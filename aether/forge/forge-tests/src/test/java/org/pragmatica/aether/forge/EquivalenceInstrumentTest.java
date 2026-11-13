@@ -387,6 +387,22 @@ class EquivalenceInstrumentTest {
             assertThat(EquivalenceDivergentControl.silentFamilies(List.of(), List.of(), EquivalenceComparison.notMeasured(legacy, blind))).doesNotContain("MON-i", "MON-ii", "MON-iii", "MON-iv");
         }
 
+        /// A family is not measured only when BOTH arms compared nothing for it: one arm with data is a comparison. Mutations: `&&` -> `||` in the
+        /// O1, O2 or O5 branch of `notMeasured`, or the legacy-side floor `<` -> `<=`; the matching assertion goes red.
+        @Test
+        void aFamily_isMeasuredWhenOnlyOneArmHasData() {
+            var legacy = new Arm("legacy", new EquivalenceKv(legacyKv(3)), Set.copyOf(CORES), deploySamples(false), 1, -1L, Map.of());
+            var empty = new Arm("fsm2", new EquivalenceKv(Map.of()), Set.copyOf(CORES), deploySamples(true), 1, 4_000L, Map.of());
+            var placed = new Arm("fsm2", new EquivalenceKv(fsm2Kv(3)), Set.copyOf(CORES), deploySamples(true), 1, 4_000L, Map.of());
+            var legacyAtFloor = new Arm("legacy", new EquivalenceKv(legacyKv(3)), Set.copyOf(CORES), deploySamples(false).subList(0, EquivalenceMonitor.MIN_SAMPLES), 1, 4_000L, Map.of());
+
+            assertThat(EquivalenceComparison.notMeasured(legacy, empty)).as("outcomes and target on one side only").doesNotContain("O1", "O2");
+            assertThat(EquivalenceComparison.notMeasured(empty, legacy)).as("either side").doesNotContain("O1", "O2");
+            assertThat(EquivalenceComparison.notMeasured(legacy, placed)).as("placement on one side only").doesNotContain("O5");
+            assertThat(EquivalenceComparison.notMeasured(placed, legacy)).as("either side").doesNotContain("O5");
+            assertThat(EquivalenceComparison.notMeasured(legacyAtFloor, placed)).as("legacy exactly at the sample floor").doesNotContain("MON-i");
+        }
+
         private static Arm fsm2Arm() {
             return arm("fsm2", true);
         }
@@ -469,6 +485,33 @@ class EquivalenceInstrumentTest {
             }
             var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())), new EquivalenceMonitor.Sample(20_000L, new EquivalenceKv(loading)));
             var events = List.of(new EquivalenceMonitor.TargetEvent(300L, SLICE.base(), 3), new EquivalenceMonitor.TargetEvent(900L, SLICE.base(), 0));
+
+            assertThat(MONITOR.check(samples, events)).extracting(EquivalenceMonitor.Violation::invariant).containsExactly("i");
+        }
+
+        /// An event stamped exactly at a sample's time is applied before that sample: the stamp is a lower bound of the commit time, so an event is
+        /// never later than a sample that already saw its effect. Mutation: `<=` -> `<` in the event cursor; the assertion goes red.
+        @Test
+        void aRingEventAtASampleInstant_isAppliedBeforeThatSample() {
+            var loading = new HashMap<AetherKey, AetherValue>();
+
+            for (var index = 0; index < 3; index++) {
+                loading.put(new AetherKey.NodeArtifactKey(CORES.get(index), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+            }
+            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())), new EquivalenceMonitor.Sample(1_000L, new EquivalenceKv(loading)));
+
+            assertThat(MONITOR.check(samples, List.of(new EquivalenceMonitor.TargetEvent(1_000L, SLICE.base(), 3)))).isEmpty();
+        }
+
+        /// A ring event that repeats the current target is no step and opens no window. Mutation: record the step for every event (the guard
+        /// `!= before` replaced by `true`); the late overshoot is excused and the assertion goes red.
+        @Test
+        void aRingEventRepeatingTheTarget_opensNoScaleWindow() {
+            var overshoot = legacyKv(3);
+
+            overshoot.put(new AetherKey.NodeArtifactKey(node("n4"), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(shared(3))), new EquivalenceMonitor.Sample(16_000L, new EquivalenceKv(overshoot)));
+            var events = List.of(new EquivalenceMonitor.TargetEvent(0L, SLICE.base(), 3), new EquivalenceMonitor.TargetEvent(15_000L, SLICE.base(), 3));
 
             assertThat(MONITOR.check(samples, events)).extracting(EquivalenceMonitor.Violation::invariant).containsExactly("i");
         }
