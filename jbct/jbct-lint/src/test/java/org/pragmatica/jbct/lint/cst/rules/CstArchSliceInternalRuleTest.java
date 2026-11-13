@@ -98,7 +98,7 @@ class CstArchSliceInternalRuleTest {
             assertFalse(hasRule("""
                     package com.example.shared;
                     import org.pragmatica.lang.Option;
-                    /// Classifies a usecase package. Not a slice.
+                    /// Slice roots such as com.example.usecase.registeruser are derived here.
                     class SharedHelper {}
                     """));
         }

@@ -636,8 +636,8 @@ class CstMapperMethodReferenceRuleTest {
         assertFalse(hasRule("""
                 package org.example;
                 class Handler {
-                    Object run(List<Wire> xs) {
-                        return xs.stream().map(Handler::isSingle).toList();
+                    Object run(Option<Wire> o) {
+                        return o.map(Handler::isSingle);
                     }
                     static boolean isSingle(Wire wire) {
                         var branches = wire.items();
