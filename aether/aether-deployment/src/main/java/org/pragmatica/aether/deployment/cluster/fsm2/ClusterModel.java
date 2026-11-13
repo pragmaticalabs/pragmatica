@@ -197,6 +197,7 @@ public final class ClusterModel {
     /// Datasources whose FAILED record was committed while suspended: announced once on the resume (`Schemas.announceWithheld`).
     PSet<String> withheldBlocked = PSet.empty(scans);
     /// #2834: the mirror of the committed open set of the leader-local families (`FsmWarningKey`), as this leader last saw it committed.
+    /// #3160: rows may carry unpublished markers, and a closed row with an unpublished recovery stays as a tombstone (`Warnings`).
     PMap<AetherKey.FsmWarningKey, AetherValue.FsmWarningValue> warningRows = PMap.empty(scans);
     /// #2834: a step raised or closed a warning of a leader-local family, or a write of the open set did not land: the next flush compares
     /// the open sets with `warningRows` (`Warnings.draft`).
