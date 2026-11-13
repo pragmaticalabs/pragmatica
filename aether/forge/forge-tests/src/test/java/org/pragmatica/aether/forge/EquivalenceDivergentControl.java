@@ -59,7 +59,8 @@ final class EquivalenceDivergentControl {
                        planted(fsm2.samples(), monitor),
                        fsm2.o4Batches(),
                        fsm2.o5PlacementMs() < 0 ? 1L : fsm2.o5PlacementMs() + Math.max(60_000L, 2 * Math.max(0L, legacy.o5PlacementMs())),
-                       lostOne(fsm2.o6()));
+                       lostOne(fsm2.o6()),
+                       fsm2.targetEvents());
     }
 
     /// The families the control did NOT make the comparison report: a divergence of the control comparison that the FSM2 comparison does not

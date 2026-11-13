@@ -283,6 +283,65 @@ class EquivalenceInstrumentTest {
             assertThat(MONITOR.check(samples)).extracting(EquivalenceMonitor.Violation::invariant).containsExactly("i");
         }
 
+        /// E09 r7 on LEGACY (vf4a): the target was put and removed between two 1 s samples while three instances were still LOADING. The sample at
+        /// +1000 ms holds live=3 and no target, so a monitor fed by samples alone reads bound=0 and reports (i). Fed the ring's target transitions
+        /// it opens the scale window at the put (peak 3) and the bound is 4. Mutation: ignore the events in `check`; the second assertion goes red.
+        @Test
+        void aTargetPutAndRemovedBetweenSamples_opensItsScaleWindowFromTheRing() {
+            var loading = new HashMap<AetherKey, AetherValue>();
+
+            for (var index = 0; index < 3; index++) {
+                loading.put(new AetherKey.NodeArtifactKey(CORES.get(index), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+            }
+            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())), new EquivalenceMonitor.Sample(1_000L, new EquivalenceKv(loading)));
+            var events = List.of(new EquivalenceMonitor.TargetEvent(300L, SLICE.base(), 3), new EquivalenceMonitor.TargetEvent(900L, SLICE.base(), 0));
+
+            assertThat(MONITOR.check(samples)).as("samples alone cannot see the step").extracting(EquivalenceMonitor.Violation::invariant).containsExactly("i");
+            assertThat(MONITOR.check(samples, events)).as("the ring saw the step").isEmpty();
+        }
+
+        /// The ring-fed window is still a window: the same live=3 with no target long after the removal is a breach.
+        @Test
+        void aRingRecordedStep_doesNotExcuseInstancesOutsideItsWindow() {
+            var loading = new HashMap<AetherKey, AetherValue>();
+
+            for (var index = 0; index < 3; index++) {
+                loading.put(new AetherKey.NodeArtifactKey(CORES.get(index), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+            }
+            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())), new EquivalenceMonitor.Sample(20_000L, new EquivalenceKv(loading)));
+            var events = List.of(new EquivalenceMonitor.TargetEvent(300L, SLICE.base(), 3), new EquivalenceMonitor.TargetEvent(900L, SLICE.base(), 0));
+
+            assertThat(MONITOR.check(samples, events)).extracting(EquivalenceMonitor.Violation::invariant).containsExactly("i");
+        }
+
+        /// The ring-side extraction: a put carries the new target, a remove 0, a leader transaction its target mutations only.
+        @Test
+        void targetTransitions_readPutsRemovesAndTransactionMutations() {
+            var ring = CommitRing.commitRing(CommitRing.DEFAULT_BUDGET_BYTES, _ -> 16, Runnable::run);
+            var key = AetherKey.SliceTargetKey.sliceTargetKey(SLICE.base());
+            var other = AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(BLUEPRINT);
+            var target = AetherValue.SliceTargetValue.sliceTargetValue(SLICE.version(), 3);
+            var tag = IncarnationTag.incarnationTag(1, "f4");
+
+            ring.invalidate(tag, 0);
+            ring.append(tag, 0, "put", List.of(new KVCommand.Put<>(key, target)), 1);
+            ring.append(tag, 1, "remove", List.of(new KVCommand.Remove<>(key)), 2);
+            ring.append(tag, 2,
+                        "tx",
+                        List.of(new KVCommand.LeaderTransaction<>(key,
+                                                                  "t1",
+                                                                  LeaderValue.leaderValue(CORES.getFirst(), 4L),
+                                                                  List.of(),
+                                                                  List.of(new KVCommand.Mutation<AetherKey, AetherValue>(other, Option.none(), Option.none()),
+                                                                          new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.some(target), Option.none())))),
+                        3);
+            var events = ring.entries().stream().flatMap(entry -> Fsm2EquivalenceRoundTest.targetTransitions(entry, 7L).stream()).toList();
+
+            assertThat(events).containsExactly(new EquivalenceMonitor.TargetEvent(7L, SLICE.base(), 3),
+                                               new EquivalenceMonitor.TargetEvent(7L, SLICE.base(), 0),
+                                               new EquivalenceMonitor.TargetEvent(7L, SLICE.base(), 0));
+        }
+
         @Test
         void aBreachShorterThanItsBound_isNotReported() {
             var samples = new ArrayList<>(deploySamples(true));

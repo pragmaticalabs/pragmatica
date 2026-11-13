@@ -226,7 +226,8 @@ class Fsm2EquivalenceRoundTest {
                               recorder.samples(),
                               quiescent ? o4 : -1,
                               placementMs,
-                              o6(cluster));
+                              o6(cluster),
+                              recorder.targetEvents());
 
             monitorLiveControl(cluster, engine);
             log("arm %s end %s load=%s".formatted(engine, Instant.now(), loadAverage()));
@@ -496,9 +497,12 @@ class Fsm2EquivalenceRoundTest {
         private final List<EquivalenceMonitor.Sample> samples = new CopyOnWriteArrayList<>();
         private final Set<Long> familySlots = new ConcurrentSkipListSet<>();
         private final Map<Long, List<String>> slotEffects = new ConcurrentSkipListMap<>();
+        private final Map<Long, List<EquivalenceMonitor.TargetEvent>> targetEvents = new ConcurrentSkipListMap<>();
         private final Map<String, RingCursor> cursors = Collections.synchronizedMap(new HashMap<>());
         private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
         private volatile long placementCut = Long.MAX_VALUE;
+        /// The start (ms since the recorder) of the ring-read pass before the current one: no entry the current pass reads was committed before it.
+        private long previousPassMs = 0L;
 
         Recorder(EmberCluster cluster) {
             this.cluster = cluster;
@@ -523,6 +527,13 @@ class Fsm2EquivalenceRoundTest {
         }
 
         private synchronized void readRings() {
+            var passStart = System.currentTimeMillis() - startMs;
+
+            readPass();
+            previousPassMs = passStart;
+        }
+
+        private void readPass() {
             for (var node : cluster.allNodes()) {
                 try {
                     var cursor = cursors.computeIfAbsent(node.self().id(), RingCursor::new);
@@ -538,7 +549,13 @@ class Fsm2EquivalenceRoundTest {
             if (touchesFamily(entry)) {
                 familySlots.add(entry.slot());
                 slotEffects.put(entry.slot(), familyEffects(entry));
+                targetEvents.putIfAbsent(entry.slot(), targetTransitions(entry, previousPassMs));
             }
+        }
+
+        /// The `SliceTargetKey` transitions read from the commit ring, in slot order (the scale-step witness the 1 s samples can miss).
+        List<EquivalenceMonitor.TargetEvent> targetEvents() {
+            return targetEvents.values().stream().flatMap(List::stream).toList();
         }
 
         List<EquivalenceMonitor.Sample> samples() {
@@ -662,6 +679,33 @@ class Fsm2EquivalenceRoundTest {
             case KVCommand.LeaderTransaction<?, ?> transaction -> transaction.mutations().stream().anyMatch(mutation -> EquivalenceKv.inO4Family(mutation.key()));
             default -> false;
         });
+    }
+
+    /// The `SliceTargetKey` transitions of one committed batch, each stamped `atMs`: a put carries the new target, a remove 0.
+    static List<EquivalenceMonitor.TargetEvent> targetTransitions(ReplicaEntry entry, long atMs) {
+        return entry.effects().stream().<EquivalenceMonitor.TargetEvent>mapMulti((effect, sink) -> {
+            switch (effect) {
+                case KVCommand.Put<?, ?> put when put.key() instanceof AetherKey.SliceTargetKey key && put.value() instanceof AetherValue.SliceTargetValue value ->
+                    sink.accept(new EquivalenceMonitor.TargetEvent(atMs, key.artifactBase(), value.targetInstances()));
+                case KVCommand.Remove<?> remove when remove.key() instanceof AetherKey.SliceTargetKey key ->
+                    sink.accept(new EquivalenceMonitor.TargetEvent(atMs, key.artifactBase(), 0));
+                case KVCommand.LeaderTransaction<?, ?> transaction -> transaction.mutations()
+                                                                                .stream()
+                                                                                .filter(mutation -> mutation.key() instanceof AetherKey.SliceTargetKey)
+                                                                                .forEach(mutation -> sink.accept(transitionOf(mutation, atMs)));
+                default -> {}
+            }
+        }).toList();
+    }
+
+    private static EquivalenceMonitor.TargetEvent transitionOf(KVCommand.Mutation<?, ?> mutation, long atMs) {
+        var key = (AetherKey.SliceTargetKey) mutation.key();
+
+        return new EquivalenceMonitor.TargetEvent(atMs,
+                                                  key.artifactBase(),
+                                                  mutation.replacement()
+                                                          .map(value -> value instanceof AetherValue.SliceTargetValue target ? target.targetInstances() : 0)
+                                                          .or(0));
     }
 
     /// The O4-family effects of one committed batch, each as `Family op detail key` (op = put / remove; detail = the value's state, goal or

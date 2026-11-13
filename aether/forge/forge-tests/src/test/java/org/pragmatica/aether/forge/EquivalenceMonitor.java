@@ -6,6 +6,7 @@
 package org.pragmatica.aether.forge;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -23,15 +24,24 @@ import org.pragmatica.consensus.NodeId;
 ///
 /// - **(i)** per artifact, ACTIVE + LOADING + LOADED instances <= target + 1 while a scale step is in progress, <= target otherwise. "In progress":
 ///   the target value of that artifact changed within the last `scaleWindowMs` (and then the bound is `max(old, new) + 1`) `[guess: the window;
-///   settled by the first LEGACY baseline runs]`.
+///   settled by the first LEGACY baseline runs]`. A change is seen from the samples AND from the [TargetEvent]s the commit ring recorded between
+///   them, so a target that is put and removed between two 1 s samples (E-09 r7, LEGACY) still opens its scale window.
 /// - **(ii)** no `SliceTargetKey` whose owning `AppBlueprintKey` is absent for more than 2 reconcile ticks (CF-5).
 /// - **(iii)** no ACTIVE instance row of a node with a committed DEPARTED record for more than one reconcile tick (C17b). LEGACY writes no
 ///   departure record, so (iii) is vacuous on a LEGACY arm.
 /// - **(iv)** at most one open apply per blueprint. The key shape (`DeploymentApplyKey(blueprintId)`) makes two committed apply rows for one
 ///   blueprint unrepresentable, so the checkable form is: no open apply whose attempt is not the committed blueprint's attempt (a second, stale
-///   open apply) for more than one reconcile tick.
+///   open apply) for more than one reconcile tick. LEGACY writes no `DeploymentApplyKey`, so (iv) is vacuous on a LEGACY arm.
 record EquivalenceMonitor(long tickMs, long scaleWindowMs) {
+    /// The fewest samples an arm may carry for the monitor to count as measuring anything `[guess: 10; r5-r9 rounds carried 61-212 per arm]`.
+    static final int MIN_SAMPLES = 10;
+
     record Sample(long atMs, EquivalenceKv kv) {}
+
+    /// One committed `SliceTargetKey` transition read from the commit ring: `targetInstances` after a put, 0 after a remove. `atMs` is a lower
+    /// bound of the commit time (the start of the ring-read pass before the one that read it), so an event is never later than a sample that
+    /// already saw its effect.
+    record TargetEvent(long atMs, ArtifactBase base, int targetInstances) {}
 
     record Violation(String invariant, long atMs, String detail) {
         String describe() {
@@ -40,6 +50,10 @@ record EquivalenceMonitor(long tickMs, long scaleWindowMs) {
     }
 
     List<Violation> check(List<Sample> samples) {
+        return check(samples, List.of());
+    }
+
+    List<Violation> check(List<Sample> samples, List<TargetEvent> events) {
         var violations = new ArrayList<Violation>();
         var lastChange = new HashMap<ArtifactBase, Long>();
         var previousTarget = new HashMap<ArtifactBase, Integer>();
@@ -48,12 +62,17 @@ record EquivalenceMonitor(long tickMs, long scaleWindowMs) {
         var departedActiveSince = new HashMap<String, Long>();
         var staleApplySince = new HashMap<String, Long>();
         var reported = new LinkedHashSet<String>();
+        var pending = events.stream().sorted(Comparator.comparingLong(TargetEvent::atMs)).toList();
+        var applied = 0;
 
         for (var sample : samples) {
             var kv = sample.kv();
             var targets = kv.targets();
             var live = kv.live();
 
+            for (; applied < pending.size() && pending.get(applied).atMs() <= sample.atMs(); applied++) {
+                eventStep(pending.get(applied), lastChange, previousTarget, peakDuringStep);
+            }
             scaleStep(sample.atMs(), targets, lastChange, previousTarget, peakDuringStep);
             for (var base : unionOf(targets.keySet(), live.keySet())) {
                 var count = live.getOrDefault(base, 0L);
@@ -100,6 +119,20 @@ record EquivalenceMonitor(long tickMs, long scaleWindowMs) {
         }
 
         return violations;
+    }
+
+    /// A ring-recorded target transition: the same bookkeeping as a sample that saw the target change, without needing a sample to catch it.
+    private static void eventStep(TargetEvent event,
+                                  Map<ArtifactBase, Long> lastChange,
+                                  Map<ArtifactBase, Integer> previousTarget,
+                                  Map<ArtifactBase, Integer> peakDuringStep) {
+        var before = previousTarget.getOrDefault(event.base(), 0);
+
+        if (event.targetInstances() != before) {
+            lastChange.put(event.base(), event.atMs());
+            peakDuringStep.put(event.base(), Math.max(event.targetInstances(), before));
+        }
+        previousTarget.put(event.base(), event.targetInstances());
     }
 
     private static void scaleStep(long atMs,

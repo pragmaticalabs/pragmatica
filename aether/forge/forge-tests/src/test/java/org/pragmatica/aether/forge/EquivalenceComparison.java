@@ -39,14 +39,27 @@ final class EquivalenceComparison {
 
     /// What one arm of a round recorded. `o4Batches` is negative when the arm did not quiesce (the count is void; a commit ring that dropped
     /// entries on every node is a round ERROR, never an O4 value);
-    /// `o5PlacementMs` is negative when placement never completed; `o6` holds the hygiene counters (lost, settled_unknown, closed).
+    /// `o5PlacementMs` is negative when placement never completed; `o6` holds the hygiene counters (lost, settled_unknown, closed);
+    /// `targetEvents` are the `SliceTargetKey` transitions the commit ring recorded between the samples (scale-step detection, MON-i).
     record Arm(String engine,
                EquivalenceKv quiescent,
                Set<NodeId> liveNodes,
                List<EquivalenceMonitor.Sample> samples,
                long o4Batches,
                long o5PlacementMs,
-               Map<String, Double> o6) {}
+               Map<String, Double> o6,
+               List<EquivalenceMonitor.TargetEvent> targetEvents) {
+        /// An arm with no ring-recorded target transitions: the samples are the only witness of a scale step.
+        Arm(String engine,
+            EquivalenceKv quiescent,
+            Set<NodeId> liveNodes,
+            List<EquivalenceMonitor.Sample> samples,
+            long o4Batches,
+            long o5PlacementMs,
+            Map<String, Double> o6) {
+            this(engine, quiescent, liveNodes, samples, o4Batches, o5PlacementMs, o6, List.of());
+        }
+    }
 
     /// A RULED outcome change, not a divergence: in `scenario` (and nowhere else), LEGACY's `legacy` verdict and the other arm's `other` verdict
     /// on the same blueprint are equal by an owner ruling, recorded as the `know` commit. Never a general normaliser: one named mapping per ruling.
@@ -141,9 +154,9 @@ final class EquivalenceComparison {
                 divergences.add(new Divergence("O6", other.engine() + " " + counter + "=" + count + ", expected 0"));
             }
         });
-        monitor.check(other.samples())
+        monitor.check(other.samples(), other.targetEvents())
                .forEach(violation -> divergences.add(new Divergence("MON-" + violation.invariant(), other.engine() + " " + violation.describe())));
-        monitor.check(legacy.samples())
+        monitor.check(legacy.samples(), legacy.targetEvents())
                .forEach(violation -> divergences.add(new Divergence("MON-" + violation.invariant(), legacy.engine() + " " + violation.describe())));
 
         return divergences;
