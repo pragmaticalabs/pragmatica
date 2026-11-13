@@ -507,14 +507,14 @@ class ReplicaAckGateTest {
         assertThat(injected.get()).as("the E3 batch was injected").isTrue();
         assertThat(replica.nextExpectedOffset(STREAM, PARTITION)).as("the E3 batch landed at the head").isEqualTo(8L);
 
-        var e3LiveSync = heldSyncs.poll();
         var releaseSync = heldSyncs.poll();
 
-        assertThat(releaseSync).as("two barriers in flight").isNotNull();
+        assertThat(releaseSync).as("the E3 batch is not acked (#2840), so only the release's barrier is in flight").isNotNull();
+        assertThat(heldSyncs).as("no barrier for an E3 ack").isEmpty();
         drain(releaseSync);
 
         assertThat(ackOffsetsUnder(E2)).as("acks under E2 cover only E2's records (0..5); all acks = %s", acks).containsExactly(5L);
-        drain(e3LiveSync);
+        assertThat(ackOffsetsUnder(E3)).as("no ack under E3").isEmpty();
     }
 
     /// #2840: the copy is verified for E2 and acked 7 under E2; a batch of E3 (from another node) lands at offset 8 while this

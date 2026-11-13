@@ -521,14 +521,14 @@ public final class ReplicationReceiveHandler {
 
         var highestHeld = fromOffset + outcome.held() - 1;
 
-        if (aheadOfCommittedView(message)) {
-            withholdAheadAck(message, streamName, partition, highestHeld);
+        if (!trustedBeforeApply && !ackGate.mayAck(streamName, partition)) {
+            deferAck(message, streamName, partition, highestHeld);
 
             return;
         }
 
-        if (!trustedBeforeApply && !ackGate.mayAck(streamName, partition)) {
-            deferAck(message, streamName, partition, highestHeld);
+        if (aheadOfCommittedView(message)) {
+            withholdAheadAck(message, streamName, partition, highestHeld);
 
             return;
         }
