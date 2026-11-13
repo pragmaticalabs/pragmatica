@@ -170,6 +170,41 @@ class QuicPostSentDropAccountingTest {
         assertThat(network.quicMetrics().droppedAfterSentSnapshot()).isEmpty();
     }
 
+    @Test
+    void d1_drain_connectionDeadAndRebufferedIntoAFullBuffer_countsTheEvictedFrameOnItsLane() {
+        var network = network(SHORT);
+        var seeded = PeerState.peerState(PEER, System.nanoTime());
+        var drained = PeerState.peerState(PEER, System.nanoTime());
+
+        network.seedPeerForTests(PEER, seeded);
+        var _ = seeded.offerOutbound(probe(StreamType.METRICS));
+        for (var i = 1; i < PeerState.OFFLINE_BUFFER_MAX; i++) {
+            var _ = seeded.offerOutbound(probe(StreamType.CONSENSUS));
+        }
+        var _ = drained.offerOutbound(probe(StreamType.KV));
+        network.drainOfflineBufferForTests(drained, deadConnection());
+
+        assertOnly(network, StreamType.METRICS, DropSite.OFFLINE_OLDEST, 1);
+        assertThat(network.quicMetrics().backpressureDropCount()).as("the re-buffer evicted one frame").isEqualTo(1L);
+    }
+
+    @Test
+    void d1_drain_deadCaptureRedispatchedToALiveConnection_refusedThere_isALoss_notARefusal() {
+        var network = network(SHORT);
+        var live = connection(PEER, QuicPeerConnection.LaneOpener.noop());
+        var drained = PeerState.peerState(PEER, System.nanoTime());
+
+        live.registerStream(StreamType.FORWARD, stream(false));
+        network.seedPeerForTests(PEER, connectedState(PEER, live));
+        var _ = drained.offerOutbound(probe(StreamType.FORWARD));
+        network.drainOfflineBufferForTests(drained, deadConnection());
+
+        assertOnly(network, StreamType.FORWARD, DropSite.DRAIN, 1);
+        assertThat(network.quicMetrics().refusedCount(StreamType.FORWARD))
+            .as("the re-dispatched drained frame's caller was told Sent, never refused")
+            .isZero();
+    }
+
     private static QuicPeerConnection deadConnection() {
         var channel = mock(io.netty.handler.codec.quic.QuicChannel.class);
 
@@ -227,7 +262,11 @@ class QuicPostSentDropAccountingTest {
         var network = network(SHORT);
         var state = PeerState.peerState(PEER, System.nanoTime());
 
-        for (var i = 0; i < PeerState.OFFLINE_BUFFER_MAX; i++) {
+        // Three distinct lanes: the oldest frame (METRICS), its successor (CONSENSUS) and the displacing send (FORWARD),
+        // so attributing to the successor, the displacer or a fixed lane each reads differently.
+        var _ = state.offerOutbound(probe(StreamType.METRICS));
+
+        for (var i = 1; i < PeerState.OFFLINE_BUFFER_MAX; i++) {
             var _ = state.offerOutbound(probe(StreamType.CONSENSUS));
         }
 
@@ -236,7 +275,8 @@ class QuicPostSentDropAccountingTest {
         var outcome = network.offerOutboundForTest(state, probe(StreamType.FORWARD));
 
         assertThat(outcome).as("a queued frame is reported Sent").isInstanceOf(WriteOutcome.Sent.class);
-        assertOnly(network, StreamType.CONSENSUS, DropSite.OFFLINE_OLDEST, 1);
+        assertOnly(network, StreamType.METRICS, DropSite.OFFLINE_OLDEST, 1);
+        assertThat(network.quicMetrics().backpressureDropCount()).as("the eviction is also a backpressure drop").isEqualTo(1L);
     }
 
     @Test

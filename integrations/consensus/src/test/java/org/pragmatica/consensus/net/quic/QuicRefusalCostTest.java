@@ -140,6 +140,34 @@ class QuicRefusalCostTest {
         }
     }
 
+    /// N1: the same single WARN where the write reaches the lane through the already-encoded path.
+    @Test
+    void firstRefusal_onAnEncodedWrite_logsExactlyOneWarn() {
+        var network = network(SHORT);
+
+        try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+            var outcome = network.writeIfWritableForTest(stream(false), new byte[]{1}, PEER, StreamType.FORWARD);
+
+            assertThat(outcome).isInstanceOf(WriteOutcome.BackpressureRefused.class);
+            assertThat(capture.messages(Level.WARN)).as("one WARN for the refusal that opened the episode").hasSize(1);
+        }
+    }
+
+    /// N1: a DHT write on a stream that is already inactive refuses at once; the refusal that opened the episode logs once.
+    @Test
+    void firstDhtRefusal_onAnInactiveStream_logsExactlyOneWarn() {
+        var network = network(SHORT);
+        var inactive = stream(false);
+
+        when(inactive.isActive()).thenReturn(false);
+        try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+            var outcome = network.writeIfWritableForTest(inactive, new byte[]{1}, PEER, StreamType.DHT);
+
+            assertThat(outcome).isInstanceOf(WriteOutcome.BackpressureRefused.class);
+            assertThat(capture.messages(Level.WARN)).as("one WARN for the refusal that opened the episode").hasSize(1);
+        }
+    }
+
     /// N1: the suppression is only for the write that opened the episode. A refusal in an episode another write opened
     /// (here a DHT retry on a live stream) logs the rate-limited refusal WARN.
     @Test

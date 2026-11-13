@@ -16,12 +16,14 @@
 
 package org.pragmatica.consensus.net.quic;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.net.quic.QuicTransportMetrics.DropSite;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.StreamType;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.AWAIT;
@@ -67,6 +69,36 @@ class QuicLossWarnGateDepartureTest {
         var _ = network.writeIfWritableForTest(stream(false), BYTES, PEER, StreamType.FORWARD);
 
         assertThat(network.lossWarnGateEntriesForTests()).as("control: a live peer's refusal is gated").isEqualTo(1);
+
+        network.departurePermanent(PEER);
+
+        assertThat(network.lossWarnGateEntriesForTests()).isZero();
+    }
+
+    @Test
+    void retryGivingUpAfterTheDeparture_logsNoWarnForTheDepartedPeer() {
+        var network = network(SLOW);
+
+        network.seedPeerForTests(PEER, PeerState.peerState(PEER, System.nanoTime()));
+        try (var capture = LogCapture.capture("org.pragmatica.consensus.net.quic.QuicClusterNetwork", Level.INFO, false)) {
+            var _ = network.writeIfWritableForTest(stream(false), BYTES, PEER, StreamType.CONSENSUS);
+
+            network.departurePermanent(PEER);
+            awaitTrue(() -> network.consensusRetriesInFlight() == 0, AWAIT, "the in-flight retry to give up");
+
+            assertThat(capture.messages(Level.WARN))
+                .as("a give-up for a REMOVED peer logs no loss WARN")
+                .noneMatch(m -> m.contains("gave up after retries"));
+        }
+    }
+
+    @Test
+    void departureOfAnAbsentPeer_forgetsItsGateEntry() {
+        var network = network(SLOW);
+
+        var _ = network.writeIfWritableForTest(stream(false), BYTES, PEER, StreamType.FORWARD);
+
+        assertThat(network.lossWarnGateEntriesForTests()).as("control: a refusal for a peer with no state is gated").isEqualTo(1);
 
         network.departurePermanent(PEER);
 
