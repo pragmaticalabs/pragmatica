@@ -1,0 +1,4 @@
+### Added (2026-11-13 — #2763: embedded TLA+ model of the FSM2 leader)
+- **The FSM2 leader boundary is a TLA+ model embedded in `cluster/fsm2/`** (`Fsm2Leader`): the leader's open-warning set, the leader fence, the `Rebuild` inherit and the write path that carries them to the next leader, checked by `tools/tla/run.sh` against an expected verdict per config. Results are bounds over the stated constants, not proofs.
+- Known-bad configs model the code before #2834 and before #3085 and must fail in every run; mutants of the model (no fence, no inherit, no remove, no draft, no expiry) must go red for the property each targets.
+- The model finds #3160 in the code as it stands: four `code_*` configs are expected failures (close side a defect, raise side the residual documented in `Warnings`); a fix flips the row.

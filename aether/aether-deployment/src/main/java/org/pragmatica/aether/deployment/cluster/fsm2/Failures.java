@@ -166,6 +166,22 @@ public sealed interface Failures {
         return committed + pending;
     }
 
+    /// ```tla Fsm2Leader:EventFire
+    /// \* Event-only family (retry exhaustion): Failures.java exhausted. code and pre3085 guard once per episode;
+    /// \* pre2834 raised unconditionally. Retry counts are committed judgments (Failures.java), so a successor whose
+    /// \* exhaustion write was never committed retries and exhausts again while the fault persists: one firing per
+    /// \* incarnation while cond holds (fairness below). The exhaustion op is an artifact intent: a flush is queued.
+    /// EventFire(n, e) ==
+    ///   /\ e \in EventFam /\ fsm[n] = "Active" /\ e \in cond /\ e \notin fired[n]
+    ///   /\ WarnOK(n)
+    ///   /\ LET raise == MODE = "pre2834" \/ MUT = "noguard" \/ e \notin warned[n]
+    ///          adds == IF raise THEN {e} ELSE {}
+    ///      IN /\ Apply(n, warned[n] \cup adds, rows[n], dirty[n], wInfl[n], gInfl[n], gIntent[n], raise, TRUE,
+    ///                    Pub(adds, {}), Hold(n, adds, {}))
+    ///   /\ fired' = [fired EXCEPT ![n] = fired[n] \cup {e}]
+    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, view, net, settles,
+    ///                  condBudget, faultBudget, deposedCommit, inheritGap>>
+    /// ```
     private static ClusterModel exhausted(ClusterModel m, Ctx ctx, SlicePair pair, String reason) {
         var artifact = pair.artifact();
 

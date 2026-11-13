@@ -169,6 +169,30 @@ public sealed interface Outbox {
     // -- flush -----------------------------------------------------------------------------------------------------
     /// The end of a drain: build the transactions. While suspended (the committed leader is not this node) nothing is
     /// submitted and the intents are dropped; the exit on CI-16 re-derives them (3.2, R-5.7.1 (a)).
+    ///
+    /// ```tla Fsm2Leader:Flush
+    /// \* Outbox.java flush. Suspended: nothing submitted, intents dropped, Warnings.suspended clears dirty.
+    /// \* Else Warnings.draft (Warnings.java): one WARNINGS tx with the difference, unless one is in flight; then the
+    /// \* goal draft; Outbox.java submitOne -> Submit effect -> one apply per step (ClusterFsmInterpreter.java).
+    /// Flush(n) ==
+    ///   /\ fsm[n] = "Active" /\ flushQ[n]
+    ///   /\ IF Suspended(n)
+    ///      THEN /\ Apply(n, warned[n], rows[n], FALSE, wInfl[n], gInfl[n], FALSE, FALSE, FALSE, shown, held[n])
+    ///           /\ UNCHANGED net
+    ///      ELSE LET draftW == Persists /\ dirty[n] /\ ~wInfl[n] /\ MUT # "nodraft"
+    ///               doW == draftW /\ warned[n] # rows[n]
+    ///               doG == gIntent[n]
+    ///               wtx == [kind |-> "W", node |-> n, inc |-> inc[n], lv |-> view[n],
+    ///                       adds |-> warned[n] \ rows[n], rems |-> rows[n] \ warned[n], val |-> 0, exp |-> 0,
+    ///                       cov |-> Len(held[n])]
+    ///               gtx == [kind |-> "G", node |-> n, inc |-> inc[n], lv |-> view[n],
+    ///                       adds |-> {}, rems |-> {}, val |-> target, exp |-> kvDesired]
+    ///           IN /\ net' = net \cup (IF doW THEN {wtx} ELSE {}) \cup (IF doG THEN {gtx} ELSE {})
+    ///              /\ Apply(n, warned[n], rows[n], IF draftW THEN FALSE ELSE dirty[n], wInfl[n] \/ doW,
+    ///                       gInfl[n] \/ doG, FALSE, FALSE, FALSE, shown, held[n])
+    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, settles,
+    ///                  condBudget, faultBudget, deposedCommit, inheritGap>>
+    /// ```
     static ClusterModel flush(ClusterModel m, Ctx ctx, boolean suspended) {
         m.flushQueued = false;
         // Design-out by parking: while suspended nothing is submitted; event-only intents are parked and replayed on the CI-16 resume
@@ -498,6 +522,19 @@ public sealed interface Outbox {
     // BER-free absorption, design-out: a submission that never settled is dropped from `submitted` and its pending goals are released.
     // Guarantee: the loss is re-derived, never silent. Mechanism: the `lost` metric here, and the next reconcile derives the same
     // intent again from the mirror (level-triggered), so nothing depends on the lost write having landed.
+    /// ```tla Fsm2Leader:Expire
+    /// \* Outbox.java expire/release: a submission whose settlement will never come stops counting as in flight;
+    /// \* WARNINGS: unlanded marks dirty. The bound exceeds applyTimeout, so the engine no longer holds the tx.
+    /// Expire(n) ==
+    ///   /\ fsm[n] = "Active" /\ MUT # "noexpire"
+    ///   /\ LET eW == wInfl[n] /\ TxOf(n, "W") = {}
+    ///          eG == gInfl[n] /\ TxOf(n, "G") = {}
+    ///      IN /\ eW \/ eG
+    ///         /\ Apply(n, warned[n], rows[n], dirty[n] \/ eW, wInfl[n] /\ ~eW, gInfl[n] /\ ~eG, gIntent[n], FALSE,
+    ///                  flushQ[n], shown, held[n])
+    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, net, settles,
+    ///                  condBudget, faultBudget, deposedCommit, inheritGap>>
+    /// ```
     static ClusterModel expire(ClusterModel m, Ctx ctx) {
         var bound = ctx.settings().submissionExpiry() * 1_000_000L;
 
@@ -529,6 +566,39 @@ public sealed interface Outbox {
     // FER (degrade forward): a settlement for a correlation that is not in `submitted` (expired by `expire`, or from a model replaced by a
     // Rebuild) is dropped and counted. Guarantee: nothing is applied twice and the loss is visible. Mechanism: the `settled_unknown` metric;
     // the submission's pending entries were already released and its intent is re-derived level-triggered from the mirror.
+    /// ```tla Fsm2Leader:Settle
+    /// \* WriteSettled of this incarnation: Outbox.java. W accepted: mirror takes the mutations (Warnings.accepted,
+    /// \* Warnings.java); refused: the refusal's values re-index the mirror, m.leader := refusal leader, unlanded marks
+    /// \* dirty (Outbox.java; Warnings.java); failed: re-drafted by the next reconcile.
+    /// Settle(s) ==
+    ///   /\ s \in settles /\ fsm[s.node] = "Active" /\ s.inc = inc[s.node]
+    ///   /\ LET n == s.node
+    ///          isW == s.kind = "W"
+    ///          r == IF isW /\ s.out = "acc" THEN (rows[n] \ s.rems) \cup s.adds
+    ///               ELSE IF isW /\ s.out = "ref" THEN (rows[n] \ (s.adds \cup s.rems)) \cup s.seen
+    ///               ELSE rows[n]
+    ///          d == IF isW /\ s.out = "ref" THEN TRUE ELSE dirty[n]
+    ///          \* #3085: an accepted WARNINGS write publishes the held warnings it carried (Warnings.accepted -> committed -> publish)
+    ///          pubW == MODE = "code" /\ isW /\ s.out = "acc"
+    ///          k == IF s.cov < Len(held[n]) THEN s.cov ELSE Len(held[n])    \* the prefix the transaction carried (warningsCovered)
+    ///          sh == IF pubW THEN Pubd(shown, SubSeq(held[n], 1, k)) ELSE shown
+    ///          hd == IF pubW THEN SubSeq(held[n], k + 1, Len(held[n])) ELSE held[n]
+    ///      IN /\ settles' = settles \ {s}
+    ///         /\ view' = IF s.out = "ref" THEN [view EXCEPT ![n] = s.lv] ELSE view
+    ///         /\ Apply(n, warned[n], r, d, IF isW THEN FALSE ELSE wInfl[n], IF isW THEN gInfl[n] ELSE FALSE,
+    ///                  gIntent[n], FALSE, flushQ[n], sh, hd)
+    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, fired, net,
+    ///                  condBudget, faultBudget, deposedCommit, inheritGap>>
+    /// ```
+    ///
+    /// ```tla Fsm2Leader:DropSettle
+    /// \* A settlement of another incarnation is dropped (ClusterFsm.java; Outbox.java).
+    /// DropSettle(s) ==
+    ///   /\ s \in settles /\ (fsm[s.node] = "Dormant" \/ s.inc # inc[s.node])
+    ///   /\ settles' = settles \ {s}
+    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, shown, fsm, inc, view, warned, rows,
+    ///                  dirty, flushQ, wInfl, gInfl, gIntent, fired, net, condBudget, faultBudget, deposedCommit, inheritGap, held>>
+    /// ```
     static ClusterModel settle(ClusterModel m, Ctx ctx, ClusterInput.WriteSettled settled) {
         return m.submitted.get(settled.correlationId())
                           .fold(() -> unknownSettlement(m, ctx),
