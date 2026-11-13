@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import io.netty.channel.ChannelFuture;
 import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicStreamChannel;
+import io.netty.handler.codec.quic.QuicStreamChannelConfig;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterFormationConfig;
 import org.pragmatica.consensus.net.quic.TransportTripwireFixtures.TripwireTopology;
@@ -94,6 +95,7 @@ final class LossAccountingFixtures {
         when(stream.writeAndFlush(any())).thenReturn(future);
         when(stream.isActive()).thenReturn(true);
         when(stream.isWritable()).thenReturn(writable);
+        when(stream.config()).thenReturn(mock(QuicStreamChannelConfig.class));
 
         return stream;
     }
