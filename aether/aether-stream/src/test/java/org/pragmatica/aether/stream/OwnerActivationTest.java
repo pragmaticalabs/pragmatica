@@ -740,9 +740,11 @@ class OwnerActivationTest {
         assertThat(catchUps).containsExactly("peer-b@8");
     }
 
-    /// #3142 F3: a confirmation that fails leaves the cap as learned and does not block the gate.
+    /// #3142 F3, hook level only: a confirm hook whose promise fails does not block the gate. This pins the gate's tolerance of a failed
+    /// hook, not the cap value: the real binding never fails and an unreadable page uncaps the cap (see
+    /// `OwnerCatchupCommittedLineageTest#confirmLineageEnd_whenThePageCannotBeRead_dropsTheCap`).
     @Test
-    void activate_failedConfirmation_keepsTheCap_andDoesNotBlock() {
+    void activate_failedConfirmHook_doesNotBlockTheGate() {
         members.set(List.of(SELF, PEER_A, PEER_B));
         localWatermark.set(2L);
         peerWatermarks.put(PEER_A, 6L);

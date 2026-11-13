@@ -94,6 +94,32 @@ class ForwardCatchupTransportTest {
         assertThat(raised).as("no episode is reported from single-page reads").isEmpty();
     }
 
+    /// #3080 (c8): a single page whose first event is not the requested offset is a gap, refused rather than taken as the lineage
+    /// page. Red under "singlePage skips the contiguity check" (the gappy page is delivered).
+    @Test
+    void requestPage_nonContiguousPage_failsWithAGap() {
+        var transport = forwardCatchupTransport(new GappyForwardSource(eventsFrom(3, 4)), 2);
+
+        var result = transport.requestPage(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 0L)).await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("gap detected"));
+    }
+
+    /// #3080 (c9): a single page cut at the byte cap with no event at all can never show the lineage end; it fails instead of
+    /// answering an empty page the learn would read as "no bound". Red under "singlePage skips the truncated-empty check".
+    @Test
+    void requestPage_cutPageWithNoEvent_failsInsteadOfAnsweringEmpty() {
+        var source = new FakeForwardSource(eventsFrom(0, 3), 0);
+        var transport = forwardCatchupTransport(source, 4);
+
+        var result = transport.requestPage(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 0L)).await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("maxReadResponseBytes"));
+        assertThat(source.reads().get()).isEqualTo(1);
+    }
+
     /// #1638 B2: every page received is reported as progress, so a long catch-up is seen as moving. Red under "pages
     /// are not reported".
     @Test

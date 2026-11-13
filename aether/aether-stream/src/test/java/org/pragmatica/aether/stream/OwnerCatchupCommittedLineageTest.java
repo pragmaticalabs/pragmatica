@@ -305,7 +305,22 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(fixture.served()).as("R1 confirmed, then pulled; R2 never read").doesNotContain(OTHER);
     }
 
-    /// #3081 (F3b): a cap that cannot be confirmed (the page is unreadable) is dropped, never relied on: the tail stands uncapped.
+    /// #3081 (F3b, c1): the re-learned page is readable but now ends the committed lineage elsewhere (E3 starts at 13, not 11, so the
+    /// end is 12, not the remembered 10). A readable page is not a confirmation: the stale cap is dropped and the tail stands.
+    /// Red under "confirm accepts any readable page".
+    @Test
+    void confirmLineageEnd_whenTheRelearnedEndDiffersButIsReadable_dropsTheStaleCap() {
+        var fixture = disownedTailFixture();
+
+        settled(fixture.backfill().learnLineageEnd("s", 0, SOURCE, 20L, 11L)).onFailure(cause -> fail(cause.message()));
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 13L)));
+        settled(fixture.backfill().confirmLineageEnd("s", 0, SOURCE, 20L)).onFailure(cause -> fail(cause.message()));
+
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).as("stale cap 10 not kept").isEqualTo(20L);
+    }
+
+    /// #3081 (F3b): a cap that cannot be confirmed (the page is unreadable) is dropped, never relied on: the tail stands uncapped. On the
+    /// real path the confirm never fails, it uncaps (`recover(_ -> none)`). Red under "an unreadable page keeps the cap".
     @Test
     void confirmLineageEnd_whenThePageCannotBeRead_dropsTheCap() {
         var fixture = disownedTailFixture();
