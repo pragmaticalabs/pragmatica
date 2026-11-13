@@ -134,6 +134,51 @@ class QuicPostSentDropAccountingTest {
     }
 
     @Test
+    void d1_drain_connectionDeadWithNoPeerState_isCountedOnItsLane() {
+        var network = network(SHORT);
+        var state = PeerState.peerState(PEER, System.nanoTime());
+
+        var _ = state.offerOutbound(probe(StreamType.FORWARD));
+        network.drainOfflineBufferForTests(state, deadConnection());
+
+        assertOnly(network, StreamType.FORWARD, DropSite.DRAIN, 1);
+    }
+
+    @Test
+    void d1_drain_connectionDeadOnRemovedPeer_isCountedOnItsLane() {
+        var network = network(SHORT);
+        var state = PeerState.peerState(PEER, System.nanoTime());
+        var removed = PeerState.peerState(PEER, System.nanoTime());
+        var _ = removed.authoritativeRemove(System.nanoTime());
+
+        network.seedPeerForTests(PEER, removed);
+        var _ = state.offerOutbound(probe(StreamType.KV));
+        network.drainOfflineBufferForTests(state, deadConnection());
+
+        assertOnly(network, StreamType.KV, DropSite.DRAIN, 1);
+    }
+
+    @Test
+    void d1_drain_connectionDeadAndRebuffered_isNotALoss_control() {
+        var network = network(SHORT);
+        var state = PeerState.peerState(PEER, System.nanoTime());
+        network.seedPeerForTests(PEER, PeerState.peerState(PEER, System.nanoTime()));
+        var _ = state.offerOutbound(probe(StreamType.KV));
+        network.drainOfflineBufferForTests(state, deadConnection());
+
+        assertThat(network.offlineBufferSizeForTests(PEER)).as("the frame went back into the offline buffer").isEqualTo(1);
+        assertThat(network.quicMetrics().droppedAfterSentSnapshot()).isEmpty();
+    }
+
+    private static QuicPeerConnection deadConnection() {
+        var channel = mock(io.netty.handler.codec.quic.QuicChannel.class);
+
+        when(channel.isActive()).thenReturn(false);
+
+        return QuicPeerConnection.quicPeerConnection(PEER, channel);
+    }
+
+    @Test
     void d2_pendingLaneWrite_refusedOnceTheLaneOpens_isCountedOnItsLane() {
         var network = network(SHORT);
         var opener = new HeldOpener();

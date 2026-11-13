@@ -2324,6 +2324,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// connection (the stale capture lost a race), the frame is written there and the outcome is that write's, because
     /// reporting ConnectionDead for a frame that was written would tell a caller "not sent" about a command that was.
     /// Buffered (an ordinary frame) or dropped (a [NoOfflineBuffering] one, a REMOVED peer) it stays ConnectionDead.
+    /// A dropped frame whose caller was already told `Sent` (`afterSent` present) is counted here, at that site: the
+    /// ConnectionDead it yields is indistinguishable from a buffered one to [#countLostAfterSent].
     private WriteOutcome redispatchAfterDeadConnection(PeerState state,
                                                        Message.Wired message,
                                                        PeerState.Expiry expiry,
@@ -2338,9 +2340,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 recordQueued(state, evictedLane);
                 yield new WriteOutcome.ConnectionDead(state.peerId());
             }
-            case PeerState.OfferOutcome.Dropped ignored -> new WriteOutcome.ConnectionDead(state.peerId());
-            case PeerState.OfferOutcome.NotBuffered ignored -> new WriteOutcome.ConnectionDead(state.peerId());
+            case PeerState.OfferOutcome.Dropped ignored -> unbufferedConnectionDead(state.peerId(), message, afterSent);
+            case PeerState.OfferOutcome.NotBuffered ignored -> unbufferedConnectionDead(state.peerId(), message, afterSent);
         };
+    }
+
+    /// A frame the dead-connection path did not put back into the offline buffer is gone: if its caller was told `Sent`
+    /// (`afterSent` present) it is counted at that site.
+    private WriteOutcome unbufferedConnectionDead(NodeId peerId, Message.Wired message, Option<DropSite> afterSent) {
+        afterSent.onPresent(site -> quicMetrics.onDroppedAfterSent(message.streamType(), site, 1));
+
+        return new WriteOutcome.ConnectionDead(peerId);
     }
 
     private WriteOutcome writeToStream(NodeId peerId, Message.Wired message, QuicPeerConnection connection) {
@@ -2351,7 +2361,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// goes back into the offline buffer with the SAME instant its caller stops waiting, never a fresh one (#1996).
     /// `afterSent` is empty for a send whose caller receives this outcome. It names the drop site for a frame whose caller
     /// was already told `Sent` (the offline-buffer drain): such a frame is lost silently to its caller, so a refusal of it
-    /// is not counted as a refused send.
+    /// is not counted as a refused send, and a frame the dead-connection path drops without buffering is counted at the site.
     @SuppressWarnings("JBCT-PAT-01")  // Stream selection, lazy serialize, write
     private WriteOutcome writeToStream(NodeId peerId,
                                        Message.Wired message,
@@ -2366,7 +2376,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
             // The re-dispatch goes through offerOutbound, which DROPS a NoOfflineBuffering message instead of buffering it
             // (#1973): held for the reattach it would be delivered after the caller was told ConnectionDead means not sent.
             return state == null
-                   ? new WriteOutcome.ConnectionDead(peerId)
+                   ? unbufferedConnectionDead(peerId, message, afterSent)
                    : redispatchAfterDeadConnection(state, message, expiry, afterSent);
         }
 
@@ -2614,8 +2624,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// A frame the caller was told `Sent` whose later write came back as anything but a write or a held frame is lost:
-    /// count it at `site`. `ConnectionDead` is excluded -- the frame went back into the offline buffer, where D5 and D11
-    /// account for it.
+    /// count it at `site`. `ConnectionDead` is excluded: either the frame went back into the offline buffer, where D5 and
+    /// D11 account for it, or it was not buffered and [#unbufferedConnectionDead] already counted it at `site`.
     @Contract
     private void countLostAfterSent(StreamType lane, DropSite site, WriteOutcome outcome) {
         if (! (outcome instanceof WriteOutcome.Sent) && !(outcome instanceof WriteOutcome.ConnectionDead)) {
