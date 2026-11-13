@@ -703,6 +703,74 @@ class CstMapperMethodReferenceRuleTest {
                 """));
     }
 
+    /// #3065 control: the accessor receiver is qualified (`wire.items`), a different expression from the guarded `items`.
+    @Test
+    void analyze_getLastOnQualifiedReceiver_flags() {
+        assertTrue(hasRule("""
+                package org.example;
+                class Handler {
+                    Object run(Option<Wire> o) {
+                        return o.flatMap(Handler::lastName);
+                    }
+                    static Option<String> lastName(Wire wire) {
+                        var items = wire.others();
+                        return items.isEmpty() ? Option.none() : Option.some(wire.items.getLast());
+                    }
+                }
+                """));
+    }
+
+    /// #3065 control: the accessor receiver is a call result, which the text guard does not resolve, so it stays partial.
+    @Test
+    void analyze_getLastOnCallResultReceiver_flags() {
+        assertTrue(hasRule("""
+                package org.example;
+                class Handler {
+                    Object run(Option<Wire> o) {
+                        return o.flatMap(Handler::lastName);
+                    }
+                    static Option<String> lastName(Wire wire) {
+                        return wire.items().isEmpty() ? Option.none() : Option.some(wire.items().getLast());
+                    }
+                }
+                """));
+    }
+
+    /// #3065 control: only `getFirst` / `getLast` are guardable; an indexed `get(0)` stays partial.
+    @Test
+    void analyze_indexedGetUnderEmptyGuard_flags() {
+        assertTrue(hasRule("""
+                package org.example;
+                class Handler {
+                    Object run(Option<Wire> o) {
+                        return o.flatMap(Handler::lastName);
+                    }
+                    static Option<String> lastName(Wire wire) {
+                        var segments = wire.items();
+                        return segments.isEmpty() ? Option.none() : Option.some(segments.get(0));
+                    }
+                }
+                """));
+    }
+
+    /// #3065 a guarded accessor whose `.getLast()` starts on a new line is still guarded.
+    @Test
+    void analyze_getLastReceiverOnPreviousLine_isClean() {
+        assertFalse(hasRule("""
+                package org.example;
+                class Handler {
+                    Object run(Option<Wire> o) {
+                        return o.flatMap(Handler::lastName);
+                    }
+                    static Option<String> lastName(Wire wire) {
+                        var segments = wire.items();
+                        return segments.isEmpty() ? Option.none() : Option.some(segments
+                                .getLast());
+                    }
+                }
+                """));
+    }
+
     private long count(String source) {
         return lint(source).stream()
                            .filter(diagnostic -> diagnostic.ruleId()
