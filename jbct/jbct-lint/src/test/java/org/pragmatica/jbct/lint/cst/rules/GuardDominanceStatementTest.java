@@ -94,6 +94,18 @@ class GuardDominanceStatementTest {
         assertFalse(fires("if (!xs.isEmpty()) return xs.getFirst()"));
     }
 
+    // ---- else side starting right after the colon, and a block that never closes (b_c13, b_u10)
+
+    @Test
+    void elseExpressionStartingWithACastRightAfterTheColon_isReached() {
+        assertFalse(fires("return xs.isEmpty() ? 0 :(int) xs.getFirst();"));
+    }
+
+    @Test
+    void unclosedThenBlock_runsToTheEndOfText() {
+        assertFalse(fires("if (!xs.isEmpty()) { return xs.getFirst();"));
+    }
+
     // ---- what counts as a read of the receiver between guard and accessor (d_g3, d_g5 = `get`, d_g6, d_g8)
 
     @Test
