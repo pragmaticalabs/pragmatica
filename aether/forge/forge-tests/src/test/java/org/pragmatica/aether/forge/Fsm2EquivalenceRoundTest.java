@@ -47,6 +47,7 @@ import org.pragmatica.aether.forge.EquivalenceComparison.Arm;
 import org.pragmatica.aether.forge.EquivalenceComparison.Divergence;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.deployment.Fsm2System;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -101,6 +102,7 @@ class Fsm2EquivalenceRoundTest {
     private final HttpOperations http = jdkHttpOperations();
     private final List<String> report = new ArrayList<>();
     private final Map<DeploymentEngine, Boolean> monitorLive = new HashMap<>();
+    private final Map<DeploymentEngine, Boolean> o6Live = new HashMap<>();
 
     /// The scenarios of design 9.3 that this harness drives. Node counts leave room to re-place after a loss (one instance per node).
     enum Scenario {
@@ -147,6 +149,11 @@ class Fsm2EquivalenceRoundTest {
         monitorLive.forEach((engine, fired) -> {
             if (!fired) {
                 silent.add("MONITOR-live-plant(" + engine + ")");
+            }
+        });
+        o6Live.forEach((engine, fired) -> {
+            if (!fired) {
+                silent.add("O6-live-probe(" + engine + ")");
             }
         });
         oracle.forEach(verdict -> {
@@ -206,12 +213,16 @@ class Fsm2EquivalenceRoundTest {
             var placementMs = scenario(scenario, cluster, recorder);
             var quiescent = awaitQuiescence(cluster);
 
-            recorder.stop();
-            recorder.ringLog().forEach(line -> log("ring (%s) %s".formatted(engine, line)));
-            EquivalenceMonitor.requireSamples(engine.name(), recorder.samples().size());
+            // The arm's data is frozen while the Recorder is still live: the O4 positive control below commits through the same counted
+            // instrument, so everything the arm reports is read (copied) before the control's batch exists.
+            recorder.readRings();
+            var samples = recorder.samples();
+
+            EquivalenceMonitor.requireSamples(engine.name(), samples.size());
             var slotCount = recorder.batches();
             var slots = recorder.slotEffects();
             var o4 = EquivalenceComparison.o4Counted(slots, scenario.name());
+            var targetEvents = recorder.targetEvents();
 
             logSlots(engine, slots);
             placements.put(engine, EquivalenceComparison.placement(recorder.placementSlots()));
@@ -219,25 +230,31 @@ class Fsm2EquivalenceRoundTest {
             log("O4 (%s): %d slots, %d counted after the %s allow-list".formatted(engine, slotCount, o4, scenario));
             var kv = new EquivalenceKv(snapshot(cluster));
             var live = cluster.allNodes().stream().map(AetherNode::self).collect(Collectors.toUnmodifiableSet());
+            var o6 = o6(cluster);
 
             if (!quiescent) {
                 log("arm %s NOT QUIESCENT within %d ms".formatted(engine, QUIESCENCE_BOUND_MS));
             }
-            o4Controls.put(engine, o4ScriptedBatchCounted(cluster));
             if (engine == DeploymentEngine.LEGACY) {
                 oracle.add(EquivalenceOracle.check(kv, leaderValue(cluster), live));
             }
             var arm = new Arm(engine == DeploymentEngine.LEGACY ? "legacy" : "fsm2",
                               kv,
                               live,
-                              recorder.samples(),
+                              samples,
                               quiescent ? o4 : -1,
                               placementMs,
-                              o6(cluster),
-                              recorder.targetEvents(),
+                              o6,
+                              targetEvents,
                               System.currentTimeMillis());
 
+            o4Controls.put(engine, o4ScriptedBatchCounted(cluster, recorder, scenario));
+            recorder.stop();
+            recorder.ringLog().forEach(line -> log("ring (%s) %s".formatted(engine, line)));
             monitorLiveControl(cluster, engine);
+            if (engine == DeploymentEngine.FSM2) {
+                o6Live.put(engine, o6ReaderSeesClosed(cluster));
+            }
             log("arm %s end %s load=%s".formatted(engine, Instant.now(), loadAverage()));
 
             return arm;
@@ -756,29 +773,62 @@ class Fsm2EquivalenceRoundTest {
         new TreeMap<>(slots).forEach((slot, effects) -> log("O4 slot (%s) %d: %s".formatted(engine, slot, effects)));
     }
 
-    /// The scripted extra batch (design 9.5 O4 positive control): one leader transaction putting a control outcome key. Counted = exactly one
-    /// slot of the ring carries it. Removed afterwards (outside the arm's count, which was taken before).
-    private boolean o4ScriptedBatchCounted(EmberCluster cluster) {
+    /// The scripted extra batch (design 9.5 O4 positive control), committed while the [Recorder] is live: one leader transaction putting a
+    /// control outcome key. Counted = the Recorder's slot count ([Recorder#batches]) and the allow-listed count ([EquivalenceComparison#o4Counted])
+    /// both move by exactly 1, so the control exercises the ring cursors and the counting, not a direct ring read. The key is removed afterwards
+    /// (outside the arm's count, which was frozen before).
+    private boolean o4ScriptedBatchCounted(EmberCluster cluster, Recorder recorder, Scenario scenario) {
         var node = leader(cluster);
         var key = AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(O4_CONTROL);
         var value = new AetherValue.DeploymentOutcomeValue(AetherValue.DeploymentOutcomeStatus.SUCCEEDED, List.of(), "", 0L, AetherValue.DeploymentOutcomeValue.FIRST_VERSION, "f4");
-        var before = node.kvStore().replicaRing().nextSlot();
+        var batchesBefore = recorder.batches();
+        var countedBefore = EquivalenceComparison.o4Counted(recorder.slotEffects(), scenario.name());
 
         commit(node, key, Option.none(), Option.some(value));
-        awaitTrue("the scripted batch commits", Duration.ofSeconds(30), () -> node.kvStore().get(key).isPresent());
-        var slots = node.kvStore()
-                        .replicaRing()
-                        .entries()
-                        .stream()
-                        .filter(entry -> entry.slot() >= before)
-                        .filter(entry -> entry.effects().stream().anyMatch(effect -> effect instanceof KVCommand.Put<?, ?> put && put.key().equals(key)))
-                        .map(ReplicaEntry::slot)
-                        .collect(Collectors.toCollection(TreeSet::new));
+        var deadline = System.currentTimeMillis() + 30_000L;
+
+        while (recorder.batches() < batchesBefore + 1 && System.currentTimeMillis() < deadline) {
+            sleep(100L);
+        }
+        // One more pass after the first sight: an instrument that over-counts the batch shows here.
+        sleep(600L);
+        recorder.readRings();
+        var batchesAfter = recorder.batches();
+        var countedAfter = EquivalenceComparison.o4Counted(recorder.slotEffects(), scenario.name());
 
         commit(node, key, Option.some(value), Option.none());
-        log("O4 scripted batch: slots carrying it=" + slots);
+        log("O4 scripted batch (live recorder): batches %d -> %d, counted %d -> %d".formatted(batchesBefore, batchesAfter, countedBefore, countedAfter));
 
-        return slots.size() == 1;
+        return batchesAfter - batchesBefore == 1 && countedAfter - countedBefore == 1;
+    }
+
+    /// The O6 reader's positive control (design 9.5 O6), FSM2 arm only (LEGACY nodes have no FSM, their O6 is 0 by construction): a node's
+    /// cluster interpreter is closed and then offered an input, which the interpreter discards and counts `inputs_total{result=closed}`
+    /// (`FsmRuntime#offered`); [#o6] must read that counter through the same meter path the arm's O6 uses. Runs after the arm's data is taken
+    /// and after the monitor control, on a non-leader node (the node's own stop closes the interpreter again, which is idempotent).
+    private boolean o6ReaderSeesClosed(EmberCluster cluster) {
+        var leader = leader(cluster);
+        var node = cluster.allNodes().stream().filter(candidate -> candidate != leader).findFirst().orElse(leader);
+        var before = o6(cluster).get("closed");
+
+        node.deploymentWiring().system().onPresent(Fsm2EquivalenceRoundTest::closeAndOffer);
+        var deadline = System.currentTimeMillis() + 10_000L;
+
+        while (o6(cluster).get("closed") <= before && System.currentTimeMillis() < deadline) {
+            sleep(100L);
+        }
+        var after = o6(cluster).get("closed");
+
+        log("O6 live probe (FSM2): closed %.0f -> %.0f on %s".formatted(before, after, node.self().id()));
+
+        return after > before;
+    }
+
+    /// Closes the cluster interpreter, then offers it an input: refused, and counted `result=closed`.
+    @Contract
+    private static void closeAndOffer(Fsm2System system) {
+        system.clusterInterpreter().close();
+        system.clusterInterpreter().stateRestored();
     }
 
     /// The monitor hook's control (CTO ruling on plan 3.3): each invariant's violation is committed into the LIVE store, read back through the
