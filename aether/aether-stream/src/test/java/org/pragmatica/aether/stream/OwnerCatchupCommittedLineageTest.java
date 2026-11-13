@@ -159,6 +159,34 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(fixture.served()).as("R1 again, not R2").containsExactly(SOURCE, SOURCE);
     }
 
+    /// #3081 (ABA): R1 was repaired and refilled by a later epoch up to 16, below the raw tail (20) its cap was learned at, and above
+    /// the cap (10). The cap describes a history R1 no longer has: R1 is ranked by its tail 16, ahead of R2 (15), and read again.
+    @Test
+    void redrive_ofAReplicaRefilledBelowTheObservedTailButAboveItsCap_isRankedByItsTail_notTheOldCap() {
+        var fixture = disownedTailFixture();
+
+        settled(fixture.backfill().backfill("s", 0));
+        fixture.registry().updateWatermark("s", 0, SOURCE, 16L, ReplicationState.CAUGHT_UP);
+        settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(fixture.served()).as("R1 again, ahead of R2 at 15").containsExactly(SOURCE, SOURCE);
+    }
+
+    /// #3081: a changed tail evicts the entry, so the memory is not left holding a history the replica no longer has: the old tail
+    /// (20) is no longer capped once the replica was seen at 16. A tail at or below the cap (8) is capped by nothing and evicts nothing.
+    @Test
+    void lineageEnd_evictsTheEntryOnAChangedTailAboveTheCap_andKeepsItForATailBelowTheCap() {
+        var fixture = disownedTailFixture();
+
+        settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).as("learned cap").isEqualTo(10L);
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 8L)).as("below the cap: unchanged").isEqualTo(8L);
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).as("not evicted by a tail below the cap").isEqualTo(10L);
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 16L)).as("changed tail above the cap").isEqualTo(16L);
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).as("evicted").isEqualTo(20L);
+    }
+
     /// The promotion gate's own path ([PartitionBackfill#catchUpOwnerFrom]) targets the probed source's lineage end alone: another
     /// replica in the registry (R2 at 15) does not hold the activation short, since the gate would probe the same source again.
     @Test
