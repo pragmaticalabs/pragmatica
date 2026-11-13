@@ -254,7 +254,8 @@ public sealed interface Schemas {
                                                                                                                                              (ctx.nowMs() - value.updatedAt()) / 1000L,
                                                                                                                                              slicesOwnedBy(m,
                                                                                                                                                            value.owningBlueprint()),
-                                                                                                                                             lever(ctx, value));
+                                                                                                                                             lever(ctx,
+                                                                                                                                                   value));
     }
 
     /// The MIGRATING lever is a leadership change, because only a rebuild resets the record. `aether nodes shutdown <leader>` is the lever:
@@ -266,8 +267,10 @@ public sealed interface Schemas {
                     .canRetryManually()
                ? "Recovery: aether schema retry " + value.datasourceName()
                : "No manual retry (the retry route refuses " + value.status()
-                + "). Recovery: move leadership off the current leader " + ctx.self().id()
-                + " with `aether nodes shutdown " + ctx.self().id()
+                + "). Recovery: move leadership off the current leader " + ctx.self()
+                                                                              .id()
+                + " with `aether nodes shutdown " + ctx.self()
+                                                       .id()
                 + "`; the next leader's rebuild resets the record to PENDING and re-runs it (unfenced where schema-migration-unfenced applies:"
                 + " a migration still running there can run twice)";
     }
