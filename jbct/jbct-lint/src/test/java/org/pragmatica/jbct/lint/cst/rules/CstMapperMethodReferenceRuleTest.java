@@ -1140,6 +1140,7 @@ class CstMapperMethodReferenceRuleTest {
         assertTrue(hasRule(polarityFixture("""
                 switch (wire.kind()) {
                     case 1:
+                        wire.touch();
                         if (xs.isEmpty()) return Option.none();
                         return Option.none();
                     case 2:
@@ -1221,6 +1222,155 @@ class CstMapperMethodReferenceRuleTest {
                 if (xs.isEmpty()) return Option.none();
                 return switch (wire.kind()) {
                     case 1 -> Option.some(xs.getFirst());
+                    default -> Option.none();
+                };
+                """)));
+    }
+
+    @Test
+    void analyze_polarityBitAndBeforeGuardAndChain_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                return Option.option(wire.count() & !xs.isEmpty() && xs.getFirst().isEmpty());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityEarlyExitThenDefaultLabel_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                switch (wire.kind()) {
+                    case 1:
+                        wire.touch();
+                        if (xs.isEmpty()) return Option.none();
+                        break;
+                    default:
+                        return Option.some(xs.getFirst());
+                }
+                return Option.none();
+                """)));
+    }
+
+    @Test
+    void analyze_polarityTernaryGuardAfterAndOperand_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                return wire.flag() && xs.isEmpty() ? Option.none() : Option.some(xs.getFirst());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityReceiverComparedBetweenGuardAndAccessor_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                if (xs.isEmpty()) return Option.none();
+                wire.touch(xs == wire.other());
+                return Option.some(xs.getFirst());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityAndChainAccessorInsideCallArguments_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return Option.option(!xs.isEmpty() && wire.test(wire.flag(), xs.getFirst()));
+                """)));
+    }
+
+    @Test
+    void analyze_polarityGuardedTernaryAsLaterArgument_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return Option.some(wire.pick(wire.flag(), xs.isEmpty() ? "" : xs.getFirst()));
+                """)));
+    }
+
+    @Test
+    void analyze_polarityGuardedTernaryInsideOuterTernaryThenBranch_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return Option.some(wire.flag() ? xs.isEmpty() ? "" : xs.getFirst() : "");
+                """)));
+    }
+
+    @Test
+    void analyze_polarityGuardedTernaryInElseBranchOfOuterTernary_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return Option.some(wire.flag() ? "" : xs.isEmpty() ? "" : xs.getFirst());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityGuardAfterLambdaArrow_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return Option.option(wire.any(w -> !xs.isEmpty() && xs.getFirst().isEmpty()));
+                """)));
+    }
+
+    @Test
+    void analyze_polarityGuardedTernaryAfterYield_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                var s = switch (wire.kind()) {
+                    case 1 -> { yield xs.isEmpty() ? "" : xs.getFirst(); }
+                    default -> "";
+                };
+                return Option.some(s);
+                """)));
+    }
+
+    @Test
+    void analyze_polarityParenthesizedDisjunctionBeforeAndChain_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return Option.option((wire.flag() || wire.other()) && !xs.isEmpty() && xs.getFirst().isEmpty());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityDisjunctionOutsideEnclosingCall_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return Option.option(wire.flag() || wire.test(!xs.isEmpty() && xs.getFirst().isEmpty()));
+                """)));
+    }
+
+    @Test
+    void analyze_polarityDisjunctionInEarlierStatement_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                var f = wire.flag() || wire.other();
+                return Option.option(wire.test(f) && !xs.isEmpty() && xs.getFirst().isEmpty());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityDisjunctionInEarlierArgument_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return Option.option(wire.pick(wire.flag() || wire.other(), wire.test(true) && !xs.isEmpty() && xs.getFirst().isEmpty()));
+                """)));
+    }
+
+    @Test
+    void analyze_polarityDisjunctionInTernaryCondition_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return Option.option(wire.flag() || wire.other() ? wire.test(true) && !xs.isEmpty() && xs.getFirst().isEmpty() : false);
+                """)));
+    }
+
+    @Test
+    void analyze_polarityBitOrBeforeAndChain_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return Option.option(wire.flag() | wire.other() && !xs.isEmpty() && xs.getFirst().isEmpty());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityEarlyExitThenArrowArmWithTernary_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                if (xs.isEmpty()) return Option.none();
+                return switch (wire.kind()) {
+                    case 1 -> Option.some(wire.flag() ? "x" : xs.getFirst());
+                    default -> Option.none();
+                };
+                """)));
+    }
+
+    @Test
+    void analyze_polarityEarlyExitThenArrowArmWithMethodReference_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                if (xs.isEmpty()) return Option.none();
+                return switch (wire.kind()) {
+                    case 1 -> wire.map(Handler::lastName, xs.getFirst());
                     default -> Option.none();
                 };
                 """)));

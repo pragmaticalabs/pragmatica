@@ -62,11 +62,11 @@ sealed interface GuardDominance permits GuardDominance.unused {
         return false;
     }
 
-    /// True when the receiver is reassigned (`xs = ..`, `xs += ..`) or accessed through anything but a read member between the
+    /// True when the receiver is reassigned (`xs = ..`) or accessed through anything but a read member between the
     /// guard and the accessor: the guarded state may no longer hold.
     private static boolean written(String code, String receiver, int from, int to) {
         var write = Pattern.compile("(?<![\\w$])" + Pattern.quote(receiver)
-                                   + "\\s*(?:[-+*/%&|^]?=(?!=)|\\.\\s*(?!(?:" + READS
+                                   + "\\s*(?:=(?!=)|\\.\\s*(?!(?:" + READS
                                    + ")\\b)[A-Za-z_]\\w*)");
 
         return write.matcher(code.substring(from, to))

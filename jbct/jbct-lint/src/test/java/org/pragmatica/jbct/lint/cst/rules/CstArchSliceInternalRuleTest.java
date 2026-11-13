@@ -103,6 +103,33 @@ class CstArchSliceInternalRuleTest {
                                                           && d.message().contains("'com.example.usecase.loginuser.internal'")),
                        "diagnostics: " + diagnostics);
         }
+
+        @Test
+        void detects_blockCommentBetweenImportKeywordAndName_reportsCleanPackage() {
+            var diagnostics = lint("""
+                    package com.example.usecase.registeruser;
+                    import/* c */com.example.usecase.loginuser.internal.Token;
+                    class RegisterUser {}
+                    """);
+
+            assertTrue(diagnostics.stream().anyMatch(d -> d.ruleId().equals(RULE_ID)
+                                                          && d.message().contains("'com.example.usecase.loginuser.internal'")),
+                       "diagnostics: " + diagnostics);
+        }
+
+        @Test
+        void detects_lineCommentWithSemicolonInsideImport_reportsCleanPackage() {
+            var diagnostics = lint("""
+                    package com.example.usecase.registeruser;
+                    import com.example.usecase.loginuser // x; y
+                        .internal.Token;
+                    class RegisterUser {}
+                    """);
+
+            assertTrue(diagnostics.stream().anyMatch(d -> d.ruleId().equals(RULE_ID)
+                                                          && d.message().contains("'com.example.usecase.loginuser.internal'")),
+                       "diagnostics: " + diagnostics);
+        }
     }
 
     @Nested
