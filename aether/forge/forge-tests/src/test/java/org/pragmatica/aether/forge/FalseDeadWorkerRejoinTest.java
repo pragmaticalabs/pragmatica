@@ -5,7 +5,6 @@
 package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
@@ -74,24 +73,9 @@ class FalseDeadWorkerRejoinTest {
         assertThat(liveWorkers()).extracting(AetherNode::self).containsExactly(replacement);
     }
 
-    /// Removal path (#3107): the cores remove the worker while it is still alive (its fence is out of reach), and after the
-    /// heal the SAME worker is re-admitted. Without #3107 its directive stays lost; this tripwire pins that, and when #3107
-    /// merges it goes red: enable `removedWorkerHealed_rejoinsWithDirectiveAndKvLink` and delete this one.
-    @Test void removedWorkerHealed_currentBehaviour_directiveStaysLost() {
-        var id = bootAndCutWorker(REMOVAL_FIRST, REMOVAL_FIRST_COMMUNITY, false);
-
-        assertThat(cluster.exitCodeOf(id.id())).as("the worker was removed before its fence could fire").isEqualTo(Option.none());
-        var worker = cluster.getNode(id.id()).unwrap();
-
-        healSwim();
-
-        await().alias("TRIPWIRE: the healed worker's directive stayed lost (#3107 not merged); enable removedWorkerHealed_rejoinsWithDirectiveAndKvLink and delete this test")
-               .during(RECOVERY_BOUND.duration())
-               .atMost(RECOVERY_BOUND.duration().plusSeconds(60))
-               .until(() -> !directiveCommitted(worker));
-    }
-
-    @Disabled("#3107 (C2) not merged: enable once it is, and delete removedWorkerHealed_currentBehaviour_directiveStaysLost")
+    /// Removal path (#3107 territory): the cores remove the worker while it is still alive (its fence is out of reach), and
+    /// after the heal the SAME worker is re-admitted and its directive committed again. The join here comes after the removal
+    /// completed; the join racing an in-flight removal is what #3107 sequences and is not pinned by this IT.
     @Test void removedWorkerHealed_rejoinsWithDirectiveAndKvLink() {
         var id = bootAndCutWorker(REMOVAL_FIRST, REMOVAL_FIRST_COMMUNITY, false);
         var key = new AetherKey.ActivationDirectiveKey(id);
@@ -104,7 +88,8 @@ class FalseDeadWorkerRejoinTest {
         await().alias("the healed worker's directive is committed again")
                .atMost(RECOVERY_BOUND.duration())
                .until(() -> leader().kvStore().getTyped(key, AetherValue.ActivationDirectiveValue.class).isPresent());
-        // The QUIC layer rejects the worker as a REMOVED peer until the tombstone lapses (about 30 s observed); the bound covers it.
+        // The QUIC layer rejects the worker as a REMOVED peer until its Hello is re-admitted (about 1 s with the transport cut, up to
+        // about 30 s with it kept, observed); the bound covers both.
         log.info("Healed worker's directive committed {} ms after the heal (RECOVERY_BOUND {} ms)",
                  TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - healedAt),
                  RECOVERY_BOUND.duration().toMillis());
