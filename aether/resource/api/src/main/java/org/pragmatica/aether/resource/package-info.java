@@ -72,6 +72,13 @@
 ///                                      ELSE LET x == CHOOSE y \in S : TRUE IN count[x] + F[S \ {x}]
 ///          IN F[Keys]
 ///
+/// \* What closeAll's lock-free walk of the key set can see: an entry is invisible to it while its inserting thread is still
+/// \* inside the admission compute (pc = "admitted", published by Acq_Publish), because ConcurrentHashMap links the node
+/// \* only after the mapping function returned. Trace validation found the gap: a model that saw the entry at once rejected
+/// \* the recorded run "Acq_Admit insert | CA_Flag | CA_Check returned | Acq_Post drained".
+/// Visible(k) == /\ entry[k].pool # 0
+///               /\ ~\E t \in Threads : pc[t] = "admitted" /\ t[2] = k
+///
 /// Capture(p) == /\ captures' = [captures EXCEPT ![p] = @ + 1]
 ///               /\ closing' = closing \cup {p}
 ///

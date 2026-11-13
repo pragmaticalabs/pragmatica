@@ -675,12 +675,15 @@ final class SharedPools {
     /// \* can drive to <= 0 while another key is present). On return, the closes still in flight (pendingCloses: every
     /// \* close started, and every release's claim registered before its removing compute) join the returned list;
     /// \* without the fix "claims" (adb7a765da, the strict invariant) only the drain's own captures did.
+    /// \* The walk is lock-free: a key a thread inserted inside its admission compute (pc = "admitted", see Visible) is not
+    /// \* in the table the walk reads until that compute returns (SharedPools.java:183, the `entries.compute` of acquire; a
+    /// \* ConcurrentHashMap links the new node only after the mapping function returned), so the walk cannot see it.
     /// CA_Check == /\ ca = "check"
-    ///             /\ IF IF Fix("exactempty") THEN \A k \in Keys : entry[k].pool = 0 ELSE Total <= 0
+    ///             /\ IF IF Fix("exactempty") THEN \A k \in Keys : ~Visible(k) ELSE Total <= 0
     ///                THEN /\ ca' = "returned"
     ///                     /\ caPools' = IF Fix("claims") THEN caPools \cup (closing \cap shared) ELSE caPools
     ///                     /\ UNCHANGED caSnap
-    ///                ELSE /\ caSnap' = {k \in Keys : entry[k].pool # 0}
+    ///                ELSE /\ caSnap' = {k \in Keys : Visible(k)}
     ///                     /\ ca' = IF caSnap' = {} THEN "check" ELSE "drain"
     ///                     /\ UNCHANGED caPools
     ///             /\ UNCHANGED <<entry, count, closed, poolSt, shared, inflight, closing, captures, closes, thr,

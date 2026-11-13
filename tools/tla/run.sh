@@ -15,7 +15,7 @@
 # Every row prints its wall time; a sim row also prints the trace count and mean trace length of TLC's last progress line.
 # Env: TLA_JAR, TLC_WORKERS, TLC_OPTS (passed to check.sh), TLA_OUT (default target/tla), TLC_TIMEOUT (seconds per
 # config, needs coreutils timeout), MODELS_TSV (default: models.tsv beside this script; used by runselftest.sh),
-# SIM_SECONDS (time budget per config, default 60), SIM_TRACES (trace cap, default 1000000), SIM_DEPTH (default 200).
+# SIM_SECONDS (time budget per config, default 60), SIM_TRACES (trace cap, default 1000000), SIM_DEPTH (default 40; at 200 the Stalled "settled" row was not found in 60 s, at 40 it is found in seconds).
 set -uo pipefail
 profile=${1:-small}; filter=${2:-.*}
 here=$(cd "$(dirname "$0")" && pwd)
@@ -28,9 +28,9 @@ bad=$(awk -F'\t' '($4 != "pass" && $4 != "fail") || ($4 == "fail" && ($5 == "" |
 [[ -z $bad ]] || { echo "run: ERROR models.tsv rows need expect pass|fail and, for fail, the violated property: $bad" >&2; exit 2; }
 red=0; summary=(); runstart=$(date +%s)
 if [[ $profile == sim ]]; then
-  export TLC_OPTS="${TLC_OPTS:-} -simulate num=${SIM_TRACES:-1000000} -depth ${SIM_DEPTH:-200}"
+  export TLC_OPTS="${TLC_OPTS:-} -simulate num=${SIM_TRACES:-1000000} -depth ${SIM_DEPTH:-40}"
   export TLC_JAVA_OPTS="${TLC_JAVA_OPTS:-} -Dtlc2.TLC.stopAfter=${SIM_SECONDS:-60}"
-  echo "run: sim profile: random simulation, ${SIM_SECONDS:-60}s per config, depth ${SIM_DEPTH:-200}; a sampled pass is NOT a proof"
+  echo "run: sim profile: random simulation, ${SIM_SECONDS:-60}s per config, depth ${SIM_DEPTH:-40}; a sampled pass is NOT a proof"
 fi
 
 # Coverage: the configs the extractor writes for each module must be exactly the rows listed for it.
