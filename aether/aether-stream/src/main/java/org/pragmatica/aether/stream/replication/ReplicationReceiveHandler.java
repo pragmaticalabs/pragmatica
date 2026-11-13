@@ -521,7 +521,13 @@ public final class ReplicationReceiveHandler {
 
         var highestHeld = fromOffset + outcome.held() - 1;
 
-        if (aheadOfCommittedView(message) || !trustedBeforeApply && !ackGate.mayAck(streamName, partition)) {
+        if (aheadOfCommittedView(message)) {
+            withholdAheadAck(message, streamName, partition, highestHeld);
+
+            return;
+        }
+
+        if (!trustedBeforeApply && !ackGate.mayAck(streamName, partition)) {
             deferAck(message, streamName, partition, highestHeld);
 
             return;
@@ -548,14 +554,29 @@ public final class ReplicationReceiveHandler {
 
     /// #2840: a batch stamped with an epoch NEWER than this replica's committed record is admitted ([#senderMatches]: the view lags
     /// a commit the sender has seen), but the [AckGate] judges the copy for the committed epoch, not for the batch's, so it would
-    /// count records of an older lineage below the batch as the batch's own. Such a batch is applied and its ack deferred; the
-    /// copy is acked for the new epoch only once the record catches up and a compare verifies the copy for it.
+    /// count records of an older lineage below the batch as the batch's own. Such a batch is applied and its ack withheld (not
+    /// kept in [#deferredAcks]: a kept ack of the newer epoch would displace a deferral of the committed one); the compare is
+    /// asked for, and the owner's next batch is acked once the record catches up and the copy is verified for its epoch.
     private boolean aheadOfCommittedView(ReplicationMessage.ReplicateEvents message) {
         return committedOwners.committedOwner(message.streamName(),
                                               message.partition())
                               .filter(committed -> message.ownerEpoch()
                                                           .isStrictlyAfter(committed.ownerEpoch()))
                               .isPresent();
+    }
+
+    @Contract
+    private void withholdAheadAck(ReplicationMessage.ReplicateEvents message,
+                                  String streamName,
+                                  int partition,
+                                  long highestHeld) {
+        log.debug("ReplicationReceiveHandler: {}[{}] up to {} applied but NOT acked: the batch's epoch {} is newer than the committed "
+                 + "view, so the copy is not yet verified for it",
+                  streamName,
+                  partition,
+                  highestHeld,
+                  message.ownerEpoch());
+        onGap.accept(streamName, partition);
     }
 
     private boolean isCommittedEpoch(String streamName, int partition, Epoch epoch) {
