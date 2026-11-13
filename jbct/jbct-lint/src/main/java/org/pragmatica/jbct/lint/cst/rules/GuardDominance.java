@@ -62,15 +62,28 @@ sealed interface GuardDominance permits GuardDominance.unused {
         return false;
     }
 
-    /// True when the receiver is reassigned (`xs = ..`), accessed through anything but a read member, or escapes (passed as a
-    /// call or constructor argument, `drain(xs)`, or used as a method-reference target, `xs::add`) between the guard and the
-    /// accessor: the guarded state may no longer hold, so the guard is undecidable.
+    /// Statement keywords that may precede a `(` without it opening a call argument list: `return (xs).size()` is a
+    /// parenthesised receiver, not a call.
+    String NON_CALL = "return|yield|throw|else|case|if|while|for|switch|synchronized|assert";
+
+    /// True when the receiver is reassigned (`xs = ..`), accessed through anything but a read member, or escapes between the
+    /// guard and the accessor: the guarded state may no longer hold, so the guard is undecidable.
+    ///
+    /// Escape = the receiver, as a whole token, is a call or constructor argument (`f(xs)`, `f(a, xs)`, `f(xs, b)`,
+    /// `new Foo(xs)`, `new Foo<>(xs)`) or a method-reference target (`xs::add`). A first argument needs a call opener: the `(`
+    /// preceded, modulo whitespace, by an identifier (not a statement keyword) or by the `>` of a generic type or call (not
+    /// the `->` of a lambda). A later argument is recognised by its leading `,`. A closing `)` followed by `->` ends a lambda
+    /// parameter list, not an argument list. So these are deliberately NOT escapes: a parenthesised receiver `(xs).size()`,
+    /// `((List<String>) (xs)).size()`, `return (xs).size()`, and a lambda parameter list ending in the receiver, `(xs) -> ..`
+    /// or `(a, xs) -> ..`. A lambda parameter list with the receiver elsewhere (`(xs, b) -> ..`) still counts as an escape: it
+    /// only compiles when `xs` is a field, and a false positive is the cheaper side.
     private static boolean written(String code, String receiver, int from, int to) {
         var name = Pattern.quote(receiver);
         var write = Pattern.compile("(?<![\\w$])" + name
                                    + "\\s*(?:=(?!=)|::|\\.\\s*(?!(?:" + READS
-                                   + ")\\b)[A-Za-z_]\\w*)|[(,]\\s*" + name
-                                   + "\\s*[,)]");
+                                   + ")\\b)[A-Za-z_]\\w*)|(?:(?:(?<!-)>|(?<![\\w$])(?!(?:" + NON_CALL
+                                   + ")\\b)[\\w$]+)\\s*\\(|,)\\s*" + name
+                                   + "\\s*(?:,|\\)(?!\\s*->))");
 
         return write.matcher(code.substring(from, to))
                     .find();
