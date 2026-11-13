@@ -8,6 +8,8 @@ list honest, in both directions:
   - an image a Java source starts (new <X>Container("img"), DockerImageName.parse("img"), a *_IMAGE / *_DIGEST constant)
     that the list does not name fails, so a new image cannot be silently missed;
   - a listed image no source starts, or one whose modules differ from the sources', fails, so the list never rots;
+  - a Testcontainers test tagged quarantine fails: that job does not pre-pull (known limits: an image held in a constant
+    not named *IMAGE*/*DIGEST*, DockerImageName.parse(variable), compose files and docker-CLI users are not seen);
   - a pulled module that no test-group owns (tools/ci-test-groups.txt) fails: the pre-pull step would never run for it;
   - the Testcontainers version must be one value across the poms, and the list pins that version's Ryuk image.
 
@@ -30,7 +32,9 @@ SHAPES = (
     re.compile(r'new\s+\w*Container(?:<[^>]*>)?\(\s*"([^"]+)"'),
     re.compile(r'DockerImageName\.parse\(\s*"([^"]+)"'),
     re.compile(r'\b\w*(?:IMAGE|DIGEST)\w*\s*=\s*"([^"]+)"'),
+    re.compile(r'\.withImage\(\s*"([^"]+)"'),
 )
+QUARANTINE = re.compile(r'@Tag\(\s*"quarantine"')
 RYUK = "testcontainers/ryuk:"
 TC_VERSION = re.compile(r"<testcontainers\.version>\s*([^<\s]+)\s*</testcontainers\.version>")
 IGNORED_DIRS = {"target", ".git", "node_modules", ".m2-local"}
@@ -62,6 +66,16 @@ def referenced(root):
             for image in shape.findall(text):
                 found.setdefault(image, set()).add(module)
     return found
+
+
+def quarantined_container_tests(root):
+    """Sources that import Testcontainers and carry @Tag("quarantine"): the quarantine job does not pre-pull."""
+    found = []
+    for path in java_sources(root):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if "org.testcontainers" in text and QUARANTINE.search(text):
+            found.append(str(path.relative_to(root)))
+    return sorted(found)
 
 
 def listed(root):
@@ -119,6 +133,9 @@ def problems(root):
         errors.append(f"Testcontainers version is not a single value across the poms: {sorted(versions)}")
     if len(ryuk) != 1:
         errors.append(f"expected exactly one {RYUK}<tag> entry, found {ryuk}")
+    for source in quarantined_container_tests(root):
+        errors.append(f"QUARANTINED container test {source}: the quarantine job does not pre-pull images; "
+                      f"add a pre-pull step there before tagging a Testcontainers test quarantine")
     return errors, len(found), len(entries), versions
 
 

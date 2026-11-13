@@ -19,6 +19,7 @@ ATTEMPTS="${CI_PREPULL_ATTEMPTS:-4}"
 BACKOFF_BASE="${CI_PREPULL_BACKOFF_BASE:-10}"
 PREFIX="${TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX:-}"
 DOCKER="${CI_PREPULL_DOCKER:-docker}"
+SLEEP="${CI_PREPULL_SLEEP:-sleep}" # injectable so a test records the backoff instead of waiting
 MODULES_FILE="${1:-}"
 
 if [ -n "$MODULES_FILE" ] && [ ! -r "$MODULES_FILE" ]; then
@@ -64,7 +65,7 @@ pull() {
     fi
     delay=$((BACKOFF_BASE * (1 << (attempt - 1))))
     echo "prepull: pull of $ref failed (attempt $attempt of $ATTEMPTS); retrying in ${delay}s"
-    sleep "$delay"
+    "$SLEEP" "$delay"
     attempt=$((attempt + 1))
   done
 }
