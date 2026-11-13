@@ -14,6 +14,7 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -41,6 +42,7 @@ public sealed interface Warnings {
     String INVALID_PLACEMENT = "invalid-placement";
     String RETRY_EXHAUSTED = "retry-exhausted-unsettled";
     String SCHEMA_UNKNOWN = "schema-status-unknown";
+    String SCHEMA_STALLED = "schema-migration-stalled";
     String STRAY = "stray-instance";
     String SCHEMA_HOLD = "schema-hold";
     String JOIN_UNMATCHED = "join-unmatched";
@@ -49,11 +51,13 @@ public sealed interface Warnings {
     String UNJUDGEABLE = "worker-absence-unjudgeable";
     String SUPPRESSED = "departure-inferred-suppressed";
     String GROWTH_BLOCKED = Directory.GROWTH_BLOCKED;
+    String APPLY_DEADLINE = Deadlines.EXCEEDED;
 
-    /// The eleven leader-local families: each opener code with its recovery code.
+    /// The twelve leader-local families: each opener code with its recovery code.
     Map<String, String> FAMILIES = Map.ofEntries(Map.entry(INVALID_PLACEMENT, Recoveries.PLACEMENT_VALID),
                                                  Map.entry(RETRY_EXHAUSTED, Recoveries.RETRY_EXHAUSTED_SETTLED),
                                                  Map.entry(SCHEMA_UNKNOWN, Recoveries.SCHEMA_STATUS_READABLE),
+                                                 Map.entry(SCHEMA_STALLED, Recoveries.SCHEMA_MIGRATION_PROGRESSED),
                                                  Map.entry(STRAY, Recoveries.STRAY_INSTANCE_REMOVED),
                                                  Map.entry(SCHEMA_HOLD, Recoveries.SCHEMA_HOLD_CLEARED),
                                                  Map.entry(JOIN_UNMATCHED, Recoveries.JOIN_MATCHED),
@@ -61,7 +65,8 @@ public sealed interface Warnings {
                                                  Map.entry(UNPLACED, Directory.ASSIGNMENT_PLACED),
                                                  Map.entry(UNJUDGEABLE, Recoveries.WORKER_ABSENCE_JUDGEABLE),
                                                  Map.entry(SUPPRESSED, Recoveries.DEPARTURE_BREAKER_CLEARED),
-                                                 Map.entry(GROWTH_BLOCKED, Directory.GROWTH_RESUMED));
+                                                 Map.entry(GROWTH_BLOCKED, Directory.GROWTH_RESUMED),
+                                                 Map.entry(APPLY_DEADLINE, Recoveries.APPLY_DEADLINE_CLEARED));
 
     /// Every code that opens or closes a warning of a family.
     Set<String> CODES = Stream.concat(FAMILIES.keySet().stream(),
@@ -215,6 +220,8 @@ public sealed interface Warnings {
                                 m.retryExhaustedWarned.toList().stream().map(Artifact::asString)),
                          single(SCHEMA_UNKNOWN,
                                 m.schemaUnknownWarned.toList().stream()),
+                         single(SCHEMA_STALLED,
+                                m.schemaStalledWarned.toList().stream()),
                          single(JOIN_UNMATCHED,
                                 m.unmatchedWarned.toList().stream().map(NodeId::id)),
                          single(NO_POLICY,
@@ -227,6 +234,8 @@ public sealed interface Warnings {
                                 m.suppressedWarned.toList().stream()),
                          single(GROWTH_BLOCKED,
                                 m.growthBlocked.toList().stream()),
+                         single(APPLY_DEADLINE,
+                                m.applyDeadlineWarned.keys().stream().map(BlueprintId::asString)),
                          strays(m),
                          holds(m))
                      .flatMap(entries -> entries)
@@ -290,6 +299,7 @@ public sealed interface Warnings {
             case INVALID_PLACEMENT -> artifactOf(key).map(artifact -> adoptPlacement(m, ctx, artifact)).or(m);
             case RETRY_EXHAUSTED -> artifactOf(key).map(artifact -> adoptRetry(m, ctx, artifact)).or(m);
             case SCHEMA_UNKNOWN -> adoptSchema(m, ctx, key.subject());
+            case SCHEMA_STALLED -> adoptStalled(m, ctx, key.subject());
             case STRAY -> artifactOf(key).map(artifact -> adoptStray(m, ctx, artifact, value)).or(m);
             case SCHEMA_HOLD -> artifactOf(key).map(artifact -> adoptHold(m, ctx, artifact, value)).or(m);
             case JOIN_UNMATCHED -> nodeOf(key).map(node -> adoptUnmatched(m, ctx, node)).or(m);
@@ -298,6 +308,9 @@ public sealed interface Warnings {
             case UNJUDGEABLE -> adoptUnjudgeable(m, key.subject());
             case SUPPRESSED -> adoptSuppressed(m, ctx, key.subject());
             case GROWTH_BLOCKED -> adoptGrowthBlocked(m, key.subject());
+            case APPLY_DEADLINE -> BlueprintId.blueprintId(key.subject()).option().map(id -> adoptApplyDeadline(m,
+                                                                                                                ctx,
+                                                                                                                id)).or(m);
             default -> m;
         };
     }
@@ -349,6 +362,18 @@ public sealed interface Warnings {
         }
 
         m.schemaUnknownWarned = m.schemaUnknownWarned.add(datasource);
+
+        return m;
+    }
+
+    /// #2773: the datasource's record was removed between the leaders (gone); else it stays open, and the successor's stall sweep closes it
+    /// once the condition ended. Not raised again (the raise site checks the set).
+    private static ClusterModel adoptStalled(ClusterModel m, Ctx ctx, String datasource) {
+        if (m.schemas.get(datasource).isEmpty()) {
+            return gone(m, ctx, SCHEMA_STALLED, datasource, "its schema record was removed between leaders");
+        }
+
+        m.schemaStalledWarned = m.schemaStalledWarned.add(datasource);
 
         return m;
     }
@@ -482,6 +507,27 @@ public sealed interface Warnings {
     /// R-CF.17: a source label never leaves the model; it closes on the next admission for the source.
     private static ClusterModel adoptGrowthBlocked(ClusterModel m, String source) {
         m.growthBlocked = m.growthBlocked.add(source);
+
+        return m;
+    }
+
+    /// R-4.1.7: the blueprint's outcome is still a deadline terminal, else the episode ended between the leaders (a republish, a removal, a
+    /// terminal that was in flight when the leader changed) and is closed; a successor's own deadline then raises a new warning.
+    private static ClusterModel adoptApplyDeadline(ClusterModel m, Ctx ctx, BlueprintId id) {
+        return m.outcomes.get(id)
+                         .filter(outcome -> Deadlines.EXCEEDED.equals(outcome.cause()))
+                         .map(outcome -> openApplyDeadline(m,
+                                                           id,
+                                                           outcome.attemptId()))
+                         .or(() -> gone(m,
+                                        ctx,
+                                        APPLY_DEADLINE,
+                                        id.asString(),
+                                        "its deadline terminal was replaced or removed between leaders"));
+    }
+
+    private static ClusterModel openApplyDeadline(ClusterModel m, BlueprintId id, String attempt) {
+        m.applyDeadlineWarned = m.applyDeadlineWarned.put(id, attempt);
 
         return m;
     }

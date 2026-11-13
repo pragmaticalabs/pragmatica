@@ -261,6 +261,16 @@ class ClusterEventRedeliveryTest {
         assertThat(landed).isEmpty();
     }
 
+    /// #2981 step 2: a lapsed owner lease is restored by the owner's next renewal, so it pauses the horizon like a pending promotion,
+    /// locally and as a forwarder sees it. Mutation: either arm of `isPromotionRefusal` without `OwnerLeaseLapsed` -> RED.
+    @Test
+    void isPromotionRefusal_aLapsedOwnerLease_localOrForwarded_counts() {
+        var lapsed = new StreamError.OwnerLeaseLapsed("system:cluster-events", 0);
+
+        assertThat(ClusterEventRedelivery.isPromotionRefusal(lapsed)).isTrue();
+        assertThat(ClusterEventRedelivery.isPromotionRefusal(new StreamForwardError.RemotePublishRetryable(lapsed.message()))).isTrue();
+    }
+
     /// A forwarder sees the owner's refusal as a retryable response carrying its text: both promotion refusals count.
     @Test
     void redeliver_forwardedPromotionRefusals_pauseTheHorizonToo() {

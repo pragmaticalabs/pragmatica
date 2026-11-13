@@ -114,6 +114,29 @@ class ManagementServerStreamSeamGaugeTest {
             .isEqualTo(2.0);
     }
 
+    /// #2981 step 2 (design 2.2 check 3): `aether.stream.truncation.below_visible{outcome}` reads the manager's two counters, each under its own tag.
+    @Test
+    @Timeout(60)
+    void startedServer_exposesTheTruncationBelowVisibleGauge_perOutcome_readingThePartitionManager() {
+        var spm = mock(StreamPartitionManager.class);
+
+        when(spm.truncationRefusedBelowVisible()).thenReturn(4L);
+        when(spm.truncationRetractedBelowVisible()).thenReturn(7L);
+        server = managementServer(spm);
+
+        var started = server.start().await(START_BOUND);
+
+        assertThat(started.isSuccess()).as("control: the server started: %s", started).isTrue();
+
+        var refused = server.meterRegistry().find("aether.stream.truncation.below_visible").tag("outcome", "refused").gauge();
+        var retracted = server.meterRegistry().find("aether.stream.truncation.below_visible").tag("outcome", "retracted").gauge();
+
+        assertThat(refused).as("the refused gauge is registered").isNotNull();
+        assertThat(retracted).as("the retracted gauge is registered").isNotNull();
+        assertThat(refused.value()).isEqualTo(4.0);
+        assertThat(retracted.value()).isEqualTo(7.0);
+    }
+
     private static ManagementServer managementServer(StreamPartitionManager spm) {
         var node = mock(ManageableNode.class, NONE_OR_MOCK);
 

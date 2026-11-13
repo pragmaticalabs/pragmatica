@@ -49,7 +49,9 @@ class NodeFsmTimingsTest {
                                                 timeSpan(91).seconds(),
                                                 timeSpan(3).seconds(),
                                                 timeSpan(33).seconds(),
-                                                60);
+                                                60,
+                                                timeSpan(15).minutes(),
+                                                timeSpan(2).hours());
 
         var timings = NodeFsmTimings.nodeFsmTimings(deployment, timeSpan(30).seconds());
 

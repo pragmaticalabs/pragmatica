@@ -258,6 +258,14 @@ public final class AppendLog implements AutoCloseable {
         return open(file, sink, FileOps::writeBytesForced);
     }
 
+    /// Test-only (#3128): `probe` runs on the calling thread at the start of every epoch-history persist (a synchronous file
+    /// and directory force), before any I/O. It lets a test observe WHICH thread pays that fsync without sampling stacks.
+    /// Install `() -> {}` to remove it. Process-wide: it sees every log in the JVM.
+    @Contract
+    public static void epochPersistProbe(Runnable probe) {
+        EpochHistory.persistProbe = probe;
+    }
+
     /// Test seam: `sidecarWriter` writes (and forces) the epoch history's temp file ([EpochHistory]).
     static Result<AppendLog> open(Path file, TornTailSink sink, Fn2<Result<Unit>, Path, byte[]> sidecarWriter) {
         return open(file, sink, sidecarWriter, FileOps::writeBytesForced);

@@ -44,11 +44,17 @@ public final class MembershipContext {
     private final AtomicLong bootToken = new AtomicLong(0);
     /// #2936: the member's own live report that it cannot write to the quorum.
     private final BooleanSupplier quorumLossReported;
+    /// #3119: the OBSERVER's own report that it cannot write to the quorum (this node's detector, not the member's).
+    private final BooleanSupplier observerQuorumLost;
 
-    MembershipContext(Fsm<MembershipState, MembershipEvent> fsm, NodeId member, BooleanSupplier quorumLossReported) {
+    MembershipContext(Fsm<MembershipState, MembershipEvent> fsm,
+                      NodeId member,
+                      BooleanSupplier quorumLossReported,
+                      BooleanSupplier observerQuorumLost) {
         this.fsm = fsm;
         this.member = member;
         this.quorumLossReported = quorumLossReported;
+        this.observerQuorumLost = observerQuorumLost;
         this.observed = new MembershipState.Observed(this);
         this.memberState = new MembershipState.Member(this);
         this.suspect = new MembershipState.Suspect(this);
@@ -66,6 +72,14 @@ public final class MembershipContext {
     /// Whether the member currently reports it cannot write to the quorum (#2936); read at transition time.
     public boolean reportsQuorumLoss() {
         return quorumLossReported.getAsBoolean();
+    }
+
+    /// Whether the member's quorum-loss report holds it out of re-admission (#2936), read at transition time: only
+    /// while the observer itself holds quorum (#3119). A quorumless observer cannot exclude a quorumless member: when a
+    /// partition leaves every node without quorum, each node's report clears only after it re-admits its peers, so
+    /// holding them out on the report is a circular wait and the cluster never re-forms quorum.
+    public boolean quorumLossHoldsOut() {
+        return reportsQuorumLoss() && !observerQuorumLost.getAsBoolean();
     }
 
     /// Record a SWIM incarnation, advancing the high-water mark monotonically. Stale (lower)

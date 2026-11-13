@@ -150,6 +150,7 @@ class ConsumerBehindTheRingComponentTest {
     @Test
     void forwardedConsumerRead_belowTheOwnersRing_isServedFromTheTier_underTheOwnerEpoch() {
         tier.seal(STREAM, PARTITION, 0, 19);
+        manager.ownerLease(OwnerLease.TEST_VALID);
         manager.ownershipRecords((_, _) -> Option.some(record(List.of(new EpochStart(E1, 0L), new EpochStart(E2, 25L)))));
         var assignee = assigneeOf(manager);
 
@@ -174,6 +175,7 @@ class ConsumerBehindTheRingComponentTest {
     @Test
     void localValidatedRead_belowTheRing_keepsEpochAdmissionFirst_andTheWarnLineNamesTheGroup() {
         tier.seal(STREAM, PARTITION, 0, 19);
+        manager.ownerLease(OwnerLease.TEST_VALID);
         manager.ownershipRecords((_, _) -> Option.some(record(List.of(new EpochStart(E1, 0L), new EpochStart(E2, 5L)))));
         var router = StreamReadRouter.localOnly(manager);
 
@@ -187,6 +189,7 @@ class ConsumerBehindTheRingComponentTest {
         assertThat(served.ownerEpoch()).isEqualTo(E2);
         assertThat(served.fromTier()).isTrue();
 
+        manager.ownerLease(OwnerLease.TEST_VALID);
         manager.ownershipRecords((_, _) -> Option.none());
         var lines = new CopyOnWriteArrayList<String>();
         var detach = LogCapture.warningsOf(ConsumerRuntimeState.class, lines);

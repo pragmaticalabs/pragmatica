@@ -13,6 +13,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.config.TimeoutsConfig;
 import org.pragmatica.aether.deployment.cluster.fsm2.AbsenceBounds;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterFsm;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
@@ -222,16 +223,20 @@ public final class Fsm2System {
                                       config.atomicity(),
                                       Set.of(),
                                       bounds)
-                            .withTiming(Timing.DEFAULT.withTick(config.timeouts()
-                                                                      .deployment()
-                                                                      .reconciliationInterval()
-                                                                      .millis()))
+                            .withTiming(timing(config.timeouts().deployment()))
                             .withCommunitySizing(sizing.targetSize(),
                                                  sizing.viabilityFloor());
 
         return paced.withSubmissionExpiry(config.protocol().applyTimeout().plus(TimeSpan.timeSpan(5).seconds()).millis())
                     .withProcess(process)
                     .withSeedCores(seedCores(config.topology()));
+    }
+
+    /// The time constants the operator sets under `[timeouts.deployment]`: the reconcile tick and the apply deadline of R-4.1.7 (#970).
+    static Timing timing(TimeoutsConfig.DeploymentTimeouts deployment) {
+        return Timing.DEFAULT.withTick(deployment.reconciliationInterval().millis())
+                             .withApplyDeadline(deployment.applyDeadline().millis())
+                             .withApplySchemaPauseMax(deployment.applySchemaPauseMax().millis());
     }
 
     /// The configured nodes of role `core` (an entry with no role label counts as core), which `Absence.classOf` classes CORE without a directive

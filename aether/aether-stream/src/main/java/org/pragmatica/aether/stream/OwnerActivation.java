@@ -14,6 +14,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
+import java.util.function.ToIntFunction;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -155,6 +156,9 @@ public final class OwnerActivation {
     @FunctionalInterface
     public interface OwnershipRecordSource {
         Option<StreamPartitionOwnershipValue> committed(String stream, int partition);
+        /// #2981 step 2 (design §2.2 "Unwired seams"): the explicit default of a manager whose record seam was never bound, compared
+        /// BY IDENTITY. Finds no record.
+        OwnershipRecordSource UNWIRED = (_, _) -> Option.none();
     }
 
     /// Which ring serves `(stream, partition)` on this node ([OffHeapRingBuffer#incarnation]): the activation tells a ring
@@ -458,6 +462,9 @@ public final class OwnerActivation {
     private final TimeSpan unreachableAlarmAfter;
     private final RingIncarnation ringIncarnation;
     private final LineageCommit lineage;
+    /// #2981 step 2 (design §2.2 check 1): the node lease, and the confirmation factor that decides whether it gates a stream (>= 2).
+    private final OwnerLease lease;
+    private final ToIntFunction<String> confirmationFactor;
     /// The ring each partition was last activated on, by [RingIncarnation]: an activation on the SAME ring kept its
     /// offsets, one on another ring (a restart, a re-created stream) may assign them again.
     private final Map<PartitionKey, Long> activatedIncarnation = new ConcurrentHashMap<>();
@@ -514,12 +521,47 @@ public final class OwnerActivation {
 
     private volatile PeerLineageEnd peerLineageEnd = (_, _, _, watermark) -> watermark;
 
+    /// Re-learns the committed-lineage end entry that caps `peer` (tail `watermark`) before the gate ranks on it (#3142 F3): an entry
+    /// is advisory, and a replica refilled to exactly the remembered tail would otherwise keep a stale cap. Late-bound
+    /// ([#peerLineageConfirm]).
+    @FunctionalInterface
+    public interface PeerLineageConfirm {
+        Promise<Unit> of(String stream, int partition, NodeId peer, long watermark);
+    }
+
+    private volatile PeerLineageConfirm peerLineageConfirm = (_, _, _, _) -> Promise.success(Unit.unit());
+
+    /// Late-bind the confirmation of a learned cap (#3142 F3). Unset (the default) confirms nothing, so the gate ranks on the caps
+    /// as learned. Set once at wiring.
+    @Contract
+    public void peerLineageConfirm(PeerLineageConfirm confirm) {
+        this.peerLineageConfirm = confirm;
+    }
+
     /// Late-bind the committed-lineage end of a peer (#3071, ruling 37277a904f). The gate ranks, compares and verifies a peer only up
     /// to it: a deposed epoch's tail the catch-up refuses never counts as ahead, so the gate cannot pull it again on every demand.
     /// The refused tail is the peer's to repair. Unknown (the default) is the raw watermark. Set once at wiring.
     @Contract
     public void peerLineageEnd(PeerLineageEnd end) {
         this.peerLineageEnd = end;
+    }
+
+    /// Learns, without installing anything, the committed-lineage end of `peer` (tail `watermark`) from the page it serves at `from`
+    /// (#3080). A failure is the hook's to absorb: the gate then judges the peer as it did before. Late-bound ([#peerLineageLearn]).
+    @FunctionalInterface
+    public interface PeerLineageLearn {
+        Promise<Unit> of(String stream, int partition, NodeId peer, long watermark, long from);
+    }
+
+    private volatile PeerLineageLearn peerLineageLearn = (_, _, _, _, _) -> Promise.success(Unit.unit());
+
+    /// Late-bind the read-only lineage-end learning (#3080). Two responders that disagree may differ only because one holds a deposed
+    /// epoch's tail whose bound no pull has taught this node yet; the bound is learned from the page of each, at the first offset
+    /// they differ, and the pair is compared once more over what remains. Unset (the default) learns nothing, so such a pair is
+    /// refused as before. Set once at wiring.
+    @Contract
+    public void peerLineageLearn(PeerLineageLearn learn) {
+        this.peerLineageLearn = learn;
     }
 
     /// Late-bind the candidate's durable sealed floor, the bound the gate's relaxation for a divergent peer respects. Set once at
@@ -615,7 +657,9 @@ public final class OwnerActivation {
                             BlockAlarm alarm,
                             TimeSpan unreachableAlarmAfter,
                             RingIncarnation ringIncarnation,
-                            LineageCommit lineage) {
+                            LineageCommit lineage,
+                            OwnerLease lease,
+                            ToIntFunction<String> confirmationFactor) {
         this.self = self;
         this.records = records;
         this.placementOwner = placementOwner;
@@ -630,6 +674,8 @@ public final class OwnerActivation {
         this.unreachableAlarmAfter = unreachableAlarmAfter;
         this.ringIncarnation = ringIncarnation;
         this.lineage = lineage;
+        this.lease = lease;
+        this.confirmationFactor = confirmationFactor;
     }
 
     public static OwnerActivation ownerActivation(NodeId self,
@@ -660,8 +706,12 @@ public final class OwnerActivation {
                                LineageCommit.NONE);
     }
 
-    /// The production factory (#1730 phase 2): the activation also commits where the current epoch begins (see
-    /// [LineageCommit]) before the node is marked activated.
+    /// The confirmation factor of the factory without a lease (tests that predate #2981): every stream reads as CF=1, which takes no
+    /// lease check (design §0 scope), so those gates admit exactly as before.
+    private static final ToIntFunction<String> NO_LEASE_SCOPE = _ -> 1;
+
+    /// The lineage-committing factory (#1730 phase 2) without a node lease (tests that predate #2981): the activation also commits
+    /// where the current epoch begins (see [LineageCommit]) before the node is marked activated; no stream takes the lease check.
     public static OwnerActivation ownerActivation(NodeId self,
                                                   OwnershipRecordSource records,
                                                   PlacementOwner placementOwner,
@@ -676,6 +726,43 @@ public final class OwnerActivation {
                                                   TimeSpan unreachableAlarmAfter,
                                                   RingIncarnation ringIncarnation,
                                                   LineageCommit lineage) {
+        return ownerActivation(self,
+                               records,
+                               placementOwner,
+                               barrier,
+                               liveMembers,
+                               probe,
+                               selfWatermark,
+                               catchUp,
+                               consensusActive,
+                               ranges,
+                               alarm,
+                               unreachableAlarmAfter,
+                               ringIncarnation,
+                               lineage,
+                               OwnerLease.UNWIRED,
+                               NO_LEASE_SCOPE);
+    }
+
+    /// The production factory (#1730 phase 2, #2981 step 2): the activation also commits where the current epoch begins (see
+    /// [LineageCommit]) before the node is marked activated, and a stream whose `confirmationFactor` is 2 or more is admitted only
+    /// while `lease` is valid ([#admit]).
+    public static OwnerActivation ownerActivation(NodeId self,
+                                                  OwnershipRecordSource records,
+                                                  PlacementOwner placementOwner,
+                                                  Option<LinearizableBarrier> barrier,
+                                                  Supplier<List<NodeId>> liveMembers,
+                                                  ReplicaWatermarkProbe probe,
+                                                  SelfWatermark selfWatermark,
+                                                  OwnerCatchUp catchUp,
+                                                  BooleanSupplier consensusActive,
+                                                  RecordRange ranges,
+                                                  BlockAlarm alarm,
+                                                  TimeSpan unreachableAlarmAfter,
+                                                  RingIncarnation ringIncarnation,
+                                                  LineageCommit lineage,
+                                                  OwnerLease lease,
+                                                  ToIntFunction<String> confirmationFactor) {
         return new OwnerActivation(self,
                                    records,
                                    placementOwner,
@@ -689,7 +776,9 @@ public final class OwnerActivation {
                                    alarm,
                                    unreachableAlarmAfter,
                                    ringIncarnation,
-                                   lineage);
+                                   lineage,
+                                   lease,
+                                   confirmationFactor);
     }
 
     /// Whether this node may act as owner of `(stream, partition)` right now: its consensus engine is active,
@@ -732,7 +821,17 @@ public final class OwnerActivation {
 
     /// The gate every owner action passes: admitted when activated; otherwise an activation is started and the
     /// action is refused with the transient [StreamError.OwnerNotActivated].
+    ///
+    /// #2981 step 2 (design §2.2 check 1, F-1a-5, F-1a-8): FIRST, a stream with confirmation factor 2 or more whose node lease is
+    /// not valid now is refused with the transient [StreamError.OwnerLeaseLapsed], with NO activation side effect: no gate is
+    /// started (a lapse must not send consensus rounds and probes at the quorum whose slowness caused it) and `activated` is left
+    /// as it was, so the next renewal restores admission without a re-gate. An ADMISSION check, not a read-freshness guarantee: a
+    /// read admitted under a valid lease may be served after the lease lapsed.
     public Result<Unit> admit(String stream, int partition) {
+        if (leaseLapsed(stream)) {
+            return new StreamError.OwnerLeaseLapsed(stream, partition).result();
+        }
+
         if (isActivated(stream, partition)) {
             return Result.unitResult();
         }
@@ -740,6 +839,10 @@ public final class OwnerActivation {
         attempt(stream, partition, REDRIVE_INITIAL_BACKOFF);
 
         return new StreamError.OwnerNotActivated(stream, partition).result();
+    }
+
+    private boolean leaseLapsed(String stream) {
+        return confirmationFactor.applyAsInt(stream) >= 2 && !lease.valid();
     }
 
     /// #2682: the committed-record hook. A committed ownership record that newly names this node (no record before, or an
@@ -875,7 +978,37 @@ public final class OwnerActivation {
     }
 
     private Promise<Unit> activateOrRedrive(String stream, int partition, TimeSpan backoff) {
-        return activate(stream, partition).onFailure(cause -> redrive(stream, partition, backoff, cause));
+        return activateUnlessHeld(stream, partition, backoff).onFailure(cause -> redrive(stream,
+                                                                                         partition,
+                                                                                         backoff,
+                                                                                         cause));
+    }
+
+    /// #3140: [#attempt] checks the refusal wait, but a gate run by another thread (an admit, or the redrive timer) can be
+    /// refused and park the partition between that check and this thread winning `inFlight`, so the stale check let a second
+    /// gate probe INSIDE the hold (a third hold measured 0 ms; the consumer's twin is #2875). The check is repeated here, once
+    /// this thread owns `inFlight`: it releases the partition untouched and defers to the wait's end. The result is
+    /// [ActivationError#IN_PROGRESS], which [#redrive] ignores, because the deferral is the re-drive.
+    private Promise<Unit> activateUnlessHeld(String stream, int partition, TimeSpan backoff) {
+        var key = PartitionKey.partitionKey(stream, partition);
+
+        if (!inFlight.add(key)) {
+            return ActivationError.IN_PROGRESS.promise();
+        }
+
+        return refusalWaitLeft(key).fold(() -> runGate(stream, partition, key).withResult(_ -> inFlight.remove(key)),
+                                         left -> yieldToRefusal(stream, partition, backoff, key, left));
+    }
+
+    private Promise<Unit> yieldToRefusal(String stream,
+                                         int partition,
+                                         TimeSpan backoff,
+                                         PartitionKey key,
+                                         TimeSpan left) {
+        inFlight.remove(key);
+        deferPastRefusal(stream, partition, backoff, left);
+
+        return ActivationError.IN_PROGRESS.promise();
     }
 
     /// The part of the partition's refusal wait still to run, none once it has passed.
@@ -1394,10 +1527,24 @@ public final class OwnerActivation {
     private Promise<Unit> catchUpFromResponders(String stream, int partition, List<PeerWatermark> answered) {
         var local = selfWatermark.localWatermark(stream, partition);
 
-        return withoutDivergentPeers(stream, partition, local, answered).flatMap(kept -> catchUpFromKept(stream,
-                                                                                                         partition,
-                                                                                                         local,
-                                                                                                         kept));
+        return confirmCaps(stream, partition, answered).flatMap(_ -> withoutDivergentPeers(stream,
+                                                                                           partition,
+                                                                                           local,
+                                                                                           answered))
+                          .flatMap(kept -> catchUpFromKept(stream, partition, local, kept));
+    }
+
+    /// Every probed peer's learned cap is confirmed after the probe round and before any ranking (#3142 F3).
+    /// Recovery: design-out. [Promise#allOf] settles with each confirmation's own result and never fails, so a confirmation that
+    /// fails leaves the cap as learned and never blocks the gate; the cap is only an advisory bound, and the catch-up it ranks
+    /// still verifies what it installs.
+    private Promise<Unit> confirmCaps(String stream, int partition, List<PeerWatermark> answered) {
+        return Promise.allOf(answered.stream()
+                                     .map(peer -> peerLineageConfirm.of(stream,
+                                                                        partition,
+                                                                        peer.node(),
+                                                                        peer.watermark()))
+                                     .toList()).map(_ -> Unit.unit());
     }
 
     /// #1730 phase 2 (KIP-101): a candidate ELECTED from the committed ISR holds every acknowledged record, because an
@@ -1635,6 +1782,14 @@ public final class OwnerActivation {
 
     /// Compare the last [#OVERLAP_WINDOW] offsets both peers' heads cover.
     private Promise<Unit> verifyPair(String stream, int partition, PeerWatermark source, PeerWatermark peer) {
+        return verifyPair(stream, partition, source, peer, false);
+    }
+
+    private Promise<Unit> verifyPair(String stream,
+                                     int partition,
+                                     PeerWatermark source,
+                                     PeerWatermark peer,
+                                     boolean learned) {
         var to = Math.min(lineageEnd(stream, partition, source), lineageEnd(stream, partition, peer));
 
         if (to < 0) {
@@ -1658,7 +1813,8 @@ public final class OwnerActivation {
                                                                               source,
                                                                               peer,
                                                                               sourceRange,
-                                                                              peerRange));
+                                                                              peerRange,
+                                                                              learned));
     }
 
     private Promise<Unit> pairAgreesOrRefuse(String stream,
@@ -1666,7 +1822,8 @@ public final class OwnerActivation {
                                              PeerWatermark source,
                                              PeerWatermark peer,
                                              List<OffHeapRingBuffer.RawEvent> sourceRange,
-                                             List<OffHeapRingBuffer.RawEvent> peerRange) {
+                                             List<OffHeapRingBuffer.RawEvent> peerRange,
+                                             boolean learned) {
         if (compared(sourceRange, peerRange) == 0) {
             return refuseDivergent(new ActivationBlock.OverlapUnverifiable(stream,
                                                                            partition,
@@ -1678,12 +1835,42 @@ public final class OwnerActivation {
 
         return agree(sourceRange, peerRange)
                ? Promise.success(Unit.unit())
-               : refuseDivergent(new ActivationBlock.DivergentPeers(stream,
+               : learnOrRefuse(stream, partition, source, peer, firstDifference(sourceRange, peerRange).or(0L), learned);
+    }
+
+    /// #3080: a pair that differs is refused only once the bound of each side has been learned from its own page. A responder
+    /// whose differing records are a deposed epoch's tail is then judged only up to its bound, and the pair compared again agrees;
+    /// one whose records differ with no bound to explain it is refused as before.
+    private Promise<Unit> learnOrRefuse(String stream,
+                                        int partition,
+                                        PeerWatermark source,
+                                        PeerWatermark peer,
+                                        long differsAt,
+                                        boolean learned) {
+        return learned
+               ? refuseDivergent(new ActivationBlock.DivergentPeers(stream,
                                                                     partition,
                                                                     source.node(),
                                                                     source.watermark(),
                                                                     peer.node(),
-                                                                    peer.watermark()));
+                                                                    peer.watermark()))
+               : Promise.all(learnBound(stream, partition, source, differsAt),
+                             learnBound(stream, partition, peer, differsAt)).flatMap((_, _) -> verifyPair(stream,
+                                                                                                          partition,
+                                                                                                          source,
+                                                                                                          peer,
+                                                                                                          true));
+    }
+
+    /// Recovery: design-out. A page that cannot be read teaches nothing, and the pair is compared again exactly as before, so the
+    /// refusal that follows is the one the gate raised without learning.
+    private Promise<Unit> learnBound(String stream, int partition, PeerWatermark peer, long from) {
+        return peerLineageLearn.of(stream,
+                                   partition,
+                                   peer.node(),
+                                   peer.watermark(),
+                                   from)
+                               .recover(_ -> Unit.unit());
     }
 
     /// Compare the last [#OVERLAP_WINDOW] offsets both heads cover; nothing overlaps when either side is empty.

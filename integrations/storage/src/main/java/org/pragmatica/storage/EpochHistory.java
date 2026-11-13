@@ -42,6 +42,10 @@ final class EpochHistory {
     private static final String CRC_PREFIX = "crc ";
     private static final Logger log = LoggerFactory.getLogger(EpochHistory.class);
 
+    /// Test-only (#3128): runs on the calling thread at the start of every [#persist], before any I/O, and changes no
+    /// behaviour. A no-op unless a test installs one through [AppendLog#epochPersistProbe]; unset, the cost is one volatile read.
+    static volatile Runnable persistProbe = () -> {};
+
     private final Path sidecar;
     private final Fn2<Result<Unit>, Path, byte[]> writer;
     private final Object lock = new Object();
@@ -170,6 +174,7 @@ final class EpochHistory {
     /// Runs under `lock`. The in-memory copy changes only after the directory force: a caller never sees an
     /// entry a crash could take back.
     private Result<Unit> persist(List<AppendLog.EpochStart> next) {
+        persistProbe.run();
         var temp = sidecar.resolveSibling(sidecar.getFileName() + ".tmp");
 
         return writer.apply(temp,

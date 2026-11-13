@@ -46,8 +46,17 @@ public sealed interface Schemas {
         };
     }
 
+    /// Every dispatch is stamped (`schemaDispatchedAt`): the stall sweep measures quiet time from the later of the record's `updatedAt` and
+    /// this stamp, because a dispatch is an act on the record that its own commit (the lock Put) has not yet reached, and a restore keeps the
+    /// backup's old `updatedAt`.
     private static ClusterModel dispatch(ClusterModel m, Ctx ctx, String datasource) {
         ctx.emit(new ClusterEffect.DispatchMigration(datasource));
+
+        return stamp(m, ctx, datasource);
+    }
+
+    private static ClusterModel stamp(ClusterModel m, Ctx ctx, String datasource) {
+        m.schemaDispatchedAt = m.schemaDispatchedAt.put(datasource, ctx.nowMs());
 
         return m;
     }
@@ -102,6 +111,8 @@ public sealed interface Schemas {
     /// C12, the removal: a reported datasource whose record is removed is closed with the reason subject-gone (D.6 row 17).
     static ClusterModel onRemove(ClusterModel m, Ctx ctx, String datasource) {
         readable(m, ctx, datasource, Recoveries.gone(datasource, "its schema record was removed"));
+        stallEnded(m, ctx, datasource, Recoveries.gone(datasource, "its schema record was removed"));
+        m.schemaDispatchedAt = m.schemaDispatchedAt.remove(datasource);
 
         return Indexer.removeSchema(m, datasource);
     }
@@ -143,6 +154,123 @@ public sealed interface Schemas {
                                            .asString())
                         .sorted()
                         .toList();
+    }
+
+    // -- #2773: the stall sweep ------------------------------------------------------------------------------------
+    /// The longest a record legitimately stays PENDING with no live lock: the orchestrator writes PENDING and re-dispatches after a backoff
+    /// of at most 45 s (a transient retry's `calculateBackoff(MAX_RETRIES - 1)` and the fenced-in-the-database cap, both pinned equal to this
+    /// by `G2SchemaScenariosTest`). A held lock is a live attempt, so a record with a live lock is never stalled.
+    long RETRY_CEILING_MS = 45_000L;
+    /// Reconcile ticks of grace past the ceiling before a record is reported (the tick is the sweep's granularity).
+    int STALL_GRACE_TICKS = 2;
+
+    /// Step 2d of the reconcile: the level-triggered stall check. A PENDING or MIGRATING record with no live lock and no write or dispatch of
+    /// this leader for longer than [#RETRY_CEILING_MS] plus the grace (with the default 30 s tick, 105 s) is stalled: nothing in this term re-dispatches it (a failed lock Put abandons the attempt without a
+    /// retry). The leader reports it once per episode and closes the report when the condition ends. It dispatches and writes nothing:
+    // Design-out: no recovery writer here. A MIGRATING reset in-term would multiply unfenced re-runs on datasources without a database fence
+    // (`schema-migration-unfenced`); the rebuild's reset (C1) stays the only automatic one, and the warning names it. Guarantee: a stall is
+    // reported within the ceiling + grace + one tick of its start by the leader that is acting; mechanism: the `FsmWarningKey` open set
+    // (`Warnings`), which a successor inherits at `Rebuild`; a rebuilding successor then re-dispatches or resets the record (stamping it), which closes the inherited report.
+    static ClusterModel sweepStalls(ClusterModel m, Ctx ctx) {
+        var stalled = m.schemas.values()
+                               .stream()
+                               .filter(value -> isStalled(m, ctx, value))
+                               .sorted(Comparator.comparing(SchemaVersionValue::datasourceName))
+                               .toList();
+        var names = stalled.stream().map(SchemaVersionValue::datasourceName).collect(Collectors.toSet());
+
+        stalled.forEach(value -> stallOpened(m, ctx, value));
+        m.schemaStalledWarned.toList()
+                             .stream()
+                             .sorted()
+                             .filter(datasource -> !names.contains(datasource))
+                             .forEach(datasource -> stallEnded(m,
+                                                               ctx,
+                                                               datasource,
+                                                               endedMessage(datasource)));
+
+        return m;
+    }
+
+    private static boolean isStalled(ClusterModel m, Ctx ctx, SchemaVersionValue value) {
+        return isUnsettled(value)
+               && lockExpired(m, ctx, value.datasourceName())
+               && isQuiet(m, ctx, value);
+    }
+
+    private static boolean isUnsettled(SchemaVersionValue value) {
+        return value.status() == SchemaStatus.PENDING || value.status() == SchemaStatus.MIGRATING;
+    }
+
+    private static boolean isQuiet(ClusterModel m, Ctx ctx, SchemaVersionValue value) {
+        return ctx.nowMs() - quietSince(m, value) > stallAfterMs(ctx);
+    }
+
+    /// When the record last moved. A record not yet reported moves with a write (`updatedAt`) or with this leader's dispatch or reset; a
+    /// record already reported moves only with a dispatch or reset: a write that dispatches nothing and takes no lock (the operator's
+    /// `POST /schema/migrate` on MIGRATING, "no orchestrator effect") is not progress and must not close the report.
+    private static long quietSince(ClusterModel m, SchemaVersionValue value) {
+        var dispatched = m.schemaDispatchedAt.get(value.datasourceName()).or(0L);
+
+        return m.schemaStalledWarned.contains(value.datasourceName())
+               ? dispatched
+               : Math.max(value.updatedAt(), dispatched);
+    }
+
+    private static long stallAfterMs(Ctx ctx) {
+        return RETRY_CEILING_MS + STALL_GRACE_TICKS * ctx.settings()
+                                                         .timing()
+                                                         .tick();
+    }
+
+    private static ClusterModel stallOpened(ClusterModel m, Ctx ctx, SchemaVersionValue value) {
+        if (!m.schemaStalledWarned.contains(value.datasourceName())) {
+            m.schemaStalledWarned = m.schemaStalledWarned.add(value.datasourceName());
+            ctx.warn(Warnings.SCHEMA_STALLED, value.datasourceName(), stalledMessage(m, ctx, value));
+        }
+
+        return m;
+    }
+
+    private static ClusterModel stallEnded(ClusterModel m, Ctx ctx, String datasource, String why) {
+        if (m.schemaStalledWarned.contains(datasource)) {
+            m.schemaStalledWarned = m.schemaStalledWarned.remove(datasource);
+            ctx.warn(Recoveries.SCHEMA_MIGRATION_PROGRESSED, datasource, why);
+        }
+
+        return m;
+    }
+
+    private static String endedMessage(String datasource) {
+        return "Schema migration for datasource " + datasource
+             + " progressed: its record has a live lock, was dispatched or reset by the leader, or left PENDING or MIGRATING";
+    }
+
+    /// The report names the datasource, the recorded status, the slices the record holds and the lever. The lever is chosen by the predicate
+    /// the retry route uses (`SchemaStatus#canRetryManually`), so the warning never names a route that would refuse the record.
+    private static String stalledMessage(ClusterModel m, Ctx ctx, SchemaVersionValue value) {
+        return "Schema migration for datasource %s is stalled: status %s for %ds with no live migration lock; holds slices %s. %s".formatted(value.datasourceName(),
+                                                                                                                                             value.status(),
+                                                                                                                                             (ctx.nowMs() - value.updatedAt()) / 1000L,
+                                                                                                                                             slicesOwnedBy(m,
+                                                                                                                                                           value.owningBlueprint()),
+                                                                                                                                             lever(ctx,
+                                                                                                                                                   value));
+    }
+
+    /// The MIGRATING lever is a leadership change, because only a rebuild resets the record. The lever is stopping or restarting the leader's
+    /// process at the host or container level. No CLI command is named: `nodes drain` and `nodes shutdown` both deliver a DRAIN on the leader's
+    /// broadcast, which skips the leader itself (`LeaderReconciler` #1089), so neither is known to stop the leader. The re-run is unfenced where
+    /// `schema-migration-unfenced` applies: a migration still running there can run twice.
+    private static String lever(Ctx ctx, SchemaVersionValue value) {
+        return value.status()
+                    .canRetryManually()
+               ? "Recovery: aether schema retry " + value.datasourceName()
+               : "No manual retry (the retry route refuses " + value.status()
+                + "). Recovery: move leadership off the current leader " + ctx.self()
+                                                                              .id()
+                + " by stopping or restarting that node's process at the host or container level; the next leader's rebuild resets the record to PENDING and re-runs it (unfenced where schema-migration-unfenced applies:"
+                + " a migration still running there can run twice)";
     }
 
     // -- C1: rebuild-time recovery ---------------------------------------------------------------------------------
@@ -203,7 +331,7 @@ public sealed interface Schemas {
         Outbox.direct(m,
                       TxDraft.draft(SubmitKind.SCHEMA, key, List.of(mutation)));
 
-        return m;
+        return stamp(m, ctx, datasource);
     }
 
     // -- the gate --------------------------------------------------------------------------------------------------

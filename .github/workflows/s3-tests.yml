@@ -50,6 +50,13 @@ jobs:
         run: mvn install -B -DskipTests -pl integrations/storage,aether/node -am
         timeout-minutes: 25
 
+      # Ryuk comes through the mirror (`*` in tools/ci-test-images.txt); MinIO is on cgr.dev and is `!`, so the plan below pulls Ryuk only.
+      - name: Pre-pull Testcontainers images
+        run: |
+          echo "aether/node" > s3-modules.txt
+          tools/ci-prepull-images.sh s3-modules.txt
+        timeout-minutes: 10
+
       - name: Run the S3 group
         run: >
           mvn test -B -pl integrations/storage,aether/node

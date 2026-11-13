@@ -25,9 +25,11 @@ public sealed interface Recoveries {
     String DEPARTURE_BREAKER_CLEARED = "departure-breaker-cleared";
     String PLACEMENT_VALID = "placement-valid";
     String JOIN_MATCHED = "join-matched";
+    String APPLY_DEADLINE_CLEARED = "apply-deadline-cleared";
     String RETRY_EXHAUSTED_SETTLED = "retry-exhausted-settled";
     String SCHEMA_HOLD_CLEARED = "schema-hold-cleared";
     String SCHEMA_STATUS_READABLE = "schema-status-readable";
+    String SCHEMA_MIGRATION_PROGRESSED = "schema-migration-progressed";
     String SLICE_UNRESPONSIVE_EXPIRED = "slice-unresponsive-expired";
     String STRAY_INSTANCE_REMOVED = "stray-instance-removed";
     String WORKER_ABSENCE_JUDGEABLE = "worker-absence-judgeable";

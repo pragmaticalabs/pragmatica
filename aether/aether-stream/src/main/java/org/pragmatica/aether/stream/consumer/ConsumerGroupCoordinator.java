@@ -66,6 +66,7 @@ public sealed interface ConsumerGroupCoordinator {
         return new DefaultConsumerGroupCoordinator(clusterNode,
                                                    registry,
                                                    leaderEpoch,
+                                                   new AtomicLong(),
                                                    new AtomicReference<>(new CoordinatorState.Dormant()));
     }
 
@@ -112,10 +113,13 @@ public sealed interface ConsumerGroupCoordinator {
 
         record Dormant() implements CoordinatorState {}
 
-        /// @param counter the last rebalance counter this activation stamped; every rebalance takes the next one
-        ///                under the leader's current `(incarnation, term)`, so the applier's [org.pragmatica.cluster.state.kvstore.EpochBearing]
-        ///                fence on [ConsumerGroupValue] keeps the newest rebalance whatever order Rabia commits the
-        ///                submitted batches in, and refuses a deposed leader's late batch (#2626)
+        /// @param counter the last rebalance counter this COORDINATOR stamped, shared by all its activations; every
+        ///                rebalance takes the next one under the leader's current `(incarnation, term)`, so the applier's
+        ///                [org.pragmatica.cluster.state.kvstore.EpochBearing] fence on [ConsumerGroupValue] keeps the newest
+        ///                rebalance whatever order Rabia commits the submitted batches in, and refuses a deposed leader's
+        ///                late batch (#2626). #2642: it outlives an activation because a re-activation at the SAME term
+        ///                must mint above the previous activation's still-uncommitted batches, which the committed-epoch
+        ///                reseed cannot see.
         record Active(ClusterNode<KVCommand<AetherKey>> clusterNode,
                       ConsumerGroupRegistry registry,
                       Supplier<Epoch> leaderEpoch,
@@ -248,9 +252,12 @@ public sealed interface ConsumerGroupCoordinator {
                        : cause.result();
             }
 
-            /// `(incarnation, term)` come from the leader, the counter from this activation. When the committed
-            /// assignments already carry this very `(incarnation, term)` (a leader re-adopted at the same term,
-            /// whose counter restarted) the counter is re-seeded above the committed one. When the committed
+            /// `(incarnation, term)` come from the leader, the counter from this coordinator: one atomic step over the
+            /// counter every activation shares, so no two mints (even from an old activation finishing a call after a
+            /// re-activation) draw the same value, and a same-term re-activation mints above the previous activation's
+            /// uncommitted batches (#2642). When the committed assignments already carry this very
+            /// `(incarnation, term)` (a leader re-adopted at the same term by a restarted process, whose counter
+            /// restarted) the counter is re-seeded above the committed one. When the committed
             /// epoch is AHEAD of the leader's, this node is deposed or its term source lags: the rebalance is
             /// refused here, loudly, because the applier would refuse it anyway and nothing would re-derive it.
             /// #2654: while the life's incarnation is not committed the base is refused with
@@ -266,7 +273,7 @@ public sealed interface ConsumerGroupCoordinator {
             private Result<Epoch> nextEpochFrom(String groupId, String streamName, Epoch base) {
                 var committed = registry.committedEpoch(groupId, streamName);
                 var seeded = committed.filter(c -> sameTerm(c, base)).map(Epoch::localCounter).or(0L);
-                var candidate = base.withCounter(Math.max(counter.get(), seeded) + 1);
+                var candidate = base.withCounter(counter.updateAndGet(last -> Math.max(last, seeded) + 1));
 
                 if (committed.filter(c -> !candidate.isStrictlyAfter(c)).isPresent()) {
                     log.warn("Refusing rebalance of consumer group {}/{}: epoch {} is not after the committed {} (deposed leader or lagging term source)",
@@ -277,8 +284,6 @@ public sealed interface ConsumerGroupCoordinator {
 
                     return CoordinatorError.SUPERSEDED.result();
                 }
-
-                counter.set(candidate.localCounter());
 
                 return Result.success(candidate);
             }
@@ -390,6 +395,7 @@ public sealed interface ConsumerGroupCoordinator {
     record DefaultConsumerGroupCoordinator(ClusterNode<KVCommand<AetherKey>> clusterNode,
                                            ConsumerGroupRegistry registry,
                                            Supplier<Epoch> leaderEpoch,
+                                           AtomicLong counter,
                                            AtomicReference<CoordinatorState> state) implements ConsumerGroupCoordinator {
         private static final Logger log = LoggerFactory.getLogger(DefaultConsumerGroupCoordinator.class);
 
@@ -400,7 +406,7 @@ public sealed interface ConsumerGroupCoordinator {
                 state.set(new CoordinatorState.Active(clusterNode,
                                                       registry,
                                                       leaderEpoch,
-                                                      new AtomicLong(),
+                                                      counter,
                                                       new ConcurrentHashMap<>(),
                                                       new ConcurrentHashMap<>()));
             } else {

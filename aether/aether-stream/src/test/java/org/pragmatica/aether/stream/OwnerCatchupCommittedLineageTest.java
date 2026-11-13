@@ -29,6 +29,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.aether.stream.replication.BackfillError;
+import org.pragmatica.aether.stream.replication.CatchupTransport;
 import org.pragmatica.aether.stream.replication.PartitionBackfill;
 import org.pragmatica.aether.stream.replication.QuarantineView;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
@@ -78,6 +79,14 @@ class OwnerCatchupCommittedLineageTest {
     private final AtomicBoolean streamAlive = new AtomicBoolean(true);
     private volatile CommittedStreamOwnerSource committedOwners = CommittedStreamOwnerSource.none();
     private volatile Promise<org.pragmatica.lang.Unit> probeGate;
+    /// What the disowned-tail fixture's SOURCE serves as its history; set to the committed lineage to model a replica refilled by it.
+    private volatile List<ProvenanceEntry> sourceHistory = List.of(ProvenanceEntry.provenanceEntry(E1, 0));
+    /// The `fromOffset` of every request the disowned-tail fixture answered, in order.
+    private final List<Long> requestedFrom = new CopyOnWriteArrayList<>();
+    /// Reads asked as whole catch-ups (the paging loop), and as a single page, per the disowned-tail fixture's transport.
+    private final AtomicInteger wholeReads = new AtomicInteger();
+    private final AtomicInteger pageReads = new AtomicInteger();
+    private final AtomicBoolean failingConfirm = new AtomicBoolean();
 
     @BeforeEach
     void startTheActivatingOwner() {
@@ -118,7 +127,7 @@ class OwnerCatchupCommittedLineageTest {
 
         assertThat(second.isSuccess()).as("second redrive activates: %s", second).isTrue();
         assertThat(head()).isEqualTo(15L);
-        assertThat(fixture.served()).as("R1 once, then the replica holding the lineage").containsExactly(SOURCE, OTHER);
+        assertThat(fixture.served()).as("R1 pulled, its cap confirmed by one page, then the replica holding the lineage").containsExactly(SOURCE, SOURCE, OTHER);
     }
 
     /// The redrive predicate ranks by the same lineage end: once the owner holds R2's lineage, R1's raw tail (20) past it is no
@@ -159,6 +168,192 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(fixture.served()).as("R1 again, not R2").containsExactly(SOURCE, SOURCE);
     }
 
+    /// #3081 (ABA): R1 was repaired and refilled by a later epoch up to 16, below the raw tail (20) its cap was learned at, and above
+    /// the cap (10). The cap describes a history R1 no longer has: R1 is ranked by its tail 16, ahead of R2 (15), and read again.
+    @Test
+    void redrive_ofAReplicaRefilledBelowTheObservedTailButAboveItsCap_isRankedByItsTail_notTheOldCap() {
+        var fixture = disownedTailFixture();
+
+        settled(fixture.backfill().backfill("s", 0));
+        fixture.registry().updateWatermark("s", 0, SOURCE, 16L, ReplicationState.CAUGHT_UP);
+        settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(fixture.served()).as("R1 again, ahead of R2 at 15").containsExactly(SOURCE, SOURCE);
+    }
+
+    /// #3081: a changed tail evicts the entry, so the memory is not left holding a history the replica no longer has: the old tail
+    /// (20) is no longer capped once the replica was seen at 16. A tail at or below the cap (8) is capped by nothing and evicts nothing.
+    @Test
+    void lineageEnd_evictsTheEntryOnAChangedTailAboveTheCap_andKeepsItForATailBelowTheCap() {
+        var fixture = disownedTailFixture();
+
+        settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).as("learned cap").isEqualTo(10L);
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 8L)).as("below the cap: unchanged").isEqualTo(8L);
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).as("not evicted by a tail below the cap").isEqualTo(10L);
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 16L)).as("changed tail above the cap").isEqualTo(16L);
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).as("evicted").isEqualTo(20L);
+    }
+
+    /// #3081: a tail exactly AT the cap (a lagging row that reaches the lineage end, 10) is capped by nothing and evicts nothing: the
+    /// entry learned for the raw tail (20) still caps it afterwards. Red under "evict on a tail equal to the cap".
+    @Test
+    void lineageEnd_aTailExactlyAtTheCap_keepsTheEntry() {
+        var fixture = disownedTailFixture();
+
+        settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 10L)).as("at the cap: unchanged").isEqualTo(10L);
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).as("the entry was not evicted").isEqualTo(10L);
+    }
+
+    /// #3081 (F3b) on the probe path: R1 (raw 20, lineage end 10) is refilled by the committed lineage to exactly 20, and the probe
+    /// reads 20 again. The cap is confirmed before the ranking relies on it, so R1 (20) outranks R2 (15) and the owner activates at 20,
+    /// not short at 15. Red under "rank on the stale cap".
+    @Test
+    void probePath_ofAReplicaRefilledToExactlyTheObservedTail_isRankedByItsTail_notTheStaleCap() {
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+
+        var lineage = List.of(ProvenanceEntry.provenanceEntry(E1, 0), ProvenanceEntry.provenanceEntry(E3, 11));
+        var replicas = new java.util.ArrayList<>(List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
+                                                         new Replica(OTHER, 15L, lineage)));
+        var fixture = fixture(true, replicas);
+
+        assertThat(settled(fixture.backfill().backfill("s", 0)).isFailure()).as("held short of R2's 15").isTrue();
+        assertThat(head()).as("R1 installed through its lineage end").isEqualTo(10L);
+
+        replicas.set(0, new Replica(SOURCE, 20L, lineage));
+
+        var second = settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(second.isSuccess()).as("second run: %s", second).isTrue();
+        assertThat(head()).as("the refilled R1 holds 20").isEqualTo(20L);
+    }
+
+    /// #3080: the gate learns a responder's bound before it refuses a pair. The page R1 serves from 11 is history E1, re-assigned by
+    /// the committed E3 @ 11: R1's committed lineage ends at 10 for its raw tail 20. Nothing is installed by learning it.
+    @Test
+    void learnLineageEnd_fromAPageHoldingADeposedTail_remembersTheEnd_andInstallsNothing() {
+        var fixture = disownedTailFixture();
+
+        var learned = settled(fixture.backfill().learnLineageEnd("s", 0, SOURCE, 20L, 11L));
+
+        assertThat(learned.isSuccess()).as("learned: %s", learned).isTrue();
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).isEqualTo(10L);
+        assertThat(fixture.served()).containsExactly(SOURCE);
+        assertThat(head()).as("read only").isEqualTo(-1L);
+    }
+
+    /// #3080 (F1): a learn is ONE bounded page read at the first differing offset, never the transport's whole-suffix catch-up: the
+    /// gate repeats it on every pass of a genuine divergence, for both sides, so a loop to the source's head is a storm. The request
+    /// carries `from` (11), not the start of the log.
+    @Test
+    void learnLineageEnd_issuesOneSinglePageRead_atTheGivenOffset_andNoWholeCatchup() {
+        var fixture = disownedTailFixture();
+
+        settled(fixture.backfill().learnLineageEnd("s", 0, SOURCE, 20L, 11L)).onFailure(cause -> fail(cause.message()));
+
+        assertThat(pageReads).as("one single-page read").hasValue(1);
+        assertThat(wholeReads).as("no whole-suffix catch-up").hasValue(0);
+        assertThat(requestedFrom).as("read at the first differing offset").containsExactly(11L);
+    }
+
+    /// #3081 (F3b): the entry is advisory. A cap whose replica still ends its committed lineage where the entry says is confirmed by
+    /// ONE single-page read from the first re-assigned offset (11) and stays.
+    @Test
+    void confirmLineageEnd_ofAnUnchangedReplica_readsOnePage_andKeepsTheCap() {
+        var fixture = disownedTailFixture();
+
+        settled(fixture.backfill().learnLineageEnd("s", 0, SOURCE, 20L, 11L)).onFailure(cause -> fail(cause.message()));
+        requestedFrom.clear();
+        settled(fixture.backfill().confirmLineageEnd("s", 0, SOURCE, 20L)).onFailure(cause -> fail(cause.message()));
+
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).as("confirmed cap").isEqualTo(10L);
+        assertThat(pageReads).as("learn + confirm, one page each").hasValue(2);
+        assertThat(wholeReads).hasValue(0);
+        assertThat(requestedFrom).as("confirmed from the first re-assigned offset").containsExactly(11L);
+    }
+
+    /// #3081 (F3b, equal-tail ABA): the replica was repaired and refilled by the committed lineage to EXACTLY the tail (20) the cap was
+    /// learned at. The offset alone cannot tell; the re-learned page follows the lineage, so the cap is dropped and the tail stands.
+    @Test
+    void confirmLineageEnd_ofAReplicaRefilledToExactlyTheObservedTail_dropsTheCap() {
+        var fixture = disownedTailFixture();
+
+        settled(fixture.backfill().learnLineageEnd("s", 0, SOURCE, 20L, 11L)).onFailure(cause -> fail(cause.message()));
+        sourceHistory = List.of(ProvenanceEntry.provenanceEntry(E1, 0), ProvenanceEntry.provenanceEntry(E3, 11));
+        settled(fixture.backfill().confirmLineageEnd("s", 0, SOURCE, 20L)).onFailure(cause -> fail(cause.message()));
+
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).as("not capped by a history it no longer has").isEqualTo(20L);
+    }
+
+    /// #3081 (F3b) on the promotion path: the refilled replica (20) is ranked by its tail, ahead of R2 (15), because the cap was
+    /// confirmed before the ranking relied on it. Without the confirmation R2 is read and the owner activates short, at 15.
+    @Test
+    void redrive_ofAReplicaRefilledToExactlyTheObservedTail_isRankedByItsTail_notTheStaleCap() {
+        var fixture = disownedTailFixture();
+
+        settled(fixture.backfill().learnLineageEnd("s", 0, SOURCE, 20L, 11L)).onFailure(cause -> fail(cause.message()));
+        sourceHistory = List.of(ProvenanceEntry.provenanceEntry(E1, 0), ProvenanceEntry.provenanceEntry(E3, 11));
+        fixture.served().clear();
+
+        var outcome = settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(outcome.isSuccess()).as("redrive: %s", outcome).isTrue();
+        assertThat(head()).as("the refilled replica holds 20").isEqualTo(20L);
+        assertThat(fixture.served()).as("R1 confirmed, then pulled; R2 never read").doesNotContain(OTHER);
+    }
+
+    /// #3081 (F3b, c1): the re-learned page is readable but now ends the committed lineage elsewhere (E3 starts at 13, not 11, so the
+    /// end is 12, not the remembered 10). A readable page is not a confirmation: the stale cap is dropped and the tail stands.
+    /// Red under "confirm accepts any readable page".
+    @Test
+    void confirmLineageEnd_whenTheRelearnedEndDiffersButIsReadable_dropsTheStaleCap() {
+        var fixture = disownedTailFixture();
+
+        settled(fixture.backfill().learnLineageEnd("s", 0, SOURCE, 20L, 11L)).onFailure(cause -> fail(cause.message()));
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 13L)));
+        settled(fixture.backfill().confirmLineageEnd("s", 0, SOURCE, 20L)).onFailure(cause -> fail(cause.message()));
+
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).as("stale cap 10 not kept").isEqualTo(20L);
+    }
+
+    /// #3081 (F3b): a cap that cannot be confirmed (the page is unreadable) is dropped, never relied on: the tail stands uncapped. On the
+    /// real path the confirm never fails, it uncaps (`recover(_ -> none)`). Red under "an unreadable page keeps the cap".
+    @Test
+    void confirmLineageEnd_whenThePageCannotBeRead_dropsTheCap() {
+        var fixture = disownedTailFixture();
+
+        settled(fixture.backfill().learnLineageEnd("s", 0, SOURCE, 20L, 11L)).onFailure(cause -> fail(cause.message()));
+        failingConfirm.set(true);
+        settled(fixture.backfill().confirmLineageEnd("s", 0, SOURCE, 20L));
+
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).isEqualTo(20L);
+    }
+
+    /// #3081 (F3b): nothing is read when no entry caps the tail (no entry, or another tail).
+    @Test
+    void confirmLineageEnd_whenNoEntryCapsTheTail_readsNothing() {
+        var fixture = disownedTailFixture();
+
+        settled(fixture.backfill().confirmLineageEnd("s", 0, SOURCE, 20L)).onFailure(cause -> fail(cause.message()));
+        settled(fixture.backfill().learnLineageEnd("s", 0, SOURCE, 20L, 11L)).onFailure(cause -> fail(cause.message()));
+        settled(fixture.backfill().confirmLineageEnd("s", 0, SOURCE, 16L)).onFailure(cause -> fail(cause.message()));
+
+        assertThat(pageReads).as("only the learn").hasValue(1);
+    }
+
+    /// #3080: a page that follows the committed lineage teaches no bound: R2's raw tail stands.
+    @Test
+    void learnLineageEnd_fromAPageFollowingTheCommittedLineage_remembersNothing() {
+        var fixture = disownedTailFixture();
+
+        settled(fixture.backfill().learnLineageEnd("s", 0, OTHER, 15L, 11L)).onFailure(cause -> fail(cause.message()));
+
+        assertThat(fixture.backfill().lineageEnd("s", 0, OTHER, 15L)).isEqualTo(15L);
+    }
+
     /// The promotion gate's own path ([PartitionBackfill#catchUpOwnerFrom]) targets the probed source's lineage end alone: another
     /// replica in the registry (R2 at 15) does not hold the activation short, since the gate would probe the same source again.
     @Test
@@ -193,7 +388,7 @@ class OwnerCatchupCommittedLineageTest {
 
         assertThat(second.isSuccess()).as("second redrive activates: %s", second).isTrue();
         assertThat(head()).as("R2's committed 11..15 installed").isEqualTo(15L);
-        assertThat(fixture.served()).as("R1 once, then the replica holding the lineage").containsExactly(SOURCE, OTHER);
+        assertThat(fixture.served()).as("R1 pulled, its cap confirmed by one page, then the replica holding the lineage").containsExactly(SOURCE, SOURCE, OTHER);
         assertThat(fixture.backfill().redriveCandidates()).isEmpty();
     }
 
@@ -217,7 +412,7 @@ class OwnerCatchupCommittedLineageTest {
 
         assertThat(second.isSuccess()).as("R1's learned end 12 is the maximum: %s", second).isTrue();
         assertThat(head()).isEqualTo(12L);
-        assertThat(fixture.served()).containsExactly(SOURCE, OTHER);
+        assertThat(fixture.served()).as("R1 pulled, its cap confirmed, then R2").containsExactly(SOURCE, SOURCE, OTHER);
     }
 
     /// P10 with no other replica probed: the target is the only replica's lineage end, so the owner activates at 10 on the first
@@ -251,7 +446,7 @@ class OwnerCatchupCommittedLineageTest {
 
         fixture.registry().updateWatermark("s", 0, SOURCE, 20L, ReplicationState.CAUGHT_UP);
 
-        assertThat(fixture.served()).containsExactly(SOURCE, SOURCE);
+        assertThat(fixture.served()).as("pull, cap confirmation, re-pull").containsExactly(SOURCE, SOURCE, SOURCE);
         assertThat(fixture.backfill().redriveCandidates()).as("R1's raw 20 is capped at 10").isEmpty();
     }
 
@@ -300,7 +495,9 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(head()).isEqualTo(13L);
         assertThat(settled(fixture.backfill().backfill("s", 0)).isSuccess()).isTrue();
         assertThat(head()).isEqualTo(18L);
-        assertThat(fixture.served()).containsExactly(SOURCE, OTHER, THIRD);
+        assertThat(fixture.served()).as("each learned cap is confirmed by one page before the next round ranks on it (the two confirmations of round 3 run in parallel: any order)")
+                                    .containsExactlyInAnyOrder(SOURCE, SOURCE, SOURCE, OTHER, OTHER, THIRD);
+        assertThat(fixture.served().getLast()).as("the last read is the third pull").isEqualTo(THIRD);
         assertThat(fixture.backfill().redriveCandidates()).isEmpty();
     }
 
@@ -325,7 +522,7 @@ class OwnerCatchupCommittedLineageTest {
 
         assertThat(second.isSuccess()).as("second redrive reads R2: %s", second).isTrue();
         assertThat(head()).isEqualTo(25L);
-        assertThat(fixture.served()).containsExactly(SOURCE, OTHER);
+        assertThat(fixture.served()).as("R1 pulled, its cap confirmed, then R2").containsExactly(SOURCE, SOURCE, OTHER);
     }
 
     /// P10 (verifier M8), the registry path ranks the OTHER survivors by committed-lineage end, never their raw tail: R2 (raw 30, lineage
@@ -346,7 +543,7 @@ class OwnerCatchupCommittedLineageTest {
 
         assertThat(second.isSuccess()).as("R2's learned end 12 is the best other end: %s", second).isTrue();
         assertThat(head()).isEqualTo(12L);
-        assertThat(fixture.served()).containsExactly(OTHER, SOURCE);
+        assertThat(fixture.served()).as("the learned cap of R2 is confirmed before R1 is read").containsExactly(OTHER, OTHER, SOURCE);
     }
 
     /// Fallback (CTO ruling 2026-11-09), probe path: two replicas hold the same committed end 15; the first read fails (unreadable). The owner
@@ -1224,7 +1421,7 @@ class OwnerCatchupCommittedLineageTest {
 
         var backfill = PartitionBackfill.partitionBackfill(registry,
                                                            owner.alignedRecovery(),
-                                                           (node, request) -> servedBy(node, request, served),
+                                                           countingTransport((node, request) -> servedBy(node, request, served)),
                                                            ReplicationTransport.NOOP,
                                                            (_, _, _) -> BackfillError.General.NO_SOURCE_REPLICA.promise(),
                                                            (_, _) -> head(),
@@ -1236,11 +1433,31 @@ class OwnerCatchupCommittedLineageTest {
         return new DisownedTail(registry, backfill, served);
     }
 
+    /// Tells a whole catch-up (the transport's paging loop, which reads the source's full suffix) from a single page.
+    private CatchupTransport countingTransport(CatchupTransport inner) {
+        return new CatchupTransport() {
+            @Override
+            public Promise<CatchupResponse> requestCatchup(NodeId target, CatchupRequest request) {
+                wholeReads.incrementAndGet();
+
+                return inner.requestCatchup(target, request);
+            }
+
+            @Override
+            public Promise<CatchupResponse> requestPage(NodeId target, CatchupRequest request) {
+                pageReads.incrementAndGet();
+
+                return failingConfirm.get() ? BackfillError.General.NO_SOURCE_REPLICA.promise() : inner.requestCatchup(target, request);
+            }
+        };
+    }
+
     private Promise<CatchupResponse> servedBy(NodeId node, CatchupRequest request, List<NodeId> served) {
         served.add(node);
+        requestedFrom.add(request.fromOffset());
 
         return node.equals(SOURCE)
-               ? Promise.success(served(request.fromOffset(), 20L, SOURCE, List.of(ProvenanceEntry.provenanceEntry(E1, 0))))
+               ? Promise.success(served(request.fromOffset(), 20L, SOURCE, sourceHistory))
                : Promise.success(served(request.fromOffset(), 15L, OTHER, List.of(ProvenanceEntry.provenanceEntry(E1, 0), ProvenanceEntry.provenanceEntry(E3, 11))));
     }
 

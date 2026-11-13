@@ -468,7 +468,7 @@ public final class SchemaRoutes implements RouteSource {
     /// redeploy). MIGRATING and COMPLETED remain refused: MIGRATING already has a runner in flight,
     /// and re-arming a COMPLETED record would replay a migration nothing marked failed.
     private Promise<SchemaMigrateResponse> writeRetryStatus(SchemaVersionValue current, String datasource) {
-        if (current.status() != SchemaStatus.FAILED && current.status() != SchemaStatus.PENDING) {
+        if (!current.status().canRetryManually()) {
             return schemaNotFailed(datasource, current.status()).promise();
         }
 
