@@ -15,6 +15,7 @@
  */
 package org.pragmatica.consensus.net.quic;
 
+import java.util.Collections;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
@@ -193,10 +194,13 @@ public final class QuicTransportMetrics {
         writeFailures.increment();
     }
 
-    /// #2583 P0: records `frames` frames, already reported `Sent`, dropped at `site` on `lane`.
+    /// #2583 P0: records `frames` frames, already reported `Sent`, dropped at `site` on `lane`. Zero frames (a site that
+    /// discarded an empty batch) records nothing, so no counter exists until a frame was lost there.
     @Contract
     public void onDroppedAfterSent(StreamType lane, DropSite site, long frames) {
-        droppedAfterSent.computeIfAbsent(droppedAfterSentKey(lane, site), _ -> new LongAdder()).add(frames);
+        if (frames > 0) {
+            droppedAfterSent.computeIfAbsent(droppedAfterSentKey(lane, site), _ -> new LongAdder()).add(frames);
+        }
     }
 
     /// #2583 P0: records one send refused with `BackpressureRefused` on `lane`.
@@ -519,13 +523,13 @@ public final class QuicTransportMetrics {
                : counter.sum();
     }
 
-    /// #2583 P0: every non-zero `droppedAfterSent.<lane>.<site>` counter, by name.
+    /// #2583 P0: every non-zero `droppedAfterSent.<lane>.<site>` counter, by name: an unmodifiable view sorted by name.
     public Map<String, Long> droppedAfterSentSnapshot() {
         var snapshot = new TreeMap<String, Long>();
 
         droppedAfterSent.forEach((key, counter) -> snapshot.put(key, counter.sum()));
 
-        return Map.copyOf(snapshot);
+        return Collections.unmodifiableSortedMap(snapshot);
     }
 
     /// #2583 P0: sends refused with `BackpressureRefused` on `lane`, cumulative.
