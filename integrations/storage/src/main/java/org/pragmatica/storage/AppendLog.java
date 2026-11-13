@@ -184,7 +184,6 @@ public final class AppendLog implements AutoCloseable {
     private static final long COMPACTION_THRESHOLD_BYTES = 8L * 1024 * 1024;
     /// The floor of a log opened without one ([#withSealedFloor]): nothing sealed, so only `lastOffset + 1` follows a record.
     private static final LongSupplier NO_SEALED_FLOOR = () -> - 1L;
-
     private static final Fn1<Cause, Throwable> APPEND_FAILED = AppendLog::appendFailure;
 
     private static final Fn1<Cause, Throwable> TRUNCATE_FAILED = t -> new WalError.TruncateFailed(t.getMessage());
