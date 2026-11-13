@@ -77,7 +77,7 @@ class RetentionAgeDiskReadTest {
         assertThat(maxTimestamp()).as("learned once the file is readable again").isPositive();
     }
 
-    /// Control: an intact block is learned on the first pass, so the failures below are the injected ones.
+    /// Control: an intact block is learned on the first pass, so the failure cases around it are not a broken setup.
     @Test
     void anIntactBlock_isLearnedOnTheFirstPass() {
         index.rebuildFromRefs(Map.of(REF, seal()));
