@@ -11,6 +11,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.Submitted;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
@@ -171,6 +172,27 @@ class WarnAfterCommitTest {
 
         assertThat(ctx.withdraw(1, _ -> true)).containsExactly(new ClusterEffect.Warn(OPENER, BILLING.asString(), "this step"));
         assertThat(ctx.effects()).containsExactly(new ClusterEffect.Warn(OPENER, ORDERS.asString(), "earlier"));
+    }
+
+    /// A `Rebuild` closes the inherited warning whose subject left the model (immediate: it closes a committed row), then applies the C17r
+    /// removal as an ordinary input in the same step. Red when: the FSM's window starts before that input (`ctx.effectCount()` not read at
+    /// the start of `apply`), so the inherit close is taken into the held set and waits for a WARNINGS write that is held here.
+    @Test
+    void inheritClose_beforeTheFirstInputOfTheStep_isNotHeld() {
+        var h = oneFailureShort(ORDERS);
+
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        LcSupport.node(h, CORE_1, 11L).fails(ORDERS, false);
+        h.drain();
+        assertThat(committed(h)).as("precondition: the leader committed the opener").isTrue();
+
+        h.deliver(new ClusterInput.Deactivate());
+        h.seedRemove(new SliceTargetKey(ORDERS.base()));
+        h.dead = ClusterInput.DeadSet.deadSet(Set.of(CORE_1), Set.of());
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        h.activate();
+
+        assertThat(h.warns(RECOVERY)).as("the inherit close is published in the Rebuild step, not after a later write").hasSize(1);
     }
 
     /// Red when: a non-family effect (an uncatalogued or node-local code, a metric) is held: only the leader-local families have a WARNINGS row.
