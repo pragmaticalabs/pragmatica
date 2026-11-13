@@ -1159,7 +1159,8 @@ class OwnerCatchupCommittedLineageTest {
 
         probeGate = null;
 
-        assertThat(outcomeOf(late)).as("control: the late round did reach the all-stalled state").isEqualTo(BackfillError.General.SOURCE_STALLED);
+        assertThat(outcomeOf(late)).as("control (#3156): the late round of a destroyed stream counts nothing, so it ends short, not all-stalled")
+                                   .isEqualTo(BackfillError.General.INCOMPLETE_BACKFILL);
         assertThat(openWarnings(alarm)).as("no zombie for a destroyed stream").isEmpty();
         assertThat(alarm.raised()).as("the raise was refused, not raised and resolved").isEmpty();
     }

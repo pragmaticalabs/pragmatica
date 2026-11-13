@@ -1835,20 +1835,32 @@ public final class PartitionBackfill {
 
     private Result<Long> reportIfAllStalled(String streamName, int partition, Result<Long> result) {
         if (result.fold(SOURCE_STALLED::equals, _ -> false)) {
-            raiseStalled(streamName, partition);
+            raiseCountedStall(streamName, partition);
         }
 
         return result;
     }
 
+    /// The raise of a round that ended all-stalled (#3156): under [#oversizedOrder], the same monitor [#clearStalledOf] drops the counters
+    /// under, the raise needs the stream to exist and a source's counter to be at [#MAX_STALLED_ROUNDS] NOW. A round of a destroyed
+    /// incarnation that counted its last stalled round before the listener ran finds the counter gone, so it raises nothing in the recreated stream.
+    private Unit raiseCountedStall(String streamName, int partition) {
+        synchronized (oversizedOrder) {
+            return streamExists.test(streamName) && hasStalledSource(partitionKey(streamName, partition))
+                   ? raiseStalled(streamName, partition)
+                   : Unit.unit();
+        }
+    }
+
     /// Raises the all-stalled warning once per episode, under [#oversizedOrder].
     ///
     /// ```tla Stalled:R_Report
-    /// \* reportIfAllStalled -> raiseStalled under the monitor: mayRaiseStalled = the flight is current (one flight:
-    /// \* always) and the stream still exists. A raise during a reconcile pass lands after its snapshot (rec "dirty").
+    /// \* reportIfAllStalled -> raiseCountedStall -> raiseStalled under the monitor: mayRaiseStalled = the flight is current (one
+    /// \* flight: always) and the stream still exists; with the fix "reset" the counter must still be at MAX (a round of a
+    /// \* destroyed incarnation finds it dropped). A raise during a reconcile pass lands after its snapshot (rec "dirty").
     /// R_Report == /\ rpc = "report"
     ///             /\ rpc' = "idle"
-    ///             /\ IF allStalled /\ (exists \/ ~Fix("level"))
+    ///             /\ IF allStalled /\ (exists \/ ~Fix("level")) /\ (cnt >= MAX \/ ~Fix("reset"))
     ///                THEN /\ reported' = TRUE
     ///                     /\ early' = (early \/ (~reported /\ ep < MAX))
     ///                     /\ settled' = FALSE
