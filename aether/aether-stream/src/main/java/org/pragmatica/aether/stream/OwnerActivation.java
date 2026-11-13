@@ -1497,8 +1497,11 @@ public final class OwnerActivation {
     private Promise<Unit> catchUpFromResponders(String stream, int partition, List<PeerWatermark> answered) {
         var local = selfWatermark.localWatermark(stream, partition);
 
-        return confirmCaps(stream, partition, answered).flatMap(_ -> withoutDivergentPeers(stream, partition, local, answered))
-                                                       .flatMap(kept -> catchUpFromKept(stream, partition, local, kept));
+        return confirmCaps(stream, partition, answered).flatMap(_ -> withoutDivergentPeers(stream,
+                                                                                           partition,
+                                                                                           local,
+                                                                                           answered))
+                          .flatMap(kept -> catchUpFromKept(stream, partition, local, kept));
     }
 
     /// Every probed peer's learned cap is confirmed after the probe round and before any ranking (#3142 F3).
