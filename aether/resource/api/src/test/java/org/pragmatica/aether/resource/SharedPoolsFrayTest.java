@@ -14,6 +14,7 @@ import org.pastalab.fray.core.scheduler.PCTScheduler;
 import org.pastalab.fray.junit.junit5.FrayTestExtension;
 import org.pastalab.fray.junit.junit5.annotations.FrayTest;
 import org.pragmatica.aether.resource.SharedPoolFixtures.FakeConnector;
+import org.pragmatica.aether.resource.SharedPoolFixtures.FakePool;
 import org.pragmatica.aether.resource.SharedPoolFixtures.FakeView;
 import org.pragmatica.aether.resource.SharedPoolFixtures.FakeShareableFactory;
 import org.pragmatica.aether.resource.SpiResourceProvider.Provisioned;
@@ -37,8 +38,11 @@ class SharedPoolsFrayTest {
     static final int ITERATIONS = 300;
     /// Race-reached witness, across iterations (the classes are not reloaded, so statics persist): iterations in which a
     /// view was made from an already closed pool and was discarded with `ProviderClosed`, i.e. the drain-before-fill
-    /// interleaving of #3171 actually occurred.
+    /// interleaving of #3171 actually occurred. PCT alone never reached it at this head (0 of 3000 iterations measured),
+    /// so every other iteration is armed: node stop runs from the view factory, i.e. between the pool resolving and the
+    /// view being made, while the other threads still race it. The unarmed iterations stay pure schedule exploration.
     private static final AtomicInteger DRAIN_BEFORE_FILL = new AtomicInteger();
+    private static final AtomicInteger ITERATION = new AtomicInteger();
 
     /// One iteration's world. The classes are not reloaded per iteration (`resetClassLoaderPerIteration = false`), so
     /// everything but the witness counter is local to the call.
@@ -48,9 +52,15 @@ class SharedPoolsFrayTest {
         private final AtomicInteger servedAfterStop = new AtomicInteger();
         private final AtomicBoolean closeAllReturned = new AtomicBoolean();
         private final AtomicBoolean closeAllStarted = new AtomicBoolean();
+        private final AtomicBoolean stopFired = new AtomicBoolean();
+        private final boolean armed;
         private final AtomicInteger refusedBeforeStop = new AtomicInteger();
         private final List<Promise<Unit>> reported = new CopyOnWriteArrayList<>();
         private final SharedPools pools = SharedPools.sharedPools(this::closePool);
+
+        private Race(boolean armed) {
+            this.armed = armed;
+        }
 
         /// A view handed to a caller was made from a pool that was already closed: the caller got a dead pool.
         private void auditView(FakeConnector view) {
@@ -83,6 +93,15 @@ class SharedPoolsFrayTest {
                     .onSuccess(view -> view.stop().await());
         }
 
+        /// Node stop from the view factory (armed iterations), once: after the pool resolved, before the view is made.
+        private FakeConnector stopBeforeView(FakePool pool) {
+            if (stopFired.compareAndSet(false, true)) {
+                stopNode();
+            }
+
+            return pool;
+        }
+
         private void stopNode() {
             closeAllStarted.set(true);
             reported.addAll(pools.closeAll());
@@ -100,6 +119,10 @@ class SharedPoolsFrayTest {
 
         private void run() throws InterruptedException {
             warmUpEntriesTable();
+
+            if (armed) {
+                factory.viewHook = this::stopBeforeView;
+            }
 
             var first = new Thread(() -> acquireThenStop("slice-a"));
             var second = new Thread(() -> acquireThenStop("slice-b"));
@@ -134,7 +157,7 @@ class SharedPoolsFrayTest {
     @FrayTest(iterations = ITERATIONS, scheduler = PCTScheduler.class,
                resetClassLoaderPerIteration = false, abortThreadExecutionAfterMainExit = true)
     void closeAllRacingAcquireAndRelease_issuesNoViewOfAClosedPool_andClosesEveryPoolOnce() throws InterruptedException {
-        var race = new Race();
+        var race = new Race(ITERATION.getAndIncrement() % 2 == 0);
 
         race.run();
         race.assertInvariants();
