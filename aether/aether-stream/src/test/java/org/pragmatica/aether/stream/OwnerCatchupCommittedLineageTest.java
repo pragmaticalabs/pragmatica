@@ -1164,6 +1164,52 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(alarm.raised()).as("the raise was refused, not raised and resolved").isEmpty();
     }
 
+    /// #3156 (RED at 541eb0fd3f): the stall round counter belongs to one incarnation of the stream. After destroy and recreate under the same
+    /// name, the raise needs the full MAX_STALLED_ROUNDS stalled rounds again, not the rounds the destroyed stream already counted.
+    @Test
+    void stalledRounds_doNotSurviveDestroyAndRecreate_theNewIncarnationNeedsTheFullCount() {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS - 1).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+        streamAlive.set(false);
+        fixture.backfill().clearStalledOf("s");
+        streamAlive.set(true);
+
+        settled(fixture.backfill().backfill("s", 0));
+        assertThat(alarm.raised()).as("one stalled round in the new incarnation is not MAX").isEmpty();
+
+        IntStream.rangeClosed(2, PartitionBackfill.MAX_STALLED_ROUNDS).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+        assertThat(alarm.raised()).as("control: the full count in the new incarnation raises").hasSize(1);
+    }
+
+    /// #3156 (RED at 541eb0fd3f): a round of the destroyed incarnation still in flight when the stream-removed listener ran must not count into
+    /// the counter after the clear, or the recreated stream inherits it.
+    @Test
+    void stalledRounds_aRoundInFlightAcrossDestroy_isNotCountedIntoTheNextIncarnation() {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS - 2).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+
+        probeGate = Promise.promise();
+        var inFlight = fixture.backfill().backfill("s", 0);
+
+        assertThat(inFlight.isResolved()).as("control: the round is held in its source read").isFalse();
+        streamAlive.set(false);
+        fixture.backfill().clearStalledOf("s");
+        probeGate.resolve(Result.unitResult());
+        settled(inFlight);
+        probeGate = null;
+        streamAlive.set(true);
+
+        settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(alarm.raised()).as("the new incarnation has stalled one round").isEmpty();
+    }
+
     /// #2960: a gate catch-up that FAILS leaves the partition all-stalled, so its warning stays open.
     @Test
     void registryPath_aFailedGateCatchUpAfterAllStalled_keepsTheWarning() {
