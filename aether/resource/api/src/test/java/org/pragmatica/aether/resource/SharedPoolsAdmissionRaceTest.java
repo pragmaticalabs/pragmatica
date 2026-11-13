@@ -21,8 +21,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.resource.SharedPoolFixtures.TIMEOUT;
 
 /// An acquire that sees the node-stop flag AFTER its own admission fails with `ProviderClosed`, never a view of a pool
-/// that is closed at once. The interleaving is forced through a map seam: a hook runs right after the acquirer's first
-/// `compute` returned, before its closed re-check.
+/// that is closed at once. The interleavings are forced through seams: a hook runs right after the acquirer's first
+/// `compute` returned, before its closed re-check; or inside `provision`, after the check passed; or right after the
+/// acquirer's flag read returned `false`.
 class SharedPoolsAdmissionRaceTest {
     private static final class SeamMap extends ConcurrentHashMap<Object, Object> {
         private final AtomicInteger calls = new AtomicInteger();
@@ -139,5 +140,72 @@ class SharedPoolsAdmissionRaceTest {
 
         assertThat(joined.isFailure()).as("the joiner must fail, got %s", joined).isTrue();
         joined.onFailure(cause -> assertThat(cause).isSameAs(ResourceProvisioningError.ProviderClosed.INSTANCE));
+    }
+
+    /// The flag read that returns `false` and then fires `hook`: the node stop lands between the acquirer's flag check and
+    /// whatever the acquirer does next. Coupled to the read order (compute's refusal read is the first, the acquire's own
+    /// check the second), by design: the window under test is exactly that one read.
+    private static final class SeamFlag extends AtomicBoolean {
+        private final AtomicInteger reads = new AtomicInteger();
+        private final int fireAfterRead;
+        private final Runnable hook;
+
+        private SeamFlag(int fireAfterRead, Runnable hook) {
+            this.fireAfterRead = fireAfterRead;
+            this.hook = hook;
+        }
+
+        @Override
+        public boolean get() {
+            var value = super.get();
+
+            if (reads.incrementAndGet() == fireAfterRead) {
+                hook.run();
+            }
+
+            return value;
+        }
+    }
+
+    private void installFlag(AtomicBoolean flag) throws Exception {
+        var closed = SharedPools.class.getDeclaredField("closed");
+
+        closed.setAccessible(true);
+        closed.set(pools, flag);
+    }
+
+    /// Node stop begins inside the creator's `provision`, i.e. after its flag check passed and after the drain can see its
+    /// entry: the drain's close is registered on the pool before the creator's holder slot, so it runs first. The holder
+    /// must fail with `ProviderClosed`, not receive a view of the pool the drain closed (#3171).
+    @Test
+    void closeAllDuringProvisioning_holderFailsWithProviderClosed_notAViewOfAClosedPool() {
+        var viewsOfClosedPool = new AtomicInteger();
+
+        factory.viewHook = pool -> {
+            viewsOfClosedPool.addAndGet(pool.closeCount());
+
+            return pool;
+        };
+
+        var acquired = pools.<FakeConnector> acquire("k", "slice-a", factory, () -> {
+            pools.closeAll();
+
+            return provision();
+        }, "label").await(TIMEOUT);
+
+        assertThat(viewsOfClosedPool.get()).as("no view was issued for a pool that was already closed").isZero();
+        assertThat(acquired.isFailure()).as("the holder must fail, got %s", acquired).isTrue();
+        acquired.onFailure(cause -> assertThat(cause).isSameAs(ResourceProvisioningError.ProviderClosed.INSTANCE));
+        assertThat(closes.get()).as("the pool the drain captured closes exactly once").isEqualTo(1);
+        assertThat(pools.size()).isZero();
+    }
+
+    /// Node stop begins right after the creator's flag check passed: the creator must not open a pool only for the drain to
+    /// close it (#3171).
+    @Test
+    void closeAllRightAfterTheFlagCheck_provisionsNothing() throws Exception {
+        installFlag(new SeamFlag(2, pools::closeAll));
+
+        assertRefusedAndNothingLeaked(acquire("slice-a"));
     }
 }
