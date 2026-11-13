@@ -13,6 +13,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -71,6 +72,7 @@ import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLeaseKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
@@ -87,12 +89,15 @@ import org.pragmatica.aether.stream.KvCommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.KvStreamOwnerEpochSource;
 import org.pragmatica.aether.stream.LinearizableBarrier;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
+import org.pragmatica.aether.stream.NodeLease;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.OwnerActivation;
+import org.pragmatica.aether.stream.OwnerLease;
 import org.pragmatica.aether.stream.OwnerPeerReads;
 import org.pragmatica.aether.stream.SegmentTierPressure;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.StreamSeam;
 import org.pragmatica.aether.stream.StreamPublisherFactory;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamWriteRouter;
@@ -238,6 +243,120 @@ public sealed interface StreamAssembly {
 
     /// #2682: the route that hands every committed ownership record to the owner-activation hook, which starts the promotion
     /// gate when the record newly names this node.
+    /// #2981 step 2 (design §2.1): the node's lease, wired as production runs it, in one place so the wiring test drives this code.
+    /// Renewals are delivered to it through the ordered notification route (never from the `Put` promise); a `reset` and every
+    /// replay start revoke it (r7 S2, C1: `onReplayStart` is a listener list, so FSM2's install signal keeps its own slot); its
+    /// lapses, restorations and clock-rate events go to the operator warnings.
+    static NodeLease nodeLease(NodeId self,
+                               StreamingConfig streaming,
+                               KVStore<AetherKey, AetherValue> kvStore,
+                               Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                               OperatorWarningSink sink,
+                               List<MessageRouter.Entry<?>> entries) {
+        var lease = NodeLease.nodeLease(self,
+                                        streaming.ownerLease(),
+                                        streaming.ownerLeaseRenewal(),
+                                        streaming.clockDriftBound(),
+                                        applier,
+                                        kvStore::isReplaying,
+                                        NodeLease.LeaseClock.systemClock(),
+                                        leaseEvents(sink, self));
+
+        kvStore.onReset(lease::revoke);
+        kvStore.onReplayStart(_ -> lease.revoke());
+        entries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                           .onPut(NodeLeaseKey.class, lease::onRenewal)
+                                           .build()
+                                           .asRouteEntries());
+
+        return lease;
+    }
+
+    /// The lease's operator events (know 018945dae1): one subject per node, so a lapse and its restoration pair.
+    static NodeLease.Events leaseEvents(OperatorWarningSink sink, NodeId self) {
+        return new NodeLease.Events() {
+            @Contract
+            @Override
+            public void lapsed(NodeLease.LapseReason reason, long nanos) {
+                OperatorWarnings.raise(LOG,
+                                       sink,
+                                       OperatorWarningCode.STREAM_OWNER_LEASE_LAPSED,
+                                       self.id(),
+                                       "Node lease of {} lapsed ({}, {} ms past expiry): CF>=2 owner admissions park, acks and visibility pause until a renewal lands.",
+                                       self.id(),
+                                       reason,
+                                       TimeUnit.NANOSECONDS.toMillis(nanos));
+            }
+
+            @Contract
+            @Override
+            public void restored() {
+                OperatorWarnings.raise(LOG,
+                                       sink,
+                                       OperatorWarningCode.STREAM_OWNER_LEASE_RESTORED,
+                                       self.id(),
+                                       "Node lease of {} restored by a delivered renewal.",
+                                       self.id());
+            }
+
+            @Contract
+            @Override
+            public void clockRateDivergence(long monotonicNanos, long wallNanos) {
+                OperatorWarnings.raise(LOG,
+                                       sink,
+                                       OperatorWarningCode.NODE_CLOCK_RATE_DIVERGENCE,
+                                       self.id(),
+                                       "Clock rates of {} diverge: monotonic advanced {} ns while wall advanced {} ns.",
+                                       self.id(),
+                                       monotonicNanos,
+                                       wallNanos);
+            }
+
+            @Contract
+            @Override
+            public void clockRateNormal() {
+                OperatorWarnings.raise(LOG,
+                                       sink,
+                                       OperatorWarningCode.NODE_CLOCK_RATE_NORMAL,
+                                       self.id(),
+                                       "Clock rates of {} agree again.",
+                                       self.id());
+            }
+        };
+    }
+
+    /// The partition manager's committed ownership records (#1873; #2981 step 2, design §2.2 "Lock-free record read"): read with the
+    /// lock-free [KVStore#peekTyped], so the owner checks on the publish, ack and visibility paths never wait behind a batch the
+    /// apply thread is applying under the store monitor. Absence (inside a reset-to-restore window) reads as "no record", which the
+    /// lease checks treat as "not mine" and fail closed.
+    static OwnerActivation.OwnershipRecordSource committedOwnershipRecords(KVStore<AetherKey, AetherValue> kvStore) {
+        return (stream, partition) -> kvStore.peekTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
+                                                                                                                partition),
+                                                        StreamPartitionOwnershipValue.class);
+    }
+
+    /// #2981 step 2 (design §2.2): node startup fails when the partition manager's ownership-record seam or lease seam is still its
+    /// `UNWIRED` sentinel, or the lease is the test-scope "valid" object. Compared BY IDENTITY, so it holds without a WAL and
+    /// whatever `boundSeams` says. Names the offending seam.
+    @Contract
+    @SuppressWarnings("JBCT-EX-01")
+    static void verifyOwnerSeamsWired(OwnerActivation.OwnershipRecordSource records, OwnerLease lease) {
+        if (records == OwnerActivation.OwnershipRecordSource.UNWIRED) {
+            throw new IllegalStateException("Stream seam " + StreamSeam.OWNERSHIP_RECORDS
+                                           + " is still UNWIRED: refusing to start without the committed ownership records");
+        }
+
+        if (lease == OwnerLease.UNWIRED) {
+            throw new IllegalStateException("Stream seam " + StreamSeam.OWNER_LEASE
+                                           + " is still UNWIRED: refusing to start without the node lease");
+        }
+
+        if (lease == OwnerLease.TEST_VALID) {
+            throw new IllegalStateException("Stream seam " + StreamSeam.OWNER_LEASE
+                                           + " is the test-scope valid lease: refusing to start with a lease that never lapses");
+        }
+    }
+
     static List<MessageRouter.Entry<?>> committedOwnershipRoutes(OwnerActivation ownerActivation) {
         return KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                    .onPut(StreamPartitionOwnershipKey.class,
@@ -862,6 +981,19 @@ public sealed interface StreamAssembly {
         // then writes fail retryable NotOwnerAppend (CTO ruling on #1230). No record admits (the cold-start
         // window, where the fence is inert and HRW routing alone picks the writer).
         streamPartitionManager.ownerWriteAdmission(streamOwnershipViews.writeAdmission(config.self()));
+        // #2981 step 2: the node lease. Renewals go through consensus every owner_lease_renewal; the deferred task is cancelled with the
+        // node's other periodic tasks. CF >= 2 owner admission (below) and the partition manager's owner checks read it.
+        var nodeLease = nodeLease(config.self(),
+                                  streamingConfig,
+                                  kvStore,
+                                  clusterCommandApplier,
+                                  operatorWarningSink,
+                                  allEntries);
+
+        defer.accept(() -> SharedScheduler.scheduleAtFixedRate(nodeLease::renew, streamingConfig.ownerLeaseRenewal()));
+        streamPartitionManager.ownerLease(nodeLease);
+        // #2981 step 2 (design §2.2, §2.4): a renewal edge re-derives owner visibility and re-checks parked ack waiters.
+        nodeLease.onValidityRegained(streamPartitionManager::onLeaseRegained);
         // #1555 owner promotion gate: this node acts as a partition's owner (appends, servedByOwner, owner reads)
         // only after a no-op consensus round has refreshed its committed ownership view, the record still names
         // it, and it has caught up to every live placement member's watermark. The round is ALWAYS ordered here,
@@ -898,12 +1030,12 @@ public sealed interface StreamAssembly {
                                                               streamLineageCommit(() -> kvStore.getTyped(LeaderKey.INSTANCE,
                                                                                                          LeaderValue.class),
                                                                                   clusterCommandApplier,
-                                                                                  hlcClock));
+                                                                                  hlcClock),
+                                                              nodeLease,
+                                                              streamPartitionManager::confirmationFactorFor);
         // #1873 (KIP-320): every consumer read is checked, on the node that serves it, against the partition's COMMITTED epoch
         // starts; this is where that node reads them.
-        streamPartitionManager.ownershipRecords((stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
-                                                                                                                                                partition),
-                                                                                        StreamPartitionOwnershipValue.class));
+        streamPartitionManager.ownershipRecords(committedOwnershipRecords(kvStore));
         // #2201 C-16: a consumer read below the ring tail is served from the sealed tier (StreamPartitionManager.readServingTiered,
         // the validated read of StreamReadRouter and of the owner's forward handler). Unbound, every consumer behind the ring
         // would be moved to the ring tail; EmberConsumerPathTripwireTest#tierFallbackSeam_isBoundOnEveryBootedNode pins it.
@@ -916,6 +1048,8 @@ public sealed interface StreamAssembly {
         // #2960: the all-stalled warning is raised only for a stream that exists, so one destroyed under an in-flight round leaves no report.
         streamPartitionBackfill.streamExists(streamPartitionManager::streamExists);
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
+        // #2981 step 2 (design §2.2 check 3): the owner visibility check reads the activation without starting one.
+        streamPartitionManager.ownerActivated(ownerActivation::isActivated);
         // #1730 phase 2: the gate's relaxation for a divergent peer respects the candidate's durable sealed floor, and a peer it
         // leaves out loses the row this registry kept for it from an earlier tenure.
         ownerActivation.sealedFloor(streamSegmentIndex::lastSealedOffset);
@@ -982,6 +1116,8 @@ public sealed interface StreamAssembly {
         // #2201 A-14: every seam of the manager is bound by now (the last ones above); a safety-relevant seam still at its
         // permissive default on a node with a WAL is named at ERROR (and counted by `aether.streams.seams.unbound.safety`).
         streamPartitionManager.reportUnboundSafetySeams();
+        // #2981 step 2 (design §2.2, "Production cannot run unwired"): independent of the WAL and of boundSeams, which count an explicit UNWIRED as bound.
+        verifyOwnerSeamsWired(streamPartitionManager.ownershipRecordSeam(), streamPartitionManager.ownerLeaseSeam());
         // #932: one thread each per node, both daemon and neither closed on stop — nine of each survived a
         // nine-node stop. The controller's close() is shutdownNow on the executor it owns; the backfill
         // executor is this method's own. Controller first: its reconcile is what submits to the backfill.
@@ -1395,7 +1531,8 @@ public sealed interface StreamAssembly {
                                   ReplicaSetController streamReplicaSetController,
                                   KvCommittedStreamOwnerSource committedStreamOwnerSource,
                                   Option<LinearizableBarrier> linearizableBarrier,
-                                  StreamForwardHandler streamForwardHandler) {}
+                                  StreamForwardHandler streamForwardHandler,
+                                  long bootToken) {}
 
     /// The stream forward routes, the replication receive handler and its routes and the stream forward extensions.
     static Unit streamForwarding(StreamForwardingInputs in) {
@@ -1421,6 +1558,7 @@ public sealed interface StreamAssembly {
         var committedStreamOwnerSource = in.committedStreamOwnerSource();
         var linearizableBarrier = in.linearizableBarrier();
         var streamForwardHandler = in.streamForwardHandler();
+        var bootToken = in.bootToken();
 
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.PublishForward.class,
                                                  streamForwardHandler::onPublishForward));
@@ -1446,7 +1584,8 @@ public sealed interface StreamAssembly {
                                                                                                                                                                                                    partition)),
                                                                                                   streamPartitionManager::syncReplicated,
                                                                                                   streamOwnershipViews.writeAuthority(),
-                                                                                                  operatorWarningSink);
+                                                                                                  operatorWarningSink,
+                                                                                                  () -> bootToken);
         // #1730 phase 2 (B7): a copy not yet compared with the committed owner of the current epoch acknowledges nothing.
         streamReplicationReceiveHandler.ackGate(streamPartitionManager::replicaVerified);
         // #2599: the ack of a batch the gate held back is sent once a compare verifies the copy, not left to a later batch.

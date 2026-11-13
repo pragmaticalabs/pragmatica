@@ -174,6 +174,30 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware, Typed
         }
     }
 
+    /// #686 S1: the auto-heal setting as the route check saw it, and as it stands after a refused write.
+    enum AutoHealSetting {
+        /// The key is absent: auto-heal counts as enabled.
+        ABSENT,
+        ENABLED,
+        DISABLED
+    }
+
+    /// #686 S1: a routed apply was refused at the write because the auto-heal value it was decided on moved (a flip, or the
+    /// first write of the key) after the route check read it. The route the client claimed may now be the wrong one: re-plan.
+    record AutoHealChanged(AutoHealSetting observed, AutoHealSetting now) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Auto-heal changed while the apply was being committed: the route check saw " + observed
+                 + " and it is now " + now
+                 + ". Nothing was committed. Re-run `aether cluster apply` so it re-plans against the current state.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
     /// #289: a config push carrying `expectedVersion=0` (the "I expect a fresh cluster" sentinel) was
     /// rejected because a populated config already exists. Without this fence an `expectedVersion=0`
     /// push skips the CAS check and blind-overwrites mutable cluster config — e.g. a re-run of

@@ -52,13 +52,14 @@ sealed interface StreamForwardRetry {
     /// #1555: the same bounded ladder for an owner-local append refused because this node's owner promotion is
     /// still running ([StreamError.OwnerNotActivated]) — the refusal triggers the promotion, which normally
     /// completes within the ladder. FER: a promotion still pending after the last attempt propagates the
-    /// transient refusal to the caller rather than appending on an un-promoted owner.
+    /// transient refusal to the caller rather than appending on an un-promoted owner. #2981: a lapsed node lease
+    /// ([StreamError.OwnerLeaseLapsed]) rides the same ladder; its next delivered renewal restores admission.
     static Promise<Long> withPromotionRetry(Fn0<Promise<Long>> appendAttempt) {
         return attempt(appendAttempt, 1, Deadline.current(), StreamForwardRetry::isPromotionPending);
     }
 
     private static boolean isPromotionPending(Cause cause) {
-        return cause instanceof StreamError.OwnerNotActivated;
+        return cause instanceof StreamError.OwnerNotActivated || cause instanceof StreamError.OwnerLeaseLapsed;
     }
 
     /// #1230 ownership-lag redirect for the owner-local arm of {@link StreamWriteRouter}: a local append refused

@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream.forward;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -13,12 +14,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.LastSealedOffsetSource;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
+import org.pragmatica.aether.stream.provenance.PartitionFlags;
+import org.pragmatica.aether.stream.provenance.PartitionFlags.PartitionFlag;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.aether.stream.replication.PartitionBackfill;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
@@ -135,6 +139,48 @@ class WalReplicaOfLoglessOwnerTest {
                                                               replica.epochHistory(STREAM, PARTITION),
                                                               from)
                                                           .isTrue();
+    }
+
+    /// #1938 "by reading" step: after the catch-up the next LIVE append from the log-less owner lands attributed (the history
+    /// is not empty), raises no durable flag, and a third backfill still ends caught up. Red under "catch-up installs nothing".
+    @Test
+    void liveAppendAfterCatchUp_raisesNoFlag_andAThirdBackfillStaysCaughtUp() {
+        var raised = new CopyOnWriteArrayList<AetherValue.PartitionRecoveryReason>();
+        replica.partitionFlags(recordingFlags(raised));
+        publish(E1, 3);
+        publish(E2, 1);
+        backfill(committedOwner(OWNER));
+        publish(E2, 1);
+        backfill(committedOwner(OWNER));
+
+        replica.appendRecovered(STREAM, PARTITION, "e".getBytes(UTF_8), 1L, E2).onFailure(cause -> fail(cause.message()));
+        publish(E2, 1);
+        backfill(committedOwner(OWNER));
+
+        assertThat(raised).as("no HISTORY_MISSING or MARKED_DIVERGED").isEmpty();
+        assertThat(replica.epochHistory(STREAM, PARTITION).unwrap()).containsExactly(at(E1, 0L), at(E2, 3L));
+        assertThat(replica.quarantinedAt(STREAM, PARTITION)).isEqualTo(Option.none());
+    }
+
+    private static PartitionFlags recordingFlags(List<AetherValue.PartitionRecoveryReason> raised) {
+        return new PartitionFlags() {
+            @Override
+            public Promise<PartitionFlag> raise(String stream, int partition, AetherValue.PartitionRecoveryReason reason) {
+                raised.add(reason);
+
+                return Promise.success(new PartitionFlag(AetherValue.StreamPartitionRecoveryValue.raised(Option.none(), reason), "digest"));
+            }
+
+            @Override
+            public Option<PartitionFlag> status(String stream, int partition) {
+                return Option.none();
+            }
+
+            @Override
+            public AetherValue.PartitionRecoveryReason local(AetherValue.PartitionRecoveryReasonKind kind, String evidence) {
+                return AetherValue.PartitionRecoveryReason.partitionRecoveryReason(kind, Option.some("self"), evidence);
+            }
+        };
     }
 
     private static CommittedStreamOwnerSource committedOwner(NodeId node) {

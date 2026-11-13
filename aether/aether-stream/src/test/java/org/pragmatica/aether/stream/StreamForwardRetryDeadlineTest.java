@@ -22,6 +22,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// attempts after the first.
 class StreamForwardRetryDeadlineTest {
 
+    /// #2981 step 2: an owner-local append refused for a lapsed lease rides the promotion ladder; the renewal that lands meanwhile
+    /// admits the retry. Mutation: `OwnerLeaseLapsed` dropped from `isPromotionPending` -> RED (one attempt, the refusal returned).
+    @Test
+    void withPromotionRetry_aLapsedOwnerLease_isRetried() {
+        var calls = new AtomicInteger();
+
+        var result = StreamForwardRetry.withPromotionRetry(() -> calls.incrementAndGet() < 2
+                                                                 ? new StreamError.OwnerLeaseLapsed("orders", 0).promise()
+                                                                 : Promise.success(7L))
+                                       .await();
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(calls).hasValue(2);
+    }
+
     @Test
     void withBoundedRetry_underAmbientDeadline_retriesObserveTheBoundedBudget() {
         var boundedPerAttempt = new ArrayList<Boolean>();

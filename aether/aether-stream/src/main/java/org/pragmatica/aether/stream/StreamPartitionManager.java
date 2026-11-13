@@ -121,6 +121,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #1278 ruling F: how long the publish auto-create path waits for its proposed config to commit and apply here.
     /// Inside the 5 s forward timeout that made this path asynchronous; past it the publish refuses retriably.
     private static final TimeSpan PUBLISH_COMMIT_WAIT = TimeSpan.timeSpan(2).seconds();
+    /// #2981 step 2 (design §2.2 check 2, F-1a-4): how long after registration a lapse-parked ack waiter is answered unknown.
+    private static final TimeSpan ACK_PARK_BUDGET = TimeSpan.timeSpan(5).seconds();
     /// Bound on dropping or checking a stream's durable footprint (a local ref write and one forced snapshot).
     private static final TimeSpan FOOTPRINT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
     private static final Logger log = LoggerFactory.getLogger(StreamPartitionManager.class);
@@ -277,9 +279,23 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #1730 phase 2: where a replica's divergent-tail truncation is reported to the operator, late-bound
     /// ([#operatorWarnings(OperatorWarningSink)]); log-only until then.
     private volatile OperatorWarningSink operatorWarnings = OperatorWarningSink.logOnly();
+
     /// #1730 phase 2 / #1873: the committed ownership records a validated consumer read is checked against, late-bound
     /// ([#ownershipRecords(OwnerActivation.OwnershipRecordSource)]); none until wired.
-    private volatile OwnerActivation.OwnershipRecordSource ownershipRecords = (_, _) -> Option.none();
+    private volatile OwnerActivation.OwnershipRecordSource ownershipRecords = OwnerActivation.OwnershipRecordSource.UNWIRED;
+
+    /// #2981 step 2 (design §2.2): this node's lease, read by the owner checks ([#ownerLease(OwnerLease)]); [OwnerLease#UNWIRED]
+    /// (compared by identity) until wired.
+    private volatile OwnerLease ownerLease = OwnerLease.UNWIRED;
+    /// #2981 step 2 (design §2.2 check 3): whether this node is activated for the ownership it holds, late-bound
+    /// ([#ownerActivated(OwnerActivatedView)]); unchecked until wired.
+    private volatile OwnerActivatedView ownerActivated = ACTIVATION_UNCHECKED;
+    /// #2981 step 2 (design §2.2 check 2): ack waiters whose replicas confirmed while the lease was lapsed ([#awaitReplication]).
+    private final Set<ParkedAck> parkedAcks = ConcurrentHashMap.newKeySet();
+
+    /// Test seam (#2981 S12), see [#beforeParkJoinProbe(Runnable)]; nothing until a test sets it.
+    private volatile Runnable beforeParkJoinProbe = () -> {};
+
     /// #2590 P1: where a partition's committed position and its suffix truncations are told, late-bound
     /// ([#partitionLogEvents(PartitionLogEvents)]); nobody until wired.
     private volatile PartitionLogEvents partitionLogEvents = PartitionLogEvents.NONE;
@@ -454,6 +470,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final AtomicLong refusedReplicaDropsSinceBoot = new AtomicLong(0);
     /// Replica partitions quarantined since boot because a divergent held entry was found (#1505 F2).
     private final AtomicLong quarantinedPartitionsSinceBoot = new AtomicLong(0);
+    /// #2981 step 2 (design 2.2 check 3): cuts asked to go below the ring's visible offset, by outcome (`refused`: a confirmation-factor >= 2
+    /// cut that did not happen, counted per refused attempt; `retracted`: a CF = 1 or non-durable cut that went through). Since boot.
+    private final AtomicLong truncationRefusedBelowVisible = new AtomicLong(0);
+    private final AtomicLong truncationRetractedBelowVisible = new AtomicLong(0);
 
     private StreamPartitionManager(long maxTotalBytes,
                                    EvictionListener evictionListener,
@@ -778,6 +798,15 @@ public final class StreamPartitionManager implements AutoCloseable {
         Result<Unit> admit(String stream, int partition);
     }
 
+    /// #2981 step 2 (design §2.2 check 3): whether this node is activated for exactly the ownership it holds now, with no side
+    /// effect. `AetherNode` binds [OwnerActivation#isActivated]; the default reports activated (the pre-lease owner rule).
+    @FunctionalInterface
+    public interface OwnerActivatedView {
+        boolean isActivated(String stream, int partition);
+    }
+
+    private static final OwnerActivatedView ACTIVATION_UNCHECKED = (_, _) -> true;
+
     /// Owner promotion block (#1555): the reason this node's promotion of `(stream, partition)` cannot complete
     /// without an operator, if any. `AetherNode` binds [OwnerActivation#blockOf]; the default reports none.
     @FunctionalInterface
@@ -1017,8 +1046,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// which a replayed ring holds durably, so the bound is a guard here rather than a cut.
     @Contract
     private void raiseToMarker(String streamName, int partition, AppendLog.AckedMark marker) {
-        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> ring.advanceVisible(Math.min(ring.durableOffset(),
-                                                                                                     marker.offset())));
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> ownerAdvance(streamName,
+                                                                                     partition,
+                                                                                     confirmationFactorFor(streamName),
+                                                                                     ring,
+                                                                                     Math.min(ring.durableOffset(),
+                                                                                              marker.offset())));
     }
 
     /// A client-facing local read (#1555). On the placement OWNER it passes the owner promotion gate first, so a
@@ -1388,6 +1421,32 @@ public final class StreamPartitionManager implements AutoCloseable {
     public void ownershipRecords(OwnerActivation.OwnershipRecordSource source) {
         this.ownershipRecords = source;
         boundSeams.add(StreamSeam.OWNERSHIP_RECORDS);
+    }
+
+    /// #2981 step 2: late-bind this node's lease (`AetherNode` wires the node's [NodeLease]). Set once at wiring.
+    @Contract
+    public void ownerLease(OwnerLease lease) {
+        this.ownerLease = lease;
+        boundSeams.add(StreamSeam.OWNER_LEASE);
+    }
+
+    /// The ownership-record seam as bound, for the boot check of `StreamAssembly` (compared BY IDENTITY to
+    /// [OwnerActivation.OwnershipRecordSource#UNWIRED]).
+    public OwnerActivation.OwnershipRecordSource ownershipRecordSeam() {
+        return ownershipRecords;
+    }
+
+    /// The lease seam as bound, for the boot check of `StreamAssembly` (compared BY IDENTITY to [OwnerLease#UNWIRED] and
+    /// [OwnerLease#TEST_VALID]).
+    public OwnerLease ownerLeaseSeam() {
+        return ownerLease;
+    }
+
+    /// #2981 step 2: late-bind the side-effect-free activation view the owner visibility check reads ([#ownerAdvance]).
+    /// Set once at wiring.
+    @Contract
+    public void ownerActivated(OwnerActivatedView view) {
+        this.ownerActivated = view;
     }
 
     /// #2590 P1: bind the listener told each partition's committed position and suffix truncations. Not a safety seam:
@@ -2715,9 +2774,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Reads the ack through the overlay, because this observer runs BEFORE the registry records it.
     @Contract
     private void ackedVisible(OffHeapRingBuffer ring, ReplicationMessage.ReplicateAck ack) {
-        ring.advanceVisible(Math.min(ring.durableOffset(),
-                                     replicationManager.replicatedThrough(ack,
-                                                                          confirmationFactorFor(ack.streamName()) - 1)));
+        var confirmationFactor = confirmationFactorFor(ack.streamName());
+
+        ownerAdvance(ack.streamName(),
+                     ack.partition(),
+                     confirmationFactor,
+                     ring,
+                     Math.min(ring.durableOffset(), replicationManager.replicatedThrough(ack, confirmationFactor - 1)));
     }
 
     /// A rebuilt ring's replayed WAL tail is durable and not visible ([StreamEntry#placeRecord], #1387); this
@@ -2742,8 +2805,16 @@ public final class StreamPartitionManager implements AutoCloseable {
                                 Supplier<PartitionState> state) {
         switch (placementRoleSupplier.roleFor(config.name(), partition)) {
             case REPLICA -> holdRecoveredTailUntilVerified(state, partition, ring);
-            case OWNER -> ring.advanceVisible(replicaAckedBound(config, partition, ring));
-            case NONE -> ring.advanceVisible(replicaAckedBound(config, partition, ring));
+            case OWNER -> ownerAdvance(config.name(),
+                                       partition,
+                                       config.confirmationFactor(),
+                                       ring,
+                                       replicaAckedBound(config, partition, ring));
+            case NONE -> ownerAdvance(config.name(),
+                                      partition,
+                                      config.confirmationFactor(),
+                                      ring,
+                                      replicaAckedBound(config, partition, ring));
         }
 
         ring.addAppendListener(visible -> announceVisible(config.name(), partition, visible));
@@ -2760,9 +2831,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #2087: the owner's visible position moved: tell the replicas. Runs on the ring's serial notifier -- never under
     /// the append lock, never on a publisher's thread -- and the notifier coalesces advances, so a burst of acks is one
     /// message per drain, not one per ack. A node that is not this partition's owner announces nothing.
+    ///
+    /// #2981 step 2 (design §2.2 check 3, F-1a-6): nor does an owner whose lease is not valid now (confirmation factor 1 and a
+    /// manager with both lease seams unwired excepted): its local `committed` event is visibility too and pauses with it. The tick
+    /// ([#repeatVisible]) announces again once a renewal lands.
     @Contract
     private void announceVisible(String streamName, int partition, long visible) {
-        if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
+        if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER && announcementLeased(streamName)) {
             partitionLogEvents.committed(streamName, partition, visible);
             replicationManager.announceCommitted(streamName,
                                                  partition,
@@ -2970,8 +3045,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         if (replica) {
             exposeReplicaCommitted(streamName, partition, ring);
         } else {
-            ring.advanceVisible(Math.min(Math.min(offset, ring.durableOffset()),
-                                         peerAcknowledgedThrough(streamName, partition)));
+            ownerAdvance(streamName,
+                         partition,
+                         confirmationFactorFor(streamName),
+                         ring,
+                         Math.min(Math.min(offset, ring.durableOffset()),
+                                  peerAcknowledgedThrough(streamName, partition)));
         }
 
         if (offset >= ring.headOffset()) {
@@ -3002,7 +3081,49 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Both are volatile accesses, so at least one of the two sees both inputs.
     @Contract
     private void refreshVisible(OffHeapRingBuffer ring, String streamName, int partition) {
-        ring.advanceVisible(Math.min(ring.durableOffset(), peerAcknowledgedThrough(streamName, partition)));
+        ownerAdvance(streamName,
+                     partition,
+                     confirmationFactorFor(streamName),
+                     ring,
+                     Math.min(ring.durableOffset(), peerAcknowledgedThrough(streamName, partition)));
+    }
+
+    /// #2981 step 2 (design §2.2 check 3, F-1a-3): the one owner-role visibility advance. Every non-replica site calls it, and
+    /// nothing else in this class calls `advanceVisible` except it and the REPLICA arm [#exposeReplicaCommitted] (pinned by a
+    /// structural test). It advances to `bound` while [#ownerRoleHolds]; otherwise only to the replica bound, `min(durable,
+    /// committed mark)`, and never past `bound`: what a replica would show, which the owner that announced the mark put under
+    /// its own lease. A lapse therefore pauses owner visibility; a renewal edge re-derives it ([#onLeaseRegained]).
+    @Contract
+    private void ownerAdvance(String streamName,
+                              int partition,
+                              int confirmationFactor,
+                              OffHeapRingBuffer ring,
+                              long bound) {
+        ring.advanceVisible(ownerRoleHolds(streamName, partition, confirmationFactor)
+                            ? bound
+                            : Math.min(bound,
+                                       Math.min(ring.durableOffset(), committedMarkThrough(streamName, partition))));
+    }
+
+    /// Whether this node may act on the owner path of `(streamName, partition)` now: the lease is read FIRST (it reads the
+    /// clock), then the applied record must name this node (present, no remote committed owner) and the node must be activated
+    /// for it. Confirmation factor 1 and a manager with both the lease and the ownership-record seams unwired keep the pre-lease
+    /// owner rule; a half-wired manager fails closed (an unwired lease is never valid, an unwired record source holds none).
+    private boolean ownerRoleHolds(String streamName, int partition, int confirmationFactor) {
+        return ownerChecksBypassed(confirmationFactor) || ownerLease.valid() && namesThisNodeActivated(streamName,
+                                                                                                       partition);
+    }
+
+    private boolean ownerChecksBypassed(int confirmationFactor) {
+        return confirmationFactor < 2 || ownerLease == OwnerLease.UNWIRED && ownershipRecords == OwnerActivation.OwnershipRecordSource.UNWIRED;
+    }
+
+    private boolean namesThisNodeActivated(String streamName, int partition) {
+        return ownershipRecords.committed(streamName, partition)
+                               .isPresent()
+               && ownerWriteAdmission.remoteCommittedOwner(streamName, partition)
+                                     .isEmpty()
+               && ownerActivated.isActivated(streamName, partition);
     }
 
     private long peerAcknowledgedThrough(String streamName, int partition) {
@@ -3059,6 +3180,17 @@ public final class StreamPartitionManager implements AutoCloseable {
                  refused);
 
         return cause.result();
+    }
+
+    /// Truncations refused because they would cut below the visible offset of a confirmation-factor >= 2 partition (#2981), per refused
+    /// attempt, since boot. The `refused` tag of `aether.stream.truncation.below_visible`.
+    public long truncationRefusedBelowVisible() {
+        return truncationRefusedBelowVisible.get();
+    }
+
+    /// Cuts below the visible offset that went through as a retraction (CF = 1 or non-durable), since boot. See [#truncationRefusedBelowVisible].
+    public long truncationRetractedBelowVisible() {
+        return truncationRetractedBelowVisible.get();
     }
 
     /// Events dropped since boot on best-effort streams because a frozen ring could not fit them (#1233).
@@ -3284,7 +3416,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                  partition,
                  keep,
                  cause.message());
-        if (cause instanceof StreamError.RepairPreserveFailed || cause instanceof StreamError.RepairWitnessFailed) {
+        if (cause instanceof StreamError.TruncateBelowVisible refused) {
+            refusedBelowVisible(streamName, partition, refused);
+        } else if (cause instanceof StreamError.RepairPreserveFailed || cause instanceof StreamError.RepairWitnessFailed) {
             synchronized (refusedCutOrder) {
                 var previous = repairEpisode(streamName).refusedCuts().put(partition, cause.message());
 
@@ -3335,10 +3469,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void closeRefusedCut(PartitionState.RepairEpisode episode, PartitionRef ref, String reason) {
         synchronized (refusedCutOrder) {
-            if (episode.refusedCuts().remove(ref.partition()) != null) {
+            var recorded = episode.refusedCuts().remove(ref.partition());
+
+            if (recorded != null) {
                 OperatorWarnings.raise(log,
                                        operatorWarnings,
-                                       OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
+                                       resumedCode(recorded),
                                        ref.streamName() + "[" + ref.partition() + "]",
                                        "Replica {}[{}]: the refused divergent-tail cut no longer stands -- {}.",
                                        ref.streamName(),
@@ -3349,12 +3485,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     @Contract
-    private void cutResumed(String streamName, int partition, PartitionRef ref) {
+    void cutResumed(String streamName, int partition, PartitionRef ref) {
         synchronized (refusedCutOrder) {
-            if (repairEpisode(streamName).refusedCuts().remove(partition) != null) {
+            var recorded = repairEpisode(streamName).refusedCuts().remove(partition);
+
+            if (recorded != null) {
                 OperatorWarnings.raise(log,
                                        operatorWarnings,
-                                       OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
+                                       resumedCode(recorded),
                                        streamName + "[" + partition + "]",
                                        "Replica {}[{}] cut its divergent tail back after the refusal that had stopped it; its records are preserved.",
                                        streamName,
@@ -3409,6 +3547,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         var epoch = divergentEpoch(streamName, partition, divergedAtOffset);
         var wrote = new java.util.concurrent.atomic.AtomicBoolean(false);
         var preserved = new java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved>();
+        var retractedFrom = new AtomicLong(NOT_RETRACTED);
 
         cutWindowHook.run();
         var token = new Object();
@@ -3425,6 +3564,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                               epoch,
                                                               wrote,
                                                               preserved,
+                                                              retractedFrom,
                                                               token),
                                        _ -> {
                                            forgetCutState(streamName, partition, ref, divergedAtOffset, keep);
@@ -3438,6 +3578,10 @@ public final class StreamPartitionManager implements AutoCloseable {
                        .onSuccess(_ -> option(preserved.get()).onPresent(segment -> reportPreserved(streamName,
                                                                                                     partition,
                                                                                                     segment)))
+                       .onSuccess(_ -> reportRetraction(streamName,
+                                                        partition,
+                                                        keep,
+                                                        retractedFrom.get()))
                        .map(removed -> new TailCut(keep, removed, keep + 1, keep + removed, epoch));
         } finally {
             // Every exit closes the cut's bracket (#2087): the cut refused, failed in the durable copy, failed to shrink the ring, or threw. A
@@ -3469,10 +3613,21 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Option<Epoch> epoch,
                                           java.util.concurrent.atomic.AtomicBoolean wrote,
                                           java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved,
+                                          AtomicLong retractedFrom,
                                           Object token) {
         beginCut(streamName, partition, token);
 
-        return cutSteps(streamName, partition, divergedAtOffset, keep, authority, wal, ring, epoch, wrote, preserved);
+        return cutSteps(streamName,
+                        partition,
+                        divergedAtOffset,
+                        keep,
+                        authority,
+                        wal,
+                        ring,
+                        epoch,
+                        wrote,
+                        preserved,
+                        retractedFrom);
     }
 
     private Result<Unit> cutSteps(String streamName,
@@ -3484,14 +3639,17 @@ public final class StreamPartitionManager implements AutoCloseable {
                                   OffHeapRingBuffer ring,
                                   Option<Epoch> epoch,
                                   java.util.concurrent.atomic.AtomicBoolean wrote,
-                                  java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved) {
+                                  java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved,
+                                  AtomicLong retractedFrom) {
         var head = ring.headOffset();
         var prospective = new TailCut(keep, head - keep, keep + 1, head, epoch);
 
-        return authorised(streamName, partition, divergedAtOffset, authority).flatMap(_ -> witnessBeforeCut(streamName,
-                                                                                                            partition,
-                                                                                                            wal,
-                                                                                                            prospective))
+        return authorised(streamName, partition, divergedAtOffset, authority).flatMap(_ -> requireVisibleKept(streamName,
+                                                                                                              partition,
+                                                                                                              keep,
+                                                                                                              ring,
+                                                                                                              retractedFrom))
+                         .flatMap(_ -> witnessBeforeCut(streamName, partition, wal, prospective))
                          .onSuccess(_ -> wrote.set(wal.isPresent()))
                          .flatMap(_ -> preserveBeforeCut(streamName, partition, wal, ring, prospective, preserved))
                          .flatMap(_ -> wal.map(appendLog -> appendLog.truncateSuffix(keep))
@@ -3573,6 +3731,90 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                                     appendLog,
                                                                                                                                     earlier))
                                          .onEmpty(() -> deletePendingCut(pendingCutFile(appendLog))));
+    }
+
+    /// Sentinel of the retraction slot: this cut did not go below the visible offset.
+    private static final long NOT_RETRACTED = -1L;
+
+    /// #2981 step 2 (design 2.2 check 3): a cut below the ring's visible offset would retract records already served, and the next
+    /// append would reuse their offsets. Evaluated inside the cut's ordered section, before the witness or anything else is written, so a
+    /// refusal leaves the ring, the WAL, the witness and `visible` untouched. A confirmation-factor >= 2 partition REFUSES (the owner's
+    /// lineage rule makes this cut unreachable: a defect, the quarantine stands); CF = 1 and non-durable partitions are outside that rule
+    /// (a deposed owner's visible covers records the cluster never replicated), so the cut proceeds and is reported as a counted retraction.
+    /// [guess G9] A manager whose placement role is still the unwired default ([#ALWAYS_OWNER]: every partition is OWNER, so `visible` equals
+    /// `durable` whatever the owner announced) is not a replica that a repair can run on: the check is skipped there. Production wires the
+    /// supplier in `StreamAssembly`; the divergent-tail fixtures that never wire it model a replica's repair on a manager that exposes its
+    /// whole tail, which a wired replica (visible bounded by the owner's committed mark and the verified prefix) cannot be in.
+    private Result<Unit> requireVisibleKept(String streamName,
+                                            int partition,
+                                            long keep,
+                                            OffHeapRingBuffer ring,
+                                            AtomicLong retractedFrom) {
+        var visible = ring.visibleOffset();
+
+        return keep >= visible || placementRoleSupplier == ALWAYS_OWNER
+               ? Result.unitResult()
+               : belowVisible(streamName, partition, keep, visible, retractedFrom);
+    }
+
+    private Result<Unit> belowVisible(String streamName,
+                                      int partition,
+                                      long keep,
+                                      long visible,
+                                      AtomicLong retractedFrom) {
+        return confirmationFactorFor(streamName) >= 2
+               ? new StreamError.TruncateBelowVisible(streamName, partition, keep, visible).<Unit> result()
+               : Result.unitResult().onSuccess(_ -> retractedFrom.set(visible));
+    }
+
+    /// The cut went through below `visible` (CF = 1 or non-durable): counted as `retracted` and told to the operator at INFO.
+    @Contract
+    private void reportRetraction(String streamName, int partition, long keep, long visible) {
+        if (visible != NOT_RETRACTED) {
+            truncationRetractedBelowVisible.incrementAndGet();
+            OperatorWarnings.raise(log,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_TRUNCATION_RETRACTED,
+                                   streamName + "[" + partition + "]",
+                                   "Replica {}[{}] cut back to offset {} below its visible offset {}: records already served were retracted "
+                                  + "(confirmation factor below 2, nothing acknowledged durably is lost).",
+                                   streamName,
+                                   partition,
+                                   keep,
+                                   visible);
+        }
+    }
+
+    /// A truncation refused because it would cut below the visible offset (CF >= 2): counted per refused attempt, and raised as
+    /// `stream-truncation-refused` once per distinct failure episode (same record-and-raise monitor as the other refused cuts), closed by
+    /// `stream-truncation-quarantine-cleared` when the cut finally goes through or the partition's replica goes away.
+    @Contract
+    private void refusedBelowVisible(String streamName, int partition, StreamError.TruncateBelowVisible refused) {
+        truncationRefusedBelowVisible.incrementAndGet();
+        synchronized (refusedCutOrder) {
+            var previous = repairEpisode(streamName).refusedCuts().put(partition, refused.message());
+
+            if (!refused.message().equals(previous)) {
+                refusalWindowHook.run();
+                OperatorWarnings.raise(log,
+                                       operatorWarnings,
+                                       OperatorWarningCode.STREAM_TRUNCATION_REFUSED,
+                                       streamName + "[" + partition + "]",
+                                       "Replica {}[{}] refused a truncation back to offset {}: visible is {} and the stream has confirmation factor >= 2, "
+                                      + "so this cut is unreachable by design (a defect). The partition stays quarantined with its records untouched.",
+                                       streamName,
+                                       partition,
+                                       refused.keepThrough(),
+                                       refused.visibleOffset());
+            }
+        }
+    }
+
+    /// The recovery code that closes a refused-cut episode whose recorded cause was `recorded`.
+    private static OperatorWarningCode resumedCode(String recorded) {
+        return StreamError.TruncateBelowVisible.describes(recorded)
+               ? OperatorWarningCode.STREAM_TRUNCATION_QUARANTINE_CLEARED
+               : OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED;
     }
 
     /// Evaluated inside the cut's ordered section, immediately before the first thing it removes: the committed owner that
@@ -4578,11 +4820,163 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// ack in the pre-update observer call, both registry rows then land, and the await resolves before
     /// either post-update observer call — so without this the continuation could miss its own acked write.
     /// A ring released in the meantime has no reader left to expose the event to.
+    ///
+    /// #2981 step 2 (design §2.2 check 2, F-1a-2, F-1a-4): the ownership `(owner, ownerEpoch, ownershipTerm)` is captured when the
+    /// waiter registers (ISR fields excluded, so a routine ISR change does not turn a valid ack into unknown). When the replicas
+    /// have confirmed, the lease is read first, then the ownership: unchanged and the lease valid -> acknowledged; changed ->
+    /// [StreamError.OwnershipMovedBeforeAck]; unchanged and the lease lapsed -> PARKED until a renewal edge ([#onLeaseRegained])
+    /// re-checks it, or [StreamError.OwnerLeaseLapsedBeforeAck] once [#ACK_PARK_BUDGET] has passed since registration. Every
+    /// writer maps either failure to `PublishOutcomeUnknown`: the acks did arrive and the record may survive. Confirmation
+    /// factor 1, and a manager with both lease seams unwired, acknowledge as before.
     public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
+        var waiter = AckWaiter.ackWaiter(streamName, partition, ackOwnership(streamName, partition), System.nanoTime());
+
         return replicationManager.awaitReplication(streamName, partition, offset, minAcks)
-                                 .withSuccess(_ -> resolvePartitionBuffer(streamName, partition).onSuccess(ring -> refreshVisible(ring,
-                                                                                                                                  streamName,
-                                                                                                                                  partition)));
+                                 .flatMap(_ -> completeAck(waiter));
+    }
+
+    /// #2981 step 2 (design §2.2 check 2): the ownership an ack waiter is admitted under, without its ISR.
+    private record AckOwnership(NodeId owner, Epoch ownerEpoch, long ownershipTerm) {
+        static AckOwnership ackOwnership(StreamPartitionOwnershipValue record) {
+            return new AckOwnership(record.owner(), record.ownerEpoch(), record.ownershipTerm());
+        }
+    }
+
+    /// An ack waiter: its partition, the ownership captured at registration, and the registration instant (`System.nanoTime`).
+    private record AckWaiter(String streamName, int partition, Option<AckOwnership> ownership, long registeredNanos) {
+        static AckWaiter ackWaiter(String streamName,
+                                   int partition,
+                                   Option<AckOwnership> ownership,
+                                   long registeredNanos) {
+            return new AckWaiter(streamName, partition, ownership, registeredNanos);
+        }
+    }
+
+    /// A waiter whose replicas confirmed while the lease was lapsed, and the answer its publisher holds.
+    private record ParkedAck(AckWaiter waiter, Promise<Unit> answer) {
+        static ParkedAck parkedAck(AckWaiter waiter) {
+            return new ParkedAck(waiter, Promise.promise());
+        }
+    }
+
+    private enum AckVerdict {
+        ACKNOWLEDGED,
+        MOVED,
+        LAPSED
+    }
+
+    private Option<AckOwnership> ackOwnership(String streamName, int partition) {
+        return ownershipRecords.committed(streamName, partition)
+                               .map(AckOwnership::ackOwnership);
+    }
+
+    private Promise<Unit> completeAck(AckWaiter waiter) {
+        var verdict = ackVerdict(waiter);
+
+        return verdict == AckVerdict.LAPSED
+               ? park(waiter)
+               : Promise.resolved(settled(waiter, verdict));
+    }
+
+    /// The lease is read BEFORE the ownership (design §2.2: `now` first).
+    private AckVerdict ackVerdict(AckWaiter waiter) {
+        return ownerChecksBypassed(confirmationFactorFor(waiter.streamName()))
+               ? AckVerdict.ACKNOWLEDGED
+               : ackVerdict(ownerLease.valid(),
+                            ackOwnership(waiter.streamName(), waiter.partition()).equals(waiter.ownership()));
+    }
+
+    private static AckVerdict ackVerdict(boolean leaseValid, boolean ownershipUnchanged) {
+        return ownershipUnchanged
+               ? leaseVerdict(leaseValid)
+               : AckVerdict.MOVED;
+    }
+
+    private static AckVerdict leaseVerdict(boolean leaseValid) {
+        return leaseValid
+               ? AckVerdict.ACKNOWLEDGED
+               : AckVerdict.LAPSED;
+    }
+
+    /// The answer of a waiter whose verdict is final: acknowledged (visibility refreshed first, rev1309 F1) or moved.
+    private Result<Unit> settled(AckWaiter waiter, AckVerdict verdict) {
+        return verdict == AckVerdict.ACKNOWLEDGED
+               ? acknowledged(waiter)
+               : new StreamError.OwnershipMovedBeforeAck(waiter.streamName(), waiter.partition()).result();
+    }
+
+    private Result<Unit> acknowledged(AckWaiter waiter) {
+        refreshVisible(waiter.streamName(), waiter.partition());
+
+        return Result.unitResult();
+    }
+
+    @Contract
+    private void refreshVisible(String streamName, int partition) {
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> refreshVisible(ring, streamName, partition));
+    }
+
+    /// Parks a lapsed waiter until a renewal edge re-checks it or its budget, counted from registration, runs out. It is
+    /// re-checked once right after joining the list: a renewal edge that ran between the verdict and the join would
+    /// otherwise leave it parked until its deadline.
+    private Promise<Unit> park(AckWaiter waiter) {
+        var parked = ParkedAck.parkedAck(waiter);
+
+        beforeParkJoinProbe.run();
+        parkedAcks.add(parked);
+        SharedScheduler.schedule(() -> expireParked(parked), remainingParkBudget(waiter));
+        recheckParked(parked);
+
+        return parked.answer();
+    }
+
+    /// Test seam (#2981 S12): runs between the lapsed verdict and the waiter joining the park list, the window in which a
+    /// renewal edge finds no parked waiter to re-check.
+    @Contract
+    void beforeParkJoinProbe(Runnable probe) {
+        beforeParkJoinProbe = probe;
+    }
+
+    private static TimeSpan remainingParkBudget(AckWaiter waiter) {
+        return TimeSpan.timeSpan(Math.max(0L,
+                                          waiter.registeredNanos() + ACK_PARK_BUDGET.nanos() - System.nanoTime())).nanos();
+    }
+
+    /// Settles a parked waiter whose verdict is no longer "lapsed". Removal from the list decides which of the re-check and
+    /// the deadline answers, so each waiter is answered once.
+    @Contract
+    private void recheckParked(ParkedAck parked) {
+        var verdict = ackVerdict(parked.waiter());
+
+        if (verdict != AckVerdict.LAPSED && parkedAcks.remove(parked)) {
+            parked.answer().resolve(settled(parked.waiter(), verdict));
+        }
+    }
+
+    @Contract
+    private void expireParked(ParkedAck parked) {
+        if (parkedAcks.remove(parked)) {
+            parked.answer()
+                  .resolve(new StreamError.OwnerLeaseLapsedBeforeAck(parked.waiter().streamName(),
+                                                                     parked.waiter().partition()).result());
+        }
+    }
+
+    private boolean announcementLeased(String streamName) {
+        return ownerChecksBypassed(confirmationFactorFor(streamName)) || ownerLease.valid();
+    }
+
+    /// #2981 step 2 (design §2.2, §2.4): this node's lease went from invalid to valid. The owner re-derives `visible` of every
+    /// partition placement names it owner of (one [#refreshVisible] each, through [#ownerAdvance]), then every parked ack waiter
+    /// is re-checked. `AetherNode` binds it to the lease's validity-regained edge.
+    @Contract
+    public void onLeaseRegained() {
+        materializedHeads().stream()
+                         .filter(head -> placementRoleSupplier.roleFor(head.streamName(),
+                                                                       head.partition()) == Role.OWNER)
+                         .forEach(head -> refreshVisible(head.streamName(),
+                                                         head.partition()));
+        parkedAcks.forEach(this::recheckParked);
     }
 
     /// #1262 fail-closed guard, applied ONCE by `StreamWriteRouter.publish` — the single write operation behind

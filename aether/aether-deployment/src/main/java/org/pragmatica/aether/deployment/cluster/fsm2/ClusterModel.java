@@ -82,6 +82,10 @@ public final class ClusterModel {
     long orphanTargetScanTick = -1L;
     PMap<Artifact, AwaitedTarget> awaitedTargets = PMap.empty(scans);
     PMap<BlueprintId, Long> redriveAt = PMap.empty(scans);
+    /// R-4.1.7: the apply deadline clock of each open apply, this leader's monotonic readings.
+    PMap<BlueprintId, Deadlines.ApplyClock> applyClocks = PMap.empty(scans);
+    /// R-4.1.7: blueprints reported `apply-deadline-exceeded` whose episode is open, with the attempt it ended.
+    PMap<BlueprintId, String> applyDeadlineWarned = PMap.empty(scans);
     PMap<Artifact, PSet<Artifact>> dependencies = PMap.empty(scans);
     PMap<Artifact, PSet<Artifact>> dependents = PMap.empty(scans);
     PMap<String, SchemaVersionValue> schemas = PMap.empty(scans);
@@ -229,6 +233,8 @@ public final class ClusterModel {
         c.orphanTargetScanTick = orphanTargetScanTick;
         c.awaitedTargets = awaitedTargets.rebound(meter);
         c.redriveAt = redriveAt.rebound(meter);
+        c.applyClocks = applyClocks.rebound(meter);
+        c.applyDeadlineWarned = applyDeadlineWarned.rebound(meter);
         c.dependencies = dependencies.rebound(meter);
         c.dependents = dependents.rebound(meter);
         c.schemas = schemas.rebound(meter);

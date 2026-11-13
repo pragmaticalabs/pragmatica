@@ -33,6 +33,7 @@ import static org.pragmatica.aether.stream.replication.ReplicationReceiveHandler
 class ReplicationReceiveHandlerTest {
     private static final NodeId SELF = NodeId.randomNodeId();
     private static final NodeId GOVERNOR = NodeId.randomNodeId();
+    private static final long BOOT_TOKEN = 7L;
     private static final String STREAM = "events";
     private static final int PARTITION = 0;
 
@@ -213,7 +214,8 @@ class ReplicationReceiveHandlerTest {
                                                                           (_, _) -> {},
                                                                           (_, _) -> Causes.cause("fsync failed").promise(),
                                                                           CommittedStreamOwnerSource.none(),
-                                                                          OperatorWarningSink.handingOffTo(warnings::add));
+                                                                          OperatorWarningSink.handingOffTo(warnings::add),
+                                                                          () -> BOOT_TOKEN);
 
         handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(3), timestamps(3), Epoch.ZERO));
 

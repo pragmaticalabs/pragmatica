@@ -119,6 +119,7 @@ public sealed interface Lifecycle {
         if (wasSuspended && !isSuspended(m, ctx)) {
             Schemas.resetStalledMigrations(m, ctx);
             Schemas.announceWithheld(m, ctx);
+            Deadlines.rearm(m);
             m.joinWarningsDue = true;
             Reconcile.request(m, ctx);
         }

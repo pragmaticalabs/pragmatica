@@ -12,6 +12,10 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 /// - `awaitedTarget`: the bound of the awaited-target watch and of the target re-drive, 1 per 2 min (6.2).
 /// - `departingReread`: one consensus timeout, the re-read period of an unresolved C17 / C17s (R-4.3.0).
 /// - `rebalanceHysteresisTicks`: how many consecutive imbalanced ticks precede a rebalance move.
+/// - `drainStep`: the pacing of the drain loops.
+/// - `applyDeadline` / `applySchemaPauseMax` (ms, R-4.1.7, #970): the unpaused time an open apply may stay unresolved, and the most time
+///   its open schema gate may pause that clock. A non-positive `applyDeadline` is an unreadable bound: the apply is then never
+///   terminated, only re-driven (the failure direction is re-drive, never condemn).
 public record Timing(long postActivation,
                      long tick,
                      long retryBase,
@@ -20,8 +24,20 @@ public record Timing(long postActivation,
                      long awaitedTarget,
                      long departingReread,
                      int rebalanceHysteresisTicks,
-                     long drainStep) {
-    public static final Timing DEFAULT = new Timing(2_000L, 30_000L, 1_000L, 30_000L, 5, 120_000L, 30_000L, 2, 2_000L);
+                     long drainStep,
+                     long applyDeadline,
+                     long applySchemaPauseMax) {
+    public static final Timing DEFAULT = new Timing(2_000L,
+                                                    30_000L,
+                                                    1_000L,
+                                                    30_000L,
+                                                    5,
+                                                    120_000L,
+                                                    30_000L,
+                                                    2,
+                                                    2_000L,
+                                                    900_000L,
+                                                    7_200_000L);
 
     public static Timing timing() {
         return DEFAULT;
@@ -36,7 +52,9 @@ public record Timing(long postActivation,
                           awaitedTarget,
                           departingReread,
                           rebalanceHysteresisTicks,
-                          drainStep);
+                          drainStep,
+                          applyDeadline,
+                          applySchemaPauseMax);
     }
 
     public Timing withAwaitedTarget(long value) {
@@ -48,6 +66,36 @@ public record Timing(long postActivation,
                           value,
                           departingReread,
                           rebalanceHysteresisTicks,
-                          drainStep);
+                          drainStep,
+                          applyDeadline,
+                          applySchemaPauseMax);
+    }
+
+    public Timing withApplyDeadline(long value) {
+        return new Timing(postActivation,
+                          tick,
+                          retryBase,
+                          retryMax,
+                          maxRetries,
+                          awaitedTarget,
+                          departingReread,
+                          rebalanceHysteresisTicks,
+                          drainStep,
+                          value,
+                          applySchemaPauseMax);
+    }
+
+    public Timing withApplySchemaPauseMax(long value) {
+        return new Timing(postActivation,
+                          tick,
+                          retryBase,
+                          retryMax,
+                          maxRetries,
+                          awaitedTarget,
+                          departingReread,
+                          rebalanceHysteresisTicks,
+                          drainStep,
+                          applyDeadline,
+                          value);
     }
 }

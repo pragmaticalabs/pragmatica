@@ -1489,7 +1489,7 @@ public final class PartitionBackfill {
                                                         quarantine.committedEpoch(streamName, partition)));
     }
 
-    /// The default [BackfillAckSink]: the ack goes straight out on the replication transport.
+    /// The default [BackfillAckSink]: the ack goes straight out on the replication transport, naming no replica process (#1697: production wires the receive handler's sink, whose acks name it).
     @Contract
     private void ackOnTransport(NodeId owner, String streamName, int partition, long watermark, Epoch ownerEpoch) {
         replicationTransport.send(owner, replicateAck(self, streamName, partition, watermark, ownerEpoch));

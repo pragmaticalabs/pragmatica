@@ -65,6 +65,16 @@ class ReadRefusalTest {
         assertThat(sampled).as("a kind with no sample would be untested on the wire").isEqualTo(declared);
     }
 
+    /// #2981 step 2 (design §0 row 3): read routing treats a lapsed owner lease as not-activated; no new wire kind. Mutation: the
+    /// `OwnerLeaseLapsed` arm mapped to another kind or not carried -> RED.
+    @Test
+    void aLapsedOwnerLease_travelsAsOwnerNotActivated() {
+        var refusal = ReadRefusal.readRefusal(new StreamError.OwnerLeaseLapsed("orders", 4)).unwrap();
+
+        assertThat(refusal.kind()).isEqualTo(Kind.OWNER_NOT_ACTIVATED);
+        assertThat(refusal.toCause("")).isEqualTo(new StreamError.OwnerNotActivated("orders", 4));
+    }
+
     @Test
     void everyCarriedCause_survivesTheCodecAsItself() {
         for (var cause : CARRIED) {

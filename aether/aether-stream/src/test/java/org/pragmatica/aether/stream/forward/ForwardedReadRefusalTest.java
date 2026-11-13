@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.stream.OwnerLease;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource.CommittedOwner;
 import org.pragmatica.aether.stream.EvictionListener;
@@ -584,6 +585,7 @@ class ForwardedReadRefusalTest {
     /// The owner at epoch E2 whose epoch began at offset 3, over five records; a cursor of E1 past 3 is diverged.
     private void ownerCommittedAtEpochTwo() {
         publishedOnOwner(5);
+        owner.ownerLease(OwnerLease.TEST_VALID);
         owner.ownershipRecords((_, _) -> Option.some(new StreamPartitionOwnershipValue(OWNER_ID,
                                                                                        E2,
                                                                                        2L,
