@@ -1,8 +1,23 @@
-# Embedded TLA+ models (pilot)
+# Embedded TLA+ models
 
 TLA+ models of critical concurrency paths live in the Java source, as fragments inside `///` doc comments.
-`extract.py` assembles them into a module and its TLC configs; `check.sh` extracts and runs TLC. Model checking
-only, no proofs.
+`extract.py` assembles them into a module and its TLC configs; `check.sh` extracts and runs TLC on one config;
+`run.sh` runs every config listed in `models.tsv` and compares each verdict with the expected one.
+
+**Results are bounds, not proofs.** TLC explores every state reachable within a config's constants (keys, scopes,
+acquires, environment steps). A passing config says no violation exists within those constants and nothing about
+larger ones; a model that abstracts the code says nothing about what it leaves out. State a result with its config
+and constants, e.g. "SharedPools `code`, 2 keys, 2 scopes, MaxAcquires 3: no violation (876,713 distinct states)".
+
+## Models
+
+| Module | Protocol | Skeleton | Actions |
+|---|---|---|---|
+| `SharedPools` | node-shared resource pools: acquire, release, `closeAll` (#2978) | `aether/resource/api/.../resource/package-info.java` | `SharedPools.java`, `SpiResourceProvider.java` |
+| `Stalled` | owner catch-up all-stalled warning, level-triggered (#2967) | `aether/aether-stream/.../replication/package-info.java` | `PartitionBackfill.java` |
+
+Scope (owner ruling 2026-11-13): protocols with a written race or ordering ruling (consensus, FSM2 leader and
+reconcile, stream ownership, catch-up and ISR, SharedPools, quorum re-admission). Not mandated elsewhere.
 
 ## Convention
 
@@ -24,6 +39,12 @@ only, no proofs.
   helpers shared by several actions, library semantics that are not our code (e.g. ConcurrentHashMap's count
   publication), `Init`, `Next`, fairness, invariants and properties. It sits in `package-info.java`, or in the
   protocol class header.
+- **Trace event names are action names.** A test-only trace hook (e.g. `SharedPools.traceTo`) emits one event per
+  atomic region, named after the action that models it, so `trace.py` can check a recorded run against the spec.
+  The hook must not change production behaviour: with no sink installed the region runs its body and nothing else.
+- **Every filed concurrency defect in a listed protocol adds a known-bad config**: a config that models the code
+  before the fix (the model's `Fixed` constant drops the fix's name) and must FAIL. It is listed in `models.tsv` with
+  `expect` = `fail`. A known-bad config that passes means the model no longer reaches the code it pins.
 - **Configs** are blocks tagged `tlacfg <Module>:<Variant>`, written to `<Module>_<Variant>.cfg`. Variant `common`
   is prepended to every other variant. One variant per property keeps each counterexample attributable.
 - Assembly order is deterministic: `head`, then the action fragments ordered by (source path, line), then `tail`.
@@ -43,16 +64,46 @@ Syntax and semantic errors are SANY's and TLC's. `check.sh` annotates every `lin
 position in TLC's output with the Java source line it came from (`<Module>.map.tsv`), so a counterexample reads as
 a sequence of Java locations.
 
+## Expected verdicts: `models.tsv`
+
+One row per config: module, source root, variant, `expect` (`pass` or `fail`), the constant overrides of the small
+profile, and what the row pins. `run.sh` is red when:
+- a config the extractor finds has no row, or a row names a config that does not exist;
+- a `pass` row finds a violation;
+- a `fail` row (known-bad) finds none (TLC exit 0): the negative control did not fire;
+- TLC ends any other way (parse or config error, timeout).
+
 ## Running
 
 ```
-tools/tla/check.sh <Module> <Variant> <source roots...>
+tools/tla/run.sh [small|full] [module-regex]          # every config with its expected verdict
+tools/tla/check.sh <Module> <Variant> <source roots...>  # one config
+tools/tla/selftest.sh <Module> <source root>           # the extractor's own checks, on a copy of the root
 # e.g.
+tools/tla/run.sh small SharedPools
 tools/tla/check.sh SharedPools leak aether/resource/api/src/main/java
 ```
 
+`small` applies the row's overrides (minutes in total); `full` runs every config as written (hours: liveness at the
+written bounds is the long pole).
+
+### On demand in CI
+
+The `TLA+ models` workflow (`.github/workflows/tla-models.yml`) runs only when triggered, never on a pull request,
+a push or a schedule, and it is not a required check:
+
+```
+gh workflow run tla-models.yml -f profile=small -f modules='.*'
+gh workflow run tla-models.yml --ref <branch> -f profile=full -f modules=SharedPools
+gh run watch                                   # then download the tla-models-* artifact for the TLC logs
+```
+
+It pins `tla2tools.jar` (version and sha256 in the workflow), runs `selftest.sh` for every selected module, then
+`run.sh` at the chosen profile, and uploads `target/tla/` (every config's TLC log with Java positions).
+
 Environment: `TLA_JAR` (default `~/tools/tla/tla2tools.jar`), `TLC_WORKERS`, `TLC_OPTS`, `TLA_OUT` (default
-`target/tla/<Module>`). The deadlock check is off: bounded models end in terminal states by design. The full TLC log
+`target/tla/<Module>` for `check.sh`, `target/tla` for `run.sh`), `TLC_CONST` (`check.sh`: space-separated
+`Name=value` overrides of the config's constants, recorded in the log), `TLC_TIMEOUT` (`run.sh`: seconds per config). The deadlock check is off: bounded models end in terminal states by design. The full TLC log
 is `<out>/<Module>_<Variant>.log`; the console gets the verdict, the counterexample as actions with their Java
 positions, and the state counts.
 
