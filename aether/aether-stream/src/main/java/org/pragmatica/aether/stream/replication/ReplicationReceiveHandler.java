@@ -520,6 +520,10 @@ public final class ReplicationReceiveHandler {
         }
 
         var highestHeld = fromOffset + outcome.held() - 1;
+        // #2840: ONE reading of the committed view, taken before the gate, decides "ahead". Read after the gate, a view that
+        // advanced in between made the batch's epoch the committed one, and the copy the gate had judged for the older epoch
+        // was acked under the newer. Read before it, an advance after the snapshot only withholds (or the gate doubts the copy).
+        var ahead = aheadOfCommittedView(message);
 
         if (!trustedBeforeApply && !ackGate.mayAck(streamName, partition)) {
             deferAck(message, streamName, partition, highestHeld);
@@ -527,7 +531,7 @@ public final class ReplicationReceiveHandler {
             return;
         }
 
-        if (aheadOfCommittedView(message)) {
+        if (ahead) {
             withholdAheadAck(message, streamName, partition, highestHeld);
 
             return;
