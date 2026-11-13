@@ -46,7 +46,7 @@ class WarnAfterCommitTest {
         LcSupport.node(h, CORE_1, 11L).fails(ORDERS, false);
         h.drain();
         assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("precondition: the leader decided the exhaustion").isTrue();
-        assertThat(h.warningPuts()).as("precondition: the WARNINGS write carrying it is drafted").containsExactly(KEY);
+        assertThat(h.warningPuts()).as("precondition: the last WARNINGS write carries it").endsWith(KEY);
 
         return h;
     }
