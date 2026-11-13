@@ -17,7 +17,6 @@ import org.pragmatica.aether.resource.db.jdbc.JdbcSqlConnectorFactory;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.testing.DockerRequirement;
@@ -32,10 +31,6 @@ import static org.pragmatica.aether.resource.db.DatabaseConnectorConfig.database
 /// it. The raw lock block below is written independently of the production text.
 @Tag("heavy-db")
 class MigrationFenceOracleTest extends LiveMigrateFenceContract {
-    private static final String BOOTSTRAP_DEFECT = "Oracle's history bootstrap (`DEFAULT 'VERSIONED' NOT NULL` written NOT NULL first) is refused with ORA-03076:"
-                                                   + " pre-existing, not part of #2591;"
-                                                   + " #3069: enable when migrate_freshSchema_failsOnTheHistoryBootstrap_ORA03076 stops seeing ORA-03076";
-
     private static final AtomicInteger USERS = new AtomicInteger();
     private static final String PASSWORD = "fencepw";
     private static final String TRY_LOCK = "DECLARE h VARCHAR2(128); r INTEGER; BEGIN"
@@ -58,35 +53,42 @@ class MigrationFenceOracleTest extends LiveMigrateFenceContract {
         }
     }
 
-    /// Tripwire for the pre-existing Oracle bootstrap defect: a migrate on a fresh schema reaches the fence (so the
-    /// fence level is proven by the inherited fence tests) but dies on the history table's DDL. When this fails, the
-    /// defect is fixed: delete it and remove the three `@Disabled` overrides below.
+    /// A second bootstrap and ownership claim on a schema whose tables already exist must succeed: ORA-00955 is the
+    /// only create failure the Oracle DDL swallows (#3069, Oracle 19c+ has no `CREATE TABLE IF NOT EXISTS`).
     @Test
-    void migrate_freshSchema_failsOnTheHistoryBootstrap_ORA03076() throws Exception {
+    void bootstrapAndClaimOwnership_succeedAgain_onAnExistingSchema() throws Exception {
         freshSchema();
 
-        var result = migrate(connector(2), "node-a", script(1, "ok", APPLY_SCRIPT));
+        var connector = connector(1);
+        var repository = SchemaHistoryRepository.schemaHistoryRepository();
 
-        assertThat(causeOf(result).message()).as("#3069: Oracle history bootstrap fails with ORA-03076; when this passes without the error, delete this tripwire"
-                                                                  + " and enable migrate_leavesNoFenceBehind_onSuccessAndOnFailure,"
-                                                                  + " migrate_twoConcurrentRunners_applyTheScriptExactlyOnce,"
-                                                                  + " migrate_fenceSurvivesTheRunnersOwnCommits_competitorIsFencedMidRun").contains("ORA-03076");
+        assertThat(repository.bootstrap(connector).await().isSuccess()).as("first bootstrap").isTrue();
+        assertThat(repository.claimOwnership(connector, DATASOURCE, OWNER).await().isSuccess()).as("first claim").isTrue();
+        assertThat(repository.bootstrap(connector).await().isSuccess()).as("second bootstrap").isTrue();
+        assertThat(repository.claimOwnership(connector, DATASOURCE, OWNER).await().isSuccess()).as("second claim").isTrue();
     }
 
-    @Disabled(BOOTSTRAP_DEFECT)
+    /// `checksum` and `applied_at` are `NUMBER(19)` on Oracle: read back as `long`, they equal what the runner wrote (a
+    /// checksum beyond 2^53 would not survive a double).
     @Test
-    @Override
-    void migrate_leavesNoFenceBehind_onSuccessAndOnFailure() {}
+    void history_checksumAndAppliedAt_readBackAsLongEqualToTheWrittenValues() throws Exception {
+        freshSchema();
 
-    @Disabled(BOOTSTRAP_DEFECT)
-    @Test
-    @Override
-    void migrate_twoConcurrentRunners_applyTheScriptExactlyOnce() {}
+        var written = 9_007_199_254_740_993L;
+        var before = System.currentTimeMillis();
 
-    @Disabled(BOOTSTRAP_DEFECT)
-    @Test
-    @Override
-    void migrate_fenceSurvivesTheRunnersOwnCommits_competitorIsFencedMidRun() {}
+        assertThat(migrate(connector(2), "node-a", MigrationScript.migrationScript("V1__roundtrip.sql", APPLY_SCRIPT, written)).isSuccess()).isTrue();
+
+        var after = System.currentTimeMillis();
+
+        try (var probe = rawConnection(); var statement = probe.createStatement();
+             var rs = statement.executeQuery("SELECT checksum, applied_at FROM aether_schema_history")) {
+            assertThat(rs.next()).isTrue();
+            assertThat(rs.getLong("checksum")).isEqualTo(written);
+            assertThat(rs.getLong("applied_at")).isBetween(before, after);
+            assertThat(rs.next()).as("one history row").isFalse();
+        }
+    }
 
     @Override
     void freshSchema() throws SQLException {
