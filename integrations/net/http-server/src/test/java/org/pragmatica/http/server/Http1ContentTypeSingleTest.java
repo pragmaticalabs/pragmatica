@@ -52,6 +52,22 @@ class Http1ContentTypeSingleTest {
         assertThat(contentTypeLines(head)).hasSize(1);
     }
 
+    /// Pins the other half of the filtered `add` in `NettyResponseWriter.response`: only `Content-Type` is dropped,
+    /// every other handler header still reaches the wire, exactly once.
+    @Test
+    void otherHandlerHeaders_reachTheWireExactlyOnce() throws IOException {
+        var head = exchange((_, writer) -> writer.header("X-Trace-Id", "abc").header("X-Other", "v").ok("{}"));
+
+        assertThat(linesNamed(head, "x-trace-id:")).containsExactly("X-Trace-Id: abc");
+        assertThat(linesNamed(head, "x-other:")).containsExactly("X-Other: v");
+    }
+
+    private static String[] linesNamed(String head, String prefix) {
+        return Arrays.stream(head.split("\r\n"))
+                     .filter(line -> line.toLowerCase(Locale.ROOT).startsWith(prefix))
+                     .toArray(String[]::new);
+    }
+
     private static String[] contentTypeLines(String head) {
         return Arrays.stream(head.split("\r\n"))
                      .filter(line -> line.toLowerCase(Locale.ROOT).startsWith("content-type:"))
