@@ -86,7 +86,8 @@ class CstArchSliceInternalRuleTest {
 
             assertTrue(diagnostics.stream().anyMatch(d -> d.ruleId().equals(RULE_ID)
                                                           && d.message().contains("'com.example.usecase.loginuser.internal'")
-                                                          && !d.message().contains("///")));
+                                                          && !d.message().contains("///")),
+                       "diagnostics: " + diagnostics);
         }
     }
 
