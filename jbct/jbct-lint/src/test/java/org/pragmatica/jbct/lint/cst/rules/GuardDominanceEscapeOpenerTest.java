@@ -85,6 +85,12 @@ class GuardDominanceEscapeOpenerTest {
         assertTrue(firesWithMiddle("f (xs) > 0"));
     }
 
+    /// A callee that merely starts with a statement keyword is still a callee (`returnValue(xs)`, not `return (xs)`).
+    @Test
+    void calleeStartingWithStatementKeyword_isAnEscape() {
+        assertTrue(firesWithMiddle("returnValue(xs) > 0"));
+    }
+
     @Test
     void constructorArgument_isAnEscape() {
         assertTrue(firesWithMiddle("new Foo(xs).n() > 0"));
