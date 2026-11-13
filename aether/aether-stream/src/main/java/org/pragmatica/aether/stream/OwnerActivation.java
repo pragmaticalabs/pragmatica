@@ -521,12 +521,47 @@ public final class OwnerActivation {
 
     private volatile PeerLineageEnd peerLineageEnd = (_, _, _, watermark) -> watermark;
 
+    /// Re-learns the committed-lineage end entry that caps `peer` (tail `watermark`) before the gate ranks on it (#3142 F3): an entry
+    /// is advisory, and a replica refilled to exactly the remembered tail would otherwise keep a stale cap. Late-bound
+    /// ([#peerLineageConfirm]).
+    @FunctionalInterface
+    public interface PeerLineageConfirm {
+        Promise<Unit> of(String stream, int partition, NodeId peer, long watermark);
+    }
+
+    private volatile PeerLineageConfirm peerLineageConfirm = (_, _, _, _) -> Promise.success(Unit.unit());
+
+    /// Late-bind the confirmation of a learned cap (#3142 F3). Unset (the default) confirms nothing, so the gate ranks on the caps
+    /// as learned. Set once at wiring.
+    @Contract
+    public void peerLineageConfirm(PeerLineageConfirm confirm) {
+        this.peerLineageConfirm = confirm;
+    }
+
     /// Late-bind the committed-lineage end of a peer (#3071, ruling 37277a904f). The gate ranks, compares and verifies a peer only up
     /// to it: a deposed epoch's tail the catch-up refuses never counts as ahead, so the gate cannot pull it again on every demand.
     /// The refused tail is the peer's to repair. Unknown (the default) is the raw watermark. Set once at wiring.
     @Contract
     public void peerLineageEnd(PeerLineageEnd end) {
         this.peerLineageEnd = end;
+    }
+
+    /// Learns, without installing anything, the committed-lineage end of `peer` (tail `watermark`) from the page it serves at `from`
+    /// (#3080). A failure is the hook's to absorb: the gate then judges the peer as it did before. Late-bound ([#peerLineageLearn]).
+    @FunctionalInterface
+    public interface PeerLineageLearn {
+        Promise<Unit> of(String stream, int partition, NodeId peer, long watermark, long from);
+    }
+
+    private volatile PeerLineageLearn peerLineageLearn = (_, _, _, _, _) -> Promise.success(Unit.unit());
+
+    /// Late-bind the read-only lineage-end learning (#3080). Two responders that disagree may differ only because one holds a deposed
+    /// epoch's tail whose bound no pull has taught this node yet; the bound is learned from the page of each, at the first offset
+    /// they differ, and the pair is compared once more over what remains. Unset (the default) learns nothing, so such a pair is
+    /// refused as before. Set once at wiring.
+    @Contract
+    public void peerLineageLearn(PeerLineageLearn learn) {
+        this.peerLineageLearn = learn;
     }
 
     /// Late-bind the candidate's durable sealed floor, the bound the gate's relaxation for a divergent peer respects. Set once at
@@ -1492,10 +1527,24 @@ public final class OwnerActivation {
     private Promise<Unit> catchUpFromResponders(String stream, int partition, List<PeerWatermark> answered) {
         var local = selfWatermark.localWatermark(stream, partition);
 
-        return withoutDivergentPeers(stream, partition, local, answered).flatMap(kept -> catchUpFromKept(stream,
-                                                                                                         partition,
-                                                                                                         local,
-                                                                                                         kept));
+        return confirmCaps(stream, partition, answered).flatMap(_ -> withoutDivergentPeers(stream,
+                                                                                           partition,
+                                                                                           local,
+                                                                                           answered))
+                          .flatMap(kept -> catchUpFromKept(stream, partition, local, kept));
+    }
+
+    /// Every probed peer's learned cap is confirmed after the probe round and before any ranking (#3142 F3).
+    /// Recovery: design-out. [Promise#allOf] settles with each confirmation's own result and never fails, so a confirmation that
+    /// fails leaves the cap as learned and never blocks the gate; the cap is only an advisory bound, and the catch-up it ranks
+    /// still verifies what it installs.
+    private Promise<Unit> confirmCaps(String stream, int partition, List<PeerWatermark> answered) {
+        return Promise.allOf(answered.stream()
+                                     .map(peer -> peerLineageConfirm.of(stream,
+                                                                        partition,
+                                                                        peer.node(),
+                                                                        peer.watermark()))
+                                     .toList()).map(_ -> Unit.unit());
     }
 
     /// #1730 phase 2 (KIP-101): a candidate ELECTED from the committed ISR holds every acknowledged record, because an
@@ -1733,6 +1782,14 @@ public final class OwnerActivation {
 
     /// Compare the last [#OVERLAP_WINDOW] offsets both peers' heads cover.
     private Promise<Unit> verifyPair(String stream, int partition, PeerWatermark source, PeerWatermark peer) {
+        return verifyPair(stream, partition, source, peer, false);
+    }
+
+    private Promise<Unit> verifyPair(String stream,
+                                     int partition,
+                                     PeerWatermark source,
+                                     PeerWatermark peer,
+                                     boolean learned) {
         var to = Math.min(lineageEnd(stream, partition, source), lineageEnd(stream, partition, peer));
 
         if (to < 0) {
@@ -1756,7 +1813,8 @@ public final class OwnerActivation {
                                                                               source,
                                                                               peer,
                                                                               sourceRange,
-                                                                              peerRange));
+                                                                              peerRange,
+                                                                              learned));
     }
 
     private Promise<Unit> pairAgreesOrRefuse(String stream,
@@ -1764,7 +1822,8 @@ public final class OwnerActivation {
                                              PeerWatermark source,
                                              PeerWatermark peer,
                                              List<OffHeapRingBuffer.RawEvent> sourceRange,
-                                             List<OffHeapRingBuffer.RawEvent> peerRange) {
+                                             List<OffHeapRingBuffer.RawEvent> peerRange,
+                                             boolean learned) {
         if (compared(sourceRange, peerRange) == 0) {
             return refuseDivergent(new ActivationBlock.OverlapUnverifiable(stream,
                                                                            partition,
@@ -1776,12 +1835,42 @@ public final class OwnerActivation {
 
         return agree(sourceRange, peerRange)
                ? Promise.success(Unit.unit())
-               : refuseDivergent(new ActivationBlock.DivergentPeers(stream,
+               : learnOrRefuse(stream, partition, source, peer, firstDifference(sourceRange, peerRange).or(0L), learned);
+    }
+
+    /// #3080: a pair that differs is refused only once the bound of each side has been learned from its own page. A responder
+    /// whose differing records are a deposed epoch's tail is then judged only up to its bound, and the pair compared again agrees;
+    /// one whose records differ with no bound to explain it is refused as before.
+    private Promise<Unit> learnOrRefuse(String stream,
+                                        int partition,
+                                        PeerWatermark source,
+                                        PeerWatermark peer,
+                                        long differsAt,
+                                        boolean learned) {
+        return learned
+               ? refuseDivergent(new ActivationBlock.DivergentPeers(stream,
                                                                     partition,
                                                                     source.node(),
                                                                     source.watermark(),
                                                                     peer.node(),
-                                                                    peer.watermark()));
+                                                                    peer.watermark()))
+               : Promise.all(learnBound(stream, partition, source, differsAt),
+                             learnBound(stream, partition, peer, differsAt)).flatMap((_, _) -> verifyPair(stream,
+                                                                                                          partition,
+                                                                                                          source,
+                                                                                                          peer,
+                                                                                                          true));
+    }
+
+    /// Recovery: design-out. A page that cannot be read teaches nothing, and the pair is compared again exactly as before, so the
+    /// refusal that follows is the one the gate raised without learning.
+    private Promise<Unit> learnBound(String stream, int partition, PeerWatermark peer, long from) {
+        return peerLineageLearn.of(stream,
+                                   partition,
+                                   peer.node(),
+                                   peer.watermark(),
+                                   from)
+                               .recover(_ -> Unit.unit());
     }
 
     /// Compare the last [#OVERLAP_WINDOW] offsets both heads cover; nothing overlaps when either side is empty.

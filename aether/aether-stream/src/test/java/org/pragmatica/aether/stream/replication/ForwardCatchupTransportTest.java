@@ -51,6 +51,75 @@ class ForwardCatchupTransportTest {
         assertThat(source.reads().get()).isEqualTo(3);
     }
 
+    /// #3080 (F1): a single-page read is ONE forward read at the given offset, however long the source's suffix: 5 events, batch 2,
+    /// the answer holds the first page only. Red under "page through the suffix" (3 reads, 5 events).
+    @Test
+    void requestPage_readsExactlyOnePage_neverTheWholeSuffix() {
+        var source = new FakeForwardSource(eventsFrom(0, 5));
+        var transport = forwardCatchupTransport(source, 2);
+
+        var response = transport.requestPage(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 2L))
+                                .await()
+                                .or((ReplicationMessage.CatchupResponse) null);
+
+        assertThat(response).isNotNull();
+        assertThat(source.reads().get()).as("one forward read").isEqualTo(1);
+        assertThat(response.fromOffset()).isEqualTo(2L);
+        assertThat(response.toOffset()).isEqualTo(3L);
+        assertThat(response.payloads()).hasSize(2);
+    }
+
+    /// #3080 (item 5): a single page answered as a consumer read fails the read but is not catch-up episode accounting: the gate's
+    /// lineage learns do not feed `STREAM_CATCHUP_SOURCE_NOT_ANSWERING`. Red under "single page notes the unvouched answer".
+    @Test
+    void requestPage_pageNotVouched_fails_andFeedsNoNotAnsweringEpisode() {
+        var raised = new java.util.concurrent.CopyOnWriteArrayList<OperatorWarning>();
+        var now = new java.util.concurrent.atomic.AtomicLong(1_000L);
+        var transport = forwardCatchupTransport(new FakeForwardSource(eventsFrom(0, 3), false),
+                                                4,
+                                                OperatorWarningSink.handingOffTo(raised::add),
+                                                now::get);
+        var request = catchupRequest(SOURCE, STREAM, PARTITION, 0L);
+
+        var first = transport.requestPage(SOURCE, request).await();
+        now.addAndGet(ForwardCatchupTransport.NOT_ANSWERED_REPORT_AFTER_MS);
+        var second = transport.requestPage(SOURCE, request).await();
+        now.addAndGet(1L);
+        transport.requestPage(SOURCE, request).await();
+
+        settle();
+        settle();
+        assertThat(first.isFailure()).isTrue();
+        assertThat(second.isFailure()).isTrue();
+        assertThat(raised).as("no episode is reported from single-page reads").isEmpty();
+    }
+
+    /// #3080 (c8): a single page whose first event is not the requested offset is a gap, refused rather than taken as the lineage
+    /// page. Red under "singlePage skips the contiguity check" (the gappy page is delivered).
+    @Test
+    void requestPage_nonContiguousPage_failsWithAGap() {
+        var transport = forwardCatchupTransport(new GappyForwardSource(eventsFrom(3, 4)), 2);
+
+        var result = transport.requestPage(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 0L)).await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("gap detected"));
+    }
+
+    /// #3080 (c9): a single page cut at the byte cap with no event at all can never show the lineage end; it fails instead of
+    /// answering an empty page the learn would read as "no bound". Red under "singlePage skips the truncated-empty check".
+    @Test
+    void requestPage_cutPageWithNoEvent_failsInsteadOfAnsweringEmpty() {
+        var source = new FakeForwardSource(eventsFrom(0, 3), 0);
+        var transport = forwardCatchupTransport(source, 4);
+
+        var result = transport.requestPage(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 0L)).await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("maxReadResponseBytes"));
+        assertThat(source.reads().get()).isEqualTo(1);
+    }
+
     /// #1638 B2: every page received is reported as progress, so a long catch-up is seen as moving. Red under "pages
     /// are not reported".
     @Test
