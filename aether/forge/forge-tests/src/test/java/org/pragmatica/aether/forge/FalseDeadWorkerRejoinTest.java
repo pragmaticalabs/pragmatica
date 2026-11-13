@@ -65,10 +65,15 @@ class FalseDeadWorkerRejoinTest {
     @Test void fencedWorker_exitsDrained_andFreshReplacementGetsDirective() {
         var id = bootAndCutWorker(FENCE_FIRST, defaultCommunityAbsence(), true);
 
-        await().alias("the worker fenced and exited with EXIT_DRAINED before the cores removed it")
+        // The exit code surfaces only after the drain, which can outlast the cores' removal; the detector's own fence flag
+        // is the moment the worker's fence fired.
+        await().alias("the worker's core-absence detector fenced")
+               .atMost(RECOVERY_BOUND.duration())
+               .until(() -> cluster.getNode(id.id()).flatMap(AetherNode::coreAbsenceSnapshot).map(CoreAbsenceSnapshot::fenced).or(false));
+        assertThat(directiveCommitted(id)).as("the fence precedes the cores' removal of the worker").isTrue();
+        await().alias("the fenced worker exited with EXIT_DRAINED")
                .atMost(RECOVERY_BOUND.duration())
                .until(() -> cluster.exitCodeOf(id.id()).map(code -> code == AetherNode.EXIT_DRAINED).or(false));
-        assertThat(directiveCommitted(id)).as("the fence precedes the cores' removal of the worker").isTrue();
         awaitDirectiveRemoved(id);
         healSwim();
 
