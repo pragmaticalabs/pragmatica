@@ -22,5 +22,5 @@ Stalled	aether/aether-stream/src/main/java	liveowner	pass	-	the code, owner and 
 Stalled	aether/aether-stream/src/main/java	edgeremove	fail	-	v2967b F1: edge-triggered warning outlives removal
 Stalled	aether/aether-stream/src/main/java	edgedestroy	fail	-	v2967b F2: edge-triggered warning outlives destroy
 Stalled	aether/aether-stream/src/main/java	edgeowner	pass	-	edge-triggered, owner flips only: no defect there
-Stalled	aether/aether-stream/src/main/java	settled	pass	-	a settled reconcile leaves only backed warnings
-Stalled	aether/aether-stream/src/main/java	early	pass	-	a raise needs MAX rounds in this incarnation
+Stalled	aether/aether-stream/src/main/java	settled	fail	-	#3155 known finding, open: a report raised after the reconcile snapshot stays open until the next pass
+Stalled	aether/aether-stream/src/main/java	early	fail	-	#3156 known finding, open: the stall counter survives destroy and recreate

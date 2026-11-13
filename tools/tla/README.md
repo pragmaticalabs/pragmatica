@@ -73,6 +73,8 @@ profile, and what the row pins. `run.sh` is red when:
 - a `fail` row (known-bad) finds none (TLC exit 0): the negative control did not fire;
 - TLC ends any other way (parse or config error, timeout).
 
+An expected failure (`expect` = `fail`) must cite an open issue or be a known-bad variant of a fixed defect; when the issue is fixed, flip the row to `pass`.
+
 ## Running
 
 ```
