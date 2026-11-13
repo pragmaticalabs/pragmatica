@@ -2341,7 +2341,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 yield new WriteOutcome.ConnectionDead(state.peerId());
             }
             case PeerState.OfferOutcome.Dropped ignored -> unbufferedConnectionDead(state.peerId(), message, afterSent);
-            case PeerState.OfferOutcome.NotBuffered ignored -> unbufferedConnectionDead(state.peerId(), message, afterSent);
+            case PeerState.OfferOutcome.NotBuffered ignored -> unbufferedConnectionDead(state.peerId(),
+                                                                                        message,
+                                                                                        afterSent);
         };
     }
 
@@ -2624,7 +2626,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private void writePendingLaneMessage(QuicStreamChannel stream, byte[] bytes, NodeId peerId, StreamType lane) {
         countLostAfterSent(lane,
                            DropSite.PENDING_LANE_WRITE,
-                           writeIfWritable(stream, bytes, peerId, lane, Option.none(), Option.some(DropSite.PENDING_LANE_WRITE)));
+                           writeIfWritable(stream,
+                                           bytes,
+                                           peerId,
+                                           lane,
+                                           Option.none(),
+                                           Option.some(DropSite.PENDING_LANE_WRITE)));
     }
 
     /// A frame the caller was told `Sent` whose later write came back as anything but a write or a held frame is lost:
