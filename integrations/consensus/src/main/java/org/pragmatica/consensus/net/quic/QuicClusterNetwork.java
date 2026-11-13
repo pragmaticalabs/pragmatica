@@ -1076,8 +1076,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         firstObservedMissingMs.remove(nodeId);
         helloLabels.remove(nodeId);
-        forgetLossWarnGates(nodeId);
         if (peer == null) {
+            forgetLossWarnGates(nodeId);
             endBackpressureEpisodes(nodeId);
             log.debug("departurePermanent for {} suppressed: peer absent (no transition)", nodeId);
 
@@ -1095,8 +1095,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // records nothing — no duplicate PeerDisconnected flood, no REMOVED→REMOVED journal noise.
         peer.authoritativeRemove(System.nanoTime()).onPresent(this::closeDroppedConnection);
         // After REMOVED, not before: a write racing this departure re-checks REMOVED after counting (see
-        // countBackpressuredWrite), so its episode is dropped by whichever of the two runs second.
+        // countBackpressuredWrite), so its episode is dropped by whichever of the two runs second. The loss-WARN gates
+        // follow the same order (see admitLossWarn): a refusal or retry give-up after the departure leaves no entry.
         endBackpressureEpisodes(nodeId);
+        forgetLossWarnGates(nodeId);
         var clientRef = client;
 
         if (clientRef != null) {
@@ -2746,6 +2748,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return backpressureEpisodes.size();
     }
 
+    /// Package-private test seam (#2583 P0): the entries of both loss-WARN gates (refusal and retry give-up), so tests
+    /// can show a departed peer leaves none behind.
+    int lossWarnGateEntriesForTests() {
+        return lastRefusalWarnNanos.size() + lastGiveUpWarnNanos.size();
+    }
+
     /// Package-private test seam — drives `writeIfWritable` directly so regression tests can
     /// assert the per-stream backpressure branch (CONSENSUS retry vs. fast-fail refusal)
     /// without standing up a full QUIC handshake.
@@ -2791,7 +2799,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private WriteOutcome refuseBackpressured(NodeId peerId, StreamType streamType) {
         quicMetrics.onBackpressureDrop();
         quicMetrics.onRefused(streamType);
-        if (admitWarn(lastRefusalWarnNanos, peerId, streamType)) {
+        if (admitLossWarn(lastRefusalWarnNanos, peerId, streamType)) {
             log.warn("Channel to peer {} not writable on stream {} — refusing message (backpressure); further refusals on this lane are counted, not logged, for {} s",
                      peerId,
                      streamType,
@@ -2799,6 +2807,22 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
 
         return new WriteOutcome.BackpressureRefused(peerId);
+    }
+
+    /// [#admitWarn] for a peer that may have departed. A refusal or retry give-up for a REMOVED peer logs nothing and leaves
+    /// no gate entry: departure forgets the gates AFTER the transition to REMOVED, and this re-checks REMOVED after
+    /// admitting, so whichever of the two runs second removes the entry (the #2580 episode pattern). Without it every
+    /// departed incarnation would leave an entry behind for the life of the process.
+    private boolean admitLossWarn(Map<BackpressureLane, Long> gate, NodeId peerId, StreamType lane) {
+        var admitted = admitWarn(gate, peerId, lane);
+
+        if (isPeerRemoved(peerId)) {
+            gate.remove(new BackpressureLane(peerId, lane));
+
+            return false;
+        }
+
+        return admitted;
     }
 
     /// True for the first caller per (peer, lane) per [#LOSS_WARN_INTERVAL_NANOS]; atomic, so a burst of racing
@@ -2871,7 +2895,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @Contract
     private void retryGaveUp(NodeId peerId, StreamType streamType, Cause cause) {
         quicMetrics.onDroppedAfterSent(streamType, DropSite.RETRY_GAVE_UP, 1);
-        if (admitWarn(lastGiveUpWarnNanos, peerId, streamType)) {
+        if (admitLossWarn(lastGiveUpWarnNanos, peerId, streamType)) {
             log.warn("{} send to {} gave up after retries and is lost after Sent — relying on retransmit: {}",
                      streamType,
                      peerId,
