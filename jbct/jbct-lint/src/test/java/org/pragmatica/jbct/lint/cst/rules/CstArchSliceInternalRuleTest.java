@@ -72,10 +72,93 @@ class CstArchSliceInternalRuleTest {
                     class SharedHelper {}
                     """));
         }
+
+        /// #3065: the import node carries the `///` block that follows it; the violation must still be reported against the
+        /// import's package, not against the import plus the trailing doc text.
+        @Test
+        void detects_importFollowedByDocBlock_reportsCleanPackage() {
+            var diagnostics = lint("""
+                    package com.example.usecase.registeruser;
+                    import com.example.usecase.loginuser.internal.Token;
+                    /// Registers a user.
+                    class RegisterUser {}
+                    """);
+
+            assertTrue(diagnostics.stream().anyMatch(d -> d.ruleId().equals(RULE_ID)
+                                                          && d.message().contains("'com.example.usecase.loginuser.internal'")
+                                                          && !d.message().contains("///")),
+                       "diagnostics: " + diagnostics);
+        }
+
+        /// #3065: a `;` inside a comment within the import must not end the import body early and hide the violation.
+        @Test
+        void detects_importWithSemicolonInsideComment_reportsCleanPackage() {
+            var diagnostics = lint("""
+                    package com.example.usecase.registeruser;
+                    import com.example.usecase.loginuser.internal /* ; */ .Token;
+                    class RegisterUser {}
+                    """);
+
+            assertTrue(diagnostics.stream().anyMatch(d -> d.ruleId().equals(RULE_ID)
+                                                          && d.message().contains("'com.example.usecase.loginuser.internal'")),
+                       "diagnostics: " + diagnostics);
+        }
+
+        @Test
+        void detects_blockCommentBetweenImportKeywordAndName_reportsCleanPackage() {
+            var diagnostics = lint("""
+                    package com.example.usecase.registeruser;
+                    import/* c */com.example.usecase.loginuser.internal.Token;
+                    class RegisterUser {}
+                    """);
+
+            assertTrue(diagnostics.stream().anyMatch(d -> d.ruleId().equals(RULE_ID)
+                                                          && d.message().contains("'com.example.usecase.loginuser.internal'")),
+                       "diagnostics: " + diagnostics);
+        }
+
+        @Test
+        void detects_multiLineBlockCommentWithSemicolonInsideImport_reportsCleanPackage() {
+            var diagnostics = lint("""
+                    package com.example.usecase.registeruser;
+                    import com.example.usecase.loginuser.internal /* a;
+                       b */ .Token;
+                    class RegisterUser {}
+                    """);
+
+            assertTrue(diagnostics.stream().anyMatch(d -> d.ruleId().equals(RULE_ID)
+                                                          && d.message().contains("'com.example.usecase.loginuser.internal'")),
+                       "diagnostics: " + diagnostics);
+        }
+
+        @Test
+        void detects_lineCommentWithSemicolonInsideImport_reportsCleanPackage() {
+            var diagnostics = lint("""
+                    package com.example.usecase.registeruser;
+                    import com.example.usecase.loginuser // x; y
+                        .internal.Token;
+                    class RegisterUser {}
+                    """);
+
+            assertTrue(diagnostics.stream().anyMatch(d -> d.ruleId().equals(RULE_ID)
+                                                          && d.message().contains("'com.example.usecase.loginuser.internal'")),
+                       "diagnostics: " + diagnostics);
+        }
     }
 
     @Nested
     class NearMisses {
+        /// #3065: a trailing `///` block mentioning `usecase` is trivia of the import node, not part of the imported name.
+        @Test
+        void allows_importFollowedByDocBlockMentioningUsecase() {
+            assertFalse(hasRule("""
+                    package com.example.shared;
+                    import org.pragmatica.lang.Option;
+                    /// Slice roots such as com.example.usecase.registeruser.internal are derived here.
+                    class SharedHelper {}
+                    """));
+        }
+
         @Test
         void allows_importOfAnotherSliceRootSurface() {
             assertFalse(hasRule("""
