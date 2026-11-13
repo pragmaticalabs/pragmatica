@@ -99,7 +99,7 @@ class CstArchSliceInternalRuleTest {
             assertFalse(hasRule("""
                     package com.example.shared;
                     import org.pragmatica.lang.Option;
-                    /// Slice roots such as com.example.usecase.registeruser are derived here.
+                    /// Slice roots such as com.example.usecase.registeruser.internal are derived here.
                     class SharedHelper {}
                     """));
         }
