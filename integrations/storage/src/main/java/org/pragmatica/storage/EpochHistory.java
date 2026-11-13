@@ -175,7 +175,6 @@ final class EpochHistory {
     /// entry a crash could take back.
     private Result<Unit> persist(List<AppendLog.EpochStart> next) {
         persistProbe.run();
-
         var temp = sidecar.resolveSibling(sidecar.getFileName() + ".tmp");
 
         return writer.apply(temp,
