@@ -1746,6 +1746,13 @@ public final class PartitionBackfill {
     /// registration default). A FRESH HRW owner (empty ring, `localWatermark == -1`) therefore falls back to
     /// {@link #probeThenPromoteOwner}, which probes the blind survivors' REAL tails before it may self-promote.
     private Promise<Long> promoteOwner(String streamName, int partition, List<ReplicaDescriptor> replicas) {
+        return confirmCaps(streamName, partition, replicas).flatMap(_ -> promoteOwnerRanked(streamName,
+                                                                                            partition,
+                                                                                            replicas));
+    }
+
+    /// [#promoteOwner] once every learned cap on the registry rows was confirmed ([#confirmLineageEnd]).
+    private Promise<Long> promoteOwnerRanked(String streamName, int partition, List<ReplicaDescriptor> replicas) {
         var localWatermark = selfWatermark.localWatermark(streamName, partition);
         var ahead = aheadSurvivors(replicas, localWatermark);
 
@@ -2022,8 +2029,10 @@ public final class PartitionBackfill {
     /// #3081: the entry caps `node` only at the very tail it was learned for. A tail above the lineage end and different from it is
     /// a replica that changed since (repaired by truncation and refilled, or grown by new data): the entry describes a history it
     /// no longer has, so it is removed and the tail stands uncapped. A tail at or below the end is capped by nothing either way,
-    /// so it is left alone (an unknown tail, a lagging row). Residual: a repair that refills to exactly the remembered tail is
-    /// indistinguishable here, because the offset alone carries no epoch.
+    /// so it is left alone (an unknown tail, a lagging row); a lagging row (a registry `confirmedOffset` between the end and the raw
+    /// tail) is indistinguishable from a changed replica and evicts too. That errs on the side of uncapping, which costs a re-pull and
+    /// a clip, never an install. A repair that refills to exactly the remembered tail is indistinguishable HERE, because the offset
+    /// alone carries no epoch: the entry is advisory, and [#confirmLineageEnd] re-learns it before a cap is relied on.
     private static long capOrEvict(ConcurrentHashMap<NodeId, Lineage> ends, NodeId node, Lineage lineage, long tail) {
         if (tail == lineage.rawTail()) {
             return Math.min(tail, lineage.end());
@@ -2034,6 +2043,81 @@ public final class PartitionBackfill {
         }
 
         return tail;
+    }
+
+    /// #3081 (the entry is advisory): before a cap is relied on, the page the entry was learned from is read again, ONE page from the
+    /// first re-assigned offset. The cap stays only if that page still ends the committed lineage where the entry says; otherwise (a
+    /// replica refilled to exactly the remembered tail, a page that cannot be read) the entry is removed and the tail stands uncapped.
+    /// Recovery: design-out. An unconfirmable cap is dropped, so the worst case is a re-pull and a clip, never an install. Nothing is
+    /// read when no entry caps `tail`.
+    public Promise<Unit> confirmLineageEnd(String streamName, int partition, NodeId node, long tail) {
+        return Option.option(committedLineageEnds.get(partitionKey(streamName, partition)))
+                     .flatMap(ends -> Option.option(ends.get(node))
+                                            .filter(lineage -> caps(lineage, tail))
+                                            .map(lineage -> relearn(ends, streamName, partition, node, lineage)))
+                     .or(Promise.success(Unit.unit()));
+    }
+
+    private static boolean caps(Lineage lineage, long tail) {
+        return tail == lineage.rawTail() && lineage.end() < tail;
+    }
+
+    private Promise<Unit> relearn(ConcurrentHashMap<NodeId, Lineage> ends,
+                                  String streamName,
+                                  int partition,
+                                  NodeId node,
+                                  Lineage lineage) {
+        return transport.requestPage(node,
+                                     catchupRequest(node,
+                                                    streamName,
+                                                    partition,
+                                                    lineage.end() + 1))
+                        .map(response -> lineageBound(response).map(bound -> Math.min(lineage.rawTail(),
+                                                                                      bound - 1))
+                                                     .filter(end -> end == lineage.end()))
+                        .recover(_ -> Option.<Long> none())
+                        .map(confirmed -> keepOrEvict(ends, node, lineage, confirmed));
+    }
+
+    private static Unit keepOrEvict(ConcurrentHashMap<NodeId, Lineage> ends,
+                                    NodeId node,
+                                    Lineage lineage,
+                                    Option<Long> confirmed) {
+        return confirmed.fold(() -> evict(ends, node, lineage), _ -> Unit.unit());
+    }
+
+    private static Unit evict(ConcurrentHashMap<NodeId, Lineage> ends, NodeId node, Lineage lineage) {
+        ends.remove(node, lineage);
+
+        return Unit.unit();
+    }
+
+    /// [#confirmLineageEnd] for every non-self replica at its registry `confirmedOffset`.
+    private Promise<Unit> confirmCaps(String streamName, int partition, List<ReplicaDescriptor> replicas) {
+        return Promise.allOf(replicas.stream()
+                                     .filter(descriptor -> !descriptor.nodeId()
+                                                                      .equals(self))
+                                     .map(descriptor -> confirmLineageEnd(streamName,
+                                                                          partition,
+                                                                          descriptor.nodeId(),
+                                                                          descriptor.confirmedOffset()))
+                                     .toList()).mapToUnit();
+    }
+
+    /// [#confirmLineageEnd] for every probed peer that answered, at its probed tail (index-aligned with `results`).
+    private Promise<Unit> confirmProbed(String streamName,
+                                        int partition,
+                                        List<NodeId> peers,
+                                        List<Result<Long>> results) {
+        return Promise.allOf(IntStream.range(0,
+                                             peers.size())
+                                      .mapToObj(i -> results.get(i)
+                                                            .<Promise<Unit>> fold(_ -> Promise.success(Unit.unit()),
+                                                                                  tail -> confirmLineageEnd(streamName,
+                                                                                                            partition,
+                                                                                                            peers.get(i),
+                                                                                                            tail)))
+                                      .toList()).mapToUnit();
     }
 
     private void rememberLineageEnd(String streamName, int partition, NodeId source, long rawTail, long end) {
@@ -2145,12 +2229,12 @@ public final class PartitionBackfill {
     /// #3080: learn, WITHOUT installing anything, where `node`'s committed lineage ends, from the page it serves at `from`. The
     /// activation gate calls it when two responders disagree, before it refuses: a deposed epoch's tail is told apart from a genuine
     /// divergence by the same history and the same committed epoch starts a pull clips against ([#lineageBound]). `rawTail` is the
-    /// tail the end is learned for ([Lineage]). A page that cannot be read teaches nothing and fails the promise; the caller
-    /// decides what an unlearned bound means.
+    /// tail the end is learned for ([Lineage]). The read is ONE page ([CatchupTransport#requestPage]), never the source's whole
+    /// suffix: the bound lies at the page start, and a genuine divergence that stays refused is learned again on every gate pass. A
+    /// page that cannot be read teaches nothing and fails the promise; the caller decides what an unlearned bound means.
     public Promise<Unit> learnLineageEnd(String streamName, int partition, NodeId node, long rawTail, long from) {
-        return transport.requestCatchup(node,
-                                        catchupRequest(node, streamName, partition, from),
-                                        () -> progress(streamName, partition))
+        return transport.requestPage(node,
+                                     catchupRequest(node, streamName, partition, from))
                         .map(response -> lineageBound(response).map(bound -> Math.min(rawTail, bound - 1))
                                                      .onPresent(end -> rememberLineageEnd(streamName,
                                                                                           partition,
@@ -2244,13 +2328,12 @@ public final class PartitionBackfill {
             return ownerSelfPromote(streamName, partition);
         }
 
-        return Promise.allOf(blind.stream().map(peer -> probe.probe(peer, streamName, partition)).toList()).flatMap(results -> decideOwnerCatchup(streamName,
-                                                                                                                                                  partition,
-                                                                                                                                                  settle(streamName,
-                                                                                                                                                         partition,
-                                                                                                                                                         blind,
-                                                                                                                                                         results),
-                                                                                                                                                  localWatermark));
+        return Promise.allOf(blind.stream().map(peer -> probe.probe(peer, streamName, partition)).toList())
+                      .flatMap(results -> confirmProbed(streamName, partition, blind, results).map(_ -> results))
+                      .flatMap(results -> decideOwnerCatchup(streamName,
+                                                             partition,
+                                                             settle(streamName, partition, blind, results),
+                                                             localWatermark));
     }
 
     /// The non-self survivors whose LOCAL watermark is unknown (registration default `-1`, i.e. blind under

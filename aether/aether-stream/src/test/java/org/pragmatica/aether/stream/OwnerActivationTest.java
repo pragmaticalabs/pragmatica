@@ -825,6 +825,45 @@ class OwnerActivationTest {
         assertThat(alarms).anyMatch(OwnerActivation.ActivationBlock.DivergentPeers.class::isInstance);
     }
 
+    /// #3080 (F4): a bound learned ABOVE the first offset the pair differs is not an explanation. The genuine divergence is at 3
+    /// and B's refused tail starts at 4 (learned end 3): the pair still differs at 3, below the bound, so it is refused.
+    @Test
+    void activate_mixed_learnedBoundAboveTheFirstDifference_isRefusedAsDivergentPeers() {
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        localWatermark.set(2L);
+        peerWatermarks.put(PEER_A, 3L);
+        peerWatermarks.put(PEER_B, 5L);
+        refusedFrom.put(PEER_B, 4L);
+        divergent.add(PEER_B);
+        divergentFrom.set(3L);
+
+        assertThat(activate()).isFalse();
+        assertThat(learnedEnds).as("the bound was learned").containsEntry(PEER_B, 3L);
+        assertThat(catchUps).isEmpty();
+        assertThat(alarms).anyMatch(OwnerActivation.ActivationBlock.DivergentPeers.class::isInstance);
+    }
+
+    /// #3080: with no learn hook bound, nothing is learned and the pair is refused exactly as before learning existed; the default
+    /// hook settles (it does not leave the gate waiting).
+    @Test
+    void activate_mixed_withNoLearnHookBound_refusesAsDivergentPeersAsBefore() {
+        var unhooked = gate(PromotionTestRanges.NEVER_ALARM);
+
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        localWatermark.set(2L);
+        peerWatermarks.put(PEER_A, 3L);
+        peerWatermarks.put(PEER_B, 5L);
+        refusedFrom.put(PEER_B, 3L);
+        divergent.add(PEER_B);
+        divergentFrom.set(3L);
+
+        var outcome = unhooked.activate(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds());
+
+        assertThat(outcome.isSuccess()).isFalse();
+        assertThat(learnCalls).as("the test hook is not the one bound").isEmpty();
+        assertThat(alarms).anyMatch(OwnerActivation.ActivationBlock.DivergentPeers.class::isInstance);
+    }
+
     /// Decision (a): an unreachable live member blocks activation; once the membership FSM declares it DEAD it
     /// leaves the live placement set and activation proceeds — but never while a reachable member is ahead.
     @Test
