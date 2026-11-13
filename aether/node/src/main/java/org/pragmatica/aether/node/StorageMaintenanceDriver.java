@@ -171,7 +171,6 @@ public final class StorageMaintenanceDriver {
 
         startPromotionUnlessRunning();
         var collection = runPass(PART_GARBAGE_COLLECTION, garbageCollector::collectGarbage);
-
         var retry = runPass(PART_RETRY_PENDING, this::retryPendingPass);
         var promotion = promotionResult.getAndSet(Option.none());
 
