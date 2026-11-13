@@ -7,6 +7,8 @@ package org.pragmatica.aether.stream.forward;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.pragmatica.http.HttpError;
 import org.pragmatica.aether.stream.replication.ReplicationError;
@@ -29,6 +31,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -176,6 +179,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     private final Option<LinearizableOwnerServe<OffHeapRingBuffer.RawEvent>> ownerServe;
     private final Option<TieredStreamReader> tieredReader;
     private final Option<ControlLog> controlLog;
+    private final Set<NodeId> unsentRequesters = ConcurrentHashMap.newKeySet();
 
     DefaultStreamForwardHandler(NodeId selfNodeId,
                                 StreamPartitionManager partitionManager,
@@ -193,6 +197,42 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         this.ownerServe = ownerServe;
         this.tieredReader = tieredReader;
         this.controlLog = controlLog;
+    }
+
+    /// #2583 P2: every reply reads its [WriteOutcome]. A reply the transport did not accept is counted
+    /// ([StreamReadForwardMetrics#recordReplyNotSent]) and opens one WARN episode per requester, closed by a summary on the
+    /// next accepted reply, never one WARN per message. Recovery: design-out -- no re-send. The handler holds no deadline
+    /// of the requester's wait, so it cannot bound a re-send; the requester's own timeout and retry (#2574, #2683) already
+    /// own recovery of a reply that never arrives, and the counter is what makes the loss visible here.
+    @Contract
+    private void reply(NodeId requester, StreamForwardMessage response) {
+        transport.send(requester, response).onSuccess(outcome -> observeReply(requester, outcome));
+    }
+
+    @Contract
+    private void observeReply(NodeId requester, WriteOutcome outcome) {
+        if (outcome.isSent()) {
+            closeUnsentEpisode(requester);
+        } else {
+            countUnsentReply(requester, outcome);
+        }
+    }
+
+    @Contract
+    private void countUnsentReply(NodeId requester, WriteOutcome outcome) {
+        metrics.recordReplyNotSent();
+        if (unsentRequesters.add(requester)) {
+            log.warn("Forward reply to {} not sent ({}); further unsent replies to it are counted, not logged",
+                     requester,
+                     outcome);
+        }
+    }
+
+    @Contract
+    private void closeUnsentEpisode(NodeId requester) {
+        if (unsentRequesters.remove(requester)) {
+            log.info("Forward replies to {} are being accepted again", requester);
+        }
     }
 
     /// #1236: the replica floor (`CF - 1` peers) is checked BEFORE the owner appends, so a forwarded
@@ -382,7 +422,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     private void sendSuccessResponse(PublishForward request, long offset) {
         var response = PublishForwardResponse.successResponse(selfNodeId, request.correlationId(), offset);
 
-        transport.send(request.sender(), response);
+        reply(request.sender(), response);
         log.trace("Forwarded publish succeeded for {}[{}] correlationId={} offset={}",
                   request.streamName(),
                   request.partition(),
@@ -394,7 +434,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     private void sendFailureResponse(PublishForward request, String errorMessage) {
         var response = PublishForwardResponse.failureResponse(selfNodeId, request.correlationId(), errorMessage);
 
-        transport.send(request.sender(), response);
+        reply(request.sender(), response);
         log.warn("Forwarded publish failed for {}[{}] correlationId={}: {}",
                  request.streamName(),
                  request.partition(),
@@ -429,7 +469,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     private void sendOutcomeUnknownResponse(PublishForward request, String errorMessage) {
         var response = PublishForwardResponse.outcomeUnknownResponse(selfNodeId, request.correlationId(), errorMessage);
 
-        transport.send(request.sender(), response);
+        reply(request.sender(), response);
         log.warn("Forwarded publish outcome unknown for {}[{}] correlationId={}: {}",
                  request.streamName(),
                  request.partition(),
@@ -441,7 +481,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     private void sendRetryableResponse(PublishForward request, String errorMessage) {
         var response = PublishForwardResponse.retryableResponse(selfNodeId, request.correlationId(), errorMessage);
 
-        transport.send(request.sender(), response);
+        reply(request.sender(), response);
         log.warn("Forwarded publish retryable for {}[{}] correlationId={}: {}",
                  request.streamName(),
                  request.partition(),
@@ -506,7 +546,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
             metrics.recordTruncated();
         }
 
-        transport.send(request.sender(), response);
+        reply(request.sender(), response);
         log.trace("Forwarded read succeeded for {}[{}] fromOffset={} correlationId={} events={} truncated={}",
                   request.streamName(),
                   request.partition(),
@@ -522,13 +562,13 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     @Contract
     private void sendReadFailure(ReadForward request, Cause cause) {
         if (cause instanceof StreamError.EpochDiverged diverged) {
-            transport.send(request.sender(),
-                           ReadForwardResponse.epochDivergedResponse(selfNodeId,
-                                                                     request.correlationId(),
-                                                                     diverged.ownerEpoch(),
-                                                                     diverged.resumeAt(),
-                                                                     diverged.provenLossFrom(),
-                                                                     diverged.message()));
+            reply(request.sender(),
+                  ReadForwardResponse.epochDivergedResponse(selfNodeId,
+                                                            request.correlationId(),
+                                                            diverged.ownerEpoch(),
+                                                            diverged.resumeAt(),
+                                                            diverged.provenLossFrom(),
+                                                            diverged.message()));
             log.info("Forwarded read diverged for {}[{}] fromOffset={} correlationId={}: {}",
                      request.streamName(),
                      request.partition(),
@@ -544,7 +584,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         log.warn("Forwarded read failure correlationId={} (cause chain: {})",
                  request.correlationId(),
                  HttpError.causeChain(cause));
-        transport.send(request.sender(), failureAnswer(request, cause, clientText));
+        reply(request.sender(), failureAnswer(request, cause, clientText));
         log.warn("Forwarded read failed for {}[{}] fromOffset={} correlationId={}: {}",
                  request.streamName(),
                  request.partition(),
@@ -620,11 +660,11 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
 
     @Contract
     private void sendControlResponse(ControlAppendForward request, List<ControlOutcome> outcomes) {
-        transport.send(request.sender(),
-                       ControlAppendForwardResponse.controlAppendForwardResponse(selfNodeId,
-                                                                                 request.correlationId(),
-                                                                                 outcomes.stream()
-                                                                                         .map(ControlOutcomeDto::fromOutcome)
-                                                                                         .toList()));
+        reply(request.sender(),
+              ControlAppendForwardResponse.controlAppendForwardResponse(selfNodeId,
+                                                                        request.correlationId(),
+                                                                        outcomes.stream()
+                                                                                .map(ControlOutcomeDto::fromOutcome)
+                                                                                .toList()));
     }
 }
