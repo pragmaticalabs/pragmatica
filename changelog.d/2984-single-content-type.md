@@ -1,0 +1,2 @@
+### Fixed (2026-11-13 — #2984: app HTTP/1.1 responses carried `Content-Type` twice)
+- **The HTTP/1.1 response writer now emits exactly one `Content-Type`.** The app server passes the type both as a response header and as the typed `write` argument, and the writer added the header on top of the typed one (`content-type` and `Content-Type` on the wire), breaking single-valued clients. The typed argument is authoritative; a handler-set `Content-Type` header is dropped. HTTP/3 already replaced it (pinned by test). [verified: `Http1ContentTypeSingleTest`, red on the old writer]
