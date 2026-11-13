@@ -129,9 +129,9 @@ class Fsm2EquivalenceRoundTest {
         for (var index = 0; index < engines.size(); index++) {
             var engine = engines.get(index);
 
-            var basePort = 33000 + 400 * index;
+            var firstBase = 33000 + EquivalencePorts.STEP * index;
 
-            arms.put(engine, EquivalenceVerdict.guarded(() -> runArm(scenario, engine, basePort, oracle, o4Controls, placements), error -> armError(scenario, round, engine, error)));
+            arms.put(engine, EquivalenceVerdict.guarded(() -> runArm(scenario, engine, firstBase, oracle, o4Controls, placements), error -> armError(scenario, round, engine, error)));
         }
         var legacy = arms.get(DeploymentEngine.LEGACY);
         var fsm2 = arms.get(DeploymentEngine.FSM2);
@@ -199,10 +199,13 @@ class Fsm2EquivalenceRoundTest {
 
     private Arm runArm(Scenario scenario,
                        DeploymentEngine engine,
-                       int basePort,
+                       int firstBase,
                        List<EquivalenceOracle.Verdict> oracle,
                        Map<DeploymentEngine, Boolean> o4Controls,
                        Map<DeploymentEngine, String> placements) {
+        var basePort = EquivalencePorts.freeBase(firstBase, scenario.nodes);
+
+        log("arm %s ports base=%d".formatted(engine, basePort));
         var cluster = emberCluster(scenario.nodes, basePort, basePort + 100, basePort + 200, "f4" + engine.name().toLowerCase().charAt(0));
 
         cluster.withDeploymentEngine(engine);
