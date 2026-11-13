@@ -63,7 +63,7 @@ class Http3ResponseHeaderNamesTest {
         server = Http3Server.create(HttpServerConfig.httpServerConfig("h3-header-names", port),
                                     QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
                                                          .unwrap(),
-                                    (_, writer) -> writer.header("X-Request-Id", "req-upper").ok("{}"))
+                                    (_, writer) -> writer.header("X-Request-Id", "req-upper").header("Content-Type", "application/json; charset=UTF-8").ok("{}"))
                             .await(timeSpan(10).seconds())
                             .unwrap();
         clientGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
@@ -82,6 +82,14 @@ class Http3ResponseHeaderNamesTest {
         assertThat(headers.status()).as("the response arrives").isNotNull();
         assertThat(headers.status().toString()).isEqualTo("200");
         assertThat(headers.get("x-request-id")).hasToString("req-upper");
+    }
+
+    /// #2984: `Content-Type` passed as a header and as the typed `write` argument leaves the server once.
+    @Test
+    void contentTypeSetAsHeaderAndAsTypedArgument_arrivesOnce() throws Exception {
+        var headers = exchange();
+
+        assertThat(headers.getAll("content-type")).hasSize(1);
     }
 
     /// Under `tr-TR` a default-locale lower case turns the `I` of `X-Request-Id` into a dotless `ı`, which is not the
