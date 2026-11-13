@@ -17,11 +17,8 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// [LiveFenceContract] plus the end-to-end MIGRATE runs on an engine whose history tables can be bootstrapped.
-/// Written for [MigrationFenceOracleTest], where they are `@Disabled` behind a tripwire: neither SQL Server (`CREATE
-/// TABLE IF NOT EXISTS` is not valid T-SQL, #3050) nor Oracle (`DEFAULT` after `NOT NULL`, ORA-03076) can bootstrap
-/// its history table today, so no migration gets as far as its first script (both pre-existing, found by the live
-/// tests; see the PR's residuals).
+/// [LiveFenceContract] plus the end-to-end MIGRATE runs on an engine whose history tables can be bootstrapped: a
+/// fresh schema must reach its first script, which pins the per-dialect history DDL (#3050 SQL Server, #3069 Oracle).
 abstract class LiveMigrateFenceContract extends LiveFenceContract {
     /// No fence outlives the run: after a success and after a failing script another session can take it.
     @Test

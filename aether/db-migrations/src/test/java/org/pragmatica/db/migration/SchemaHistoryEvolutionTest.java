@@ -55,10 +55,10 @@ class SchemaHistoryEvolutionTest {
     @Nested
     class StepOneDdl {
 
-        /// v1 is dialect-independent and always the `CREATE TABLE IF NOT EXISTS` for all 8 columns.
+        /// v1 is `CREATE TABLE IF NOT EXISTS` for every dialect but SQL Server, which has no such syntax (#3050).
         @ParameterizedTest
-        @EnumSource(DatabaseType.class)
-        void stepV1_isCreateTableIfNotExists_forEveryDialect(DatabaseType type) {
+        @EnumSource(value = DatabaseType.class, mode = EnumSource.Mode.EXCLUDE, names = "SQLSERVER")
+        void stepV1_isCreateTableIfNotExists_forEveryDialectButSqlServer(DatabaseType type) {
             var statements = SchemaHistoryEvolution.STEP_V1.ddl().render(type);
 
             assertThat(statements).hasSize(1);
@@ -67,6 +67,26 @@ class SchemaHistoryEvolutionTest {
                     .contains("PRIMARY KEY (version, type)")
                     .doesNotContain("status")
                     .doesNotContain("statements_completed");
+        }
+
+        @Test
+        void stepV1_sqlServer_guardsTheCreateWithObjectId() {
+            var statements = SchemaHistoryEvolution.STEP_V1.ddl().render(DatabaseType.SQLSERVER);
+
+            assertThat(statements).hasSize(1);
+            assertThat(statements.getFirst())
+                    .startsWith("IF OBJECT_ID(N'aether_schema_history', N'U') IS NULL CREATE TABLE aether_schema_history (")
+                    .doesNotContain("IF NOT EXISTS")
+                    .contains("PRIMARY KEY (version, type)");
+        }
+
+        /// Oracle (ORA-03076) requires DEFAULT before NOT NULL; every other engine accepts that order too (#3069).
+        @ParameterizedTest
+        @EnumSource(DatabaseType.class)
+        void stepV1_putsDefaultBeforeNotNull_forEveryDialect(DatabaseType type) {
+            assertThat(SchemaHistoryEvolution.STEP_V1.ddl().render(type).getFirst())
+                    .contains("VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL")
+                    .doesNotContain("NOT NULL DEFAULT");
         }
     }
 

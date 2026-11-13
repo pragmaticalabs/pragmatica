@@ -25,7 +25,7 @@ import static org.pragmatica.aether.resource.db.DatabaseConnectorConfig.database
 /// FDB-2b fix round (#2591, review A1): the SQL Server tier-2 fence (`sp_getapplock`, `@LockOwner = 'Session'`) against a
 /// live SQL Server 2022. The raw lock statement below is written independently of the production text.
 @Tag("heavy-db")
-class MigrationFenceSqlServerTest extends LiveFenceContract {
+class MigrationFenceSqlServerTest extends LiveMigrateFenceContract {
     private static final AtomicInteger DATABASES = new AtomicInteger();
     private static final String TRY_LOCK = "SET NOCOUNT ON; DECLARE @r INT; EXEC @r = sp_getapplock @Resource = 'aether_schema_migration',"
                                            + " @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = 0; SELECT @r";
