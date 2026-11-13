@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.util.Arrays;
 import java.util.List;
 
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -17,11 +18,13 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.serialization.SliceCodec;
 
 import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// #1873: `EpochStart.coversFrom` (the oldest epoch an entry stands for) crosses the consensus wire in the ownership record. A
 /// null or ZERO `coversFrom` is read as the entry's own epoch, so a codec that dropped the field would decode every entry as
@@ -93,5 +96,68 @@ class EpochStartCodecTest {
         assertThat(starts.stream().map(EpochStart::owner).toList())
             .isEqualTo(List.of(Option.none(), Option.some(earlier), Option.some(owner)));
         assertThat(starts).isEqualTo(List.of(unknown, folded, unfolded));
+    }
+
+    /// #2981 step 3 compatibility: a record in the format BEFORE `owner` (the owner encoding absent from every start) is not
+    /// readable by this codec, and the failure is LOUD. The reader takes the bytes after `coversFrom` as the owner's `Option`,
+    /// so an old-format start either runs out of bytes (last start) or meets the next start's tag where an `Option` tag is
+    /// expected (a middle start): never a record that silently names no owner. Pre-GA no old-format record is persisted or on
+    /// a peer's wire, so a loud refusal is the acceptable outcome; this pins that it is not a silent one.
+    @Test
+    void anOldFormatStart_withoutTheOwnerEncoding_failsLoudly_neverDecodesSilently() {
+        var codec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
+        var none = Unpooled.buffer();
+
+        codec.write(none, Option.none());
+
+        var ownerBytes = new byte[none.readableBytes()];
+
+        none.readBytes(ownerBytes);
+
+        var one = encoded(codec, List.of(EpochStart.epochStart(Epoch.epoch(1L, 2L, 5L), 10L, Option.none())));
+        var two = encoded(codec,
+                          List.of(EpochStart.epochStart(Epoch.epoch(1L, 2L, 5L), 10L, Option.none()),
+                                  EpochStart.epochStart(Epoch.epoch(1L, 2L, 6L), 20L, Option.none())));
+        var oneOldFormat = withoutOwnerEncodingAt(one, one.length - ownerBytes.length, ownerBytes);
+        var twoOldFormat = withoutOwnerEncodingAt(withoutOwnerEncodingAt(two, two.length - ownerBytes.length, ownerBytes),
+                                                  one.length - ownerBytes.length,
+                                                  ownerBytes);
+
+        assertThat(oneOldFormat).as("the instrument: the owner encoding was really removed").hasSize(one.length - ownerBytes.length);
+        assertThat(twoOldFormat).as("the instrument: both owner encodings were really removed").hasSize(two.length - 2 * ownerBytes.length);
+        assertThatThrownBy(() -> codec.read(Unpooled.wrappedBuffer(oneOldFormat))).isInstanceOf(RuntimeException.class);
+        assertThatThrownBy(() -> codec.read(Unpooled.wrappedBuffer(twoOldFormat))).isInstanceOf(RuntimeException.class);
+    }
+
+    private static byte[] encoded(SliceCodec codec, List<EpochStart> starts) {
+        var owner = NodeId.nodeId("node-1").unwrap();
+        var value = new StreamPartitionOwnershipValue(owner,
+                                                      Epoch.epoch(1L, 2L, 10L),
+                                                      10L,
+                                                      HlcTimestamp.ZERO,
+                                                      List.of(owner),
+                                                      1L,
+                                                      false,
+                                                      List.of(),
+                                                      starts);
+        var put = new KVCommand.Put<AetherKey, AetherValue>(StreamPartitionOwnershipKey.streamPartitionOwnershipKey("orders", 0), value);
+        var buf = Unpooled.buffer();
+
+        codec.write(buf, put);
+
+        var bytes = new byte[buf.readableBytes()];
+
+        buf.readBytes(bytes);
+        return bytes;
+    }
+
+    private static byte[] withoutOwnerEncodingAt(byte[] bytes, int at, byte[] ownerBytes) {
+        assertThat(Arrays.copyOfRange(bytes, at, at + ownerBytes.length)).as("the owner encoding sits at the cut").isEqualTo(ownerBytes);
+
+        var out = new byte[bytes.length - ownerBytes.length];
+
+        System.arraycopy(bytes, 0, out, 0, at);
+        System.arraycopy(bytes, at + ownerBytes.length, out, at, bytes.length - at - ownerBytes.length);
+        return out;
     }
 }
