@@ -185,24 +185,6 @@ class RefutedDrainQuorumLossTest {
                                                                        .containsEntry(SUSPECT, "Member"));
     }
 
-    /// #3028 S3 pin (mutant f4): a refusal is remembered only when the member REPORTED quorum loss at the offer. The
-    /// first query (the DEAD refusal) answers yes, the second (the arming check) no: nothing was refused for quorum loss
-    /// as far as the arming check can see, so nothing is re-offered and the identity stays DEAD.
-    @Test
-    void refusalNotAttributedToQuorumLoss_isNotReoffered() throws InterruptedException {
-        var survivor = deadWhileReporting(survivor(SHORT_DEPARTURE));
-        var firstQuery = new AtomicBoolean(true);
-
-        reporting.clear();
-        survivor.setQuorumLossReport(_ -> firstQuery.getAndSet(false));
-        survivor.onSwimHealthy(SUSPECT, 3L);
-        assertThat(survivor.memberStates()).containsEntry(SUSPECT, "Dead");
-        Thread.sleep(3000);
-
-        assertThat(survivor.memberStates()).as("no quorum-loss report at arming time: no re-offer was scheduled")
-                                           .containsEntry(SUSPECT, "Dead");
-    }
-
     /// #3028 S3 pin (mutant f3): an offer at or below the incarnation the identity died at is stale gossip, not a refusal
     /// to re-offer. A stale offer must not start the timer: the refused newer offer 1.4s later owns it and fires 2s
     /// after ITS offer.
@@ -283,6 +265,24 @@ class RefutedDrainQuorumLossTest {
 
         assertThat(survivor.memberStates()).as("the pending re-offer found the identity out of DEAD and did nothing")
                                            .containsEntry(SUSPECT, "Suspect");
+    }
+
+    /// v3107a F1 (design 3.6): the DEAD refusal saw the quorum-loss report, which then cleared before the arming check read it
+    /// again. The refusal WAS for quorum loss and the quorum is now regained, so the refused incarnation must still be re-offered;
+    /// nothing else will (the refutation is spent). At a07fe436fb nothing is armed and the identity stays DEAD for good.
+    @Test
+    void v3107a_reportClearsBetweenRefusalAndArming_isStillReadmitted() {
+        var survivor = deadWhileReporting(survivor(SHORT_DEPARTURE));
+        var firstQuery = new AtomicBoolean(true);
+
+        reporting.clear();
+        survivor.setQuorumLossReport(_ -> firstQuery.getAndSet(false));
+        survivor.onSwimHealthy(SUSPECT, 3L);
+        assertThat(survivor.memberStates()).as("refused at the DEAD check: the report held then").containsEntry(SUSPECT, "Dead");
+
+        await().atMost(6, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(survivor.memberStates()).as("quorum regained: the refused incarnation is re-offered")
+                                                                       .containsEntry(SUSPECT, "Member"));
     }
 
     private MembershipFsm deadWhileReporting(MembershipFsm survivor) {

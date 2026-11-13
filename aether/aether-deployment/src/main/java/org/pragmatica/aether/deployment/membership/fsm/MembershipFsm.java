@@ -1285,7 +1285,7 @@ public final class MembershipFsm {
     /// further notice arrives) and the report's clearing carries a further bump only when the member's incarnation moves.
     @Contract
     private void reofferIfRefusedForQuorumLoss(MemberTracking tracking, long incarnation) {
-        if (tracking.armRejoinReoffer(incarnation, quorumLossReported.test(tracking.id))) {
+        if (tracking.armRejoinReoffer(incarnation)) {
             SharedScheduler.schedule(() -> reofferRefusedRejoin(tracking), REJOIN_REOFFER);
         }
     }
@@ -2040,10 +2040,11 @@ public final class MembershipFsm {
         }
 
         /// #3028 S3: records `incarnation` as a rejoin refused for quorum loss when this member is DEAD, `incarnation`
-        /// exceeds the incarnation it died at, and it `reportsQuorumLoss`. True when the caller must schedule the
+        /// exceeds the incarnation it died at. The report is not re-read here: the DEAD refusal of a newer incarnation is for quorum loss
+        /// alone, and a second read could see the report cleared and leave the refusal permanent (v3107a F1). True when the caller must schedule the
         /// re-offer (none is pending yet), so at most one re-offer timer exists per member.
-        synchronized boolean armRejoinReoffer(long incarnation, boolean reportsQuorumLoss) {
-            if (! (fsm.current() instanceof MembershipState.Dead dead) || incarnation <= dead.terminalIncarnation() || !reportsQuorumLoss) {
+        synchronized boolean armRejoinReoffer(long incarnation) {
+            if (! (fsm.current() instanceof MembershipState.Dead dead) || incarnation <= dead.terminalIncarnation()) {
                 return false;
             }
 
