@@ -187,6 +187,30 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).as("evicted").isEqualTo(20L);
     }
 
+    /// #3080: the gate learns a responder's bound before it refuses a pair. The page R1 serves from 11 is history E1, re-assigned by
+    /// the committed E3 @ 11: R1's committed lineage ends at 10 for its raw tail 20. Nothing is installed by learning it.
+    @Test
+    void learnLineageEnd_fromAPageHoldingADeposedTail_remembersTheEnd_andInstallsNothing() {
+        var fixture = disownedTailFixture();
+
+        var learned = settled(fixture.backfill().learnLineageEnd("s", 0, SOURCE, 20L, 11L));
+
+        assertThat(learned.isSuccess()).as("learned: %s", learned).isTrue();
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).isEqualTo(10L);
+        assertThat(fixture.served()).containsExactly(SOURCE);
+        assertThat(head()).as("read only").isEqualTo(-1L);
+    }
+
+    /// #3080: a page that follows the committed lineage teaches no bound: R2's raw tail stands.
+    @Test
+    void learnLineageEnd_fromAPageFollowingTheCommittedLineage_remembersNothing() {
+        var fixture = disownedTailFixture();
+
+        settled(fixture.backfill().learnLineageEnd("s", 0, OTHER, 15L, 11L)).onFailure(cause -> fail(cause.message()));
+
+        assertThat(fixture.backfill().lineageEnd("s", 0, OTHER, 15L)).isEqualTo(15L);
+    }
+
     /// The promotion gate's own path ([PartitionBackfill#catchUpOwnerFrom]) targets the probed source's lineage end alone: another
     /// replica in the registry (R2 at 15) does not hold the activation short, since the gate would probe the same source again.
     @Test

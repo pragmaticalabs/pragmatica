@@ -2142,6 +2142,24 @@ public final class PartitionBackfill {
                                bound.map(b -> clippedBefore(response, b)).or(response));
     }
 
+    /// #3080: learn, WITHOUT installing anything, where `node`'s committed lineage ends, from the page it serves at `from`. The
+    /// activation gate calls it when two responders disagree, before it refuses: a deposed epoch's tail is told apart from a genuine
+    /// divergence by the same history and the same committed epoch starts a pull clips against ([#lineageBound]). `rawTail` is the
+    /// tail the end is learned for ([Lineage]). A page that cannot be read teaches nothing and fails the promise; the caller
+    /// decides what an unlearned bound means.
+    public Promise<Unit> learnLineageEnd(String streamName, int partition, NodeId node, long rawTail, long from) {
+        return transport.requestCatchup(node,
+                                        catchupRequest(node, streamName, partition, from),
+                                        () -> progress(streamName, partition))
+                        .map(response -> lineageBound(response).map(bound -> Math.min(rawTail, bound - 1))
+                                                     .onPresent(end -> rememberLineageEnd(streamName,
+                                                                                          partition,
+                                                                                          node,
+                                                                                          rawTail,
+                                                                                          end)))
+                        .mapToUnit();
+    }
+
     /// I-27 (#1759, CTO D1): the activating owner takes a source's records only up to the lowest offset a later committed epoch
     /// re-assigned ([AlignedRecovery#reassignedFrom]): a replica serving its WAL ships what it holds, a deposed epoch's tail
     /// included, vouched by its own history, and the receiver clips it. What is left out is never installed, and the end learned
