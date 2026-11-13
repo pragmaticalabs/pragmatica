@@ -72,10 +72,37 @@ class CstArchSliceInternalRuleTest {
                     class SharedHelper {}
                     """));
         }
+
+        /// #3065: the import node carries the `///` block that follows it; the violation must still be reported against the
+        /// import's package, not against the import plus the trailing doc text.
+        @Test
+        void detects_importFollowedByDocBlock_reportsCleanPackage() {
+            var diagnostics = lint("""
+                    package com.example.usecase.registeruser;
+                    import com.example.usecase.loginuser.internal.Token;
+                    /// Registers a user.
+                    class RegisterUser {}
+                    """);
+
+            assertTrue(diagnostics.stream().anyMatch(d -> d.ruleId().equals(RULE_ID)
+                                                          && d.message().contains("'com.example.usecase.loginuser.internal'")
+                                                          && !d.message().contains("///")));
+        }
     }
 
     @Nested
     class NearMisses {
+        /// #3065: a trailing `///` block mentioning `usecase` is trivia of the import node, not part of the imported name.
+        @Test
+        void allows_importFollowedByDocBlockMentioningUsecase() {
+            assertFalse(hasRule("""
+                    package com.example.shared;
+                    import org.pragmatica.lang.Option;
+                    /// Classifies a usecase package. Not a slice.
+                    class SharedHelper {}
+                    """));
+        }
+
         @Test
         void allows_importOfAnotherSliceRootSurface() {
             assertFalse(hasRule("""

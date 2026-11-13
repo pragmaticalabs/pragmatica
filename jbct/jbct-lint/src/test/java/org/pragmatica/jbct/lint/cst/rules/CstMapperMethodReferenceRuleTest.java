@@ -613,6 +613,96 @@ class CstMapperMethodReferenceRuleTest {
                 """));
     }
 
+    /// #3065: a `getLast` dominated by an `isEmpty()` guard on the same receiver is total.
+    @Test
+    void analyze_getLastGuardedByIsEmptyTernary_isClean() {
+        assertFalse(hasRule("""
+                package org.example;
+                class Handler {
+                    Object run(Option<Wire> o) {
+                        return o.flatMap(Handler::lastName);
+                    }
+                    static Option<String> lastName(Wire wire) {
+                        var segments = wire.items();
+                        return segments.isEmpty() ? Option.none() : Option.some(segments.getLast());
+                    }
+                }
+                """));
+    }
+
+    /// #3065: a `getFirst` dominated by a `size() == 1 &&` guard on the same receiver is total.
+    @Test
+    void analyze_getFirstGuardedBySizeCheck_isClean() {
+        assertFalse(hasRule("""
+                package org.example;
+                class Handler {
+                    Object run(List<Wire> xs) {
+                        return xs.stream().map(Handler::isSingle).toList();
+                    }
+                    static boolean isSingle(Wire wire) {
+                        var branches = wire.items();
+                        return branches.size() == 1 && branches.getFirst().isEmpty();
+                    }
+                }
+                """));
+    }
+
+    /// #3065 control: the guard is on ANOTHER receiver, so the accessor is still partial.
+    @Test
+    void analyze_getLastGuardOnOtherReceiver_flags() {
+        assertTrue(hasRule("""
+                package org.example;
+                class Handler {
+                    Object run(Option<Wire> o) {
+                        return o.flatMap(Handler::lastName);
+                    }
+                    static Option<String> lastName(Wire wire) {
+                        var segments = wire.items();
+                        var others = wire.others();
+                        return others.isEmpty() ? Option.none() : Option.some(segments.getLast());
+                    }
+                }
+                """));
+    }
+
+    /// #3065 control: the guard comes AFTER the accessor, so it does not dominate it.
+    @Test
+    void analyze_getLastGuardAfterAccessor_flags() {
+        assertTrue(hasRule("""
+                package org.example;
+                class Handler {
+                    Object run(Option<Wire> o) {
+                        return o.flatMap(Handler::lastName);
+                    }
+                    static Option<String> lastName(Wire wire) {
+                        var segments = wire.items();
+                        var last = segments.getLast();
+                        return segments.isEmpty() ? Option.none() : Option.some(last);
+                    }
+                }
+                """));
+    }
+
+    /// #3065 control: a guarded accessor does not excuse another partial operation in the same body.
+    @Test
+    void analyze_guardedGetLastPlusThrow_flags() {
+        assertTrue(hasRule("""
+                package org.example;
+                class Handler {
+                    Object run(Option<Wire> o) {
+                        return o.flatMap(Handler::lastName);
+                    }
+                    static Option<String> lastName(Wire wire) {
+                        var segments = wire.items();
+                        if (wire.broken()) {
+                            throw new IllegalStateException("broken");
+                        }
+                        return segments.isEmpty() ? Option.none() : Option.some(segments.getLast());
+                    }
+                }
+                """));
+    }
+
     private long count(String source) {
         return lint(source).stream()
                            .filter(diagnostic -> diagnostic.ruleId()
