@@ -4,17 +4,27 @@
 // See LICENSE in the repository root for full terms.
 /// Stream partition replication: backfill, catch-up and owner activation.
 ///
-/// The TLA+ model `Stalled` (at 92ccde7f6c, level-triggered) of the owner catch-up's all-stalled warning ([PartitionBackfill]) lives in
+/// The TLA+ model `Stalled` (level-triggered, #2967) of the owner catch-up's all-stalled warning ([PartitionBackfill]) lives in
 /// doc-comment fragments: this skeleton carries the state, the environment (cluster events raised by other components),
 /// `Init`, `Next`, fairness and the properties; each action sits on the code that implements it.
-/// `tools/tla/check.sh Stalled <variant> aether/aether-stream/src/main/java` extracts and checks it.
+/// `tools/tla/check.sh Stalled <variant> aether/aether-stream/src/main/java` extracts and checks one config;
+/// `tools/tla/run.sh` runs every config with its expected verdict (`tools/tla/models.tsv`). Results are bounds, not
+/// proofs: a passing config says no violation exists within its constants.
 ///
 /// ```tla Stalled:head
 /// EXTENDS Naturals
 ///
 /// \* One partition of one stream on this node and one catch-up source. MAX is MAX_STALLED_ROUNDS. Env is the set
 /// \* of environment events enabled in a run, EnvSteps bounds how many happen.
-/// CONSTANTS MAX, EnvSteps, Env
+/// \* Fixed: the fixes the modelled code carries (the code as it stands carries AllFixes). A config that drops one
+/// \* models the earlier version and must fail:
+/// \*   level - the warning is level-triggered: every round and reconcileStalled re-check what backs it, and a raise
+/// \*           needs the stream to exist (bcc2102db6 was edge-triggered: v2967b F1, F2)
+/// CONSTANTS MAX, EnvSteps, Env, Fixed
+///
+/// AllFixes == {"level"}
+/// Fix(f) == f \in Fixed
+/// ASSUME Fixed \subseteq AllFixes
 ///
 /// VARIABLES
 ///     exists,      \* the stream exists on this node (destroy / recreate)
@@ -123,31 +133,55 @@
 ///
 /// ```tlacfg Stalled:live
 /// CONSTANT Env = {"destroy", "recreate", "remove", "add", "owner", "quar"}
+/// CONSTANT Fixed <- AllFixes
 /// PROPERTY UnbackedClears
 /// ```
 ///
 /// ```tlacfg Stalled:liveremove
 /// CONSTANT Env = {"remove", "add", "owner", "quar"}
+/// CONSTANT Fixed <- AllFixes
 /// PROPERTY UnbackedClears
 /// ```
 ///
 /// ```tlacfg Stalled:livedestroy
 /// CONSTANT Env = {"destroy", "recreate"}
+/// CONSTANT Fixed <- AllFixes
 /// PROPERTY UnbackedClears
 /// ```
 ///
 /// ```tlacfg Stalled:liveowner
 /// CONSTANT Env = {"owner", "quar"}
+/// CONSTANT Fixed <- AllFixes
+/// PROPERTY UnbackedClears
+/// ```
+///
+/// ```tlacfg Stalled:edgeremove
+/// CONSTANT Env = {"remove", "add", "owner", "quar"}
+/// CONSTANT Fixed = {}
+/// PROPERTY UnbackedClears
+/// ```
+///
+/// ```tlacfg Stalled:edgedestroy
+/// CONSTANT Env = {"destroy", "recreate"}
+/// CONSTANT Fixed = {}
+/// PROPERTY UnbackedClears
+/// ```
+///
+/// ```tlacfg Stalled:edgeowner
+/// CONSTANT Env = {"owner", "quar"}
+/// CONSTANT Fixed = {}
 /// PROPERTY UnbackedClears
 /// ```
 ///
 /// ```tlacfg Stalled:settled
 /// CONSTANT Env = {"destroy", "recreate", "remove", "add", "owner", "quar"}
+/// CONSTANT Fixed <- AllFixes
 /// INVARIANT SettledIsBacked
 /// ```
 ///
 /// ```tlacfg Stalled:early
 /// CONSTANT Env = {"destroy", "recreate", "remove", "add", "owner", "quar"}
+/// CONSTANT Fixed <- AllFixes
 /// INVARIANT NoEarlyRaise
 /// ```
 package org.pragmatica.aether.stream.replication;
