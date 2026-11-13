@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
@@ -14,6 +15,7 @@ import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.stream.forward.StreamForwardError;
+import org.pragmatica.aether.stream.replication.PartitionKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.hlc.HlcTimestamp;
@@ -23,7 +25,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /// #3140: the owner-activation gate's twin of #2875. `attempt` checks the refusal wait and then starts a gate; a gate run by
 /// another thread can be refused and park the partition between the check and the start, so the stale check let a second gate
@@ -35,7 +36,7 @@ class OwnerActivationHoldYieldTest {
     private static final NodeId SELF = new NodeId("self");
     private static final NodeId PEER = new NodeId("peer");
     private static final String STREAM = "orders";
-    private static final long MIN_FIRST_HOLD_MS = 190L;
+    private static final long HOLD_MS = 2_000L;
 
     private final List<Long> probesAtNanos = new CopyOnWriteArrayList<>();
 
@@ -45,14 +46,44 @@ class OwnerActivationHoldYieldTest {
 
         gate.admit(STREAM, 0);
         assertThat(probesAtNanos).as("the admit ran one refused gate").hasSize(1);
-        assumeTrue(elapsedMs(probesAtNanos.getFirst()) < MIN_FIRST_HOLD_MS / 2, "the hold had not run out when the stale start was simulated");
+
+        var holdSetAt = holdFor(gate);
 
         start(gate);
 
         assertThat(probesAtNanos).as("a start inside the hold probes nothing").hasSize(1);
-        await(() -> probesAtNanos.size() >= 2, "the hold's end re-drives the partition");
-        assertThat((probesAtNanos.get(1) - probesAtNanos.get(0)) / 1_000_000L).as("the re-probe waited the first hold out")
-                                                                              .isGreaterThanOrEqualTo(MIN_FIRST_HOLD_MS);
+        awaitReprobeAfterHold(holdSetAt);
+    }
+
+    /// The deferral is the ONLY route to a later activation here: no gate ran, so no refused gate scheduled its own re-drive.
+    /// Red when `yieldToRefusal` releases the partition without deferring to the hold's end.
+    @Test
+    void startInsideTheHold_withNoPriorGate_deferralIsTheOnlyRedrive() throws Exception {
+        var gate = refusedGate();
+        var holdSetAt = holdFor(gate);
+
+        start(gate);
+
+        assertThat(probesAtNanos).as("a start inside the hold probes nothing").isEmpty();
+        awaitReprobeAfterHold(holdSetAt);
+    }
+
+    /// Stands a hold of [#HOLD_MS] from now, set directly so no wall-clock race with the gate's own hold decides the
+    /// precondition: the start that follows is microseconds after it. Returns the instant the hold was set.
+    @SuppressWarnings("unchecked")
+    private static long holdFor(OwnerActivation gate) throws Exception {
+        var field = OwnerActivation.class.getDeclaredField("refusedUntilNanos");
+        var now = System.nanoTime();
+
+        field.setAccessible(true);
+        ((Map<PartitionKey, Long>) field.get(gate)).put(PartitionKey.partitionKey(STREAM, 0), now + HOLD_MS * 1_000_000L);
+        return now;
+    }
+
+    private void awaitReprobeAfterHold(long holdSetAt) throws InterruptedException {
+        await(() -> !probesAtNanos.isEmpty() && probesAtNanos.getLast() > holdSetAt, "the hold's end re-drives the partition");
+        assertThat((probesAtNanos.getLast() - holdSetAt) / 1_000_000L).as("the re-probe waited the hold out")
+                                                                       .isGreaterThanOrEqualTo(HOLD_MS);
     }
 
     private static void start(OwnerActivation gate) throws Exception {
@@ -83,10 +114,6 @@ class OwnerActivationHoldYieldTest {
         probesAtNanos.add(System.nanoTime());
 
         return StreamForwardError.ForwardNotSent.FACTORY.apply(new WriteOutcome.BackpressureRefused(PEER)).promise();
-    }
-
-    private static long elapsedMs(long atNanos) {
-        return (System.nanoTime() - atNanos) / 1_000_000L;
     }
 
     private static void await(BooleanSupplier done, String what) throws InterruptedException {
