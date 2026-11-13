@@ -1,0 +1,24 @@
+# Every container image the tests start (#3124). Checked against the Java sources by tools/check-ci-test-images.py (static-gates);
+# tools/ci-prepull-images.sh pre-pulls the images a test group needs, with bounded retry, before its test step.
+#
+# Format: <image> <module>[,<module>...]   A module suffixed `!` is referenced but its tests are excluded from the required
+# jobs, so it is inventoried and never pre-pulled for. `*` is every test group. Images are pinned as the tests pin them.
+
+# Testcontainers' own reaper container; the tag is the default of the pinned Testcontainers version (the check requires one
+# version across the poms). Retag it here when <testcontainers.version> moves.
+testcontainers/ryuk:0.12.0 *
+
+postgres:15-alpine aether/slice-testkit,aether/pg-tools/sql-splitter,integrations/db/postgres-async
+postgres:16 aether/db-migrations,aether/pg-tools/pg-codegen,aether/resource/db-async,aether/resource/db-jdbc,aether/resource/db-jooq,aether/resource/db-jooq-async,aether/resource/db-jooq-r2dbc,aether/resource/db-r2dbc,integrations/db/jdbc,integrations/db/postgres-r2dbc-adapter
+postgres:16-alpine aether/aether-deployment
+mysql:8.0 aether/db-migrations,aether/pg-tools/sql-splitter,aether/aether-deployment!
+localstack/localstack:3.8 aether/environment/aws
+edoburu/pgbouncer:v1.26.1-p0 aether/db-migrations
+
+# heavy-db (excluded by surefire.excludedGroups / heavyDb.excludedGroups in the module poms): ~1.5 GB images, run on demand.
+gvenzl/oracle-free:23-slim-faststart aether/db-migrations!,aether/pg-tools/sql-splitter!
+mcr.microsoft.com/mssql/server:2022-latest aether/db-migrations!,aether/pg-tools/sql-splitter!
+icr.io/db2_community/db2:11.5.9.0 aether/pg-tools/sql-splitter!
+
+# S3-tagged (root surefire.excludedGroups); s3-tests.yml runs them. cgr.dev is not fronted by the Docker Hub mirror.
+cgr.dev/chainguard/minio@sha256:709099319add48dfb44aa596a7070d3ddd8dd04d7ae881765719aec29df9e510 aether/node!,integrations/storage!
