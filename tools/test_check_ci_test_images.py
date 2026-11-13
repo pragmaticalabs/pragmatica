@@ -193,6 +193,16 @@ class PrepullTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stdout)
         self.assertEqual(["pull mirror.gcr.io/testcontainers/ryuk:0.12.0"], self.log.read_text().splitlines())
 
+    def test_without_a_plan_every_image_but_the_excluded_is_pulled(self):
+        (self.tmp / "list").write_text("testcontainers/ryuk:0.12.0 *\npostgres:16 mod/a\nx.io/y:1 mod/c!\n")
+        full = dict(os.environ, CI_TEST_IMAGES_LIST=str(self.tmp / "list"), CI_PREPULL_DOCKER=str(self.tmp / "docker"),
+                    CI_PREPULL_SLEEP=str(self.tmp / "sleep"), FAKE_LOG=str(self.log), FAKE_SLEEP_LOG=str(self.naps),
+                    TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX="mirror.gcr.io/")
+        result = subprocess.run([str(TOOLS / "ci-prepull-images.sh")], env=full, capture_output=True, text=True)
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertEqual(["pull mirror.gcr.io/testcontainers/ryuk:0.12.0", "pull mirror.gcr.io/postgres:16"],
+                         self.log.read_text().splitlines())
+
     def test_empty_selection_fails(self):
         result = self.run_with("postgres:16 mod/a\n", "mod/z\n")
         self.assertEqual(1, result.returncode)
