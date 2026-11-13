@@ -717,12 +717,12 @@ class OwnerActivationTest {
         assertThat(alarms).isEmpty();
     }
 
-    /// TRIPWIRE (#3071 residual, current behaviour): B's refused tail starts at the offset A holds in the lineage and its bound is
-    /// NOT yet known. Before any pull, B (raw 5) is ranked first and its records at 3 differ from A's, so the pairwise source check
-    /// refuses with DivergentPeers: the bound is learned only from a page of B, and this rule (#1555) is not changed here. When a
-    /// bound becomes knowable before the pull, this test goes red: replace it with a completion at 3.
+    /// #3080: B's refused tail starts at the offset A holds in the lineage and its bound is NOT yet known. Before any pull, B (raw 5)
+    /// is ranked first and its records at 3 differ from A's. The pair is not refused on that: the bound is learned from B's page
+    /// first, B is then compared with A only up to it, and the activation completes at 3 (B's tail is pulled once, clipped to 2,
+    /// then A's record at 3).
     @Test
-    void activate_mixed_unknownRefusedTailDivergingFromAnotherPeer_refusesAsDivergentPeers() {
+    void activate_mixed_unknownRefusedTailDivergingFromAnotherPeer_learnsTheBoundBeforeTheCheck_andCompletes() {
         members.set(List.of(SELF, PEER_A, PEER_B));
         localWatermark.set(2L);
         peerWatermarks.put(PEER_A, 3L);
@@ -731,9 +731,10 @@ class OwnerActivationTest {
         divergent.add(PEER_B);
         divergentFrom.set(3L);
 
-        assertThat(activate()).isFalse();
-        assertThat(catchUps).isEmpty();
-        assertThat(alarms).anyMatch(OwnerActivation.ActivationBlock.DivergentPeers.class::isInstance);
+        assertThat(activate()).isTrue();
+        assertThat(localWatermark).hasValue(3L);
+        assertThat(catchUps).containsExactly("peer-b@5", "peer-a@3");
+        assertThat(alarms).isEmpty();
     }
 
     /// Decision (a): an unreachable live member blocks activation; once the membership FSM declares it DEAD it
