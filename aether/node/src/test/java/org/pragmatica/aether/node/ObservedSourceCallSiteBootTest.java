@@ -118,6 +118,7 @@ class ObservedSourceCallSiteBootTest {
 
     private boolean recordDefect() {
         node.invocationMetrics().recordExecution(ARTIFACT, "call", ExecutionOutcome.DEFECT);
+        System.out.println("DBG leader=" + node.isLeader() + " exec=" + node.metricsCollector().allObservations().get(node.self()).values().keySet().stream().filter(k -> k.startsWith("exec|")).toList() + " counts=" + node.invocationMetrics().executionCounts());
 
         return true;
     }
