@@ -971,6 +971,62 @@ class CstMapperMethodReferenceRuleTest {
                 """)));
     }
 
+    /// #3065 polarity: the guard is only part of the condition, so the accessor is reachable when empty.
+    @Test
+    void analyze_polarityTernaryCompoundCondition_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                return wire.broken() || !xs.isEmpty() ? Option.some(xs.getFirst()) : Option.none();
+                """)));
+    }
+
+    /// #3065 polarity: the guard names `wire.xs`, a different expression from `xs`.
+    @Test
+    void analyze_polarityGuardOnQualifiedName_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                return wire.xs.isEmpty() ? Option.none() : Option.some(xs.getFirst());
+                """)));
+    }
+
+    /// #3065 polarity: a nested ternary in the empty branch does not end it.
+    @Test
+    void analyze_polarityNestedTernary_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return xs.isEmpty() ? wire.broken() ? Option.none() : Option.none() : Option.some(xs.getFirst());
+                """)));
+    }
+
+    /// #3065 polarity: `size() >= 1 ? acc : d`.
+    @Test
+    void analyze_polaritySizeAtLeastOne_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return xs.size() >= 1 ? Option.some(xs.getFirst()) : Option.none();
+                """)));
+    }
+
+    /// #3065 polarity: `size() != 0 ? acc : d`.
+    @Test
+    void analyze_polaritySizeNotZero_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return xs.size() != 0 ? Option.some(xs.getFirst()) : Option.none();
+                """)));
+    }
+
+    /// #3065 polarity: `size() < 1 ? d : acc`.
+    @Test
+    void analyze_polaritySizeBelowOne_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return xs.size() < 1 ? Option.none() : Option.some(xs.getFirst());
+                """)));
+    }
+
+    /// #3065 polarity: `size() <= 0 ? d : acc`.
+    @Test
+    void analyze_polaritySizeAtMostZero_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return xs.size() <= 0 ? Option.none() : Option.some(xs.getFirst());
+                """)));
+    }
+
     /// Source whose referenced `lastName` has body `body` over the plain-identifier receiver `xs`.
     private static String polarityFixture(String body) {
         return "package org.example;\n"
