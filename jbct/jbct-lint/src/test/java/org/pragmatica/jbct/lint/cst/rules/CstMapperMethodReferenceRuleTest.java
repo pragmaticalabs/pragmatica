@@ -1088,6 +1088,144 @@ class CstMapperMethodReferenceRuleTest {
                 """)));
     }
 
+    /// #3065 undecidable classes (receiver written after the guard, old-style case labels, guard as operand of a comparison or
+    /// arithmetic, comma-separated arguments, `||` before a chain) keep firing; the *_isClean forms stay exempt.
+    @Test
+    void analyze_polarityReceiverReassignedAfterEarlyExit_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (xs.isEmpty()) return Option.none();
+                xs = wire.other();
+                return Option.some(xs.getFirst());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityReceiverMutatedAfterEarlyExit_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (xs.isEmpty()) return Option.none();
+                xs.clear();
+                return Option.some(xs.getFirst());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityReceiverReassignedInsideNonEmptyIf_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (!xs.isEmpty()) {
+                    xs = wire.other();
+                    return Option.some(xs.getFirst());
+                }
+                return Option.none();
+                """)));
+    }
+
+    @Test
+    void analyze_polarityEarlyExitThenOldStyleCaseLabel_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                switch (wire.kind()) {
+                    case 1:
+                        wire.touch();
+                        if (xs.isEmpty()) return Option.none();
+                        wire.touch();
+                        break;
+                    case 2:
+                        return Option.some(xs.getFirst());
+                }
+                return Option.none();
+                """)));
+    }
+
+    @Test
+    void analyze_polarityReturnThenOldStyleCaseLabel_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                switch (wire.kind()) {
+                    case 1:
+                        if (xs.isEmpty()) return Option.none();
+                        return Option.none();
+                    case 2:
+                        return Option.some(xs.getFirst());
+                }
+                return Option.none();
+                """)));
+    }
+
+    @Test
+    void analyze_polarityGuardComparedToNonLiteralTernary_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                return wire.flag() == xs.isEmpty() ? Option.none() : Option.some(xs.getFirst());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityNegatedGuardComparedToNonLiteralTernary_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                return wire.flag() == !xs.isEmpty() ? Option.some(xs.getFirst()) : Option.none();
+                """)));
+    }
+
+    @Test
+    void analyze_polarityNegatedGuardComparedToNonLiteralAndChain_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                return Option.option(wire.flag() == !xs.isEmpty() && xs.getFirst().isEmpty());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityArithmeticBeforeSizeGuardAndChain_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                return Option.option(wire.count() - xs.size() > 0 && xs.getFirst().isEmpty());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityGuardAndAccessorAreSeparateArguments_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                return wire.pick(!xs.isEmpty() && wire.flag(), xs.getFirst());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityDisjunctionBeforeAndChain_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                return Option.option(wire.flag() || !xs.isEmpty() && xs.getFirst().isEmpty());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityGuardedAssignmentTernary_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                var first = xs.isEmpty() ? "" : xs.getFirst();
+                return Option.some(first);
+                """)));
+    }
+
+    @Test
+    void analyze_polarityAndChainAfterOtherConjunct_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return Option.option(wire.flag() && !xs.isEmpty() && xs.getFirst().isEmpty());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityReadMemberBetweenGuardAndAccessor_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                if (xs.isEmpty()) return Option.none();
+                wire.touch(xs.size());
+                return Option.some(xs.getFirst());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityEarlyExitThenArrowSwitchArm_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                if (xs.isEmpty()) return Option.none();
+                return switch (wire.kind()) {
+                    case 1 -> Option.some(xs.getFirst());
+                    default -> Option.none();
+                };
+                """)));
+    }
+
     /// Source whose referenced `lastName` has body `body` over the plain-identifier receiver `xs`.
     private static String polarityFixture(String body) {
         return "package org.example;\n"

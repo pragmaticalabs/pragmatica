@@ -89,6 +89,20 @@ class CstArchSliceInternalRuleTest {
                                                           && !d.message().contains("///")),
                        "diagnostics: " + diagnostics);
         }
+
+        /// #3065: a `;` inside a comment within the import must not end the import body early and hide the violation.
+        @Test
+        void detects_importWithSemicolonInsideComment_reportsCleanPackage() {
+            var diagnostics = lint("""
+                    package com.example.usecase.registeruser;
+                    import com.example.usecase.loginuser.internal /* ; */ .Token;
+                    class RegisterUser {}
+                    """);
+
+            assertTrue(diagnostics.stream().anyMatch(d -> d.ruleId().equals(RULE_ID)
+                                                          && d.message().contains("'com.example.usecase.loginuser.internal'")),
+                       "diagnostics: " + diagnostics);
+        }
     }
 
     @Nested
