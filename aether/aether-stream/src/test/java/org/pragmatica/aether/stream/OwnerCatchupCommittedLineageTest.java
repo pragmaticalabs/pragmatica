@@ -10,8 +10,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
@@ -1202,13 +1204,163 @@ class OwnerCatchupCommittedLineageTest {
         streamAlive.set(false);
         fixture.backfill().clearStalledOf("s");
         probeGate.resolve(Result.unitResult());
-        settled(inFlight);
+        var straggler = settled(inFlight);
         probeGate = null;
         streamAlive.set(true);
 
-        settled(fixture.backfill().backfill("s", 0));
+        assertThat(outcomeOf(straggler)).as("control: the straggler of the destroyed stream counted nothing, so it ends short")
+                                        .isEqualTo(BackfillError.General.INCOMPLETE_BACKFILL);
 
-        assertThat(alarm.raised()).as("the new incarnation has stalled one round").isEmpty();
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS - 1).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+
+        assertThat(alarm.raised()).as("the new incarnation has stalled MAX-1 rounds; a counted straggler would make it MAX").isEmpty();
+    }
+
+    /// #3156: the raise's own existence check. The stream is gone when the last stalled round raises, though its listener has not run, so the
+    /// counter still stands at MAX. The seam refuses only the call made by raiseCountedStall (found by its caller frame, so the test does not
+    /// depend on how many calls precede it), so only that check can refuse.
+    @Test
+    void raise_ofADestroyedStreamWhoseListenerHasNotRun_isRefusedByTheRaiseCheck() {
+        assertRaiseRefusedOnlyWhenCalledFrom("raiseCountedStall");
+    }
+
+    /// #2960 F2: the same for mayRaiseStalled, the check inside raiseStalled, which also guards the reconcile-pass raise.
+    @Test
+    void raise_ofADestroyedStreamWhoseListenerHasNotRun_isRefusedByMayRaiseStalled() {
+        assertRaiseRefusedOnlyWhenCalledFrom("mayRaiseStalled");
+    }
+
+    private void assertRaiseRefusedOnlyWhenCalledFrom(String method) {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS - 1).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+
+        var refused = new AtomicBoolean();
+
+        fixture.backfill().streamExists(_ -> !refusedFrom(method, refused));
+        var last = settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(outcomeOf(last)).as("control: the last round did reach the all-stalled state").isEqualTo(BackfillError.General.SOURCE_STALLED);
+        assertThat(refused.get()).as("control: the seam was asked by " + method).isTrue();
+        assertThat(alarm.raised()).as("a destroyed stream is never raised for").isEmpty();
+    }
+
+    private static boolean refusedFrom(String method, AtomicBoolean refused) {
+        var caller = StackWalker.getInstance()
+                                .walk(frames -> frames.filter(frame -> frame.getClassName().equals(PartitionBackfill.class.getName()))
+                                                      .findFirst()
+                                                      .map(StackWalker.StackFrame::getMethodName)
+                                                      .orElse(""));
+        var refuse = caller.equals(method);
+
+        refused.compareAndSet(false, refuse);
+
+        return refuse;
+    }
+
+    /// #3156 monitor on countStalledRound: the stream-removed listener (a second thread) fires while a round is inside its count, after the
+    /// existence check passed. The monitor makes the listener wait, so the count lands first and the clear drops it; without the monitor the
+    /// clear runs between the check and the put and the count is put back into the next incarnation. The racing interleaving is a witness, not
+    /// a hope: the listener thread must be observed BLOCKED on the monitor, and the test fails if it is not.
+    @Test
+    void countStalledRound_aListenerFiringInsideTheCount_waitsForTheMonitor() {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+        var race = new ListenerRace(fixture, 1);
+
+        pageCaps.put(SOURCE, 0L);
+        fixture.backfill().streamExists(race::exists);
+        settled(fixture.backfill().backfill("s", 0));
+        race.finish();
+        race.alive.set(true);
+
+        assertThat(race.observed.get()).as("witness: the listener reached the monitor while the count held it").isEqualTo(Thread.State.BLOCKED);
+
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS - 1).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+
+        assertThat(alarm.raised()).as("the destroyed incarnation's count was dropped by the clear, not put back after it").isEmpty();
+    }
+
+    /// #3156 monitor on raiseCountedStall: the listener fires between the raise's existence check and its counter check. The monitor makes it
+    /// wait, so the raise of the (then still current) incarnation lands and the listener resolves it; without the monitor the clear drops the
+    /// counter first and the raise is silently lost. Same witness: the listener thread must be observed BLOCKED.
+    @Test
+    void raiseCountedStall_aListenerFiringInsideTheRaise_waitsForTheMonitor() {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS - 1).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+
+        var race = new ListenerRace(fixture, 2);
+
+        fixture.backfill().streamExists(race::exists);
+        var last = settled(fixture.backfill().backfill("s", 0));
+        race.finish();
+
+        assertThat(outcomeOf(last)).as("control: the last round did reach the all-stalled state").isEqualTo(BackfillError.General.SOURCE_STALLED);
+        assertThat(race.observed.get()).as("witness: the listener reached the monitor while the raise held it").isEqualTo(Thread.State.BLOCKED);
+        assertThat(alarm.raised()).as("the raise landed before the listener's clear").hasSize(1);
+        assertThat(openWarnings(alarm)).as("and the clear resolved it").isEmpty();
+    }
+
+    /// Stream-existence seam that starts the stream-removed listener on a second thread at its `fireAt`-th call (made while the caller holds the
+    /// monitor) and waits until that thread is BLOCKED or finished, recording which. Every other call answers with `alive`.
+    private final class ListenerRace {
+        final AtomicBoolean alive = new AtomicBoolean(true);
+        final AtomicReference<Thread.State> observed = new AtomicReference<>(Thread.State.NEW);
+        private final Replicas fixture;
+        private final int fireAt;
+        private final AtomicInteger calls = new AtomicInteger();
+        private final Thread listener;
+
+        ListenerRace(Replicas fixture, int fireAt) {
+            this.fixture = fixture;
+            this.fireAt = fireAt;
+            this.listener = new Thread(this::destroy);
+        }
+
+        boolean exists(String streamName) {
+            var answer = alive.get();
+
+            if (calls.incrementAndGet() == fireAt) {
+                listener.start();
+                awaitBlockedOrDone();
+            }
+
+            return answer;
+        }
+
+        private void destroy() {
+            fixture.backfill().clearStalledOf("s");
+            alive.set(false);
+        }
+
+        private void awaitBlockedOrDone() {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+            while (System.nanoTime() < deadline && !blockedOrDone()) {
+                Thread.onSpinWait();
+            }
+
+            observed.set(listener.getState());
+        }
+
+        private boolean blockedOrDone() {
+            var state = listener.getState();
+
+            return state == Thread.State.BLOCKED || state == Thread.State.TERMINATED;
+        }
+
+        void finish() {
+            try {
+                listener.join(10_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
     }
 
     /// #3156 (found by the embedded model, `early`): the stream is destroyed, its listener runs and it is recreated between the moment the last
