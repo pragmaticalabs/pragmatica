@@ -117,7 +117,7 @@ class EquivalenceInstrumentTest {
             var fsm2Divergences = EquivalenceComparison.compare(legacy, fsm2, MONITOR);
             var controlDivergences = EquivalenceComparison.compare(legacy, control, MONITOR);
 
-            assertThat(EquivalenceDivergentControl.silentFamilies(fsm2Divergences, controlDivergences)).as(controlDivergences.toString()).isEmpty();
+            assertThat(EquivalenceDivergentControl.silentFamilies(fsm2Divergences, controlDivergences, List.of())).as(controlDivergences.toString()).isEmpty();
         }
 
         /// The control is judged against what FSM2 already shows: a family FSM2 already diverges on must still show the control's own finding.
@@ -127,7 +127,7 @@ class EquivalenceInstrumentTest {
             var fsm2 = arm("fsm2", true);
             var fsm2Divergences = EquivalenceComparison.compare(legacy, fsm2, MONITOR);
 
-            assertThat(EquivalenceDivergentControl.silentFamilies(fsm2Divergences, fsm2Divergences)).containsExactlyElementsOf(EquivalenceDivergentControl.FAMILIES);
+            assertThat(EquivalenceDivergentControl.silentFamilies(fsm2Divergences, fsm2Divergences, List.of())).containsExactlyElementsOf(EquivalenceDivergentControl.FAMILIES);
         }
 
         /// E-09 regression: LEGACY wrote FAILED and FSM2 wrote ROLLED_BACK; the O1 control must still differ from LEGACY (it once flipped to FAILED).
@@ -136,7 +136,7 @@ class EquivalenceInstrumentTest {
             var legacy = withVerdict(arm("legacy", false), AetherValue.DeploymentOutcomeStatus.FAILED);
             var fsm2 = withVerdict(arm("fsm2", true), AetherValue.DeploymentOutcomeStatus.ROLLED_BACK);
             var control = EquivalenceDivergentControl.of(fsm2, legacy, MONITOR);
-            var silent = EquivalenceDivergentControl.silentFamilies(EquivalenceComparison.compare(legacy, fsm2, MONITOR), EquivalenceComparison.compare(legacy, control, MONITOR));
+            var silent = EquivalenceDivergentControl.silentFamilies(EquivalenceComparison.compare(legacy, fsm2, MONITOR), EquivalenceComparison.compare(legacy, control, MONITOR), List.of());
 
             assertThat(silent).doesNotContain("O1");
         }
@@ -153,7 +153,7 @@ class EquivalenceInstrumentTest {
 
             assertThat(fsm2Divergences).extracting(EquivalenceComparison.Divergence::family).doesNotContain("O1");
             assertThat(controlDivergences).extracting(EquivalenceComparison.Divergence::family).contains("O1");
-            assertThat(EquivalenceDivergentControl.silentFamilies(fsm2Divergences, controlDivergences)).doesNotContain("O1");
+            assertThat(EquivalenceDivergentControl.silentFamilies(fsm2Divergences, controlDivergences, List.of())).doesNotContain("O1");
         }
 
         /// The mapping is scoped: outside E-09 the same pair diverges, and on E-09 only the ruled pair is mapped (FSM2 SUCCEEDED vs LEGACY FAILED,
@@ -262,15 +262,100 @@ class EquivalenceInstrumentTest {
             assertThat(EquivalenceComparison.residue(past)).hasSize(1);
         }
 
-        /// A scenario that places nothing (E-09: both arms -1) still gets an O5 control that fires.
+        /// A scenario that places nothing (E-09: both arms -1) compares nothing for O5: the family is not measured, and the control plants no
+        /// placement to credit it. Mutation: plant `1L` whenever FSM2 is negative (the old fallback); `control.o5PlacementMs()` goes red.
         @Test
-        void o5Control_firesWhenNeitherArmPlaces() {
-            var legacy = new Arm("legacy", new EquivalenceKv(legacyKv(0)), Set.copyOf(CORES), List.of(), 1, -1L, Map.of());
-            var fsm2 = new Arm("fsm2", new EquivalenceKv(fsm2Kv(0)), Set.copyOf(CORES), List.of(), 1, -1L, Map.of());
+        void o5_isNotMeasured_whenNeitherArmPlaces_andNothingIsPlanted() {
+            var legacy = new Arm("legacy", new EquivalenceKv(legacyKv(0)), Set.copyOf(CORES), deploySamples(false), 1, -1L, Map.of());
+            var fsm2 = new Arm("fsm2", new EquivalenceKv(fsm2Kv(0)), Set.copyOf(CORES), deploySamples(true), 1, -1L, Map.of());
+            var control = EquivalenceDivergentControl.of(fsm2, legacy, MONITOR);
+            var notMeasured = EquivalenceComparison.notMeasured(legacy, fsm2);
+
+            assertThat(control.o5PlacementMs()).isEqualTo(-1L);
+            assertThat(notMeasured).contains("O5");
+            assertThat(EquivalenceComparison.compare(legacy, control, MONITOR)).extracting(EquivalenceComparison.Divergence::family).doesNotContain("O5");
+            assertThat(EquivalenceDivergentControl.silentFamilies(EquivalenceComparison.compare(legacy, fsm2, MONITOR),
+                                                                  EquivalenceComparison.compare(legacy, control, MONITOR),
+                                                                  notMeasured)).doesNotContain("O5");
+            assertThat(EquivalenceDivergentControl.silentFamilies(EquivalenceComparison.compare(legacy, fsm2, MONITOR),
+                                                                  EquivalenceComparison.compare(legacy, control, MONITOR),
+                                                                  List.of())).as("measured, the unplanted family would be silent").contains("O5");
+        }
+
+        /// E-03 shape: the undeploy leaves no outcome and no target in either arm, so O1 and O2 compared nothing. Neither control plants a fallback
+        /// (a SUCCEEDED outcome, an unplaced target); both families are reported not measured. Mutation: restore either fallback plant; the matching
+        /// `doesNotContain` goes red.
+        @Test
+        void o1AndO2_areNotMeasured_whenThereIsNoOutcomeAndNoTarget_andNothingIsPlanted() {
+            var legacy = new Arm("legacy", new EquivalenceKv(Map.of()), Set.copyOf(CORES), deploySamples(false), 1, 4_000L, Map.of());
+            var fsm2 = new Arm("fsm2", new EquivalenceKv(Map.of()), Set.copyOf(CORES), deploySamples(true), 1, 4_000L, Map.of());
+            var control = EquivalenceDivergentControl.of(fsm2, legacy, MONITOR);
+            var notMeasured = EquivalenceComparison.notMeasured(legacy, fsm2);
+            var controlFamilies = EquivalenceComparison.compare(legacy, control, MONITOR).stream().map(EquivalenceComparison.Divergence::family).toList();
+
+            assertThat(notMeasured).containsExactly("O1", "O2");
+            assertThat(controlFamilies).doesNotContain("O1", "O2");
+            assertThat(EquivalenceDivergentControl.silentFamilies(EquivalenceComparison.compare(legacy, fsm2, MONITOR),
+                                                                  EquivalenceComparison.compare(legacy, control, MONITOR),
+                                                                  notMeasured)).isEmpty();
+        }
+
+        /// A target with no instance placed anywhere is measured by O2, so its control still plants the unplaced target: the fallback is kept
+        /// only where the real comparison had something to compare.
+        @Test
+        void o2_isMeasuredWithAnUnplacedTarget_andItsControlStillFires() {
+            var legacy = new Arm("legacy", new EquivalenceKv(shared(3)), Set.copyOf(CORES), deploySamples(false), 1, 4_000L, Map.of());
+            var fsm2 = new Arm("fsm2", new EquivalenceKv(shared(3)), Set.copyOf(CORES), deploySamples(true), 1, 4_000L, Map.of());
             var control = EquivalenceDivergentControl.of(fsm2, legacy, MONITOR);
 
-            assertThat(EquivalenceDivergentControl.silentFamilies(EquivalenceComparison.compare(legacy, fsm2, MONITOR),
-                                                                  EquivalenceComparison.compare(legacy, control, MONITOR))).doesNotContain("O5");
+            assertThat(EquivalenceComparison.notMeasured(legacy, fsm2)).doesNotContain("O2");
+            assertThat(EquivalenceComparison.compare(legacy, control, MONITOR)).extracting(EquivalenceComparison.Divergence::family).contains("O2");
+        }
+
+        /// The monitor is not measured below the sample floor, in either arm, and the control plants no tail on an arm without samples.
+        /// Mutation: plant a tail after a synthetic sample when `samples` is empty (the old fallback); the control-sample assertion goes red.
+        @Test
+        void monitor_isNotMeasured_belowTheSampleFloor_andNothingIsPlanted() {
+            var legacy = arm("legacy", false);
+            var blind = new Arm("fsm2", fsm2Arm().quiescent(), Set.copyOf(CORES), List.of(), 10, 4_000L, Map.of());
+            var floorMinusOne = new Arm("fsm2", fsm2Arm().quiescent(), Set.copyOf(CORES), deploySamples(true).subList(0, EquivalenceMonitor.MIN_SAMPLES - 1), 10, 4_000L, Map.of());
+            var atFloor = new Arm("fsm2", fsm2Arm().quiescent(), Set.copyOf(CORES), deploySamples(true).subList(0, EquivalenceMonitor.MIN_SAMPLES), 10, 4_000L, Map.of());
+
+            assertThat(EquivalenceComparison.notMeasured(legacy, blind)).contains("MON-i", "MON-ii", "MON-iii", "MON-iv");
+            assertThat(EquivalenceComparison.notMeasured(legacy, floorMinusOne)).contains("MON-i");
+            assertThat(EquivalenceComparison.notMeasured(legacy, atFloor)).doesNotContain("MON-i");
+            assertThat(EquivalenceComparison.notMeasured(blind, legacy)).as("either arm").contains("MON-i");
+            assertThat(EquivalenceDivergentControl.of(blind, legacy, MONITOR).samples()).isEmpty();
+            assertThat(EquivalenceDivergentControl.silentFamilies(List.of(), List.of(), EquivalenceComparison.notMeasured(legacy, blind))).doesNotContain("MON-i", "MON-ii", "MON-iii", "MON-iv");
+        }
+
+        private static Arm fsm2Arm() {
+            return arm("fsm2", true);
+        }
+
+        /// A blind sampler cannot reach the comparison: below the floor the arm fails, at the floor it does not.
+        @Test
+        void requireSamples_failsTheArmBelowTheFloor() {
+            EquivalenceMonitor.requireSamples("fsm2", EquivalenceMonitor.MIN_SAMPLES);
+            assertThatThrownBy(() -> EquivalenceMonitor.requireSamples("fsm2", EquivalenceMonitor.MIN_SAMPLES - 1)).isInstanceOf(IllegalStateException.class)
+                                                                                                                     .hasMessageContaining("fsm2")
+                                                                                                                     .hasMessageContaining("monitor samples");
+        }
+
+        /// A non-quiescent arm (o4 = -1) is a VOID of the round, not an O4 DIVERGE (vf4a 7). Mutations: `voids` returning empty; dropping a
+        /// `hasO4Count` guard in `o4` (legacy -1 against 10 then reads `10 > -1.2`): each goes red.
+        @Test
+        void aNonQuiescentArm_isAVoid_notAnO4Divergence() {
+            var legacy = arm("legacy", false);
+            var fsm2 = arm("fsm2", true);
+            var fsm2NotQuiescent = new Arm("fsm2", fsm2.quiescent(), fsm2.liveNodes(), fsm2.samples(), -1, 4_000L, Map.of());
+            var legacyNotQuiescent = new Arm("legacy", legacy.quiescent(), legacy.liveNodes(), legacy.samples(), -1, 4_000L, Map.of());
+
+            assertThat(EquivalenceComparison.compare(legacy, fsm2NotQuiescent, MONITOR)).isEmpty();
+            assertThat(EquivalenceComparison.compare(legacyNotQuiescent, fsm2, MONITOR)).isEmpty();
+            assertThat(EquivalenceComparison.voids(legacy, fsm2NotQuiescent)).singleElement().asString().contains("O4 void count", "fsm2=-1");
+            assertThat(EquivalenceComparison.voids(legacyNotQuiescent, fsm2)).singleElement().asString().contains("legacy=-1");
+            assertThat(EquivalenceComparison.voids(legacy, fsm2)).isEmpty();
         }
 
         @Test

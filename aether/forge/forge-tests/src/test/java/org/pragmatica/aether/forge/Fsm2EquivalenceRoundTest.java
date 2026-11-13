@@ -127,21 +127,17 @@ class Fsm2EquivalenceRoundTest {
         for (var index = 0; index < engines.size(); index++) {
             var engine = engines.get(index);
 
-            try {
-                arms.put(engine, runArm(scenario, engine, 33000 + 400 * index, oracle, o4Controls, placements));
-            } catch (RuntimeException | AssertionError e) {
-                log("arm %s ERROR %s".formatted(engine, e));
-                log("VERDICT ERROR");
-                write(scenario, round);
-                throw e;
-            }
+            var basePort = 33000 + 400 * index;
+
+            arms.put(engine, EquivalenceVerdict.guarded(() -> runArm(scenario, engine, basePort, oracle, o4Controls, placements), error -> armError(scenario, round, engine, error)));
         }
         var legacy = arms.get(DeploymentEngine.LEGACY);
         var fsm2 = arms.get(DeploymentEngine.FSM2);
         var control = EquivalenceDivergentControl.of(fsm2, legacy, MONITOR);
         var fsm2Divergences = EquivalenceComparison.compare(legacy, fsm2, MONITOR, scenario.name());
         var controlDivergences = EquivalenceComparison.compare(legacy, control, MONITOR, scenario.name());
-        var silent = new ArrayList<>(EquivalenceDivergentControl.silentFamilies(fsm2Divergences, controlDivergences));
+        var notMeasured = EquivalenceComparison.notMeasured(legacy, fsm2);
+        var silent = new ArrayList<>(EquivalenceDivergentControl.silentFamilies(fsm2Divergences, controlDivergences, notMeasured));
 
         o4Controls.forEach((engine, fired) -> {
             if (!fired) {
@@ -159,21 +155,31 @@ class Fsm2EquivalenceRoundTest {
             }
         });
         var divergences = new ArrayList<>(fsm2Divergences.stream().map(Divergence::describe).toList());
-        var voids = placementVoid(placements);
+        var voids = new ArrayList<>(placementVoid(placements));
+
+        voids.addAll(EquivalenceComparison.voids(legacy, fsm2));
 
         oracle.forEach(verdict -> verdict.disagreements().forEach(submit -> divergences.add("ORACLE: " + submit.describe())));
-        var verdict = !silent.isEmpty() || !voids.isEmpty() ? "VOID" : divergences.isEmpty() ? "PASS" : "DIVERGE";
+        var verdict = EquivalenceVerdict.of(silent, voids, divergences);
 
         log("arm legacy: o4=%d o5=%d ms o6=%s samples=%d".formatted(legacy.o4Batches(), legacy.o5PlacementMs(), legacy.o6(), legacy.samples().size()));
         log("arm fsm2:   o4=%d o5=%d ms o6=%s samples=%d".formatted(fsm2.o4Batches(), fsm2.o5PlacementMs(), fsm2.o6(), fsm2.samples().size()));
         oracle.forEach(result -> log(result.describe()));
         log("control divergences: " + controlDivergences.stream().map(Divergence::describe).toList());
         log("silent controls: " + silent);
+        log("not measured (compared zero items, no control credited): " + notMeasured);
         log("placement legacy=%s fsm2=%s; void: %s".formatted(placements.get(DeploymentEngine.LEGACY), placements.get(DeploymentEngine.FSM2), voids));
         divergences.forEach(divergence -> log("DIVERGENCE " + divergence));
         log("VERDICT " + verdict);
         write(scenario, round);
-        assertThat(verdict).as(String.join("\n", report)).isEqualTo("PASS");
+        assertThat(verdict).as(String.join("\n", report)).isEqualTo(EquivalenceVerdict.PASS);
+    }
+
+    /// An arm threw: the ERROR line, no verdict claimed, the report written (the exception itself is rethrown by [EquivalenceVerdict#guarded]).
+    private void armError(Scenario scenario, int round, DeploymentEngine engine, Throwable error) {
+        log("arm %s ERROR %s".formatted(engine, error));
+        log("VERDICT ERROR");
+        write(scenario, round);
     }
 
     private Arm runArm(Scenario scenario,
@@ -202,6 +208,7 @@ class Fsm2EquivalenceRoundTest {
 
             recorder.stop();
             recorder.ringLog().forEach(line -> log("ring (%s) %s".formatted(engine, line)));
+            EquivalenceMonitor.requireSamples(engine.name(), recorder.samples().size());
             var slotCount = recorder.batches();
             var slots = recorder.slotEffects();
             var o4 = EquivalenceComparison.o4Counted(slots, scenario.name());

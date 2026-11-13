@@ -251,10 +251,44 @@ final class EquivalenceComparison {
         return desired.goal() == AetherValue.SliceGoal.UNLOADED && nowMs - desired.issuedAt() <= TOMBSTONE_GRACE_MS;
     }
 
+    /// The round-voiding findings of a comparison: an arm that did not quiesce has no O4 count (-1), so the comparison is not a divergence of
+    /// FSM2 but a round that measured nothing: VOID, never an O4 DIVERGE.
+    static List<String> voids(Arm legacy, Arm other) {
+        return hasO4Count(legacy) && hasO4Count(other)
+               ? List.of()
+               : List.of("O4 void count: an arm did not quiesce (legacy=" + legacy.o4Batches() + ", " + other.engine() + "=" + other.o4Batches() + ")");
+    }
+
+    private static final List<String> MONITOR_FAMILIES = List.of("MON-i", "MON-ii", "MON-iii", "MON-iv");
+
+    /// The families whose real comparison compared zero items, so a round measured nothing for them: O1 with no outcome in either arm, O2 with no
+    /// target in either arm, O5 with neither arm placing, and the monitor with an arm below [EquivalenceMonitor#MIN_SAMPLES]. Reported, never
+    /// credited: the divergent control plants nothing for them and does not have to fire for them.
+    static List<String> notMeasured(Arm legacy, Arm other) {
+        var families = new ArrayList<String>();
+
+        if (verdicts(legacy.quiescent()).isEmpty() && verdicts(other.quiescent()).isEmpty()) {
+            families.add("O1");
+        }
+        if (legacy.quiescent().targets().isEmpty() && other.quiescent().targets().isEmpty()) {
+            families.add("O2");
+        }
+        if (legacy.o5PlacementMs() < 0 && other.o5PlacementMs() < 0) {
+            families.add("O5");
+        }
+        if (legacy.samples().size() < EquivalenceMonitor.MIN_SAMPLES || other.samples().size() < EquivalenceMonitor.MIN_SAMPLES) {
+            families.addAll(MONITOR_FAMILIES);
+        }
+
+        return families;
+    }
+
+    private static boolean hasO4Count(Arm arm) {
+        return arm.o4Batches() >= 0;
+    }
+
     private static void o4(Arm legacy, Arm other, List<Divergence> divergences) {
-        if (legacy.o4Batches() < 0 || other.o4Batches() < 0) {
-            divergences.add(new Divergence("O4", "void count: an arm did not quiesce (legacy=" + legacy.o4Batches() + ", " + other.engine() + "=" + other.o4Batches() + ")"));
-        } else if (other.o4Batches() > O4_RATIO * legacy.o4Batches()) {
+        if (hasO4Count(legacy) && hasO4Count(other) && other.o4Batches() > O4_RATIO * legacy.o4Batches()) {
             divergences.add(new Divergence("O4", other.engine() + " batches=" + other.o4Batches() + " > " + O4_RATIO + " x legacy " + legacy.o4Batches()));
         }
     }

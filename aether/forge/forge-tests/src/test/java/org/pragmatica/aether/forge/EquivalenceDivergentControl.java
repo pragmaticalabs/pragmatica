@@ -33,12 +33,17 @@ import org.pragmatica.lang.Option;
 /// scripted batch, which is a real commit read back through the commit ring.
 ///
 /// - O1: the first outcome's verdict flipped (FAILED -> SUCCEEDED, as the plan's "a FATAL report under ALL_OR_NOTHING writes SUCCEEDED"; any other
-///   status -> FAILED); with no outcome, a SUCCEEDED outcome appears.
-/// - O2: placement stops at target - 1 (one ACTIVE row of the first placed artifact removed); with no placed target, a target of 1 with no row.
+///   status -> FAILED). With no outcome there is nothing to flip: O1 is not measured, and nothing is planted.
+/// - O2: placement stops at target - 1 (one ACTIVE row of the first placed artifact removed); with targets but none placed, a target of 1 with no
+///   row. With no target at all, O2 is not measured and nothing is planted.
 /// - O3: C17b leaves one departed node's `TopicPublisher` row.
-/// - O5: placement delayed by max(60 s, 2 x LEGACY); in a scenario that places nothing (E-09), a placement that completes; O6: one `lost`
-///   submission.
-/// - Monitor (i)-(iv): each planted in a tail of samples appended after the arm's last sample, long enough to exceed every bound.
+/// - O5: placement delayed by max(60 s, 2 x LEGACY); O6: one `lost` submission. In a scenario that places nothing (E-09, both arms negative) O5 is
+///   not measured and nothing is planted.
+/// - Monitor (i)-(iv): each planted in a tail of samples appended after the arm's last sample, long enough to exceed every bound. With no sample
+///   there is no tail to extend: the monitor is not measured and nothing is planted.
+///
+/// A family the real comparison compared nothing for ([EquivalenceComparison#notMeasured]) is never credited by a plant: no fallback plant
+/// manufactures a divergence the real data could not have, and [#silentFamilies] does not require that family to fire.
 final class EquivalenceDivergentControl {
     static final List<String> FAMILIES = List.of("O1", "O2", "O3", "O5", "O6", "MON-i", "MON-ii", "MON-iii", "MON-iv");
     static final NodeId DEPARTED = NodeId.nodeId("f4-control-departed").unwrap();
@@ -48,7 +53,6 @@ final class EquivalenceDivergentControl {
     private static final Artifact O2_PLANT = Artifact.artifact("org.f4.control:o2:1.0.0").unwrap();
     private static final BlueprintId II_OWNER = BlueprintId.blueprintId("org.f4.control:monitor-ii-owner:1.0.0").unwrap();
     private static final BlueprintId IV_PLANT = BlueprintId.blueprintId("org.f4.control:monitor-iv:1.0.0").unwrap();
-    private static final BlueprintId O1_PLANT = BlueprintId.blueprintId("org.f4.control:o1:1.0.0").unwrap();
 
     private EquivalenceDivergentControl() {}
 
@@ -58,15 +62,26 @@ final class EquivalenceDivergentControl {
                        fsm2.liveNodes(),
                        planted(fsm2.samples(), monitor),
                        fsm2.o4Batches(),
-                       fsm2.o5PlacementMs() < 0 ? 1L : fsm2.o5PlacementMs() + Math.max(60_000L, 2 * Math.max(0L, legacy.o5PlacementMs())),
+                       delayed(fsm2, legacy),
                        lostOne(fsm2.o6()),
                        fsm2.targetEvents(),
                        fsm2.nowMs());
     }
 
+    /// O5 of the control arm: delayed past the bound; one-arm-only when FSM2 never placed but LEGACY did; untouched (negative) when neither placed,
+    /// where O5 is not measured.
+    private static long delayed(Arm fsm2, Arm legacy) {
+        if (fsm2.o5PlacementMs() >= 0) {
+            return fsm2.o5PlacementMs() + Math.max(60_000L, 2 * Math.max(0L, legacy.o5PlacementMs()));
+        }
+
+        return legacy.o5PlacementMs() < 0 ? fsm2.o5PlacementMs() : 1L;
+    }
+
     /// The families the control did NOT make the comparison report: a divergence of the control comparison that the FSM2 comparison does not
-    /// already contain, per family. Empty = every control fired.
-    static List<String> silentFamilies(List<Divergence> fsm2, List<Divergence> control) {
+    /// already contain, per family, among the families the real comparison measured (`notMeasured` are not required to fire). Empty = every
+    /// measured control fired.
+    static List<String> silentFamilies(List<Divergence> fsm2, List<Divergence> control, List<String> notMeasured) {
         var fsm2Details = new HashSet<String>();
 
         fsm2.forEach(divergence -> fsm2Details.add(anonymous(divergence)));
@@ -76,7 +91,7 @@ final class EquivalenceDivergentControl {
                .filter(divergence -> !fsm2Details.contains(anonymous(divergence)))
                .forEach(divergence -> fired.add(divergence.family()));
 
-        return FAMILIES.stream().filter(family -> !fired.contains(family)).toList();
+        return FAMILIES.stream().filter(family -> !notMeasured.contains(family) && !fired.contains(family)).toList();
     }
 
     /// A divergence with the arm's name erased, so the same finding in the FSM2 and the control comparison compares equal.
@@ -88,27 +103,29 @@ final class EquivalenceDivergentControl {
         var kv = new LinkedHashMap<>(entries);
         var view = new EquivalenceKv(entries);
 
-        // O1
+        // O1: nothing to flip with no outcome (not measured)
         view.outcomes()
             .entrySet()
             .stream()
             .findFirst()
-            .ifPresentOrElse(first -> kv.put(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(BlueprintId.blueprintId(first.getKey()).unwrap()),
-                                             flipped(first.getValue())),
-                             () -> kv.put(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(O1_PLANT),
-                                          new AetherValue.DeploymentOutcomeValue(AetherValue.DeploymentOutcomeStatus.SUCCEEDED, List.of(), "", 0L, 1L, "control")));
-        // O2
+            .ifPresent(first -> kv.put(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(BlueprintId.blueprintId(first.getKey()).unwrap()), flipped(first.getValue())));
+        // O2: with no target at all there is nothing to under-place (not measured)
         var active = view.active();
         var placed = view.targets().entrySet().stream().filter(entry -> entry.getValue().targetInstances() > 0 && active.getOrDefault(entry.getKey(), 0L) > 0).findFirst();
 
         placed.ifPresentOrElse(target -> removeOneActive(kv, target.getKey()),
-                               () -> kv.put(AetherKey.SliceTargetKey.sliceTargetKey(O2_PLANT.base()),
-                                            AetherValue.SliceTargetValue.sliceTargetValue(O2_PLANT.version(), 1)));
+                               () -> plantUnplacedTarget(kv, view));
         // O3
         kv.put(new AetherKey.TopicPublisherKey(ResourceAddress.resourceAddress("f4", "control", "1.0.0").unwrap(), O2_PLANT, DEPARTED),
                AetherValue.TopicPublisherValue.topicPublisherValue(DEPARTED, AetherValue.TopicTier.ANY));
 
         return kv;
+    }
+
+    private static void plantUnplacedTarget(Map<AetherKey, AetherValue> kv, EquivalenceKv view) {
+        if (!view.targets().isEmpty()) {
+            kv.put(AetherKey.SliceTargetKey.sliceTargetKey(O2_PLANT.base()), AetherValue.SliceTargetValue.sliceTargetValue(O2_PLANT.version(), 1));
+        }
     }
 
     private static AetherValue.DeploymentOutcomeValue flipped(AetherValue.DeploymentOutcomeValue outcome) {
@@ -160,8 +177,11 @@ final class EquivalenceDivergentControl {
     private static List<EquivalenceMonitor.Sample> planted(List<EquivalenceMonitor.Sample> samples, EquivalenceMonitor monitor) {
         var out = new ArrayList<EquivalenceMonitor.Sample>();
 
+        if (samples.isEmpty()) {
+            return out;
+        }
         samples.forEach(sample -> out.add(new EquivalenceMonitor.Sample(sample.atMs(), new EquivalenceKv(withPlantTargets(sample.kv().entries())))));
-        var last = samples.isEmpty() ? new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())) : samples.getLast();
+        var last = samples.getLast();
         var tail = new LinkedHashMap<>(withPlantTargets(last.kv().entries()));
 
         // (i): three LOADING rows of an artifact whose steady target is 1

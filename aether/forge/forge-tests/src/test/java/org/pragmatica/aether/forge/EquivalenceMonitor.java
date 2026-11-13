@@ -17,6 +17,7 @@ import java.util.Set;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
 
 /// The during-run invariant monitor (FSM replacement plan 3.3, "transient divergence"): quiescence cannot see a transient breach, so committed KV
 /// is sampled every second and each sample checked against four invariants. A pure function over the recorded samples, so the planted
@@ -37,6 +38,14 @@ record EquivalenceMonitor(long tickMs, long scaleWindowMs) {
     static final int MIN_SAMPLES = 10;
 
     record Sample(long atMs, EquivalenceKv kv) {}
+
+    /// Fails the arm when its sampler produced fewer than [#MIN_SAMPLES] samples: a blind sampler checks clean, so it must not reach the comparison.
+    @Contract
+    static void requireSamples(String arm, int count) {
+        if (count < MIN_SAMPLES) {
+            throw new IllegalStateException("instrument: the " + arm + " arm recorded " + count + " monitor samples, below the floor of " + MIN_SAMPLES);
+        }
+    }
 
     /// One committed `SliceTargetKey` transition read from the commit ring: `targetInstances` after a put, 0 after a remove. `atMs` is a lower
     /// bound of the commit time (the start of the ring-read pass before the one that read it), so an event is never later than a sample that
