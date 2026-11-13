@@ -76,6 +76,13 @@ class StreamAssemblyEagerActivationTest {
         assertThat(AssemblySource.stripped()).containsOnlyOnce("ownerActivation.peerLineageEnd(streamPartitionBackfill::lineageEnd);");
     }
 
+    /// #3142 F3: the gate re-learns each probed peer's cap through the backfill before ranking; without this line the default confirms
+    /// nothing and an equal-tail ABA entry keeps capping a refilled replica, and no behavioural test reaches the assembly.
+    @Test
+    void thePeerLineageConfirm_isWiredToTheBackfill() {
+        assertThat(AssemblySource.stripped()).containsOnlyOnce("ownerActivation.peerLineageConfirm(streamPartitionBackfill::confirmLineageEnd);");
+    }
+
     /// #3080: the gate learns a diverging pair's bounds through the same backfill instance that remembers them; without this line the
     /// default learns nothing and the stall returns, and no behavioural test reaches the assembly.
     @Test

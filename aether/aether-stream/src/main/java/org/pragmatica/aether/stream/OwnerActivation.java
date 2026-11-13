@@ -521,6 +521,23 @@ public final class OwnerActivation {
 
     private volatile PeerLineageEnd peerLineageEnd = (_, _, _, watermark) -> watermark;
 
+    /// Re-learns the committed-lineage end entry that caps `peer` (tail `watermark`) before the gate ranks on it (#3142 F3): an entry
+    /// is advisory, and a replica refilled to exactly the remembered tail would otherwise keep a stale cap. Late-bound
+    /// ([#peerLineageConfirm]).
+    @FunctionalInterface
+    public interface PeerLineageConfirm {
+        Promise<Unit> of(String stream, int partition, NodeId peer, long watermark);
+    }
+
+    private volatile PeerLineageConfirm peerLineageConfirm = (_, _, _, _) -> Promise.success(Unit.unit());
+
+    /// Late-bind the confirmation of a learned cap (#3142 F3). Unset (the default) confirms nothing, so the gate ranks on the caps
+    /// as learned. Set once at wiring.
+    @Contract
+    public void peerLineageConfirm(PeerLineageConfirm confirm) {
+        this.peerLineageConfirm = confirm;
+    }
+
     /// Late-bind the committed-lineage end of a peer (#3071, ruling 37277a904f). The gate ranks, compares and verifies a peer only up
     /// to it: a deposed epoch's tail the catch-up refuses never counts as ahead, so the gate cannot pull it again on every demand.
     /// The refused tail is the peer's to repair. Unknown (the default) is the raw watermark. Set once at wiring.
@@ -1480,10 +1497,21 @@ public final class OwnerActivation {
     private Promise<Unit> catchUpFromResponders(String stream, int partition, List<PeerWatermark> answered) {
         var local = selfWatermark.localWatermark(stream, partition);
 
-        return withoutDivergentPeers(stream, partition, local, answered).flatMap(kept -> catchUpFromKept(stream,
-                                                                                                         partition,
-                                                                                                         local,
-                                                                                                         kept));
+        return confirmCaps(stream, partition, answered).flatMap(_ -> withoutDivergentPeers(stream, partition, local, answered))
+                                                       .flatMap(kept -> catchUpFromKept(stream, partition, local, kept));
+    }
+
+    /// Every probed peer's learned cap is confirmed after the probe round and before any ranking (#3142 F3).
+    /// Recovery: design-out. A confirmation that fails leaves the cap as learned and never blocks the gate; the cap is only an
+    /// advisory bound, and the catch-up it ranks still verifies what it installs.
+    private Promise<Unit> confirmCaps(String stream, int partition, List<PeerWatermark> answered) {
+        return Promise.allOf(answered.stream()
+                                     .map(peer -> peerLineageConfirm.of(stream,
+                                                                        partition,
+                                                                        peer.node(),
+                                                                        peer.watermark())
+                                                                    .recover(_ -> Unit.unit()))
+                                     .toList()).map(_ -> Unit.unit());
     }
 
     /// #1730 phase 2 (KIP-101): a candidate ELECTED from the committed ISR holds every acknowledged record, because an

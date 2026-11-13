@@ -95,14 +95,33 @@ class OwnerActivationTest {
     /// The bound lookups the gate made before refusing a pair (#3080): `<peer>@<watermark>/<from>`.
     private final List<String> learnCalls = new CopyOnWriteArrayList<>();
     private final AtomicBoolean learnFails = new AtomicBoolean();
+    /// The confirmations the gate asked for (#3142 F3): `<peer>@<watermark>`; a peer in [#staleCaps] loses its cap when confirmed.
+    private final List<String> confirmCalls = new CopyOnWriteArrayList<>();
+    private final Set<NodeId> staleCaps = ConcurrentHashMap.newKeySet();
+    private final AtomicBoolean confirmFails = new AtomicBoolean();
 
     {
         activation.peerLineageLearn(this::learn);
+        activation.peerLineageConfirm(this::confirm);
         activation.peerRingTail((_, _, _) -> Promise.success(peerTail.get()));
         activation.peerLineageEnd((stream, partition, peer, watermark) -> STREAM.equals(stream) && partition == PARTITION
                                                                           ? Math.min(watermark,
                                                                                      learnedEnds.getOrDefault(peer, Long.MAX_VALUE))
                                                                           : watermark);
+    }
+
+    private Promise<Unit> confirm(String stream, int partition, NodeId peer, long watermark) {
+        confirmCalls.add(peer.id() + "@" + watermark);
+
+        if (confirmFails.get()) {
+            return Causes.cause("page unreadable").promise();
+        }
+
+        if (staleCaps.contains(peer)) {
+            learnedEnds.remove(peer);
+        }
+
+        return Promise.success(Unit.unit());
     }
 
     /// What a page of `peer` at `from` teaches without installing anything: the refused tail it holds from `refusedFrom` (never below
@@ -705,6 +724,38 @@ class OwnerActivationTest {
         assertThat(alarms).isEmpty();
     }
 
+    /// #3142 F3: B's cap (4) is an equal-tail ABA entry (B was refilled to its observed tail 8); the gate confirms before ranking, the cap
+    /// is dropped, and B (8) outranks A (6) as the source. Ranking on the stale cap would pull A.
+    @Test
+    void activate_staleCapOfAPeer_isConfirmedBeforeRanking_andTheRefilledPeerIsTheSource() {
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        localWatermark.set(2L);
+        peerWatermarks.put(PEER_A, 6L);
+        peerWatermarks.put(PEER_B, 8L);
+        learnedEnds.put(PEER_B, 4L);
+        staleCaps.add(PEER_B);
+
+        assertThat(activate()).isTrue();
+        assertThat(confirmCalls).containsExactlyInAnyOrder("peer-a@6", "peer-b@8");
+        assertThat(catchUps).containsExactly("peer-b@8");
+    }
+
+    /// #3142 F3: a confirmation that fails leaves the cap as learned and does not block the gate.
+    @Test
+    void activate_failedConfirmation_keepsTheCap_andDoesNotBlock() {
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        localWatermark.set(2L);
+        peerWatermarks.put(PEER_A, 6L);
+        peerWatermarks.put(PEER_B, 8L);
+        learnedEnds.put(PEER_B, 4L);
+        staleCaps.add(PEER_B);
+        confirmFails.set(true);
+
+        assertThat(activate()).isTrue();
+        assertThat(confirmCalls).hasSize(2);
+        assertThat(catchUps).containsExactly("peer-a@6");
+    }
+
     /// #3071: a peer whose committed-lineage end is at or below the owner's head is not compared pairwise with the source, even
     /// when its raw watermark is above that head: the source may have evicted that lower range, and the peer is checked against
     /// the owner's own records instead.
@@ -841,6 +892,26 @@ class OwnerActivationTest {
         assertThat(learnedEnds).as("the bound was learned").containsEntry(PEER_B, 3L);
         assertThat(catchUps).isEmpty();
         assertThat(alarms).anyMatch(OwnerActivation.ActivationBlock.DivergentPeers.class::isInstance);
+    }
+
+    /// #3142 F3: with no confirm hook bound the gate ranks on the caps as learned, exactly as before; the default settles.
+    @Test
+    void activate_withNoConfirmHookBound_ranksOnTheCapsAsLearned() {
+        var unhooked = gate(PromotionTestRanges.NEVER_ALARM);
+
+        unhooked.peerLineageEnd((_, _, peer, watermark) -> Math.min(watermark, learnedEnds.getOrDefault(peer, Long.MAX_VALUE)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        localWatermark.set(2L);
+        peerWatermarks.put(PEER_A, 6L);
+        peerWatermarks.put(PEER_B, 8L);
+        learnedEnds.put(PEER_B, 4L);
+        staleCaps.add(PEER_B);
+
+        var outcome = unhooked.activate(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds());
+
+        assertThat(outcome.isSuccess()).isTrue();
+        assertThat(confirmCalls).as("the test hook is not the one bound").isEmpty();
+        assertThat(catchUps).containsExactly("peer-a@6");
     }
 
     /// #3080: with no learn hook bound, nothing is learned and the pair is refused exactly as before learning existed; the default
