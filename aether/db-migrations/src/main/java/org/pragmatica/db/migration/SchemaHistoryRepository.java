@@ -131,7 +131,6 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
                                                 + " SET schema_version = ?";
 
     private static final RowMapper<Integer> SCHEMA_VERSION_MAPPER = row -> row.getInt("schema_version");
-
     private static final String QUERY_OWNER_SQL = "SELECT blueprint_base FROM " + SchemaHistoryEvolution.OWNER_TABLE;
 
     private static final String INSERT_OWNER_SQL = "INSERT INTO " + SchemaHistoryEvolution.OWNER_TABLE

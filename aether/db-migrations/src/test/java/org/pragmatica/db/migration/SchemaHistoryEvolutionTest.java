@@ -104,7 +104,6 @@ class SchemaHistoryEvolutionTest {
                                : "CREATE TABLE IF NOT EXISTS aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)");
         }
     }
-    }
 
     @Nested
     class StepTwoDialectAwareAlter {

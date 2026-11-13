@@ -112,7 +112,9 @@ public sealed interface SchemaHistoryEvolution {
 
     /// `DEFAULT` precedes `NOT NULL` (#3069): Oracle refuses the reverse with ORA-03076, every other engine accepts both.
     private static List<String> stepOne(DatabaseType type) {
-        return List.of(createTableIfAbsent(type, "aether_schema_history", """
+        return List.of(createTableIfAbsent(type,
+                                           "aether_schema_history",
+                                           """
 
                 version        INTEGER      NOT NULL,
                 type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,
