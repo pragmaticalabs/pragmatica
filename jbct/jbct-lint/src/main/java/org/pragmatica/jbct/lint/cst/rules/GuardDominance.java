@@ -69,7 +69,8 @@ sealed interface GuardDominance permits GuardDominance.unused {
         var name = Pattern.quote(receiver);
         var write = Pattern.compile("(?<![\\w$])" + name
                                    + "\\s*(?:=(?!=)|::|\\.\\s*(?!(?:" + READS
-                                   + ")\\b)[A-Za-z_]\\w*)|[(,]\\s*" + name + "\\s*[,)]");
+                                   + ")\\b)[A-Za-z_]\\w*)|[(,]\\s*" + name
+                                   + "\\s*[,)]");
 
         return write.matcher(code.substring(from, to))
                     .find();
