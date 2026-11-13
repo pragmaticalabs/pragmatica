@@ -5,7 +5,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.channels.ClosedChannelException;
+import java.nio.channels.AsynchronousCloseException;
+import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -139,7 +140,7 @@ import static org.pragmatica.lang.Unit.unit;
 /// `WalStats.failStopped`. Recovery action: reopen (node restart) — the scan trims to the valid
 /// prefix, and nothing acked is lost because refused appends were never acked.
 ///
-/// A channel the JDK closed beneath the log (an interrupted thread, an asynchronous close; #2539) is NOT a fail-stop: nothing was
+/// A channel closed by an interrupt or an asynchronous close (#2539) is NOT a fail-stop: nothing was
 /// refused by the volume, so the log reports [WalError.General#WAL_CLOSED] -- no error log, no mark -- as after [#close]. An append
 /// admitted before [#close] is committed (the close-time force covers it); one that loses to close or follows it gets `WAL_CLOSED`.
 ///
@@ -1045,12 +1046,13 @@ public final class AppendLog implements AutoCloseable {
                                                   position + frame.capacity()));
     }
 
-    /// A channel the JDK closed beneath the log -- an interrupted thread closes the channel it was using
-    /// (`ClosedByInterruptException`), as do `AsynchronousCloseException` and `ClosedChannelException` -- carries a null
-    /// message and is the same state as a closed log: [WalError.General#WAL_CLOSED] (#2539). Any other fault keeps its
-    /// detail, falling back to its class name so the detail is never null.
+    /// A channel closed by an interrupt (`ClosedByInterruptException`) or by an asynchronous close from another thread
+    /// (`AsynchronousCloseException`) is what a stop does to a thread still writing or forcing; both carry a null message. The
+    /// log can no longer write, the same state as after [#close]: [WalError.General#WAL_CLOSED] (#2539). Any other fault -- a
+    /// plain `ClosedChannelException` included, which no stop produces -- keeps its detail, falling back to its class name so
+    /// the detail is never null, and fail-stops.
     private static Cause appendFailure(Throwable failure) {
-        return failure instanceof ClosedChannelException
+        return failure instanceof ClosedByInterruptException || failure instanceof AsynchronousCloseException
                ? WalError.General.WAL_CLOSED
                : new WalError.AppendFailed(Option.option(failure.getMessage()).or(failure.getClass().getSimpleName()));
     }
@@ -1076,7 +1078,7 @@ public final class AppendLog implements AutoCloseable {
         }
     }
 
-    /// Runs under `syncLock`. A channel closed beneath the log (#2539) is a log that is closed: it stays refused with
+    /// Runs under `syncLock`. A channel closed by an interrupt or asynchronous close (#2539) is a log that is closed: it stays refused with
     /// `WAL_CLOSED`, with no fail-stop, no error log and no `<log>.failstopped` mark -- nothing was refused by the volume.
     private void refuseClosedOrFailStop(Cause cause) {
         if (cause == WalError.General.WAL_CLOSED) {

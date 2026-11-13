@@ -26,9 +26,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// flight finishes first, and the close-time force publishes `syncedSeq` over it; a commit that runs later resolves from
 /// `syncedSeq` and touches no file. An append that loses to close, or follows it, gets `WAL_CLOSED`.
 ///
-/// A channel closed beneath the log without [AppendLog#close] (an interrupted thread closes the channel it was using, with a
-/// null-message `ClosedByInterruptException`) is the same state as a closed log: the log can no longer write, so it reports
-/// closed rather than fail-stopping.
+/// A channel closed by an interrupt (the thread closes the channel it was using, with a null-message
+/// `ClosedByInterruptException`) is the same state as a closed log: the log can no longer write, so it reports closed rather
+/// than fail-stopping.
 @Timeout(60)
 class AppendLogCloseAppendTest {
     private static final String WAL_CLOSED_MESSAGE = AppendLog.WalError.General.WAL_CLOSED.message();
@@ -57,13 +57,16 @@ class AppendLogCloseAppendTest {
     }
 
     @Test
-    void commit_whenTheChannelWasClosedBeneathTheLog_isRefusedClosed_notFailStopped() throws Exception {
-        var wal = AppendLog.open(dir.resolve("beneath.wal")).unwrap();
+    void groupCommit_onAnInterruptedThread_isRefusedClosed_notFailStopped() throws Exception {
+        var wal = AppendLog.open(dir.resolve("force.wal")).unwrap();
         var seq = wal.write(0L, new byte[16], 1L).unwrap();
 
-        channelOf(wal).close();
-
-        assertRefusedClosed(wal.commit(seq).await(), wal);
+        Thread.currentThread().interrupt();
+        try {
+            assertRefusedClosed(groupCommit(wal, seq), wal);
+        } finally {
+            Thread.interrupted();
+        }
     }
 
     @Test
@@ -79,13 +82,31 @@ class AppendLogCloseAppendTest {
     }
 
     @Test
-    void anyAppend_afterTheChannelWasClosedBeneathTheLog_isRefusedClosed() throws Exception {
+    void anyAppend_afterAnInterruptClosedTheChannel_isRefusedClosed() {
         var wal = AppendLog.open(dir.resolve("later.wal")).unwrap();
 
-        channelOf(wal).close();
-        wal.write(0L, new byte[16], 1L);
+        Thread.currentThread().interrupt();
+        try {
+            wal.write(0L, new byte[16], 1L);
+        } finally {
+            Thread.interrupted();
+        }
 
         assertRefusedClosed(wal.append(1L, new byte[16], 1L).await(), wal);
+    }
+
+    /// A plain `ClosedChannelException` is no stop's doing: it keeps fail-stopping, but its detail is never null.
+    @Test
+    void commit_whenTheChannelWasClosedBeneathTheLog_failStops_withANonNullDetail() throws Exception {
+        var wal = AppendLog.open(dir.resolve("beneath.wal")).unwrap();
+        var seq = wal.write(0L, new byte[16], 1L).unwrap();
+
+        channelOf(wal).close();
+
+        var outcome = wal.commit(seq).await().<String>fold(cause -> cause.message(), _ -> "accepted");
+
+        assertThat(outcome).isEqualTo("WAL append failed: ClosedChannelException");
+        assertThat(wal.failStopped()).isTrue();
     }
 
     /// Appenders and a closer are released together by a latch; every append must be committed or `WAL_CLOSED`, and every
@@ -163,6 +184,15 @@ class AppendLogCloseAppendTest {
         } catch (java.io.IOException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    private static Result<Unit> groupCommit(AppendLog wal, long seq) throws ReflectiveOperationException {
+        var method = AppendLog.class.getDeclaredMethod("groupCommit", long.class);
+
+        method.setAccessible(true);
+        @SuppressWarnings("unchecked") var result = (Result<Unit>) method.invoke(wal, seq);
+
+        return result;
     }
 
     private static FileChannel channelOf(AppendLog wal) throws ReflectiveOperationException {
