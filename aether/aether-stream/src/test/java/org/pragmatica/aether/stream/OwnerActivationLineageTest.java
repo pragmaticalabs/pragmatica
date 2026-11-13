@@ -109,7 +109,7 @@ class OwnerActivationLineageTest {
 
         assertThat(commits).containsExactly("start@10");
         assertThat(record.get().unwrap().ownerEpoch()).as("the leader's epoch stands").isEqualTo(EPOCH);
-        assertThat(record.get().unwrap().lastEpochStart().unwrap()).isEqualTo(EpochStart.epochStart(EPOCH, 10L, Option.none()));
+        assertThat(record.get().unwrap().lastEpochStart().unwrap()).isEqualTo(EpochStart.epochStart(EPOCH, 10L, Option.some(SELF)));
         assertThat(activation.isActivated(STREAM, PARTITION)).as("activated for the record it committed").isTrue();
     }
 
@@ -138,7 +138,7 @@ class OwnerActivationLineageTest {
         var after = record.get().unwrap();
 
         assertThat(after.ownerEpoch()).isEqualTo(EPOCH.withCounter(after.ownershipTerm())).isNotEqualTo(EPOCH);
-        assertThat(after.lastEpochStart().unwrap()).isEqualTo(EpochStart.epochStart(after.ownerEpoch(), 3L, Option.none()));
+        assertThat(after.lastEpochStart().unwrap()).isEqualTo(EpochStart.epochStart(after.ownerEpoch(), 3L, Option.some(SELF)));
         assertThat(activation.isActivated(STREAM, PARTITION)).as("activated for the NEW ownership").isTrue();
     }
 

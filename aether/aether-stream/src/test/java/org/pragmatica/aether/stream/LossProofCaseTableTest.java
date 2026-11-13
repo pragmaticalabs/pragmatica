@@ -70,7 +70,7 @@ class LossProofCaseTableTest {
         var record = foldedThenRestartedAt(60L);
 
         assertThat(record.epochStarts()).as("premise: two entries, the oldest folded").hasSize(2);
-        assertThat(record.epochStarts().getFirst()).isEqualTo(new EpochStart(e(6), 0L, e(1), Option.none()));
+        assertThat(record.epochStarts().getFirst()).isEqualTo(new EpochStart(e(6), 0L, e(1), Option.some(SELF)));
         assertDiverged(record, e(3), 25L, 0L, false);
     }
 
