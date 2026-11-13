@@ -2362,6 +2362,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// `afterSent` is empty for a send whose caller receives this outcome. It names the drop site for a frame whose caller
     /// was already told `Sent` (the offline-buffer drain): such a frame is lost silently to its caller, so a refusal of it
     /// is not counted as a refused send, and a frame the dead-connection path drops without buffering is counted at the site.
+    ///
+    /// A fast-fail lane that is not writable refuses BEFORE the encode (#2583 P0). Accepted consequence (ruling N2): a frame
+    /// whose encode would fail gets `BackpressureRefused` while its lane is unwritable, not `EncodeFailed` with its ERROR
+    /// (#492 class), so a codec bug on such a lane surfaces only once the lane is writable again.
     @SuppressWarnings("JBCT-PAT-01")  // Stream selection, lazy serialize, write
     private WriteOutcome writeToStream(NodeId peerId,
                                        Message.Wired message,

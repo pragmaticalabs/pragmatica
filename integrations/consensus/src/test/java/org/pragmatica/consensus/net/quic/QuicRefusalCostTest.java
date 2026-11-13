@@ -18,12 +18,14 @@ package org.pragmatica.consensus.net.quic;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
+import io.netty.buffer.ByteBuf;
 import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.StreamType;
+import org.pragmatica.serialization.Serializer;
 import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -80,6 +82,33 @@ class QuicRefusalCostTest {
         assertThat(outcome).isInstanceOf(WriteOutcome.Sent.class);
         assertThat(encodes.get()).as("the counting serializer is on the encode path").isEqualTo(1);
         assertThat(network.quicMetrics().refusedCount(StreamType.FORWARD)).isZero();
+    }
+
+    /// N2 (accepted): a frame whose encode would fail is refused while its fast-fail lane is unwritable, and reported
+    /// `EncodeFailed` once the lane is writable.
+    @Test
+    void unencodableFrame_isRefusedWhileUnwritable_andEncodeFailedOnceWritable() {
+        var network = network(failingSerializer(), SHORT);
+
+        var refused = network.writeToStreamForTests(PEER, probe(StreamType.FORWARD), connectionWith(StreamType.FORWARD, false));
+        var failed = network.writeToStreamForTests(PEER, probe(StreamType.FORWARD), connectionWith(StreamType.FORWARD, true));
+
+        assertThat(refused).isInstanceOf(WriteOutcome.BackpressureRefused.class);
+        assertThat(failed).isInstanceOf(WriteOutcome.EncodeFailed.class);
+    }
+
+    private static Serializer failingSerializer() {
+        return new Serializer() {
+            @Override
+            public <T> byte[] encode(T object) {
+                throw new IllegalStateException("simulated codec bug");
+            }
+
+            @Override
+            public <T> void write(ByteBuf byteBuf, T object) {
+                throw new IllegalStateException("simulated codec bug");
+            }
+        };
     }
 
     @Test
