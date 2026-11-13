@@ -2,7 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-package org.pragmatica.aether.deployment.cluster.fsm;
+package org.pragmatica.aether.deployment.cluster.community;
 
 import java.util.List;
 
@@ -52,6 +52,11 @@ public interface CommunityLivenessView {
     /// than silently gaining a demotion path with no signal behind it.
     static CommunityLivenessView unwired() {
         return Unwired.INSTANCE;
+    }
+
+    /// `true` when `view` is a real observation, not the [#unwired] default.
+    static boolean isWired(CommunityLivenessView view) {
+        return view != Unwired.INSTANCE;
     }
 
     /// Holder for the single unwired instance, so a caller can tell "not wired" from "wired, and
