@@ -331,12 +331,12 @@ class WarnAfterCommitTest {
         assertThat(h.model().warningsHeld).as("nor held").noneMatch(warn -> warn.code().equals(HOLD));
     }
 
-    // -- the third outcome: committed, never published, inherited (Warnings, "Publish after commit") --------------------------------------
-    /// Pins the documented outcome: the WARNINGS write commits, but `Deactivate` is processed before its settlement. The row is committed
-    /// and open, nobody published the opener, and the successor inherits it without raising it. Red when that changes: update the
-    /// "Publish after commit" paragraph of `Warnings` with it.
+    // -- the third outcome: committed, never published, inherited (#3160, Warnings, "Publish after commit") --------------------------------
+    /// #3160, raise side: the WARNINGS write commits, but `Deactivate` is processed before its settlement. The row is committed open and
+    /// carries the unpublished opener, so the successor inherits it and publishes the opener once. Red when: the successor inherits the row
+    /// without publishing it (the operator sees no opener, and may later see its recovery alone).
     @Test
-    void committedBeforeDeactivateIsProcessed_isInheritedUnpublished() {
+    void committedBeforeDeactivateIsProcessed_isPublishedByTheSuccessor() {
         var h = exhausted();
         var write = warningsWrite(h);
 
@@ -353,14 +353,14 @@ class WarnAfterCommitTest {
 
         assertThat(committed(h)).as("row committed open").isTrue();
         assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("the successor inherited it").isTrue();
-        assertThat(h.warns(OPENER)).as("the opener was never published").isEmpty();
-        assertThat(h.warns(RECOVERY)).as("and never closed").isEmpty();
+        assertThat(h.warns(OPENER)).as("the successor published the committed opener once").hasSize(1);
+        assertThat(h.warns(RECOVERY)).as("and did not close it").isEmpty();
     }
 
-    /// Pins the documented outcome through a reincarnation (`StateRestored`: `Deactivate` then `Activate` in one dispatch): the write
-    /// committed, its settlement reaches the new incarnation and is dropped as stale. Red when that changes (see the test above).
+    /// #3160, raise side through a reincarnation (`StateRestored`: `Deactivate` then `Activate` in one dispatch): the write committed, its
+    /// settlement reaches the new incarnation and is dropped as stale. Red when: the new incarnation inherits the row without publishing it.
     @Test
-    void reincarnatedAfterCommit_staleSettlement_isInheritedUnpublished() {
+    void reincarnatedAfterCommit_staleSettlement_isPublishedByTheNewIncarnation() {
         var h = exhausted();
         var write = warningsWrite(h);
         var settlement = h.applyHeld(write.correlationId());
@@ -375,7 +375,71 @@ class WarnAfterCommitTest {
 
         assertThat(committed(h)).as("row committed open").isTrue();
         assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("the new incarnation inherited it").isTrue();
-        assertThat(h.warns(OPENER)).as("the opener was never published").isEmpty();
+        assertThat(h.warns(OPENER)).as("the new incarnation published the committed opener once").hasSize(1);
+    }
+
+    private static final String PLACEMENT = "invalid-placement";
+    private static final String PLACEMENT_VALID = "placement-valid";
+    private static final FsmWarningKey PLACEMENT_KEY = FsmWarningKey.fsmWarningKey(PLACEMENT, ORDERS.asString());
+
+    /// ORDERS' placement does not parse: the leader opened `invalid-placement`, committed and published it; every submission held from here
+    /// on, the placement is fixed and the leader closes the warning, its WARNINGS write in flight.
+    private static FsmHarness closeInFlight() {
+        var h = threeCores();
+
+        h.seedQuietly(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "NOWHERE"));
+        h.activate();
+        assertThat(h.warns(PLACEMENT)).as("precondition: the opener was published").hasSize(1);
+        assertThat(present(h, PLACEMENT_KEY)).as("precondition: and committed").isTrue();
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        h.seed(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "CORE_ONLY"));
+        h.drain();
+        h.deliver(new ClusterInput.Reconcile());
+        assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("precondition: the leader closed it").isFalse();
+        assertThat(h.warns(PLACEMENT_VALID)).as("precondition: the recovery is held while its write is in flight").isEmpty();
+
+        return h;
+    }
+
+    /// #3160, close side (the #3085 symptom through another window): the WARNINGS write closing the warning commits, but `Deactivate` is
+    /// processed before its settlement. Red when: the successor inherits nothing that names the close, so the opener stays open for ever in
+    /// the operator's view.
+    @Test
+    void closeCommittedBeforeDeactivateIsProcessed_isPublishedByTheSuccessor() {
+        var h = closeInFlight();
+        var write = warningsWrite(h);
+
+        h.deliver(new ClusterInput.Deactivate());
+        assertThat(((KVCommand.TransactionResult) h.applyCommand(write.transaction())).accepted()).as("precondition: the close committed")
+                                                                                                 .isTrue();
+        h.commitLeader(CORE_2, 2L);
+        h.commitLeader(FsmHarness.SELF, 3L);
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        h.drain();
+        h.activate();
+        h.deliver(new ClusterInput.Reconcile());
+        h.deliver(new ClusterInput.Reconcile());
+
+        assertThat(h.warns(PLACEMENT_VALID)).as("the successor published the committed recovery once").hasSize(1);
+        assertThat(h.warns(PLACEMENT)).as("the opener is not raised again").hasSize(1);
+        assertThat(present(h, PLACEMENT_KEY)).as("nothing left committed").isFalse();
+    }
+
+    /// Control for the close side: with the settlement processed before `Deactivate`, the recovery is published exactly once and no row is
+    /// left.
+    @Test
+    void closeSettledBeforeDeactivate_isPublishedOnce() {
+        var h = closeInFlight();
+
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        while (!h.held.isEmpty()) {
+            var write = h.held.values().iterator().next();
+
+            h.settleHeld(write, h.applyHeld(write.correlationId()));
+        }
+
+        assertThat(h.warns(PLACEMENT_VALID)).as("published once, after commit").hasSize(1);
+        assertThat(present(h, PLACEMENT_KEY)).as("nothing left committed").isFalse();
     }
 
     /// Control for the two above: with the settlement processed before `Deactivate`, the opener is published exactly once.
