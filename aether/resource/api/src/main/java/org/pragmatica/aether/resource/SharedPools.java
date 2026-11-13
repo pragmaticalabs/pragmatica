@@ -156,7 +156,10 @@ final class SharedPools {
     }
 
     /// Opens the pool this call inserted, unless node stop began since the admission check: then the pool is resolved with
-    /// `ProviderClosed` instead, so nothing is provisioned only to be closed by the drain. Contained: a factory that
+    /// `ProviderClosed` instead, so nothing is provisioned only to be closed by the drain. The skip is an optimisation
+    /// that no test pins: with it removed, [#fillSlot] still refuses through [#unlessStopped] and the drain still closes
+    /// the pool exactly once, so no invariant detects its removal (the flag is a final `AtomicBoolean`, no seam reads it
+    /// between the check and the factory call). Contained: a factory that
     /// throws synchronously fails the pool (and is evicted) instead of leaving the placeholder unresolved, which would
     /// wedge the key and every release waiting on it.
     private Promise<Provisioned<?>> provisionUnlessStopped(Promise<Provisioned<?>> pool,
@@ -252,9 +255,10 @@ final class SharedPools {
                                   .flatMap(this::unlessStopped));
     }
 
-    /// Hands the view out only if node stop had not begun when it was made. The flag is set before the drain registers or
-    /// runs any close, so a flag still clear here means the drain's close had not run yet, and the view was made from an
-    /// open pool; a flag already set means the pool may be closed, and the view is discarded, never handed out.
+    /// Hands the view out only if node stop had not begun when this check runs, after the view was made. The flag is set
+    /// before the drain registers or runs any close, so a flag still clear here means the drain's close had not run yet;
+    /// a flag already set means the pool may be closed, and the view is discarded, never handed out. Scope: node stop
+    /// only. A holder's own release racing its provisioning can still close the pool before the view is made (#3178).
     private <T> Result<T> unlessStopped(T view) {
         return closed.get()
                ? ResourceProvisioningError.ProviderClosed.INSTANCE.<T> result()

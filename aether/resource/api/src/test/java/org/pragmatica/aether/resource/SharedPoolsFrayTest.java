@@ -8,6 +8,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.pastalab.fray.core.scheduler.PCTScheduler;
 import org.pastalab.fray.junit.junit5.FrayTestExtension;
@@ -34,13 +35,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 @ExtendWith(FrayTestExtension.class)
 class SharedPoolsFrayTest {
     static final int ITERATIONS = 300;
+    /// Race-reached witness, across iterations (the classes are not reloaded, so statics persist): iterations in which a
+    /// view was made from an already closed pool and was discarded with `ProviderClosed`, i.e. the drain-before-fill
+    /// interleaving of #3171 actually occurred.
+    private static final AtomicInteger DRAIN_BEFORE_FILL = new AtomicInteger();
 
-    /// One iteration's world. Fray reloads the classes per iteration, and everything is local to the call.
+    /// One iteration's world. The classes are not reloaded per iteration (`resetClassLoaderPerIteration = false`), so
+    /// everything but the witness counter is local to the call.
     private static final class Race {
         private final FakeShareableFactory factory = new FakeShareableFactory();
         private final AtomicInteger viewsOfClosedPool = new AtomicInteger();
         private final AtomicInteger servedAfterStop = new AtomicInteger();
         private final AtomicBoolean closeAllReturned = new AtomicBoolean();
+        private final AtomicBoolean closeAllStarted = new AtomicBoolean();
+        private final AtomicInteger refusedBeforeStop = new AtomicInteger();
         private final List<Promise<Unit>> reported = new CopyOnWriteArrayList<>();
         private final SharedPools pools = SharedPools.sharedPools(this::closePool);
 
@@ -63,6 +71,10 @@ class SharedPoolsFrayTest {
             var afterStop = closeAllReturned.get();
             var acquired = pools.<FakeConnector> acquire("k", scope, factory, this::provision, "label").await();
 
+            if (acquired.isFailure() && !closeAllStarted.get()) {
+                refusedBeforeStop.incrementAndGet();
+            }
+
             if (afterStop && acquired.isSuccess()) {
                 servedAfterStop.incrementAndGet();
             }
@@ -72,6 +84,7 @@ class SharedPoolsFrayTest {
         }
 
         private void stopNode() {
+            closeAllStarted.set(true);
             reported.addAll(pools.closeAll());
             closeAllReturned.set(true);
         }
@@ -107,6 +120,14 @@ class SharedPoolsFrayTest {
             assertThat(factory.provisioned).as("every pool that was opened is closed exactly once")
                                            .allSatisfy(pool -> assertThat(pool.closeCount()).isEqualTo(1));
             assertThat(pools.size()).as("node stop leaves no entry").isZero();
+            assertThat(refusedBeforeStop.get()).as("an acquire that completed before node stop began was refused")
+                                               .isZero();
+        }
+
+        /// Whether this iteration reached the drain-before-fill order: a view was made from a pool the drain had already
+        /// closed (never handed out: [#assertInvariants] pins that).
+        private boolean reachedDrainBeforeFill() {
+            return factory.views.stream().anyMatch(view -> view.poolClosedAtIssue);
         }
     }
 
@@ -117,5 +138,15 @@ class SharedPoolsFrayTest {
 
         race.run();
         race.assertInvariants();
+
+        if (race.reachedDrainBeforeFill()) {
+            DRAIN_BEFORE_FILL.incrementAndGet();
+        }
+    }
+
+    @AfterAll
+    static void drainBeforeFillWasReached() {
+        System.out.println("FRAY-WITNESS drain-before-fill iterations: " + DRAIN_BEFORE_FILL.get() + " of " + ITERATIONS);
+        assertThat(DRAIN_BEFORE_FILL.get()).as("the drain-before-fill interleaving was never reached").isPositive();
     }
 }

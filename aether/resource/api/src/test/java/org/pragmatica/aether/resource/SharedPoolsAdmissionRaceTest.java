@@ -142,8 +142,10 @@ class SharedPoolsAdmissionRaceTest {
     }
 
     /// Node stop begins inside the creator's `provision`, i.e. after its flag check passed and after the drain can see its
-    /// entry: the drain's close is registered on the pool before the creator's holder slot, so it runs first. The holder
-    /// must fail with `ProviderClosed`, not be handed a view of the pool the drain closed (#3171).
+    /// entry. The creator's holder slot is registered first (before `provision` runs), the drain's close after it, so
+    /// the view is made from a still-open pool and discarded by the flag re-read; the close runs afterwards. This is the
+    /// fill-then-close order; the close-then-fill order (#3171) is reached only by the Fray test. The holder must fail
+    /// with `ProviderClosed`, not be handed a view of a pool the drain closes.
     @Test
     void closeAllDuringProvisioning_holderFailsWithProviderClosed_notAViewOfAClosedPool() {
         var acquired = pools.<FakeConnector> acquire("k", "slice-a", factory, () -> {
