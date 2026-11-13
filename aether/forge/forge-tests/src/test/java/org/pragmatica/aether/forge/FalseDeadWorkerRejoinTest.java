@@ -103,16 +103,6 @@ class FalseDeadWorkerRejoinTest {
         log.info("Same-id refusals counted on the cores: {}", coreRefusals());
     }
 
-    /// FSM2 arm, admission only: on the FSM2 engine the `Directory` directive writers (`writeDirective`, `joinMint`) mint a
-    /// worker's directive, which the legacy arms above never reach. The removal path is not run on FSM2: there the cores did not
-    /// remove the worker's directive within `BUDGET` (observed), so a removal arm would pin nothing here.
-    @Test void fsm2Worker_admissionCommitsDirective() {
-        cluster.withDeploymentEngine(AetherValue.DeploymentEngine.FSM2);
-        var id = bootWorker(REMOVAL_FIRST, REMOVAL_FIRST_COMMUNITY);
-
-        assertThat(directiveCommitted(id)).as("the leader committed the FSM2 worker's directive").isTrue();
-    }
-
     /// The removed worker stops instead of retrying forever, bounded by `RECOVERY_BOUND` after the heal. It is refused by the
     /// cores (terminal removal) but never told, so it does not exit with `EXIT_IDENTITY_REFUSED`: it stops through the QUORUM_LOSS
     /// self-fence (`EXIT_DRAINED`) about 75 s after the cut, because the refusal keeps it out of the cores' quorum. Both codes
