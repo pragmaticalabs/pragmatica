@@ -94,7 +94,7 @@ class GuardDominanceStatementTest {
         assertFalse(fires("if (!xs.isEmpty()) return xs.getFirst()"));
     }
 
-    // ---- else side starting right after the colon, and a block that never closes (b_c13, b_u10)
+    // ---- else side starting right after the colon, and a block that never closes (b_c13; the unclosed block pins current behaviour, no mutant depends on it)
 
     @Test
     void elseExpressionStartingWithACastRightAfterTheColon_isReached() {
