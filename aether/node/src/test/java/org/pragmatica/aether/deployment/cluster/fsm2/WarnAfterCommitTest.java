@@ -500,13 +500,15 @@ class WarnAfterCommitTest {
         assertThat(m.warningsCovered).isZero();
     }
 
-    /// Red when: a flush that drafts nothing records coverage (`covering` applied to an empty draft).
+    /// Red when: a flush that drafts nothing records coverage (`covering` applied to an empty draft). The held warning is already
+    /// committed in its marker row (the mirror equals the desired set), so the flush has nothing to write (#3160 markers).
     @Test
     void draftWithNothingToWrite_coversNothing() {
         var m = new ClusterModel();
 
         m.warningsDirty = true;
         m.warningsHeld = List.of(new ClusterEffect.Warn(OPENER, ORDERS.asString(), "held"));
+        Warnings.indexRow(m, KEY, Warnings.desired(m).get(KEY));
         Warnings.draft(m);
 
         assertThat(m.warningsCovered).isZero();
