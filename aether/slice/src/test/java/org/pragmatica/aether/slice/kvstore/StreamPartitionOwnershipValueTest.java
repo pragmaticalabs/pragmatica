@@ -136,8 +136,8 @@ class StreamPartitionOwnershipValueTest {
         var v = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner, epoch, 3L, HlcTimestamp.ZERO, java.util.List.of(owner), 4L);
         var started = v.withEpochStart(10L);
 
-        assertThat(started.epochStarts()).containsExactly(AetherValue.EpochStart.epochStart(epoch, 10L, Option.none()));
-        assertThat(started.lastEpochStart().unwrap()).isEqualTo(AetherValue.EpochStart.epochStart(epoch, 10L, Option.none()));
+        assertThat(started.epochStarts()).containsExactly(AetherValue.EpochStart.epochStart(epoch, 10L, Option.some(owner)));
+        assertThat(started.lastEpochStart().unwrap()).isEqualTo(AetherValue.EpochStart.epochStart(epoch, 10L, Option.some(owner)));
         assertThat(started.isrVersion()).as("a recorded start is a change of the record").isEqualTo(5L);
         assertThat(started.withEpochStart(10L)).as("the same start again changes nothing").isSameAs(started);
     }
@@ -156,7 +156,7 @@ class StreamPartitionOwnershipValueTest {
         assertThat(next.ownershipTerm()).isEqualTo(4L);
         assertThat(next.ownerEpoch()).isEqualTo(epoch.withCounter(4L)).isNotEqualTo(epoch);
         assertThat(next.epochStarts()).as("the new epoch re-assigns offsets from 3, so the start at 7 is superseded")
-                                      .containsExactly(AetherValue.EpochStart.epochStart(epoch.withCounter(4L), 3L, Option.none()));
+                                      .containsExactly(AetherValue.EpochStart.epochStart(epoch.withCounter(4L), 3L, Option.some(owner)));
         assertThat(next.isr()).containsExactly(owner, peer);
     }
 
@@ -170,9 +170,9 @@ class StreamPartitionOwnershipValueTest {
         var second = v.restarted(3L, HlcTimestamp.ZERO);
         var third = second.restarted(0L, HlcTimestamp.ZERO);
 
-        assertThat(second.epochStarts()).containsExactly(AetherValue.EpochStart.epochStart(e1, 0L, Option.none()), AetherValue.EpochStart.epochStart(e1.withCounter(2L), 3L, Option.none()));
+        assertThat(second.epochStarts()).containsExactly(AetherValue.EpochStart.epochStart(e1, 0L, Option.some(owner)), AetherValue.EpochStart.epochStart(e1.withCounter(2L), 3L, Option.some(owner)));
         assertThat(third.epochStarts()).as("a new life begins at offset 0: nothing before it survives")
-                                       .containsExactly(AetherValue.EpochStart.epochStart(e1.withCounter(3L), 0L, Option.none()));
+                                       .containsExactly(AetherValue.EpochStart.epochStart(e1.withCounter(3L), 0L, Option.some(owner)));
     }
 
     /// Bounded, newest kept, and the dropped starts are FOLDED (C2, v1873 round 2): the oldest kept start takes the lowest
