@@ -89,6 +89,7 @@ B21.readers.traffic.NodeDepartureKey -> fsm2:ObservedSliceFeed.trafficFeed[Endpo
 B21.readers.traffic.SliceObservedKey -> fsm2:ObservedSliceFeed.trafficFeed[EndpointRegistry$1endpointRegistry]
 B21.tracker.NodeArtifactKey.put -> dropped
 B21.tracker.NodeArtifactKey.remove -> dropped
+B22.AllInstancesFailedDetector.activeInstances -> fsm2:observed
 B3.ActivationDriver -> fsm2:Fsm2System.reconcileActivation
 B4.PassiveClientSwitch -> dropped
 B5.ConfigApplied -> fsm2:NodeFsmInput.ConfigChanged

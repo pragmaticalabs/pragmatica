@@ -555,6 +555,14 @@ public final class DeploymentWiring {
         }
     }
 
+    // -- 4a sources (F5b, phase-3 design 8.2 D-10) ------------------------------------------------------------------
+    /// B22: a source read on demand: FSM2's observed rows under FSM2, the legacy source under LEGACY.
+    public <T> Supplier<T> source(String point, Supplier<T> fsm2, Supplier<T> legacy) {
+        return isFsm2()
+               ? recorded(point, "fsm2:observed", fsm2)
+               : recorded(point, LEGACY_TARGET, legacy);
+    }
+
     /// B17 (Q8): whether the blueprint publish batch writes the apply record: on under FSM2, off under LEGACY.
     public boolean applyRecords() {
         bindings.put("B17.ApplyRecord",
