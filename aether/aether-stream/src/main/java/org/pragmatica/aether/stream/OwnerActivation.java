@@ -943,7 +943,37 @@ public final class OwnerActivation {
     }
 
     private Promise<Unit> activateOrRedrive(String stream, int partition, TimeSpan backoff) {
-        return activate(stream, partition).onFailure(cause -> redrive(stream, partition, backoff, cause));
+        return activateUnlessHeld(stream, partition, backoff).onFailure(cause -> redrive(stream,
+                                                                                         partition,
+                                                                                         backoff,
+                                                                                         cause));
+    }
+
+    /// #3140: [#attempt] checks the refusal wait, but a gate run by another thread (an admit, or the redrive timer) can be
+    /// refused and park the partition between that check and this thread winning `inFlight`, so the stale check let a second
+    /// gate probe INSIDE the hold (a third hold measured 0 ms; the consumer's twin is #2875). The check is repeated here, once
+    /// this thread owns `inFlight`: it releases the partition untouched and defers to the wait's end. The result is
+    /// [ActivationError#IN_PROGRESS], which [#redrive] ignores, because the deferral is the re-drive.
+    private Promise<Unit> activateUnlessHeld(String stream, int partition, TimeSpan backoff) {
+        var key = PartitionKey.partitionKey(stream, partition);
+
+        if (!inFlight.add(key)) {
+            return ActivationError.IN_PROGRESS.promise();
+        }
+
+        return refusalWaitLeft(key).fold(() -> runGate(stream, partition, key).withResult(_ -> inFlight.remove(key)),
+                                         left -> yieldToRefusal(stream, partition, backoff, key, left));
+    }
+
+    private Promise<Unit> yieldToRefusal(String stream,
+                                         int partition,
+                                         TimeSpan backoff,
+                                         PartitionKey key,
+                                         TimeSpan left) {
+        inFlight.remove(key);
+        deferPastRefusal(stream, partition, backoff, left);
+
+        return ActivationError.IN_PROGRESS.promise();
     }
 
     /// The part of the partition's refusal wait still to run, none once it has passed.
