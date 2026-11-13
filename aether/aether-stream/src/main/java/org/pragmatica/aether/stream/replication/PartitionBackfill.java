@@ -2015,11 +2015,26 @@ public final class PartitionBackfill {
     /// observed then.
     public long lineageEnd(String streamName, int partition, NodeId node, long tail) {
         return Option.option(committedLineageEnds.get(partitionKey(streamName, partition)))
-                     .flatMap(ends -> Option.option(ends.get(node)))
-                     .filter(lineage -> tail <= lineage.rawTail())
-                     .map(lineage -> Math.min(tail,
-                                              lineage.end()))
+                     .flatMap(ends -> Option.option(ends.get(node))
+                                            .map(lineage -> capOrEvict(ends, node, lineage, tail)))
                      .or(tail);
+    }
+
+    /// #3081: the entry caps `node` only at the very tail it was learned for. A tail above the lineage end and different from it is
+    /// a replica that changed since (repaired by truncation and refilled, or grown by new data): the entry describes a history it
+    /// no longer has, so it is removed and the tail stands uncapped. A tail at or below the end is capped by nothing either way,
+    /// so it is left alone (an unknown tail, a lagging row). Residual: a repair that refills to exactly the remembered tail is
+    /// indistinguishable here, because the offset alone carries no epoch.
+    private static long capOrEvict(ConcurrentHashMap<NodeId, Lineage> ends, NodeId node, Lineage lineage, long tail) {
+        if (tail == lineage.rawTail()) {
+            return Math.min(tail, lineage.end());
+        }
+
+        if (tail > lineage.end()) {
+            ends.remove(node, lineage);
+        }
+
+        return tail;
     }
 
     private void rememberLineageEnd(String streamName, int partition, NodeId source, long rawTail, long end) {
