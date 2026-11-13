@@ -143,24 +143,15 @@ class SharedPoolsAdmissionRaceTest {
 
     /// Node stop begins inside the creator's `provision`, i.e. after its flag check passed and after the drain can see its
     /// entry: the drain's close is registered on the pool before the creator's holder slot, so it runs first. The holder
-    /// must fail with `ProviderClosed`, not receive a view of the pool the drain closed (#3171).
+    /// must fail with `ProviderClosed`, not be handed a view of the pool the drain closed (#3171).
     @Test
     void closeAllDuringProvisioning_holderFailsWithProviderClosed_notAViewOfAClosedPool() {
-        var viewsOfClosedPool = new AtomicInteger();
-
-        factory.viewHook = pool -> {
-            viewsOfClosedPool.addAndGet(pool.closeCount());
-
-            return pool;
-        };
-
         var acquired = pools.<FakeConnector> acquire("k", "slice-a", factory, () -> {
             pools.closeAll();
 
             return provision();
         }, "label").await(TIMEOUT);
 
-        assertThat(viewsOfClosedPool.get()).as("no view was issued for a pool that was already closed").isZero();
         assertThat(acquired.isFailure()).as("the holder must fail, got %s", acquired).isTrue();
         acquired.onFailure(cause -> assertThat(cause).isSameAs(ResourceProvisioningError.ProviderClosed.INSTANCE));
         assertThat(closes.get()).as("the pool the drain captured closes exactly once").isEqualTo(1);

@@ -13,7 +13,7 @@ import org.pastalab.fray.core.scheduler.PCTScheduler;
 import org.pastalab.fray.junit.junit5.FrayTestExtension;
 import org.pastalab.fray.junit.junit5.annotations.FrayTest;
 import org.pragmatica.aether.resource.SharedPoolFixtures.FakeConnector;
-import org.pragmatica.aether.resource.SharedPoolFixtures.FakePool;
+import org.pragmatica.aether.resource.SharedPoolFixtures.FakeView;
 import org.pragmatica.aether.resource.SharedPoolFixtures.FakeShareableFactory;
 import org.pragmatica.aether.resource.SpiResourceProvider.Provisioned;
 import org.pragmatica.lang.Promise;
@@ -44,17 +44,11 @@ class SharedPoolsFrayTest {
         private final List<Promise<Unit>> reported = new CopyOnWriteArrayList<>();
         private final SharedPools pools = SharedPools.sharedPools(this::closePool);
 
-        private Race() {
-            factory.viewHook = this::viewOf;
-        }
-
-        /// The pool is already closed when a view of it is issued: the view would hand a slice a dead pool.
-        private FakeConnector viewOf(FakePool pool) {
-            if (pool.closeCount() > 0) {
+        /// A view handed to a caller was made from a pool that was already closed: the caller got a dead pool.
+        private void auditView(FakeConnector view) {
+            if (((FakeView) view).poolClosedAtIssue) {
                 viewsOfClosedPool.incrementAndGet();
             }
-
-            return pool;
         }
 
         private Promise<Unit> closePool(Provisioned<?> provisioned) {
@@ -73,7 +67,8 @@ class SharedPoolsFrayTest {
                 servedAfterStop.incrementAndGet();
             }
 
-            acquired.onSuccess(view -> view.stop().await());
+            acquired.onSuccess(this::auditView)
+                    .onSuccess(view -> view.stop().await());
         }
 
         private void stopNode() {
@@ -96,7 +91,7 @@ class SharedPoolsFrayTest {
         }
 
         private void assertInvariants() {
-            assertThat(viewsOfClosedPool.get()).as("a view was issued for a pool that was already closed").isZero();
+            assertThat(viewsOfClosedPool.get()).as("a view was handed out for a pool that was already closed").isZero();
             assertThat(servedAfterStop.get()).as("an acquire that started after node stop returned was served").isZero();
             assertThat(factory.provisioned).as("every pool that was opened is closed exactly once")
                                            .allSatisfy(pool -> assertThat(pool.closeCount()).isEqualTo(1));

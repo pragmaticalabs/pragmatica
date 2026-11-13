@@ -25,8 +25,6 @@
         <!-- Fray controlled-concurrency tests (#3162). One version for the test dependency and the plugin that builds the
              instrumented JDK those tests need. -->
         <fray.version>0.9.2</fray.version>
-        <!-- The root list plus FrayTest: a Fray test runs only in the `fray` profile, where the agent is attached. -->
-        <surefire.excludedGroups>Infinite, Slow, Benchmark, S3, quarantine, FrayTest</surefire.excludedGroups>
     </properties>
 
     <dependencies>
@@ -74,16 +72,21 @@
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
         </dependency>
-        <dependency>
-            <groupId>org.pastalab.fray</groupId>
-            <artifactId>fray-junit</artifactId>
-            <version>${fray.version}</version>
-            <scope>test</scope>
-        </dependency>
     </dependencies>
 
     <build>
         <plugins>
+            <!-- A Fray test needs Fray's runtime classes, which only the `fray` profile supplies (its instrumented JDK): the
+                 class does not even load without them, so the default build does not compile it. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <testExcludes>
+                        <testExclude>**/*FrayTest.java</testExclude>
+                    </testExcludes>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.sonatype.central</groupId>
                 <artifactId>central-publishing-maven-plugin</artifactId>
@@ -95,7 +98,7 @@
     </build>
 
     <profiles>
-        <!-- `mvn test -Pfray -pl aether/resource/api`: runs ONLY the Fray tests (tag FrayTest). `prepare-fray` jlinks an
+        <!-- `mvn test -Pfray -pl aether/resource/api`: compiles and runs ONLY the Fray tests (tag FrayTest). `prepare-fray` jlinks an
              instrumented JDK into target/ and puts the Fray agent into `argLine` and the instrumented `java` into `jvm`;
              the root surefire `argLine` is a literal, so it is restated here with `@{argLine}` to carry the agent.
              Own profile, not an own execution: the instrumented JDK costs a jlink per build and the agent must not slow
@@ -104,10 +107,24 @@
             <id>fray</id>
             <properties>
                 <argLine></argLine>
-                <surefire.excludedGroups>Infinite, Slow, Benchmark, S3, quarantine</surefire.excludedGroups>
             </properties>
+            <dependencies>
+                <dependency>
+                    <groupId>org.pastalab.fray</groupId>
+                    <artifactId>fray-junit</artifactId>
+                    <version>${fray.version}</version>
+                    <scope>test</scope>
+                </dependency>
+            </dependencies>
             <build>
                 <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-compiler-plugin</artifactId>
+                        <configuration>
+                            <testExcludes combine.self="override"/>
+                        </configuration>
+                    </plugin>
                     <plugin>
                         <groupId>org.pastalab.fray.maven</groupId>
                         <artifactId>fray-plugins-maven</artifactId>

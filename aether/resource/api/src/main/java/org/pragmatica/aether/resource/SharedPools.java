@@ -177,9 +177,9 @@ final class SharedPools {
     ///    provisioned, so the drain's close completes on a failed pool; holders that joined the entry meanwhile fail with
     ///    the same cause.
     /// 2. The flag is not yet visible, but the drain sees the insert: the drain registers its close on the pool before
-    ///    this acquirer registers its holder slot, so the close runs first. [#fillSlot] re-reads the flag, which is always
-    ///    set before the drain registers anything, and fails the slot with `ProviderClosed` instead of issuing a view of
-    ///    a pool the drain has closed.
+    ///    this acquirer registers its holder slot, so the close runs first. [#fillSlot] re-reads the flag AFTER making the
+    ///    view, which is always set before the drain registers anything, and fails the slot with `ProviderClosed`
+    ///    instead of handing out a view of a pool the drain has closed.
     /// 3. The flag is set after the view was issued: the holder was served from an open pool, which node stop closes.
     private <T> Promise<T> refuseAfterAdmission(Object key, Admission admission) {
         var late = departing();
@@ -239,7 +239,7 @@ final class SharedPools {
     }
 
     /// Resolves the slot of the holder this thread added: the view on success, the pool's failure otherwise, and
-    /// `ProviderClosed` once node stop began (the pool may already be closed by the drain). It runs as
+    /// `ProviderClosed` once node stop began before the view was made (see [#unlessStopped]). It runs as
     /// a dependent of the pool, which is after `compute` returned, so outside the bin lock.
     @SuppressWarnings("unchecked")
     private <T> Promise<T> fillSlot(Promise<T> slot,
@@ -247,10 +247,18 @@ final class SharedPools {
                                     NodeShareable<T, ?> shareable,
                                     Object key,
                                     String scope) {
-        return slot.resolve(closed.get()
-                            ? ResourceProvisioningError.ProviderClosed.INSTANCE.<T> result()
-                            : result.map(provisioned -> shareable.view((T) provisioned.resource(),
-                                                                       () -> releaseSlot(key, scope, slot))));
+        return slot.resolve(result.map(provisioned -> shareable.view((T) provisioned.resource(),
+                                                                     () -> releaseSlot(key, scope, slot)))
+                                  .flatMap(this::unlessStopped));
+    }
+
+    /// Hands the view out only if node stop had not begun when it was made. The flag is set before the drain registers or
+    /// runs any close, so a flag still clear here means the drain's close had not run yet, and the view was made from an
+    /// open pool; a flag already set means the pool may be closed, and the view is discarded, never handed out.
+    private <T> Result<T> unlessStopped(T view) {
+        return closed.get()
+               ? ResourceProvisioningError.ProviderClosed.INSTANCE.<T> result()
+               : Result.success(view);
     }
 
     /// A failed pool was never opened, so it has nothing to close. Its holders all receive the failure, and the next
