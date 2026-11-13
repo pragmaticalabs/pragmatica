@@ -794,7 +794,6 @@ final class NettyHttpServer implements HttpServer {
             if (extraHeaders.contains(X_REQUEST_ID)) {
                 response.headers().remove(X_REQUEST_ID);
             }
-
             // #2984: the typed ContentType argument is the one Content-Type; a handler-set copy is dropped, not added twice.
             response.headers().add(extraHeaders.copy().remove(HttpHeaderNames.CONTENT_TYPE));
 
