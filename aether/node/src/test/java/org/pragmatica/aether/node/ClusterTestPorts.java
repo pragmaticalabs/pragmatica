@@ -48,8 +48,9 @@ import java.util.function.IntSupplier;
 ///   the address the node binds.
 ///
 /// Residual, stated: a process that does not use the lock directory and binds an explicit port inside the window can
-/// still take it (none in the repo: the #2731 grep of 61000-65535 found only range-validation bounds and config-parse
-/// literals). The lock directory is a fixed path, not `java.io.tmpdir`, so forks with a redirected tmpdir still meet.
+/// still take it (none now: the #2731 grep of 61000-65535 found range-validation bounds and config-parse literals, and
+/// `M1StreamLoadTest`'s default base 63000, which #2741 moved to 44000). The lock directory is a fixed path, not `java.io.tmpdir`, so forks with a
+/// redirected tmpdir still meet.
 public final class ClusterTestPorts {
     private static final int SWIM_OFFSET = CoreSwimHealthDetector.SWIM_PORT_OFFSET;
     private static final int MAX_PORT = 65_535;
