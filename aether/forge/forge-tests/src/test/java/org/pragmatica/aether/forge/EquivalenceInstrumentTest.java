@@ -246,6 +246,22 @@ class EquivalenceInstrumentTest {
             assertThat(EquivalenceComparison.residue(new Arm("fsm2", new EquivalenceKv(kv), Set.copyOf(CORES), List.of(), 1, 1L, Map.of()))).hasSize(1);
         }
 
+        /// The tombstone exemption ends with the 120 s grace: a tombstone of a departed node issued exactly 120 s before the snapshot is exempt, one
+        /// millisecond older is residue. Mutation: drop the age bound (exempt every tombstone); the second assertion goes red. Mutation: `<=` -> `<`
+        /// on the bound; the first goes red.
+        @Test
+        void tombstone_isExemptOnlyInsideTheGrace() {
+            var kv = fsm2Kv(3);
+            var gone = node("gone");
+
+            kv.put(AetherKey.SliceDesiredKey.sliceDesiredKey(gone, SLICE), new AetherValue.SliceDesiredValue(AetherValue.SliceGoal.UNLOADED, new AetherValue.Generation(1L, 9L), 1_000L));
+            var atBound = new Arm("fsm2", new EquivalenceKv(kv), Set.copyOf(CORES), List.of(), 1, 1L, Map.of(), List.of(), 1_000L + EquivalenceComparison.TOMBSTONE_GRACE_MS);
+            var past = new Arm("fsm2", new EquivalenceKv(kv), Set.copyOf(CORES), List.of(), 1, 1L, Map.of(), List.of(), 1_001L + EquivalenceComparison.TOMBSTONE_GRACE_MS);
+
+            assertThat(EquivalenceComparison.residue(atBound)).isEmpty();
+            assertThat(EquivalenceComparison.residue(past)).hasSize(1);
+        }
+
         /// A scenario that places nothing (E-09: both arms -1) still gets an O5 control that fires.
         @Test
         void o5Control_firesWhenNeitherArmPlaces() {

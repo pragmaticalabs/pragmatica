@@ -28,6 +28,8 @@ final class EquivalenceComparison {
     /// Design 9.5 O5: FSM2 <= LEGACY + max(30 s, 25%) `[guess]`.
     static final long O5_FLOOR_MS = 30_000L;
     static final double O5_RATIO = 0.25;
+    /// Design O3: an FSM2 desired tombstone (goal UNLOADED) is exempt only inside this grace after it was issued.
+    static final long TOMBSTONE_GRACE_MS = 120_000L;
 
     private EquivalenceComparison() {}
 
@@ -40,7 +42,8 @@ final class EquivalenceComparison {
     /// What one arm of a round recorded. `o4Batches` is negative when the arm did not quiesce (the count is void; a commit ring that dropped
     /// entries on every node is a round ERROR, never an O4 value);
     /// `o5PlacementMs` is negative when placement never completed; `o6` holds the hygiene counters (lost, settled_unknown, closed);
-    /// `targetEvents` are the `SliceTargetKey` transitions the commit ring recorded between the samples (scale-step detection, MON-i).
+    /// `targetEvents` are the `SliceTargetKey` transitions the commit ring recorded between the samples (scale-step detection, MON-i);
+    /// `nowMs` is the wall clock of the quiescent snapshot (the reference of the O3 tombstone grace).
     record Arm(String engine,
                EquivalenceKv quiescent,
                Set<NodeId> liveNodes,
@@ -48,8 +51,10 @@ final class EquivalenceComparison {
                long o4Batches,
                long o5PlacementMs,
                Map<String, Double> o6,
-               List<EquivalenceMonitor.TargetEvent> targetEvents) {
-        /// An arm with no ring-recorded target transitions: the samples are the only witness of a scale step.
+               List<EquivalenceMonitor.TargetEvent> targetEvents,
+               long nowMs) {
+        /// An arm with no ring-recorded target transitions: the samples are the only witness of a scale step. `nowMs` 0 reads every tombstone as
+        /// freshly issued at 0.
         Arm(String engine,
             EquivalenceKv quiescent,
             Set<NodeId> liveNodes,
@@ -57,7 +62,7 @@ final class EquivalenceComparison {
             long o4Batches,
             long o5PlacementMs,
             Map<String, Double> o6) {
-            this(engine, quiescent, liveNodes, samples, o4Batches, o5PlacementMs, o6, List.of());
+            this(engine, quiescent, liveNodes, samples, o4Batches, o5PlacementMs, o6, List.of(), 0L);
         }
     }
 
@@ -209,7 +214,8 @@ final class EquivalenceComparison {
         });
     }
 
-    /// O3: rows left behind at quiescence. Exempt by design: FSM2 desired tombstones (goal UNLOADED) and kept directives (not read here).
+    /// O3: rows left behind at quiescence. Exempt by design: FSM2 desired tombstones (goal UNLOADED) issued within [#TOMBSTONE_GRACE_MS] of the
+    /// arm's snapshot, and kept directives (not read here).
     static List<String> residue(Arm arm) {
         var kv = arm.quiescent();
         var targets = kv.targets().keySet();
@@ -221,7 +227,7 @@ final class EquivalenceComparison {
                 case AetherKey.NodeArtifactKey row when !targets.contains(row.artifact().base()) || !live.contains(row.nodeId()) -> rows.add(row.toString());
                 case AetherKey.SliceObservedKey row when !targets.contains(row.artifact().base()) || !live.contains(row.nodeId()) -> rows.add(row.toString());
                 case AetherKey.SliceDesiredKey row when value instanceof AetherValue.SliceDesiredValue desired
-                                                       && desired.goal() != AetherValue.SliceGoal.UNLOADED
+                                                       && !isFreshTombstone(desired, arm.nowMs())
                                                        && (!targets.contains(row.artifact().base()) || !live.contains(row.nodeId())) -> rows.add(row.toString());
                 case AetherKey.TopicPublisherKey row when !live.contains(row.nodeId()) || !targets.contains(row.artifact().base()) -> rows.add(row.toString());
                 case AetherKey.HttpNodeRouteKey row when !live.contains(row.nodeId()) -> rows.add(row.toString());
@@ -238,6 +244,11 @@ final class EquivalenceComparison {
           });
 
         return rows;
+    }
+
+    /// A tombstone (goal UNLOADED) issued at most [#TOMBSTONE_GRACE_MS] before `nowMs`; the bound itself is still inside the grace.
+    private static boolean isFreshTombstone(AetherValue.SliceDesiredValue desired, long nowMs) {
+        return desired.goal() == AetherValue.SliceGoal.UNLOADED && nowMs - desired.issuedAt() <= TOMBSTONE_GRACE_MS;
     }
 
     private static void o4(Arm legacy, Arm other, List<Divergence> divergences) {

@@ -227,7 +227,8 @@ class Fsm2EquivalenceRoundTest {
                               quiescent ? o4 : -1,
                               placementMs,
                               o6(cluster),
-                              recorder.targetEvents());
+                              recorder.targetEvents(),
+                              System.currentTimeMillis());
 
             monitorLiveControl(cluster, engine);
             log("arm %s end %s load=%s".formatted(engine, Instant.now(), loadAverage()));
