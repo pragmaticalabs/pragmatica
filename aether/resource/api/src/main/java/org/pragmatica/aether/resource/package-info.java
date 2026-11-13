@@ -3,19 +3,31 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 /// Resource provisioning for slices.
 ///
-/// The TLA+ model `SharedPools` (at adb7a765da) of the node-shared pools ([SharedPools]) and the per-slice path of
+/// The TLA+ model `SharedPools` of the node-shared pools ([SharedPools], #2978) and the per-slice path of
 /// `SpiResourceProvider.provideShared` lives in doc-comment fragments: this skeleton carries the constants,
 /// variables, helpers, `Init`, `Next`, fairness and the properties; each action sits on the code that implements it.
-/// `tools/tla/check.sh SharedPools <variant> aether/resource/api/src/main/java` extracts and checks it.
+/// `tools/tla/check.sh SharedPools <variant> aether/resource/api/src/main/java` extracts and checks one config;
+/// `tools/tla/run.sh` runs every config with its expected verdict (`tools/tla/models.tsv`). Results are bounds, not
+/// proofs: a passing config says no violation exists within its constants.
 ///
 /// ```tla SharedPools:head
 /// EXTENDS Naturals, FiniteSets, TLC
 ///
 /// \* Acquirer threads are (scope, key) pairs. A pool is a provision promise plus the resource it opens.
 /// \* SlicePath enables the per-slice path (provideSlicePool) beside the shared one.
-/// \* Ruling: an acquire that sees closed after admission fails with ProviderClosed (not implemented at adb7a765da).
-/// \* ExactEmpty: closeAll loops until a key-set pass is empty instead of reading isEmpty() (not implemented).
-/// CONSTANTS Keys, Scopes, MaxPools, MaxAcquires, MaxFaults, SlicePath, Ruling, ExactEmpty
+/// \* Fixed: the fixes the modelled code carries. The code as it stands carries AllFixes; a config that drops some
+/// \* models an earlier version, and is a known-bad config that must fail (each fix is named where it applies):
+/// \*   contained  - a factory that throws synchronously fails the pool (336dca8f30 lacked it: v2978a F1, wedge)
+/// \*   slotbound  - a view's stop leaves only its own holding (336dca8f30: v2978a F3, stale)
+/// \*   postdrain  - an acquire re-reads closed after admission and drains its key (336dca8f30: v2978a F2, leak)
+/// \*   ruling     - an acquire that sees closed after admission fails with ProviderClosed (adb7a765da: v2978c F3)
+/// \*   exactempty - closeAll loops on key presence, not isEmpty() (adb7a765da: N1, found by this model)
+/// \*   claims     - closeAll's result carries every close still in flight (adb7a765da: NoOpenAfterStop)
+/// CONSTANTS Keys, Scopes, MaxPools, MaxAcquires, MaxFaults, SlicePath, Fixed
+///
+/// AllFixes == {"contained", "slotbound", "postdrain", "ruling", "exactempty", "claims"}
+/// Fix(f) == f \in Fixed
+/// ASSUME Fixed \subseteq AllFixes
 ///
 /// Pools == 1..MaxPools
 /// Slots == 1..MaxAcquires
@@ -177,65 +189,78 @@
 /// SPECIFICATION Spec
 /// ```
 ///
-/// ```tlacfg SharedPools:fixed
+/// ```tlacfg SharedPools:code
 /// SYMMETRY Perms
 /// CONSTANT SlicePath = FALSE
-/// CONSTANT Ruling = FALSE
-/// CONSTANT ExactEmpty = FALSE
-/// INVARIANT NoWedge NoStaleRelease ExactlyOnce NoLeakAfterStop
+/// CONSTANT Fixed <- AllFixes
+/// INVARIANT NoWedge NoStaleRelease NoHandleAfterClosed ExactlyOnce NoLeakAfterStop NoOpenAfterStop
 /// ```
 ///
-/// ```tlacfg SharedPools:fixedexact
-/// SYMMETRY Perms
-/// CONSTANT SlicePath = FALSE
-/// CONSTANT Ruling = FALSE
-/// CONSTANT ExactEmpty = TRUE
-/// INVARIANT NoWedge NoStaleRelease ExactlyOnce NoLeakAfterStop
-/// ```
-///
-/// ```tlacfg SharedPools:fixedslice
+/// ```tlacfg SharedPools:codeslice
 /// SYMMETRY Perms
 /// CONSTANT SlicePath = TRUE
-/// CONSTANT Ruling = FALSE
-/// CONSTANT ExactEmpty = TRUE
-/// INVARIANT NoWedge NoStaleRelease ExactlyOnce NoLeakAfterStop
+/// CONSTANT Fixed <- AllFixes
+/// INVARIANT NoWedge NoStaleRelease NoHandleAfterClosed ExactlyOnce NoLeakAfterStop NoOpenAfterStop
+/// ```
+///
+/// ```tlacfg SharedPools:wedge
+/// SYMMETRY Perms
+/// CONSTANT SlicePath = FALSE
+/// CONSTANT Fixed = {}
+/// INVARIANT NoWedge
+/// ```
+///
+/// ```tlacfg SharedPools:wedgeslice
+/// SYMMETRY Perms
+/// CONSTANT SlicePath = TRUE
+/// CONSTANT Fixed = {}
+/// INVARIANT NoWedge
+/// ```
+///
+/// ```tlacfg SharedPools:stale
+/// SYMMETRY Perms
+/// CONSTANT SlicePath = FALSE
+/// CONSTANT Fixed = {}
+/// INVARIANT NoStaleRelease
+/// ```
+///
+/// ```tlacfg SharedPools:leak
+/// SYMMETRY Perms
+/// CONSTANT SlicePath = FALSE
+/// CONSTANT Fixed = {}
+/// INVARIANT NoLeakAfterStop
 /// ```
 ///
 /// ```tlacfg SharedPools:afterclosed
 /// SYMMETRY Perms
 /// CONSTANT SlicePath = FALSE
-/// CONSTANT Ruling = FALSE
-/// CONSTANT ExactEmpty = TRUE
+/// CONSTANT Fixed = {"contained", "slotbound", "postdrain"}
 /// INVARIANT NoHandleAfterClosed
 /// ```
 ///
-/// ```tlacfg SharedPools:ruling
+/// ```tlacfg SharedPools:isemptydrain
 /// SYMMETRY Perms
 /// CONSTANT SlicePath = FALSE
-/// CONSTANT Ruling = TRUE
-/// CONSTANT ExactEmpty = TRUE
-/// INVARIANT NoWedge NoStaleRelease NoHandleAfterClosed ExactlyOnce NoLeakAfterStop
+/// CONSTANT Fixed = {"contained", "slotbound", "postdrain", "ruling", "claims"}
+/// INVARIANT NoLeakAfterStop
 /// ```
 ///
 /// ```tlacfg SharedPools:strict
 /// SYMMETRY Perms
 /// CONSTANT SlicePath = FALSE
-/// CONSTANT Ruling = TRUE
-/// CONSTANT ExactEmpty = TRUE
+/// CONSTANT Fixed = {"contained", "slotbound", "postdrain", "ruling", "exactempty"}
 /// INVARIANT NoOpenAfterStop
 /// ```
 ///
 /// ```tlacfg SharedPools:live
 /// CONSTANT SlicePath = FALSE
-/// CONSTANT Ruling = FALSE
-/// CONSTANT ExactEmpty = FALSE
+/// CONSTANT Fixed <- AllFixes
 /// PROPERTY CloseAllCompletes AllSharedSettle
 /// ```
 ///
-/// ```tlacfg SharedPools:liveruling
+/// ```tlacfg SharedPools:liveadb7
 /// CONSTANT SlicePath = FALSE
-/// CONSTANT Ruling = TRUE
-/// CONSTANT ExactEmpty = TRUE
+/// CONSTANT Fixed = {"contained", "slotbound", "postdrain"}
 /// PROPERTY CloseAllCompletes AllSharedSettle
 /// ```
 package org.pragmatica.aether.resource;

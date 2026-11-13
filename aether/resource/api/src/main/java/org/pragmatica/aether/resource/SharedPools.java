@@ -98,6 +98,7 @@ final class SharedPools {
     /// release settles (its close completed, or nothing was captured).
     private final Set<Promise<Unit>> pendingCloses = ConcurrentHashMap.newKeySet();
     private final Fn1<Promise<Unit>, Provisioned<?>> closer;
+    private volatile Option<TraceSink> trace = Option.none();
 
     private SharedPools(Fn1<Promise<Unit>, Provisioned<?>> closer) {
         this.closer = closer;
@@ -106,6 +107,68 @@ final class SharedPools {
     /// `closer` is the provider's one close funnel, shared with the per-slice path.
     static SharedPools sharedPools(Fn1<Promise<Unit>, Provisioned<?>> closer) {
         return new SharedPools(closer);
+    }
+
+    /// Test-only trace hook for TLA+ trace validation (`tools/tla/trace.py`, spec `SharedPools`): absent in production,
+    /// where no event is built and no lock is taken. When set, each atomic region runs and records its event under the
+    /// sink's monitor, taken inside any bin lock the region already holds (bin, then sink: the only order), so the
+    /// recorded sequence is a linearization of the regions. Event names are the spec's action names; an empty event
+    /// records nothing.
+    interface TraceSink {
+        Unit event(Object... event);
+    }
+
+    Unit traceTo(TraceSink sink) {
+        trace = Option.some(sink);
+
+        return Unit.unit();
+    }
+
+    private <R> R region(Fn0<R> body, Fn1<Object[], R> event) {
+        return trace.fold(body::apply, sink -> recorded(sink, body, event));
+    }
+
+    private static <R> R recorded(TraceSink sink, Fn0<R> body, Fn1<Object[], R> event) {
+        synchronized (sink) {
+            var result = body.apply();
+
+            sink.event(event.apply(result));
+
+            return result;
+        }
+    }
+
+    private Unit note(Object... event) {
+        return region(Unit::unit, _ -> event);
+    }
+
+    private static Object[] admitEvent(String scope, Object key, Admission admission) {
+        return new Object[]{"Acq_Admit", scope, key, outcome(admission), admission.created
+                                                                         ? admission.entry.pool()
+                                                                         : ""};
+    }
+
+    private static String outcome(Admission admission) {
+        return admission.refused
+               ? "refused"
+               : admission.created
+                 ? "insert"
+                 : admission.newHolder
+                   ? "add"
+                   : "join";
+    }
+
+    private static String captured(Departure departure, String yes, String no) {
+        return option(departure.removed).map(_ -> yes)
+                     .or(no);
+    }
+
+    private static Object[] postDrainEvent(String scope, Object key, Departure late) {
+        return new Object[]{"Acq_Post", scope, key, captured(late, "drained", "nodrain")};
+    }
+
+    private static Object[] drainEvent(Object key, Departure departure) {
+        return new Object[]{"CA_Drain", key, captured(departure, "captured", "empty")};
     }
 
     /// Adds `scope` as a holder of the pool under `key` and yields that holder's view. `provision` runs only when this
@@ -117,18 +180,39 @@ final class SharedPools {
                            String label) {
         var admission = new Admission();
 
-        entries.compute(key, (_, current) -> admit(current, scope, label, admission));
+        entries.compute(key,
+                        (_, current) -> region(() -> admit(current, scope, label, admission),
+                                               _ -> admitEvent(scope, key, admission)));
         if (admission.refused) {
             return ResourceProvisioningError.ProviderClosed.INSTANCE.promise();
         }
 
-        return closed.get()
-               ? refuseAfterAdmission(key, admission)
+        return closedAfterAdmission(key, scope)
+               ? refuseAfterAdmission(key, scope, admission)
                : admitted(key, scope, shareable, provision, label, admission);
     }
 
     /// The acquire path after a transition that no node stop overtook: wires the eviction and the holder's slot, and
     /// provisions when this call created the entry.
+    ///
+    /// ```tla SharedPools:Acq_Provision
+    /// \* Contained (`Promise.unitPromise().flatMap(_ -> provision.apply())`): a factory that throws synchronously fails
+    /// \* the pool like an asynchronous failure (Resolve's failure branch), so it is evicted instead of wedging the key.
+    /// \* Without the fix "contained" (336dca8f30, v2978a F1) `provision.apply()` was called directly, and a factory
+    /// \* that throws left the pool pending for good: that fault branch consumes the budget and never resolves.
+    /// Acq_Provision(t) ==
+    ///     /\ pc[t] = "provision"
+    ///     /\ pc' = [pc EXCEPT ![t] = "wait"]
+    ///     /\ \/ /\ inflight' = inflight \cup {tpool[t]}
+    ///           /\ UNCHANGED faults
+    ///        \/ /\ ~Fix("contained")
+    ///           /\ faults < MaxFaults
+    ///           /\ faults' = faults + 1
+    ///           /\ UNCHANGED inflight
+    ///     /\ UNCHANGED <<entry, count, closed, poolSt, shared, closing, captures, closes, caVars, created, newHolder,
+    ///                    tslot, tpool, sawClosed, afterClosedHit, slotSt, slotOf, nAcq, nPools, staleHit, sliceCache,
+    ///                    spc>>
+    /// ```
     @SuppressWarnings("unchecked")
     private <T> Promise<T> admitted(Object key,
                                     String scope,
@@ -152,12 +236,37 @@ final class SharedPools {
             // Contained: a factory that throws synchronously fails the pool (and is evicted) instead of leaving the
             // placeholder unresolved, which would wedge the key and every release waiting on it.
             Promise.unitPromise()
-                   .flatMap(_ -> provision.apply())
+                   .flatMap(_ -> provisioning(provision, scope, key))
                    .onSuccess(_ -> LOG.log(System.Logger.Level.INFO, "opened shared pool {0} for {1}", label, scope))
-                   .onResult(pool::resolve);
+                   .onResult(result -> resolved(pool, result));
         }
 
         return attached.flatMap(_ -> slot);
+    }
+
+    private Promise<Provisioned<?>> provisioning(Fn0<Promise<Provisioned<?>>> provision, String scope, Object key) {
+        note("Acq_Provision", scope, key);
+
+        return provision.apply();
+    }
+
+    private Promise<Provisioned<?>> resolved(Promise<Provisioned<?>> pool, Result<Provisioned<?>> result) {
+        note("Resolve",
+             pool,
+             result.isSuccess()
+             ? "open"
+             : "failed");
+
+        return pool.resolve(result);
+    }
+
+    /// The re-read of `closed` right after the admission `compute` returned (the first half of `Acq_Post`; the drain in
+    /// [#refuseAfterAdmission] is the second).
+    private boolean closedAfterAdmission(Object key, String scope) {
+        return region(closed::get,
+                      seen -> seen
+                              ? new Object[0]
+                              : new Object[]{"Acq_Post", scope, key, "nodrain"});
     }
 
     /// Store-then-load against `closeAll`'s flag: either the drain sees this acquirer's insert, or this acquirer sees
@@ -165,7 +274,38 @@ final class SharedPools {
     /// fails with `ProviderClosed`, never a view: when this call created the entry, its pool is resolved with
     /// `ProviderClosed` instead of being provisioned, so the drain's close completes on a failed pool, and holders that
     /// joined the entry meanwhile fail with the same cause.
-    private <T> Promise<T> refuseAfterAdmission(Object key, Admission admission) {
+    ///
+    /// ```tla SharedPools:Acq_Post
+    /// \* Runs after the admission compute returned: re-reads `closed` and, when set, fails with ProviderClosed: a pool
+    /// \* this thread created is resolved with that failure instead of being provisioned, and the key is drained
+    /// \* through the same capture as closeAll. The ghost sawClosed records a read of closed that still yields a view.
+    /// \* Without the fix "ruling" (adb7a765da, v2978c F3) the drain ran but the acquire went on to a view; without
+    /// \* "postdrain" as well (336dca8f30, v2978a F2) there was no re-read at all.
+    /// Acq_Post(t) ==
+    ///     LET k == t[2]
+    ///         e == entry[k]
+    ///         fail == Fix("ruling") /\ Fix("postdrain") /\ closed
+    ///     IN /\ pc[t] = "post"
+    ///        /\ sawClosed' = [sawClosed EXCEPT ![t] = closed /\ ~fail]
+    ///        /\ IF Fix("postdrain") /\ closed /\ e.pool # 0
+    ///           THEN /\ entry' = [entry EXCEPT ![k] = NoEntry]
+    ///                /\ count' = [count EXCEPT ![k] = @ - 1]
+    ///                /\ Capture(e.pool)
+    ///           ELSE UNCHANGED <<entry, count, captures, closing>>
+    ///        /\ IF fail
+    ///           THEN /\ poolSt' = IF created[t] THEN [poolSt EXCEPT ![tpool[t]] = "failed"] ELSE poolSt
+    ///                /\ slotSt' = IF newHolder[t] THEN [slotSt EXCEPT ![tslot[t]] = "failed"] ELSE slotSt
+    ///                /\ pc' = [pc EXCEPT ![t] = "idle"]
+    ///                /\ created' = [created EXCEPT ![t] = FALSE]
+    ///                /\ newHolder' = [newHolder EXCEPT ![t] = FALSE]
+    ///                /\ tslot' = [tslot EXCEPT ![t] = 0]
+    ///                /\ tpool' = [tpool EXCEPT ![t] = 0]
+    ///           ELSE /\ pc' = [pc EXCEPT ![t] = IF created[t] THEN "provision" ELSE "wait"]
+    ///                /\ UNCHANGED <<poolSt, slotSt, created, newHolder, tslot, tpool>>
+    ///        /\ UNCHANGED <<closed, shared, inflight, closes, caVars, afterClosedHit, slotOf, nAcq, nPools, faults,
+    ///                       staleHit, sliceCache, spc>>
+    /// ```
+    private <T> Promise<T> refuseAfterAdmission(Object key, String scope, Admission admission) {
         var late = departing();
         var refusal = ResourceProvisioningError.ProviderClosed.INSTANCE;
 
@@ -173,7 +313,7 @@ final class SharedPools {
             admission.entry.pool().resolve(refusal.<Provisioned<?>> result());
         }
 
-        entries.compute(key, (_, current) -> drain(current, late));
+        entries.compute(key, (_, current) -> region(() -> drain(current, late), _ -> postDrainEvent(scope, key, late)));
         option(late.removed).onPresent(removed -> close(removed).onResult(late.pending::resolve))
               .onEmpty(() -> late.pending.succeed(Unit.unit()));
 
@@ -182,6 +322,54 @@ final class SharedPools {
 
     /// The `compute` mapping function: refuses after node stop (keeping whatever is there, absent included), inserts
     /// the entry when absent, otherwise joins it.
+    ///
+    /// ```tla SharedPools:Acq_Admit
+    /// \* One compute on the key: refuse after node stop, insert (this thread provisions), re-join, or join.
+    /// Acq_Admit(t) ==
+    ///     LET s == t[1]
+    ///         k == t[2]
+    ///         e == entry[k]
+    ///         sl == nAcq + 1
+    ///         p == nPools + 1
+    ///     IN /\ pc[t] = "idle"
+    ///        /\ nAcq < MaxAcquires
+    ///        /\ nAcq' = nAcq + 1
+    ///        /\ sawClosed' = [sawClosed EXCEPT ![t] = FALSE]
+    ///        /\ IF closed
+    ///           THEN /\ UNCHANGED pc
+    ///                /\ UNCHANGED <<entry, poolSt, shared, nPools, slotSt, slotOf, created, newHolder, tslot, tpool>>
+    ///           ELSE IF e.pool = 0
+    ///           THEN /\ nPools < MaxPools
+    ///                /\ entry' = [entry EXCEPT ![k] = [pool |-> p, holders |-> [NoHolders EXCEPT ![s] = sl]]]
+    ///                /\ poolSt' = [poolSt EXCEPT ![p] = "pending"]
+    ///                /\ shared' = shared \cup {p}
+    ///                /\ nPools' = p
+    ///                /\ slotSt' = [slotSt EXCEPT ![sl] = "pending"]
+    ///                /\ slotOf' = [slotOf EXCEPT ![sl] = t]
+    ///                /\ created' = [created EXCEPT ![t] = TRUE]
+    ///                /\ newHolder' = [newHolder EXCEPT ![t] = TRUE]
+    ///                /\ tslot' = [tslot EXCEPT ![t] = sl]
+    ///                /\ tpool' = [tpool EXCEPT ![t] = p]
+    ///                /\ pc' = [pc EXCEPT ![t] = "admitted"]
+    ///           ELSE IF e.holders[s] # 0
+    ///           THEN /\ created' = [created EXCEPT ![t] = FALSE]
+    ///                /\ newHolder' = [newHolder EXCEPT ![t] = FALSE]
+    ///                /\ tslot' = [tslot EXCEPT ![t] = e.holders[s]]
+    ///                /\ tpool' = [tpool EXCEPT ![t] = e.pool]
+    ///                /\ pc' = [pc EXCEPT ![t] = "post"]
+    ///                /\ UNCHANGED <<entry, poolSt, shared, nPools, slotSt, slotOf>>
+    ///           ELSE /\ entry' = [entry EXCEPT ![k].holders[s] = sl]
+    ///                /\ slotSt' = [slotSt EXCEPT ![sl] = "pending"]
+    ///                /\ slotOf' = [slotOf EXCEPT ![sl] = t]
+    ///                /\ created' = [created EXCEPT ![t] = FALSE]
+    ///                /\ newHolder' = [newHolder EXCEPT ![t] = TRUE]
+    ///                /\ tslot' = [tslot EXCEPT ![t] = sl]
+    ///                /\ tpool' = [tpool EXCEPT ![t] = e.pool]
+    ///                /\ pc' = [pc EXCEPT ![t] = "post"]
+    ///                /\ UNCHANGED <<poolSt, shared, nPools>>
+    ///        /\ UNCHANGED <<count, closed, inflight, closing, captures, closes, caVars, faults, staleHit, sliceCache, spc,
+    ///                       afterClosedHit>>
+    /// ```
     @NullReturn
     private SharedEntry admit(SharedEntry current, String scope, String label, Admission admission) {
         if (closed.get()) {
@@ -224,18 +412,67 @@ final class SharedPools {
 
     /// Resolves the slot of the holder this thread added: the view on success, the pool's failure otherwise. It runs as
     /// a dependent of the pool, which is after `compute` returned, so outside the bin lock.
+    ///
+    /// ```tla SharedPools:Acq_Fill
+    /// \* The holder's slot resolves from the pool: the view on success, the failure otherwise. A re-joining holder
+    /// \* receives its existing slot.
+    /// Acq_Fill(t) ==
+    ///     LET p == tpool[t]
+    ///         sl == tslot[t]
+    ///         view == IF newHolder[t] THEN poolSt[p] # "failed" ELSE slotSt[sl] # "failed"
+    ///     IN /\ pc[t] = "wait"
+    ///        /\ IF newHolder[t]
+    ///           THEN /\ poolSt[p] \in {"open", "failed", "closed"}
+    ///                /\ slotSt' = [slotSt EXCEPT ![sl] = IF poolSt[p] = "failed" THEN "failed" ELSE "view"]
+    ///           ELSE /\ slotSt[sl] # "pending"
+    ///                /\ UNCHANGED slotSt
+    ///        /\ afterClosedHit' = (afterClosedHit \/ (view /\ sawClosed[t]))
+    ///        /\ pc' = [pc EXCEPT ![t] = "idle"]
+    ///        /\ created' = [created EXCEPT ![t] = FALSE]
+    ///        /\ newHolder' = [newHolder EXCEPT ![t] = FALSE]
+    ///        /\ tslot' = [tslot EXCEPT ![t] = 0]
+    ///        /\ tpool' = [tpool EXCEPT ![t] = 0]
+    ///        /\ sawClosed' = [sawClosed EXCEPT ![t] = FALSE]
+    ///        /\ UNCHANGED <<entry, count, closed, poolSt, shared, inflight, closing, captures, closes, caVars,
+    ///                       slotOf, nAcq, nPools, faults, staleHit, sliceCache, spc>>
+    /// ```
     @SuppressWarnings("unchecked")
     private <T> Promise<T> fillSlot(Promise<T> slot,
                                     Result<Provisioned<?>> result,
                                     NodeShareable<T, ?> shareable,
                                     Object key,
                                     String scope) {
+        note("Acq_Fill",
+             scope,
+             key,
+             result.isSuccess()
+             ? "view"
+             : "failed");
+
         return slot.resolve(result.map(provisioned -> shareable.view((T) provisioned.resource(),
                                                                      () -> releaseSlot(key, scope, slot))));
     }
 
     /// A failed pool was never opened, so it has nothing to close. Its holders all receive the failure, and the next
     /// acquire opens a fresh pool. Conditional on identity, so it can never evict a newer entry.
+    ///
+    /// ```tla SharedPools:Resolve
+    /// \* The provision promise resolves (environment: the factory). On failure the eviction dependent removes the entry
+    /// \* that still holds this pool (conditional on identity); the per-slice path's `withFailure` eviction likewise.
+    /// Resolve(p) ==
+    ///     /\ p \in inflight
+    ///     /\ inflight' = inflight \ {p}
+    ///     /\ \/ /\ poolSt' = [poolSt EXCEPT ![p] = "open"]
+    ///           /\ UNCHANGED <<entry, count, faults, sliceCache>>
+    ///        \/ /\ faults < MaxFaults
+    ///           /\ faults' = faults + 1
+    ///           /\ poolSt' = [poolSt EXCEPT ![p] = "failed"]
+    ///           /\ entry' = [k \in Keys |-> IF entry[k].pool = p THEN NoEntry ELSE entry[k]]
+    ///           /\ count' = [k \in Keys |-> IF entry[k].pool = p THEN count[k] - 1 ELSE count[k]]
+    ///           /\ sliceCache' = [s \in Scopes |-> IF sliceCache[s] = p THEN 0 ELSE sliceCache[s]]
+    ///     /\ UNCHANGED <<closed, shared, closing, captures, closes, caVars, thr, slotSt, slotOf, nAcq, nPools,
+    ///                    staleHit, spc>>
+    /// ```
     private Unit evictFailed(Object key, Promise<Provisioned<?>> failed) {
         entries.compute(key, (_, current) -> unlessFailed(current, failed));
 
@@ -269,6 +506,24 @@ final class SharedPools {
         return closeIfCaptured(departure, scope);
     }
 
+    /// The `compute` mapping function of a view's release: leaves only when `scope` still holds `slot`.
+    ///
+    /// ```tla SharedPools:ViewStop
+    /// \* The view's stop runs releaseSlot(key, scope, slot): it leaves only the holding it was issued for. The ghost
+    /// \* staleHit records a stop that changed a holding other than its own (implementation-independent). Without the
+    /// \* fix "slotbound" (336dca8f30, v2978a F3) the stop ran release(key, scope): bound to the scope, not the holding.
+    /// ViewStop(sl) ==
+    ///     LET s == slotOf[sl][1]
+    ///         k == slotOf[sl][2]
+    ///     IN /\ slotSt[sl] = "view"
+    ///        /\ slotSt' = [slotSt EXCEPT ![sl] = "stopped"]
+    ///        /\ IF IF Fix("slotbound") THEN entry[k].holders[s] = sl ELSE entry[k].holders[s] # 0
+    ///           THEN Leave(k, s)
+    ///           ELSE UNCHANGED <<entry, count, captures, closing>>
+    ///        /\ staleHit' = (staleHit \/ (entry[k].holders[s] # sl /\ entry'[k].holders[s] # entry[k].holders[s]))
+    ///        /\ UNCHANGED <<closed, poolSt, shared, inflight, closes, caVars, thr, slotOf, nAcq, nPools, faults,
+    ///                       sliceCache, spc>>
+    /// ```
     @NullReturn
     private static SharedEntry departIfHolding(SharedEntry current,
                                                String scope,
@@ -281,6 +536,15 @@ final class SharedPools {
     }
 
     /// The `compute` mapping function of a release: an absent key or a scope that is not a holder is left as it is.
+    ///
+    /// ```tla SharedPools:ReleaseAll
+    /// \* releaseScope -> release(key, scope): one compute that removes the holder, capturing the entry when last.
+    /// ReleaseAll(s, k) ==
+    ///     /\ entry[k].holders[s] # 0
+    ///     /\ Leave(k, s)
+    ///     /\ UNCHANGED <<closed, poolSt, shared, inflight, closes, caVars, thr, slotSt, slotOf, nAcq, nPools, faults,
+    ///                    staleHit, sliceCache, spc>>
+    /// ```
     @NullReturn
     private static SharedEntry depart(SharedEntry current, String scope, Departure departure) {
         return option(current).filter(entry -> entry.holders()
@@ -330,9 +594,23 @@ final class SharedPools {
     }
 
     /// The shared-pool caller of the provider's one close funnel.
+    ///
+    /// ```tla SharedPools:Close_Pool
+    /// \* pool.flatMap(closer): waits for the pool to resolve; closes an opened pool, skips a failed one.
+    /// Close_Pool(p) ==
+    ///     /\ p \in closing
+    ///     /\ poolSt[p] \in {"open", "failed"}
+    ///     /\ closing' = closing \ {p}
+    ///     /\ IF poolSt[p] = "open"
+    ///        THEN /\ poolSt' = [poolSt EXCEPT ![p] = "closed"]
+    ///             /\ closes' = [closes EXCEPT ![p] = @ + 1]
+    ///        ELSE UNCHANGED <<poolSt, closes>>
+    ///     /\ UNCHANGED <<entry, count, closed, shared, inflight, captures, caVars, thr, slotSt, slotOf, nAcq, nPools,
+    ///                    faults, staleHit, sliceCache, spc>>
+    /// ```
     private Promise<Unit> close(SharedEntry entry) {
         var closing = entry.pool()
-                           .flatMap(closer)
+                           .flatMap(provisioned -> closeProvisioned(entry, provisioned))
                            .onSuccess(_ -> LOG.log(System.Logger.Level.INFO,
                                                    "closed shared pool {0}",
                                                    entry.label()));
@@ -340,6 +618,12 @@ final class SharedPools {
         pendingCloses.add(closing);
 
         return closing.onResultRun(() -> pendingCloses.remove(closing));
+    }
+
+    private Promise<Unit> closeProvisioned(SharedEntry entry, Provisioned<?> provisioned) {
+        note("Close_Pool", entry.pool());
+
+        return closer.apply(provisioned);
     }
 
     /// Releases `scope` from every pool it holds. The walk is over a table snapshot, not `List.copyOf`: that asks the
@@ -361,8 +645,16 @@ final class SharedPools {
     /// release, never a plain `remove(key)`. The loop runs on key presence, never on `isEmpty()`: the map's count is a sum
     /// of striped cells, not a snapshot, so a concurrent insert and remove of another key can make it read zero while a
     /// held key is still present. The result also carries the closes a release started before the drain, still pending.
+    ///
+    /// ```tla SharedPools:CA_Flag
+    /// CA_Flag == /\ ca = "idle"
+    ///            /\ closed' = TRUE
+    ///            /\ ca' = "check"
+    ///            /\ UNCHANGED <<entry, count, poolSt, shared, inflight, closing, captures, closes, caSnap, caPools, thr,
+    ///                           slotSt, slotOf, nAcq, nPools, faults, staleHit, sliceCache, spc>>
+    /// ```
     List<Promise<Unit>> closeAll() {
-        closed.set(true);
+        region(this::flagClosed, _ -> new Object[]{"CA_Flag"});
         var closes = new LinkedHashSet<Promise<Unit>>();
 
         for (var keys = presentKeys(); !keys.isEmpty(); keys = presentKeys()) {
@@ -376,20 +668,64 @@ final class SharedPools {
 
     /// The keys found by walking the table. Not `List.copyOf`: that asks the key view `isEmpty()`, which is the map's
     /// count again, and returns an empty list on the very read this drain must not trust.
+    ///
+    /// ```tla SharedPools:CA_Check
+    /// \* A pass walks the key set and the loop ends when a walk finds no key. Without the fix "exactempty" (adb7a765da,
+    /// \* N1) the loop read `isEmpty()`, the published count (CHM sumCount, which a concurrent insert not yet counted
+    /// \* can drive to <= 0 while another key is present). On return, the closes still in flight (pendingCloses: every
+    /// \* close started, and every release's claim registered before its removing compute) join the returned list;
+    /// \* without the fix "claims" (adb7a765da, the strict invariant) only the drain's own captures did.
+    /// CA_Check == /\ ca = "check"
+    ///             /\ IF IF Fix("exactempty") THEN \A k \in Keys : entry[k].pool = 0 ELSE Total <= 0
+    ///                THEN /\ ca' = "returned"
+    ///                     /\ caPools' = IF Fix("claims") THEN caPools \cup (closing \cap shared) ELSE caPools
+    ///                     /\ UNCHANGED caSnap
+    ///                ELSE /\ caSnap' = {k \in Keys : entry[k].pool # 0}
+    ///                     /\ ca' = IF caSnap' = {} THEN "check" ELSE "drain"
+    ///                     /\ UNCHANGED caPools
+    ///             /\ UNCHANGED <<entry, count, closed, poolSt, shared, inflight, closing, captures, closes, thr,
+    ///                            slotSt, slotOf, nAcq, nPools, faults, staleHit, sliceCache, spc>>
+    /// ```
     private List<Object> presentKeys() {
-        return new ArrayList<>(entries.keySet());
+        return region(() -> new ArrayList<Object>(entries.keySet()),
+                      keys -> new Object[]{"CA_Check", keys.isEmpty()
+                                                       ? "returned"
+                                                       : "drain"});
+    }
+
+    private Unit flagClosed() {
+        closed.set(true);
+
+        return Unit.unit();
     }
 
     private void drainKeys(List<Object> keys, Set<Promise<Unit>> closes) {
         for (var key : keys) {
             var departure = new Departure();
 
-            entries.compute(key, (_, current) -> drain(current, departure));
+            entries.compute(key,
+                            (_, current) -> region(() -> drain(current, departure), _ -> drainEvent(key, departure)));
             option(departure.removed).onPresent(removed -> closes.add(close(removed)));
         }
     }
 
     /// The drain's `compute` mapping function: captures the entry and removes it (`null` is the `compute` contract).
+    ///
+    /// ```tla SharedPools:CA_Drain
+    /// CA_Drain(k) ==
+    ///     /\ ca = "drain"
+    ///     /\ k \in caSnap
+    ///     /\ caSnap' = caSnap \ {k}
+    ///     /\ ca' = IF caSnap' = {} THEN "check" ELSE "drain"
+    ///     /\ IF entry[k].pool # 0
+    ///        THEN /\ entry' = [entry EXCEPT ![k] = NoEntry]
+    ///             /\ count' = [count EXCEPT ![k] = @ - 1]
+    ///             /\ Capture(entry[k].pool)
+    ///             /\ caPools' = caPools \cup {entry[k].pool}
+    ///        ELSE UNCHANGED <<entry, count, captures, closing, caPools>>
+    ///     /\ UNCHANGED <<closed, poolSt, shared, inflight, closes, thr, slotSt, slotOf, nAcq, nPools, faults, staleHit,
+    ///                    sliceCache, spc>>
+    /// ```
     @NullReturn
     private static SharedEntry drain(SharedEntry current, Departure departure) {
         departure.removed = current;
