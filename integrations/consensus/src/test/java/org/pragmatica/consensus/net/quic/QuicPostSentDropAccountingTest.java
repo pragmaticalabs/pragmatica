@@ -99,6 +99,38 @@ class QuicPostSentDropAccountingTest {
         network.drainOfflineBufferForTests(state, connection);
 
         assertOnly(network, StreamType.FORWARD, DropSite.DRAIN, 1);
+        assertThat(network.quicMetrics().refusedCount(StreamType.FORWARD))
+            .as("the drained frame's caller was told Sent, never refused")
+            .isZero();
+    }
+
+    @Test
+    void d1_drain_dhtFrameOnInactiveStream_isALoss_notARefusal() {
+        var network = network(SHORT);
+        var connection = connection(PEER, QuicPeerConnection.LaneOpener.noop());
+        var state = PeerState.peerState(PEER, System.nanoTime());
+        var inactive = stream(false);
+
+        when(inactive.isActive()).thenReturn(false);
+        connection.registerStream(StreamType.DHT, inactive);
+        var _ = state.offerOutbound(probe(StreamType.DHT));
+        network.drainOfflineBufferForTests(state, connection);
+
+        assertOnly(network, StreamType.DHT, DropSite.DRAIN, 1);
+        assertThat(network.quicMetrics().refusedCount(StreamType.DHT)).isZero();
+    }
+
+    @Test
+    void callerRefusal_isCountedAsRefused_control() {
+        var network = network(SHORT);
+        var connection = connection(PEER, QuicPeerConnection.LaneOpener.noop());
+
+        connection.registerStream(StreamType.FORWARD, stream(false));
+        var outcome = network.writeToStreamForTests(PEER, probe(StreamType.FORWARD), connection);
+
+        assertThat(outcome).isInstanceOf(WriteOutcome.BackpressureRefused.class);
+        assertThat(network.quicMetrics().refusedCount(StreamType.FORWARD)).isEqualTo(1L);
+        assertThat(network.quicMetrics().droppedAfterSentSnapshot()).as("a refusal its caller sees is not a loss").isEmpty();
     }
 
     @Test
@@ -114,6 +146,9 @@ class QuicPostSentDropAccountingTest {
         opener.complete(Option.some(blocked));
 
         assertOnly(network, StreamType.METRICS, DropSite.PENDING_LANE_WRITE, 1);
+        assertThat(network.quicMetrics().refusedCount(StreamType.METRICS))
+            .as("the pending frame's caller was told Sent, never refused")
+            .isZero();
     }
 
     @Test
