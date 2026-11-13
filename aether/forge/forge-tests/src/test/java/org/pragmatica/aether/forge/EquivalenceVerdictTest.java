@@ -123,6 +123,8 @@ class EquivalenceVerdictTest {
         var file = EquivalenceVerdict.reportFile(dir.resolve("nested"), "E09", 7);
 
         assertThat(file.getFileName().toString()).isEqualTo("E09-round07.txt");
+        assertThat(file).isEqualTo(dir.resolve("nested").resolve("E09-round07.txt"));
+        assertThat(EquivalenceVerdict.reportFile(dir, "E09", 12)).isEqualTo(dir.resolve("E09-round12.txt"));
         assertThat(EquivalenceVerdict.reportFile(dir, "E09", 12).getFileName().toString()).isEqualTo("E09-round12.txt");
         EquivalenceVerdict.writeReport(file, List.of("a", "VERDICT PASS"));
         EquivalenceVerdict.writeReport(file, List.of("VERDICT ERROR"));

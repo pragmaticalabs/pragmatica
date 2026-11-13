@@ -5,6 +5,9 @@
 
 package org.pragmatica.aether.forge;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -13,6 +16,7 @@ import java.util.Set;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.forge.EquivalenceComparison.Arm;
 import org.pragmatica.aether.slice.SliceState;
@@ -671,6 +675,169 @@ class EquivalenceInstrumentTest {
             var breached = new Arm("fsm2", fsm2.quiescent(), fsm2.liveNodes(), samples, 10, 4_000L, Map.of());
 
             assertThat(assemble(arm("legacy", false), breached, fired, fired, fsm2Fired, oracle, placements, "E01").divergences()).singleElement().asString().contains("MON-i");
+        }
+    }
+
+    /// `round()`'s wiring (f4fixE; vf4d RT1-RT6): the orchestration the live round calls, driven offline by stub arms, so a hard-coded verdict, a
+    /// dropped discard, swapped or mis-named arguments and a wrong report file are all reachable without a cluster. Every assertion reads the
+    /// report FILE at its exact path, which is what a reader of a round's evidence sees.
+    @Nested
+    class RoundWiring {
+        private final List<String> report = new ArrayList<>();
+        private final List<DeploymentEngine> order = new ArrayList<>();
+        private final List<Integer> bases = new ArrayList<>();
+
+        private EquivalenceRound round(String scenario, int round, Path dir) {
+            return EquivalenceRound.equivalenceRound(scenario, round, dir, MONITOR, report, report::add);
+        }
+
+        private EquivalenceRound.ArmRun stub(Arm legacy, Arm fsm2, Set<String> unfired) {
+            return (engine, base, recording) -> {
+                order.add(engine);
+                bases.add(base);
+                if (engine == DeploymentEngine.LEGACY) {
+                    recording.oracle().add(EquivalenceOracle.check(new EquivalenceKv(legacyKv(3)), LeaderValue.leaderValue(CORES.getFirst(), 4L), Set.copyOf(CORES)));
+                }
+                recording.o4Controls().put(engine, !unfired.contains("o4:" + engine));
+                recording.monitorLive().put(engine, !unfired.contains("monitor:" + engine));
+                if (engine == DeploymentEngine.FSM2) {
+                    recording.o6Live().put(engine, !unfired.contains("o6:" + engine));
+                }
+                recording.placements().put(engine, "[a=3 nodes]");
+                return engine == DeploymentEngine.LEGACY ? legacy : fsm2;
+            };
+        }
+
+        private EquivalenceRoundFindings runClean(String scenario, int round, Path dir, Set<String> unfired) {
+            return round(scenario, round, dir).run("", stub(arm("legacy", false), arm("fsm2", true), unfired));
+        }
+
+        private static Arm heavyFsm2() {
+            var fsm2 = arm("fsm2", true);
+
+            return new Arm("fsm2", fsm2.quiescent(), fsm2.liveNodes(), fsm2.samples(), 13, 4_000L, Map.of());
+        }
+
+        private static List<String> verdictLines(Path file) throws IOException {
+            return Files.readAllLines(file).stream().filter(line -> line.contains("VERDICT ")).toList();
+        }
+
+        /// RT4 (verdict hard-coded PASS) and RT5/RT6 (report file name): agreeing arms are PASS, written to `<scenario>-round<NN>.txt` under the
+        /// output directory, and the file is exactly the report.
+        @Test
+        void agreeingArms_passAndTheReportIsWrittenWhole(@TempDir Path dir) throws IOException {
+            var findings = runClean("E01", 3, dir, Set.of());
+            var file = dir.resolve("E01-round03.txt");
+
+            assertThat(findings.verdict()).isEqualTo(EquivalenceVerdict.PASS);
+            assertThat(file).exists();
+            assertThat(Files.readAllLines(file)).isEqualTo(report);
+            assertThat(verdictLines(file)).singleElement().isEqualTo("VERDICT PASS");
+        }
+
+        /// RT4: diverging arms give DIVERGE in the returned findings and in the report file, never PASS. Mutation: the verdict hard-coded PASS in
+        /// the logged line or in the findings.
+        @Test
+        void divergingArms_areDivergeInTheFileNamedForTheScenario(@TempDir Path dir) throws IOException {
+            var findings = round("E02", 0, dir).run("", stub(arm("legacy", false), heavyFsm2(), Set.of()));
+
+            assertThat(findings.verdict()).isEqualTo(EquivalenceVerdict.DIVERGE);
+            assertThat(verdictLines(dir.resolve("E02-round00.txt"))).singleElement().isEqualTo("VERDICT DIVERGE");
+            assertThat(Files.readAllLines(dir.resolve("E02-round00.txt"))).anyMatch(line -> line.contains("DIVERGENCE O4: "));
+            assertThat(dir.resolve("E01-round00.txt")).doesNotExist();
+        }
+
+        /// A control that stayed silent is VOID in the file. Mutation: the logged verdict not taken from the findings.
+        @Test
+        void aSilentControl_isVoidInTheFile(@TempDir Path dir) throws IOException {
+            var findings = runClean("E01", 0, dir, Set.of("o4:LEGACY"));
+
+            assertThat(findings.verdict()).isEqualTo(EquivalenceVerdict.VOID);
+            assertThat(verdictLines(dir.resolve("E01-round00.txt"))).singleElement().isEqualTo("VERDICT VOID");
+        }
+
+        /// RT3: the scenario name reaches the comparison (the E-09 ruling hides FAILED vs ROLLED_BACK on E09 and nowhere else) and the file name.
+        /// RT2 (LEGACY and FSM2 swapped at the call): the ruling is directional, so a swapped call reads DIVERGE on E09.
+        @Test
+        void theScenarioName_andTheArmOrder_reachTheAssembly(@TempDir Path dir) throws IOException {
+            var legacy = Comparison.withVerdict(arm("legacy", false), AetherValue.DeploymentOutcomeStatus.FAILED);
+            var fsm2 = Comparison.withVerdict(arm("fsm2", true), AetherValue.DeploymentOutcomeStatus.ROLLED_BACK);
+
+            assertThat(round("E09", 0, dir).run("", stub(legacy, fsm2, Set.of())).verdict()).isEqualTo(EquivalenceVerdict.PASS);
+            assertThat(verdictLines(dir.resolve("E09-round00.txt"))).singleElement().isEqualTo("VERDICT PASS");
+            report.clear();
+            assertThat(round("E01", 0, dir).run("", stub(legacy, fsm2, Set.of())).verdict()).isEqualTo(EquivalenceVerdict.DIVERGE);
+            assertThat(verdictLines(dir.resolve("E01-round00.txt"))).singleElement().isEqualTo("VERDICT DIVERGE");
+        }
+
+        /// RT2: each control map reaches its own slot of the assembly (a swap of two same-typed maps compiles). One control unfired at a time;
+        /// the silent entry must name that control and that engine.
+        @Test
+        void eachControlMap_reachesItsOwnSlot(@TempDir Path dir) {
+            assertThat(runClean("E01", 0, dir, Set.of("o4:LEGACY")).silent()).containsExactly("O4-scripted-batch(LEGACY)");
+            assertThat(runClean("E01", 0, dir, Set.of("o4:FSM2")).silent()).containsExactly("O4-scripted-batch(FSM2)");
+            assertThat(runClean("E01", 0, dir, Set.of("monitor:LEGACY")).silent()).containsExactly("MONITOR-live-plant(LEGACY)");
+            assertThat(runClean("E01", 0, dir, Set.of("monitor:FSM2")).silent()).containsExactly("MONITOR-live-plant(FSM2)");
+            assertThat(runClean("E01", 0, dir, Set.of("o6:FSM2")).silent()).containsExactly("O6-live-probe(FSM2)");
+        }
+
+        /// RT1: the earlier verdict file is gone before the first arm starts. Mutation: the `discardStale` call removed (or aimed at another file);
+        /// the arm sees the stale PASS file and the assertion goes red.
+        @Test
+        void aStaleVerdictFile_isGoneBeforeTheFirstArmStarts(@TempDir Path dir) throws IOException {
+            var file = dir.resolve("E01-round02.txt");
+            var seenAtStart = new ArrayList<Boolean>();
+            var inner = stub(arm("legacy", false), arm("fsm2", true), Set.of());
+
+            Files.writeString(file, "x VERDICT PASS\n");
+            round("E01", 2, dir).run("", (engine, base, recording) -> {
+                seenAtStart.add(Files.exists(file));
+                return inner.run(engine, base, recording);
+            });
+            assertThat(seenAtStart).containsExactly(false, false);
+        }
+
+        /// An arm that throws leaves an ERROR report in place of the stale PASS, the exception propagates, and the second arm never runs.
+        @Test
+        void anArmThatThrows_replacesAStalePassWithError_andIsRethrown(@TempDir Path dir) throws IOException {
+            var file = dir.resolve("E01-round00.txt");
+            var boom = new IllegalStateException("arm boom");
+
+            Files.writeString(file, "x VERDICT PASS\n");
+            assertThatThrownBy(() -> round("E01", 0, dir).run("", (engine, base, recording) -> {
+                order.add(engine);
+                throw boom;
+            })).isSameAs(boom);
+            assertThat(order).containsExactly(DeploymentEngine.LEGACY);
+            assertThat(verdictLines(file)).singleElement().isEqualTo("VERDICT ERROR");
+            assertThat(Files.readAllLines(file)).anyMatch(line -> line.contains("arm LEGACY ERROR"));
+        }
+
+        /// A verdict assembly that throws (a missing arm) is an ERROR report, rethrown, never a PASS file. Mutation: `verdictError` not writing.
+        @Test
+        void anAssemblyThatThrows_isAnErrorReport(@TempDir Path dir) throws IOException {
+            var file = dir.resolve("E01-round00.txt");
+            var inner = stub(arm("legacy", false), arm("fsm2", true), Set.of());
+
+            Files.writeString(file, "x VERDICT PASS\n");
+            assertThatThrownBy(() -> round("E01", 0, dir).run("", (engine, base, recording) -> engine == DeploymentEngine.LEGACY ? null : inner.run(engine, base, recording)))
+                .isInstanceOf(RuntimeException.class);
+            assertThat(verdictLines(file)).singleElement().isEqualTo("VERDICT ERROR");
+        }
+
+        /// Even rounds run LEGACY first, odd rounds FSM2 first; the first arm's port block starts at 33000, the second one STEP (400) later. The
+        /// literals are the contract, not the constants.
+        @Test
+        void theArmOrder_alternatesWithTheRound_andTheBlocksAreSpaced(@TempDir Path dir) {
+            runClean("E01", 0, dir, Set.of());
+            assertThat(order).containsExactly(DeploymentEngine.LEGACY, DeploymentEngine.FSM2);
+            assertThat(bases).containsExactly(33000, 33400);
+            order.clear();
+            bases.clear();
+            runClean("E01", 1, dir, Set.of());
+            assertThat(order).containsExactly(DeploymentEngine.FSM2, DeploymentEngine.LEGACY);
+            assertThat(bases).containsExactly(33000, 33400);
+            assertThat(dir.resolve("E01-round01.txt")).exists();
         }
     }
 

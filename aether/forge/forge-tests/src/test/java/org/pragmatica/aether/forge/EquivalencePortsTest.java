@@ -8,6 +8,7 @@ package org.pragmatica.aether.forge;
 import java.io.IOException;
 import java.net.DatagramSocket;
 import java.net.ServerSocket;
+import java.util.function.IntPredicate;
 
 import org.junit.jupiter.api.Test;
 
@@ -88,13 +89,14 @@ class EquivalencePortsTest {
         }
     }
 
-    /// The margin beyond the node count (a re-placing scenario binds one instance per node): the last margin port of the last range.
-    /// Mutation: MARGIN shrunk or dropped from the loop bound.
+    /// The margin beyond the node count (a re-placing scenario binds one instance per node): the last margin port of the last range, as a
+    /// literal (3 nodes + a margin of 4 = 7 ports per range, so the last is `base + 200 + 6`); the constant is deliberately not used, or any
+    /// MARGIN would pass. Mutation: MARGIN shrunk (0, 1, 3) or dropped from the loop bound (f4fixE: P4, P4b).
     @Test
     void aHeldPort_atTheEndOfTheMargin_skipsItsBlock() throws IOException {
         var start = twoFreeBlocks();
 
-        try (var held = new ServerSocket(start + 200 + NODES + EquivalencePorts.MARGIN - 1)) {
+        try (var held = new ServerSocket(start + 200 + 6)) {
             assertThat(EquivalencePorts.freeBase(start, NODES)).isEqualTo(start + EquivalencePorts.STEP);
         }
     }
@@ -116,5 +118,16 @@ class EquivalencePortsTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining(String.valueOf(port));
         }
+    }
+
+    /// The taken-port list of the exhausted message is the ports that were busy, in probe order (f4fixE P8d): the start port also appears in
+    /// "from base N", so naming it proves nothing. Mutation: `taken.addAll(busy)` removed; the list reads `[]`.
+    @Test
+    void noFreeBlock_listsTheBusyPorts() {
+        IntPredicate canBind = port -> port != 5001 && port != 5401 && port != 5602;
+
+        assertThatThrownBy(() -> EquivalencePorts.freeBase(5000, 400, 2, 3, canBind))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessage("no free port block in 2 tries from base 5000 (step 400); busy ports: [5001, 5401, 5602]");
     }
 }

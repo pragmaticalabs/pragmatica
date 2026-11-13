@@ -44,7 +44,6 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.forge.EquivalenceComparison.Arm;
-import org.pragmatica.aether.forge.EquivalenceComparison.Divergence;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.deployment.Fsm2System;
@@ -101,8 +100,6 @@ class Fsm2EquivalenceRoundTest {
 
     private final HttpOperations http = jdkHttpOperations();
     private final List<String> report = new ArrayList<>();
-    private final Map<DeploymentEngine, Boolean> monitorLive = new HashMap<>();
-    private final Map<DeploymentEngine, Boolean> o6Live = new HashMap<>();
 
     /// The scenarios of design 9.3 that this harness drives. Node counts leave room to re-place after a loss (one instance per node).
     enum Scenario {
@@ -119,63 +116,18 @@ class Fsm2EquivalenceRoundTest {
     void round() {
         var scenario = Scenario.valueOf(System.getProperty("f4.scenario").replace("-", ""));
         var round = Integer.getInteger("f4.round", 0);
-        var engines = round % 2 == 0 ? List.of(DeploymentEngine.LEGACY, DeploymentEngine.FSM2) : List.of(DeploymentEngine.FSM2, DeploymentEngine.LEGACY);
-        var arms = new HashMap<DeploymentEngine, Arm>();
-        var oracle = new ArrayList<EquivalenceOracle.Verdict>();
-        var o4Controls = new HashMap<DeploymentEngine, Boolean>();
-        var placements = new HashMap<DeploymentEngine, String>();
+        var out = Path.of(System.getProperty("f4.out", "target/f4"));
+        var findings = EquivalenceRound.equivalenceRound(scenario.name(), round, out, MONITOR, report, this::log)
+                                       .run("tick=%d quiet=%d".formatted(TICK_MS, QUIET_MS),
+                                            (engine, firstBase, recording) -> runArm(scenario, engine, firstBase, recording));
 
-        EquivalenceVerdict.discardStale(reportFile(scenario, round));
-        log("F4 round scenario=%s round=%d order=%s tick=%d quiet=%d".formatted(scenario, round, engines, TICK_MS, QUIET_MS));
-        for (var index = 0; index < engines.size(); index++) {
-            var engine = engines.get(index);
-
-            var firstBase = 33000 + EquivalencePorts.STEP * index;
-
-            arms.put(engine, EquivalenceVerdict.guarded(() -> runArm(scenario, engine, firstBase, oracle, o4Controls, placements), error -> armError(scenario, round, engine, error)));
-        }
-        var legacy = arms.get(DeploymentEngine.LEGACY);
-        var fsm2 = arms.get(DeploymentEngine.FSM2);
-        var findings = EquivalenceVerdict.guarded(() -> EquivalenceRoundFindings.assemble(legacy, fsm2, o4Controls, monitorLive, o6Live, oracle, placements, MONITOR, scenario.name()),
-                                                  error -> verdictError(scenario, round, error));
-        var silent = findings.silent();
-        var voids = findings.voids();
-        var divergences = findings.divergences();
-        var verdict = findings.verdict();
-
-        log("arm legacy: o4=%d o5=%d ms o6=%s samples=%d".formatted(legacy.o4Batches(), legacy.o5PlacementMs(), legacy.o6(), legacy.samples().size()));
-        log("arm fsm2:   o4=%d o5=%d ms o6=%s samples=%d".formatted(fsm2.o4Batches(), fsm2.o5PlacementMs(), fsm2.o6(), fsm2.samples().size()));
-        oracle.forEach(result -> log(result.describe()));
-        log("control divergences: " + findings.controlDivergences().stream().map(Divergence::describe).toList());
-        log("silent controls: " + silent);
-        log("not measured (compared zero items, no control credited): " + findings.notMeasured());
-        log("placement legacy=%s fsm2=%s; void: %s".formatted(placements.get(DeploymentEngine.LEGACY), placements.get(DeploymentEngine.FSM2), voids));
-        divergences.forEach(divergence -> log("DIVERGENCE " + divergence));
-        log("VERDICT " + verdict);
-        write(scenario, round);
-        assertThat(verdict).as(String.join("\n", report)).isEqualTo(EquivalenceVerdict.PASS);
-    }
-
-    /// An arm threw: the ERROR line, no verdict claimed, the report written (the exception itself is rethrown by [EquivalenceVerdict#guarded]).
-    private void armError(Scenario scenario, int round, DeploymentEngine engine, Throwable error) {
-        log("arm %s ERROR %s".formatted(engine, error));
-        log("VERDICT ERROR");
-        write(scenario, round);
-    }
-
-    /// The verdict contradicted the round's own findings: the ERROR line, the report written (the exception is rethrown by [EquivalenceVerdict#guarded]).
-    private void verdictError(Scenario scenario, int round, Throwable error) {
-        log("verdict ERROR %s".formatted(error));
-        log("VERDICT ERROR");
-        write(scenario, round);
+        assertThat(findings.verdict()).as(String.join("\n", report)).isEqualTo(EquivalenceVerdict.PASS);
     }
 
     private Arm runArm(Scenario scenario,
                        DeploymentEngine engine,
                        int firstBase,
-                       List<EquivalenceOracle.Verdict> oracle,
-                       Map<DeploymentEngine, Boolean> o4Controls,
-                       Map<DeploymentEngine, String> placements) {
+                       EquivalenceRound.Recording recording) {
         var basePort = EquivalencePorts.freeBase(firstBase, scenario.nodes);
 
         log("arm %s ports base=%d".formatted(engine, basePort));
@@ -209,8 +161,8 @@ class Fsm2EquivalenceRoundTest {
             var targetEvents = recorder.targetEvents();
 
             logSlots(engine, slots);
-            placements.put(engine, EquivalenceComparison.placement(recorder.placementSlots()));
-            log("placement (%s): gate=%s whole arm=%s".formatted(engine, placements.get(engine), EquivalenceComparison.placement(slots)));
+            recording.placements().put(engine, EquivalenceComparison.placement(recorder.placementSlots()));
+            log("placement (%s): gate=%s whole arm=%s".formatted(engine, recording.placements().get(engine), EquivalenceComparison.placement(slots)));
             log("O4 (%s): %d slots, %d counted after the %s allow-list".formatted(engine, slotCount, o4, scenario));
             var kv = new EquivalenceKv(snapshot(cluster));
             var live = cluster.allNodes().stream().map(AetherNode::self).collect(Collectors.toUnmodifiableSet());
@@ -220,7 +172,7 @@ class Fsm2EquivalenceRoundTest {
                 log("arm %s NOT QUIESCENT within %d ms".formatted(engine, QUIESCENCE_BOUND_MS));
             }
             if (engine == DeploymentEngine.LEGACY) {
-                oracle.add(EquivalenceOracle.check(kv, leaderValue(cluster), live));
+                recording.oracle().add(EquivalenceOracle.check(kv, leaderValue(cluster), live));
             }
             var arm = new Arm(engine == DeploymentEngine.LEGACY ? "legacy" : "fsm2",
                               kv,
@@ -232,12 +184,12 @@ class Fsm2EquivalenceRoundTest {
                               targetEvents,
                               System.currentTimeMillis());
 
-            o4Controls.put(engine, o4ScriptedBatchCounted(cluster, recorder, scenario));
+            recording.o4Controls().put(engine, o4ScriptedBatchCounted(cluster, recorder, scenario));
             recorder.stop();
             recorder.ringLog().forEach(line -> log("ring (%s) %s".formatted(engine, line)));
-            monitorLiveControl(cluster, engine);
+            monitorLiveControl(cluster, engine, recording);
             if (engine == DeploymentEngine.FSM2) {
-                o6Live.put(engine, o6ReaderSeesClosed(cluster));
+                recording.o6Live().put(engine, o6ReaderSeesClosed(cluster));
             }
             log("arm %s end %s load=%s".formatted(engine, Instant.now(), loadAverage()));
 
@@ -818,7 +770,7 @@ class Fsm2EquivalenceRoundTest {
     /// The monitor hook's control (CTO ruling on plan 3.3): each invariant's violation is committed into the LIVE store, read back through the
     /// same snapshot path the recorder uses, and sampled every 25 ms and checked by a monitor with zero bounds (FSM2 removes the ACTIVE row of a DEPARTED node within a few samples, so any longer bound can never trip); all four must trip. Runs after the arm's data is taken, so
     /// it contaminates no comparison; the rows are removed again. A miss is a silent control.
-    private void monitorLiveControl(EmberCluster cluster, DeploymentEngine engine) {
+    private void monitorLiveControl(EmberCluster cluster, DeploymentEngine engine, EquivalenceRound.Recording recording) {
         var node = leader(cluster);
         var rows = EquivalenceDivergentControl.livePlant();
         var monitor = new EquivalenceMonitor(0L, 0L);
@@ -847,7 +799,7 @@ class Fsm2EquivalenceRoundTest {
                                                                                                           samples.stream().filter(sample -> sample.kv().entries().keySet().containsAll(rows.keySet())).count(),
                                                                                                           samples.size(),
                                                                                                           samples.stream().filter(sample -> !sample.kv().departed().isEmpty()).count()));
-        monitorLive.put(engine, tripped.containsAll(Set.of("i", "ii", "iii", "iv")));
+        recording.monitorLive().put(engine, tripped.containsAll(Set.of("i", "ii", "iii", "iv")));
     }
 
     private static void commit(AetherNode node, AetherKey key, Option<AetherValue> expected, Option<AetherValue> replacement) {
@@ -1051,13 +1003,5 @@ class Fsm2EquivalenceRoundTest {
 
         report.add(stamped);
         System.out.println("F4 " + stamped);
-    }
-
-    private static Path reportFile(Scenario scenario, int round) {
-        return EquivalenceVerdict.reportFile(Path.of(System.getProperty("f4.out", "target/f4")), scenario.name(), round);
-    }
-
-    private void write(Scenario scenario, int round) {
-        EquivalenceVerdict.writeReport(reportFile(scenario, round), report);
     }
 }
