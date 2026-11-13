@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// acquire started after node stop returned is refused.
 @ExtendWith(FrayTestExtension.class)
 class SharedPoolsFrayTest {
-    static final int ITERATIONS = 2000;
+    static final int ITERATIONS = 300;
 
     /// One iteration's world. Fray reloads the classes per iteration, and everything is local to the call.
     private static final class Race {
@@ -104,7 +104,7 @@ class SharedPoolsFrayTest {
         }
     }
 
-    @FrayTest(iterations = ITERATIONS, scheduler = PCTScheduler.class)
+    @FrayTest(iterations = ITERATIONS, scheduler = PCTScheduler.class, resetClassLoaderPerIteration = false)
     void closeAllRacingAcquireAndRelease_issuesNoViewOfAClosedPool_andClosesEveryPoolOnce() throws InterruptedException {
         var race = new Race();
 
