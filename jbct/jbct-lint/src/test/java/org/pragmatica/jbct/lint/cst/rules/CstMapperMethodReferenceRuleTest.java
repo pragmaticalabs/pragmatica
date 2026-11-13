@@ -1027,6 +1027,30 @@ class CstMapperMethodReferenceRuleTest {
                 """)));
     }
 
+    /// #3065 polarity: the `&&` guard names `wire.xs`, a different expression from `xs`.
+    @Test
+    void analyze_polarityQualifiedSizeGuardAndChain_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                return wire.xs.size() > 0 && xs.getFirst().isEmpty();
+                """)));
+    }
+
+    /// #3065 polarity: the accessor is in a nested branch of the EMPTY side.
+    @Test
+    void analyze_polarityNestedTernaryAccessorInEmptyBranch_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                return xs.isEmpty() ? wire.broken() ? Option.none() : Option.some(xs.getFirst()) : Option.none();
+                """)));
+    }
+
+    /// #3065 polarity: a `::` method reference inside the `&&` chain is not a ternary.
+    @Test
+    void analyze_polarityAndChainWithMethodReference_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return xs.size() == 1 && wire.apply(String::trim) && xs.getFirst().isEmpty();
+                """)));
+    }
+
     /// Source whose referenced `lastName` has body `body` over the plain-identifier receiver `xs`.
     private static String polarityFixture(String body) {
         return "package org.example;\n"

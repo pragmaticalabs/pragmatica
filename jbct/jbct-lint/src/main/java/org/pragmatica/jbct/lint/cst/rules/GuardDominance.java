@@ -13,7 +13,7 @@ import java.util.regex.Pattern;
 ///   - `if (G-empty) <return|throw>;` at statement level, then `acc` later in the same or an enclosing block.
 ///
 /// G-nonEmpty: `!r.isEmpty()`, `r.size() > N`, `r.size() >= K` (K >= 1), `r.size() == K` (K >= 1), `r.size() != 0`.
-/// G-empty: `r.isEmpty()` (not negated), `r.size() == 0`, `r.size() < 1`, `r.size() <= 0`.
+/// G-empty: `r.isEmpty()` (a leading `!` is not part of the condition start, so it never qualifies), `r.size() == 0`, `r.size() < 1`, `r.size() <= 0`.
 ///
 /// Anything else is undecidable here and does NOT exempt, so the rule keeps firing: a guard in another method, a compound
 /// condition (`a || r.isEmpty()`, `!(a || r.isEmpty())`), an empty-side access (`if (r.isEmpty()) { r.getFirst(); }`), an
@@ -38,7 +38,7 @@ sealed interface GuardDominance permits GuardDominance.unused {
         }
 
         while (empty.find() && empty.end() <= accessorStart) {
-            if (!isNegated(masked, empty.start()) && emptySideReaches(masked, empty.start(), empty.end(), accessorStart)) {
+            if (emptySideReaches(masked, empty.start(), empty.end(), accessorStart)) {
                 return true;
             }
         }
@@ -62,12 +62,6 @@ sealed interface GuardDominance permits GuardDominance.unused {
                                                                                                guardStart,
                                                                                                guardEnd,
                                                                                                accessor);
-    }
-
-    private static boolean isNegated(String code, int guardStart) {
-        var prev = previousNonSpace(code, guardStart);
-
-        return prev >= 0 && code.charAt(prev) == '!';
     }
 
     private static boolean andChainReaches(String code, int guardEnd, int accessor) {
