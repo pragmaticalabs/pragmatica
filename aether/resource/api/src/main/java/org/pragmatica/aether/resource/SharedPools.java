@@ -149,22 +149,38 @@ final class SharedPools {
 
         logAdmission(admission, label, scope);
         if (admission.created) {
-            // Contained: a factory that throws synchronously fails the pool (and is evicted) instead of leaving the
-            // placeholder unresolved, which would wedge the key and every release waiting on it.
-            Promise.unitPromise()
-                   .flatMap(_ -> provision.apply())
-                   .onSuccess(_ -> LOG.log(System.Logger.Level.INFO, "opened shared pool {0} for {1}", label, scope))
-                   .onResult(pool::resolve);
+            provisionUnlessStopped(pool, provision, label, scope);
         }
 
         return attached.flatMap(_ -> slot);
     }
 
-    /// Store-then-load against `closeAll`'s flag: either the drain sees this acquirer's insert, or this acquirer sees
-    /// the flag and drains its own key through the same capture. An acquire that saw the flag AFTER its own admission
-    /// fails with `ProviderClosed`, never a view: when this call created the entry, its pool is resolved with
-    /// `ProviderClosed` instead of being provisioned, so the drain's close completes on a failed pool, and holders that
-    /// joined the entry meanwhile fail with the same cause.
+    /// Opens the pool this call inserted, unless node stop began since the admission check: then the pool is resolved with
+    /// `ProviderClosed` instead, so nothing is provisioned only to be closed by the drain. Contained: a factory that
+    /// throws synchronously fails the pool (and is evicted) instead of leaving the placeholder unresolved, which would
+    /// wedge the key and every release waiting on it.
+    private Promise<Provisioned<?>> provisionUnlessStopped(Promise<Provisioned<?>> pool,
+                                                           Fn0<Promise<Provisioned<?>>> provision,
+                                                           String label,
+                                                           String scope) {
+        return closed.get()
+               ? pool.resolve(ResourceProvisioningError.ProviderClosed.INSTANCE.<Provisioned<?>> result())
+               : Promise.unitPromise()
+                        .flatMap(_ -> provision.apply())
+                        .onSuccess(_ -> LOG.log(System.Logger.Level.INFO, "opened shared pool {0} for {1}", label, scope))
+                        .onResult(pool::resolve);
+    }
+
+    /// Store-then-load against `closeAll`'s flag; three cases, by where the acquirer's flag read falls.
+    /// 1. The flag is already visible after the admission (this method): the acquirer fails with `ProviderClosed`, never
+    ///    a view. When this call created the entry, its pool is resolved with `ProviderClosed` instead of being
+    ///    provisioned, so the drain's close completes on a failed pool; holders that joined the entry meanwhile fail with
+    ///    the same cause.
+    /// 2. The flag is not yet visible, but the drain sees the insert: the drain registers its close on the pool before
+    ///    this acquirer registers its holder slot, so the close runs first. [#fillSlot] re-reads the flag, which is always
+    ///    set before the drain registers anything, and fails the slot with `ProviderClosed` instead of issuing a view of
+    ///    a pool the drain has closed.
+    /// 3. The flag is set after the view was issued: the holder was served from an open pool, which node stop closes.
     private <T> Promise<T> refuseAfterAdmission(Object key, Admission admission) {
         var late = departing();
         var refusal = ResourceProvisioningError.ProviderClosed.INSTANCE;
@@ -222,7 +238,8 @@ final class SharedPools {
         return admission.entry;
     }
 
-    /// Resolves the slot of the holder this thread added: the view on success, the pool's failure otherwise. It runs as
+    /// Resolves the slot of the holder this thread added: the view on success, the pool's failure otherwise, and
+    /// `ProviderClosed` once node stop began (the pool may already be closed by the drain). It runs as
     /// a dependent of the pool, which is after `compute` returned, so outside the bin lock.
     @SuppressWarnings("unchecked")
     private <T> Promise<T> fillSlot(Promise<T> slot,
@@ -230,8 +247,10 @@ final class SharedPools {
                                     NodeShareable<T, ?> shareable,
                                     Object key,
                                     String scope) {
-        return slot.resolve(result.map(provisioned -> shareable.view((T) provisioned.resource(),
-                                                                     () -> releaseSlot(key, scope, slot))));
+        return slot.resolve(closed.get()
+                            ? ResourceProvisioningError.ProviderClosed.INSTANCE.<T> result()
+                            : result.map(provisioned -> shareable.view((T) provisioned.resource(),
+                                                                       () -> releaseSlot(key, scope, slot))));
     }
 
     /// A failed pool was never opened, so it has nothing to close. Its holders all receive the failure, and the next
