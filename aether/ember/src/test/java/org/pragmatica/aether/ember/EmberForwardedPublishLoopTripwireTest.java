@@ -78,7 +78,7 @@ class EmberForwardedPublishLoopTripwireTest {
         assertThat(run.persists()).as("control: the fresh stream's first append recorded its epoch (EpochHistory.persist entered)").isNotEmpty();
         assertThat(run.onTransportInHandler()).as("C-01 fixed? EpochHistory.persist (FileChannel.force under the AppendLog lock) was never entered on a transport "
                                                   + "event-loop thread inside StreamForwardHandler.onPublishForward (persists seen: %s). Delete this tripwire and "
-                                                  + "enable forwardedPublish_neverPersistsTheEpochHistoryOnTheTransportLoopThread (#2201)",
+                                                  + "enable forwardedPublish_neverPersistsTheEpochHistoryOnTheTransportLoopThread (#2201, #3130)",
                                                run.summary())
                                               .isNotEmpty();
     }
