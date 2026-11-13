@@ -76,7 +76,18 @@ class SharedPoolsFrayTest {
             closeAllReturned.set(true);
         }
 
+        /// Allocates the entries map's table before the race starts: two threads racing `ConcurrentHashMap.initTable`'s
+        /// `Thread.yield` spin livelock Fray's own scheduler (a hang in Fray, not in SharedPools, seen in about one run in
+        /// five). The racing key is a different one, so the scenario under test is unchanged.
+        private void warmUpEntriesTable() {
+            pools.<FakeConnector> acquire("warm", "warm-scope", factory, this::provision, "label")
+                 .await()
+                 .onSuccess(view -> view.stop().await());
+        }
+
         private void run() throws InterruptedException {
+            warmUpEntriesTable();
+
             var first = new Thread(() -> acquireThenStop("slice-a"));
             var second = new Thread(() -> acquireThenStop("slice-b"));
             var stopper = new Thread(this::stopNode);
