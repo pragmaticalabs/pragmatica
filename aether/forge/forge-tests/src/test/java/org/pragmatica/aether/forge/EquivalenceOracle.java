@@ -47,7 +47,8 @@ import org.pragmatica.swim.SwimConfig;
 ///   `(committed LeaderValue.viewSequence, counter 1..k in key order)`, observed version 1 for that generation, incarnation 0 (current by C8);
 /// - no `DeploymentApplyKey` and no `NodeDepartureKey`; `NodeArtifactKey` itself is dropped (FSM2 does not read it);
 /// - `ArtifactJudgmentKey`: none. LEGACY's in-memory `permanentlyFailed`/`retryCounters` have no test hook in this lane `[guess: the hook]`,
-///   so the oracle runs only at quiescent points with no FAILED instance and no FAILED outcome, and says so (`judgmentsUnread`);
+///   so the oracle reads without them and says so (`judgmentsUnread`). It runs at EVERY LEGACY quiescent point, including one that holds a FAILED
+///   instance or a FAILED outcome (E-09): there is no guard (E-09 rounds read projected=0 there);
 /// - every shared key (targets, blueprints, outcomes, directives, rosters, communities) as committed.
 ///
 /// Seams are not in the D-8 table: they are synthesised from the cluster view (counted = ready = core view = local alive = the live cores),

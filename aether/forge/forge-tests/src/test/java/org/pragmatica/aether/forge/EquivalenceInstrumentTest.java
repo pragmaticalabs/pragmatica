@@ -120,6 +120,64 @@ class EquivalenceInstrumentTest {
             assertThat(EquivalenceDivergentControl.silentFamilies(fsm2Divergences, controlDivergences, List.of())).as(controlDivergences.toString()).isEmpty();
         }
 
+        /// The family list is pinned by literal, not against itself: shrinking it (O4 is absent by design: its control is the scripted batch) would
+        /// otherwise hide a family from `silentFamilies`. Mutation: drop any family from `FAMILIES`; this goes red.
+        @Test
+        void families_arePinnedByLiteral() {
+            assertThat(EquivalenceDivergentControl.FAMILIES).containsExactly("O1", "O2", "O3", "O5", "O6", "MON-i", "MON-ii", "MON-iii", "MON-iv");
+        }
+
+        /// An FSM2 arm that ALREADY diverges on a family must not credit a control that only repeats that divergence: here FSM2 is under-placed (O2)
+        /// and the control's comparison shows exactly FSM2's own finding, which is not a firing of the control. Mutation: remove the
+        /// `fsm2Details` filter in `silentFamilies`; the O2 assertion goes red.
+        @Test
+        void aControl_repeatingOnlyAnFsm2DivergenceIsSilent_onAnFsm2ArmThatAlreadyDiverges() {
+            var legacy = arm("legacy", false);
+            var underPlaced = new Arm("fsm2", new EquivalenceKv(fsm2Kv(2)), Set.copyOf(CORES), deploySamples(true), 10, 4_000L, Map.of());
+            var fsm2Divergences = EquivalenceComparison.compare(legacy, underPlaced, MONITOR);
+            var echoed = fsm2Divergences.stream()
+                                        .map(divergence -> new EquivalenceComparison.Divergence(divergence.family(), divergence.detail().replace("fsm2", "control")))
+                                        .toList();
+
+            assertThat(fsm2Divergences).extracting(EquivalenceComparison.Divergence::family).contains("O2");
+            assertThat(EquivalenceDivergentControl.silentFamilies(fsm2Divergences, echoed, List.of())).contains("O2");
+        }
+
+        /// LEGACY-side defects are reported by every family that can see them (vf4b: three mutants dropping the LEGACY side survived). Mutations:
+        /// the LEGACY `o2` call, the LEGACY `residue` call, the LEGACY monitor check; each goes red in its test.
+        @Test
+        void aLegacyUnderPlacement_isO2() {
+            var divergences = EquivalenceComparison.compare(new Arm("legacy", new EquivalenceKv(legacyKv(2)), Set.copyOf(CORES), deploySamples(false), 10, 4_000L, Map.of()),
+                                                            arm("fsm2", true),
+                                                            MONITOR);
+
+            assertThat(divergences).extracting(EquivalenceComparison.Divergence::describe).singleElement().asString().startsWith("O2: legacy ");
+        }
+
+        @Test
+        void aLegacyResidueRow_isO3() {
+            var kv = legacyKv(3);
+
+            kv.put(new AetherKey.NodeArtifactKey(node("gone"), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.FAILED));
+            var divergences = EquivalenceComparison.compare(new Arm("legacy", new EquivalenceKv(kv), Set.copyOf(CORES), deploySamples(false), 10, 4_000L, Map.of()),
+                                                            arm("fsm2", true),
+                                                            MONITOR);
+
+            assertThat(divergences).extracting(EquivalenceComparison.Divergence::describe).singleElement().asString().startsWith("O3: legacy residue ");
+        }
+
+        @Test
+        void aLegacyMonitorBreach_isReported() {
+            var samples = new ArrayList<>(deploySamples(false));
+            var overshoot = legacyKv(3);
+
+            overshoot.put(new AetherKey.NodeArtifactKey(node("n4"), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+            samples.add(new EquivalenceMonitor.Sample(40_000L, new EquivalenceKv(overshoot)));
+            var divergences = EquivalenceComparison.compare(new Arm("legacy", new EquivalenceKv(legacyKv(3)), Set.copyOf(CORES), samples, 10, 4_000L, Map.of()), arm("fsm2", true), MONITOR);
+
+            assertThat(divergences).extracting(EquivalenceComparison.Divergence::describe).singleElement().asString().contains("MON-i").contains("legacy");
+        }
+
         /// The control is judged against what FSM2 already shows: a family FSM2 already diverges on must still show the control's own finding.
         @Test
         void aControl_isNotCreditedWithADivergenceFsm2AlreadyHas() {
