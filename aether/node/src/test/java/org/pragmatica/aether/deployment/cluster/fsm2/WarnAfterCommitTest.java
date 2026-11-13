@@ -9,19 +9,27 @@ import java.util.Map;
 import java.util.Set;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.Submitted;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.lang.Option;
 import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind.WARNINGS;
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
+import static org.pragmatica.aether.deployment.cluster.fsm2.SlFixtures.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /// #3085: a leader-local family warning reaches the operator-warning sink only once the WARNINGS row that carries it has committed (publish
 /// after commit). The window it closes: a warning raised in the drain whose leader is deposed before its WARNINGS write commits was published
@@ -210,5 +218,260 @@ class WarnAfterCommitTest {
         assertThat(ctx.effects()).as("the family warning is held while a write is in flight, the other is not")
                                  .containsExactly(new ClusterEffect.Warn("some-other-code", ORDERS.asString(), "not a family"));
         assertThat(m.warningsHeld).containsExactly(new ClusterEffect.Warn(OPENER, ORDERS.asString(), "a family"));
+    }
+
+    // -- a schema hold re-raised at Rebuild (Lifecycle.rebuild, outside any input's step) -----------------------------------------------
+    private static final String HOLD = "schema-hold";
+    private static final FsmWarningKey HOLD_KEY = FsmWarningKey.fsmWarningKey(HOLD, ORDERS.asString());
+    private static final String APP = "org.example:app:1.0.0";
+
+    private static boolean present(FsmHarness h, FsmWarningKey key) {
+        return h.snapshot()
+                .entries()
+                .stream()
+                .anyMatch(entry -> entry.key()
+                                        .equals(key));
+    }
+
+    private static SchemaVersionValue pendingSchema() {
+        return new SchemaVersionValue("orders-db", 1, "V1", SchemaStatus.PENDING, "org.example:migrations:1.0.0", blueprintId(APP), 0,
+                                      FsmHarness.START_WALL);
+    }
+
+    /// ORDERS placed and held by its pending schema; the leader's hold opener committed (every write applied so far).
+    private static FsmHarness holdCommitted() {
+        var h = held();
+
+        node(h, hosts(h, ORDERS).getFirst(), 1L).follows(ORDERS);
+        h.drain();
+        assertThat(h.warns(HOLD)).as("precondition: the first leader raised the hold").hasSize(1);
+        assertThat(present(h, HOLD_KEY)).as("precondition: and committed it").isTrue();
+
+        return h;
+    }
+
+    private static FsmHarness held() {
+        var h = threeCores();
+
+        h.activate();
+        publish(h, blueprint(APP, false, ATTEMPT, slice(ORDERS, 1, 1, Set.of())), Option.none());
+        h.seed(new SchemaVersionKey("orders-db"), pendingSchema());
+        h.drain();
+
+        return h;
+    }
+
+    /// The hold row did not commit (its leader was deposed before its WARNINGS write landed), so the successor's `Rebuild` raises the hold
+    /// again, with every submission held from here on.
+    private static FsmHarness rebuiltWithoutTheHoldRow() {
+        var h = holdCommitted();
+
+        h.deliver(new ClusterInput.Deactivate());
+        h.seedRemove(HOLD_KEY);
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        h.activate();
+
+        return h;
+    }
+
+    /// Red when: the hold opener `Rebuild` raises (`Slices.activateLoadedAtRebuild`) reaches the sink in the `Rebuild` step, before the
+    /// WARNINGS write carrying it commits: `Lifecycle.rebuild` takes no step window, so `Warnings.noteRaised` never holds it.
+    @Test
+    void rebuildTimeHoldOpener_isHeldUntilItsRowCommits() {
+        var h = rebuiltWithoutTheHoldRow();
+        var write = warningsWrite(h);
+
+        assertThat(present(h, HOLD_KEY)).as("precondition: the hold row is not committed").isFalse();
+        assertThat(h.warns(HOLD)).as("held while its write is in flight").hasSize(1);
+
+        h.settleHeld(write, h.applyHeld(write.correlationId()));
+
+        assertThat(present(h, HOLD_KEY)).as("precondition: the hold row committed").isTrue();
+        assertThat(h.warns(HOLD)).as("published once its row committed").hasSize(2);
+    }
+
+    /// The #3085 end state through `Rebuild`: the successor re-raises the hold, is deposed, and the fence refuses its WARNINGS write. Red
+    /// when: the opener reached the sink although no row exists, an open warning no later leader can close.
+    @Test
+    void rebuildTimeHoldOpener_deposedBeforeItsRowCommits_isNeverPublished() {
+        var h = rebuiltWithoutTheHoldRow();
+        var write = warningsWrite(h);
+
+        h.deliver(new ClusterInput.Deactivate());
+        h.commitLeader(CORE_2, 100L);
+
+        assertThat(h.applyHeld(write.correlationId())).as("precondition: the fence refuses the deposed leader's write")
+                                                      .isInstanceOf(Settlement.Refused.class);
+        assertThat(present(h, HOLD_KEY)).as("no row").isFalse();
+        assertThat(h.warns(HOLD)).as("only the first leader's committed opener reached the sink").hasSize(1);
+    }
+
+    /// Control for the two above: the same opener raised by an ordinary input is held while its write is in flight.
+    @Test
+    void holdOpenerFromAnInput_isHeld() {
+        var h = held();
+
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        node(h, hosts(h, ORDERS).getFirst(), 1L).follows(ORDERS);
+        h.drain();
+
+        assertThat(h.warns(HOLD)).as("held: its write is not committed").isEmpty();
+    }
+
+    /// Control: with the hold row committed, `inherit` seeds the family set and the `Rebuild` raises nothing, held or published.
+    @Test
+    void rebuildWithTheHoldRowCommitted_raisesNothing() {
+        var h = holdCommitted();
+
+        h.deliver(new ClusterInput.Deactivate());
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        h.activate();
+
+        assertThat(h.warns(HOLD)).as("inherited: not raised again").hasSize(1);
+        assertThat(h.model().warningsHeld).as("nor held").noneMatch(warn -> warn.code().equals(HOLD));
+    }
+
+    // -- the third outcome: committed, never published, inherited (Warnings, "Publish after commit") --------------------------------------
+    /// Pins the documented outcome: the WARNINGS write commits, but `Deactivate` is processed before its settlement. The row is committed
+    /// and open, nobody published the opener, and the successor inherits it without raising it. Red when that changes: update the
+    /// "Publish after commit" paragraph of `Warnings` with it.
+    @Test
+    void committedBeforeDeactivateIsProcessed_isInheritedUnpublished() {
+        var h = exhausted();
+        var write = warningsWrite(h);
+
+        h.deliver(new ClusterInput.Deactivate());
+        assertThat(((KVCommand.TransactionResult) h.applyCommand(write.transaction())).accepted()).as("precondition: the write committed")
+                                                                                                 .isTrue();
+        h.commitLeader(CORE_2, 2L);
+        h.commitLeader(FsmHarness.SELF, 3L);
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        h.drain();
+        h.activate();
+        h.deliver(new ClusterInput.Reconcile());
+        h.deliver(new ClusterInput.Reconcile());
+
+        assertThat(committed(h)).as("row committed open").isTrue();
+        assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("the successor inherited it").isTrue();
+        assertThat(h.warns(OPENER)).as("the opener was never published").isEmpty();
+        assertThat(h.warns(RECOVERY)).as("and never closed").isEmpty();
+    }
+
+    /// Pins the documented outcome through a reincarnation (`StateRestored`: `Deactivate` then `Activate` in one dispatch): the write
+    /// committed, its settlement reaches the new incarnation and is dropped as stale. Red when that changes (see the test above).
+    @Test
+    void reincarnatedAfterCommit_staleSettlement_isInheritedUnpublished() {
+        var h = exhausted();
+        var write = warningsWrite(h);
+        var settlement = h.applyHeld(write.correlationId());
+
+        assertThat(settlement).as("precondition: the write committed").isInstanceOf(Settlement.Accepted.class);
+        h.deliver(new ClusterInput.Deactivate());
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        h.activate();
+        h.settleHeld(write, settlement);
+        h.deliver(new ClusterInput.Reconcile());
+        h.drain();
+
+        assertThat(committed(h)).as("row committed open").isTrue();
+        assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("the new incarnation inherited it").isTrue();
+        assertThat(h.warns(OPENER)).as("the opener was never published").isEmpty();
+    }
+
+    /// Control for the two above: with the settlement processed before `Deactivate`, the opener is published exactly once.
+    @Test
+    void settledBeforeDeactivate_isPublishedOnce() {
+        var h = exhausted();
+        var write = warningsWrite(h);
+
+        h.settleHeld(write, h.applyHeld(write.correlationId()));
+
+        assertThat(committed(h)).isTrue();
+        assertThat(h.warns(OPENER)).as("published once, after commit").hasSize(1);
+    }
+
+    // -- the held-set bookkeeping ----------------------------------------------------------------------------------------------------------
+    private static ClusterModel withAWarningsWriteInFlight() {
+        var m = new ClusterModel();
+
+        m.submitted = m.submitted.put("c1",
+                                      new Submitted("c1", WARNINGS, List.of(), 1L, new LeaderValue(FsmHarness.SELF, 1L), 0L));
+
+        return m;
+    }
+
+    /// Red when: a step that raised no family warning marks the open set dirty anyway (`noteRaised` without its `raised` guard).
+    @Test
+    void stepRaisingNothing_whileAWriteIsInFlight_doesNotMarkTheSetDirty() {
+        var m = withAWarningsWriteInFlight();
+        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
+
+        ctx.warn("some-other-code", ORDERS.asString(), "not a family");
+        Warnings.noteRaised(m, ctx, 0);
+
+        assertThat(m.warningsDirty).isFalse();
+    }
+
+    /// Red when: `publish` reads `warningsLanded` with nothing held (the empty-held guard is gone): the sublist is out of range.
+    @Test
+    void nothingHeld_isANoOp_whateverLandedSays() {
+        var m = withAWarningsWriteInFlight();
+        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
+
+        m.warningsLanded = 1;
+
+        assertThatCode(() -> Warnings.noteRaised(m, ctx, 0)).doesNotThrowAnyException();
+        assertThat(ctx.effects()).isEmpty();
+    }
+
+    /// Red when: an accepted WARNINGS transaction lands its coverage but leaves `warningsCovered` set for the next one.
+    @Test
+    void acceptedWarningsWrite_consumesTheCoverage() {
+        var m = new ClusterModel();
+
+        m.warningsCovered = 2;
+        Warnings.accepted(m, TxDraft.draft(WARNINGS, KEY, List.of()));
+
+        assertThat(m.warningsLanded).isEqualTo(2);
+        assertThat(m.warningsCovered).isZero();
+    }
+
+    /// Red when: a flush that drafts nothing records coverage (`covering` applied to an empty draft).
+    @Test
+    void draftWithNothingToWrite_coversNothing() {
+        var m = new ClusterModel();
+
+        m.warningsDirty = true;
+        m.warningsHeld = List.of(new ClusterEffect.Warn(OPENER, ORDERS.asString(), "held"));
+        Warnings.draft(m);
+
+        assertThat(m.warningsCovered).isZero();
+    }
+
+    /// Red when: the window start is not the number of effects collected so far.
+    @Test
+    void effectCount_isTheNumberOfEffectsCollected() {
+        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
+
+        assertThat(ctx.effectCount()).isZero();
+        ctx.warn(OPENER, ORDERS.asString(), "one");
+        assertThat(ctx.effectCount()).isEqualTo(1);
+        ctx.warn(OPENER, BILLING.asString(), "two");
+        assertThat(ctx.effectCount()).isEqualTo(2);
+    }
+
+    /// Red when: `copy()` drops a held-warning field, so the next step loses what is held or what landed.
+    @Test
+    void copy_carriesTheHeldWarningFields() {
+        var m = new ClusterModel();
+
+        m.warningsHeld = List.of(new ClusterEffect.Warn(OPENER, ORDERS.asString(), "held"));
+        m.warningsCovered = 1;
+        m.warningsLanded = 1;
+        var c = m.copy();
+
+        assertThat(c.warningsHeld).isEqualTo(m.warningsHeld);
+        assertThat(c.warningsCovered).isEqualTo(1);
+        assertThat(c.warningsLanded).isEqualTo(1);
     }
 }

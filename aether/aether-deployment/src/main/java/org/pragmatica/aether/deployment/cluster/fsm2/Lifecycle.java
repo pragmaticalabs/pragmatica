@@ -28,7 +28,8 @@ public sealed interface Lifecycle {
     /// supersedes a committed DEPARTED), `inherited` is seeded from the snapshot's non-STALE DEPARTED records (H-1), and
     /// `incarnationStart` is taken from the monotonic clock. The `coreView` of the snapshot only starts the liveness clocks
     /// (R-2.11 (b)). Then schedule the two timers (NT-07) and queue the first reconcile; strays, intake re-drive and departed rows are
-    /// handled by that reconcile.
+    /// handled by that reconcile. A family warning the rebuild raises after `inherit` (a schema hold re-raised at activation) is held until
+    /// its WARNINGS row commits, as a step's is (#3085, `Warnings.noteRaised`); the recoveries `inherit` raises stay immediate.
     static ClusterModel rebuild(Ctx ctx, long incarnation, Snapshot snapshot) {
         var m = new ClusterModel();
 
@@ -39,6 +40,8 @@ public sealed interface Lifecycle {
         snapshot.admissions().forEach((node, admission) -> m.admissions = m.admissions.put(node, admission));
         snapshot.entries().forEach(entry -> Indexer.indexPut(m, ctx, entry.key(), entry.value()));
         Warnings.inherit(m, ctx);
+        var from = ctx.effectCount();
+
         m.inherited = inheritedAtRebuild(m);
         m.announcementSeenAt = PMap.empty(m.scans);
         m.absentSince = PMap.empty(m.scans);
@@ -56,7 +59,7 @@ public sealed interface Lifecycle {
         Slices.activateLoadedAtRebuild(m, ctx);
         Reconcile.request(m, ctx);
 
-        return m;
+        return Warnings.noteRaised(m, ctx, from);
     }
 
     /// C17r (#2937): one synthesised removal input per id in local membership's current DEAD set, `NodeRemoved` for a core and

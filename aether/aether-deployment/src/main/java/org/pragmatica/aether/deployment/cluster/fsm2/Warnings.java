@@ -35,11 +35,16 @@ import org.pragmatica.lang.Option;
 ///   reconcile pass, which marks the set dirty level-triggered (never at once: a write that fails fast would loop).
 /// - Fence: the transaction is a `LeaderTransaction` and `FsmWarningValue` is `LeaderAuthorized`, so a deposed leader's write is refused.
 /// - Publish after commit (#3085): a family warning or recovery a step raises is held (`warningsHeld`) and reaches the operator-warning sink
-///   only once the WARNINGS write reflecting it is accepted, or the committed mirror already equals the family sets. A leader deposed or
-///   crashed before that write commits never publishes the warning: it is dropped with the model, never left open where no successor can
-///   close it. The cost: an event-only warning raised in that window is lost (the successor raises it only if the event recurs). The
-///   recoveries `inherit` raises at `Rebuild` are not held: they close committed rows, and a successor deposed before their removal commits
-///   leaves the row to the next one, which closes it again (a repeated recovery, never an open warning).
+///   only once the WARNINGS write reflecting it is accepted, or the committed mirror already equals the family sets. A warning `Rebuild`
+///   raises after `inherit` is held the same way (`Lifecycle.rebuild`). A leader deposed or crashed before that write commits never
+///   publishes the warning: it is dropped with the model, never published without a committed row. The cost: an event-only warning raised
+///   in that window is lost (the successor raises it only if the event recurs). A third outcome: the write commits, but the leader processes
+///   `Deactivate` (or a reincarnation drops the settlement as stale) before the settlement, since the two arrive in no fixed order. The row
+///   is then committed and open, the warning was never published, and the successor inherits it without raising it, so the operator sees no
+///   opener and may later see its recovery alone. The successor does not re-publish inherited rows: the event aggregator dedups a warning only
+///   per node and within a 60 s window, so that would repeat the opener of every published row at each leader change. The recoveries
+///   `inherit` raises at `Rebuild` are not held: they close committed rows, and a successor deposed before their removal commits leaves the
+///   row to the next one, which closes it again (a repeated recovery, never an open warning).
 /// - Inherit (`Rebuild`): the family sets are seeded from the committed rows, so a successor never raises an inherited open again (each
 ///   family's raise site checks its set), and an inherited warning whose subject left the model between the leaders is closed with
 ///   [Recoveries#SUBJECT_GONE]. The families' level-triggered checks close what ended otherwise.
