@@ -113,7 +113,6 @@ public interface ManageableNode {
     }
 
     KVStore<AetherKey, AetherValue> kvStore();
-
     /// Where the per-node slice rows of [#kvStore] are read (deployment state machine spec 1.6.1): the deployment engine's source. No default:
     /// a node answers its wiring's source, and a node double names the rows it serves (F5a, v3135b g13).
     SliceRowSource sliceRows();
