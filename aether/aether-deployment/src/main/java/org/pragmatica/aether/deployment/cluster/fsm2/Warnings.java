@@ -34,7 +34,17 @@ import org.pragmatica.lang.Option;
 ///   or expired one marks the set dirty again, so the next flush drafts the difference anew. A failed one is re-drafted by the next
 ///   reconcile pass, which marks the set dirty level-triggered (never at once: a write that fails fast would loop).
 /// - Fence: the transaction is a `LeaderTransaction` and `FsmWarningValue` is `LeaderAuthorized`, so a deposed leader's write is refused.
-///   Residual: a warning a leader published in a drain that it was deposed in before its write committed is not inherited.
+/// - Publish after commit (#3085): a family warning or recovery a step raises is held (`warningsHeld`) and reaches the operator-warning sink
+///   only once the WARNINGS write reflecting it is accepted, or the committed mirror already equals the family sets. A warning `Rebuild`
+///   raises after `inherit` is held the same way (`Lifecycle.rebuild`). A leader deposed or crashed before that write commits never
+///   publishes the warning: it is dropped with the model, never published without a committed row. The cost: an event-only warning raised
+///   in that window is lost (the successor raises it only if the event recurs). A third outcome: the write commits, but the leader processes
+///   `Deactivate` (or a reincarnation drops the settlement as stale) before the settlement, since the two arrive in no fixed order. The row
+///   is then committed and open, the warning was never published, and the successor inherits it without raising it, so the operator sees no
+///   opener and may later see its recovery alone. The successor does not re-publish inherited rows: the event aggregator dedups a warning only
+///   per node and within a 60 s window, so that would repeat the opener of every published row at each leader change. The recoveries
+///   `inherit` raises at `Rebuild` are not held: they close committed rows, and a successor deposed before their removal commits leaves the
+///   row to the next one, which closes it again (a repeated recovery, never an open warning).
 /// - Inherit (`Rebuild`): the family sets are seeded from the committed rows, so a successor never raises an inherited open again (each
 ///   family's raise site checks its set), and an inherited warning whose subject left the model between the leaders is closed with
 ///   [Recoveries#SUBJECT_GONE]. The families' level-triggered checks close what ended otherwise.
@@ -91,14 +101,39 @@ public sealed interface Warnings {
     // -- the write -------------------------------------------------------------------------------------------------
     /// The end of a step: a step that raised a warning or a recovery of a family marks the open set dirty. A dirty set whose difference is
     /// empty is clean again, so a step that changed nothing queues no flush.
-    static ClusterModel noteRaised(ClusterModel m, Ctx ctx) {
-        if (ctx.effects().stream().anyMatch(Warnings::isFamilyWarn)) {
+    ///
+    /// #3085, publish after commit: the family warnings the step's handlers raised (`from` on) leave the step and join `warningsHeld`; what
+    /// committed is published now (`publish`). A warning reaches the operator-warning sink only once the open-set row reflecting it is
+    /// committed, so a leader deposed (or crashed) before its WARNINGS write commits has published nothing the successor does not inherit.
+    static ClusterModel noteRaised(ClusterModel m, Ctx ctx, int from) {
+        var raised = ctx.withdraw(from, Warnings::isFamilyWarn);
+
+        if (!raised.isEmpty()) {
             m.warningsDirty = true;
+            m.warningsHeld = Stream.concat(m.warningsHeld.stream(), raised.stream()).toList();
         }
 
         if (m.warningsDirty && !inFlight(m) && difference(m).isEmpty()) {
             m.warningsDirty = false;
         }
+
+        return publish(m, ctx);
+    }
+
+    /// The held warnings that committed, in raise order: every one when nothing is in flight and the committed mirror equals the family
+    /// sets (a write landed, or the step's changes cancelled out), else the prefix the accepted WARNINGS transaction carried.
+    private static ClusterModel publish(ClusterModel m, Ctx ctx) {
+        if (m.warningsHeld.isEmpty()) {
+            return m;
+        }
+
+        var count = !inFlight(m) && difference(m).isEmpty()
+                    ? m.warningsHeld.size()
+                    : m.warningsLanded;
+
+        m.warningsHeld.subList(0, count).forEach(ctx::emit);
+        m.warningsHeld = List.copyOf(m.warningsHeld.subList(count, m.warningsHeld.size()));
+        m.warningsLanded = 0;
 
         return m;
     }
@@ -120,10 +155,17 @@ public sealed interface Warnings {
 
         return mutations.isEmpty()
                ? m
-               : Outbox.direct(m,
-                               TxDraft.draft(SubmitKind.WARNINGS,
-                                             mutations.getFirst().key(),
-                                             mutations));
+               : covering(Outbox.direct(m,
+                                        TxDraft.draft(SubmitKind.WARNINGS,
+                                                      mutations.getFirst().key(),
+                                                      mutations)));
+    }
+
+    /// #3085: the drafted transaction carries every warning held so far (the difference is taken from the family sets they changed).
+    private static ClusterModel covering(ClusterModel m) {
+        m.warningsCovered = m.warningsHeld.size();
+
+        return m;
     }
 
     /// A flush while suspended submits nothing: the open set is clean until the resume's reconcile marks it dirty again (`reconcile`).
@@ -140,15 +182,23 @@ public sealed interface Warnings {
         return m;
     }
 
-    /// An accepted WARNINGS transaction: the mirror takes its mutations now, before the applier's notifications arrive.
+    /// An accepted WARNINGS transaction: the mirror takes its mutations now, before the applier's notifications arrive, and the warnings it
+    /// carried are published at the end of the step (#3085).
     static ClusterModel accepted(ClusterModel m, TxDraft draft) {
         return draft.kind() == SubmitKind.WARNINGS
                ? draft.mutations()
                       .stream()
-                      .reduce(m,
+                      .reduce(committed(m),
                               Warnings::landed,
                               (left, right) -> right)
                : m;
+    }
+
+    private static ClusterModel committed(ClusterModel m) {
+        m.warningsLanded = m.warningsCovered;
+        m.warningsCovered = 0;
+
+        return m;
     }
 
     /// A refused or expired WARNINGS transaction: the next flush drafts the difference again, from the mirror the refusal corrected.

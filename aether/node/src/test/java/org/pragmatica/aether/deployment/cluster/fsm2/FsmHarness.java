@@ -79,6 +79,9 @@ final class FsmHarness {
     /// Local membership's DEAD set as the next `Rebuild` reads it (C17r).
     ClusterInput.DeadSet dead = ClusterInput.DeadSet.NONE;
     SettlePolicy policy = SettlePolicy.APPLY;
+    /// #3085: a family warning is published only once its WARNINGS write commits. Set, the WARNINGS transactions are applied whatever `policy`
+    /// does to the other submissions, so a test that holds, loses or fails the decision writes still sees the warnings it asserts.
+    boolean warningsCommit;
     ClusterState state = ClusterState.initial();
     boolean notifying = true;
 
@@ -262,7 +265,11 @@ final class FsmHarness {
     }
 
     private void submitted(ClusterEffect.Submit submit) {
-        switch (policy) {
+        var effective = warningsCommit && submit.kind() == ClusterModel.SubmitKind.WARNINGS
+                        ? SettlePolicy.APPLY
+                        : policy;
+
+        switch (effective) {
             case APPLY -> settle(submit, applyTransaction(submit));
             case LOSE -> {}
             case HOLD -> held.put(submit.correlationId(), submit);
