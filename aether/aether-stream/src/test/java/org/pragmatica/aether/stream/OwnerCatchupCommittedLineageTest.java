@@ -196,6 +196,41 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).as("evicted").isEqualTo(20L);
     }
 
+    /// #3081: a tail exactly AT the cap (a lagging row that reaches the lineage end, 10) is capped by nothing and evicts nothing: the
+    /// entry learned for the raw tail (20) still caps it afterwards. Red under "evict on a tail equal to the cap".
+    @Test
+    void lineageEnd_aTailExactlyAtTheCap_keepsTheEntry() {
+        var fixture = disownedTailFixture();
+
+        settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 10L)).as("at the cap: unchanged").isEqualTo(10L);
+        assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).as("the entry was not evicted").isEqualTo(10L);
+    }
+
+    /// #3081 (F3b) on the probe path: R1 (raw 20, lineage end 10) is refilled by the committed lineage to exactly 20, and the probe
+    /// reads 20 again. The cap is confirmed before the ranking relies on it, so R1 (20) outranks R2 (15) and the owner activates at 20,
+    /// not short at 15. Red under "rank on the stale cap".
+    @Test
+    void probePath_ofAReplicaRefilledToExactlyTheObservedTail_isRankedByItsTail_notTheStaleCap() {
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+
+        var lineage = List.of(ProvenanceEntry.provenanceEntry(E1, 0), ProvenanceEntry.provenanceEntry(E3, 11));
+        var replicas = new java.util.ArrayList<>(List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
+                                                         new Replica(OTHER, 15L, lineage)));
+        var fixture = fixture(true, replicas);
+
+        assertThat(settled(fixture.backfill().backfill("s", 0)).isFailure()).as("held short of R2's 15").isTrue();
+        assertThat(head()).as("R1 installed through its lineage end").isEqualTo(10L);
+
+        replicas.set(0, new Replica(SOURCE, 20L, lineage));
+
+        var second = settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(second.isSuccess()).as("second run: %s", second).isTrue();
+        assertThat(head()).as("the refilled R1 holds 20").isEqualTo(20L);
+    }
+
     /// #3080: the gate learns a responder's bound before it refuses a pair. The page R1 serves from 11 is history E1, re-assigned by
     /// the committed E3 @ 11: R1's committed lineage ends at 10 for its raw tail 20. Nothing is installed by learning it.
     @Test
@@ -445,7 +480,9 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(head()).isEqualTo(13L);
         assertThat(settled(fixture.backfill().backfill("s", 0)).isSuccess()).isTrue();
         assertThat(head()).isEqualTo(18L);
-        assertThat(fixture.served()).as("each learned cap is confirmed by one page before the next round ranks on it").containsExactly(SOURCE, SOURCE, OTHER, SOURCE, OTHER, THIRD);
+        assertThat(fixture.served()).as("each learned cap is confirmed by one page before the next round ranks on it (the two confirmations of round 3 run in parallel: any order)")
+                                    .containsExactlyInAnyOrder(SOURCE, SOURCE, SOURCE, OTHER, OTHER, THIRD);
+        assertThat(fixture.served().getLast()).as("the last read is the third pull").isEqualTo(THIRD);
         assertThat(fixture.backfill().redriveCandidates()).isEmpty();
     }
 
