@@ -8,7 +8,7 @@
   `Rebuild` and on a restore, which keeps the backup's old `updatedAt`) restarts the quiet time, so a record the leader has just acted on is not
   reported. An operator write that dispatches nothing (`POST /schema/migrate` on MIGRATING) does not close an open report. The lever is chosen by
   the retry route's own predicate (`SchemaStatus.canRetryManually`): `aether schema retry` for PENDING; for MIGRATING the retry route refuses, and
-  the warning names the current leader and `aether nodes shutdown <leader>` (`nodes drain` does not move leadership): the next leader's
+  the warning names the current leader and tells the operator to stop or restart that node's process at the host or container level (no CLI command: `nodes drain` and `nodes shutdown` both deliver a DRAIN on the leader's broadcast, which skips the leader): the next leader's
   rebuild resets the record to PENDING and re-runs it. That re-run is under the database migration fence (#2591) only where the datasource has
   one; for a datasource reported `schema-migration-unfenced` it is unfenced, and a migration still running there can run twice. The open
   warning is part of the committed open set (`FsmWarningKey`), so a successor leader inherits it. The check dispatches and writes nothing.

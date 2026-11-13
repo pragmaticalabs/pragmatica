@@ -366,12 +366,13 @@ class G2SchemaScenariosTest {
         assertThat(h.warns("schema-migration-stalled")).as("150 s after the dispatch: reported").hasSize(1);
     }
 
-    // #2773 F2: the MIGRATING lever is one the operator can take: it names the leader (this node, the one that raises it) and `nodes shutdown`,
-    // which stops the node (route -> SHUTTING_DOWN -> NodeDeploymentManager.onMembershipDecision -> AetherNode.stop) and so hands leadership over;
-    // `nodes drain` moves slices only and is not named. It says the re-run is unfenced where `schema-migration-unfenced` applies.
-    // Red when: the leader id, the shutdown command or the unfenced caveat is dropped, or drain is named.
+    // #2773 F2: the MIGRATING lever is one the operator can take: it names the leader (this node, the one that raises it) and says to stop or
+    // restart that node's process at the host or container level; the successor's rebuild then resets the record. No CLI command is named:
+    // `nodes drain` and `nodes shutdown` share the DRAIN path, whose broadcast skips the leader (LeaderReconciler #1089), so neither is known to stop it.
+    // It says the re-run is unfenced where `schema-migration-unfenced` applies.
+    // Red when: the leader id, the process-level lever or the unfenced caveat is dropped, or a CLI command is named.
     @Test
-    void stallWarning_migrating_namesTheLeaderAndTheShutdownLever() {
+    void stallWarning_migrating_namesTheLeaderAndTheProcessLevelLever() {
         var h = threeCores();
 
         h.activate();
@@ -380,9 +381,9 @@ class G2SchemaScenariosTest {
         var message = h.warns("schema-migration-stalled").getFirst().message();
 
         assertThat(message).contains("current leader " + FsmHarness.SELF.id(),
-                                     "`aether nodes shutdown " + FsmHarness.SELF.id() + "`",
+                                     "by stopping or restarting that node's process at the host or container level",
                                      "schema-migration-unfenced")
-                  .doesNotContain("aether nodes drain");
+                  .doesNotContain("aether nodes drain", "aether nodes shutdown");
     }
 
     // #2773 F3: an operator write that dispatches nothing and takes no lock (`POST /schema/migrate` on MIGRATING, "no orchestrator effect") is not

@@ -170,7 +170,7 @@ public sealed interface Schemas {
     // Design-out: no recovery writer here. A MIGRATING reset in-term would multiply unfenced re-runs on datasources without a database fence
     // (`schema-migration-unfenced`); the rebuild's reset (C1) stays the only automatic one, and the warning names it. Guarantee: a stall is
     // reported within the ceiling + grace + one tick of its start by the leader that is acting; mechanism: the `FsmWarningKey` open set
-    // (`Warnings`), which a successor inherits at `Rebuild`, so the report survives a leader change.
+    // (`Warnings`), which a successor inherits at `Rebuild`; a rebuilding successor then re-dispatches or resets the record (stamping it), which closes the inherited report.
     static ClusterModel sweepStalls(ClusterModel m, Ctx ctx) {
         var stalled = m.schemas.values()
                                .stream()
@@ -258,9 +258,9 @@ public sealed interface Schemas {
                                                                                                                                                    value));
     }
 
-    /// The MIGRATING lever is a leadership change, because only a rebuild resets the record. `aether nodes shutdown <leader>` is the lever:
-    /// the route marks the node SHUTTING_DOWN, `NodeDeploymentManager.onMembershipDecision` runs the shutdown callback (`AetherNode.stop`) and
-    /// the leader leaves. `aether nodes drain` moves slices only and keeps the leader, so it is not named. The re-run is unfenced where
+    /// The MIGRATING lever is a leadership change, because only a rebuild resets the record. The lever is stopping or restarting the leader's
+    /// process at the host or container level. No CLI command is named: `nodes drain` and `nodes shutdown` both deliver a DRAIN on the leader's
+    /// broadcast, which skips the leader itself (`LeaderReconciler` #1089), so neither is known to stop the leader. The re-run is unfenced where
     /// `schema-migration-unfenced` applies: a migration still running there can run twice.
     private static String lever(Ctx ctx, SchemaVersionValue value) {
         return value.status()
@@ -269,9 +269,7 @@ public sealed interface Schemas {
                : "No manual retry (the retry route refuses " + value.status()
                 + "). Recovery: move leadership off the current leader " + ctx.self()
                                                                               .id()
-                + " with `aether nodes shutdown " + ctx.self()
-                                                       .id()
-                + "`; the next leader's rebuild resets the record to PENDING and re-runs it (unfenced where schema-migration-unfenced applies:"
+                + " by stopping or restarting that node's process at the host or container level; the next leader's rebuild resets the record to PENDING and re-runs it (unfenced where schema-migration-unfenced applies:"
                 + " a migration still running there can run twice)";
     }
 
