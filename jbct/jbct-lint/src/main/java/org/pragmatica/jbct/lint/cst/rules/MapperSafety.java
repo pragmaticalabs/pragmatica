@@ -135,12 +135,13 @@ public sealed interface MapperSafety permits MapperSafety.unused {
     }
 
     /// True when the given code fragment contains a partial operation that no emptiness / size guard dominates (#3065). A
-    /// `getFirst` / `getLast` is guarded when the same receiver appears EARLIER in the fragment in `<receiver>.isEmpty()` or
-    /// `<receiver>.size() <cmp>`; every other partial operation (`throw`, `orElseThrow`, indexed `get`, ...) is never guarded.
+    /// `getFirst` / `getLast` on a plain identifier receiver is guarded only when it is reached on the NON-EMPTY side of an
+    /// emptiness / size check on that receiver (forms and polarity: [GuardDominance]); every other partial operation (`throw`,
+    /// `orElseThrow`, indexed `get`, ...) is never guarded.
     ///
-    /// Known limits (text, not flow): the guard is matched by receiver name and position only, so its polarity and branch are
-    /// not checked (`if (xs.isEmpty()) { xs.getFirst(); }` reads as guarded), and a receiver that is not a plain identifier
-    /// (`wire.items().getFirst()`) is never guarded. Used by JBCT-TOT-02's body scan only; the lambda rule keeps
+    /// Known limits (text, not flow): a guard whose polarity or reach is not one of the [GuardDominance] forms (another method,
+    /// a compound or negated-compound condition, a conditional early exit) does not exempt, and a receiver that is not a plain
+    /// identifier (`wire.items().getFirst()`) is never guarded. Used by JBCT-TOT-02's body scan only; the lambda rule keeps
     /// [#containsPartialOperation].
     static boolean containsUnguardedPartialOperation(String code) {
         var masked = maskForOps(code);
@@ -160,16 +161,8 @@ public sealed interface MapperSafety permits MapperSafety.unused {
             return false;
         }
 
-        return receiverBefore(masked, start).filter(receiver -> hasGuardBefore(masked, start, receiver))
+        return receiverBefore(masked, start).filter(receiver -> GuardDominance.dominates(masked, start, receiver))
                              .isPresent();
-    }
-
-    private static boolean hasGuardBefore(String masked, int start, String receiver) {
-        var guard = Pattern.compile("(?<![\\w$.])" + Pattern.quote(receiver)
-                                   + "\\s*\\.\\s*(?:isEmpty\\s*\\(\\s*\\)|size\\s*\\(\\s*\\)\\s*(?:==|!=|<=|>=|<|>))");
-
-        return guard.matcher(masked.substring(0, start))
-                    .find();
     }
 
     /// Plain identifier directly before the `.` at `dotIdx`, or `none` when the receiver is any other expression (a call
