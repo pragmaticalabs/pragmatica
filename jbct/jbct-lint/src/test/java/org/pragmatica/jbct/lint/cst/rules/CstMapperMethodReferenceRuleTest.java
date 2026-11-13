@@ -771,6 +771,220 @@ class CstMapperMethodReferenceRuleTest {
                 """));
     }
 
+    /// #3065 polarity: `if (!xs.isEmpty()) { xs.getFirst() }` reaches the accessor on the non-empty side.
+    @Test
+    void analyze_polarityIfNotEmptyBlock_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                if (!xs.isEmpty()) {
+                    return Option.some(xs.getFirst());
+                }
+                return Option.none();
+                """)));
+    }
+
+    /// #3065 polarity: `if (xs.isEmpty()) return ...;` then the accessor: early exit.
+    @Test
+    void analyze_polarityEarlyExitReturn_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                if (xs.isEmpty()) return Option.none();
+                return Option.some(xs.getFirst());
+                """)));
+    }
+
+    /// #3065 polarity: early exit through a block whose last statement returns.
+    @Test
+    void analyze_polarityEarlyExitBlock_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                if (xs.isEmpty()) {
+                    return Option.none();
+                }
+                return Option.some(xs.getFirst());
+                """)));
+    }
+
+    /// #3065 polarity: the early exit is guarded, but the `throw` is itself a partial operation, so the body still flags.
+    @Test
+    void analyze_polarityEarlyExitThrow_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (xs.isEmpty()) {
+                    throw new IllegalStateException("empty");
+                }
+                return Option.some(xs.getFirst());
+                """)));
+    }
+
+    /// #3065 polarity: `!xs.isEmpty() ? acc : d`.
+    @Test
+    void analyze_polarityTernaryNegatedThen_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return !xs.isEmpty() ? Option.some(xs.getFirst()) : Option.none();
+                """)));
+    }
+
+    /// #3065 polarity: `if (xs.size() > 0)` is the non-empty side.
+    @Test
+    void analyze_polaritySizePositiveIf_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                if (xs.size() > 0) {
+                    return Option.some(xs.getFirst());
+                }
+                return Option.none();
+                """)));
+    }
+
+    /// #3065 polarity: `size() > 0 ? acc : d`.
+    @Test
+    void analyze_polaritySizePositiveTernary_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return xs.size() > 0 ? Option.some(xs.getFirst()) : Option.none();
+                """)));
+    }
+
+    /// #3065 polarity: `size() == 0 ? d : acc`.
+    @Test
+    void analyze_polaritySizeZeroTernaryElse_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return xs.size() == 0 ? Option.none() : Option.some(xs.getFirst());
+                """)));
+    }
+
+    /// #3065 polarity: `!xs.isEmpty() && acc`.
+    @Test
+    void analyze_polarityNotEmptyAndChain_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                return !xs.isEmpty() && xs.getFirst().isEmpty();
+                """)));
+    }
+
+    /// #3065 polarity: empty side of an `if`: must fire.
+    @Test
+    void analyze_polarityEmptySideIf_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (xs.isEmpty()) {
+                    return Option.some(xs.getFirst());
+                }
+                return Option.none();
+                """)));
+    }
+
+    /// #3065 polarity: empty side, single statement: must fire.
+    @Test
+    void analyze_polarityEmptySideSingleStatement_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (xs.isEmpty()) return Option.some(xs.getFirst());
+                return Option.none();
+                """)));
+    }
+
+    /// #3065 polarity: `isEmpty() ? acc : d`: the accessor is on the empty side.
+    @Test
+    void analyze_polarityEmptySideTernaryThen_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                return xs.isEmpty() ? Option.some(xs.getFirst()) : Option.none();
+                """)));
+    }
+
+    /// #3065 polarity: `!isEmpty() ? d : acc`: the accessor is on the empty side.
+    @Test
+    void analyze_polarityNegatedTernaryElse_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                return !xs.isEmpty() ? Option.none() : Option.some(xs.getFirst());
+                """)));
+    }
+
+    /// #3065 polarity: `size() == 0 ? acc : d`.
+    @Test
+    void analyze_polaritySizeZeroTernaryThen_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                return xs.size() == 0 ? Option.some(xs.getFirst()) : Option.none();
+                """)));
+    }
+
+    /// #3065 polarity: `isEmpty() && acc` evaluates the accessor on the empty side.
+    @Test
+    void analyze_polarityEmptyAndChain_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                return xs.isEmpty() && xs.getFirst().isEmpty();
+                """)));
+    }
+
+    /// #3065 polarity: compound `||` condition: polarity undecidable, keeps firing.
+    @Test
+    void analyze_polarityCompoundOrCondition_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (!xs.isEmpty() || wire.broken()) {
+                    return Option.some(xs.getFirst());
+                }
+                return Option.none();
+                """)));
+    }
+
+    /// #3065 polarity: negated compound condition: keeps firing.
+    @Test
+    void analyze_polarityNegatedCompoundEarlyExit_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (!(wire.broken() || xs.isEmpty())) {
+                    return Option.none();
+                }
+                return Option.some(xs.getFirst());
+                """)));
+    }
+
+    /// #3065 polarity: the `if (empty)` body does not leave, so the accessor is reachable when empty.
+    @Test
+    void analyze_polarityConditionalEarlyExit_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (xs.isEmpty()) {
+                    wire.log();
+                }
+                return Option.some(xs.getFirst());
+                """)));
+    }
+
+    /// #3065 polarity: the early exit guards only its inner block.
+    @Test
+    void analyze_polarityEarlyExitInClosedBlock_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (wire.broken()) {
+                    if (xs.isEmpty()) return Option.none();
+                }
+                return Option.some(xs.getFirst());
+                """)));
+    }
+
+    /// #3065 polarity: `else if (empty) return` is conditional on the first test.
+    @Test
+    void analyze_polarityElseIfEarlyExit_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (wire.broken()) {
+                    wire.log();
+                } else if (xs.isEmpty()) return Option.none();
+                return Option.some(xs.getFirst());
+                """)));
+    }
+
+    /// #3065 polarity: the accessor sits after an `||` and is reachable when the guard is false.
+    @Test
+    void analyze_polarityAndChainEscapedByOr_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                return xs.size() == 1 && wire.broken() || xs.getFirst().isEmpty();
+                """)));
+    }
+
+    /// Source whose referenced `lastName` has body `body` over the plain-identifier receiver `xs`.
+    private static String polarityFixture(String body) {
+        return "package org.example;\n"
+               + "class Handler {\n"
+               + "    Object run(Option<Wire> o) {\n"
+               + "        return o.flatMap(Handler::lastName);\n"
+               + "    }\n"
+               + "    static Option<String> lastName(Wire wire) {\n"
+               + "        var xs = wire.items();\n"
+               + body.indent(8)
+               + "    }\n"
+               + "}\n";
+    }
+
     private long count(String source) {
         return lint(source).stream()
                            .filter(diagnostic -> diagnostic.ruleId()
