@@ -1051,6 +1051,43 @@ class CstMapperMethodReferenceRuleTest {
                 """)));
     }
 
+    /// #3065 polarity: a NON-EMPTY-side guard that comes after the accessor does not dominate it.
+    @Test
+    void analyze_polarityNonEmptyGuardAfterAccessor_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                var first = xs.getFirst();
+                return !xs.isEmpty() && first.isEmpty() ? Option.none() : Option.none();
+                """)));
+    }
+
+    /// #3065 polarity: `size() >= 0` is always true, so it proves nothing about emptiness.
+    @Test
+    void analyze_polaritySizeAtLeastZero_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                return xs.size() >= 0 ? Option.some(xs.getFirst()) : Option.none();
+                """)));
+    }
+
+    /// #3065 polarity: the non-empty `if` ended before the accessor (braced statement).
+    @Test
+    void analyze_polarityAccessorAfterNonEmptyIfBlock_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (!xs.isEmpty()) {
+                    wire.touch();
+                }
+                return Option.some(xs.getFirst());
+                """)));
+    }
+
+    /// #3065 polarity: the non-empty `if` ended before the accessor (single statement).
+    @Test
+    void analyze_polarityAccessorAfterNonEmptyIfSingleStatement_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (!xs.isEmpty()) wire.touch();
+                return Option.some(xs.getFirst());
+                """)));
+    }
+
     /// Source whose referenced `lastName` has body `body` over the plain-identifier receiver `xs`.
     private static String polarityFixture(String body) {
         return "package org.example;\n"
