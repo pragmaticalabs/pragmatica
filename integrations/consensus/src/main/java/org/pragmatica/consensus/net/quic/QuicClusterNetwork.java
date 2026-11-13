@@ -2276,8 +2276,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                                                                 message,
                                                                                                 connection,
                                                                                                 expiry);
-            case PeerState.OfferOutcome.Queued(boolean oldestEvicted) -> {
-                recordQueued(state, message.streamType(), oldestEvicted);
+            case PeerState.OfferOutcome.Queued(Option<StreamType> evictedLane) -> {
+                recordQueued(state, evictedLane);
                 // Queued in the offline buffer — the message has been accepted for eventual
                 // delivery on reconnect. Report as Sent so callers (DHT) treat it as enqueued
                 // success; if the peer never reconnects within the operation deadline the
@@ -2297,15 +2297,19 @@ public class QuicClusterNetwork implements ClusterNetwork {
         };
     }
 
-    /// `lane` is the displacing frame's: the offline buffer is shared by every lane and does not report which lane the
-    /// frame it evicted was on, so D5 is attributed to the lane of the send that caused the eviction.
-    private void recordQueued(PeerState state, StreamType lane, boolean oldestEvicted) {
+    /// D5 is attributed to `evictedLane`, the lane of the frame the full offline buffer dropped, not to the lane of the
+    /// send that displaced it. The dropped frame is usually one whose caller was told `Sent`; it can also be one re-buffered
+    /// by [#redispatchAfterDeadConnection] for a caller told `ConnectionDead`, which this site cannot tell apart.
+    private void recordQueued(PeerState state, Option<StreamType> evictedLane) {
         quicMetrics.onBackpressureQueued();
-        if (oldestEvicted) {
-            quicMetrics.onBackpressureDrop();
-            quicMetrics.onDroppedAfterSent(lane, DropSite.OFFLINE_OLDEST, 1);
-            log.debug("Offline buffer for peer {} at capacity — dropped oldest", state.peerId());
-        }
+        evictedLane.onPresent(lane -> recordOldestEvicted(state, lane));
+    }
+
+    @Contract
+    private void recordOldestEvicted(PeerState state, StreamType lane) {
+        quicMetrics.onBackpressureDrop();
+        quicMetrics.onDroppedAfterSent(lane, DropSite.OFFLINE_OLDEST, 1);
+        log.debug("Offline buffer for peer {} at capacity — dropped oldest ({} frame)", state.peerId(), lane);
     }
 
     /// The re-dispatch of a frame whose captured connection turned out dead. It reports what happened to the frame, not
@@ -2321,8 +2325,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                                                           message,
                                                                                           live,
                                                                                           expiry);
-            case PeerState.OfferOutcome.Queued(boolean oldestEvicted) -> {
-                recordQueued(state, message.streamType(), oldestEvicted);
+            case PeerState.OfferOutcome.Queued(Option<StreamType> evictedLane) -> {
+                recordQueued(state, evictedLane);
                 yield new WriteOutcome.ConnectionDead(state.peerId());
             }
             case PeerState.OfferOutcome.Dropped ignored -> new WriteOutcome.ConnectionDead(state.peerId());

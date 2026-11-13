@@ -143,7 +143,7 @@ class QuicPostSentDropAccountingTest {
     }
 
     @Test
-    void d5_offlineBufferEvictsOldest_isCountedOnTheDisplacingLane() {
+    void d5_offlineBufferEvictsOldest_isCountedOnTheEvictedFramesLane() {
         var network = network(SHORT);
         var state = PeerState.peerState(PEER, System.nanoTime());
 
@@ -156,7 +156,7 @@ class QuicPostSentDropAccountingTest {
         var outcome = network.offerOutboundForTest(state, probe(StreamType.FORWARD));
 
         assertThat(outcome).as("a queued frame is reported Sent").isInstanceOf(WriteOutcome.Sent.class);
-        assertOnly(network, StreamType.FORWARD, DropSite.OFFLINE_OLDEST, 1);
+        assertOnly(network, StreamType.CONSENSUS, DropSite.OFFLINE_OLDEST, 1);
     }
 
     @Test
