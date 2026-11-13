@@ -302,15 +302,14 @@ public sealed interface Warnings {
         var open = opened(m);
         var held = unpublished(m);
 
-        return Stream.concat(open.keySet()
-                                 .stream(),
-                             held.keySet()
-                                 .stream())
+        return Stream.concat(open.keySet().stream(),
+                             held.keySet().stream())
                      .distinct()
                      .collect(Collectors.toMap(key -> key,
                                                key -> marked(Option.option(open.get(key)),
                                                              key,
-                                                             held.getOrDefault(key, List.of()))));
+                                                             held.getOrDefault(key,
+                                                                               List.of()))));
     }
 
     /// The held warnings by the key of their warning, in raise order.
@@ -322,23 +321,23 @@ public sealed interface Warnings {
     }
 
     private static FsmWarningKey keyOf(ClusterEffect.Warn warn) {
-        return FsmWarningKey.fsmWarningKey(OPENERS.getOrDefault(warn.code(), warn.code()), warn.subject());
+        return FsmWarningKey.fsmWarningKey(OPENERS.getOrDefault(warn.code(), warn.code()),
+                                           warn.subject());
     }
 
-    private static FsmWarningValue marked(Option<FsmWarningValue> open, FsmWarningKey key, List<ClusterEffect.Warn> held) {
-        return FsmWarningValue.fsmWarningValue(open.map(FsmWarningValue::members)
-                                                   .or(Map.of()),
+    private static FsmWarningValue marked(Option<FsmWarningValue> open,
+                                          FsmWarningKey key,
+                                          List<ClusterEffect.Warn> held) {
+        return FsmWarningValue.fsmWarningValue(open.map(FsmWarningValue::members).or(Map.of()),
                                                open.isPresent(),
                                                latest(held, key.code()),
-                                               latest(held, FAMILIES.getOrDefault(key.code(), key.code())));
+                                               latest(held,
+                                                      FAMILIES.getOrDefault(key.code(), key.code())));
     }
 
     private static Option<String> latest(List<ClusterEffect.Warn> held, String code) {
-        return Option.from(held.stream()
-                               .filter(warn -> warn.code()
-                                                   .equals(code))
-                               .reduce((earlier, later) -> later))
-                     .map(ClusterEffect.Warn::message);
+        return Option.from(held.stream().filter(warn -> warn.code()
+                                                            .equals(code)).reduce((earlier, later) -> later)).map(ClusterEffect.Warn::message);
     }
 
     /// The open set the family sets describe.
@@ -441,7 +440,8 @@ public sealed interface Warnings {
         }
 
         var opener = Map.entry(key.code(), value.opener());
-        var recovery = Map.entry(FAMILIES.get(key.code()), value.recovery());
+        var recovery = Map.entry(FAMILIES.get(key.code()),
+                                 value.recovery());
 
         (value.open()
          ? Stream.of(recovery, opener)

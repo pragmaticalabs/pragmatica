@@ -3650,10 +3650,7 @@ public sealed interface AetherValue {
     /// #3160: `opener` and `recovery` are the messages of the family's opener (the key's code) and recovery that the writing leader has
     /// committed but not yet published, so a successor publishes them when it inherits the row. `open` false marks a row the family closed
     /// whose recovery is not yet published (a tombstone): the successor publishes the recovery and removes the row.
-    record FsmWarningValue(Map<String, String> members,
-                           boolean open,
-                           Option<String> opener,
-                           Option<String> recovery) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
+    record FsmWarningValue(Map<String, String> members, boolean open, Option<String> opener, Option<String> recovery) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
         public FsmWarningValue {
             members = Collections.unmodifiableSortedMap(new TreeMap<>(members));
         }
