@@ -85,17 +85,6 @@ class FalseDeadWorkerRejoinTest {
     /// the heal the same id is refused (terminal removal, counted on the cores) and a fresh-id replacement receives its
     /// directive. The refusal count is logged, not asserted, here: it is read right after the heal, before the worker's retries.
     @Test void removedWorker_freshReplacementGetsDirective() {
-        freshReplacementGetsDirective();
-    }
-
-    /// The removal-path replacement on the FSM2 engine: its Directory directive writers (`writeDirective`, `joinMint`) mint the
-    /// replacement's directive, which the legacy arm never reaches.
-    @Test void removedWorker_freshReplacementGetsDirective_fsm2() {
-        cluster.withDeploymentEngine(AetherValue.DeploymentEngine.FSM2);
-        freshReplacementGetsDirective();
-    }
-
-    private void freshReplacementGetsDirective() {
         var id = removeWorkerThenHeal();
         var replacement = LifecycleAwait.nodeSettled("admit replacement worker", cluster, cluster.addWorkerNode());
 
@@ -106,6 +95,16 @@ class FalseDeadWorkerRejoinTest {
         assertThat(leader().kvStore().getTyped(new AetherKey.ActivationDirectiveKey(id), AetherValue.ActivationDirectiveValue.class).isPresent())
                 .as("the removed identity never regains a directive").isFalse();
         log.info("Same-id refusals counted on the cores: {}", coreRefusals());
+    }
+
+    /// FSM2 arm, admission only: on the FSM2 engine the `Directory` directive writers (`writeDirective`, `joinMint`) mint a
+    /// worker's directive, which the legacy arms above never reach. The removal path is not run on FSM2: there the cores did not
+    /// remove the worker's directive within `BUDGET` (observed), so a removal arm would pin nothing here.
+    @Test void fsm2Worker_admissionCommitsDirective() {
+        cluster.withDeploymentEngine(AetherValue.DeploymentEngine.FSM2);
+        var id = bootWorker(REMOVAL_FIRST, REMOVAL_FIRST_COMMUNITY);
+
+        assertThat(directiveCommitted(id)).as("the leader committed the FSM2 worker's directive").isTrue();
     }
 
     /// The removed worker stops instead of retrying forever, bounded by `RECOVERY_BOUND` after the heal. It is refused by the
@@ -183,6 +182,13 @@ class FalseDeadWorkerRejoinTest {
     }
 
     private NodeId bootAndCutWorker(TimeSpan coreAbsence, TimeSpan communityAbsence, boolean keepQuic) {
+        var id = bootWorker(coreAbsence, communityAbsence);
+
+        cutSwim(id, keepQuic);
+        return id;
+    }
+
+    private NodeId bootWorker(TimeSpan coreAbsence, TimeSpan communityAbsence) {
         LifecycleAwait.settled("start false-dead fixture", cluster, cluster.start());
         await().atMost(BUDGET.duration()).until(() -> cluster.currentLeader().isPresent());
         // Set after the cores started: only the worker created next gets the fence window under test.
@@ -200,7 +206,6 @@ class FalseDeadWorkerRejoinTest {
         await().alias("every core has observed the worker SWIM-HEALTHY before the cut (the cold-boot gate suppresses a never-HEALTHY death)")
                .atMost(BUDGET.duration())
                .until(() -> cluster.allNodes().stream().filter(node -> !node.self().equals(id)).allMatch(node -> swimHealthy(node, id)));
-        cutSwim(id, keepQuic);
         return id;
     }
 
