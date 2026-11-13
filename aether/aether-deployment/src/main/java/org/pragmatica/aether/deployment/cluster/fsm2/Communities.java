@@ -77,9 +77,11 @@ public sealed interface Communities {
     /// [Option#none] — "nothing to count", not "zero members alive".
     static Option<Integer> observed(ClusterState state, String id) {
         return state instanceof ClusterState.Active active
-               ? active.model().rosters.get(id)
-                      .filter(roster -> !roster.dissolved())
-                      .map(_ -> liveMembers(active.model(), id))
+               ? active.model().rosters
+                       .get(id)
+                       .filter(roster -> !roster.dissolved())
+                       .map(_ -> liveMembers(active.model(),
+                                             id))
                : Option.none();
     }
 
