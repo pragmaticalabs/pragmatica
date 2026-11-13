@@ -72,6 +72,17 @@ public sealed interface Communities {
                         .or(0);
     }
 
+    /// The count the state in [#evaluate] was decided on, as the management API reads it (#3159): [#liveMembers] of the model `state` holds,
+    /// when it is built and the community has a committed, non-dissolved roster. Anything else (Dormant, Rebuilding, no roster) is
+    /// [Option#none] — "nothing to count", not "zero members alive".
+    static Option<Integer> observed(ClusterState state, String id) {
+        return state instanceof ClusterState.Active active
+               ? active.model().rosters.get(id)
+                      .filter(roster -> !roster.dissolved())
+                      .map(_ -> liveMembers(active.model(), id))
+               : Option.none();
+    }
+
     static CommunityState next(CommunityState current, int liveMembers, int floor) {
         return switch (current) {
             case FORMING -> liveMembers >= floor

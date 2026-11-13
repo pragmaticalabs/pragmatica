@@ -141,7 +141,7 @@ public interface ManageableNode {
     /// #1652 — the leader's instantaneous live-member count for a community, served by
     /// `GET /cluster/communities`. An observation, not committed state; [Option#none] when this node
     /// cannot observe it (not the leader, liveness unwired, no committed roster). Default none keeps
-    /// test proxies compiling; the production node record reads the committed roster through `CommunityLiveMembers`, under either deployment engine (#3159).
+    /// test proxies compiling; the production node record reads it from the source that decided the state: the committed model under FSM2, the roster against the liveness view under LEGACY (#3159).
     default Option<Integer> communityLiveMembers(String communityId) {
         return Option.none();
     }

@@ -2415,6 +2415,7 @@ public interface AetherNode extends ManageableNode {
             @Override
             public Option<Integer> communityLiveMembers(String communityId) {
                 return CommunityLiveMembers.observedByLeader(clusterNode.leaderManager().isLeader(),
+                                                             deploymentWiring.clusterModel(),
                                                              kvStore,
                                                              communityLiveness,
                                                              communityId);

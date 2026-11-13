@@ -82,7 +82,7 @@ class CommunityLiveMembersTest {
     void observedByLeader_isAbsent_onANodeThatIsNotTheLeader() {
         commitOneMemberRoster();
 
-        assertThat(CommunityLiveMembers.observedByLeader(false, kvStore, node -> false, COMMUNITY)).isEqualTo(none());
+        assertThat(CommunityLiveMembers.observedByLeader(false, none(), kvStore, node -> false, COMMUNITY)).isEqualTo(none());
     }
 
     /// #3159: nor does a leader whose liveness view is unwired — that count would come from the everyone-alive default.
@@ -90,21 +90,21 @@ class CommunityLiveMembersTest {
     void observedByLeader_isAbsent_whileTheLivenessViewIsUnwired() {
         commitOneMemberRoster();
 
-        assertThat(CommunityLiveMembers.observedByLeader(true, kvStore, CommunityLivenessView.unwired(), COMMUNITY)).isEqualTo(none());
+        assertThat(CommunityLiveMembers.observedByLeader(true, none(), kvStore, CommunityLivenessView.unwired(), COMMUNITY)).isEqualTo(none());
     }
 
     @Test
     void observedByLeader_isTheObservedCount_onTheLeaderWithAWiredView() {
         commitOneMemberRoster();
 
-        assertThat(CommunityLiveMembers.observedByLeader(true, kvStore, node -> false, COMMUNITY)).isEqualTo(some(1));
+        assertThat(CommunityLiveMembers.observedByLeader(true, none(), kvStore, node -> false, COMMUNITY)).isEqualTo(some(1));
     }
 
     @Test
     void observedByLeader_excludesAMemberTheWiredViewObservesAbsent() {
         commitOneMemberRoster();
 
-        assertThat(CommunityLiveMembers.observedByLeader(true, kvStore, node -> true, COMMUNITY)).isEqualTo(some(0));
+        assertThat(CommunityLiveMembers.observedByLeader(true, none(), kvStore, node -> true, COMMUNITY)).isEqualTo(some(0));
     }
 
     private void commitOneMemberRoster() {
