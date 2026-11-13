@@ -1210,6 +1210,35 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(alarm.raised()).as("the new incarnation has stalled one round").isEmpty();
     }
 
+    /// #3156 (found by the embedded model, `early`): the stream is destroyed, its listener runs and it is recreated between the moment the last
+    /// stalled round was counted and the moment its raise takes the monitor. The raise belongs to the destroyed incarnation, whose counter the
+    /// listener dropped, so it is refused. The stream-existence predicate is the seam: its second call of the final round is the raise's own check.
+    @Test
+    void raise_afterDestroyAndRecreateBetweenTheLastCountAndTheRaise_isRefused() {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS - 1).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+
+        var calls = new AtomicInteger();
+
+        fixture.backfill().streamExists(_ -> destroyedAndRecreatedOnTheSecondCall(fixture, calls));
+        var last = settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(outcomeOf(last)).as("control: the last round did reach the all-stalled state").isEqualTo(BackfillError.General.SOURCE_STALLED);
+        assertThat(calls.get()).as("control: the seam ran (count, then raise check)").isGreaterThanOrEqualTo(2);
+        assertThat(alarm.raised()).as("no warning for the new incarnation from the old incarnation's rounds").isEmpty();
+    }
+
+    private boolean destroyedAndRecreatedOnTheSecondCall(Replicas fixture, AtomicInteger calls) {
+        if (calls.incrementAndGet() == 2) {
+            fixture.backfill().clearStalledOf("s");
+        }
+
+        return true;
+    }
+
     /// #2960: a gate catch-up that FAILS leaves the partition all-stalled, so its warning stays open.
     @Test
     void registryPath_aFailedGateCatchUpAfterAllStalled_keepsTheWarning() {
