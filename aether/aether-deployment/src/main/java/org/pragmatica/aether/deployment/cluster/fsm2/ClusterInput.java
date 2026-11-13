@@ -43,8 +43,14 @@ public sealed interface ClusterInput {
     /// CI-8: membership admitted a core (`NodeJoined`).
     record NodeJoined(NodeId node, Admission admission) implements ClusterInput {}
 
-    /// CI-7: membership admitted a worker (`WorkerJoinDecision`).
-    record WorkerJoin(NodeId node, Admission admission) implements ClusterInput {}
+    /// CI-7: membership admitted a worker (`WorkerJoinDecision`). `source` is the membership `source` label read at enqueue time from the descriptor
+    /// the seam poller samples (#3172): a seam sample taken behind the join can be coalesced past it, so placement must not rely on the snapshot alone.
+    record WorkerJoin(NodeId node, Admission admission, Option<String> source) implements ClusterInput {
+        /// A join with no source observed at enqueue: placement reads the seam snapshot only.
+        public WorkerJoin(NodeId node, Admission admission) {
+            this(node, admission, Option.none());
+        }
+    }
 
     /// CI-8: a core left (`NodeRemoved`).
     record NodeRemoved(NodeId node) implements ClusterInput {}
