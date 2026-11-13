@@ -5,7 +5,6 @@
 package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
@@ -38,8 +37,7 @@ import static org.awaitility.Awaitility.await;
 /// - Removal first (`coreAbsence` above removal plus heal): the cores remove the worker while it is still alive. Removal is
 ///   terminal (`MembershipFsm.processEvidenceRefusal`: a Dead identity needs a fresh NodeId), so the healed same-id worker is
 ///   refused and never rejoins; only a fresh-id replacement receives a directive. The refusal is only counted and logged on the
-///   cores (`MembershipFsm.recordProcessEvidenceRefusal`); no `IdentityRefused` / `HelloRefused` reaches the worker, so it is
-///   never told to exit with `EXIT_IDENTITY_REFUSED` (see the tripwire below).
+///   cores (`MembershipFsm.recordProcessEvidenceRefusal`); the worker is not told, and stops through its QUORUM_LOSS self-fence.
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 class FalseDeadWorkerRejoinTest {
@@ -52,7 +50,6 @@ class FalseDeadWorkerRejoinTest {
     private static final TimeSpan REMOVAL_FIRST = TimeSpan.timeSpan(300).seconds();
     /// Wait between the directive's removal and the heal so the removal is terminal (Dead) before the worker returns.
     private static final TimeSpan REMOVAL_SETTLE = TimeSpan.timeSpan(30).seconds();
-    private static final TimeSpan TRIPWIRE_WINDOW = TimeSpan.timeSpan(45).seconds();
     private static final TimeSpan REMOVAL_FIRST_COMMUNITY = TimeSpan.timeSpan(360).seconds();
     private final EmberCluster cluster = EmberCluster.emberCluster(3, 33400, 33500, 33600, "false-dead");
 
@@ -96,31 +93,18 @@ class FalseDeadWorkerRejoinTest {
         log.info("Same-id refusals counted on the cores: {}", coreRefusals());
     }
 
-    /// TRIPWIRE for the product defect behind the disabled test below: today the removed worker keeps retrying and is never
-    /// told its identity is refused (cores only log it), so it does not stop. Fails when the worker starts stopping on its own:
-    /// then enable `removedWorker_stopsAfterRemoval` and delete this test.
-    @Test void removedWorker_currentlyKeepsRetrying_tripwire() {
-        var id = removeWorkerThenHeal();
-
-        await().alias("the cores refused the removed identity (positive control: the refusal path was reached)")
-               .atMost(RECOVERY_BOUND.duration())
-               .until(() -> coreRefusals() > 0);
-        await().during(TRIPWIRE_WINDOW.duration())
-               .atMost(TRIPWIRE_WINDOW.duration().plusSeconds(30))
-               .alias("the removed worker now stops on its own: enable removedWorker_stopsAfterRemoval and delete this tripwire")
-               .until(() -> cluster.exitCodeOf(id.id()).isEmpty());
-    }
-
-    /// The intended behaviour: a removed worker stops (any exit, expected `EXIT_IDENTITY_REFUSED`) within `RECOVERY_BOUND` of
-    /// the heal instead of retrying forever. Disabled until the cores tell the worker its identity is refused.
-    @Disabled("product defect: the cores refuse a removed worker's identity without telling it, so it retries forever; enable when fixed and delete the tripwire")
+    /// The removed worker stops instead of retrying forever, bounded by `RECOVERY_BOUND` after the heal. It is refused by the
+    /// cores (terminal removal) but never told, so it does not exit with `EXIT_IDENTITY_REFUSED`: it stops through the QUORUM_LOSS
+    /// self-fence (`EXIT_DRAINED`) about 75 s after the cut, because the refusal keeps it out of the cores' quorum. Both codes
+    /// mean "replace with a fresh NodeId". If the same id were re-admitted this test times out, which is the signal.
     @Test void removedWorker_stopsAfterRemoval() {
         var id = removeWorkerThenHeal();
 
         await().alias("the removed worker stopped")
                .atMost(RECOVERY_BOUND.duration())
                .until(() -> cluster.exitCodeOf(id.id()).isPresent());
-        assertThat(cluster.exitCodeOf(id.id())).isEqualTo(Option.some(AetherNode.EXIT_IDENTITY_REFUSED));
+        assertThat(cluster.exitCodeOf(id.id()).unwrap()).isIn(AetherNode.EXIT_DRAINED, AetherNode.EXIT_IDENTITY_REFUSED);
+        log.info("Removed worker exited with {}; same-id refusals counted on the cores: {}", cluster.exitCodeOf(id.id()).unwrap(), coreRefusals());
     }
 
     /// Boots, cuts the worker (transport too), waits for its removal, lets the removal finalize, then heals.
