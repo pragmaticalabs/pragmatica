@@ -60,7 +60,6 @@ public final class NodeDeploymentContext {
     private final TimeSpan activationChainTimeout;
     private final TimeSpan transitionRetryDelay;
     private final AtomicLong quorumSequence;
-    private final AtomicReference<Runnable> shutdownCallback;
     private final AtomicReference<Runnable> activeOnEntryCallback;
     private final AtomicReference<OperatorWarningSink> operatorWarnings;
 
@@ -204,7 +203,6 @@ public final class NodeDeploymentContext {
         this.activationChainTimeout = activationChainTimeout;
         this.transitionRetryDelay = transitionRetryDelay;
         this.quorumSequence = new AtomicLong(0);
-        this.shutdownCallback = new AtomicReference<>();
         this.activeOnEntryCallback = new AtomicReference<>();
         this.operatorWarnings = new AtomicReference<>(OperatorWarningSink.logOnly());
         this.clock = clock;
@@ -413,15 +411,6 @@ public final class NodeDeploymentContext {
     @Contract
     public void setOperatorWarningSink(OperatorWarningSink sink) {
         operatorWarnings.set(sink);
-    }
-
-    public Option<Runnable> shutdownCallback() {
-        return Option.option(shutdownCallback.get());
-    }
-
-    @Contract
-    public void setShutdownCallback(Runnable callback) {
-        shutdownCallback.set(callback);
     }
 
     public Option<Runnable> activeOnEntryCallback() {

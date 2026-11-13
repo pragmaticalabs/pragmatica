@@ -3040,6 +3040,8 @@ public interface AetherNode extends ManageableNode {
         var quorumLossDetectorRef = new AtomicReference<QuorumLossDetector>();
         // #2688: watches the LeaderChange deliveries the toggles receive, for stop() to wait on.
         var leaderDeactivation = LeaderDeactivation.leaderDeactivation();
+        // #3158: the node's own stop, bound once the node exists (below); the self-stop route reads it.
+        var selfStopRef = new AtomicReference<Runnable>();
         var aetherEntries = collectRouteEntries(kvStore,
                                                 nodeDeploymentManager,
                                                 clusterDeploymentManager,
@@ -3082,6 +3084,9 @@ public interface AetherNode extends ManageableNode {
                                                 leaderDeactivation,
                                                 config.self());
 
+        wireSelfStopOnShuttingDown(aetherEntries,
+                                   config.self(),
+                                   () -> Option.option(selfStopRef.get()).onPresent(Runnable::run));
         TopologyAssembly.placementDrainRoutes(new TopologyAssembly.PlacementDrainRoutesInputs(config,
                                                                                               clusterNode,
                                                                                               communityDrain,
@@ -3730,7 +3735,7 @@ public interface AetherNode extends ManageableNode {
                                   reactors,
                                   leaderDeactivation);
 
-        nodeDeploymentManager.setShutdownCallback(node::stop);
+        selfStopRef.set(node::stop);
         StreamAssembly.retentionWatch(new StreamAssembly.RetentionWatchInputs(kvStore,
                                                                               alertManager,
                                                                               streamSegmentIndex,
@@ -4569,6 +4574,25 @@ public interface AetherNode extends ManageableNode {
                                               decision -> sweep.accept(decision.nodeId())));
     }
 
+    /// #3158: the node stops itself on its OWN `MembershipDecision.NodeShuttingDown`, under either deployment engine. This is a
+    /// node lifecycle act, not a deployment-engine one: the route was a LEGACY `NodeDeploymentManager` hook, so FSM2 counted it
+    /// as a drop and ignored the decision. A decision naming another node is not this node's to act on. `MembershipDecision`
+    /// documents the variant as no longer emitted by the projector, so the route is dormant until a producer returns; it is
+    /// bound so that the producer's return cannot meet an unwired node.
+    @Contract
+    static void wireSelfStopOnShuttingDown(List<MessageRouter.Entry<?>> entries, NodeId self, Runnable stop) {
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeShuttingDown.class,
+                                              decision -> stopWhenOwn(self, decision, stop)));
+    }
+
+    @Contract
+    private static void stopWhenOwn(NodeId self, MembershipDecision.NodeShuttingDown decision, Runnable stop) {
+        if (decision.nodeId().equals(self)) {
+            LOG.warn("Node {} received SHUTTING_DOWN lifecycle decision - initiating shutdown", self.id());
+            stop.run();
+        }
+    }
+
     /// RC1 Step 2: register a `MembershipDecision` subscriber against every concrete variant
     /// individually because `MessageRouter` dispatches by exact class match. Subscribers that
     /// want "every membership decision" must enumerate all six variants — this helper centralises
@@ -5228,11 +5252,6 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeShuttingDown.class,
                                               deploymentWiring.legacy("B9.cdm.NodeShuttingDown",
                                                                       clusterDeploymentManager::onMembershipDecision)));
-        // RC1 Step 2: NodeDeploymentManager consumes MembershipDecision.NodeShuttingDown
-        // to trigger self-shutdown after its `onNodeLifecyclePut` listener was retired.
-        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeShuttingDown.class,
-                                              deploymentWiring.legacy("B9.ndm.NodeShuttingDown",
-                                                                      nodeDeploymentManager::onMembershipDecision)));
         // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
                                               deploymentWiring.legacy("B9.cdm.SelfShutdown",

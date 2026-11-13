@@ -47,7 +47,6 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
-import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -88,10 +87,6 @@ public interface NodeDeploymentManager {
 
     @Contract
     @MessageReceiver
-    void onMembershipDecision(MembershipDecision decision);
-
-    @Contract
-    @MessageReceiver
     void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
 
     @Contract
@@ -122,9 +117,6 @@ public interface NodeDeploymentManager {
     @Contract
     @MessageReceiver
     void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut);
-
-    @Contract
-    void setShutdownCallback(Runnable callback);
 
     @Contract
     void setSelfReadySignal(Runnable signal);
@@ -654,26 +646,6 @@ public interface NodeDeploymentManager {
                     + "(ACTIVE edge was dropped); healing activation",
                      ctx.self().id());
             dispatchQuorumEstablished();
-        }
-
-        /// RC1 Step 2: replaces the retired `onNodeLifecyclePut`. The self-shutdown
-        /// trigger fires when `TopologyObserver` projects a SHUTTING_DOWN lifecycle
-        /// transition for this node — see `MembershipDecision.NodeShuttingDown`.
-        @Contract
-        @Override
-        public void onMembershipDecision(MembershipDecision decision) {
-            if (decision instanceof MembershipDecision.NodeShuttingDown nodeShuttingDown && nodeShuttingDown.nodeId()
-                                                                                                            .equals(ctx.self())) {
-                log.warn("Node {} received SHUTTING_DOWN lifecycle decision — initiating shutdown",
-                         ctx.self().id());
-                ctx.shutdownCallback().onPresent(Runnable::run);
-            }
-        }
-
-        @Contract
-        @Override
-        public void setShutdownCallback(Runnable callback) {
-            ctx.setShutdownCallback(callback);
         }
 
         @Contract
