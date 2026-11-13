@@ -24,6 +24,22 @@ public sealed interface Reconcile {
         return m;
     }
 
+    /// ```tla Fsm2Leader:Tick
+    /// \* Reconcile pass (Timer TICK -> Reconcile.java run): level-triggered raises (once per episode, the family set
+    /// \* gates them), level-triggered closes of subjects in the family set (Failures.java closeSettled; Strays.java),
+    /// \* Warnings.reconcile marks dirty (Warnings.reconcile, Reconcile.run), and the desired/observed
+    /// \* reconcile derives a goal intent when the desired row is off target.
+    /// Tick(n) ==
+    ///   /\ fsm[n] = "Active"
+    ///   /\ LET raises == IF WarnOK(n) THEN {l \in LevelFam : l \in cond /\ l \notin warned[n]} ELSE {}
+    ///          closes == IF WarnOK(n) THEN {s \in warned[n] : s \notin cond} ELSE {}
+    ///          w == IF MUT = "noremove" THEN warned[n] \cup raises ELSE (warned[n] \cup raises) \ closes
+    ///          gi == gIntent[n] \/ (GOALS /\ kvDesired # target /\ ~gInfl[n])
+    ///      IN /\ Apply(n, w, rows[n], Persists \/ dirty[n], wInfl[n], gInfl[n], gi, raises \cup closes # {}, flushQ[n],
+    ///                    Pub(raises, closes), Hold(n, raises, closes))
+    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, net, settles,
+    ///                  condBudget, faultBudget, deposedCommit, inheritGap>>
+    /// ```
     static ClusterModel run(ClusterModel m, Ctx ctx) {
         m.reconcileQueued = false;
         if (Lifecycle.isSuspended(m, ctx)) {

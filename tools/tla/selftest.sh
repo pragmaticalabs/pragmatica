@@ -5,7 +5,7 @@
 # hold at least two fragments of <Module>; the probes edit its second one.
 set -uo pipefail
 module=$1; root=$2
-victim=${3:-$(grep -rl --include='*.java' "/// \`\`\`tla $module:" "$root" | grep -v '/package-info\.java$' | sort | head -1)}
+victim=${3:-$(grep -rc --include='*.java' "/// \`\`\`tla $module:" "$root" | grep -v '/package-info\.java:' | awk -F: '$NF >= 2 { print $1 }' | sort | head -1)}
 [[ -n $victim && $(grep -c "/// \`\`\`tla $module:" "$victim") -ge 2 ]] || { echo "selftest: ERROR no source file with two $module fragments under $root" >&2; exit 2; }
 here=$(cd "$(dirname "$0")" && pwd)
 jar=${TLA_JAR:-$HOME/tools/tla/tla2tools.jar}
