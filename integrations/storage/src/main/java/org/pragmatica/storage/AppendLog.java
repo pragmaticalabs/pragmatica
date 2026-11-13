@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -138,6 +139,10 @@ import static org.pragmatica.lang.Unit.unit;
 /// `WalStats.failStopped`. Recovery action: reopen (node restart) — the scan trims to the valid
 /// prefix, and nothing acked is lost because refused appends were never acked.
 ///
+/// A channel the JDK closed beneath the log (an interrupted thread, an asynchronous close; #2539) is NOT a fail-stop: nothing was
+/// refused by the volume, so the log reports [WalError.General#WAL_CLOSED] -- no error log, no mark -- as after [#close]. An append
+/// admitted before [#close] is committed (the close-time force covers it); one that loses to close or follows it gets `WAL_CLOSED`.
+///
 /// The transition also leaves a mark beside the log, `<name>.failstopped` ([#failStopMarkOf]), written best-effort (a volume that
 /// refused the fsync may refuse the mark too). A later open that finds the mark reports the recovery ([#onFailStopRecovered]) at its
 /// FIRST successful group commit, so the closing event says the reopened log accepted a durable write, not merely that it opened,
@@ -180,7 +185,7 @@ public final class AppendLog implements AutoCloseable {
     /// The floor of a log opened without one ([#withSealedFloor]): nothing sealed, so only `lastOffset + 1` follows a record.
     private static final LongSupplier NO_SEALED_FLOOR = () -> - 1L;
 
-    private static final Fn1<Cause, Throwable> APPEND_FAILED = t -> new WalError.AppendFailed(t.getMessage());
+    private static final Fn1<Cause, Throwable> APPEND_FAILED = AppendLog::appendFailure;
 
     private static final Fn1<Cause, Throwable> TRUNCATE_FAILED = t -> new WalError.TruncateFailed(t.getMessage());
 
@@ -1041,6 +1046,16 @@ public final class AppendLog implements AutoCloseable {
                                                   position + frame.capacity()));
     }
 
+    /// A channel the JDK closed beneath the log -- an interrupted thread closes the channel it was using
+    /// (`ClosedByInterruptException`), as do `AsynchronousCloseException` and `ClosedChannelException` -- carries a null
+    /// message and is the same state as a closed log: [WalError.General#WAL_CLOSED] (#2539). Any other fault keeps its
+    /// detail, falling back to its class name so the detail is never null.
+    private static Cause appendFailure(Throwable failure) {
+        return failure instanceof ClosedChannelException
+               ? WalError.General.WAL_CLOSED
+               : new WalError.AppendFailed(Option.option(failure.getMessage()).or(failure.getClass().getSimpleName()));
+    }
+
     private Result<Unit> writeFrameAt(ByteBuffer frame, long position) {
         return Result.lift(APPEND_FAILED,
                            () -> channel.write(frame, position))
@@ -1058,6 +1073,16 @@ public final class AppendLog implements AutoCloseable {
     /// writeLock-then-syncLock order `compact` uses.
     private void failStopOnWriteFailure(Cause cause) {
         synchronized (syncLock) {
+            refuseClosedOrFailStop(cause);
+        }
+    }
+
+    /// Runs under `syncLock`. A channel closed beneath the log (#2539) is a log that is closed: it stays refused with
+    /// `WAL_CLOSED`, with no fail-stop, no error log and no `<log>.failstopped` mark -- nothing was refused by the volume.
+    private void refuseClosedOrFailStop(Cause cause) {
+        if (cause == WalError.General.WAL_CLOSED) {
+            closed = true;
+        } else {
             failStop(cause);
         }
     }
@@ -1104,7 +1129,7 @@ public final class AppendLog implements AutoCloseable {
                                                  covered,
                                                  System.nanoTime() - startedAt))
                      .onSuccess(_ -> reportRecoveryOnce())
-                     .onFailure(this::failStop);
+                     .onFailure(this::refuseClosedOrFailStop);
     }
 
     /// Runs under `syncLock`, after a successful force: the first one of an open that found the fail-stop mark deletes the mark and
