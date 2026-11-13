@@ -46,8 +46,7 @@ AdmitOutcome(t) == IF closed THEN "refused"
                    ELSE IF entry[t[2]].holders[t[1]] # 0 THEN "join"
                    ELSE "add"
 
-FillOutcome(t) == IF (IF newHolder[t] THEN poolSt[tpool[t]] = "failed" ELSE slotSt[tslot[t]] = "failed")
-                  THEN "failed" ELSE "view"
+FillOutcome(t) == IF SlotFails(t) THEN "failed" ELSE "view"
 
 Logged == /\ i < Len(Log)
           /\ i' = i + 1
@@ -55,6 +54,8 @@ Logged == /\ i < Len(Log)
                [] E.a = "Acq_Post" -> /\ Acq_Post(E.t)
                                       /\ E.r = IF closed /\ entry[E.t[2]].pool # 0 THEN "drained" ELSE "nodrain"
                [] E.a = "Acq_Provision" -> Acq_Provision(E.t)
+               [] E.a = "Acq_Skip" -> Acq_Skip(E.t)
+               [] E.a = "Evict" -> Evict(E.p)
                [] E.a = "Resolve" -> Resolve(E.p) /\ poolSt'[E.p] = E.r
                [] E.a = "Acq_Fill" -> Acq_Fill(E.t) /\ E.r = FillOutcome(E.t)
                [] E.a = "Close_Pool" -> Close_Pool(E.p) /\ poolSt[E.p] = "open"
@@ -123,7 +124,7 @@ def record(line):
     if f[0].startswith('Acq_'):
         rec['t'] = f'<<{NAMES[f[1]]}, {NAMES[f[2]]}>>'
         rec['r'] = f[3] if len(f) > 3 else ''
-    elif f[0] in ('Resolve', 'Close_Pool'):
+    elif f[0] in ('Resolve', 'Close_Pool', 'Evict'):
         rec['p'] = f[1]
         rec['r'] = f[2] if len(f) > 2 else ''
     elif f[0] == 'CA_Drain':

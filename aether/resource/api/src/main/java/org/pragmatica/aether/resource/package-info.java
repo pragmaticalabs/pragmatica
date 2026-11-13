@@ -23,9 +23,11 @@
 /// \*   ruling     - an acquire that sees closed after admission fails with ProviderClosed (adb7a765da: v2978c F3)
 /// \*   exactempty - closeAll loops on key presence, not isEmpty() (adb7a765da: N1, found by this model)
 /// \*   claims     - closeAll's result carries every close still in flight (adb7a765da: NoOpenAfterStop)
+/// \*   stopguard  - a new holder's slot fails when node stop began, read after the view was made (#3176: a view of a pool
+/// \*                the drain closed, NoHandleAfterClosed)
 /// CONSTANTS Keys, Scopes, MaxPools, MaxAcquires, MaxFaults, SlicePath, Fixed
 ///
-/// AllFixes == {"contained", "slotbound", "postdrain", "ruling", "exactempty", "claims"}
+/// AllFixes == {"contained", "slotbound", "postdrain", "ruling", "exactempty", "claims", "stopguard"}
 /// Fix(f) == f \in Fixed
 /// ASSUME Fixed \subseteq AllFixes
 ///
@@ -78,6 +80,12 @@
 /// \* the recorded run "Acq_Admit insert | CA_Flag | CA_Check returned | Acq_Post drained".
 /// Visible(k) == /\ entry[k].pool # 0
 ///               /\ ~\E t \in Threads : pc[t] = "admitted" /\ t[2] = k /\ tpool[t] = entry[k].pool
+///
+/// \* A new holder's slot fails when its pool failed, or (Fix "stopguard") when node stop began: the code reads `closed`
+/// \* after the view was made, and a set flag precedes every close the drain registers.
+/// SlotFails(t) == IF newHolder[t]
+///                 THEN poolSt[tpool[t]] = "failed" \/ (Fix("stopguard") /\ closed)
+///                 ELSE slotSt[tslot[t]] = "failed"
 ///
 /// Capture(p) == /\ captures' = [captures EXCEPT ![p] = @ + 1]
 ///               /\ closing' = closing \cup {p}
@@ -136,8 +144,8 @@
 ///            \/ \E sl \in Slots : ViewStop(sl)
 ///            \/ \E s \in Scopes : SP_Insert(s) \/ SP_Release(s)
 ///
-/// SysNext == \/ \E t \in Threads : Acq_Publish(t) \/ Acq_Post(t) \/ Acq_Provision(t) \/ Acq_Fill(t)
-///            \/ \E p \in Pools : Resolve(p) \/ Close_Pool(p)
+/// SysNext == \/ \E t \in Threads : Acq_Publish(t) \/ Acq_Post(t) \/ Acq_Provision(t) \/ Acq_Skip(t) \/ Acq_Fill(t)
+///            \/ \E p \in Pools : Resolve(p) \/ Close_Pool(p) \/ Evict(p)
 ///            \/ CA_Flag \/ CA_Check \/ \E k \in Keys : CA_Drain(k)
 ///            \/ \E s \in Scopes : SP_Provision(s)
 ///
@@ -146,8 +154,8 @@
 /// \* Node stop (closeAll) eventually happens, and every started step eventually runs.
 /// Fairness == /\ WF_vars(CA_Flag) /\ WF_vars(CA_Check) /\ \A k \in Keys : WF_vars(CA_Drain(k))
 ///             /\ \A t \in Threads : WF_vars(Acq_Publish(t)) /\ WF_vars(Acq_Post(t))
-///                                   /\ WF_vars(Acq_Provision(t)) /\ WF_vars(Acq_Fill(t))
-///             /\ \A p \in Pools : WF_vars(Resolve(p)) /\ WF_vars(Close_Pool(p))
+///                                   /\ WF_vars(Acq_Provision(t)) /\ WF_vars(Acq_Skip(t)) /\ WF_vars(Acq_Fill(t))
+///             /\ \A p \in Pools : WF_vars(Resolve(p)) /\ WF_vars(Close_Pool(p)) /\ WF_vars(Evict(p))
 ///             /\ \A s \in Scopes : WF_vars(SP_Provision(s))
 ///
 /// Spec == Init /\ [][Next]_vars /\ Fairness
@@ -167,7 +175,8 @@
 /// \* A view's stop never removes a holding other than the one it was issued for.
 /// NoStaleRelease == ~staleHit
 ///
-/// \* An acquire that sees closed after its admission never yields a usable handle (the ruling's ProviderClosed).
+/// \* An acquire that sees closed after its admission never yields a usable handle (the ruling's ProviderClosed), and a
+/// \* new holder is never handed a view of a pool that node stop closed (the afterClosedHit ghost; Fix "stopguard").
 /// NoHandleAfterClosed == ~afterClosedHit
 ///
 /// \* Every opened pool is captured and closed at most once.
@@ -242,6 +251,13 @@
 /// SYMMETRY Perms
 /// CONSTANT SlicePath = FALSE
 /// CONSTANT Fixed = {"contained", "slotbound", "postdrain"}
+/// INVARIANT NoHandleAfterClosed
+/// ```
+///
+/// ```tlacfg SharedPools:noguard
+/// SYMMETRY Perms
+/// CONSTANT SlicePath = FALSE
+/// CONSTANT Fixed = {"contained", "slotbound", "postdrain", "ruling", "exactempty", "claims"}
 /// INVARIANT NoHandleAfterClosed
 /// ```
 ///
