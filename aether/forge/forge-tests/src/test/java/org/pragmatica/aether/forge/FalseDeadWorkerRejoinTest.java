@@ -16,6 +16,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
 import org.pragmatica.swim.SwimHealth;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -48,8 +49,9 @@ class FalseDeadWorkerRejoinTest {
     private static final TimeSpan FENCE_FIRST = TimeSpan.timeSpan(5).seconds();
     /// Well above removal plus the heal; its `communityAbsence` must stay above it (#590).
     private static final TimeSpan REMOVAL_FIRST = TimeSpan.timeSpan(300).seconds();
-    /// Wait between the directive's removal and the heal so the removal is terminal (Dead) before the worker returns.
-    private static final TimeSpan REMOVAL_SETTLE = TimeSpan.timeSpan(30).seconds();
+    /// Margin after every core reports the worker Dead and before the heal. CTO's guess (10 s), past every green observation; the
+    /// heal must not land in the gap before the removal is firm, or the worker's quorum flaps and it never stops (#3138).
+    private static final TimeSpan DEAD_MARGIN = TimeSpan.timeSpan(10).seconds();
     private static final TimeSpan REMOVAL_FIRST_COMMUNITY = TimeSpan.timeSpan(360).seconds();
     private final EmberCluster cluster = EmberCluster.emberCluster(3, 33400, 33500, 33600, "false-dead");
 
@@ -66,6 +68,8 @@ class FalseDeadWorkerRejoinTest {
         await().alias("the worker fenced and exited with EXIT_DRAINED before the cores removed it")
                .atMost(RECOVERY_BOUND.duration())
                .until(() -> cluster.exitCodeOf(id.id()).map(code -> code == AetherNode.EXIT_DRAINED).or(false));
+        assertThat(directiveCommitted(id)).as("the fence precedes the cores' removal of the worker").isTrue();
+        awaitDirectiveRemoved(id);
         healSwim();
 
         var replacement = LifecycleAwait.nodeSettled("admit replacement worker", cluster, cluster.addWorkerNode());
@@ -79,8 +83,19 @@ class FalseDeadWorkerRejoinTest {
 
     /// Removal path: the cores remove the worker (transport cut too, so the removal is prompt) before its fence can fire; after
     /// the heal the same id is refused (terminal removal, counted on the cores) and a fresh-id replacement receives its
-    /// directive. The refusal count is logged, not asserted: it depends on the removed worker's retry cadence.
+    /// directive. The refusal count is logged, not asserted, here: it is read right after the heal, before the worker's retries.
     @Test void removedWorker_freshReplacementGetsDirective() {
+        freshReplacementGetsDirective();
+    }
+
+    /// The removal-path replacement on the FSM2 engine: its Directory directive writers (`writeDirective`, `joinMint`) mint the
+    /// replacement's directive, which the legacy arm never reaches.
+    @Test void removedWorker_freshReplacementGetsDirective_fsm2() {
+        cluster.withDeploymentEngine(AetherValue.DeploymentEngine.FSM2);
+        freshReplacementGetsDirective();
+    }
+
+    private void freshReplacementGetsDirective() {
         var id = removeWorkerThenHeal();
         var replacement = LifecycleAwait.nodeSettled("admit replacement worker", cluster, cluster.addWorkerNode());
 
@@ -104,19 +119,43 @@ class FalseDeadWorkerRejoinTest {
                .atMost(RECOVERY_BOUND.duration())
                .until(() -> cluster.exitCodeOf(id.id()).isPresent());
         assertThat(cluster.exitCodeOf(id.id()).unwrap()).isIn(AetherNode.EXIT_DRAINED, AetherNode.EXIT_IDENTITY_REFUSED);
+        assertThat(coreRefusals()).as("the cores refused the removed identity's process evidence").isPositive();
         log.info("Removed worker exited with {}; same-id refusals counted on the cores: {}", cluster.exitCodeOf(id.id()).unwrap(), coreRefusals());
     }
 
-    /// Boots, cuts the worker (transport too), waits for its removal, lets the removal finalize, then heals.
+    /// Boots, cuts the worker (transport too), waits for its removal, waits until every core holds it Dead, then heals after a
+    /// fixed margin. The settle is load-bearing for the worker's STOP, not only for terminal removal: healing while the
+    /// removal is not yet firm re-admits the same id or leaves the quorum flapping HELD<->LOST, and the worker never fences
+    /// (#3138). The margin past Dead is the CTO's guess (10 s), past every green observation.
     private NodeId removeWorkerThenHeal() {
         var id = bootAndCutWorker(REMOVAL_FIRST, REMOVAL_FIRST_COMMUNITY, false);
 
+        awaitDirectiveRemoved(id);
         assertThat(cluster.exitCodeOf(id.id())).as("the worker was removed before its fence could fire").isEqualTo(Option.none());
-        // The directive disappears before the identity is terminally Dead; healing in that gap lets the same id back in (rc5
-        // runs 4 and 5 of the former rejoin test). The settle is a marked guess, observed first refusal about 37 s after the cut.
-        await().pollDelay(REMOVAL_SETTLE.duration()).atMost(REMOVAL_SETTLE.duration().plusSeconds(5)).until(() -> true);
+        await().alias("every core holds the removed worker Dead")
+               .atMost(BUDGET.duration())
+               .until(() -> cores(id).stream().allMatch(node -> isDead(node, id)));
+        await().pollDelay(DEAD_MARGIN.duration()).atMost(DEAD_MARGIN.duration().plusSeconds(5)).until(() -> true);
         healSwim();
         return id;
+    }
+
+    private List<AetherNode> cores(NodeId worker) {
+        return cluster.allNodes().stream().filter(node -> !node.self().equals(worker)).toList();
+    }
+
+    private static boolean isDead(AetherNode node, NodeId peer) {
+        return "Dead".equals(node.membershipFsm().memberStates().get(peer));
+    }
+
+    private void awaitDirectiveRemoved(NodeId id) {
+        await().alias("the cores removed the worker's directive")
+               .atMost(BUDGET.duration())
+               .until(() -> !directiveCommitted(id));
+    }
+
+    private boolean directiveCommitted(NodeId id) {
+        return leader().kvStore().getTyped(new AetherKey.ActivationDirectiveKey(id), AetherValue.ActivationDirectiveValue.class).isPresent();
     }
 
     private long coreRefusals() {
@@ -130,7 +169,7 @@ class FalseDeadWorkerRejoinTest {
 
     /// The directive of `node` as committed on the leader (the cores' view), not the node's own projection.
     private boolean directiveCommitted(AetherNode node) {
-        return leader().kvStore().getTyped(new AetherKey.ActivationDirectiveKey(node.self()), AetherValue.ActivationDirectiveValue.class).isPresent();
+        return directiveCommitted(node.self());
     }
 
     private List<AetherNode> liveWorkers() {
@@ -151,6 +190,10 @@ class FalseDeadWorkerRejoinTest {
         cluster.withCommunityAbsenceForNewNodes(communityAbsence);
         var id = LifecycleAwait.nodeSettled("admit false-dead worker", cluster, cluster.addWorkerNode());
         var worker = cluster.getNode(id.id()).unwrap();
+
+        assertThat(worker.coreAbsenceSnapshot().map(CoreAbsenceSnapshot::thresholdMs))
+                .as("the worker's effective core-absence threshold is the seam value")
+                .isEqualTo(Option.some(coreAbsence.duration().toMillis()));
         var key = new AetherKey.ActivationDirectiveKey(id);
 
         await().atMost(BUDGET.duration()).until(() -> worker.kvStore().getTyped(key, AetherValue.ActivationDirectiveValue.class).isPresent());
@@ -158,7 +201,6 @@ class FalseDeadWorkerRejoinTest {
                .atMost(BUDGET.duration())
                .until(() -> cluster.allNodes().stream().filter(node -> !node.self().equals(id)).allMatch(node -> swimHealthy(node, id)));
         cutSwim(id, keepQuic);
-        await().atMost(BUDGET.duration()).until(() -> leader().kvStore().getTyped(key, AetherValue.ActivationDirectiveValue.class).isEmpty());
         return id;
     }
 
