@@ -7,11 +7,8 @@ package org.pragmatica.aether.stream;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.LongStream;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReason;
@@ -21,10 +18,18 @@ import org.pragmatica.aether.stream.provenance.PartitionFlags.PartitionFlag;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
+
 
 /// #2320: the `toOffset >= start` boundary of `installUnattributed` (#2302 reviewed it). The copy holds offsets 0..2,
 /// so the next expected offset (`start`) is 3. Records up to `toOffset` that reach `start` are new to this copy and
@@ -46,13 +51,14 @@ class InstallUnattributedBoundaryTest {
 
     @BeforeEach
     void setUp() {
-        manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+        manager = streamPartitionManager(Long.MAX_VALUE, some(walDir));
         manager.partitionFlags(recordingFlags());
         manager.ensureStreamMaterialized(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
+        LongStream.rangeClosed(0, HEAD).forEach(this::appendHeld);
+    }
 
-        for (var offset = 0L; offset <= HEAD; offset++) {
-            manager.appendRecovered(STREAM, PARTITION, offset, PAYLOAD, 1L).onFailure(cause -> fail(cause.message()));
-        }
+    private void appendHeld(long offset) {
+        manager.appendRecovered(STREAM, PARTITION, offset, PAYLOAD, 1L).onFailure(cause -> fail(cause.message()));
     }
 
     @AfterEach
@@ -73,7 +79,8 @@ class InstallUnattributedBoundaryTest {
     void toOffsetEqualToStart_recordsUnknownAtStart() {
         var installed = manager.installUnattributed(STREAM, PARTITION, START).unwrap();
 
-        assertThat(installed.claimed()).as("toOffset == start reaches past the head: UNKNOWN claimed at start").hasSize(1);
+        assertThat(installed.claimed()).as("toOffset == start reaches past the head: UNKNOWN claimed at start")
+                  .hasSize(1);
         assertThat(manager.epochHistory(STREAM, PARTITION).unwrap()).as("one entry, at start").hasSize(1);
         assertThat(raised).containsExactly(PartitionRecoveryReasonKind.HISTORY_INCOMPLETE);
     }
@@ -93,17 +100,18 @@ class InstallUnattributedBoundaryTest {
             public Promise<PartitionFlag> raise(String stream, int partition, PartitionRecoveryReason reason) {
                 raised.add(reason.kind());
 
-                return Promise.success(new PartitionFlag(AetherValue.StreamPartitionRecoveryValue.raised(Option.none(), reason), "d"));
+                return Promise.success(new PartitionFlag(AetherValue.StreamPartitionRecoveryValue.raised(none(), reason),
+                                                         "d"));
             }
 
             @Override
             public Option<PartitionFlag> status(String stream, int partition) {
-                return Option.none();
+                return none();
             }
 
             @Override
             public PartitionRecoveryReason local(PartitionRecoveryReasonKind kind, String evidence) {
-                return PartitionRecoveryReason.partitionRecoveryReason(kind, Option.some("self"), evidence);
+                return PartitionRecoveryReason.partitionRecoveryReason(kind, some("self"), evidence);
             }
         };
     }
