@@ -13,7 +13,7 @@ import java.util.regex.Pattern;
 ///   - `if (G-empty) <return|throw>;` at statement level, then `acc` later in the same or an enclosing block.
 ///
 /// Every form needs, in addition: the guard OPENS its operand (preceded by `(`, `,`, `?`, a ternary `:`, a plain `=`, a lambda
-/// `->`, `return` / `yield`, or, for the `&&` chain only, by `&&` with no `||` earlier in the same expression), so
+/// `->`, `return` / `yield`, or, for the `&&` chain only, by `&&`), so
 /// `flag == xs.isEmpty() ? ..` and `n - xs.size() > 0 && ..` are not guards; the receiver is not reassigned or mutated between
 /// the guard and the accessor; and an early exit does not cross an old-style `case X:` / `default:` label.
 ///
@@ -152,8 +152,7 @@ sealed interface GuardDominance permits GuardDominance.unused {
     }
 
     /// The guard is the whole operand: what precedes it opens an expression, so it is not the right side of a comparison or of
-    /// arithmetic (`flag == xs.isEmpty()`, `n - xs.size() > 0`). `afterAnd` also accepts `&&` (the guard then continues a chain
-    /// that has no `||` before it).
+    /// arithmetic (`flag == xs.isEmpty()`, `n - xs.size() > 0`). `afterAnd` also accepts `&&` (the guard then continues a chain: `||` binds looser, so `a || b && G && acc` still reaches `acc` only through `G`).
     private static boolean opensOperand(String code, int guardStart, boolean afterAnd) {
         var prev = previousNonSpace(code, guardStart);
 
@@ -170,34 +169,9 @@ sealed interface GuardDominance permits GuardDominance.unused {
             case ':' -> before != ':';
             case '=' -> "=!<>+-*/%&|^".indexOf(before) < 0;
             case '>' -> before == '-';
-            case '&' -> afterAnd && before == '&' && !disjunctionBefore(code, prev - 1);
+            case '&' -> afterAnd && before == '&';
             default -> code.substring(0, prev + 1).matches("(?s).*\\b(?:return|yield)");
         };
-    }
-
-    /// True when a `||` precedes `end` in the same expression (outside parentheses that close before `end`).
-    private static boolean disjunctionBefore(String code, int end) {
-        var depth = 0;
-
-        for (var i = end - 1; i >= 0; i--) {
-            var c = code.charAt(i);
-
-            if (c == ')') {
-                depth++;
-            } else if (c == '(') {
-                if (depth == 0) {
-                    return false;
-                }
-
-                depth--;
-            } else if (depth == 0 && ",;{}?".indexOf(c) >= 0) {
-                return false;
-            } else if (depth == 0 && c == '|' && i > 0 && code.charAt(i - 1) == '|') {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private static int matchingColon(String code, int from) {

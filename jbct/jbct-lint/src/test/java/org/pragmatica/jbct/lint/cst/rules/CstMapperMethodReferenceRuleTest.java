@@ -1312,45 +1312,9 @@ class CstMapperMethodReferenceRuleTest {
     }
 
     @Test
-    void analyze_polarityParenthesizedDisjunctionBeforeAndChain_isClean() {
+    void analyze_polarityDisjunctionEarlierInAndChain_isClean() {
         assertFalse(hasRule(polarityFixture("""
-                return Option.option((wire.flag() || wire.other()) && !xs.isEmpty() && xs.getFirst().isEmpty());
-                """)));
-    }
-
-    @Test
-    void analyze_polarityDisjunctionOutsideEnclosingCall_isClean() {
-        assertFalse(hasRule(polarityFixture("""
-                return Option.option(wire.flag() || wire.test(!xs.isEmpty() && xs.getFirst().isEmpty()));
-                """)));
-    }
-
-    @Test
-    void analyze_polarityDisjunctionInEarlierStatement_isClean() {
-        assertFalse(hasRule(polarityFixture("""
-                var f = wire.flag() || wire.other();
-                return Option.option(wire.test(f) && !xs.isEmpty() && xs.getFirst().isEmpty());
-                """)));
-    }
-
-    @Test
-    void analyze_polarityDisjunctionInEarlierArgument_isClean() {
-        assertFalse(hasRule(polarityFixture("""
-                return Option.option(wire.pick(wire.flag() || wire.other(), wire.test(true) && !xs.isEmpty() && xs.getFirst().isEmpty()));
-                """)));
-    }
-
-    @Test
-    void analyze_polarityDisjunctionInTernaryCondition_isClean() {
-        assertFalse(hasRule(polarityFixture("""
-                return Option.option(wire.flag() || wire.other() ? wire.test(true) && !xs.isEmpty() && xs.getFirst().isEmpty() : false);
-                """)));
-    }
-
-    @Test
-    void analyze_polarityBitOrBeforeAndChain_isClean() {
-        assertFalse(hasRule(polarityFixture("""
-                return Option.option(wire.flag() | wire.other() && !xs.isEmpty() && xs.getFirst().isEmpty());
+                return Option.option(wire.flag() || wire.other() && !xs.isEmpty() && xs.getFirst().isEmpty());
                 """)));
     }
 
