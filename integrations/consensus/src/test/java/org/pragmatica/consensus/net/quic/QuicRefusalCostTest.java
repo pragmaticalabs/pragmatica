@@ -32,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.PEER;
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.SELF;
+import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.connectedState;
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.connection;
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.countingSerializer;
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.network;
@@ -69,6 +70,20 @@ class QuicRefusalCostTest {
         assertThat(outcome).isInstanceOf(WriteOutcome.BackpressureRefused.class);
         assertThat(encodes.get()).as("a refused frame costs no encode").isZero();
         assertThat(network.quicMetrics().refusedCount(StreamType.FORWARD)).isEqualTo(1L);
+    }
+
+    /// A send dispatched to a connected peer (the `SendNow` arm of the dispatch) is a caller-visible send: its refusal is
+    /// counted as a refused send, not as a loss after `Sent`.
+    @Test
+    void dispatchedSend_onAnUnwritableFastFailLane_isCountedAsRefused() {
+        var network = network(SHORT);
+        var state = connectedState(PEER, connectionWith(StreamType.FORWARD, false));
+
+        var outcome = network.offerOutboundForTest(state, probe(StreamType.FORWARD));
+
+        assertThat(outcome).isInstanceOf(WriteOutcome.BackpressureRefused.class);
+        assertThat(network.quicMetrics().refusedCount(StreamType.FORWARD)).isEqualTo(1L);
+        assertThat(network.quicMetrics().droppedAfterSentSnapshot()).as("its caller sees the refusal: not a loss").isEmpty();
     }
 
     @Test
