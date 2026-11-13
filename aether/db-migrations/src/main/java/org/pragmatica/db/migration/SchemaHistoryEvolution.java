@@ -111,6 +111,7 @@ public sealed interface SchemaHistoryEvolution {
     }
 
     /// `DEFAULT` precedes `NOT NULL` (#3069): Oracle refuses the reverse with ORA-03076, every other engine accepts both.
+    /// The 64-bit columns use [#bigintType] (found by the live Oracle IT: `BIGINT` is ORA-00902).
     private static List<String> stepOne(DatabaseType type) {
         return List.of(createTableIfAbsent(type,
                                            "aether_schema_history",
@@ -120,12 +121,19 @@ public sealed interface SchemaHistoryEvolution {
                 type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,
                 description    VARCHAR(256) NOT NULL,
                 script         VARCHAR(512) NOT NULL,
-                checksum       BIGINT       NOT NULL,
+                checksum       %1$s       NOT NULL,
                 applied_by     VARCHAR(128) NOT NULL,
-                applied_at     BIGINT       NOT NULL,
+                applied_at     %1$s       NOT NULL,
                 execution_ms   INTEGER      NOT NULL,
                 PRIMARY KEY (version, type)
-            """));
+            """.formatted(bigintType(type))));
+    }
+
+    /// Oracle has no `BIGINT` (ORA-00902); its 64-bit integer is `NUMBER(19)`.
+    private static String bigintType(DatabaseType type) {
+        return type == DatabaseType.ORACLE
+               ? "NUMBER(19)"
+               : "BIGINT";
     }
 
     /// Renders the v2 `ALTER TABLE aether_schema_history ADD ...` adding `status` and

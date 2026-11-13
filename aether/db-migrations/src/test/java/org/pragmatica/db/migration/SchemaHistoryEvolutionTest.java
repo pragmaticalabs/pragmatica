@@ -89,6 +89,17 @@ class SchemaHistoryEvolutionTest {
                     .doesNotContain("NOT NULL DEFAULT");
         }
 
+        /// Oracle has no BIGINT (ORA-00902): its 64-bit columns are NUMBER(19); the others keep BIGINT.
+        @ParameterizedTest
+        @EnumSource(DatabaseType.class)
+        void stepV1_64BitColumns_useTheDialectsType(DatabaseType type) {
+            var expected = type == DatabaseType.ORACLE ? "NUMBER(19)" : "BIGINT";
+
+            assertThat(SchemaHistoryEvolution.STEP_V1.ddl().render(type).getFirst())
+                    .contains("checksum       " + expected + "       NOT NULL")
+                    .contains("applied_at     " + expected + "       NOT NULL");
+        }
+
         @ParameterizedTest
         @EnumSource(DatabaseType.class)
         void metaAndOwnerTables_areCreatedIfAbsent_inTheDialectsSpelling(DatabaseType type) {
