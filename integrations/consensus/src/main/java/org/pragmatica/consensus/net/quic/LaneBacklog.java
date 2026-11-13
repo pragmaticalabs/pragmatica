@@ -18,6 +18,7 @@ package org.pragmatica.consensus.net.quic;
 import java.util.ArrayDeque;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 import org.pragmatica.lang.Contract;
 
@@ -28,19 +29,21 @@ import org.pragmatica.lang.Contract;
 /// found the stream writable and were written at once: they overtook it. A burst did that deterministically; a single
 /// momentary `isWritable() == false` under host load did it to a paced sender (one frame, one stream, one sender).
 ///
-/// The rule here is one decision, taken under one lock: a frame is written directly only if nothing is held for the
-/// stream and the stream is writable; otherwise it joins the held frames, and ONLY the held frames' drain writes them,
-/// head first. So the order frames reach the stream is the order [#admit] saw them, whichever thread called it.
-/// The write callback only hands the bytes to Netty (an event-loop task submission), which does not block, so holding
-/// the lock across it is cheap and is what makes the order the stream's order.
+/// The guarantee, per stream, for callers OFF the stream's event loop: if the send of frame A happens-before the send of
+/// frame B on the same stream, A is handed to the stream before B, whether either was held. Mechanism: a frame is written
+/// directly only while the stream has no backlog and is writable (the owner keeps at most one backlog per stream and
+/// drops it only after it retired); otherwise it joins the backlog under this lock, and ONLY the drain writes held frames,
+/// head first, under the same lock. Handing a frame to the stream from off its event loop submits an event-loop task,
+/// and those run in submission order. A caller ON the stream's event loop writes inline and can overtake tasks already
+/// queued by off-loop callers: no order holds between its frames and those. Not across streams: frames held on a stream
+/// are written to that stream or discarded with it, never moved to a replacement stream (reconnect, lane supersede).
 ///
 /// A backlog is retired once the last held frame is written or discarded; an [#admit] that finds a retired backlog
-/// reports [Admission#RETIRED] and the caller starts from a fresh one. Not a general queue: one stream, one drainer.
-final class LaneBacklog {
+/// reports [Admission#RETIRED] and the caller starts from a fresh one. Not a general queue: one stream, one drainer
+/// (the caller that got [Admission#HELD_FIRST]).
+final class LaneBacklog<F> {
     /// What [#admit] did with a frame.
     enum Admission {
-        /// Nothing was held and the stream was writable: the frame was written directly.
-        WRITTEN,
         /// The frame is the first held one: the caller owns starting the drain.
         HELD_FIRST,
         /// Frames were already held: the frame joined them, the running drain writes it.
@@ -49,60 +52,55 @@ final class LaneBacklog {
         RETIRED
     }
 
-    private final ArrayDeque<byte[]> held = new ArrayDeque<>();
+    private final ArrayDeque<F> held = new ArrayDeque<>();
     private boolean retired;
 
+    /// Holds `frame` behind the frames already held and runs `onHeld` for it under the lock, so a drain can never
+    /// account for a frame before its holding was accounted.
     @Contract
-    synchronized Admission admit(byte[] bytes, BooleanSupplier writable, Consumer<byte[]> write) {
+    synchronized Admission admit(F frame, Consumer<F> onHeld) {
         if (retired) {
             return Admission.RETIRED;
         }
 
-        if (!held.isEmpty()) {
-            held.addLast(bytes);
+        var first = held.isEmpty();
 
-            return Admission.HELD_BEHIND;
-        }
+        held.addLast(frame);
+        onHeld.accept(frame);
 
-        if (writable.getAsBoolean()) {
-            write.accept(bytes);
-
-            return Admission.WRITTEN;
-        }
-
-        held.addLast(bytes);
-
-        return Admission.HELD_FIRST;
+        return first
+               ? Admission.HELD_FIRST
+               : Admission.HELD_BEHIND;
     }
 
-    /// Writes held frames, head first, while the stream stays writable. Retires the backlog when none is left.
-    /// Returns how many frames were written.
+    /// One drain pass: writes held frames, head first, while the stream stays writable, then discards the head frames
+    /// `expired` accepts (oldest first, so the head's age bounds the backlog; a frame the stream can take is written,
+    /// never discarded). Retires the backlog when none is left and reports whether it did.
     @Contract
-    synchronized int drain(BooleanSupplier writable, Consumer<byte[]> write) {
-        var written = 0;
-
+    synchronized boolean drain(Predicate<F> expired, Consumer<F> discard, BooleanSupplier writable, Consumer<F> write) {
         while (!held.isEmpty() && writable.getAsBoolean()) {
             write.accept(held.pollFirst());
-            written++;
+        }
+
+        while (!held.isEmpty() && expired.test(held.peekFirst())) {
+            discard.accept(held.pollFirst());
         }
 
         retired = held.isEmpty();
 
-        return written;
+        return retired;
     }
 
-    /// Gives up on every held frame and retires the backlog. Returns how many were discarded.
+    /// Gives up on every held frame, passing each to `discard`, and retires the backlog, so a writer still holding a
+    /// reference to it after its owner dropped it gets [Admission#RETIRED] and cannot hold a frame nobody drains.
     @Contract
-    synchronized int discardAll() {
-        var discarded = held.size();
-
+    synchronized void discardAll(Consumer<F> discard) {
+        held.forEach(discard);
         held.clear();
         retired = true;
-
-        return discarded;
     }
 
-    synchronized boolean isRetired() {
-        return retired;
+    synchronized int size() {
+        return held.size();
     }
 }
