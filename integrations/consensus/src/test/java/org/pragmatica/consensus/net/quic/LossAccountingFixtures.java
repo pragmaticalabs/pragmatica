@@ -49,9 +49,18 @@ final class LossAccountingFixtures {
         return network(LaneProbe.codec(), interval);
     }
 
+    /// `attempts` attempts, `interval` apart: a retry that is never released stays in flight for about `attempts * interval`.
+    static QuicClusterNetwork network(int attempts, TimeSpan interval) {
+        return network(LaneProbe.codec(), attempts, interval);
+    }
+
     static QuicClusterNetwork network(Serializer serializer, TimeSpan interval) {
+        return network(serializer, 3, interval);
+    }
+
+    private static QuicClusterNetwork network(Serializer serializer, int attempts, TimeSpan interval) {
         var topology = new TripwireTopology(SELF, false, TimeSpan.timeSpan(30).seconds());
-        var tuning = new QuicTransportTuning(3,
+        var tuning = new QuicTransportTuning(attempts,
                                              interval,
                                              QuicTransportTuning.DEFAULT_WATERMARK_LOW_BYTES,
                                              QuicTransportTuning.DEFAULT_WATERMARK_HIGH_BYTES);

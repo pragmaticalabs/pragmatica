@@ -329,6 +329,19 @@ class QuicPostSentDropAccountingTest {
     }
 
     @Test
+    void d9_retryEnteredForRemovedPeer_isCountedOnTheDhtLane() {
+        var network = network(SHORT);
+        var removed = PeerState.peerState(PEER, System.nanoTime());
+        var _ = removed.authoritativeRemove(System.nanoTime());
+
+        network.seedPeerForTests(PEER, removed);
+        var outcome = network.writeIfWritableForTest(stream(false), new byte[]{1}, PEER, StreamType.DHT);
+
+        assertThat(outcome).isInstanceOf(WriteOutcome.Sent.class);
+        assertOnly(network, StreamType.DHT, DropSite.REMOVED_AT_RETRY, 1);
+    }
+
+    @Test
     void dropAfterSentMode_reportsSent_notARefusal_andMovesNoCounter() {
         var network = network(SHORT);
 

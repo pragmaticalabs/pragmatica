@@ -72,6 +72,30 @@ class QuicRefusalCostTest {
     }
 
     @Test
+    void refusedForwardFrame_opensItsBackpressureEpisode() {
+        var network = network(SHORT);
+        var connection = connectionWith(StreamType.FORWARD, false);
+
+        network.writeToStreamForTests(PEER, probe(StreamType.FORWARD), connection);
+        network.writeToStreamForTests(PEER, probe(StreamType.FORWARD), connection);
+
+        assertThat(network.openBackpressureEpisodesForTests()).as("the refusal before the encode is counted into the episode").isEqualTo(1);
+    }
+
+    @Test
+    void dhtFrame_onUnwritableActiveStream_isEncodedBeforeItsRetry() {
+        var encodes = new AtomicInteger();
+        var network = network(countingSerializer(encodes), SHORT);
+        var connection = connectionWith(StreamType.DHT, false);
+
+        var outcome = network.writeToStreamForTests(PEER, probe(StreamType.DHT), connection);
+
+        assertThat(outcome).as("DHT on a live stream retries instead of refusing").isInstanceOf(WriteOutcome.Sent.class);
+        assertThat(encodes.get()).isEqualTo(1);
+        assertThat(network.quicMetrics().refusedCount(StreamType.DHT)).isZero();
+    }
+
+    @Test
     void writableForwardFrame_isEncoded_positiveControl() {
         var encodes = new AtomicInteger();
         var network = network(countingSerializer(encodes), SHORT);

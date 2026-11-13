@@ -70,4 +70,26 @@ class QuicDroppedAfterSentSnapshotTest {
         assertThat(metrics.droppedAfterSentSnapshot()).containsOnly(Map.entry("droppedAfterSent.METRICS.backstopEviction",
                                                                               2L));
     }
+
+    /// The published counter names are an interface: the expected strings are spelled out here, not derived from
+    /// [DropSite#token], so renaming a site's token goes red.
+    @Test
+    void everySite_isPublishedUnderItsDocumentedName() {
+        var expected = Map.of(DropSite.DRAIN, "drain",
+                              DropSite.PENDING_LANE_WRITE, "pendingLaneWrite",
+                              DropSite.RETRY_GAVE_UP, "retryGaveUp",
+                              DropSite.WRITE_FAILED, "writeFailed",
+                              DropSite.OFFLINE_OLDEST, "offlineOldest",
+                              DropSite.LANE_OPEN_OLDEST, "laneOpenOldest",
+                              DropSite.REPLACED_CONNECTION, "replacedConnection",
+                              DropSite.BACKSTOP_EVICTION, "backstopEviction",
+                              DropSite.REMOVED_AT_RETRY, "removedAtRetry");
+        var metrics = QuicTransportMetrics.quicTransportMetrics();
+
+        assertThat(expected).as("every site is listed").hasSize(DropSite.values().length);
+        expected.keySet().forEach(site -> metrics.onDroppedAfterSent(StreamType.KV, site, 1));
+
+        assertThat(metrics.droppedAfterSentSnapshot().keySet())
+            .containsExactlyInAnyOrderElementsOf(expected.values().stream().map(token -> "droppedAfterSent.KV." + token).toList());
+    }
 }

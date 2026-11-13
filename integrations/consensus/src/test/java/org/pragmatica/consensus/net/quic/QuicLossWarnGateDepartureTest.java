@@ -19,6 +19,7 @@ package org.pragmatica.consensus.net.quic;
 import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.net.quic.QuicTransportMetrics.DropSite;
 import org.pragmatica.lang.io.TimeSpan;
@@ -103,5 +104,46 @@ class QuicLossWarnGateDepartureTest {
         network.departurePermanent(PEER);
 
         assertThat(network.lossWarnGateEntriesForTests()).isZero();
+    }
+
+    @Test
+    void giveUpBeforeDeparture_hasItsGateEntryForgottenByTheDeparture() {
+        var network = network(TimeSpan.timeSpan(5).millis());
+
+        network.seedPeerForTests(PEER, PeerState.peerState(PEER, System.nanoTime()));
+        var _ = network.writeIfWritableForTest(stream(false), BYTES, PEER, StreamType.CONSENSUS);
+        awaitTrue(() -> network.consensusRetriesInFlight() == 0, AWAIT, "the retry to give up");
+
+        assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP))
+            .as("control: the retry gave up")
+            .isEqualTo(1L);
+        assertThat(network.lossWarnGateEntriesForTests()).as("control: a live peer's give-up is gated").isEqualTo(1);
+
+        network.departurePermanent(PEER);
+
+        assertThat(network.lossWarnGateEntriesForTests()).isZero();
+    }
+
+    @Test
+    void departure_keepsTheOtherPeersRefusalGate() {
+        var network = network(SLOW);
+        var other = new NodeId("bbb-other");
+
+        network.seedPeerForTests(PEER, PeerState.peerState(PEER, System.nanoTime()));
+        var _ = network.writeIfWritableForTest(stream(false), BYTES, PEER, StreamType.FORWARD);
+        var _ = network.writeIfWritableForTest(stream(false), BYTES, other, StreamType.FORWARD);
+
+        assertThat(network.lossWarnGateEntriesForTests()).as("control: both peers' refusals are gated").isEqualTo(2);
+
+        network.departurePermanent(PEER);
+
+        try (var capture = LogCapture.capture("org.pragmatica.consensus.net.quic.QuicClusterNetwork", Level.INFO, false)) {
+            var _ = network.writeIfWritableForTest(stream(false), BYTES, other, StreamType.FORWARD);
+
+            assertThat(network.lossWarnGateEntriesForTests()).as("only the departed peer's entry went").isEqualTo(1);
+            assertThat(capture.messages(Level.WARN))
+                .as("the other peer is still inside its window: nothing is logged")
+                .noneMatch(m -> m.contains("refusing message"));
+        }
     }
 }
