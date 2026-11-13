@@ -551,7 +551,8 @@ public final class ReplicationReceiveHandler {
     /// count records of an older lineage below the batch as the batch's own. Such a batch is applied and its ack deferred; the
     /// copy is acked for the new epoch only once the record catches up and a compare verifies the copy for it.
     private boolean aheadOfCommittedView(ReplicationMessage.ReplicateEvents message) {
-        return committedOwners.committedOwner(message.streamName(), message.partition())
+        return committedOwners.committedOwner(message.streamName(),
+                                              message.partition())
                               .filter(committed -> message.ownerEpoch()
                                                           .isStrictlyAfter(committed.ownerEpoch()))
                               .isPresent();
