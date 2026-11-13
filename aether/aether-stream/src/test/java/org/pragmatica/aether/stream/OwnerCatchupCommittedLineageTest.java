@@ -127,7 +127,7 @@ class OwnerCatchupCommittedLineageTest {
 
         assertThat(second.isSuccess()).as("second redrive activates: %s", second).isTrue();
         assertThat(head()).isEqualTo(15L);
-        assertThat(fixture.served()).as("R1 once, then the replica holding the lineage").containsExactly(SOURCE, OTHER);
+        assertThat(fixture.served()).as("R1 pulled, its cap confirmed by one page, then the replica holding the lineage").containsExactly(SOURCE, SOURCE, OTHER);
     }
 
     /// The redrive predicate ranks by the same lineage end: once the owner holds R2's lineage, R1's raw tail (20) past it is no
@@ -338,7 +338,7 @@ class OwnerCatchupCommittedLineageTest {
 
         assertThat(second.isSuccess()).as("second redrive activates: %s", second).isTrue();
         assertThat(head()).as("R2's committed 11..15 installed").isEqualTo(15L);
-        assertThat(fixture.served()).as("R1 once, then the replica holding the lineage").containsExactly(SOURCE, OTHER);
+        assertThat(fixture.served()).as("R1 pulled, its cap confirmed by one page, then the replica holding the lineage").containsExactly(SOURCE, SOURCE, OTHER);
         assertThat(fixture.backfill().redriveCandidates()).isEmpty();
     }
 
@@ -362,7 +362,7 @@ class OwnerCatchupCommittedLineageTest {
 
         assertThat(second.isSuccess()).as("R1's learned end 12 is the maximum: %s", second).isTrue();
         assertThat(head()).isEqualTo(12L);
-        assertThat(fixture.served()).containsExactly(SOURCE, OTHER);
+        assertThat(fixture.served()).as("R1 pulled, its cap confirmed, then R2").containsExactly(SOURCE, SOURCE, OTHER);
     }
 
     /// P10 with no other replica probed: the target is the only replica's lineage end, so the owner activates at 10 on the first
@@ -396,7 +396,7 @@ class OwnerCatchupCommittedLineageTest {
 
         fixture.registry().updateWatermark("s", 0, SOURCE, 20L, ReplicationState.CAUGHT_UP);
 
-        assertThat(fixture.served()).containsExactly(SOURCE, SOURCE);
+        assertThat(fixture.served()).as("pull, cap confirmation, re-pull").containsExactly(SOURCE, SOURCE, SOURCE);
         assertThat(fixture.backfill().redriveCandidates()).as("R1's raw 20 is capped at 10").isEmpty();
     }
 
@@ -445,7 +445,7 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(head()).isEqualTo(13L);
         assertThat(settled(fixture.backfill().backfill("s", 0)).isSuccess()).isTrue();
         assertThat(head()).isEqualTo(18L);
-        assertThat(fixture.served()).containsExactly(SOURCE, OTHER, THIRD);
+        assertThat(fixture.served()).as("each learned cap is confirmed by one page before the next round ranks on it").containsExactly(SOURCE, SOURCE, OTHER, SOURCE, OTHER, THIRD);
         assertThat(fixture.backfill().redriveCandidates()).isEmpty();
     }
 
@@ -470,7 +470,7 @@ class OwnerCatchupCommittedLineageTest {
 
         assertThat(second.isSuccess()).as("second redrive reads R2: %s", second).isTrue();
         assertThat(head()).isEqualTo(25L);
-        assertThat(fixture.served()).containsExactly(SOURCE, OTHER);
+        assertThat(fixture.served()).as("R1 pulled, its cap confirmed, then R2").containsExactly(SOURCE, SOURCE, OTHER);
     }
 
     /// P10 (verifier M8), the registry path ranks the OTHER survivors by committed-lineage end, never their raw tail: R2 (raw 30, lineage
@@ -491,7 +491,7 @@ class OwnerCatchupCommittedLineageTest {
 
         assertThat(second.isSuccess()).as("R2's learned end 12 is the best other end: %s", second).isTrue();
         assertThat(head()).isEqualTo(12L);
-        assertThat(fixture.served()).containsExactly(OTHER, SOURCE);
+        assertThat(fixture.served()).as("the learned cap of R2 is confirmed before R1 is read").containsExactly(OTHER, OTHER, SOURCE);
     }
 
     /// Fallback (CTO ruling 2026-11-09), probe path: two replicas hold the same committed end 15; the first read fails (unreadable). The owner
