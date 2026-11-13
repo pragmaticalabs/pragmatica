@@ -3,13 +3,9 @@
 # jbct.toml pins CAUSE-01/02 (#720). Burn down by removing a line when its findings reach zero.
 
 [lint.rules]
-# ARCH-04: reported root is the raw import text (trailing semicolon) on the last import before a /// doc block: suspected false positive in the rule, unverified
-JBCT-ARCH-04 = "warning"
 # BND-01: java.util.Optional crosses the boundary of javac / CST cursor APIs in this module; migration to Option pending
 JBCT-BND-01 = "warning"
 # EX-01: throws/throw mandated by the Maven Mojo, annotation-processor or Jackson APIs, or deliberate fixture throw; class-name match for CstNoBusinessExceptionsRule is a name-based false positive
 JBCT-EX-01 = "warning"
 # RET-06: null-tolerant string/AST helpers; Option migration pending
 JBCT-RET-06 = "warning"
-# TOT-02: mapper returns Option (total by shape); suspected false positive in the rule, unverified
-JBCT-TOT-02 = "warning"

@@ -33,7 +33,8 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 ///      `Iterator` / `ListIterator` / `PrimitiveIterator.OfInt|OfLong|OfDouble`, provided the receiver is
 ///      not declared in this file; or
 ///   2. its target method — resolved by the reference's receiver — is declared exactly once in this
-///      compilation unit with a partial body (R-A's op set).
+///      compilation unit with a partial body (R-A's op set); a `getFirst` / `getLast` that an earlier `isEmpty()` / `size()` check on
+///      the same receiver guards does not count ([MapperSafety#containsUnguardedPartialOperation], #3065).
 ///
 /// Resolution is receiver-scoped so a same-name method in an unrelated type never triggers a false
 /// positive: `this::m` scans only the type enclosing the call site; `X::m` scans only a type named
@@ -146,7 +147,7 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
             }
 
             counts.merge(name, 1, Integer::sum);
-            if (MapperSafety.containsPartialOperation(bodyText(method))) {
+            if (MapperSafety.containsUnguardedPartialOperation(bodyText(method))) {
                 partialNames.add(name);
             }
         }
