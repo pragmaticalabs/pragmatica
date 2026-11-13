@@ -183,9 +183,7 @@ sealed interface GuardDominance permits GuardDominance.unused {
     private static boolean ifThenReaches(String code, int guardStart, int guardEnd, int accessor) {
         var statementStart = ifConditionEnd(code, guardStart, guardEnd);
 
-        return statementStart >= 0
-               && accessor >= statementStart
-               && accessor < statementEnd(code, statementStart);
+        return statementStart >= 0 && accessor < statementEnd(code, statementStart);
     }
 
     /// Index just after the `)` of `if (<guard>)` when the guard is the entire condition, or `-1`.
