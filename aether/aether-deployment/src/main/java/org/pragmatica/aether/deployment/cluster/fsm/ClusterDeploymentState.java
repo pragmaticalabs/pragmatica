@@ -467,7 +467,38 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private void processWorkerJoin(WorkerJoinDecision decision) {
             log.info("Received worker join: {} (role={})", decision.nodeId(), decision.role());
-            assignWorkerRole(decision.nodeId());
+            Option.option(ctx.removalsInFlight().get(decision.nodeId()))
+                  .onPresent(pending -> awaitRemovalThenRejoin(decision, pending))
+                  .onEmpty(() -> assignWorkerRole(decision.nodeId()));
+        }
+
+        /// #3028 M2: the node's departure cleanup is still running, and its last step deletes the activation directive. Assigning now would
+        /// see the directive that is about to disappear and return early, losing it. The join is re-dispatched into the FSM once the removal
+        /// settles (success or failure: the directive check then reads what is committed) or after [`ClusterDeploymentContext#removalWaitBound`]
+        /// (a stuck commit or a leader change), whichever comes first, exactly once.
+        private void awaitRemovalThenRejoin(WorkerJoinDecision decision, Promise<Unit> pending) {
+            var released = new AtomicBoolean(false);
+
+            pending.onResultRun(() -> releaseJoin(decision, pending, released, false));
+            SharedScheduler.schedule(() -> releaseJoin(decision, pending, released, true), ctx.removalWaitBound());
+        }
+
+        private void releaseJoin(WorkerJoinDecision decision,
+                                 Promise<Unit> pending,
+                                 AtomicBoolean released,
+                                 boolean boundExpired) {
+            if (!released.compareAndSet(false, true)) {
+                return;
+            }
+
+            if (boundExpired) {
+                log.warn("Removal of {} did not finish within {}; running its join against the committed state",
+                         decision.nodeId(),
+                         ctx.removalWaitBound());
+            }
+
+            ctx.removalsInFlight().remove(decision.nodeId(), pending);
+            ctx.dispatch(new WorkerJoinReceived(decision));
         }
 
         /// The non-core leave channel (#731), symmetric to [`#handleWorkerJoin`]. Routed straight
@@ -3489,13 +3520,23 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                      nodeRouteCommands.size(),
                      removedNode);
 
-            return applyFootprintRemoval(consensusCommands).flatMap(_ -> termWriter.hierarchyCommit(List.of(new KVCommand.Mutation<>(directiveKey,
-                                                                                                                                     previousDirective,
-                                                                                                                                     Option.none())),
-                                                                                                    List.of()))
-                                        .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
-                                                                      removedNode,
-                                                                      cause.message()));
+            return trackRemoval(removedNode,
+                                applyFootprintRemoval(consensusCommands).flatMap(_ -> termWriter.hierarchyCommit(List.of(new KVCommand.Mutation<>(directiveKey,
+                                                                                                                                                  previousDirective,
+                                                                                                                                                  Option.none())),
+                                                                                                                 List.of()))
+                                                     .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
+                                                                                   removedNode,
+                                                                                   cause.message())));
+        }
+
+        /// #3028 M2: publish the departure chain so a join of the same node can wait for it ([`#processWorkerJoin`]); the entry is dropped when
+        /// the chain settles, only if it is still this chain (a newer removal of the node keeps its own).
+        private Promise<Unit> trackRemoval(NodeId removedNode, Promise<Unit> chain) {
+            ctx.removalsInFlight().put(removedNode, chain);
+
+            return chain.onResultRun(() -> ctx.removalsInFlight()
+                                              .remove(removedNode, chain));
         }
 
         /// #1717 — a departed node with no slice footprint yields an EMPTY batch, which consensus rejects with

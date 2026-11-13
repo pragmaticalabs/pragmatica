@@ -7,8 +7,10 @@ package org.pragmatica.aether.deployment.cluster.fsm;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -28,6 +30,8 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
@@ -237,17 +241,17 @@ public final class ClusterDeploymentContext {
 
     /// #1109: where operator-attention conditions raised by the leader are reported. Log-only until the node binds its own sink (never a
     /// process-wide one: Ember runs several nodes in one JVM).
-    private final java.util.concurrent.atomic.AtomicReference<org.pragmatica.utility.warning.OperatorWarningSink> operatorWarnings = new java.util.concurrent.atomic.AtomicReference<>(org.pragmatica.utility.warning.OperatorWarningSink.logOnly());
+    private final AtomicReference<org.pragmatica.utility.warning.OperatorWarningSink> operatorWarnings = new AtomicReference<>(org.pragmatica.utility.warning.OperatorWarningSink.logOnly());
 
     /// #1109: slices the leader's gate has refused LOAD for, until their target commits. Kept here, not in `Active`, so the bound runs across leader
     /// FSM rebuilds on this node.
-    private final java.util.concurrent.ConcurrentMap<org.pragmatica.aether.artifact.Artifact, AwaitedTarget> awaitedTargets = new java.util.concurrent.ConcurrentHashMap<>();
+    private final ConcurrentMap<org.pragmatica.aether.artifact.Artifact, AwaitedTarget> awaitedTargets = new ConcurrentHashMap<>();
 
     /// #1109: the `SliceTargetValue` this leader last submitted per base and has not seen commit; what a re-submission puts again.
-    private final java.util.concurrent.ConcurrentMap<org.pragmatica.aether.artifact.ArtifactBase, org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue> pendingTargetPuts = new java.util.concurrent.ConcurrentHashMap<>();
+    private final ConcurrentMap<org.pragmatica.aether.artifact.ArtifactBase, org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue> pendingTargetPuts = new ConcurrentHashMap<>();
 
-    private final java.util.concurrent.atomic.AtomicReference<TimeSpan> awaitedTargetBound = new java.util.concurrent.atomic.AtomicReference<>(org.pragmatica.aether.slice.SliceState.LOADING.timeout()
-                                                                                                                                                                                             .or(TimeSpan.timeSpan(2).minutes()));
+    private final AtomicReference<TimeSpan> awaitedTargetBound = new AtomicReference<>(org.pragmatica.aether.slice.SliceState.LOADING.timeout()
+                                                                                                                                     .or(TimeSpan.timeSpan(2).minutes()));
 
     /// A slice whose LOAD the gate refused since `since`; `warned` once the warning was raised, `lastResubmitMs` when its target put was last re-submitted.
     public record AwaitedTarget(long since, boolean warned, long lastResubmitMs) {}
@@ -260,6 +264,28 @@ public final class ClusterDeploymentContext {
         return communityAdmission;
     }
 
+    /// #3028 M2: the departure cleanup of each node whose chain has not finished. A worker that rejoins while its removal is in flight
+    /// waits on it, so the removal's late directive delete cannot land after the join's directive check. Kept here, not in `Active`, so it
+    /// survives a leader FSM rebuild on this node.
+    private final ConcurrentMap<NodeId, Promise<Unit>> removalsInFlight = new ConcurrentHashMap<>();
+
+    /// How long a worker join waits for its node's in-flight removal before it runs against the committed state: twice the consensus
+    /// `applyTimeout` (30 s) [guess: 2 x]; a stuck commit or a leader change must not hold the join forever.
+    private final AtomicReference<TimeSpan> removalWaitBound = new AtomicReference<>(TimeSpan.timeSpan(60).seconds());
+
+    public ConcurrentMap<NodeId, Promise<Unit>> removalsInFlight() {
+        return removalsInFlight;
+    }
+
+    public TimeSpan removalWaitBound() {
+        return removalWaitBound.get();
+    }
+
+    @Contract
+    public void setRemovalWaitBound(TimeSpan bound) {
+        removalWaitBound.set(bound);
+    }
+
     public org.pragmatica.utility.warning.OperatorWarningSink operatorWarnings() {
         return operatorWarnings.get();
     }
@@ -269,11 +295,11 @@ public final class ClusterDeploymentContext {
         operatorWarnings.set(sink);
     }
 
-    public java.util.concurrent.ConcurrentMap<org.pragmatica.aether.artifact.Artifact, AwaitedTarget> awaitedTargets() {
+    public ConcurrentMap<org.pragmatica.aether.artifact.Artifact, AwaitedTarget> awaitedTargets() {
         return awaitedTargets;
     }
 
-    public java.util.concurrent.ConcurrentMap<org.pragmatica.aether.artifact.ArtifactBase, org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue> pendingTargetPuts() {
+    public ConcurrentMap<org.pragmatica.aether.artifact.ArtifactBase, org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue> pendingTargetPuts() {
         return pendingTargetPuts;
     }
 
