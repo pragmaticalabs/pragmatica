@@ -27,6 +27,7 @@ import org.pragmatica.messaging.StreamType;
 import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.when;
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.PEER;
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.SELF;
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.connection;
@@ -94,6 +95,41 @@ class QuicRefusalCostTest {
         assertThat(network.quicMetrics().refusedCount(StreamType.CONSENSUS)).isZero();
     }
 
+    /// N1: the first refusal opens the lane's backpressure episode; its entry WARN is the only WARN, the refusal WARN is
+    /// not logged a second time for the same write.
+    @Test
+    void firstRefusal_logsExactlyOneWarn() {
+        var network = network(SHORT);
+        var forward = connectionWith(StreamType.FORWARD, false);
+
+        try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+            var outcome = network.writeToStreamForTests(PEER, probe(StreamType.FORWARD), forward);
+
+            assertThat(outcome).isInstanceOf(WriteOutcome.BackpressureRefused.class);
+            assertThat(capture.messages(Level.WARN)).as("one WARN for the refusal that opened the episode").hasSize(1);
+            assertThat(capture.messages(Level.WARN).getFirst()).contains("entered");
+        }
+    }
+
+    /// N1: the suppression is only for the write that opened the episode. A refusal in an episode another write opened
+    /// (here a DHT retry on a live stream) logs the rate-limited refusal WARN.
+    @Test
+    void refusalInAnOpenEpisode_stillLogsTheRefusalWarn_control() {
+        var network = network(SHORT);
+        var inactive = stream(false);
+
+        when(inactive.isActive()).thenReturn(false);
+        try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+            var _ = network.writeIfWritableForTest(stream(false), new byte[]{1}, PEER, StreamType.DHT);
+            var outcome = network.writeIfWritableForTest(inactive, new byte[]{1}, PEER, StreamType.DHT);
+
+            assertThat(outcome).isInstanceOf(WriteOutcome.BackpressureRefused.class);
+            assertThat(capture.messages(Level.WARN).stream().filter(m -> m.contains(REFUSAL_WARN)).toList())
+                .as("the refusal did not open the episode, so its own WARN is logged")
+                .hasSize(1);
+        }
+    }
+
     @Test
     void refusalStorm_logsOneWarnPerPeerAndLane_butCountsEveryRefusal() {
         var network = network(SHORT);
@@ -105,13 +141,13 @@ class QuicRefusalCostTest {
                 network.writeToStreamForTests(PEER, probe(StreamType.FORWARD), forward);
             }
 
-            assertThat(capture.messages(Level.WARN).stream().filter(m -> m.contains(REFUSAL_WARN)).toList())
+            assertThat(capture.messages(Level.WARN))
                 .as("%d refusals on one (peer, lane): one WARN", REFUSALS)
                 .hasSize(1);
 
             network.writeToStreamForTests(PEER, probe(StreamType.METRICS), metrics);
 
-            assertThat(capture.messages(Level.WARN).stream().filter(m -> m.contains(REFUSAL_WARN)).toList())
+            assertThat(capture.messages(Level.WARN))
                 .as("another lane of the same peer has its own window")
                 .hasSize(2);
         }

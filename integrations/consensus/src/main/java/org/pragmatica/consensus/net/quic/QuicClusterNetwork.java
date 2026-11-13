@@ -2396,9 +2396,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // writable is refused BEFORE the encode: the frame would be refused after it, and under a refusal storm the
         // encode is the cost (#2583 P0). CONSENSUS and DHT retry instead of refusing, so they encode first.
         if (refusesBeforeEncode(lane, stream.unwrap())) {
-            countBackpressuredWrite(peerId, lane);
+            var opened = countBackpressuredWrite(peerId, lane);
 
-            return refuseBackpressured(peerId, lane, afterSent);
+            return refuseBackpressured(peerId, lane, afterSent, opened);
         }
 
         return encodeLoudly(message, peerId).fold(_ -> encodeFailedOutcome(peerId, message),
@@ -2699,21 +2699,22 @@ public class QuicClusterNetwork implements ClusterNetwork {
         //    fast-fail BackpressureRefused.
         // Backpressure entry: name the lane so a stalled stream is identifiable in the logs.
         // One WARN per backpressure entry, not per write (#2580); per-write and per-retry logging stay at debug.
-        countBackpressuredWrite(peerId, streamType);
+        var opened = countBackpressuredWrite(peerId, streamType);
 
         return switch (streamType) {
             case CONSENSUS -> retryBackpressuredWrite(ch, bytes, peerId, streamType);
             case DHT -> ch.isActive()
                         ? retryBackpressuredWrite(ch, bytes, peerId, streamType)
-                        : refuseBackpressured(peerId, streamType, afterSent);
-            default -> refuseBackpressured(peerId, streamType, afterSent);
+                        : refuseBackpressured(peerId, streamType, afterSent, opened);
+            default -> refuseBackpressured(peerId, streamType, afterSent, opened);
         };
     }
 
     /// Counts inside `compute`, under the same bin lock `remove` takes, so a summary never misses a write counted
     /// before it. A write captured before its peer's departure can run after `departurePermanent` closed the peer's
     /// episodes; the REMOVED re-check drops the episode it just opened, which no later event would close.
-    private void countBackpressuredWrite(NodeId peerId, StreamType streamType) {
+    /// True when this write opened the episode, i.e. its entry WARN was just logged.
+    private boolean countBackpressuredWrite(NodeId peerId, StreamType streamType) {
         var writes = backpressureEpisodes.compute(new BackpressureLane(peerId, streamType),
                                                   (lane, open) -> countWrite(open == null
                                                                              ? openBackpressureEpisode(lane)
@@ -2725,6 +2726,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (isPeerRemoved(peerId)) {
             closeBackpressureEpisode(peerId, streamType);
         }
+
+        return writes == 1;
     }
 
     private static BackpressureEpisode countWrite(BackpressureEpisode episode) {
@@ -2822,10 +2825,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// (peer, lane) per [#LOSS_WARN_INTERVAL_NANOS], since a refusal storm is exactly when the log should stay readable.
     /// A refusal of a frame whose caller was already told `Sent` (`afterSent` present) is not a refused send: its caller
     /// never sees it, and the caller counts it as a loss at that site, so it moves only the loss counter (#2583 P0, F2).
-    private WriteOutcome refuseBackpressured(NodeId peerId, StreamType streamType, Option<DropSite> afterSent) {
+    /// A refusal that opened its lane's backpressure episode (`episodeOpened`) has already logged the episode's entry
+    /// WARN: it still takes the refusal window, silently, so the first refusal on a lane logs one WARN, not two.
+    private WriteOutcome refuseBackpressured(NodeId peerId,
+                                             StreamType streamType,
+                                             Option<DropSite> afterSent,
+                                             boolean episodeOpened) {
         quicMetrics.onBackpressureDrop();
         afterSent.onEmpty(() -> quicMetrics.onRefused(streamType));
-        if (admitLossWarn(lastRefusalWarnNanos, peerId, streamType)) {
+        if (admitLossWarn(lastRefusalWarnNanos, peerId, streamType) && !episodeOpened) {
             log.warn("Channel to peer {} not writable on stream {} — refusing message (backpressure); further refusals on this lane are counted, not logged, for {} s",
                      peerId,
                      streamType,
