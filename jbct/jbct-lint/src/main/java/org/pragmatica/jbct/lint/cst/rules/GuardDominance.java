@@ -74,9 +74,10 @@ sealed interface GuardDominance permits GuardDominance.unused {
     /// preceded, modulo whitespace, by an identifier (not a statement keyword) or by the `>` of a generic type or call (not
     /// the `->` of a lambda). A later argument is recognised by its leading `,`. A closing `)` followed by `->` ends a lambda
     /// parameter list, not an argument list. So these are deliberately NOT escapes: a parenthesised receiver `(xs).size()`,
-    /// `((List<String>) (xs)).size()`, `return (xs).size()`, and a lambda parameter list ending in the receiver, `(xs) -> ..`
-    /// or `(a, xs) -> ..`. A lambda parameter list with the receiver elsewhere (`(xs, b) -> ..`) still counts as an escape: it
-    /// only compiles when `xs` is a field, and a false positive is the cheaper side.
+    /// `((List<String>) (xs)).size()`, `return (xs).size()`, and a lambda parameter list that starts or ends with the
+    /// receiver, `(xs) -> ..`, `(xs, b) -> ..` or `(a, xs) -> ..`. A lambda parameter list with the receiver after a comma and followed by another
+    /// parameter (`(a, xs, b) -> ..`) still counts as an escape: it only compiles when `xs` is a field, and a false positive is
+    /// the cheaper side.
     private static boolean written(String code, String receiver, int from, int to) {
         var name = Pattern.quote(receiver);
         var write = Pattern.compile("(?<![\\w$])" + name

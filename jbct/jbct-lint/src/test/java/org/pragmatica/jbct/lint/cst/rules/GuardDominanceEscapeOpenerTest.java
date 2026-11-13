@@ -112,8 +112,8 @@ class GuardDominanceEscapeOpenerTest {
     }
 
     @Test
-    void lambdaParameterListWithReceiverFirst_isAnEscape() {
-        assertTrue(firesWithMiddle("run((xs, b) -> 1) > 0"));
+    void lambdaParameterListWithReceiverBetweenOthers_isAnEscape() {
+        assertTrue(firesWithMiddle("run((a, xs, b) -> 1) > 0"));
     }
 
     @Test
