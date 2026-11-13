@@ -316,6 +316,7 @@ class ApplyDeadlineTest {
         var h = publishedApply();
 
         h.policy = FsmHarness.SettlePolicy.HOLD;
+        h.warningsCommit = true;
         h.advanceBySeconds(16 * 60);
         h.advanceBySeconds(5 * 60);
         assertThat(h.warns("apply-deadline-exceeded")).hasSize(1);

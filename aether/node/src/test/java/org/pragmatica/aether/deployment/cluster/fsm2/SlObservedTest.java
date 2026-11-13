@@ -170,6 +170,7 @@ class SlObservedTest {
             seedRow(h, CORE_1, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
             seedRow(h, CORE_2, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
             h.policy = FsmHarness.SettlePolicy.HOLD;
+            h.warningsCommit = true;
             h.activate();
             h.settleHeld(h.submitsBesides(ClusterModel.SubmitKind.WARNINGS).getFirst(), new ClusterInput.Settlement.Failed("lost"));
             h.deliver(new ClusterInput.Reconcile());
