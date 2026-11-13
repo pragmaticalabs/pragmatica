@@ -1980,9 +1980,8 @@ public final class PartitionBackfill {
                            .toList()
                            .forEach(key -> clearStalled(key.streamName(),
                                                         key.partition()));
-            stalledRounds.keySet()
-                         .removeIf(key -> key.streamName()
-                                             .equals(streamName));
+            stalledRounds.keySet().removeIf(key -> key.streamName()
+                                                      .equals(streamName));
         }
 
         return Unit.unit();
@@ -2030,8 +2029,7 @@ public final class PartitionBackfill {
         }
 
         if (selfWatermark.localWatermark(streamName, partition) > localWatermark) {
-            Option.option(stalledRounds.get(key))
-                  .onPresent(rounds -> rounds.remove(source));
+            Option.option(stalledRounds.get(key)).onPresent(rounds -> rounds.remove(source));
             clearStalled(streamName, partition);
 
             return result;
@@ -2048,7 +2046,8 @@ public final class PartitionBackfill {
     private int countStalledRound(String streamName, PartitionKey key, NodeId source) {
         synchronized (oversizedOrder) {
             return streamExists.test(streamName)
-                   ? stalledRounds.computeIfAbsent(key, _ -> new ConcurrentHashMap<>())
+                   ? stalledRounds.computeIfAbsent(key,
+                                                   _ -> new ConcurrentHashMap<>())
                                   .merge(source, 1, Integer::sum)
                    : 0;
         }
