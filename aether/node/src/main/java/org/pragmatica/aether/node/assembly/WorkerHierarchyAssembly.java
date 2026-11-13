@@ -741,11 +741,10 @@ public sealed interface WorkerHierarchyAssembly {
         // Assigned workers use challenge-bound governor evidence. Report expiry blocks new
         // placement; it never synthesizes individual member death or provider termination.
         var communityReachability = org.pragmatica.aether.deployment.cluster.community.CommunityReachability.communityReachability(config.timeouts()
-                                                                                                                                   .cluster()
-                                                                                                                                   .communityAbsence(),
-                                                                                                                             metricsCollector::sinceLastPong,
-                                                                                                                             System::nanoTime);
-
+                                                                                                                                         .cluster()
+                                                                                                                                         .communityAbsence(),
+                                                                                                                                   metricsCollector::sinceLastPong,
+                                                                                                                                   System::nanoTime);
         CommunityLivenessView livenessView = node -> communityDirectory.assignment(node)
                                                                        .fold(() -> communityReachability.isAbsent(node),
                                                                              _ -> !communityHealth.isReachable(node));

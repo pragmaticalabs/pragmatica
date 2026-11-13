@@ -2414,8 +2414,7 @@ public interface AetherNode extends ManageableNode {
 
             @Override
             public Option<Integer> communityLiveMembers(String communityId) {
-                return CommunityLiveMembers.observedByLeader(clusterNode.leaderManager()
-                                                                        .isLeader(),
+                return CommunityLiveMembers.observedByLeader(clusterNode.leaderManager().isLeader(),
                                                              kvStore,
                                                              communityLiveness,
                                                              communityId);
@@ -3345,15 +3344,14 @@ public interface AetherNode extends ManageableNode {
                                                                                                periodicTasks::defer));
         var quorumLossChain = quorumLossDrain.quorumLossChain();
         var coreAbsenceDetector = quorumLossDrain.coreAbsenceDetector();
-
         var communityLiveness = WorkerHierarchyAssembly.communityReachability(new WorkerHierarchyAssembly.CommunityReachabilityInputs(config,
-                                                                                                              clusterDeploymentManager,
-                                                                                                              metricsCollector,
-                                                                                                              communityDirectory,
-                                                                                                              allEntries,
-                                                                                                              membershipFsm,
-                                                                                                              communityHealth,
-                                                                                                              communityHealthRuntime));
+                                                                                                                                      clusterDeploymentManager,
+                                                                                                                                      metricsCollector,
+                                                                                                                                      communityDirectory,
+                                                                                                                                      allEntries,
+                                                                                                                                      membershipFsm,
+                                                                                                                                      communityHealth,
+                                                                                                                                      communityHealthRuntime));
         var membershipEdgesOut = MembershipAssembly.membershipEdges(new MembershipAssembly.MembershipEdgesInputs(config,
                                                                                                                  delegateRouter,
                                                                                                                  kvStore,
