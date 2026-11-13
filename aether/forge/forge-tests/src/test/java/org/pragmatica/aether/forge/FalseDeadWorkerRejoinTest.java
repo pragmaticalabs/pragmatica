@@ -21,6 +21,7 @@ import org.pragmatica.swim.SwimHealth;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -65,11 +66,12 @@ class FalseDeadWorkerRejoinTest {
     @Test void fencedWorker_exitsDrained_andFreshReplacementGetsDirective() {
         var id = bootAndCutWorker(FENCE_FIRST, defaultCommunityAbsence(), true);
 
-        // The exit code surfaces only after the drain, which can outlast the cores' removal; the detector's own fence flag
-        // is the moment the worker's fence fired.
-        await().alias("the worker's core-absence detector fenced")
+        // The fence removes its own node from the Ember registry at once (CoreAbsenceFenceOrderingTest); the exit code surfaces
+        // only after the drain, which outlasts the cores' removal. Registry departure is the moment the fence fired.
+        await().alias("the worker's core-absence fence removed it from the cluster")
                .atMost(RECOVERY_BOUND.duration())
-               .until(() -> cluster.getNode(id.id()).flatMap(AetherNode::coreAbsenceSnapshot).map(CoreAbsenceSnapshot::fenced).or(false));
+               .pollInterval(Duration.ofMillis(50))
+               .until(() -> cluster.allNodes().stream().noneMatch(node -> node.self().equals(id)));
         assertThat(directiveCommitted(id)).as("the fence precedes the cores' removal of the worker").isTrue();
         await().alias("the fenced worker exited with EXIT_DRAINED")
                .atMost(RECOVERY_BOUND.duration())
