@@ -2015,8 +2015,7 @@ public final class PartitionBackfill {
     /// observed then.
     public long lineageEnd(String streamName, int partition, NodeId node, long tail) {
         return Option.option(committedLineageEnds.get(partitionKey(streamName, partition)))
-                     .flatMap(ends -> Option.option(ends.get(node))
-                                            .map(lineage -> capOrEvict(ends, node, lineage, tail)))
+                     .flatMap(ends -> Option.option(ends.get(node)).map(lineage -> capOrEvict(ends, node, lineage, tail)))
                      .or(tail);
     }
 
