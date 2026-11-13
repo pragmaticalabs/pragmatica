@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc5] - Unreleased
 
+### Fixed (2026-11-13 — #3087: storage maintenance follow-ups to #800)
+- **A throwing retry of a pending activation no longer escapes the maintenance tick.** `StorageMaintenanceDriver.tick()` now runs it as its own pass (`retry-pending`): a throw is the tick's failed pass, raised as `STORAGE_MAINTENANCE_PASS_FAILED` for that part, counted in the progress record with its real cause, and closed by the next good pass, instead of surfacing three intervals later as "overdue".
+- **The not-started warning closes when the node loses leadership.** `DelegatedStorageAdapter.deactivate()` closes an open `STORAGE_MAINTENANCE_NOT_STARTED` warning, since a non-leader is no longer expected to activate.
+
 ## [1.0.0-rc4] - 2026-10-17
 
 ### Fixed (2026-10-17 — disruption-budget suite mistook the slice-floor 409 for the quorum budget)
