@@ -14,7 +14,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
-import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.routes.NodeLifecycleRoutes.SliceFloor;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AppHttpConfig;
@@ -92,7 +91,7 @@ class DrainGuardRowSourceBootTest {
         boot(ClusterTestPorts.freeTcpAndUdpPort());
         var server = ((Option<?>) accessor("managementServer")).unwrap();
         var floor = (SliceFloor) Result.lift(() -> {
-            var field = ManagementServer.class.getDeclaredField("sliceFloor");
+            var field = server.getClass().getDeclaredField("sliceFloor");
 
             field.setAccessible(true);
 
