@@ -1109,6 +1109,62 @@ class CstMapperMethodReferenceRuleTest {
     }
 
     @Test
+    void analyze_polarityReceiverPassedAsCallArgumentAfterEarlyExit_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (xs.isEmpty()) return Option.none();
+                wire.drain(xs);
+                return Option.some(xs.getFirst());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityReceiverPassedAsBareCallArgumentAfterEarlyExit_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (xs.isEmpty()) return Option.none();
+                drain(xs);
+                return Option.some(xs.getFirst());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityReceiverPassedAsLaterArgumentAfterEarlyExit_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (xs.isEmpty()) return Option.none();
+                wire.drain(wire.flag(), xs);
+                return Option.some(xs.getFirst());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityReceiverPassedToConstructorAfterEarlyExit_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (xs.isEmpty()) return Option.none();
+                var copy = new java.util.ArrayList<>(xs);
+                return Option.some(xs.getFirst());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityReceiverAsMethodReferenceTargetAfterEarlyExit_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (xs.isEmpty()) return Option.none();
+                wire.items2().forEach(xs::add);
+                return Option.some(xs.getFirst());
+                """)));
+    }
+
+    @Test
+    void analyze_polarityReceiverPassedAsCallArgumentInsideNonEmptyIf_flags() {
+        assertTrue(hasRule(polarityFixture("""
+                if (!xs.isEmpty()) {
+                    wire.drain(xs);
+                    return Option.some(xs.getFirst());
+                }
+                return Option.none();
+                """)));
+    }
+
+    @Test
     void analyze_polarityReceiverReassignedInsideNonEmptyIf_flags() {
         assertTrue(hasRule(polarityFixture("""
                 if (!xs.isEmpty()) {
