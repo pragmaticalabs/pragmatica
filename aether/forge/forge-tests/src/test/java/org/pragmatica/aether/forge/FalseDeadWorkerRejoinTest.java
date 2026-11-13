@@ -5,6 +5,7 @@
 package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
@@ -22,7 +23,6 @@ import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,7 +35,11 @@ import static org.awaitility.Awaitility.await;
 /// - Fence first (`coreAbsence` below the removal time): the worker halts with `EXIT_DRAINED`; production does not restart it
 ///   (#3125: nothing replaces it without CTM provisioning), so the test emulates the replacement with a fresh-id
 ///   `addWorkerNode()`.
-/// - Removal first (`coreAbsence` above removal plus heal): the same worker is still alive at the heal and must rejoin (#3107).
+/// - Removal first (`coreAbsence` above removal plus heal): the cores remove the worker while it is still alive. Removal is
+///   terminal (`MembershipFsm.processEvidenceRefusal`: a Dead identity needs a fresh NodeId), so the healed same-id worker is
+///   refused and never rejoins; only a fresh-id replacement receives a directive. The refusal is only counted and logged on the
+///   cores (`MembershipFsm.recordProcessEvidenceRefusal`); no `IdentityRefused` / `HelloRefused` reaches the worker, so it is
+///   never told to exit with `EXIT_IDENTITY_REFUSED` (see the tripwire below).
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 class FalseDeadWorkerRejoinTest {
@@ -46,6 +50,9 @@ class FalseDeadWorkerRejoinTest {
     private static final TimeSpan FENCE_FIRST = TimeSpan.timeSpan(5).seconds();
     /// Well above removal plus the heal; its `communityAbsence` must stay above it (#590).
     private static final TimeSpan REMOVAL_FIRST = TimeSpan.timeSpan(300).seconds();
+    /// Wait between the directive's removal and the heal so the removal is terminal (Dead) before the worker returns.
+    private static final TimeSpan REMOVAL_SETTLE = TimeSpan.timeSpan(30).seconds();
+    private static final TimeSpan TRIPWIRE_WINDOW = TimeSpan.timeSpan(45).seconds();
     private static final TimeSpan REMOVAL_FIRST_COMMUNITY = TimeSpan.timeSpan(360).seconds();
     private final EmberCluster cluster = EmberCluster.emberCluster(3, 33400, 33500, 33600, "false-dead");
 
@@ -73,33 +80,68 @@ class FalseDeadWorkerRejoinTest {
         assertThat(liveWorkers()).extracting(AetherNode::self).containsExactly(replacement);
     }
 
-    /// Removal path (#3107 territory): the cores remove the worker while it is still alive (its fence is out of reach), and
-    /// after the heal the SAME worker is re-admitted and its directive committed again. The join here comes after the removal
-    /// completed; the join racing an in-flight removal is what #3107 sequences and is not pinned by this IT.
-    @Test void removedWorkerHealed_rejoinsWithDirectiveAndKvLink() {
+    /// Removal path: the cores remove the worker (transport cut too, so the removal is prompt) before its fence can fire; after
+    /// the heal the same id is refused (terminal removal, counted on the cores) and a fresh-id replacement receives its
+    /// directive. The refusal count is logged, not asserted: it depends on the removed worker's retry cadence.
+    @Test void removedWorker_freshReplacementGetsDirective() {
+        var id = removeWorkerThenHeal();
+        var replacement = LifecycleAwait.nodeSettled("admit replacement worker", cluster, cluster.addWorkerNode());
+
+        assertThat(replacement).isNotEqualTo(id);
+        await().alias("the replacement worker holds a committed directive")
+               .atMost(RECOVERY_BOUND.duration())
+               .until(() -> directiveCommitted(cluster.getNode(replacement.id()).unwrap()));
+        assertThat(leader().kvStore().getTyped(new AetherKey.ActivationDirectiveKey(id), AetherValue.ActivationDirectiveValue.class).isPresent())
+                .as("the removed identity never regains a directive").isFalse();
+        log.info("Same-id refusals counted on the cores: {}", coreRefusals());
+    }
+
+    /// TRIPWIRE for the product defect behind the disabled test below: today the removed worker keeps retrying and is never
+    /// told its identity is refused (cores only log it), so it does not stop. Fails when the worker starts stopping on its own:
+    /// then enable `removedWorker_stopsAfterRemoval` and delete this test.
+    @Test void removedWorker_currentlyKeepsRetrying_tripwire() {
+        var id = removeWorkerThenHeal();
+
+        await().alias("the cores refused the removed identity (positive control: the refusal path was reached)")
+               .atMost(RECOVERY_BOUND.duration())
+               .until(() -> coreRefusals() > 0);
+        await().during(TRIPWIRE_WINDOW.duration())
+               .atMost(TRIPWIRE_WINDOW.duration().plusSeconds(30))
+               .alias("the removed worker now stops on its own: enable removedWorker_stopsAfterRemoval and delete this tripwire")
+               .until(() -> cluster.exitCodeOf(id.id()).isEmpty());
+    }
+
+    /// The intended behaviour: a removed worker stops (any exit, expected `EXIT_IDENTITY_REFUSED`) within `RECOVERY_BOUND` of
+    /// the heal instead of retrying forever. Disabled until the cores tell the worker its identity is refused.
+    @Disabled("product defect: the cores refuse a removed worker's identity without telling it, so it retries forever; enable when fixed and delete the tripwire")
+    @Test void removedWorker_stopsAfterRemoval() {
+        var id = removeWorkerThenHeal();
+
+        await().alias("the removed worker stopped")
+               .atMost(RECOVERY_BOUND.duration())
+               .until(() -> cluster.exitCodeOf(id.id()).isPresent());
+        assertThat(cluster.exitCodeOf(id.id())).isEqualTo(Option.some(AetherNode.EXIT_IDENTITY_REFUSED));
+    }
+
+    /// Boots, cuts the worker (transport too), waits for its removal, lets the removal finalize, then heals.
+    private NodeId removeWorkerThenHeal() {
         var id = bootAndCutWorker(REMOVAL_FIRST, REMOVAL_FIRST_COMMUNITY, false);
-        var key = new AetherKey.ActivationDirectiveKey(id);
-        var worker = cluster.getNode(id.id()).unwrap();
 
         assertThat(cluster.exitCodeOf(id.id())).as("the worker was removed before its fence could fire").isEqualTo(Option.none());
-        var healedAt = System.nanoTime();
-
+        // The directive disappears before the identity is terminally Dead; healing in that gap lets the same id back in (rc5
+        // runs 4 and 5 of the former rejoin test). The settle is a marked guess, observed first refusal about 37 s after the cut.
+        await().pollDelay(REMOVAL_SETTLE.duration()).atMost(REMOVAL_SETTLE.duration().plusSeconds(5)).until(() -> true);
         healSwim();
-        await().alias("the healed worker's directive is committed again")
-               .atMost(RECOVERY_BOUND.duration())
-               .until(() -> leader().kvStore().getTyped(key, AetherValue.ActivationDirectiveValue.class).isPresent());
-        // The QUIC layer rejects the worker as a REMOVED peer until its Hello is re-admitted (about 1 s with the transport cut, up to
-        // about 30 s with it kept, observed); the bound covers both.
-        log.info("Healed worker's directive committed {} ms after the heal (RECOVERY_BOUND {} ms)",
-                 TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - healedAt),
-                 RECOVERY_BOUND.duration().toMillis());
-        await().alias("the worker's KV link to the core is restored")
-               .atMost(RECOVERY_BOUND.duration())
-               .until(() -> worker.connectedPeerIds().stream().anyMatch(leader().coreNodeIds()::contains));
-        await().alias("the worker's own projection carries its directive")
-               .atMost(RECOVERY_BOUND.duration())
-               .until(() -> worker.kvStore().getTyped(key, AetherValue.ActivationDirectiveValue.class).isPresent());
-        assertThat(leader().coreNodeIds()).hasSize(3).doesNotContain(id);
+        return id;
+    }
+
+    private long coreRefusals() {
+        var cores = leader().coreNodeIds();
+
+        return cluster.allNodes().stream()
+                      .filter(node -> cores.contains(node.self()))
+                      .mapToLong(node -> node.transportMetrics().getOrDefault("membership_process_evidence_refusals_total", 0L).longValue())
+                      .sum();
     }
 
     /// The directive of `node` as committed on the leader (the cores' view), not the node's own projection.
