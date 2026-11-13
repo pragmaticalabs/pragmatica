@@ -49,6 +49,15 @@ class EndpointRegistryObservedRowsTest {
         assertThat(routedNodes()).containsExactly(NODE);
     }
 
+    /// The row's instance number is the registered endpoint's: it is routing-visible (`Endpoint.instanceNumber`), so a row read as instance 0 is red here.
+    @Test
+    void observedActiveRow_registersItsInstanceNumber() {
+        feed.onObservedPut(put(SliceObservedState.ACTIVE, 7L));
+
+        assertThat(registry.findEndpoints(ARTIFACT, METHOD)).extracting(EndpointRegistry.Endpoint::instanceNumber)
+                                                            .containsExactly(2);
+    }
+
     @Test
     void observedRowLeavingActive_unregisters() {
         feed.onObservedPut(put(SliceObservedState.ACTIVE, 7L));

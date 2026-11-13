@@ -45,6 +45,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.SliceRowSource;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
@@ -463,6 +464,8 @@ class BlueprintStatusAggregationTest {
     private record StatusManageableNode(BlueprintService blueprintService, DeploymentMap deploymentMap) implements ManageableNode {
         @Override
         public NodeId self() { return unsupported("self"); }
+        @Override
+        public SliceRowSource sliceRows() { return SliceRowSource.legacy(); }
         @Override
         public KVStore<AetherKey, AetherValue> kvStore() { return unsupported("kvStore"); }
         @Override

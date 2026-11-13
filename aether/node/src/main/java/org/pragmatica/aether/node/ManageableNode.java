@@ -114,11 +114,9 @@ public interface ManageableNode {
 
     KVStore<AetherKey, AetherValue> kvStore();
 
-    /// Where the per-node slice rows of [#kvStore] are read (deployment state machine spec 1.6.1): the deployment engine's source. Default the
-    /// LEGACY rows for node doubles; a node answers its wiring's source.
-    default SliceRowSource sliceRows() {
-        return SliceRowSource.legacy();
-    }
+    /// Where the per-node slice rows of [#kvStore] are read (deployment state machine spec 1.6.1): the deployment engine's source. No default:
+    /// a node answers its wiring's source, and a node double names the rows it serves (F5a, v3135b g13).
+    SliceRowSource sliceRows();
 
     /// D1-react (KVStore dispatcher design §3.6): the node's react executors, one per C9 component, for the per-component
     /// `react.queue.depth`, high-water and engine-stopped drop gauges. Default empty for node doubles.
