@@ -87,12 +87,17 @@ sealed interface ArchSupport permits ArchSupport.unused {
                : body;
     }
 
+    /// The import node's text also carries the trivia after its terminating `;` (a following `///` block, #3065), so the body
+    /// ends at the first `;` rather than at the end of the text.
     private static String importBody(String importText) {
-        return importText.trim()
-                         .replaceFirst("^import\\s+", "")
-                         .replaceFirst("^static\\s+", "")
-                         .replaceAll(";\\s*$", "")
-                         .trim();
+        var declaration = importText.trim()
+                                    .replaceFirst("^import\\s+", "")
+                                    .replaceFirst("^static\\s+", "");
+        var terminator = declaration.indexOf(';');
+
+        return (terminator >= 0
+                ? declaration.substring(0, terminator)
+                : declaration).trim();
     }
 
     /// Qualifier package of a fully-qualified type node's text (generics / array dims stripped), or

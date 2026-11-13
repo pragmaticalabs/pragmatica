@@ -69,6 +69,9 @@ public sealed interface MapperSafety permits MapperSafety.unused {
                                         + "|\\.orElseThrow\\s*\\("
                                         + "|\\.iterator\\s*\\(\\s*\\)\\s*\\.next\\s*\\(\\s*\\)");
 
+    /// A matched [#PARTIAL_OP] that is a `getFirst` / `getLast` call, the only operations an emptiness / size guard can dominate.
+    Pattern ACCESSOR_OP = Pattern.compile("^\\.get(?:First|Last)\\b");
+
     /// Container partial accessors that take no argument, so a method REFERENCE to them (`List::getFirst`) is as partial as the
     /// lambda `xs -> xs.getFirst()`. Shared by JBCT-TOT-02 (flags the reference by name) and JBCT-STY-05 (must not suggest
     /// rewriting a lambda that TOT-01 catches into a reference TOT-01 cannot see). Bare `get` is deliberately absent, for the
@@ -130,6 +133,65 @@ public sealed interface MapperSafety permits MapperSafety.unused {
     /// shape, so string content is filled with `#` — present but non-empty and non-numeric.
     static boolean containsPartialOperation(String code) {
         return PARTIAL_OP.matcher(maskForOps(code)).find();
+    }
+
+    /// True when the given code fragment contains a partial operation that no emptiness / size guard dominates (#3065). A
+    /// `getFirst` / `getLast` is guarded when the same receiver appears EARLIER in the fragment in `<receiver>.isEmpty()` or
+    /// `<receiver>.size() <cmp>`; every other partial operation (`throw`, `orElseThrow`, indexed `get`, ...) is never guarded.
+    ///
+    /// Known limits (text, not flow): the guard is matched by receiver name and position only, so its polarity and branch are
+    /// not checked (`if (xs.isEmpty()) { xs.getFirst(); }` reads as guarded), and a receiver that is not a plain identifier
+    /// (`wire.items().getFirst()`) is never guarded. Used by JBCT-TOT-02's body scan only; the lambda rule keeps
+    /// [#containsPartialOperation].
+    static boolean containsUnguardedPartialOperation(String code) {
+        var masked = maskForOps(code);
+        var operations = PARTIAL_OP.matcher(masked);
+
+        while (operations.find()) {
+            if (!isGuardedAccessor(masked, operations.start(), operations.group())) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static boolean isGuardedAccessor(String masked, int start, String operation) {
+        if (!ACCESSOR_OP.matcher(operation).find()) {
+            return false;
+        }
+
+        return receiverBefore(masked, start).filter(receiver -> hasGuardBefore(masked, start, receiver))
+                             .isPresent();
+    }
+
+    private static boolean hasGuardBefore(String masked, int start, String receiver) {
+        var guard = Pattern.compile("(?<![\\w$.])" + Pattern.quote(receiver)
+                                    + "\\s*\\.\\s*(?:isEmpty\\s*\\(\\s*\\)|size\\s*\\(\\s*\\)\\s*(?:==|!=|<=|>=|<|>))");
+
+        return guard.matcher(masked.substring(0, start)).find();
+    }
+
+    /// Plain identifier directly before the `.` at `dotIdx`, or `none` when the receiver is any other expression (a call
+    /// result, a qualified name, an index).
+    private static Option<String> receiverBefore(String code, int dotIdx) {
+        var end = dotIdx;
+
+        while (end > 0 && Character.isWhitespace(code.charAt(end - 1))) {
+            end--;
+        }
+
+        var startIdx = end;
+
+        while (startIdx > 0 && isIdentifierChar(code.charAt(startIdx - 1))) {
+            startIdx--;
+        }
+
+        var qualified = startIdx > 0 && code.charAt(startIdx - 1) == '.';
+
+        return startIdx == end || qualified
+               ? Option.none()
+               : Option.some(code.substring(startIdx, end));
     }
 
     /// True when the given chain fragment is a `Stream` pipeline (carries a collector / source

@@ -7,5 +7,3 @@
 JBCT-BND-01 = "warning"
 # RET-01: void return mandated by the host API or inherent to mutable emit state (Mojo.execute, Processor.init, main, AutoCloseable.close, visitor callbacks); the signature is the API where it is not our choice
 JBCT-RET-01 = "warning"
-# TOT-02: mapper returns Option (total by shape); suspected false positive in the rule, unverified
-JBCT-TOT-02 = "warning"
