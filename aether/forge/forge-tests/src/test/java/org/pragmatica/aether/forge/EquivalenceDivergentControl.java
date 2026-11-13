@@ -33,12 +33,14 @@ import org.pragmatica.lang.Option;
 /// scripted batch, which is a real commit read back through the commit ring.
 ///
 /// - O1: the first outcome's verdict flipped (FAILED -> SUCCEEDED, as the plan's "a FATAL report under ALL_OR_NOTHING writes SUCCEEDED"; any other
-///   status -> FAILED). With no outcome there is nothing to flip: O1 is not measured, and nothing is planted.
-/// - O2: placement stops at target - 1 (one ACTIVE row of the first placed artifact removed); with targets but none placed, a target of 1 with no
-///   row. With no target at all, O2 is not measured and nothing is planted.
+///   status -> FAILED); FSM2's first outcome, else LEGACY's. With no outcome in either arm there is nothing to flip: O1 is not measured, and
+///   nothing is planted.
+/// - O2: placement stops at target - 1 (one ACTIVE row of the first placed artifact removed); with targets in either arm but none placed in
+///   FSM2, a target of 1 with no row. With no target in either arm, O2 is not measured and nothing is planted.
 /// - O3: C17b leaves one departed node's `TopicPublisher` row.
-/// - O5: placement delayed by max(60 s, 2 x LEGACY); O6: one `lost` submission. In a scenario that places nothing (E-09, both arms negative) O5 is
-///   not measured and nothing is planted.
+/// - O5: LEGACY's placement time delayed by max(60 s, 2 x LEGACY), whatever FSM2 did (a one-arm-only FSM2 divergence must still read DIVERGE, not
+///   VOID: the control is planted from LEGACY, never from FSM2 data); O6: one `lost` submission. In a scenario that places nothing (E-09, both arms
+///   negative) O5 is not measured and nothing is planted.
 /// - Monitor (i)-(iv): each planted in a tail of samples appended after the arm's last sample, long enough to exceed every bound. With no sample
 ///   there is no tail to extend: the monitor is not measured and nothing is planted.
 ///
@@ -58,7 +60,7 @@ final class EquivalenceDivergentControl {
 
     static Arm of(Arm fsm2, Arm legacy, EquivalenceMonitor monitor) {
         return new Arm("control",
-                       new EquivalenceKv(diverged(fsm2.quiescent().entries())),
+                       new EquivalenceKv(diverged(fsm2.quiescent().entries(), new EquivalenceKv(legacy.quiescent().entries()))),
                        fsm2.liveNodes(),
                        planted(fsm2.samples(), monitor),
                        fsm2.o4Batches(),
@@ -68,14 +70,15 @@ final class EquivalenceDivergentControl {
                        fsm2.nowMs());
     }
 
-    /// O5 of the control arm: delayed past the bound; one-arm-only when FSM2 never placed but LEGACY did; untouched (negative) when neither placed,
-    /// where O5 is not measured.
+    /// O5 of the control arm, planted from LEGACY's placement time alone so it never depends on what FSM2 did (N1: FSM2 never placing while
+    /// LEGACY did made the old plant a silent `1L`): delayed past the bound when LEGACY placed; one past FSM2's own time when only FSM2 placed (the
+    /// one-arm finding then differs in its number); untouched (negative) when neither placed, where O5 is not measured.
     private static long delayed(Arm fsm2, Arm legacy) {
-        if (fsm2.o5PlacementMs() >= 0) {
-            return fsm2.o5PlacementMs() + Math.max(60_000L, 2 * Math.max(0L, legacy.o5PlacementMs()));
+        if (legacy.o5PlacementMs() >= 0) {
+            return legacy.o5PlacementMs() + Math.max(60_000L, 2 * legacy.o5PlacementMs());
         }
 
-        return legacy.o5PlacementMs() < 0 ? fsm2.o5PlacementMs() : 1L;
+        return fsm2.o5PlacementMs() >= 0 ? fsm2.o5PlacementMs() + 1L : fsm2.o5PlacementMs();
     }
 
     /// The families the control did NOT make the comparison report: a divergence of the control comparison that the FSM2 comparison does not
@@ -99,22 +102,23 @@ final class EquivalenceDivergentControl {
         return divergence.describe().replaceAll("\\b(fsm2|control)\\b", "ARM");
     }
 
-    private static Map<AetherKey, AetherValue> diverged(Map<AetherKey, AetherValue> entries) {
+    private static Map<AetherKey, AetherValue> diverged(Map<AetherKey, AetherValue> entries, EquivalenceKv legacyView) {
         var kv = new LinkedHashMap<>(entries);
         var view = new EquivalenceKv(entries);
 
-        // O1: nothing to flip with no outcome (not measured)
-        view.outcomes()
+        // O1: FSM2's first outcome flipped; with none, LEGACY's first (N1: FSM2 with no outcome while LEGACY has one still measures O1); with
+        // none in either arm there is nothing to flip (not measured)
+        (view.outcomes().isEmpty() ? legacyView : view).outcomes()
             .entrySet()
             .stream()
             .findFirst()
             .ifPresent(first -> kv.put(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(BlueprintId.blueprintId(first.getKey()).unwrap()), flipped(first.getValue())));
-        // O2: with no target at all there is nothing to under-place (not measured)
+        // O2: with no target in either arm there is nothing to under-place (not measured)
         var active = view.active();
         var placed = view.targets().entrySet().stream().filter(entry -> entry.getValue().targetInstances() > 0 && active.getOrDefault(entry.getKey(), 0L) > 0).findFirst();
 
         placed.ifPresentOrElse(target -> removeOneActive(kv, target.getKey()),
-                               () -> plantUnplacedTarget(kv, view));
+                               () -> plantUnplacedTarget(kv, view, legacyView));
         // O3
         kv.put(new AetherKey.TopicPublisherKey(ResourceAddress.resourceAddress("f4", "control", "1.0.0").unwrap(), O2_PLANT, DEPARTED),
                AetherValue.TopicPublisherValue.topicPublisherValue(DEPARTED, AetherValue.TopicTier.ANY));
@@ -122,8 +126,10 @@ final class EquivalenceDivergentControl {
         return kv;
     }
 
-    private static void plantUnplacedTarget(Map<AetherKey, AetherValue> kv, EquivalenceKv view) {
-        if (!view.targets().isEmpty()) {
+    /// A target of 1 with no row, planted when either arm has a target: FSM2 with no target while LEGACY has one is a measured family whose FSM2
+    /// side has no O2 finding to repeat (N1).
+    private static void plantUnplacedTarget(Map<AetherKey, AetherValue> kv, EquivalenceKv view, EquivalenceKv legacyView) {
+        if (!view.targets().isEmpty() || !legacyView.targets().isEmpty()) {
             kv.put(AetherKey.SliceTargetKey.sliceTargetKey(O2_PLANT.base()), AetherValue.SliceTargetValue.sliceTargetValue(O2_PLANT.version(), 1));
         }
     }

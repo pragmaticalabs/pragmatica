@@ -5,10 +5,14 @@
 
 package org.pragmatica.aether.forge;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -96,5 +100,32 @@ class EquivalenceVerdictTest {
         assertThat(EquivalenceVerdict.wired(EquivalenceVerdict.PASS, NONE, NONE, NONE)).isEqualTo(EquivalenceVerdict.PASS);
         assertThat(EquivalenceVerdict.wired(EquivalenceVerdict.VOID, SOME, SOME, SOME)).isEqualTo(EquivalenceVerdict.VOID);
         assertThat(EquivalenceVerdict.wired(EquivalenceVerdict.DIVERGE, NONE, NONE, SOME)).isEqualTo(EquivalenceVerdict.DIVERGE);
+    }
+
+    /// f4fixD item 2: a round that dies outside every arm writes no verdict, so the file of an earlier same scenario/round must not survive it as
+    /// a PASS. Mutation: `discardStale` doing nothing; the PASS file is still there and the assertion goes red.
+    @Test
+    void aStaleVerdictFile_isDiscardedAtRoundStart(@TempDir Path dir) throws IOException {
+        var file = EquivalenceVerdict.reportFile(dir, "E01", 3);
+
+        EquivalenceVerdict.writeReport(file, List.of("VERDICT PASS"));
+        assertThat(file).exists();
+        EquivalenceVerdict.discardStale(file);
+        assertThat(file).doesNotExist();
+        EquivalenceVerdict.discardStale(file);
+        assertThat(dir.resolve("other-round03.txt")).doesNotExist();
+    }
+
+    /// The file name is `<scenario>-round<NN>.txt`; the report is written whole and replaces an earlier one. Mutations: the round or scenario
+    /// dropped from the name; the write appending instead of replacing.
+    @Test
+    void theReport_isWrittenUnderItsRoundName_andReplacesAnEarlierOne(@TempDir Path dir) throws IOException {
+        var file = EquivalenceVerdict.reportFile(dir.resolve("nested"), "E09", 7);
+
+        assertThat(file.getFileName().toString()).isEqualTo("E09-round07.txt");
+        assertThat(EquivalenceVerdict.reportFile(dir, "E09", 12).getFileName().toString()).isEqualTo("E09-round12.txt");
+        EquivalenceVerdict.writeReport(file, List.of("a", "VERDICT PASS"));
+        EquivalenceVerdict.writeReport(file, List.of("VERDICT ERROR"));
+        assertThat(Files.readAllLines(file)).containsExactly("VERDICT ERROR");
     }
 }

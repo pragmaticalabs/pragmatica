@@ -125,6 +125,7 @@ class Fsm2EquivalenceRoundTest {
         var o4Controls = new HashMap<DeploymentEngine, Boolean>();
         var placements = new HashMap<DeploymentEngine, String>();
 
+        EquivalenceVerdict.discardStale(reportFile(scenario, round));
         log("F4 round scenario=%s round=%d order=%s tick=%d quiet=%d".formatted(scenario, round, engines, TICK_MS, QUIET_MS));
         for (var index = 0; index < engines.size(); index++) {
             var engine = engines.get(index);
@@ -135,47 +136,19 @@ class Fsm2EquivalenceRoundTest {
         }
         var legacy = arms.get(DeploymentEngine.LEGACY);
         var fsm2 = arms.get(DeploymentEngine.FSM2);
-        var control = EquivalenceDivergentControl.of(fsm2, legacy, MONITOR);
-        var fsm2Divergences = EquivalenceComparison.compare(legacy, fsm2, MONITOR, scenario.name());
-        var controlDivergences = EquivalenceComparison.compare(legacy, control, MONITOR, scenario.name());
-        var notMeasured = EquivalenceComparison.notMeasured(legacy, fsm2);
-        var silent = new ArrayList<>(EquivalenceDivergentControl.silentFamilies(fsm2Divergences, controlDivergences, notMeasured));
-
-        o4Controls.forEach((engine, fired) -> {
-            if (!fired) {
-                silent.add("O4-scripted-batch(" + engine + ")");
-            }
-        });
-        monitorLive.forEach((engine, fired) -> {
-            if (!fired) {
-                silent.add("MONITOR-live-plant(" + engine + ")");
-            }
-        });
-        o6Live.forEach((engine, fired) -> {
-            if (!fired) {
-                silent.add("O6-live-probe(" + engine + ")");
-            }
-        });
-        oracle.forEach(verdict -> {
-            if (!verdict.controlsFired()) {
-                silent.add("ORACLE-controls");
-            }
-        });
-        var divergences = new ArrayList<>(fsm2Divergences.stream().map(Divergence::describe).toList());
-        var voids = new ArrayList<>(placementVoid(placements));
-
-        voids.addAll(EquivalenceComparison.voids(legacy, fsm2));
-
-        oracle.forEach(verdict -> verdict.disagreements().forEach(submit -> divergences.add("ORACLE: " + submit.describe())));
-        var verdict = EquivalenceVerdict.guarded(() -> EquivalenceVerdict.wired(EquivalenceVerdict.of(silent, voids, divergences), silent, voids, divergences),
-                                                 error -> verdictError(scenario, round, error));
+        var findings = EquivalenceVerdict.guarded(() -> EquivalenceRoundFindings.assemble(legacy, fsm2, o4Controls, monitorLive, o6Live, oracle, placements, MONITOR, scenario.name()),
+                                                  error -> verdictError(scenario, round, error));
+        var silent = findings.silent();
+        var voids = findings.voids();
+        var divergences = findings.divergences();
+        var verdict = findings.verdict();
 
         log("arm legacy: o4=%d o5=%d ms o6=%s samples=%d".formatted(legacy.o4Batches(), legacy.o5PlacementMs(), legacy.o6(), legacy.samples().size()));
         log("arm fsm2:   o4=%d o5=%d ms o6=%s samples=%d".formatted(fsm2.o4Batches(), fsm2.o5PlacementMs(), fsm2.o6(), fsm2.samples().size()));
         oracle.forEach(result -> log(result.describe()));
-        log("control divergences: " + controlDivergences.stream().map(Divergence::describe).toList());
+        log("control divergences: " + findings.controlDivergences().stream().map(Divergence::describe).toList());
         log("silent controls: " + silent);
-        log("not measured (compared zero items, no control credited): " + notMeasured);
+        log("not measured (compared zero items, no control credited): " + findings.notMeasured());
         log("placement legacy=%s fsm2=%s; void: %s".formatted(placements.get(DeploymentEngine.LEGACY), placements.get(DeploymentEngine.FSM2), voids));
         divergences.forEach(divergence -> log("DIVERGENCE " + divergence));
         log("VERDICT " + verdict);
@@ -1026,14 +999,6 @@ class Fsm2EquivalenceRoundTest {
                      .count();
     }
 
-    /// O4 is compared only at equal placement: arms whose per-artifact node counts differ void the round (not PASS).
-    private static List<String> placementVoid(Map<DeploymentEngine, String> placements) {
-        var legacy = placements.get(DeploymentEngine.LEGACY);
-        var fsm2 = placements.get(DeploymentEngine.FSM2);
-
-        return legacy.equals(fsm2) ? List.of() : List.of("O4-placement-mismatch(legacy=" + legacy + ", fsm2=" + fsm2 + ")");
-    }
-
     private boolean healthy(EmberCluster cluster) {
         return cluster.status().nodes().stream().allMatch(node -> get(node.mgmtPort(), "/api/v1/health").contains("\"quorum\":true"));
     }
@@ -1088,14 +1053,11 @@ class Fsm2EquivalenceRoundTest {
         System.out.println("F4 " + stamped);
     }
 
-    private void write(Scenario scenario, int round) {
-        var dir = Path.of(System.getProperty("f4.out", "target/f4"));
+    private static Path reportFile(Scenario scenario, int round) {
+        return EquivalenceVerdict.reportFile(Path.of(System.getProperty("f4.out", "target/f4")), scenario.name(), round);
+    }
 
-        try {
-            Files.createDirectories(dir);
-            Files.write(dir.resolve("%s-round%02d.txt".formatted(scenario, round)), report);
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
+    private void write(Scenario scenario, int round) {
+        EquivalenceVerdict.writeReport(reportFile(scenario, round), report);
     }
 }

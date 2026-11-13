@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.cluster.state.kvstore.CommitRing;
 import org.pragmatica.cluster.state.kvstore.IncarnationTag;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -368,6 +369,52 @@ class EquivalenceInstrumentTest {
 
             assertThat(EquivalenceComparison.notMeasured(legacy, fsm2)).doesNotContain("O2");
             assertThat(EquivalenceComparison.compare(legacy, control, MONITOR)).extracting(EquivalenceComparison.Divergence::family).contains("O2");
+            // FSM2's own under-placement already supplies an O2 finding; only the plant (a different target) makes the control's finding new.
+            // Mutation: remove the unplaced-target plant (K10); the control repeats FSM2's finding and `silentFamilies` names O2.
+            assertThat(EquivalenceDivergentControl.silentFamilies(EquivalenceComparison.compare(legacy, fsm2, MONITOR),
+                                                                  EquivalenceComparison.compare(legacy, control, MONITOR),
+                                                                  EquivalenceComparison.notMeasured(legacy, fsm2))).doesNotContain("O2");
+        }
+
+        /// N1 (vf4copus, vf4cfable): a defect FSM2 shows in ONE arm only must read DIVERGE, not VOID. Each case is a measured family whose FSM2
+        /// side has nothing of the control's kind to repeat; the control is planted from LEGACY's data, so it still fires and the comparison
+        /// itself reports the real divergence. Mutations: `delayed` back to the `1L` fallback (O5), the O1 plant from FSM2 outcomes only, the O2
+        /// plant gated on FSM2 targets only; the matching assertion goes red.
+        @Test
+        void aOneArmOnlyFsm2Divergence_isDiverge_notVoid() {
+            var legacy = arm("legacy", false);
+            var neverPlaces = new Arm("fsm2", new EquivalenceKv(fsm2Kv(3)), Set.copyOf(CORES), deploySamples(true), 10, -1L, Map.of());
+            var noOutcome = withoutKeys(arm("fsm2", true), AetherKey.DeploymentOutcomeKey.class);
+            var noTarget = withoutKeys(arm("fsm2", true), AetherKey.SliceTargetKey.class);
+
+            assertThat(oneArmFindings(legacy, neverPlaces)).as("FSM2 never places").contains("O5");
+            assertThat(oneArmFindings(neverPlacesLegacy(), arm("fsm2", true))).as("LEGACY never places, FSM2 does").contains("O5");
+            assertThat(oneArmFindings(legacy, noOutcome)).as("FSM2 has no outcome").contains("O1");
+            assertThat(oneArmFindings(legacy, noTarget)).as("FSM2 has no target").doesNotContain("O2");
+        }
+
+        private static Arm neverPlacesLegacy() {
+            return new Arm("legacy", new EquivalenceKv(legacyKv(3)), Set.copyOf(CORES), deploySamples(false), 10, -1L, Map.of());
+        }
+
+        /// The families the REAL comparison reports for the one-arm arm, restricted to those whose control stayed silent; the real comparison
+        /// must name the family (a divergence), and the control must have fired for it.
+        private static List<String> oneArmFindings(Arm legacy, Arm fsm2) {
+            var control = EquivalenceDivergentControl.of(fsm2, legacy, MONITOR);
+            var real = EquivalenceComparison.compare(legacy, fsm2, MONITOR);
+            var silent = EquivalenceDivergentControl.silentFamilies(real, EquivalenceComparison.compare(legacy, control, MONITOR), EquivalenceComparison.notMeasured(legacy, fsm2));
+
+            assertThat(silent).as("every measured control fires").isEmpty();
+
+            return real.stream().map(EquivalenceComparison.Divergence::family).toList();
+        }
+
+        private static Arm withoutKeys(Arm arm, Class<?> keyType) {
+            var kv = new HashMap<>(arm.quiescent().entries());
+
+            kv.keySet().removeIf(keyType::isInstance);
+
+            return new Arm(arm.engine(), new EquivalenceKv(kv), arm.liveNodes(), arm.samples(), arm.o4Batches(), arm.o5PlacementMs(), arm.o6());
         }
 
         /// The monitor is not measured below the sample floor, in either arm, and the control plants no tail on an arm without samples.
@@ -432,6 +479,32 @@ class EquivalenceInstrumentTest {
             assertThat(EquivalenceComparison.voids(legacy, fsm2)).isEmpty();
         }
 
+        /// The E09-r7 shape through `compare` itself (vf4cfable N3, C11/C12): three instances LOADING while the target was put and removed between
+        /// two samples. The ring's target events are the only witness of the step, so `compare` must hand them to the monitor for the arm that
+        /// carries them. Mutations: the other arm's `check(samples, events)` called without the events (C11, C12); the matching assertion goes red.
+        @Test
+        void compare_hands_theRingEventsOfEachArm_toTheMonitor() {
+            var loading = new HashMap<AetherKey, AetherValue>();
+
+            for (var index = 0; index < 3; index++) {
+                loading.put(new AetherKey.NodeArtifactKey(CORES.get(index), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+            }
+            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())), new EquivalenceMonitor.Sample(1_000L, new EquivalenceKv(loading)));
+            var events = List.of(new EquivalenceMonitor.TargetEvent(300L, SLICE.base(), 3), new EquivalenceMonitor.TargetEvent(900L, SLICE.base(), 0));
+            var empty = new EquivalenceKv(Map.of());
+            var clean = new Arm("legacy", empty, Set.copyOf(CORES), List.of(), 10, 4_000L, Map.of());
+            var stepWithEvents = new Arm("fsm2", empty, Set.copyOf(CORES), samples, 10, 4_000L, Map.of(), events, 0L);
+            var stepWithoutEvents = new Arm("fsm2", empty, Set.copyOf(CORES), samples, 10, 4_000L, Map.of());
+            var legacyWithEvents = new Arm("legacy", empty, Set.copyOf(CORES), samples, 10, 4_000L, Map.of(), events, 0L);
+            var legacyWithoutEvents = new Arm("legacy", empty, Set.copyOf(CORES), samples, 10, 4_000L, Map.of());
+            var cleanOther = new Arm("fsm2", empty, Set.copyOf(CORES), List.of(), 10, 4_000L, Map.of());
+
+            assertThat(EquivalenceComparison.compare(clean, stepWithoutEvents, MONITOR)).as("control: no events, the step is a breach").extracting(EquivalenceComparison.Divergence::family).containsExactly("MON-i");
+            assertThat(EquivalenceComparison.compare(clean, stepWithEvents, MONITOR)).as("the other arm's events reach the monitor").isEmpty();
+            assertThat(EquivalenceComparison.compare(legacyWithoutEvents, cleanOther, MONITOR)).as("control: legacy, no events").extracting(EquivalenceComparison.Divergence::family).containsExactly("MON-i");
+            assertThat(EquivalenceComparison.compare(legacyWithEvents, cleanOther, MONITOR)).as("legacy's events reach the monitor").isEmpty();
+        }
+
         @Test
         void o4AndO5Gates_holdAtTheirBounds_andTripPastThem() {
             var legacy = arm("legacy", false);
@@ -440,6 +513,152 @@ class EquivalenceInstrumentTest {
 
             assertThat(EquivalenceComparison.compare(legacy, atBound, MONITOR)).isEmpty();
             assertThat(EquivalenceComparison.compare(legacy, past, MONITOR)).extracting(EquivalenceComparison.Divergence::family).containsExactly("O4", "O5");
+        }
+    }
+
+    /// The round's findings assembly (f4fixD item 3): the pure function the round test calls, so every line of the old inline `round()` assembly
+    /// (vf4cfable R07-R19) is reachable offline. Each test names the mutation it kills.
+    @Nested
+    class RoundFindings {
+        private final Map<DeploymentEngine, Boolean> fired = Map.of(DeploymentEngine.LEGACY, true, DeploymentEngine.FSM2, true);
+        private final Map<DeploymentEngine, Boolean> fsm2Fired = Map.of(DeploymentEngine.FSM2, true);
+        private final Map<DeploymentEngine, String> placements = Map.of(DeploymentEngine.LEGACY, "[a=3 nodes]", DeploymentEngine.FSM2, "[a=3 nodes]");
+        private final List<EquivalenceOracle.Verdict> oracle = List.of(oracleOver(legacyKv(3)));
+
+        private EquivalenceOracle.Verdict oracleOver(Map<AetherKey, AetherValue> kv) {
+            return EquivalenceOracle.check(new EquivalenceKv(kv), LeaderValue.leaderValue(CORES.getFirst(), 4L), Set.copyOf(CORES));
+        }
+
+        private EquivalenceRoundFindings assemble(Arm legacy,
+                                                  Arm fsm2,
+                                                  Map<DeploymentEngine, Boolean> o4,
+                                                  Map<DeploymentEngine, Boolean> monitorLive,
+                                                  Map<DeploymentEngine, Boolean> o6,
+                                                  List<EquivalenceOracle.Verdict> oracleResults,
+                                                  Map<DeploymentEngine, String> placed,
+                                                  String scenario) {
+            return EquivalenceRoundFindings.assemble(legacy, fsm2, o4, monitorLive, o6, oracleResults, placed, MONITOR, scenario);
+        }
+
+        private EquivalenceRoundFindings clean() {
+            return assemble(arm("legacy", false), arm("fsm2", true), fired, fired, fsm2Fired, oracle, placements, "E01");
+        }
+
+        @Test
+        void aCleanRound_isPass_andReportsItsControls() {
+            var findings = clean();
+
+            assertThat(findings.verdict()).isEqualTo(EquivalenceVerdict.PASS);
+            assertThat(findings.silent()).isEmpty();
+            assertThat(findings.voids()).isEmpty();
+            assertThat(findings.divergences()).isEmpty();
+            assertThat(findings.notMeasured()).isEmpty();
+            assertThat(findings.controlDivergences()).as("the control comparison is carried, not dropped").extracting(EquivalenceComparison.Divergence::family).contains("O1", "O2", "O3", "O5", "O6", "MON-i");
+        }
+
+        /// R07: a non-quiescent arm is a void, never a PASS. Mutation: the `voids.addAll(EquivalenceComparison.voids(..))` removed.
+        @Test
+        void aNonQuiescentArm_isVoid() {
+            var fsm2 = arm("fsm2", true);
+            var notQuiescent = new Arm("fsm2", fsm2.quiescent(), fsm2.liveNodes(), fsm2.samples(), -1, 4_000L, Map.of());
+            var findings = assemble(arm("legacy", false), notQuiescent, fired, fired, fsm2Fired, oracle, placements, "E01");
+
+            assertThat(findings.verdict()).isEqualTo(EquivalenceVerdict.VOID);
+            assertThat(findings.voids()).singleElement().asString().contains("O4 void count");
+        }
+
+        /// R08: placements that differ, or were never recorded, void the round. Mutations: `placementVoid` not added, or its null test dropped.
+        @Test
+        void aPlacementMismatch_orAMissingPlacement_isVoid() {
+            var mismatch = Map.of(DeploymentEngine.LEGACY, "[a=1 nodes]", DeploymentEngine.FSM2, "[a=3 nodes]");
+            var missing = Map.of(DeploymentEngine.LEGACY, "[a=3 nodes]");
+
+            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, fired, fsm2Fired, oracle, mismatch, "E01").voids()).singleElement().asString().contains("O4-placement-mismatch");
+            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, fired, fsm2Fired, oracle, missing, "E01").verdict()).isEqualTo(EquivalenceVerdict.VOID);
+            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, fired, fsm2Fired, oracle, Map.of(), "E01").verdict()).isEqualTo(EquivalenceVerdict.VOID);
+        }
+
+        /// R10, R17-R19: a control that did not fire, or that was never recorded, is silent, per engine. The O6 probe is FSM2-only by design
+        /// (LEGACY's counters are 0 by construction), so a missing LEGACY entry there is not silent. Mutations: a map not read, a read that
+        /// treats absent as fired, or always true.
+        @Test
+        void aControlThatDidNotFire_orWasNeverRecorded_isSilent() {
+            var legacyUnfired = Map.of(DeploymentEngine.LEGACY, false, DeploymentEngine.FSM2, true);
+            var fsm2Unfired = Map.of(DeploymentEngine.FSM2, false);
+
+            assertThat(assemble(arm("legacy", false), arm("fsm2", true), legacyUnfired, fired, fsm2Fired, oracle, placements, "E01").silent()).containsExactly("O4-scripted-batch(LEGACY)");
+            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, legacyUnfired, fsm2Fired, oracle, placements, "E01").silent()).containsExactly("MONITOR-live-plant(LEGACY)");
+            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, fired, fsm2Unfired, oracle, placements, "E01").silent()).containsExactly("O6-live-probe(FSM2)");
+            assertThat(assemble(arm("legacy", false), arm("fsm2", true), Map.of(DeploymentEngine.LEGACY, true), fired, fsm2Fired, oracle, placements, "E01").silent()).containsExactly("O4-scripted-batch(FSM2)");
+            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, Map.of(DeploymentEngine.FSM2, true), fsm2Fired, oracle, placements, "E01").silent()).containsExactly("MONITOR-live-plant(LEGACY)");
+            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, fired, Map.of(), oracle, placements, "E01").silent()).containsExactly("O6-live-probe(FSM2)");
+            assertThat(assemble(arm("legacy", false), arm("fsm2", true), Map.of(), Map.of(), Map.of(), oracle, placements, "E01").verdict()).isEqualTo(EquivalenceVerdict.VOID);
+            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, fired, fsm2Fired, oracle, placements, "E01").silent()).isEmpty();
+        }
+
+        /// The oracle: no result, or a result whose D-8 (e) controls did not fire, is silent; a result with a disagreement is a divergence.
+        /// Mutations: the empty-list guard removed, the `controlsFired` test inverted, the disagreements not added.
+        @Test
+        void theOracle_isSilentWithoutResultsOrControls_andItsDisagreementsAreDivergences() {
+            var unfired = new EquivalenceOracle.Verdict(List.of(), List.of(), false, true, 0, false);
+            var underPlaced = assemble(arm("legacy", false), arm("fsm2", true), fired, fired, fsm2Fired, List.of(oracleOver(legacyKv(2))), placements, "E01");
+
+            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, fired, fsm2Fired, List.of(), placements, "E01").silent()).containsExactly("ORACLE-controls");
+            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, fired, fsm2Fired, List.of(unfired), placements, "E01").silent()).containsExactly("ORACLE-controls");
+            assertThat(underPlaced.verdict()).isEqualTo(EquivalenceVerdict.DIVERGE);
+            assertThat(underPlaced.divergences()).singleElement().asString().startsWith("ORACLE: ");
+        }
+
+        /// R-level DIVERGE: an FSM2 divergence reaches the findings as its description, and a silent control still beats it (VOID beats DIVERGE).
+        @Test
+        void anFsm2Divergence_isDiverge_andASilentControlBeatsIt() {
+            var fsm2 = arm("fsm2", true);
+            var heavy = new Arm("fsm2", fsm2.quiescent(), fsm2.liveNodes(), fsm2.samples(), 13, 4_000L, Map.of());
+            var diverged = assemble(arm("legacy", false), heavy, fired, fired, fsm2Fired, oracle, placements, "E01");
+            var voided = assemble(arm("legacy", false), heavy, Map.of(), fired, fsm2Fired, oracle, placements, "E01");
+
+            assertThat(diverged.verdict()).isEqualTo(EquivalenceVerdict.DIVERGE);
+            assertThat(diverged.divergences()).singleElement().asString().startsWith("O4: ");
+            assertThat(voided.verdict()).isEqualTo(EquivalenceVerdict.VOID);
+        }
+
+        /// The scenario reaches the comparison: the E-09 ruling hides FAILED vs ROLLED_BACK on E09 and nowhere else. Mutation: the scenario
+        /// argument dropped from either `compare`.
+        @Test
+        void theScenario_reachesTheComparison() {
+            var legacy = Comparison.withVerdict(arm("legacy", false), AetherValue.DeploymentOutcomeStatus.FAILED);
+            var fsm2 = Comparison.withVerdict(arm("fsm2", true), AetherValue.DeploymentOutcomeStatus.ROLLED_BACK);
+
+            assertThat(assemble(legacy, fsm2, fired, fired, fsm2Fired, oracle, placements, "E09").verdict()).isEqualTo(EquivalenceVerdict.PASS);
+            assertThat(assemble(legacy, fsm2, fired, fired, fsm2Fired, oracle, placements, "E01").divergences()).singleElement().asString().startsWith("O1: ");
+        }
+
+        /// A family measured in neither arm is reported, and its control is not required to fire. Mutation: `notMeasured` not passed to `silentFamilies`.
+        @Test
+        void aFamilyNotMeasured_isReported_andNotRequiredToFire() {
+            var legacy = new Arm("legacy", new EquivalenceKv(legacyKv(3)), Set.copyOf(CORES), deploySamples(false), 10, -1L, Map.of());
+            var fsm2 = new Arm("fsm2", new EquivalenceKv(fsm2Kv(3)), Set.copyOf(CORES), deploySamples(true), 10, -1L, Map.of());
+            var findings = assemble(legacy, fsm2, fired, fired, fsm2Fired, oracle, placements, "E01");
+
+            assertThat(findings.notMeasured()).containsExactly("O5");
+            assertThat(findings.silent()).isEmpty();
+            assertThat(findings.verdict()).isEqualTo(EquivalenceVerdict.PASS);
+        }
+
+        /// The monitor reaches both comparisons: a breach in the FSM2 samples is a divergence of the findings. Mutation: `monitor` swapped for a
+        /// monitor that checks nothing (the bound of the round's own monitor is what the test pins: a 10 s window against a 20 s old step).
+        @Test
+        void theMonitor_reachesTheComparison() {
+            var overshoot = legacyKv(3);
+
+            overshoot.put(new AetherKey.NodeArtifactKey(node("n4"), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+            var samples = new ArrayList<>(deploySamples(true));
+
+            samples.add(new EquivalenceMonitor.Sample(40_000L, new EquivalenceKv(overshoot)));
+            var fsm2 = arm("fsm2", true);
+            var breached = new Arm("fsm2", fsm2.quiescent(), fsm2.liveNodes(), samples, 10, 4_000L, Map.of());
+
+            assertThat(assemble(arm("legacy", false), breached, fired, fired, fsm2Fired, oracle, placements, "E01").divergences()).singleElement().asString().contains("MON-i");
         }
     }
 
@@ -514,6 +733,39 @@ class EquivalenceInstrumentTest {
             var events = List.of(new EquivalenceMonitor.TargetEvent(0L, SLICE.base(), 3), new EquivalenceMonitor.TargetEvent(15_000L, SLICE.base(), 3));
 
             assertThat(MONITOR.check(samples, events)).extracting(EquivalenceMonitor.Violation::invariant).containsExactly("i");
+        }
+
+        /// Two ring puts of one target 20 s apart, with no sample between them that shows the target change (vf4cfable N4, M6/M07): the first opens
+        /// the window at 100 ms, the second repeats the target and opens none, so the over-target sample at 25 s is a breach. Without the ring's
+        /// own `previousTarget` bookkeeping the second put reads as a fresh step at 20 s and excuses it. Mutation: drop (or mis-set) the
+        /// `previousTarget.put` in `eventStep`; the assertion goes red.
+        @Test
+        void aRepeatedRingPut_ofOneTarget_opensNoSecondWindow() {
+            var overshoot = shared(3);
+
+            for (var index = 1; index <= 4; index++) {
+                overshoot.put(new AetherKey.NodeArtifactKey(node("n" + index), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+            }
+            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())), new EquivalenceMonitor.Sample(25_000L, new EquivalenceKv(overshoot)));
+            var events = List.of(new EquivalenceMonitor.TargetEvent(100L, SLICE.base(), 3), new EquivalenceMonitor.TargetEvent(20_000L, SLICE.base(), 3));
+
+            assertThat(MONITOR.check(samples, events)).extracting(EquivalenceMonitor.Violation::invariant).containsExactly("i");
+        }
+
+        /// Events handed over out of `atMs` order are applied in time order (M7): the early put is applied at the 1 s sample, the late removal is
+        /// still ahead of it. Without the sort the cursor stops at the late event, the early put is not applied, and the step reads as a breach.
+        /// Mutation: drop the `sorted` of the events; the assertion goes red.
+        @Test
+        void ringEvents_outOfTimeOrder_areAppliedInTimeOrder() {
+            var loading = new HashMap<AetherKey, AetherValue>();
+
+            for (var index = 0; index < 3; index++) {
+                loading.put(new AetherKey.NodeArtifactKey(CORES.get(index), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+            }
+            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())), new EquivalenceMonitor.Sample(1_000L, new EquivalenceKv(loading)));
+            var events = List.of(new EquivalenceMonitor.TargetEvent(20_000L, SLICE.base(), 0), new EquivalenceMonitor.TargetEvent(300L, SLICE.base(), 3));
+
+            assertThat(MONITOR.check(samples, events)).isEmpty();
         }
 
         /// The ring-side extraction: a put carries the new target, a remove 0, a leader transaction its target mutations only.

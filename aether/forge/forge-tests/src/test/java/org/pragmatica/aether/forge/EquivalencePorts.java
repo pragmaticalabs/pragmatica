@@ -22,7 +22,7 @@ final class EquivalencePorts {
     static final int STEP = 400;
     static final int TRIES = 8;
     /// Ports beyond the node count that a re-placing scenario may bind.
-    private static final int MARGIN = 4;
+    static final int MARGIN = 4;
 
     private EquivalencePorts() {}
 
