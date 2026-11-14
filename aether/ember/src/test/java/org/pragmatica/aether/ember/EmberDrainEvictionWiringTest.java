@@ -86,7 +86,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///   tick), and `Drains.resume` starts the loop. There is no synchronous entry, so thread attribution does not apply. The precondition is the
 ///   cluster interpreter's state being `ClusterState.Active` (raised when the rebuild completes, the counterpart of `REBUILT_MARKER`), and
 ///   the drainee keeps reporting at the ping interval (one pong is forgotten by the readiness sweep within three pings, before a 5 s
-///   sample), and the observable is `ClusterEffect.Log` "Drain complete for node X" (`Drains.advance`, logged by `EffectTranslator` on
+///   sample), and the observable is `ClusterEffect.Log` "Drain complete for node <id>" (the bare id, unlike the legacy line) (`Drains.advance`, logged by `EffectTranslator` on
 ///   [#FSM2_LOGGER]). It must arrive within one seam interval (`SeamPoller.INTERVAL_MS`) plus [#FSM2_SLACK_MS] of the pong.
 ///
 /// A fabricated worker id is used as the drainee (as in `EmberDrainAcknowledgementWiringTest`) so the
