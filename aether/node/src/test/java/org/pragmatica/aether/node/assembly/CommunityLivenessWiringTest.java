@@ -41,7 +41,9 @@ class CommunityLivenessWiringTest {
 
     @BeforeEach
     void wire() {
-        Mockito.when(config.timeouts().cluster().communityAbsence()).thenReturn(timeSpan(30).seconds());
+        var cluster = config.timeouts().cluster();
+
+        Mockito.doReturn(timeSpan(30).seconds()).when(cluster).communityAbsence();
         directory.put(ASSIGNED, ActivationDirectiveValue.worker("east", ""));
     }
 
