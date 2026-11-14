@@ -23,7 +23,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodePlacementValue;
@@ -286,7 +285,10 @@ class CommunityBackstopTest {
         var all = List.of(w10, M1, M2, M3, M4);
 
         w.evolve(C, GOV, Set.copyOf(all), all, 31_000L);
-        assertThat(w.recordOf(w10).map(NodeDepartureValue::state)).as("the falsely-dead worker is admitted again")
+        assertThat(w.recordOf(w10).isEmpty()).as("the view alone does not re-admit a retired identity").isTrue();
+        w.h.deliver(new ClusterInput.WorkerJoin(w10, w.admissionOf(w10)));
+        w.h.drain();
+        assertThat(w.recordOf(w10).map(NodeDepartureValue::state)).as("the falsely-dead worker is admitted again by its own join")
                   .isEqualTo(Option.some(DepartureState.ADMITTED));
         assertThat(w.stored(new ActivationDirectiveKey(w10)).map(v -> ((ActivationDirectiveValue) v).role()))
                   .as("a new WORKER directive (#3028)").isEqualTo(Option.some(ActivationDirectiveValue.WORKER));
@@ -295,9 +297,9 @@ class CommunityBackstopTest {
     }
 
     // NT-128 (c) variant
-    // Red when: the reappearance in localAlive (not in the roster) does not re-admit.
+    // Red when: the reappearance in localAlive (not in the roster) re-admits a retired identity (#3193: only its own join does), or that join does not admit it.
     @Test
-    void wrongGovernorView_reappearanceInLocalAlive_alsoReadmits() {
+    void wrongGovernorView_reappearanceInLocalAlive_aloneDoesNotReadmit_theOwnJoinDoes() {
         var w10 = node("w10");
         var w = residualWorld();
         var others = List.of(M1, M2, M3, M4);
@@ -310,6 +312,9 @@ class CommunityBackstopTest {
         assertThat(w.h.warns("departure-inferred")).hasSize(1);
         assertThat(w.recordOf(w10).isEmpty()).as("the STALE record is retired with the directive (#3193)").isTrue();
         w.refreshSeams(s -> s.withLocalAlive(Option.some(Set.of(w10, M1, M2, M3, M4))));
+        w.h.drain();
+        assertThat(w.recordOf(w10).isEmpty()).as("localAlive alone does not re-admit a retired identity").isTrue();
+        w.h.deliver(new ClusterInput.WorkerJoin(w10, w.admissionOf(w10)));
         w.h.drain();
         assertThat(w.recordOf(w10).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.ADMITTED));
     }
