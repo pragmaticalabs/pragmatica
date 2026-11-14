@@ -61,7 +61,7 @@ class MigrationSetSpiTest {
         var refused = MigrationSetId.migrationSetId("Bad:id");
 
         assertThat(refused.isFailure()).isTrue();
-        refused.onFailure(cause -> assertThat(cause).isEqualTo(MigrationSetError.invalidSetId("Bad:id")));
+        refused.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(MigrationSetError.InvalidSetId.class, refusal -> assertThat(refusal.value()).isEqualTo("Bad:id")));
     }
 
     @Test
@@ -80,8 +80,8 @@ class MigrationSetSpiTest {
         var separator = MigrationTarget.migrationTarget("db@x", schema);
         var blank = MigrationTarget.migrationTarget(" ", schema);
 
-        separator.onFailure(cause -> assertThat(cause).isEqualTo(MigrationSetError.invalidTarget("db@x")));
-        blank.onFailure(cause -> assertThat(cause).isEqualTo(MigrationSetError.invalidTarget(" ")));
+        separator.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(MigrationSetError.InvalidTarget.class, refusal -> assertThat(refusal.section()).isEqualTo("db@x")));
+        blank.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(MigrationSetError.InvalidTarget.class, refusal -> assertThat(refusal.section()).isEqualTo(" ")));
         assertThat(separator.isFailure()).isTrue();
         assertThat(blank.isFailure()).isTrue();
     }
@@ -110,8 +110,8 @@ class MigrationSetSpiTest {
         assertThat(badName.isFailure()).isTrue();
         assertThat(blankSql.isFailure()).isTrue();
         assertThat(blankName.isFailure()).isTrue();
-        badName.onFailure(cause -> assertThat(cause).isEqualTo(MigrationSetError.invalidScript("a/b.sql")));
-        blankSql.onFailure(cause -> assertThat(cause).isEqualTo(MigrationSetError.invalidScript("V1.sql")));
-        blankName.onFailure(cause -> assertThat(cause).isEqualTo(MigrationSetError.invalidScript(" ")));
+        badName.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(MigrationSetError.InvalidScript.class, refusal -> assertThat(refusal.filename()).isEqualTo("a/b.sql")));
+        blankSql.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(MigrationSetError.InvalidScript.class, refusal -> assertThat(refusal.filename()).isEqualTo("V1.sql")));
+        blankName.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(MigrationSetError.InvalidScript.class, refusal -> assertThat(refusal.filename()).isEqualTo(" ")));
     }
 }
