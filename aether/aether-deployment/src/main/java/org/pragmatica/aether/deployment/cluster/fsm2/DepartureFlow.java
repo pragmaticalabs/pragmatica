@@ -491,9 +491,7 @@ public sealed interface DepartureFlow {
                                new TxDraft(SubmitKind.CLEANUP,
                                            unmoved.getFirst().key(),
                                            unmoved,
-                                           recordGuards(node,
-                                                        unmoved,
-                                                        m.records.get(node)),
+                                           recordGuards(node, unmoved, m.records.get(node)),
                                            draft.pairs(),
                                            draft.node(),
                                            draft.attempt() + 1,
@@ -512,9 +510,7 @@ public sealed interface DepartureFlow {
     /// The record a C17b was derived from is the one the mirror holds: read from its witness, or from the record's own exact-value
     /// removal when the draft retires a worker.
     private static boolean recordUnchanged(ClusterModel m, NodeId node, TxDraft draft) {
-        return Stream.concat(draft.guards()
-                                  .stream()
-                                  .map(KVCommand.ReadWitness::expected),
+        return Stream.concat(draft.guards().stream().map(KVCommand.ReadWitness::expected),
                              draft.mutations()
                                   .stream()
                                   .filter(mutation -> mutation.key() instanceof NodeDepartureKey)
