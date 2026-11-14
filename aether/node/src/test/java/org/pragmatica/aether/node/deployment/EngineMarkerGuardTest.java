@@ -16,9 +16,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.node.deployment.EngineMarkerGuard.State;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngineValue;
@@ -29,8 +26,13 @@ import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+
 
 /// W-29 (phase-3 design 9.2, 8.2): every row of the engine marker table refuses the node ITSELF, on positive evidence only, after one WARN
 /// window measured from an observed committed `LeaderValue`; both-absent waits and never refuses; a node whose engine disagrees activates
@@ -41,8 +43,14 @@ class EngineMarkerGuardTest {
     private static final NodeId MINTER = NodeId.nodeId("core-3").unwrap();
     private static final long WINDOW_MS = 13_000L;
     private static final long NOW = 1_760_000_000_000L;
-    private static final DeploymentEngineValue FSM2_MARKER = new DeploymentEngineValue(DeploymentEngine.FSM2, MINTER, NOW - 5_000L);
-    private static final DeploymentEngineValue LEGACY_MARKER = new DeploymentEngineValue(DeploymentEngine.LEGACY, MINTER, NOW - 5_000L);
+
+    private static final DeploymentEngineValue FSM2_MARKER = new DeploymentEngineValue(DeploymentEngine.FSM2,
+                                                                                       MINTER,
+                                                                                       NOW - 5_000L);
+
+    private static final DeploymentEngineValue LEGACY_MARKER = new DeploymentEngineValue(DeploymentEngine.LEGACY,
+                                                                                         MINTER,
+                                                                                         NOW - 5_000L);
 
     private final ManualClock clock = new ManualClock();
     private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
@@ -54,35 +62,46 @@ class EngineMarkerGuardTest {
     private Option<LeaderValue> leader = Option.some(new LeaderValue(MINTER, 1L));
 
     private EngineMarkerGuard guard(DeploymentEngine engine) {
-        return EngineMarkerGuard.engineMarkerGuard(engine, SELF, WINDOW_MS, new EngineMarkerGuard.Reader() {
+        return EngineMarkerGuard.engineMarkerGuard(engine,
+                                                   SELF,
+                                                   WINDOW_MS,
+                                                   new EngineMarkerGuard.Reader() {
             @Override
             public Option<DeploymentEngineValue> marker() {
-                return marker;
-            }
+                                                       return marker;
+                                                   }
 
             @Override
             public boolean incarnationPresent() {
-                return incarnation;
-            }
+                                                       return incarnation;
+                                                   }
 
             @Override
             public Option<LeaderValue> leader() {
-                return leader;
-            }
-        }, clock, () -> NOW, sink, exits::add);
+                                                       return leader;
+                                                   }
+        },
+                                                   clock,
+                                                   () -> NOW,
+                                                   sink,
+                                                   exits::add);
     }
 
     /// The sink hands each warning to its publisher on another thread, so the list is read after the hand-off settles.
     private List<OperatorWarning> mismatchWarnings() {
         quiesce();
 
-        return warnings.stream().filter(w -> w.code() == OperatorWarningCode.DEPLOYMENT_ENGINE_MISMATCH).toList();
+        return warnings.stream()
+                       .filter(w -> w.code() == OperatorWarningCode.DEPLOYMENT_ENGINE_MISMATCH)
+                       .toList();
     }
 
     private List<OperatorWarning> matchedWarnings() {
         quiesce();
 
-        return warnings.stream().filter(w -> w.code() == OperatorWarningCode.DEPLOYMENT_ENGINE_MATCHED).toList();
+        return warnings.stream()
+                       .filter(w -> w.code() == OperatorWarningCode.DEPLOYMENT_ENGINE_MATCHED)
+                       .toList();
     }
 
     /// The sink publishes in order on its own thread: a sentinel offered now is published after every warning offered before it.
@@ -102,11 +121,9 @@ class EngineMarkerGuardTest {
 
             guard.whenOpen("activate", () -> activations.add("activate"));
             assertThat(activations).as("closed until the marker is read").isEmpty();
-
             marker = Option.some(FSM2_MARKER);
             incarnation = true;
             guard.evaluate();
-
             assertThat(guard.state()).isEqualTo(State.OPEN);
             assertThat(activations).containsExactly("activate");
             assertThat(mismatchWarnings()).isEmpty();
@@ -121,17 +138,19 @@ class EngineMarkerGuardTest {
             marker = Option.some(LEGACY_MARKER);
             incarnation = true;
             guard.evaluate();
-
             assertThat(guard.state()).isEqualTo(State.MISMATCH_WINDOW);
             assertThat(mismatchWarnings()).as("one WARN opens the window").hasSize(1);
             assertThat(exits).as("not before the window ends").isEmpty();
             var text = mismatchWarnings().getFirst().message();
 
-            assertThat(text).contains("configured for FSM2").contains("engine=LEGACY").contains(MINTER.id()).contains("fresh NodeId").contains("re-genesis");
+            assertThat(text).contains("configured for FSM2")
+                      .contains("engine=LEGACY")
+                      .contains(MINTER.id())
+                      .contains("fresh NodeId")
+                      .contains("re-genesis");
             clock.advance(WINDOW_MS - 1);
             assertThat(exits).isEmpty();
             clock.advance(1);
-
             assertThat(guard.state()).isEqualTo(State.REFUSED);
             assertThat(exits).as("the node refuses itself, once").hasSize(1);
             assertThat(mismatchWarnings()).as("the WARN was not repeated").hasSize(1);
@@ -145,7 +164,6 @@ class EngineMarkerGuardTest {
             incarnation = true;
             guard.evaluate();
             clock.advance(WINDOW_MS);
-
             assertThat(mismatchWarnings().getFirst().message()).contains("marker absent, incarnation present");
             assertThat(guard.state()).isEqualTo(State.REFUSED);
             assertThat(exits).hasSize(1);
@@ -160,7 +178,6 @@ class EngineMarkerGuardTest {
             guard.evaluate();
             clock.advance(10 * WINDOW_MS);
             guard.evaluate();
-
             assertThat(guard.state()).isEqualTo(State.WAITING);
             assertThat(mismatchWarnings()).isEmpty();
             assertThat(exits).isEmpty();
@@ -179,7 +196,6 @@ class EngineMarkerGuardTest {
             marker = Option.some(FSM2_MARKER);
             incarnation = true;
             guard.evaluate();
-
             assertThat(guard.state()).isEqualTo(State.OPEN);
             assertThat(activations).containsExactly("activate");
             assertThat(exits).isEmpty();
@@ -198,11 +214,9 @@ class EngineMarkerGuardTest {
             guard.evaluate();
             clock.advance(3 * WINDOW_MS);
             guard.evaluate();
-
             assertThat(guard.state()).isEqualTo(State.MISMATCH_UNTIMED);
             assertThat(mismatchWarnings()).isEmpty();
             assertThat(exits).isEmpty();
-
             leader = Option.some(new LeaderValue(MINTER, 2L));
             guard.evaluate();
             assertThat(guard.state()).isEqualTo(State.MISMATCH_WINDOW);
@@ -224,7 +238,6 @@ class EngineMarkerGuardTest {
             marker = Option.some(FSM2_MARKER);
             guard.evaluate();
             clock.advance(WINDOW_MS);
-
             assertThat(guard.state()).isEqualTo(State.OPEN);
             assertThat(exits).isEmpty();
         }
@@ -240,13 +253,10 @@ class EngineMarkerGuardTest {
             guard.evaluate();
             clock.advance(WINDOW_MS / 2);
             guard.evaluate();
-
             assertThat(guard.state()).isEqualTo(State.MISMATCH_WINDOW);
             assertThat(exits).isEmpty();
             assertThat(mismatchWarnings()).hasSize(1);
-
             clock.advance(WINDOW_MS / 2);
-
             assertThat(guard.state()).isEqualTo(State.REFUSED);
             assertThat(exits).hasSize(1);
         }
@@ -266,14 +276,10 @@ class EngineMarkerGuardTest {
             clock.advance(100);
             marker = Option.some(LEGACY_MARKER);
             guard.evaluate();
-
             clock.advance(WINDOW_MS / 2 - 100);
-
             assertThat(exits).as("the first window's deadline passed; the second one is still running").isEmpty();
             assertThat(guard.state()).isEqualTo(State.MISMATCH_WINDOW);
-
             clock.advance(WINDOW_MS / 2 + 100);
-
             assertThat(exits).as("the second window ended").hasSize(1);
         }
 
@@ -289,7 +295,6 @@ class EngineMarkerGuardTest {
             guard.whenOpen("leader", () -> activations.add("leader-activate"));
             clock.advance(WINDOW_MS);
             guard.whenOpen("leader", () -> activations.add("late"));
-
             assertThat(activations).isEmpty();
             assertThat(guard.state()).isEqualTo(State.REFUSED);
         }
@@ -303,7 +308,6 @@ class EngineMarkerGuardTest {
             marker = Option.some(FSM2_MARKER);
             incarnation = true;
             guard.evaluate();
-
             assertThat(activations).as("level-triggered: the latest wins").containsExactly("deactivate");
         }
 
@@ -318,14 +322,13 @@ class EngineMarkerGuardTest {
             incarnation = false;
             guard.evaluate();
             assertThat(guard.state()).isEqualTo(State.WAITING);
-
             guard.whenOpen("leader", () -> activations.add("deactivate"));
             guard.whenOpenAfterParked("leader", () -> activations.add("activate"));
             marker = Option.some(FSM2_MARKER);
             incarnation = true;
             guard.evaluate();
-
-            assertThat(activations).as("#3253: Deactivate then Activate, in order").containsExactly("deactivate", "activate");
+            assertThat(activations).as("#3253: Deactivate then Activate, in order")
+                      .containsExactly("deactivate", "activate");
         }
 
         @Test
@@ -338,7 +341,6 @@ class EngineMarkerGuardTest {
             marker = Option.some(FSM2_MARKER);
             incarnation = true;
             guard.evaluate();
-
             assertThat(activations).as("level-triggered: the latest Deactivate wins").containsExactly("deactivate-2");
         }
 
@@ -350,7 +352,6 @@ class EngineMarkerGuardTest {
             marker = Option.some(FSM2_MARKER);
             incarnation = true;
             guard.evaluate();
-
             assertThat(activations).containsExactly("activate");
         }
 
@@ -372,13 +373,20 @@ class EngineMarkerGuardTest {
                         var actual = start.run(ranOnOpen).verdict(start);
                         long entries = activations.stream().filter("E"::equals).count();
 
-                        if (!expected.equals(actual) || entries != (other >= 0 ? 1 : 0)) {
-                            mismatches.add(sequence + " other@" + other + " start=" + start + " ran=" + activations + " expected=" + expected
-                                           + " actual=" + actual);
+                        if (!expected.equals(actual) || entries != (other >= 0
+                                                                    ? 1
+                                                                    : 0)) {
+                            mismatches.add(sequence
+                                          + " other@" + other
+                                          + " start=" + start
+                                          + " ran=" + activations
+                                          + " expected=" + expected
+                                          + " actual=" + actual);
                         }
                     }
                 }
             }
+
             assertThat(cases).as("cases enumerated").isEqualTo(316);
             assertThat(mismatches).as("sequences whose parked run differs from the direct run (of %d)", cases).isEmpty();
         }
@@ -396,7 +404,6 @@ class EngineMarkerGuardTest {
             marker = Option.some(FSM2_MARKER);
             incarnation = true;
             guard.evaluate();
-
             assertThat(activations).containsExactly("D1", "A1", "E2", "H1");
         }
 
@@ -412,12 +419,15 @@ class EngineMarkerGuardTest {
                 parkEntryAt(guard, i, other);
                 parkLeaderAction(guard, sequence.charAt(i));
             }
+
             parkEntryAt(guard, sequence.length(), other);
             marker = Option.some(FSM2_MARKER);
             incarnation = true;
             guard.evaluate();
 
-            return guard.isOpen() ? Option.none() : Option.some("did not open: " + sequence);
+            return guard.isOpen()
+                   ? Option.none()
+                   : Option.some("did not open: " + sequence);
         }
 
         private void parkEntryAt(EngineMarkerGuard guard, int position, int other) {
@@ -446,9 +456,11 @@ class EngineMarkerGuardTest {
                     next.add(sequence + "D");
                     next.add(sequence + "A");
                 }
+
                 all.addAll(next);
                 frontier = next;
             }
+
             return all;
         }
     }
@@ -461,7 +473,9 @@ class EngineMarkerGuardTest {
                 return new FsmModel(false, incarnation);
             }
 
-            return active ? this : new FsmModel(true, incarnation + 1);
+            return active
+                   ? this
+                   : new FsmModel(true, incarnation + 1);
         }
 
         FsmModel run(String inputs) {
@@ -470,13 +484,18 @@ class EngineMarkerGuardTest {
             for (var input : inputs.toCharArray()) {
                 fsm = fsm.step(input);
             }
+
             return fsm;
         }
 
         /// Observable class: final activity, and whether the incarnation moved at all (a Dormant FSM's next Activate always mints
         /// last + 1, so the number is observable only while Active).
         String verdict(FsmModel start) {
-            return active ? "Active/" + (incarnation > start.incarnation ? "reincarnated" : "same") : "Dormant";
+            return active
+                   ? "Active/" + (incarnation > start.incarnation
+                                  ? "reincarnated"
+                                  : "same")
+                   : "Dormant";
         }
     }
 
@@ -508,11 +527,12 @@ class EngineMarkerGuardTest {
             var entered = new CountDownLatch(1);
             var release = new CountDownLatch(1);
 
-            guard.whenOpen("first", () -> {
-                activations.add("parked-start");
-                hold(entered, release);
-                activations.add("parked-end");
-            });
+            guard.whenOpen("first",
+                           () -> {
+                               activations.add("parked-start");
+                               hold(entered, release);
+                               activations.add("parked-end");
+                           });
             marker = Option.some(FSM2_MARKER);
             incarnation = true;
             var opener = Thread.ofPlatform().start(guard::evaluate);
@@ -525,7 +545,6 @@ class EngineMarkerGuardTest {
             release.countDown();
             opener.join(5_000);
             later.join(5_000);
-
             assertThat(activations).containsExactly("parked-start", "parked-end", "later");
         }
 
@@ -541,16 +560,26 @@ class EngineMarkerGuardTest {
             var openers = new CopyOnWriteArrayList<Thread>();
 
             guard.evaluate();
-            guard.whenOpen("hold", () -> {
-                parkAndReopen(guard, marker, openers, "w", () -> parkAndReopen(guard, marker, openers, "leader", () -> order.add("older")));
-                guard.whenOpen("leader", () -> order.add("newer"));
-            });
+            guard.whenOpen("hold",
+                           () -> {
+                               parkAndReopen(guard,
+                                             marker,
+                                             openers,
+                                             "w",
+                                             () -> parkAndReopen(guard,
+                                                                 marker,
+                                                                 openers,
+                                                                 "leader",
+                                                                 () -> order.add("older")));
+                               guard.whenOpen("leader", () -> order.add("newer"));
+                           });
             for (var opener : openers) {
                 opener.join(10_000);
             }
 
             assertThat(openers).as("both reopenings ran on their own threads").hasSize(2);
-            assertThat(order).as("the older parked activation runs before the newer admitted action").containsExactly("older", "newer");
+            assertThat(order).as("the older parked activation runs before the newer admitted action")
+                      .containsExactly("older", "newer");
         }
 
         /// P2 (v-2643 finding 2), the verifier's probe: the same placement reached through lock contention, repeated until the admitting thread
@@ -560,10 +589,12 @@ class EngineMarkerGuardTest {
         void guard_parkedActivation_neverRunsAfterANewerAdmittedOne() throws Exception {
             int inversions = 0;
             int aWon = 0;
+
             for (int i = 0; i < 200 && aWon < 20; i++) {
                 var order = Collections.synchronizedList(new ArrayList<String>());
                 var marker = new AtomicReference<>(Option.some(FSM2_MARKER));
                 var guard = sharedMarkerGuard(marker);
+
                 guard.evaluate();
                 assertThat(guard.state()).isEqualTo(State.OPEN);
                 var ranW = new AtomicReference<>("");
@@ -583,22 +614,31 @@ class EngineMarkerGuardTest {
                 var latch = new CountDownLatch(1);
                 var parkedW = new CountDownLatch(1);
                 // H holds the lock while W is parked; A queues on the lock FIRST, then C's evaluate drains W and queues behind A
-                var h = Thread.ofPlatform().name("H").start(() -> guard.whenOpen("hold", () -> {
-                    marker.set(Option.some(LEGACY_MARKER));
-                    guard.evaluate();
-                    guard.whenOpen("w", w);
-                    parkedW.countDown();
-                    try {
-                        latch.await(5, TimeUnit.SECONDS);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                }));
+                var h = Thread.ofPlatform()
+                              .name("H")
+                              .start(() -> guard.whenOpen("hold",
+                                                          () -> {
+                                                              marker.set(Option.some(LEGACY_MARKER));
+                                                              guard.evaluate();
+                                                              guard.whenOpen("w", w);
+                                                              parkedW.countDown();
+                                                              try {
+                                                              latch.await(5, TimeUnit.SECONDS);
+                                                          } catch (InterruptedException e) {
+                                                              Thread.currentThread().interrupt();
+                                                          }
+                                                          }));
+
                 parkedW.await(5, TimeUnit.SECONDS);
-                var a = Thread.ofPlatform().name("A").start(() -> guard.whenOpen("leader", () -> order.add("X-deactivate(newer)")));
+                var a = Thread.ofPlatform()
+                              .name("A")
+                              .start(() -> guard.whenOpen("leader",
+                                                          () -> order.add("X-deactivate(newer)")));
+
                 Thread.sleep(30);
                 marker.set(Option.some(FSM2_MARKER));
                 var c = Thread.ofPlatform().name("C").start(guard::evaluate);
+
                 Thread.sleep(30);
                 latch.countDown();
                 c.join(10_000);
@@ -612,8 +652,11 @@ class EngineMarkerGuardTest {
                     }
                 }
             }
+
             assertThat(aWon).as("the interleaving was reached").isGreaterThan(0);
-            assertThat(inversions).as("older parked activation ran after a newer admitted one, in %d runs that reached the interleaving", aWon).isZero();
+            assertThat(inversions).as("older parked activation ran after a newer admitted one, in %d runs that reached the interleaving",
+                                      aWon)
+                      .isZero();
         }
 
         /// The window between `takeDrained` and the recursive decision: a drained action closes the gate and re-entrantly parks a Deactivate
@@ -629,19 +672,21 @@ class EngineMarkerGuardTest {
             var openers = new CopyOnWriteArrayList<Thread>();
 
             guard.evaluate();
-            guard.whenOpen("hold", () -> {
-                close(guard, marker);
-                guard.whenOpen("leader", () -> order.add("D_old"));
-                guard.whenOpenAfterParked("leader", () -> {
-                    order.add("A_mid");
-                    close(guard, marker);
-                    guard.whenOpen("leader", () -> order.add("D2"));
-                });
-                marker.set(Option.some(FSM2_MARKER));
-                openers.add(Thread.ofPlatform().start(guard::evaluate));
-                awaitOpen(guard);
-                guard.whenOpenAfterParked("leader", () -> order.add("A_new"));
-            });
+            guard.whenOpen("hold",
+                           () -> {
+                               close(guard, marker);
+                               guard.whenOpen("leader", () -> order.add("D_old"));
+                               guard.whenOpenAfterParked("leader",
+                                                         () -> {
+                                                             order.add("A_mid");
+                                                             close(guard, marker);
+                                                             guard.whenOpen("leader", () -> order.add("D2"));
+                                                         });
+                               marker.set(Option.some(FSM2_MARKER));
+                               openers.add(Thread.ofPlatform().start(guard::evaluate));
+                               awaitOpen(guard);
+                               guard.whenOpenAfterParked("leader", () -> order.add("A_new"));
+                           });
             assertThat(guard.isOpen()).as("the gate is closed again after the drained work").isFalse();
             marker.set(Option.some(FSM2_MARKER));
             guard.evaluate();
@@ -650,9 +695,49 @@ class EngineMarkerGuardTest {
             }
 
             assertThat(order).as("the window was reached: D_old and A_mid ran from the drain, then D2 was parked re-entrantly")
-                             .startsWith("D_old", "A_mid");
+                      .startsWith("D_old", "A_mid");
             assertThat(order).as("A_mid made the FSM Active again, so D2 then A_new must re-incarnate it once more")
-                             .containsExactly("D_old", "A_mid", "D2", "A_new");
+                      .containsExactly("D_old", "A_mid", "D2", "A_new");
+        }
+
+        /// The same window with a `whenOpen` caller: a drained action closes the gate and re-entrantly parks D2 under the name, then the recursive
+        /// decision for a `whenOpen` Deactivate must replace the parked D2 (a later `whenOpen` supersedes the whole parked sequence). Red when: the
+        /// recursive `runAdmitted` is called with `keepParked=true` (D2 survives ahead of the Deactivate).
+        @Test
+        @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+        void m5Window_reentrantParkBeforeTheRecursiveDecision_whenOpenCallerReplacesTheParkedSequence() throws Exception {
+            var marker = new AtomicReference<>(Option.some(FSM2_MARKER));
+            var guard = sharedMarkerGuard(marker);
+            var order = Collections.synchronizedList(new ArrayList<String>());
+            var openers = new CopyOnWriteArrayList<Thread>();
+
+            guard.evaluate();
+            guard.whenOpen("hold",
+                           () -> {
+                               close(guard, marker);
+                               guard.whenOpen("leader", () -> order.add("D_old"));
+                               guard.whenOpenAfterParked("leader",
+                                                         () -> {
+                                                             order.add("A_mid");
+                                                             close(guard, marker);
+                                                             guard.whenOpen("leader", () -> order.add("D2"));
+                                                         });
+                               marker.set(Option.some(FSM2_MARKER));
+                               openers.add(Thread.ofPlatform().start(guard::evaluate));
+                               awaitOpen(guard);
+                               guard.whenOpen("leader", () -> order.add("D_new"));
+                           });
+            assertThat(guard.isOpen()).as("the gate is closed again after the drained work").isFalse();
+            marker.set(Option.some(FSM2_MARKER));
+            guard.evaluate();
+            for (var opener : openers) {
+                opener.join(10_000);
+            }
+
+            assertThat(order).as("the window was reached: D_old and A_mid ran from the drain, then D2 was parked re-entrantly")
+                      .startsWith("D_old", "A_mid");
+            assertThat(order).as("D_new is a whenOpen caller: it replaces the parked D2 rather than queueing behind it")
+                      .containsExactly("D_old", "A_mid", "D_new");
         }
 
         /// #3261: an opening drains parked work, and its evaluating thread queues on `running` behind a running action. Meanwhile the gate goes
@@ -669,37 +754,38 @@ class EngineMarkerGuardTest {
             var release = new CountDownLatch(1);
 
             guard.evaluate();
-            var holder = Thread.ofPlatform().start(() -> guard.whenOpen("hold", () -> {
-                marker.set(Option.none());
-                incarnation.set(false);
-                guard.evaluate();
-                guard.whenOpen("leader", () -> ran.add("X"));
-                parked.countDown();
-                hold(new CountDownLatch(1), release);
-            }));
+            var holder = Thread.ofPlatform().start(() -> guard.whenOpen("hold",
+                                                                        () -> {
+                                                                            marker.set(Option.none());
+                                                                            incarnation.set(false);
+                                                                            guard.evaluate();
+                                                                            guard.whenOpen("leader", () -> ran.add("X"));
+                                                                            parked.countDown();
+                                                                            hold(new CountDownLatch(1), release);
+                                                                        }));
+
             assertThat(parked.await(5, TimeUnit.SECONDS)).isTrue();
             assertThat(guard.isOpen()).isFalse();
-
             marker.set(Option.some(FSM2_MARKER));
             incarnation.set(true);
             var opener = Thread.ofPlatform().start(guard::evaluate);
+
             awaitOpen(guard);
             pause(200);
             marker.set(Option.none());
             incarnation.set(false);
             var waiter = Thread.ofPlatform().start(guard::evaluate);
+
             awaitState(guard, State.WAITING);
             pause(200);
             marker.set(Option.some(FSM2_MARKER));
             incarnation.set(true);
             guard.evaluate();
             assertThat(guard.isOpen()).isTrue();
-
             release.countDown();
             holder.join(10_000);
             opener.join(10_000);
             waiter.join(10_000);
-
             assertThat(ran).as("the drained action ran exactly once").containsExactly("X");
         }
 
@@ -709,6 +795,7 @@ class EngineMarkerGuardTest {
             while (guard.state() != expected && System.nanoTime() < deadline) {
                 Thread.onSpinWait();
             }
+
             assertThat(guard.state()).isEqualTo(expected);
         }
 
@@ -735,9 +822,11 @@ class EngineMarkerGuardTest {
 
         private void awaitOpen(EngineMarkerGuard guard) {
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
             while (!guard.isOpen() && System.nanoTime() < deadline) {
                 Thread.onSpinWait();
             }
+
             assertThat(guard.isOpen()).as("the reopening decided within 5 s").isTrue();
         }
 
@@ -761,23 +850,31 @@ class EngineMarkerGuardTest {
             return sharedGuard(marker, new AtomicBoolean(true));
         }
 
-        private EngineMarkerGuard sharedGuard(AtomicReference<Option<DeploymentEngineValue>> marker, AtomicBoolean incarnation) {
-            return EngineMarkerGuard.engineMarkerGuard(DeploymentEngine.FSM2, SELF, WINDOW_MS, new EngineMarkerGuard.Reader() {
+        private EngineMarkerGuard sharedGuard(AtomicReference<Option<DeploymentEngineValue>> marker,
+                                              AtomicBoolean incarnation) {
+            return EngineMarkerGuard.engineMarkerGuard(DeploymentEngine.FSM2,
+                                                       SELF,
+                                                       WINDOW_MS,
+                                                       new EngineMarkerGuard.Reader() {
                 @Override
                 public Option<DeploymentEngineValue> marker() {
-                    return marker.get();
-                }
+                                                           return marker.get();
+                                                       }
 
                 @Override
                 public boolean incarnationPresent() {
-                    return incarnation.get();
-                }
+                                                           return incarnation.get();
+                                                       }
 
                 @Override
                 public Option<LeaderValue> leader() {
-                    return Option.some(new LeaderValue(MINTER, 1L));
-                }
-            }, new ManualClock(), () -> NOW, sink, exits::add);
+                                                           return Option.some(new LeaderValue(MINTER, 1L));
+                                                       }
+            },
+                                                       new ManualClock(),
+                                                       () -> NOW,
+                                                       sink,
+                                                       exits::add);
         }
 
         private void hold(CountDownLatch entered, CountDownLatch release) {
@@ -798,7 +895,6 @@ class EngineMarkerGuardTest {
 
             guard.whenOpen("activate", () -> activations.add("activate"));
             guard.evaluate();
-
             assertThat(guard.isOpen()).isTrue();
             assertThat(activations).containsExactly("activate");
         }
@@ -828,12 +924,12 @@ class EngineMarkerGuardTest {
             incarnation = true;
             guard.evaluate();
             guard.whenOpen("leader", () -> activations.add("during-the-window"));
-
             assertThat(guard.state()).isEqualTo(State.MISMATCH_WINDOW);
             assertThat(activations).as("MT-30: the mismatch activation gate").containsExactly("before-the-marker");
             clock.advance(WINDOW_MS);
             assertThat(exits).hasSize(1);
-            assertThat(mismatchWarnings().getFirst().message()).contains("configured for LEGACY").contains("engine=FSM2");
+            assertThat(mismatchWarnings().getFirst().message()).contains("configured for LEGACY")
+                      .contains("engine=FSM2");
         }
     }
 
@@ -854,7 +950,6 @@ class EngineMarkerGuardTest {
             marker = Option.some(FSM2_MARKER);
             guard.evaluate();
             guard.evaluate();
-
             assertThat(matchedWarnings()).hasSize(1);
             assertThat(matchedWarnings().getFirst().subject()).isEqualTo(SELF.id());
             assertThat(matchedWarnings().getFirst().message()).doesNotContain(EngineMarkerGuard.REFUSED_ITSELF);
@@ -871,7 +966,6 @@ class EngineMarkerGuardTest {
             marker = Option.none();
             incarnation = false;
             guard.evaluate();
-
             assertThat(guard.state()).isEqualTo(State.WAITING);
             assertThat(matchedWarnings()).hasSize(1);
         }
@@ -885,7 +979,6 @@ class EngineMarkerGuardTest {
             incarnation = true;
             guard.evaluate();
             clock.advance(WINDOW_MS);
-
             assertThat(exits).hasSize(1);
             assertThat(matchedWarnings()).hasSize(1);
             assertThat(matchedWarnings().getFirst().subject()).isEqualTo(SELF.id());
@@ -903,7 +996,6 @@ class EngineMarkerGuardTest {
             guard.evaluate();
             marker = Option.some(FSM2_MARKER);
             guard.evaluate();
-
             assertThat(guard.state()).isEqualTo(State.OPEN);
             assertThat(mismatchWarnings()).isEmpty();
             assertThat(matchedWarnings()).isEmpty();
