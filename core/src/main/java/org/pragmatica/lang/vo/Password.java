@@ -33,11 +33,14 @@ import org.pragmatica.lang.utils.Causes;
 /// never locks out an existing user whose stored password predates it.
 ///
 /// **Default policy** ([Policy#defaultPolicy()]): 8 to 64 code points, at most 256 UTF-8 bytes, no
-/// character-class rules, no normalisation. Against NIST SP 800-63B-4: a minimum of 8 is the
-/// multi-factor floor (the specification requires 15 where the password is the only authenticator,
-/// so such a deployment passes its own policy with `minCodePoints = 15`); the maximum of 64 is the
-/// floor a verifier SHALL permit; composition rules are SHALL NOT, hence off by default. Unicode and
-/// spaces are accepted. A bcrypt deployment passes `maxUtf8Bytes = 72`.
+/// character-class rules, no normalisation. Against NIST SP 800-63B-4 (Sec. 3.1.1.2, read 2026-11-14):
+/// a minimum of 8 is the multi-factor floor, while a password that is the only authenticator SHALL be
+/// at least 15 characters (such a deployment passes its own policy with `minCodePoints = 15`);
+/// a verifier SHOULD permit at least 64 characters, which is the default maximum; composition rules
+/// are SHALL NOT, hence off by default; printing ASCII, space and Unicode are accepted, and each code
+/// point counts as one character. NIST SHOULD-level advice to apply NFC normalisation when Unicode is
+/// accepted is NOT the default (normalisation is OFF by default; enable it with
+/// `Normalizer.Form.NFC`). A bcrypt deployment passes `maxUtf8Bytes = 72`.
 ///
 /// **Never exposes the raw value.** `toString()` is redacted and every failure carries only policy
 /// numbers, never the input. `equals` and `hashCode` are the record defaults and compare the raw
