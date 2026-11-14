@@ -36,11 +36,11 @@ public sealed interface Lifecycle {
     /// \* code, pre3085: rows from the snapshot (Indexer), Warnings.inherit (Warnings.java) seeds the family sets and marks dirty.
     /// \* pre2834: Lifecycle.rebuild has no inherit; family sets start empty.
     /// Activate(n) ==
-    ///   /\ fsm[n] = "Dormant" /\ kvLeader = n
+    ///   /\ fsm[n] = "Dormant" /\ (kvLeader = n \/ MUT = "twoleaders")   \* the mutant names the node itself as leader, whatever is committed
     ///   /\ LET w == IF Persists /\ MUT # "noinherit" THEN kv ELSE {}
     ///      IN /\ fsm' = [fsm EXCEPT ![n] = "Active"]
     ///         /\ inc' = [inc EXCEPT ![n] = inc[n] + 1]
-    ///         /\ view' = [view EXCEPT ![n] = Current]
+    ///         /\ view' = [view EXCEPT ![n] = IF MUT = "twoleaders" THEN <<n, term>> ELSE Current]
     ///         /\ warned' = [warned EXCEPT ![n] = w]
     ///         /\ rows' = [rows EXCEPT ![n] = IF Persists THEN kv ELSE {}]
     ///         /\ dirty' = [dirty EXCEPT ![n] = Persists]
@@ -50,9 +50,9 @@ public sealed interface Lifecycle {
     ///         /\ gIntent' = [gIntent EXCEPT ![n] = FALSE]
     ///         /\ fired' = [fired EXCEPT ![n] = {}]
     ///         /\ held' = [held EXCEPT ![n] = <<>>]
-    ///         /\ inheritGap' = (inheritGap \/ ~(kv \subseteq w))
-    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, shown, net, settles,
-    ///                  condBudget, faultBudget, deposedCommit>>
+    ///         /\ redo' = [redo EXCEPT ![n] = {}]
+    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, shown, net, settles, condBudget,
+    ///                  faultBudget>>
     /// ```
     static ClusterModel rebuild(Ctx ctx, long incarnation, Snapshot snapshot) {
         var m = new ClusterModel();
@@ -147,7 +147,7 @@ public sealed interface Lifecycle {
     ///   /\ view' = [view EXCEPT ![n] = Current]
     ///   /\ Apply(n, warned[n], rows[n], dirty[n], wInfl[n], gInfl[n], gIntent[n], FALSE, flushQ[n], shown, held[n])
     ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, fired, net, settles,
-    ///                  condBudget, faultBudget, deposedCommit, inheritGap>>
+    ///                  condBudget, faultBudget, redo>>
     /// ```
     static ClusterModel onLeader(ClusterModel m, Ctx ctx, LeaderValue value) {
         var wasSuspended = isSuspended(m, ctx);

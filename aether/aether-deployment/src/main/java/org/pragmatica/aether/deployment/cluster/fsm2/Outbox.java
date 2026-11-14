@@ -177,7 +177,9 @@ public sealed interface Outbox {
     /// Flush(n) ==
     ///   /\ fsm[n] = "Active" /\ flushQ[n]
     ///   /\ IF Suspended(n)
-    ///      THEN /\ Apply(n, warned[n], rows[n], FALSE, wInfl[n], gInfl[n], FALSE, FALSE, FALSE, shown, held[n])
+    ///      THEN /\ Apply(n, warned[n], rows[n], FALSE, wInfl[n] /\ ~(\E t \in redo[n] : t.kind = "W"),
+    ///                    gInfl[n] /\ ~(\E t \in redo[n] : t.kind = "G"), FALSE, FALSE, FALSE, shown, held[n])
+    ///           /\ redo' = [redo EXCEPT ![n] = {}]     \* clearIntents drops the outbox, resubmission drafts included
     ///           /\ UNCHANGED net
     ///      ELSE LET draftW == Persists /\ dirty[n] /\ ~wInfl[n] /\ MUT # "nodraft"
     ///               doW == draftW /\ warned[n] # rows[n]
@@ -187,11 +189,14 @@ public sealed interface Outbox {
     ///                       cov |-> Len(held[n])]
     ///               gtx == [kind |-> "G", node |-> n, inc |-> inc[n], lv |-> view[n],
     ///                       adds |-> {}, rems |-> {}, val |-> target, exp |-> kvDesired]
-    ///           IN /\ net' = net \cup (IF doW THEN {wtx} ELSE {}) \cup (IF doG THEN {gtx} ELSE {})
+    ///               \* Outbox.direct drafts of a witness-stale refusal go out unchanged, under the witness the node holds now
+    ///               resub == {[t EXCEPT !.lv = view[n]] : t \in redo[n]}
+    ///           IN /\ net' = net \cup (IF doW THEN {wtx} ELSE {}) \cup (IF doG THEN {gtx} ELSE {}) \cup resub
+    ///              /\ redo' = [redo EXCEPT ![n] = {}]
     ///              /\ Apply(n, warned[n], rows[n], IF draftW THEN FALSE ELSE dirty[n], wInfl[n] \/ doW,
     ///                       gInfl[n] \/ doG, FALSE, FALSE, FALSE, shown, held[n])
     ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, settles,
-    ///                  condBudget, faultBudget, deposedCommit, inheritGap>>
+    ///                  condBudget, faultBudget>>
     /// ```
     static ClusterModel flush(ClusterModel m, Ctx ctx, boolean suspended) {
         m.flushQueued = false;
@@ -527,13 +532,15 @@ public sealed interface Outbox {
     /// \* WARNINGS: unlanded marks dirty. The bound exceeds applyTimeout, so the engine no longer holds the tx.
     /// Expire(n) ==
     ///   /\ fsm[n] = "Active" /\ MUT # "noexpire"
+    ///   /\ ~Suspended(n)      \* Reconcile.run calls expire only after its isSuspended return
+    ///   /\ redo[n] = {}       \* a draft held for resubmission is in the outbox, not in `submitted`
     ///   /\ LET eW == wInfl[n] /\ TxOf(n, "W") = {}
     ///          eG == gInfl[n] /\ TxOf(n, "G") = {}
     ///      IN /\ eW \/ eG
     ///         /\ Apply(n, warned[n], rows[n], dirty[n] \/ eW, wInfl[n] /\ ~eW, gInfl[n] /\ ~eG, gIntent[n], FALSE,
     ///                  flushQ[n], shown, held[n])
     ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, net, settles,
-    ///                  condBudget, faultBudget, deposedCommit, inheritGap>>
+    ///                  condBudget, faultBudget, redo>>
     /// ```
     static ClusterModel expire(ClusterModel m, Ctx ctx) {
         var bound = ctx.settings().submissionExpiry() * 1_000_000L;
@@ -574,10 +581,13 @@ public sealed interface Outbox {
     ///   /\ s \in settles /\ fsm[s.node] = "Active" /\ s.inc = inc[s.node]
     ///   /\ LET n == s.node
     ///          isW == s.kind = "W"
+    ///          ref == s.out = "ref"
+    ///          dep == ref /\ s.lv[1] # n                   \* routeRefusal: the refusal names another node, nothing is resubmitted
+    ///          stale == ref /\ ~dep /\ s.lv # s.tx.lv     \* routeRefusal: names this node under a new witness, resubmit unchanged
     ///          r == IF isW /\ s.out = "acc" THEN (rows[n] \ s.rems) \cup s.adds
     ///               ELSE IF isW /\ s.out = "ref" THEN (rows[n] \ (s.adds \cup s.rems)) \cup s.seen
     ///               ELSE rows[n]
-    ///          d == IF isW /\ s.out = "ref" THEN TRUE ELSE dirty[n]
+    ///          d == IF isW /\ ref /\ ~dep /\ ~stale THEN TRUE ELSE dirty[n]   \* rederive -> Warnings.unlanded marks dirty
     ///          \* #3085: an accepted WARNINGS write publishes the held warnings it carried (Warnings.accepted -> committed -> publish)
     ///          pubW == MODE = "code" /\ isW /\ s.out = "acc"
     ///          k == IF s.cov < Len(held[n]) THEN s.cov ELSE Len(held[n])    \* the prefix the transaction carried (warningsCovered)
@@ -585,10 +595,11 @@ public sealed interface Outbox {
     ///          hd == IF pubW THEN SubSeq(held[n], k + 1, Len(held[n])) ELSE held[n]
     ///      IN /\ settles' = settles \ {s}
     ///         /\ view' = IF s.out = "ref" THEN [view EXCEPT ![n] = s.lv] ELSE view
-    ///         /\ Apply(n, warned[n], r, d, IF isW THEN FALSE ELSE wInfl[n], IF isW THEN gInfl[n] ELSE FALSE,
-    ///                  gIntent[n], FALSE, flushQ[n], sh, hd)
-    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, fired, net,
-    ///                  condBudget, faultBudget, deposedCommit, inheritGap>>
+    ///         /\ redo' = [redo EXCEPT ![n] = IF stale THEN redo[n] \cup {s.tx} ELSE redo[n]]
+    ///         /\ Apply(n, warned[n], r, d, IF isW THEN stale ELSE wInfl[n], IF isW THEN gInfl[n] ELSE stale,
+    ///                  gIntent[n], FALSE, flushQ[n] \/ stale, sh, hd)
+    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, fired, net, condBudget,
+    ///                  faultBudget>>
     /// ```
     ///
     /// ```tla Fsm2Leader:DropSettle
@@ -597,7 +608,7 @@ public sealed interface Outbox {
     ///   /\ s \in settles /\ (fsm[s.node] = "Dormant" \/ s.inc # inc[s.node])
     ///   /\ settles' = settles \ {s}
     ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, shown, fsm, inc, view, warned, rows,
-    ///                  dirty, flushQ, wInfl, gInfl, gIntent, fired, net, condBudget, faultBudget, deposedCommit, inheritGap, held>>
+    ///                  dirty, flushQ, wInfl, gInfl, gIntent, fired, net, condBudget, faultBudget, held, redo>>
     /// ```
     static ClusterModel settle(ClusterModel m, Ctx ctx, ClusterInput.WriteSettled settled) {
         return m.submitted.get(settled.correlationId())

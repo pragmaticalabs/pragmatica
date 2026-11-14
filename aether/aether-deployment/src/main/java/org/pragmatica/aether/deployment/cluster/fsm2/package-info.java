@@ -47,6 +47,20 @@
 /// (* warning a Rebuild raises after inherit (held in the code).                                                   *)
 /// (* The environment actions (Crash, ChangeLeader, KvApply, KvFail, LoseSettle, CondOn, CondOff, SetTarget,      *)
 /// (* NodeApply) are consensus and fault injection, not this package's code; they are part of the skeleton.        *)
+/// (*                                                                                                              *)
+/// (* Guarantee. Every pass row holds for two nodes, one event subject and one level subject (the goal rows: none), *)
+/// (* at most MaxTerm - 1 leader changes (two or three, per row), MaxCond condition changes and MaxFault faults; a    *)
+/// (* RESUME=FALSE in every pass row; the RESUME=TRUE rows (a still-Active node regains leadership) are RED: a finding. *)
+/// (* Nothing is claimed beyond those bounds. The leader fence *)
+/// (* itself is the applier's (KvApply compares the full leader value) and is assumed; what this model checks is that *)
+/// (* the package's write path (Outbox flush, settlement, resubmission) never produces an accepted write for a node  *)
+/// (* other than the committed leader (AcceptedOnlyForLeader), and what each property below states, nothing else.    *)
+/// (* A witness-stale refusal (the refusal names this node under a newer witness) is modelled: the transaction is    *)
+/// (* resubmitted unchanged under the new witness (var redo, Outbox.routeRefusal).                                  *)
+/// (* W-side CAS (mutant M9, dropping it, survives all bounds): the model's warning rows are sets, so a duplicate    *)
+/// (* add or a missing remove is a no-op on kv; the code's per-key expected value (Warnings.mutation) is not        *)
+/// (* distinguishable at set granularity. Whether a value-level stale overwrite is harmless in the code is NOT      *)
+/// (* established here [unverified].                                                                                *)
 ///
 /// EXTENDS Naturals, Sequences, FiniteSets, TLC
 ///
@@ -82,11 +96,11 @@
 ///           held,                    \* per node: the family warnings raised or closed, in order, held until their WARNINGS row commits (#3085)
 ///           net, settles,            \* transactions in the engine; settlements in transit
 ///           condBudget, faultBudget,
-///           deposedCommit, inheritGap \* ghosts
+///           redo                     \* per node: transactions resubmitted unchanged after a witness-stale refusal (Outbox.routeRefusal)
 ///
 /// vars == <<term, kvLeader, kv, kvDesired, target, observed, cond, shown, fsm, inc, view,
 ///           warned, rows, dirty, flushQ, wInfl, gInfl, gIntent, fired, held, net, settles,
-///           condBudget, faultBudget, deposedCommit, inheritGap>>
+///           condBudget, faultBudget, redo>>
 ///
 /// Current == <<kvLeader, term>>
 ///
@@ -118,7 +132,7 @@
 /// \* Warnings.java noteRaised (a family Warn marks dirty; dirty with an empty difference and nothing in flight is
 /// \* clean), then Outbox.java requestFlush (hasIntents incl. Warnings.pending). Wired by ClusterFsm.java.
 /// Apply(n, w, r, d, f, g, gi, fw, q, sh, hd) ==
-///   LET d1 == IF Persists /\ fw /\ MUT # "nodirty" THEN TRUE ELSE d
+///   LET d1 == IF Persists /\ fw THEN TRUE ELSE d
 ///       d2 == IF d1 /\ ~f /\ w = r THEN FALSE ELSE d1
 ///       \* Warnings.publish: with nothing in flight and the committed mirror equal to the family sets, every held warning goes out
 ///       done == ~f /\ w = r
@@ -149,6 +163,7 @@
 ///   /\ gIntent' = [gIntent EXCEPT ![n] = FALSE]
 ///   /\ fired' = [fired EXCEPT ![n] = {}]
 ///   /\ held' = [held EXCEPT ![n] = <<>>]
+///   /\ redo' = [redo EXCEPT ![n] = {}]
 ///
 /// Init ==
 ///   /\ term = 1 /\ kvLeader = CHOOSE n \in Nodes : TRUE
@@ -160,9 +175,9 @@
 ///   /\ dirty = [n \in Nodes |-> FALSE] /\ flushQ = [n \in Nodes |-> FALSE]
 ///   /\ wInfl = [n \in Nodes |-> FALSE] /\ gInfl = [n \in Nodes |-> FALSE]
 ///   /\ gIntent = [n \in Nodes |-> FALSE] /\ fired = [n \in Nodes |-> {}] /\ held = [n \in Nodes |-> <<>>]
+///   /\ redo = [n \in Nodes |-> {}]
 ///   /\ net = {} /\ settles = {}
 ///   /\ condBudget = MaxCond /\ faultBudget = MaxFault
-///   /\ deposedCommit = FALSE /\ inheritGap = FALSE
 ///
 /// \* Environment: the leader process dies at any point between effects.
 /// Crash(n) ==
@@ -171,7 +186,7 @@
 ///   /\ faultBudget' = faultBudget - 1
 ///   /\ Discard(n)
 ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, shown, inc, view, net, settles,
-///                  condBudget, deposedCommit, inheritGap>>
+///                  condBudget>>
 ///
 /// \* Environment: consensus elects a leader (possibly the same node again); the committed leader value moves.
 /// ChangeLeader(m) ==
@@ -180,7 +195,7 @@
 ///   /\ RESUME \/ m = kvLeader \/ fsm[m] = "Dormant"
 ///   /\ term' = term + 1 /\ kvLeader' = m
 ///   /\ UNCHANGED <<kv, kvDesired, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty, flushQ,
-///                  wInfl, gInfl, gIntent, fired, net, settles, condBudget, faultBudget, deposedCommit, inheritGap, held>>
+///                  wInfl, gInfl, gIntent, fired, net, settles, condBudget, faultBudget, held, redo>>
 ///
 /// \* The consensus applier: a LeaderTransaction commits iff the committed leader is the tx's leader value (the fence;
 /// \* FsmWarningValue is LeaderAuthorized, Warnings.java) and every expected value matches (CAS).
@@ -191,14 +206,13 @@
 ///          ok == fenceOk /\ casOk
 ///          s == [kind |-> tx.kind, node |-> tx.node, inc |-> tx.inc, out |-> IF ok THEN "acc" ELSE "ref",
 ///                adds |-> tx.adds, rems |-> tx.rems, seen |-> kv \cap (tx.adds \cup tx.rems), lv |-> Current,
-///                cov |-> IF tx.kind = "W" THEN tx.cov ELSE 0]
+///                cov |-> IF tx.kind = "W" THEN tx.cov ELSE 0, tx |-> tx]
 ///      IN /\ net' = net \ {tx}
 ///         /\ settles' = settles \cup {s}
 ///         /\ kv' = IF ok /\ tx.kind = "W" THEN (kv \ tx.rems) \cup tx.adds ELSE kv
 ///         /\ kvDesired' = IF ok /\ tx.kind = "G" THEN tx.val ELSE kvDesired
-///         /\ deposedCommit' = (deposedCommit \/ (ok /\ tx.lv # Current))
 ///   /\ UNCHANGED <<term, kvLeader, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty, flushQ,
-///                  wInfl, gInfl, gIntent, fired, held, condBudget, faultBudget, inheritGap>>
+///                  wInfl, gInfl, gIntent, fired, held, condBudget, faultBudget, redo>>
 ///
 /// \* Environment: a definite failure (Settlement.Failed), nothing committed.
 /// KvFail(tx) ==
@@ -206,9 +220,9 @@
 ///   /\ faultBudget' = faultBudget - 1
 ///   /\ net' = net \ {tx}
 ///   /\ settles' = settles \cup {[kind |-> tx.kind, node |-> tx.node, inc |-> tx.inc, out |-> "fail",
-///                                adds |-> tx.adds, rems |-> tx.rems, seen |-> {}, lv |-> Current]}
+///                                adds |-> tx.adds, rems |-> tx.rems, seen |-> {}, lv |-> Current, cov |-> 0, tx |-> tx]}
 ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, shown, fsm, inc, view, warned, rows,
-///                  dirty, flushQ, wInfl, gInfl, gIntent, fired, condBudget, deposedCommit, inheritGap, held>>
+///                  dirty, flushQ, wInfl, gInfl, gIntent, fired, condBudget, held, redo>>
 ///
 /// \* Environment: the settlement never reaches the FSM (expiry handles it, #2143).
 /// LoseSettle(s) ==
@@ -216,13 +230,13 @@
 ///   /\ faultBudget' = faultBudget - 1
 ///   /\ settles' = settles \ {s}
 ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, shown, fsm, inc, view, warned, rows,
-///                  dirty, flushQ, wInfl, gInfl, gIntent, fired, net, condBudget, deposedCommit, inheritGap, held>>
+///                  dirty, flushQ, wInfl, gInfl, gIntent, fired, net, condBudget, held, redo>>
 ///
 /// CondOn(s) ==
 ///   /\ condBudget > 0 /\ s \notin cond
 ///   /\ cond' = cond \cup {s} /\ condBudget' = condBudget - 1
 ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, shown, fsm, inc, view, warned, rows, dirty,
-///                  flushQ, wInfl, gInfl, gIntent, fired, net, settles, faultBudget, deposedCommit, inheritGap, held>>
+///                  flushQ, wInfl, gInfl, gIntent, fired, net, settles, faultBudget, held, redo>>
 ///
 /// \* An event-only condition that ends starts a new episode: its retry cycle restarts, so it can exhaust (fire) again
 /// \* (without the reset, WarningsShow has a spurious counterexample: e fires once per incarnation only).
@@ -231,19 +245,19 @@
 ///   /\ cond' = cond \ {s} /\ condBudget' = condBudget - 1
 ///   /\ fired' = [n \in Nodes |-> fired[n] \ {s}]
 ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, shown, fsm, inc, view, warned, rows, dirty,
-///                  flushQ, wInfl, gInfl, gIntent, net, settles, faultBudget, deposedCommit, inheritGap, held>>
+///                  flushQ, wInfl, gInfl, gIntent, net, settles, faultBudget, held, redo>>
 ///
 /// SetTarget ==
 ///   /\ GOALS /\ condBudget > 0
 ///   /\ target' = 1 - target /\ condBudget' = condBudget - 1
 ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, observed, cond, shown, fsm, inc, view, warned, rows, dirty,
-///                  flushQ, wInfl, gInfl, gIntent, fired, net, settles, faultBudget, deposedCommit, inheritGap, held>>
+///                  flushQ, wInfl, gInfl, gIntent, fired, net, settles, faultBudget, held, redo>>
 ///
 /// \* The node FSM converges its observed row to the committed desired row.
 /// NodeApply ==
 ///   /\ observed # kvDesired /\ observed' = kvDesired
-///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, cond, shown, fsm, inc, view, warned, rows, dirty,
-///                  flushQ, wInfl, gInfl, gIntent, fired, net, settles, condBudget, faultBudget, deposedCommit, inheritGap, held>>
+///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, cond, shown, fsm, inc, view, warned, rows, dirty, flushQ,
+///                  wInfl, gInfl, gIntent, fired, net, settles, condBudget, faultBudget, held, redo>>
 ///
 /// ```
 ///
@@ -272,11 +286,39 @@
 ///   /\ kv \subseteq Subjects /\ shown \subseteq Subjects /\ cond \subseteq Subjects
 ///   /\ \A n \in Nodes : warned[n] \subseteq Subjects /\ rows[n] \subseteq Subjects /\ \A i \in 1..Len(held[n]) : held[n][i].s \in Subjects
 ///
-/// \* No deposed leader's write commits (the leader fence).
-/// NoDeposedWrite == ~deposedCommit
+/// \* Only the committed leader's writes are accepted: an accepted settlement names the node that is the committed leader when the
+/// \* applier accepts it. Holds because Outbox.flush submits only while the node's own witness names it (Suspended) and the applier's
+/// \* fence (KVStore: the full leader value, assumed here, not this package's code) refuses a witness that moved. It goes red when the
+/// \* fence is off (mut_fence): a deposed node's earlier submission commits. Stated on the node, so it does not restate the applier's
+/// \* term comparison; the term half of the fence is the applier's, assumed (see the header).
+/// AcceptedOnlyForLeader == [][\A s \in settles' \ settles : s.out = "acc" => s.node = kvLeader]_vars
 ///
-/// \* A successor's open set contains the committed open set at Rebuild (#2834: the successor inherits the exact open set).
-/// InheritSuperset == ~inheritGap
+/// \* Outbox.flush while suspended submits nothing (the intents are dropped; the CI-16 resume re-derives them): no node whose witness
+/// \* names another leader adds a transaction to the engine.
+/// NoSubmitWhileSuspended == [][\A tx \in net' \ net : ~Suspended(tx.node)]_vars
+///
+/// \* The leader's views: two unsuspended Active nodes never carry a witness of the same term (one leader per term; Lifecycle.rebuild
+/// \* takes snapshot.leader(), onLeader the committed value). Red when Activate does not require kvLeader = n and names the node itself.
+/// AtMostOneLiveLeader == \A a, b \in Nodes : (a # b /\ fsm[a] = "Active" /\ fsm[b] = "Active" /\ ~Suspended(a) /\ ~Suspended(b))
+///                                              => view[a][2] # view[b][2]
+///
+/// \* #3085 safety half (Warnings.java "never published without a committed row"): in a persisting mode, a step of the committed leader
+/// \* (witness = Current) that publishes a raise names only subjects whose row is in the committed set after the step. Stated for the
+/// \* committed leader because a deposed node's accepted-but-late settlement can publish a row its successor has since removed: that is
+/// \* the #3160 window (WarningsClose, code_close), not this safety property. And for a step after which the node's mirror equals the
+/// \* committed set: with the KV notification not yet applied (a lost settlement, Expire) the publish test compares the family sets with
+/// \* a stale mirror (Warnings.publish), a window the model reaches and this property does not claim away (code_inv trace: n2 removes e,
+/// \* its settlement is lost, e is raised again and equals the stale mirror {e}).
+/// PublishedIsCommitted == [][Persists => \A n \in Nodes : (n = kvLeader /\ view[n] = Current /\ rows'[n] = kv' /\ held'[n] # held[n])
+///                                                        => (shown' \ shown) \subseteq kv']_vars
+///
+/// \* A refused WARNINGS write whose refusal names this node under the witness it submitted with (Warnings.unlanded, via
+/// \* Outbox.rederive) leaves the node with a re-draft driver (dirty, or a queued flush) or nothing left to write. Pins the line that
+/// \* marks the open set dirty on a refusal: without it the next reconcile pass is the only driver.
+/// RefusedWRedrafts == [][\A s \in settles \ settles' :
+///                          (s.kind = "W" /\ s.out = "ref" /\ fsm[s.node] = "Active" /\ s.inc = inc[s.node]
+///                           /\ s.lv = s.tx.lv /\ Persists /\ ~wInfl'[s.node])
+///                              => (dirty'[s.node] \/ flushQ'[s.node] \/ warned'[s.node] = rows'[s.node])]_vars
 ///
 /// \* Boundary invariant named from Warnings.java ("the family sets are the desired open set; warningRows mirrors the
 /// \* committed one"): once the sole active leader is settled, what the operator sees is exactly its open set.
@@ -305,7 +347,6 @@
 /// ```tlacfg Fsm2Leader:common
 /// SPECIFICATION Spec
 /// CONSTANT Nodes = {n1, n2}
-/// CONSTANT RESUME = FALSE
 /// INVARIANT TypeOK
 /// ```
 ///
@@ -314,14 +355,18 @@
 /// CONSTANT A2834 = FALSE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 2
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
-/// INVARIANT NoDeposedWrite
-/// INVARIANT InheritSuperset
+/// PROPERTY AcceptedOnlyForLeader
+/// PROPERTY NoSubmitWhileSuspended
+/// INVARIANT AtMostOneLiveLeader
+/// PROPERTY PublishedIsCommitted
+/// PROPERTY RefusedWRedrafts
 /// ```
 ///
 /// ```tlacfg Fsm2Leader:code_persist
@@ -329,6 +374,7 @@
 /// CONSTANT A2834 = FALSE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 2
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
@@ -343,6 +389,7 @@
 /// CONSTANT A2834 = FALSE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 2
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
@@ -357,6 +404,7 @@
 /// CONSTANT A2834 = FALSE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 2
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
@@ -371,6 +419,7 @@
 /// CONSTANT A2834 = FALSE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 2
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
@@ -385,6 +434,7 @@
 /// CONSTANT A2834 = FALSE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 3
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 2
@@ -399,13 +449,16 @@
 /// CONSTANT A2834 = FALSE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 3
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 2
 /// CONSTANT GOALS = TRUE
 /// CONSTANT Subjects = {}
 /// CONSTANT EventFam = {}
-/// INVARIANT NoDeposedWrite
+/// PROPERTY AcceptedOnlyForLeader
+/// PROPERTY NoSubmitWhileSuspended
+/// INVARIANT AtMostOneLiveLeader
 /// ```
 ///
 /// ```tlacfg Fsm2Leader:codeA_inv
@@ -413,14 +466,18 @@
 /// CONSTANT A2834 = TRUE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 3
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
-/// INVARIANT NoDeposedWrite
-/// INVARIANT InheritSuperset
+/// PROPERTY AcceptedOnlyForLeader
+/// PROPERTY NoSubmitWhileSuspended
+/// INVARIANT AtMostOneLiveLeader
+/// PROPERTY PublishedIsCommitted
+/// PROPERTY RefusedWRedrafts
 /// INVARIANT OpenSetAgreement
 /// ```
 ///
@@ -429,6 +486,7 @@
 /// CONSTANT A2834 = TRUE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 3
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
@@ -443,6 +501,7 @@
 /// CONSTANT A2834 = TRUE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 3
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
@@ -457,6 +516,7 @@
 /// CONSTANT A2834 = TRUE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 3
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
@@ -471,6 +531,7 @@
 /// CONSTANT A2834 = FALSE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 2
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
@@ -485,6 +546,7 @@
 /// CONSTANT A2834 = FALSE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 2
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
@@ -499,6 +561,7 @@
 /// CONSTANT A2834 = FALSE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 2
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
@@ -513,6 +576,7 @@
 /// CONSTANT A2834 = FALSE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 2
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
@@ -527,6 +591,7 @@
 /// CONSTANT A2834 = TRUE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 3
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
@@ -541,6 +606,7 @@
 /// CONSTANT A2834 = TRUE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 3
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
@@ -550,18 +616,129 @@
 /// INVARIANT OpenSetAgreement
 /// ```
 ///
-/// ```tlacfg Fsm2Leader:mut_fence
+/// ```tlacfg Fsm2Leader:codeA_resume_inv
 /// CONSTANT MODE = "code"
-/// CONSTANT A2834 = FALSE
-/// CONSTANT FENCE = FALSE
+/// CONSTANT A2834 = TRUE
+/// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = TRUE
 /// CONSTANT MaxTerm = 3
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
-/// INVARIANT NoDeposedWrite
+/// PROPERTY AcceptedOnlyForLeader
+/// PROPERTY NoSubmitWhileSuspended
+/// INVARIANT AtMostOneLiveLeader
+/// PROPERTY PublishedIsCommitted
+/// PROPERTY RefusedWRedrafts
+/// INVARIANT OpenSetAgreement
+/// ```
+///
+/// ```tlacfg Fsm2Leader:codeA_resume_close
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = TRUE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = TRUE
+/// CONSTANT MaxTerm = 3
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY WarningsClose
+/// ```
+///
+/// ```tlacfg Fsm2Leader:codeA_resume_show
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = TRUE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = TRUE
+/// CONSTANT MaxTerm = 3
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY WarningsShow
+/// ```
+///
+/// ```tlacfg Fsm2Leader:codeA_resume_persist
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = TRUE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = TRUE
+/// CONSTANT MaxTerm = 3
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY PersistedOrCleared
+/// ```
+///
+/// ```tlacfg Fsm2Leader:pre3085A_show
+/// CONSTANT MODE = "pre3085"
+/// CONSTANT A2834 = TRUE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 3
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY WarningsShow
+/// ```
+///
+/// ```tlacfg Fsm2Leader:pre3085A_persist
+/// CONSTANT MODE = "pre3085"
+/// CONSTANT A2834 = TRUE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 3
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY PersistedOrCleared
+/// ```
+///
+/// ```tlacfg Fsm2Leader:mut_twoleaders_inv
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = TRUE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "twoleaders"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// INVARIANT AtMostOneLiveLeader
+/// ```
+///
+/// ```tlacfg Fsm2Leader:mut_fence
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = FALSE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 3
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY AcceptedOnlyForLeader
 /// ```
 ///
 /// ```tlacfg Fsm2Leader:mut_fence_goals
@@ -569,27 +746,14 @@
 /// CONSTANT A2834 = FALSE
 /// CONSTANT FENCE = FALSE
 /// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 3
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = TRUE
 /// CONSTANT Subjects = {}
 /// CONSTANT EventFam = {}
-/// INVARIANT NoDeposedWrite
-/// ```
-///
-/// ```tlacfg Fsm2Leader:mut_noinherit_inv
-/// CONSTANT MODE = "code"
-/// CONSTANT A2834 = TRUE
-/// CONSTANT FENCE = TRUE
-/// CONSTANT MUT = "noinherit"
-/// CONSTANT MaxTerm = 3
-/// CONSTANT MaxCond = 3
-/// CONSTANT MaxFault = 1
-/// CONSTANT GOALS = FALSE
-/// CONSTANT Subjects = {e, l}
-/// CONSTANT EventFam = {e}
-/// INVARIANT InheritSuperset
+/// PROPERTY AcceptedOnlyForLeader
 /// ```
 ///
 /// ```tlacfg Fsm2Leader:mut_noinherit_agree
@@ -597,6 +761,7 @@
 /// CONSTANT A2834 = TRUE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "noinherit"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 3
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
@@ -611,6 +776,7 @@
 /// CONSTANT A2834 = TRUE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "noinherit"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 3
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
@@ -625,6 +791,7 @@
 /// CONSTANT A2834 = TRUE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "noremove"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 3
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
@@ -639,6 +806,7 @@
 /// CONSTANT A2834 = TRUE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "nodraft"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 3
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 1
@@ -653,6 +821,7 @@
 /// CONSTANT A2834 = FALSE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "noexpire"
+/// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 3
 /// CONSTANT MaxCond = 3
 /// CONSTANT MaxFault = 2

@@ -172,7 +172,7 @@ public final class ClusterFsm {
     ///   /\ fsm[n] = "Active" /\ kvLeader # n
     ///   /\ Discard(n)
     ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, shown, inc, view, net, settles,
-    ///                  condBudget, faultBudget, deposedCommit, inheritGap>>
+    ///                  condBudget, faultBudget, redo>>
     /// ```
     private static ClusterState deactivated(ClusterModel model, Ctx ctx) {
         cancelTimers(model, ctx);

@@ -93,7 +93,7 @@ public sealed interface Warnings {
     ///   /\ fsm[n] = "Active" /\ rows[n] # kv
     ///   /\ Apply(n, warned[n], kv, dirty[n], wInfl[n], gInfl[n], gIntent[n], FALSE, flushQ[n], shown, held[n])
     ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, net, settles,
-    ///                  condBudget, faultBudget, deposedCommit, inheritGap>>
+    ///                  condBudget, faultBudget, redo>>
     /// ```
     static ClusterModel indexRow(ClusterModel m, FsmWarningKey key, FsmWarningValue value) {
         m.warningRows = m.warningRows.put(key, value);

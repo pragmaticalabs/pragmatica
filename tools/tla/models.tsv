@@ -26,10 +26,16 @@ Stalled	aether/aether-stream/src/main/java	edgedestroy	fail	UnbackedClears	-	v29
 Stalled	aether/aether-stream/src/main/java	edgeowner	pass	-	-	edge-triggered, owner flips only: no defect there
 Stalled	aether/aether-stream/src/main/java	settled	fail	SettledIsBacked	-	#3155 known finding, open: a report raised after the reconcile snapshot stays open until the next pass
 Stalled	aether/aether-stream/src/main/java	early	fail	NoEarlyRaise	-	#3156 known finding, open: the stall counter survives destroy and recreate
-Fsm2Leader	aether/aether-deployment/src/main/java	code_inv	pass	-	-	the code (#3146): leader fence and Rebuild inherit hold; no deposed write, inherited set is a superset
+Fsm2Leader	aether/aether-deployment/src/main/java	code_inv	pass	-	-	the code (#3146): only the committed leader's writes are accepted, no submit while suspended, one live leader, published is committed, a refused WARNINGS write re-drafts
 Fsm2Leader	aether/aether-deployment/src/main/java	code_goals	pass	-	-	the code: desired and observed converge after the last leader change
-Fsm2Leader	aether/aether-deployment/src/main/java	code_goals_inv	pass	-	-	the code, goals on: no deposed write
-Fsm2Leader	aether/aether-deployment/src/main/java	codeA_inv	pass	-	-	the code, A2834 on: fence, inherit superset, open-set agreement
+Fsm2Leader	aether/aether-deployment/src/main/java	code_goals_inv	pass	-	-	the code, goals on: only the committed leader's writes are accepted, no submit while suspended, one live leader
+# FINDING (#3181, tlaemb6/7): the four codeA_resume_* rows are RED at the code as it stands, so they are pinned as expected-fail; the model is not edited to make them pass.
+# Trace (codeA_resume_inv, 6 s, MaxTerm=3 A2834=TRUE RESUME=TRUE): n1 Activate; n2 takes leadership without a Deactivate reaching n1; n1 regains leadership at term 3 via SeeLeader while still Active, so no Rebuild/inherit runs and the open set disagrees. WarningsClose, WarningsShow and PersistedOrCleared follow from the same trace.
+Fsm2Leader	aether/aether-deployment/src/main/java	codeA_resume_inv	fail	OpenSetAgreement	-	FINDING, RESUME=TRUE red: the code, A2834 on, RESUME on (a still-Active node regains leadership at a new term): the code_inv properties and open-set agreement
+Fsm2Leader	aether/aether-deployment/src/main/java	codeA_resume_close	fail	WarningsClose	-	FINDING, RESUME=TRUE red: the code, A2834 and RESUME on: an ended condition's warning closes
+Fsm2Leader	aether/aether-deployment/src/main/java	codeA_resume_show	fail	WarningsShow	-	FINDING, RESUME=TRUE red: the code, A2834 and RESUME on: a holding condition is shown
+Fsm2Leader	aether/aether-deployment/src/main/java	codeA_resume_persist	fail	PersistedOrCleared	-	FINDING, RESUME=TRUE red: the code, A2834 and RESUME on: a shown warning is persisted or cleared
+Fsm2Leader	aether/aether-deployment/src/main/java	codeA_inv	pass	-	-	the code, A2834 on: the code_inv properties and open-set agreement
 Fsm2Leader	aether/aether-deployment/src/main/java	codeA_close	pass	-	-	the code, A2834 on: an ended condition's warning closes
 Fsm2Leader	aether/aether-deployment/src/main/java	codeA_show	pass	-	-	the code, A2834 on: a holding condition is shown
 Fsm2Leader	aether/aether-deployment/src/main/java	codeA_persist	pass	-	-	the code, A2834 on: a shown warning is persisted or cleared
@@ -43,9 +49,11 @@ Fsm2Leader	aether/aether-deployment/src/main/java	pre3085_persist	fail	Persisted
 Fsm2Leader	aether/aether-deployment/src/main/java	pre3085_agree	fail	OpenSetAgreement	-	pre-#3085: OpenSetAgreement violated
 Fsm2Leader	aether/aether-deployment/src/main/java	pre2834_close	fail	WarningsClose	-	pre-#2834 (no attention inherit): WarningsClose violated
 Fsm2Leader	aether/aether-deployment/src/main/java	pre2834_agree	fail	OpenSetAgreement	-	pre-#2834: OpenSetAgreement violated
-Fsm2Leader	aether/aether-deployment/src/main/java	mut_fence	fail	NoDeposedWrite	-	mutant, no leader fence: NoDeposedWrite violated
-Fsm2Leader	aether/aether-deployment/src/main/java	mut_fence_goals	fail	NoDeposedWrite	-	mutant, no leader fence, goals on: NoDeposedWrite violated
-Fsm2Leader	aether/aether-deployment/src/main/java	mut_noinherit_inv	fail	InheritSuperset	-	mutant, no inherit: InheritSuperset violated
+Fsm2Leader	aether/aether-deployment/src/main/java	pre3085A_show	pass	-	-	control for the pre3085 mutants: pre-#3085 with A2834 on satisfies WarningsShow
+Fsm2Leader	aether/aether-deployment/src/main/java	pre3085A_persist	pass	-	-	control for the pre3085 mutants: pre-#3085 with A2834 on satisfies PersistedOrCleared
+Fsm2Leader	aether/aether-deployment/src/main/java	mut_fence	fail	AcceptedOnlyForLeader	-	mutant, no leader fence: AcceptedOnlyForLeader violated
+Fsm2Leader	aether/aether-deployment/src/main/java	mut_fence_goals	fail	AcceptedOnlyForLeader	-	mutant, no leader fence, goals on: AcceptedOnlyForLeader violated
+Fsm2Leader	aether/aether-deployment/src/main/java	mut_twoleaders_inv	fail	AtMostOneLiveLeader	-	mutant, Activate without kvLeader = n and the view naming the node itself: AtMostOneLiveLeader violated
 Fsm2Leader	aether/aether-deployment/src/main/java	mut_noinherit_agree	fail	OpenSetAgreement	-	mutant, no inherit: OpenSetAgreement violated
 Fsm2Leader	aether/aether-deployment/src/main/java	mut_noinherit_close	fail	WarningsClose	-	mutant, no inherit: WarningsClose violated
 Fsm2Leader	aether/aether-deployment/src/main/java	mut_noremove_show	fail	WarningsShow	-	mutant of pre-#3085, no remove: WarningsShow violated
