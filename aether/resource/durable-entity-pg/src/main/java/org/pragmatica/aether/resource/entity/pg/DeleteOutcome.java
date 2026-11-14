@@ -10,7 +10,6 @@ public enum DeleteOutcome {
     DELETED,
     /// There was no row: never created, or already deleted.
     ABSENT;
-
     /// `DELETED` when the `DELETE` removed at least one row, otherwise `ABSENT`.
     static DeleteOutcome fromRemovedRows(int removed) {
         return removed > 0

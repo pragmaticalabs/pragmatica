@@ -236,7 +236,9 @@ public final class PgEntityStore<K, S, C extends Mutator<S>> {
 
     private Promise<DeleteOutcome> deleteIn(SqlConnector tx, String id) {
         return tx.update(DELETE, entity, id)
-                 .flatMap(removed -> runHook(tx, id, DeleteOutcome.fromRemovedRows(removed)));
+                 .flatMap(removed -> runHook(tx,
+                                             id,
+                                             DeleteOutcome.fromRemovedRows(removed)));
     }
 
     private Promise<DeleteOutcome> runHook(SqlConnector tx, String id, DeleteOutcome outcome) {
