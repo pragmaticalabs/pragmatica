@@ -77,6 +77,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.consensus.net.ClusterFormationConfig;
@@ -1125,11 +1126,34 @@ public final class EmberCluster {
         rollingRestartTask.cancel();
         rollingRestartActive.set(false);
         var registered = registeredNow();
-        var stopPromises = nodes.values().stream().map(EmberCluster::submitStop).toList();
+        var unstopped = new ConcurrentLinkedQueue<String>();
+        var stopPromises = nodes.entrySet()
+                                .stream()
+                                .map(entry -> submitStop(entry.getValue()).recover(cause -> noteUnstopped(unstopped,
+                                                                                                          entry.getKey(),
+                                                                                                          cause)))
+                                .toList();
 
         return clearThenSettle(settledWithLateArrivals(stopPromises, registered),
                                this::clearClusterState,
-                               Promise::unitPromise);
+                               () -> unstoppedOutcome(unstopped));
+    }
+
+    /// #3173/#3174: a node whose stop did not resolve inside [#NODE_TIMEOUT] is still running, with its QUIC port bound. The
+    /// cluster stop used to swallow that and succeed, so the next cluster's bind failed. The node is recorded here (the recover
+    /// runs before the settle, so the outcome sees every entry) and [#unstoppedOutcome] turns the record into a failure.
+    private static Unit noteUnstopped(ConcurrentLinkedQueue<String> unstopped, String nodeId, Cause cause) {
+        log.error("Node {} did not stop: {}", nodeId, cause.message());
+        unstopped.add(nodeId);
+
+        return Unit.unit();
+    }
+
+    private static Promise<Unit> unstoppedOutcome(ConcurrentLinkedQueue<String> unstopped) {
+        return unstopped.isEmpty()
+               ? Promise.success(Unit.unit())
+               : Causes.cause("Ember cluster stop: node(s) not stopped within " + NODE_TIMEOUT
+                             + ", still running: " + unstopped).promise();
     }
 
     /// The nodes in the registry right now, by identity: what a teardown is about to stop.
@@ -1462,6 +1486,12 @@ public final class EmberCluster {
     }
 
     private Promise<Unit> killNodeInternal(String nodeIdStr, AetherNode node, boolean graceful) {
+        return stopRemoved(nodeIdStr, node, graceful).recover(_ -> Unit.unit());
+    }
+
+    /// Remove the node from the registry and stop it, bounded; the result FAILS when the bound expires (the node may still be
+    /// running), so the caller decides whether that matters. [#killNodeInternal] swallows it, the self-exit path does not.
+    private Promise<Unit> stopRemoved(String nodeIdStr, AetherNode node, boolean graceful) {
         if (!nodes.remove(nodeIdStr, node)) {
             return Promise.unitPromise();
         }
@@ -1482,7 +1512,6 @@ public final class EmberCluster {
         return node.stop()
                    .onSuccess(_ -> slotOpt.onPresent(availableSlots::offer))
                    .timeout(timeout)
-                   .recover(_ -> Unit.unit())
                    .onSuccess(_ -> log.info("Node {} removed from cluster", nodeIdStr));
     }
 
@@ -1892,9 +1921,9 @@ public final class EmberCluster {
         return Map.of("artifacts", config);
     }
 
+    /// Package-visible so a test can fire a node's exit callback over a fake node.
     void onNodeExit(String nodeIdStr, int exitCode) {
-        exitCodes.put(nodeIdStr, exitCode);
-        handleSelfDrain(nodeIdStr);
+        handleSelfDrain(nodeIdStr, exitCode);
     }
 
     /// The process exit code a node exited with in this harness (`AetherNode.EXIT_DRAINED`,
@@ -1904,10 +1933,26 @@ public final class EmberCluster {
         return Option.option(exitCodes.get(nodeIdStr));
     }
 
-    private void handleSelfDrain(String nodeIdStr) {
-        Option.option(nodes.get(nodeIdStr)).onPresent(node -> killNodeInternal(nodeIdStr, node, true).onFailure(cause -> log.warn("Self-drain cleanup failed for {}: {}",
-                                                                                                                                  nodeIdStr,
-                                                                                                                                  cause.message())));
+    /// #3173/#3174: the exit is reported (`exitCodeOf`) only after the node's stop RESOLVED. It used to be recorded before the stop
+    /// began and the stop's timeout was swallowed, so a node whose stop never finished (still holding its QUIC port) was reported
+    /// as exited. A stop that does not resolve inside [#NODE_TIMEOUT] leaves the node unreported and is logged. A node already
+    /// out of the registry is being stopped by another path (`killNode`), which is what its exit is reported against.
+    private void handleSelfDrain(String nodeIdStr, int exitCode) {
+        Option.option(nodes.get(nodeIdStr))
+              .onPresent(node -> stopRemoved(nodeIdStr, node, true).map(stopped -> recordExit(nodeIdStr,
+                                                                                              exitCode,
+                                                                                              stopped))
+                                            .onFailure(cause -> log.warn("Self-drain stop of {} did not resolve, exit {} not reported: {}",
+                                                                         nodeIdStr,
+                                                                         exitCode,
+                                                                         cause.message())))
+              .onEmpty(() -> exitCodes.put(nodeIdStr, exitCode));
+    }
+
+    private Unit recordExit(String nodeIdStr, int exitCode, Unit stopped) {
+        exitCodes.put(nodeIdStr, exitCode);
+
+        return stopped;
     }
 
     public List<NodeMetrics> nodeMetrics() {
