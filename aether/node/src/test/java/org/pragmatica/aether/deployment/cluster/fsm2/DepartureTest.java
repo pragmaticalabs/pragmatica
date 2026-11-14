@@ -105,27 +105,35 @@ class DepartureTest {
         assertThat(put.expected().map(v -> ((NodeDepartureValue) v).state())).isEqualTo(Option.some(DepartureState.ADMITTED));
     }
 
-    // NT-79
-    // Red when: a zero-footprint departure submits an empty transaction, anything beyond the DEPARTED Put, or a directive
-    // mutation.
+    // NT-79 (#3193: the directive no longer survives; C17b retires a WORKER's directive, as legacy does)
+    // Red when: a zero-footprint departure submits an empty transaction or anything beyond the DEPARTED Put, or a directive
+    // mutation rides in the departure itself; or C17b leaves the worker's directive behind.
     @Test
-    void workerLeave_withNoFootprint_isTheDepartedPutAlone_andKeepsTheDirective() {
+    void workerLeave_withNoFootprint_isTheDepartedPutAlone_andC17bRetiresTheDirective() {
         var w = MbWorld.world(CORE_1);
         var worker = node("worker-1");
 
         w.admit(worker, 0x4444L);
         w.community("c1", 5, CommunityState.ACTIVE).directive(worker, Fixtures.worker("c1")).activate();
         w.h.clearLog();
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
         w.h.deliver(new ClusterInput.WorkerLeave(worker));
         var submits = w.h.submits();
 
         assertThat(submits).hasSize(1);
         assertThat(submits.getFirst().transaction().mutations()).hasSize(1);
         assertThat(submits.getFirst().kind()).isEqualTo(SubmitKind.DEPARTURE);
-        assertThat(w.present(new ActivationDirectiveKey(worker))).isTrue();
-        assertThat(w.recordOf(worker).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.DEPARTED));
-        assertThat(w.recordOf(worker).map(NodeDepartureValue::epoch)).as("names epochOf(n): no record yet, so 0 (the epoch is leader-assigned, MQ-4)")
-                  .isEqualTo(Option.some(0L));
+        assertThat(w.present(new ActivationDirectiveKey(worker))).as("the departure put alone leaves the directive").isTrue();
+
+        w.h.policy = FsmHarness.SettlePolicy.APPLY;
+        w.h.applyHeld(submits.getFirst().correlationId());
+        w.h.drain();
+        w.h.advance(w.h.settings.timing().tick() * 3);
+        w.h.drain();
+
+        assertThat(w.h.submits(SubmitKind.CLEANUP)).as("C17b follows the committed record").isNotEmpty();
+        assertThat(w.present(new ActivationDirectiveKey(worker))).as("C17b retired the worker's directive").isFalse();
+        assertThat(w.recordOf(worker).isPresent()).as("R-4.3.3 retired the record once the directive went").isFalse();
     }
 
     // NT-92 (a, b)

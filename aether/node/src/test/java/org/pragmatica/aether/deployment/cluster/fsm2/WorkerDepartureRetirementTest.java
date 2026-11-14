@@ -90,9 +90,9 @@ class WorkerDepartureRetirementTest {
         settle(w);
 
         assertThat(w.stored(new ActivationDirectiveKey(worker))
-                    .map(value -> ((ActivationDirectiveValue) value).communityId()))
-                  .as("J5 assigns the returning worker a community again")
-                  .isEqualTo(Option.some("c1"));
+                    .map(value -> ((ActivationDirectiveValue) value).role()))
+                  .as("J5 assigns the returning worker a WORKER directive again (its community is J5's choice, not c1's)")
+                  .isEqualTo(Option.some(ActivationDirectiveValue.WORKER));
     }
 
     // #3028 — Red when: a falsely departed worker that rejoins (same process) before C17b loses its directive.

@@ -219,6 +219,18 @@ final class MbWorld {
         return this;
     }
 
+    /// Activate with a DEPARTED worker record still carrying its directive: since #3193 C17b retires that directive, so the state
+    /// exists only until C17b commits. Its submission is lost here, which models the join arriving first.
+    MbWorld activateBeforeC17b() {
+        var before = h.policy;
+
+        h.policy = FsmHarness.SettlePolicy.LOSE;
+        h.activate();
+        h.policy = before;
+
+        return this;
+    }
+
     /// A committed governor announcement (a LeaderTransaction through the real applier).
     MbWorld announce(String community, NodeId governor, NodeId... members) {
         h.seed(new GovernorAnnouncementKey(community), roster(governor, false, members));

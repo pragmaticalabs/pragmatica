@@ -128,7 +128,7 @@ class JoinTableTest {
          .directive(W1,
                     Fixtures.worker("c1"))
          .record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.STALE)
-         .activate();
+         .activateBeforeC17b();
         w.h.clearLog();
         w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, B)));
         assertThat(w.recordOf(W1).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.ADMITTED));
@@ -155,7 +155,7 @@ class JoinTableTest {
          .directive(W1,
                     Fixtures.worker("c1"))
          .record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.WORKER_LEAVE)
-         .activate();
+         .activateBeforeC17b();
         w.h.clearLog();
         w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, B)));
         var submit = w.h.submits(SubmitKind.ADMISSION).getFirst();
@@ -178,7 +178,7 @@ class JoinTableTest {
          .directive(W1,
                     Fixtures.worker("c1"))
          .record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.WORKER_LEAVE)
-         .activate();
+         .activateBeforeC17b();
         var unknown = w.admit(W1, 0L);
 
         assertThat(unknown.tokenKnown()).as("the real registry has recorded no token").isFalse();
@@ -197,7 +197,7 @@ class JoinTableTest {
          .directive(W1,
                     Fixtures.worker("c1"))
          .record(W1, DepartureState.DEPARTED, 1L, A, DepartureCause.WORKER_LEAVE)
-         .activate();
+         .activateBeforeC17b();
         w.h.clearLog();
         w.tokens.admit(W1, B);
         w.h.deliver(new ClusterInput.WorkerJoin(W1, new Admission(process(B))));
@@ -406,7 +406,7 @@ class JoinTableTest {
                     Fixtures.worker("gone"))
          .record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.WORKER_LEAVE)
          .target(ORDERS, 1, "WORKERS_ONLY")
-         .activate();
+         .activateBeforeC17b();
         w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, B)));
         assertThat(w.counts(W1)).isFalse();
         assertThat(w.present(new SliceDesiredKey(W1, ORDERS))).isFalse();
