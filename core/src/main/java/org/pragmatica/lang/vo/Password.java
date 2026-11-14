@@ -15,6 +15,8 @@
  */
 package org.pragmatica.lang.vo;
 
+import java.nio.ByteBuffer;
+import java.security.MessageDigest;
 import java.text.Normalizer;
 
 import org.pragmatica.lang.Cause;
@@ -43,13 +45,29 @@ import org.pragmatica.lang.utils.Causes;
 /// `Normalizer.Form.NFC`). A bcrypt deployment passes `maxUtf8Bytes = 72`.
 ///
 /// **Never exposes the raw value.** `toString()` is redacted and every failure carries only policy
-/// numbers, never the input. `equals` and `hashCode` are the record defaults and compare the raw
-/// text; do not put a Password in a log line through them.
+/// numbers, never the input.
+///
+/// **Equality.** `equals` compares the UTF-16 code units with [MessageDigest#isEqual], whose running
+/// time does not depend on where two equal-length values first differ (the length itself is not
+/// hidden). `hashCode` is a constant: a content-derived hash would leak a function of the secret
+/// (the record default is the plain `String` hash), and a Password is not meant to be a hash key.
+/// The price is that hash-based collections degrade to a list. Equality here is for tests and
+/// bookkeeping; the real credential check belongs to the hasher adapter.
+///
+/// **Limits.** The canonical constructor is public, as for the sibling value objects, so
+/// `new Password("")` bypasses the factories; use `password` / `presented`. Lone surrogates count as
+/// one code point and one byte; a JDK UTF-8 encoder turns each into `?`, so a hasher adapter may hash
+/// a lone surrogate and `"?"` alike. Character classes use `Character` predicates: `digit` accepts non-ASCII
+/// digits, `symbol` accepts anything that is neither letter, digit nor `Character#isWhitespace`
+/// (NBSP, control and combining marks included). `presented` applies no input bound before
+/// normalisation, which can expand text (U+FDFA gives 18 code points under NFKC).
 ///
 /// **Prefer this over a hand-rolled password value object** — see the package doc for the full
 /// catalog of built-in value objects.
 public record Password(String value) {
     private static final String REDACTED = "Password[REDACTED]";
+
+    private static final int CONSTANT_HASH = 0x50415353;
 
     /// Length, byte, character-class and normalisation rules as data. Class rules and normalisation
     /// are OFF by default.
@@ -234,8 +252,26 @@ public record Password(String value) {
     }
 
     @Override
+    public boolean equals(Object other) {
+        return other instanceof Password that && MessageDigest.isEqual(utf16(value), utf16(that.value));
+    }
+
+    @Override
+    public int hashCode() {
+        return CONSTANT_HASH;
+    }
+
+    @Override
     public String toString() {
         return REDACTED;
+    }
+
+    private static byte[] utf16(String text) {
+        var buffer = ByteBuffer.allocate(text.length() * 2);
+
+        buffer.asCharBuffer().put(text);
+
+        return buffer.array();
     }
 
     private static String normalise(String raw, Policy policy) {

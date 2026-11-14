@@ -96,6 +96,12 @@ class CurrencyTest {
     }
 
     @Test
+    void currency_failure_blankMessage() {
+        assertEquals("Currency code must not be null or blank", Currency.CurrencyError.General.BLANK.message());
+        assertEquals("Currency code must not be null or blank", failure(" ").message());
+    }
+
+    @Test
     void currency_failure_isValidationCause() {
         assertInstanceOf(Cause.Validation.class, failure("ZZZ"));
         assertInstanceOf(Cause.Validation.class, failure(null));

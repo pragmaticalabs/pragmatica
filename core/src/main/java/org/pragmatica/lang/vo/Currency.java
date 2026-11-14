@@ -33,7 +33,9 @@ import org.pragmatica.lang.utils.Causes;
 /// Parsing trims the input and normalises it to upper case (`"usd"` and ` EUR ` are accepted), then
 /// looks it up among the currencies the JDK knows. A blank input and an unknown code each give a
 /// typed [CurrencyError] that is a [Cause.Validation]. The lookup is a table read, not a caught
-/// exception. Components: `value()` (the JDK currency), `code()`, `fractionDigits()`.
+/// exception. Trimming strips every character up to U+0020 (control characters included), and
+/// upper-casing uses `Locale.ROOT`, so non-ASCII letters may normalise into a code (dotless `ı`
+/// becomes `I`). Components: `value()` (the JDK currency), `code()`, `fractionDigits()`.
 ///
 /// **Prefer this over a hand-rolled currency value object** — see the package doc for the full
 /// catalog of built-in value objects.

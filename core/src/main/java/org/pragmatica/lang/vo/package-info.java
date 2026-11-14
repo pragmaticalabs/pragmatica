@@ -27,7 +27,7 @@
 /// | [Uuid][org.pragmatica.lang.vo.Uuid] | `Uuid.uuid(String)`, `Uuid.uuid(UUID)`, `Uuid.randomUuid()` | UUID parse, wrap, or generate |
 /// | [NonBlankString][org.pragmatica.lang.vo.NonBlankString] | `NonBlankString.nonBlankString(String)` | Rejects null/empty/blank, trims |
 /// | [Currency][org.pragmatica.lang.vo.Currency] | `Currency.currency(String)`, `Currency.currency(java.util.Currency)` | ISO 4217 code over `java.util.Currency`: trims, upper-cases, unknown code gives a typed `CurrencyError.UnknownCode`; accessors `code()`/`fractionDigits()` |
-/// | [Password][org.pragmatica.lang.vo.Password] | `Password.password(String, Policy)`, `Password.presented(String)` | Register/change enforces a data `Policy` (code-point bounds, UTF-8 byte cap, optional character classes and normalisation, both off by default); login checks non-blank only; `toString` redacted, no hashing |
+/// | [Password][org.pragmatica.lang.vo.Password] | `Password.password(String, Policy)`, `Password.presented(String)`, `Password.presented(String, Policy)` | Register/change enforces a data `Policy` (code-point bounds, UTF-8 byte cap, optional character classes and normalisation, both off by default); login checks non-blank only (`presented(String, Policy)` also applies the policy's normalisation); `toString` redacted, constant-time `equals`, no hashing |
 /// | [IsoDateTime][org.pragmatica.lang.vo.IsoDateTime] | `IsoDateTime.isoDateTime(String)`, `isoDateTime(OffsetDateTime)`, `now()`, `nowUtc()` | ISO 8601 datetime with offset |
 ///
 /// Not a validated value: [ValueMapping][org.pragmatica.lang.vo.ValueMapping] (`ValueMapping.valueMapping(lower, lift)`) is the

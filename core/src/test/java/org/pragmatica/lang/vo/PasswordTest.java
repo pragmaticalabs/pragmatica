@@ -28,6 +28,7 @@ import org.pragmatica.lang.vo.Password.Policy;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -232,6 +233,11 @@ class PasswordTest {
         }
 
         @Test
+        void presented_success_isNotTrimmed() {
+            Password.presented("  pw  ").onFailure(c -> fail(c.message())).onSuccess(p -> assertEquals("  pw  ", p.value()));
+        }
+
+        @Test
         void presented_success_overlongPasswordAccepted() {
             Password.presented("a".repeat(1000)).onFailure(c -> fail(c.message()));
         }
@@ -255,6 +261,11 @@ class PasswordTest {
         }
 
         @Test
+        void policy_success_oneByteIsEnough() {
+            lengths(1, 1, 1);
+        }
+
+        @Test
         void policy_success_minEqualsMax() {
             lengths(5, 5, 5);
         }
@@ -272,6 +283,70 @@ class PasswordTest {
         private Cause policyFailure(int min, int max, int bytes) {
             return Policy.policy(min, max, bytes, CharacterClasses.none(), Option.none())
                          .fold(c -> c, _ -> fail("expected failure"));
+        }
+    }
+
+    @Nested
+    class Failures {
+        @Test
+        void tooShort_carriesMinAndMessage() {
+            var cause = (PasswordError.TooShort) failure("12", lengths(5, 9, 100));
+
+            assertEquals(5, cause.min());
+            assertEquals("Password must have at least 5 characters", cause.message());
+        }
+
+        @Test
+        void tooLong_carriesMaxAndMessage() {
+            var cause = (PasswordError.TooLong) failure("123456", lengths(1, 5, 256));
+
+            assertEquals(5, cause.max());
+            assertEquals("Password must have at most 5 characters", cause.message());
+        }
+
+        @Test
+        void tooManyBytes_carriesMaxBytesAndMessage() {
+            var cause = (PasswordError.TooManyBytes) failure("123456", lengths(1, 64, 5));
+
+            assertEquals(5, cause.maxBytes());
+            assertEquals("Password must be at most 5 bytes in UTF-8", cause.message());
+        }
+
+        @Test
+        void general_messagesAreFixed() {
+            assertEquals("Password must not be null or blank", PasswordError.General.BLANK.message());
+            assertEquals("Password must contain a lower-case letter", PasswordError.General.MISSING_LOWERCASE.message());
+            assertEquals("Password must contain an upper-case letter", PasswordError.General.MISSING_UPPERCASE.message());
+            assertEquals("Password must contain a digit", PasswordError.General.MISSING_DIGIT.message());
+            assertEquals("Password must contain a symbol", PasswordError.General.MISSING_SYMBOL.message());
+            assertEquals("Password policy bounds are inconsistent", PasswordError.General.INVALID_POLICY.message());
+        }
+    }
+
+    @Nested
+    class Equality {
+        // Constant-time comparison itself is not unit-testable; these pin the observable contract only.
+        @Test
+        void equals_sameTextIsEqual() {
+            assertEquals(new Password("s3cret-value"), new Password("s3cret-value"));
+        }
+
+        @Test
+        void equals_differentTextIsNotEqual() {
+            assertNotEquals(new Password("s3cret-value"), new Password("s3cret-valuf"));
+            assertNotEquals(new Password("s3cret-value"), new Password("s3cret-valu"));
+            assertNotEquals(new Password("s3cret-value"), "s3cret-value");
+        }
+
+        @Test
+        void equals_loneSurrogateIsNotQuestionMark() {
+            assertNotEquals(new Password("\uD800"), new Password("?"));
+        }
+
+        @Test
+        void hashCode_doesNotDependOnContent() {
+            assertEquals(new Password("one").hashCode(), new Password("another-secret").hashCode());
+            assertNotEquals("one".hashCode(), new Password("one").hashCode());
         }
     }
 
