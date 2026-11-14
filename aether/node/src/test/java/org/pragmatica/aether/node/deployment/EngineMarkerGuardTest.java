@@ -12,6 +12,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
@@ -481,7 +482,7 @@ class EngineMarkerGuardTest {
 
     @Nested
     class Actions {
-        /// A running action never makes a deciding thread wait: the guard sits on the default (LEGACY) path of every gated hook, and `evaluate`
+        /// With no drained work pending, a running action never makes a deciding thread wait: the guard sits on the default (LEGACY) path of every gated hook, and `evaluate`
         /// is called from the KV dispatch, so it must not queue behind legacy work.
         @Test
         void evaluate_neverWaitsForARunningAction() throws Exception {
@@ -654,6 +655,101 @@ class EngineMarkerGuardTest {
                              .containsExactly("D_old", "A_mid", "D2", "A_new");
         }
 
+        /// The same window with a `whenOpen` caller: a drained action closes the gate and re-entrantly parks D2 under the name, then the recursive
+        /// decision for a `whenOpen` Deactivate must replace the parked D2 (a later `whenOpen` supersedes the whole parked sequence). Red when: the
+        /// recursive `runAdmitted` is called with `keepParked=true` (D2 survives ahead of the Deactivate).
+        @Test
+        @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+        void m5Window_reentrantParkBeforeTheRecursiveDecision_whenOpenCallerReplacesTheParkedSequence() throws Exception {
+            var marker = new AtomicReference<>(Option.some(FSM2_MARKER));
+            var guard = sharedMarkerGuard(marker);
+            var order = Collections.synchronizedList(new ArrayList<String>());
+            var openers = new CopyOnWriteArrayList<Thread>();
+
+            guard.evaluate();
+            guard.whenOpen("hold", () -> {
+                close(guard, marker);
+                guard.whenOpen("leader", () -> order.add("D_old"));
+                guard.whenOpenAfterParked("leader", () -> {
+                    order.add("A_mid");
+                    close(guard, marker);
+                    guard.whenOpen("leader", () -> order.add("D2"));
+                });
+                marker.set(Option.some(FSM2_MARKER));
+                openers.add(Thread.ofPlatform().start(guard::evaluate));
+                awaitOpen(guard);
+                guard.whenOpen("leader", () -> order.add("D_new"));
+            });
+            assertThat(guard.isOpen()).as("the gate is closed again after the drained work").isFalse();
+            marker.set(Option.some(FSM2_MARKER));
+            guard.evaluate();
+            for (var opener : openers) {
+                opener.join(10_000);
+            }
+
+            assertThat(order).as("the window was reached: D_old and A_mid ran from the drain, then D2 was parked re-entrantly")
+                             .startsWith("D_old", "A_mid");
+            assertThat(order).as("D_new is a whenOpen caller: it replaces the parked D2 rather than queueing behind it")
+                             .containsExactly("D_old", "A_mid", "D_new");
+        }
+
+        /// #3261: an opening drains parked work, and its evaluating thread queues on `running` behind a running action. Meanwhile the gate goes
+        /// undecided (marker and incarnation absent: WAITING) and opens again before that thread gets the lock. The second opening drains again;
+        /// the first drain's work must still run, exactly once. Red when: `drain` replaces the pending drained work instead of appending to it.
+        @Test
+        @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+        void aCloseAndReopenWhileTheOpenerWaitsForTheLock_neverLosesDrainedWork() throws Exception {
+            var marker = new AtomicReference<>(Option.some(FSM2_MARKER));
+            var incarnation = new AtomicBoolean(true);
+            var guard = sharedGuard(marker, incarnation);
+            var ran = Collections.synchronizedList(new ArrayList<String>());
+            var parked = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+
+            guard.evaluate();
+            var holder = Thread.ofPlatform().start(() -> guard.whenOpen("hold", () -> {
+                marker.set(Option.none());
+                incarnation.set(false);
+                guard.evaluate();
+                guard.whenOpen("leader", () -> ran.add("X"));
+                parked.countDown();
+                hold(new CountDownLatch(1), release);
+            }));
+            assertThat(parked.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(guard.isOpen()).isFalse();
+
+            marker.set(Option.some(FSM2_MARKER));
+            incarnation.set(true);
+            var opener = Thread.ofPlatform().start(guard::evaluate);
+            awaitOpen(guard);
+            pause(200);
+            marker.set(Option.none());
+            incarnation.set(false);
+            var waiter = Thread.ofPlatform().start(guard::evaluate);
+            awaitState(guard, State.WAITING);
+            pause(200);
+            marker.set(Option.some(FSM2_MARKER));
+            incarnation.set(true);
+            guard.evaluate();
+            assertThat(guard.isOpen()).isTrue();
+
+            release.countDown();
+            holder.join(10_000);
+            opener.join(10_000);
+            waiter.join(10_000);
+
+            assertThat(ran).as("the drained action ran exactly once").containsExactly("X");
+        }
+
+        private void awaitState(EngineMarkerGuard guard, State expected) {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+            while (guard.state() != expected && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertThat(guard.state()).isEqualTo(expected);
+        }
+
         private void close(EngineMarkerGuard guard, AtomicReference<Option<DeploymentEngineValue>> marker) {
             marker.set(Option.some(LEGACY_MARKER));
             guard.evaluate();
@@ -700,6 +796,10 @@ class EngineMarkerGuardTest {
         }
 
         private EngineMarkerGuard sharedMarkerGuard(AtomicReference<Option<DeploymentEngineValue>> marker) {
+            return sharedGuard(marker, new AtomicBoolean(true));
+        }
+
+        private EngineMarkerGuard sharedGuard(AtomicReference<Option<DeploymentEngineValue>> marker, AtomicBoolean incarnation) {
             return EngineMarkerGuard.engineMarkerGuard(DeploymentEngine.FSM2, SELF, WINDOW_MS, new EngineMarkerGuard.Reader() {
                 @Override
                 public Option<DeploymentEngineValue> marker() {
@@ -708,7 +808,7 @@ class EngineMarkerGuardTest {
 
                 @Override
                 public boolean incarnationPresent() {
-                    return true;
+                    return incarnation.get();
                 }
 
                 @Override
