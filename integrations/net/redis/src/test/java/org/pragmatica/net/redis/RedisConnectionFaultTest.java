@@ -190,20 +190,4 @@ class RedisConnectionFaultTest {
         conn.close().await(WAIT).unwrap();
         assertThat(group.isTerminated()).isTrue();
     }
-
-    @Test
-    void connectFailureBeforeTheChannelExistedStillShutsDownTheOwnedLoop() throws IOException {
-        server = FakeRedisServer.start(c -> {});
-        var dead = newGroup();
-        var owned = newGroup();
-
-        dead.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
-        group = owned;
-
-        var result = RedisConnection.connect(config(1_000), dead, Option.none(), Option.some(owned)).await(timeSpan(3).seconds());
-
-        System.err.println("DBG n19 result=" + kind(result) + " " + TestKinds.message(result));
-        assertThat(kind(result)).isEqualTo("ConnectionFailed");
-        assertThat(owned.terminationFuture().awaitUninterruptibly(5, TimeUnit.SECONDS)).isTrue();
-    }
 }

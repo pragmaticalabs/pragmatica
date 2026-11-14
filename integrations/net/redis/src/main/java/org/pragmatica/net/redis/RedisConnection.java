@@ -280,11 +280,17 @@ public final class RedisConnection implements RedisCommands {
     private Promise<RespValue> submit(ByteBuf frame) {
         var reply = Promise.<RespValue> promise();
 
-        runOnEventLoop(() -> send(frame, reply)).onFailure(cause -> refuseUnsent(frame, reply, cause));
+        runOnEventLoop(() -> send(frame, reply)).onFailure(cause -> refuseUnsent(frame, reply, endedBefore(cause)));
 
         return reply.timeout(config.commandTimeout())
                     .onFailure(this::closeOnTimeout)
                     .mapError(this::describeTimeout);
+    }
+
+    /// A loop that rejected the task because the connection already ended (an owned loop shuts down with it)
+    /// reports the connection's terminal cause, not the rejection.
+    private Cause endedBefore(Cause rejection) {
+        return Option.option(terminal.get()).or(rejection);
     }
 
     /// Runs on the event loop, which orders the queue entry with the write.
