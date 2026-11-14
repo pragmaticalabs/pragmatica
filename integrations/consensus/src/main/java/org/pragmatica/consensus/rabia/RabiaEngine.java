@@ -2999,6 +2999,7 @@ public class RabiaEngine<C extends Command> {
     /// under the old roster. With it, a receiver at a lower epoch sees a NEWER epoch, which only a LIVE responder authorizes
     /// ([#newerEpochCandidates]), and keeps waiting for one. No receiver installs a configuration from a COLD answer: a newer
     /// epoch is refused there, and an equal one is already installed. No wire or persisted shape changes.
+    /// In production (`RabiaPersistence.inMemory`, a dead node never returns) the strip arm is reached only by restored backups.
     private SavedState<C> coldAnswerState(SavedState<C> state) {
         return persistedByThisEngine
                ? state
