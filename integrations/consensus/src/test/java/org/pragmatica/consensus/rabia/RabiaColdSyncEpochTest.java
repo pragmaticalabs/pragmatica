@@ -78,34 +78,120 @@ class RabiaColdSyncEpochTest {
         assertThat(engine(B).isActive()).as("B rejoins the live newer epoch").isTrue();
         assertThat(engine(B).voterConfiguration().unwrap()).isEqualTo(new VoterConfiguration(1, REPLACED));
 
-        // Slot 2: A and C carry "x", B and D carry "y"; the two pairs' traffic interleaves freely but never crosses.
-        submit(A, "x");
-        submit(B, "y");
-        submit(D, "y");
+        // Slot 2: A and C carry one shared batch "x" (a shared batch lets the pair decide it; distinct ones split to V0).
+        // B and D both hold the empty proposal D made when it joined (the setup dropped its delivery to B; replay it), so
+        // the epoch-1 pair decides slot 2 as V0 (an empty proposal pair is a no-op slot): a decision a laggard's epoch-0 V1 "x" would contradict.
+        var x = batch("x");
+        engine(A).handleNewBatch(new NewBatch<>(A, x));
+        engine(C).handleNewBatch(new NewBatch<>(C, x));
+        sent.stream()
+            .filter(d -> d.source().equals(D) && d.target().equals(B) && d.message() instanceof Propose<?> propose
+                         && propose.epoch() == 1 && propose.phase().equals(Phase.phase(2)))
+            .findFirst()
+            .ifPresent(queue::add);
+        settle();
         var pairAC = Set.of(A, C);
         var pairBD = Set.of(B, D);
         deliverWhile(d -> (pairAC.contains(d.source()) && pairAC.contains(d.target()))
                           || (pairBD.contains(d.source()) && pairBD.contains(d.target())),
                      () -> true);
 
+        // Agreement: every Decision any engine announced for one slot names the same outcome (value, V0 included).
+        var outcomesBySlot = new HashMap<Phase, Set<String>>();
+        sent.stream()
+            .map(Delivery::message)
+            .filter(Decision.class::isInstance)
+            .map(m -> (Decision<?>) m)
+            .forEach(decision -> outcomesBySlot.computeIfAbsent(decision.phase(), _ -> new java.util.TreeSet<>())
+                                               .add(decision.stateValue() + ":" + (decision.stateValue() == StateValue.V1
+                                                                                   ? decision.value().id().toString()
+                                                                                   : "-")));
+        outcomesBySlot.forEach((slot, outcomes) -> assertThat(outcomes).as("slot %s is decided at most once: one outcome across all engines", slot)
+                                                                       .hasSize(1));
+        var logs = ALL.stream().map(id -> List.copyOf(machines.get(id).getProcessedCommands())).toList();
+        var longest = logs.stream().max(java.util.Comparator.comparingInt(List::size)).orElse(List.of());
+        logs.forEach(log -> assertThat(log).as("every applied log is a prefix of the longest")
+                                           .containsExactlyElementsOf(longest.subList(0, log.size())));
+
+        // Positive control: the epoch-1 pair really decided slot 2 (so the agreement check had a decision to disagree with),
+        // and the laggards never ballot at epoch 0 for the slot epoch 1 governs.
+        assertThat(sent.stream()
+                       .map(Delivery::message)
+                       .filter(m -> m instanceof Decision<?> decision && decision.epoch() == 1 && decision.phase().equals(Phase.phase(2))))
+            .as("positive control: the epoch-1 pair decided slot 2").isNotEmpty();
         var epochZeroBallotsForSlotTwo = sent.stream()
                                              .filter(d -> d.source().equals(A) || d.source().equals(C))
                                              .filter(d -> ballotAt(d.message(), 0, Phase.phase(2)))
                                              .toList();
         assertThat(epochZeroBallotsForSlotTwo).as("a laggard must not vote at epoch 0 for slot 2, which epoch 1 governs")
                                               .isEmpty();
-        var logs = ALL.stream().map(id -> List.copyOf(machines.get(id).getProcessedCommands())).toList();
-        var longest = logs.stream().max(java.util.Comparator.comparingInt(List::size)).orElse(List.of());
-        logs.forEach(log -> assertThat(log).as("slot 2 is decided at most once: every applied log is a prefix of the longest")
-                                           .containsExactlyElementsOf(longest.subList(0, log.size())));
-        // Positive control: the epoch-1 pair is live on slot 2 (both ballot at epoch 1), so the check above is not vacuous.
-        // D already holds its own join-time proposal for slot 2, so the two batches differ and D votes V0: the pair
-        // ballots without deciding, which is all the control needs.
-        assertThat(sent.stream().filter(d -> d.source().equals(B)).anyMatch(d -> ballotAt(d.message(), 1, Phase.phase(2))))
-            .as("positive control: B ballots at epoch 1 for slot 2").isTrue();
-        assertThat(sent.stream().filter(d -> d.source().equals(D)).anyMatch(d -> d.message() instanceof VoteRound1 vote
-                                                                                 && vote.epoch() == 1 && vote.phase().equals(Phase.phase(2))))
-            .as("positive control: D votes at epoch 1 for slot 2").isTrue();
+    }
+
+    /// Liveness half of the fix: the laggard refuses the newer-epoch COLD answer, then adopts epoch 1 from a LIVE epoch-1 answer.
+    @Test void laggard_refusesTheNewerEpochColdAnswer_thenAdoptsEpochOneFromALiveAnswer() {
+        persistedEpochOneOnB();
+        triggerResync(B, D, 1);
+        triggerResync(A, C, 0);
+
+        deliverOnly(d -> d.source().equals(A) && d.target().equals(B) && d.message() instanceof SyncRequest);
+        deliverOnly(d -> d.source().equals(B) && d.target().equals(A) && d.message() instanceof SyncResponse<?>);
+        assertThat(engine(A).isActive()).as("the epoch-1 COLD answer is refused, not adopted").isFalse();
+        assertThat(engine(A).voterConfiguration().unwrap()).isEqualTo(new VoterConfiguration(0, GENESIS_ROSTER));
+        assertThat(engine(A).currentPhaseForTesting()).as("no phase adopted from the COLD answer").isNotEqualTo(Phase.phase(2));
+
+        deliverOnly(d -> d.source().equals(A) && d.target().equals(D) && d.message() instanceof SyncRequest);
+        deliverOnly(d -> d.source().equals(D) && d.target().equals(A) && d.message() instanceof SyncResponse<?>);
+        assertThat(engine(A).voterConfiguration().unwrap()).as("A adopts epoch 1 from the LIVE answer")
+                                                           .isEqualTo(new VoterConfiguration(1, REPLACED));
+        assertThat(engine(A).isActive()).isTrue();
+        assertThat(engine(A).currentPhaseForTesting()).isEqualTo(Phase.phase(2));
+    }
+
+    /// The flag is set only by a SUCCESSFUL save. B's disk holds an epoch-1 backup it never wrote and every save B makes
+    /// fails (so B never activates): its COLD answer must still be stripped (#1526), whatever the failed save did.
+    @Test void coldAnswer_isStripped_whenTheEnginesOwnSaveFailed() {
+        var failing = new FailingSave();
+        ALL.forEach(id -> disks.put(id, RabiaPersistence.inMemory()));
+        disks.put(B, failing);
+        failing.backup.save(new SnapshotMachine(), Phase.phase(2), List.of(), new VoterConfiguration(1, REPLACED)).unwrap();
+        start(A); start(B); start(C);
+        deliverWhile(_ -> true, () -> true);
+
+        assertThat(failing.saveAttempts.get()).as("positive control: B attempted (and failed) a save").isGreaterThan(0);
+        assertThat(engine(B).isActive()).as("positive control: a node whose save failed does not activate").isFalse();
+
+        engine(B).handleSyncRequest(new SyncRequest(A));
+        settle();
+        var answerFromB = sent.stream()
+                              .filter(d -> d.source().equals(B) && d.target().equals(A) && d.message() instanceof SyncResponse<?>)
+                              .map(d -> (SyncResponse<?>) d.message())
+                              .reduce((first, second) -> second)
+                              .orElseThrow();
+        assertThat(answerFromB.responder()).isEqualTo(ResponderState.COLD);
+        assertThat(answerFromB.state().lastCommittedPhase()).as("the answer serves the loaded backup").isEqualTo(Phase.phase(2));
+        assertThat(answerFromB.state().configuration().isEmpty()).as("a backup the engine never wrote carries no configuration").isTrue();
+    }
+
+    /// Persistence whose saves always fail; `load` serves a backup written behind the engine's back.
+    private static final class FailingSave implements RabiaPersistence<TestCommand> {
+        private final RabiaPersistence<TestCommand> backup = RabiaPersistence.inMemory();
+        private final java.util.concurrent.atomic.AtomicInteger saveAttempts = new java.util.concurrent.atomic.AtomicInteger();
+
+        @Override public org.pragmatica.lang.Result<Unit> save(org.pragmatica.consensus.StateMachine<TestCommand> machine,
+                                                               Phase phase,
+                                                               java.util.Collection<Batch<TestCommand>> pending) {
+            saveAttempts.incrementAndGet();
+            return org.pragmatica.lang.utils.Causes.cause("disk full").result();
+        }
+
+        @Override public org.pragmatica.lang.Result<Unit> save(org.pragmatica.consensus.StateMachine<TestCommand> machine,
+                                                               Phase phase,
+                                                               java.util.Collection<Batch<TestCommand>> pending,
+                                                               VoterConfiguration configuration) {
+            return save(machine, phase, pending);
+        }
+
+        @Override public Option<SavedState<TestCommand>> load() { return backup.load(); }
     }
 
     /// A and C lag at epoch 0; B decided the roster change and a batch, D joined epoch 1 from B's LIVE answer, and B
@@ -170,6 +256,7 @@ class RabiaColdSyncEpochTest {
                               .reduce((first, second) -> second)
                               .orElseThrow();
         assertThat(answerFromB.responder()).as("B answered COLD").isEqualTo(ResponderState.COLD);
+        assertThat(answerFromB.state().configuration().isPresent()).as("B's COLD answer carries the configuration it persisted").isTrue();
         assertThat(answerFromB.state().configuration().unwrap()).isEqualTo(new VoterConfiguration(1, REPLACED));
         assertThat(engine(D).isActive()).as("one same-epoch COLD answer plus D itself is the #660 majority").isTrue();
         assertThat(engine(D).voterConfiguration().unwrap()).isEqualTo(new VoterConfiguration(1, REPLACED));
