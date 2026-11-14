@@ -170,9 +170,9 @@ public final class RedisConnection implements RedisCommands {
     /// the first command.
     private static Promise<Channel> handshaken(Channel ch) {
         return promise(promise -> ch.pipeline()
-                                            .get(SslHandler.class)
-                                            .handshakeFuture()
-                                            .addListener(future -> settleHandshake(future, ch, promise)));
+                                    .get(SslHandler.class)
+                                    .handshakeFuture()
+                                    .addListener(future -> settleHandshake(future, ch, promise)));
     }
 
     @Contract
@@ -422,8 +422,7 @@ public final class RedisConnection implements RedisCommands {
         @Override
         @Contract
         protected void channelRead0(ChannelHandlerContext ctx, RespValue value) {
-            option(pending.poll())
-                  .onPresent(reply -> complete(reply, value))
+            option(pending.poll()).onPresent(reply -> complete(reply, value))
                   .onEmpty(() -> fail(protocolViolation("reply without a command in flight")));
         }
 
