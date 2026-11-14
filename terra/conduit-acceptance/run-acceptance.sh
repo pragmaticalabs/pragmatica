@@ -106,12 +106,12 @@ echo "application up on port $APP_PORT, PostgreSQL on port $PG_PORT, suite image
 "$HERE/check-vendored.sh" || { echo "ACCEPTANCE ERROR: spec/hurl drifted from the recorded upstream commit" >&2; exit 2; }
 SUITE="$WORK/suite"
 mkdir -p "$SUITE"
-EXEMPT_LIST="$(grep -v '^#' "$HERE/local/exempt-by-name.txt" | awk 'NF {print $1}')"
-want_exempt=$(printf '%s\n' "$EXEMPT_LIST" | awk 'NF' | wc -l | tr -d ' ')
+EXEMPT_LIST="$(grep -v '^#' "$HERE/local/exempt-by-name.txt" | awk 'NF {printf "%s ", $1}')"
+want_exempt=$(printf '%s' "$EXEMPT_LIST" | wc -w | tr -d ' ')
 for f in "$HERE"/spec/hurl/*.hurl; do
   b="$(basename "$f")"
   awk -v base="$b" -v list="$EXEMPT_LIST" -v out="$WORK/rewrite.count" -v ex="$WORK/exempt.count" -v bad="$WORK/exempt.bad" '
-    BEGIN { n = split(list, a, "\n"); for (i = 1; i <= n; i++) named[a[i]] = 1 }
+    BEGIN { n = split(list, a, " "); for (i = 1; i <= n; i++) named[a[i]] = 1 }
     /^(GET|POST|PUT|DELETE|PATCH) / { err = 0 }
     /^HTTP [45][0-9][0-9]/ { err = 1 }
     /^HTTP [123][0-9][0-9]/ { err = 0 }
