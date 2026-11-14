@@ -47,10 +47,13 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///
 /// Pinned:
 ///  1. the hold is covered by unwritability: at least one `cleared` summary per held lane closes after the markers, and
-///     their durations (each capped at the marker-to-release span) add up to the hold on every lane. A lane that turns
+///     their durations (each capped at the marker-to-release span) add up to the hold over the held lanes. A lane that turns
 ///     writable for a moment mid-hold splits its episode in two and still passes; the lane flaps while the window fills,
 ///     so shorter episodes also appear. The log line does not name the sender, so per-lane attribution is by count and
 ///     summed duration, not by identity. Every `entered` has its `cleared`, read from the same snapshot;
+///     The physical state is sampled every 100 ms through the hold, per sender (by identity): each sender's lane must be
+///     unwritable in at least 90% of the samples, so a lane released mid-hold fails by name even when the other absorbs the
+///     aggregate;
 ///  2. a frame held longer than the 5 s frame budget is given up and counted (`RETRY_GAVE_UP`), and once the hold is released
 ///     no backlog and no retry stays behind;
 ///  3. THE #3194 ASSERTION: a write committed during the hold reaches the held peer within [#CATCH_UP_BOUND_MS] of the release,
@@ -88,6 +91,10 @@ class EmberConsensusLaneHoldTest {
     private static final int FILL_VALUE_CHARS = 2_000_000;
     private static final int FILL_PUTS_MAX = 60;
     private static final long HOLD_AFTER_MARKERS_MS = 12_000L;
+    private static final long SAMPLE_INTERVAL_MS = 100L;
+    /// The 90% is a marked guess, not a derived bound: at the verified head every sender was unwritable in 120 of 120
+    /// samples (100%); a sender released at +8 s of the 12 s hold (mutant m2b8000) measured 82 of 120 (68%).
+    private static final int MIN_UNWRITABLE_PERCENT = 90;
     private static final long CATCH_UP_BOUND_MS = 90_000L;
     private static final long SLACK_MS = 1_500L;
     private static final String LOGGER = "org.pragmatica.consensus.net.quic.QuicClusterNetwork";
@@ -106,6 +113,26 @@ class EmberConsensusLaneHoldTest {
     }
 
     private record Arrival(long nanos, String message) {}
+
+    /// `unwritable[i]` counts the samples in which sender `i`'s lane to the held peer was not writable, out of `total`.
+    private record Samples(int total, int[] unwritable) {}
+
+    private static Samples sampleUnwritable(List<AetherNode> senders, NodeId heldId, long durationMs) {
+        var unwritable = new int[senders.size()];
+        var total = 0;
+        var deadline = System.nanoTime() + durationMs * 1_000_000L;
+
+        while (System.nanoTime() < deadline) {
+            for (var i = 0; i < unwritable.length; i++) {
+                if (!laneOf(senders.get(i), heldId).isWritable()) {
+                    unwritable[i]++;
+                }
+            }
+            total++;
+            pause(SAMPLE_INTERVAL_MS);
+        }
+        return new Samples(total, unwritable);
+    }
 
     @Test
     @Timeout(600)
@@ -141,7 +168,7 @@ class EmberConsensusLaneHoldTest {
             awaitTrue("an entered WARN per held lane", () -> enteredFor(arrivals, heldId).size() >= senders.size());
             var gaveUpBefore = senders.stream().mapToLong(sender -> gaveUp(sender)).sum();
 
-            pause(HOLD_AFTER_MARKERS_MS);
+            var samples = sampleUnwritable(senders, heldId, HOLD_AFTER_MARKERS_MS);
             var gaveUp = senders.stream().mapToLong(sender -> gaveUp(sender)).sum() - gaveUpBefore;
             var releasedAt = System.nanoTime();
 
@@ -175,6 +202,16 @@ class EmberConsensusLaneHoldTest {
                                                                               senders.size(),
                                                                               holdMs,
                                                                               episodes).isTrue();
+            // (1b) per-sender physical state: each sender's lane stayed unwritable through the hold. The log summary above is an
+            // aggregate (credit moves between senders), so a lane released mid-hold is caught here, by identity.
+            for (var i = 0; i < senders.size(); i++) {
+                assertThat(samples.unwritable()[i]).as("sender %s -> %s CONSENSUS lane unwritable in %d of %d samples (>= %d%% required)",
+                                                       senders.get(i).self(),
+                                                       heldId,
+                                                       samples.unwritable()[i],
+                                                       samples.total(),
+                                                       MIN_UNWRITABLE_PERCENT).isGreaterThanOrEqualTo(samples.total() * MIN_UNWRITABLE_PERCENT / 100);
+            }
             // (2) frames older than the budget were given up and counted; nothing stays behind after the release.
             assertThat(gaveUp).as("held frames older than the frame budget are counted as RETRY_GAVE_UP").isPositive();
             awaitTrue("no backlog and no retry in flight after the release",
