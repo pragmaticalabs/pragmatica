@@ -1892,7 +1892,7 @@ public final class EmberCluster {
         return Map.of("artifacts", config);
     }
 
-    private void onNodeExit(String nodeIdStr, int exitCode) {
+    void onNodeExit(String nodeIdStr, int exitCode) {
         exitCodes.put(nodeIdStr, exitCode);
         handleSelfDrain(nodeIdStr);
     }
