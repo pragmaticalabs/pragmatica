@@ -38,8 +38,8 @@ import org.pragmatica.lang.Verify;
 /// Directives, communities and governor announcements (spec C13, C14, J5, B-066, B-069, B-070, R-4.3.3).
 ///
 /// - A **directive** names a node's role; the FSM assigns a CORE directive to a joining non-seed core (J5) and a WORKER
-///   directive, minting the community when needed, to a joining worker (B-069, B-070). It removes a departed WORKER's directive in C17b
-///   (#3193, `DepartureFlow#cleanup`), never a core's (R-4.3.1).
+///   directive, minting the community when needed, to a joining worker (B-069, B-070). It removes a departed WORKER's directive in C17b,
+///   with the worker's record in the same transaction (#3193, `DepartureFlow#cleanup`), never a core's (R-4.3.1).
 /// - A **community** is chosen by incumbency, then by the lowest fill ratio, counting only live, non-departed assignments
 ///   (R-3.3.9, N4-4, NT-39).
 /// - An **announcement** refreshes the leader-local freshness clock of its community (R-2.14c).
@@ -173,8 +173,9 @@ public sealed interface Directory {
                      .toList();
     }
 
-    /// R-4.3.3 derived again from the mirror, after a refusal (R-5.7.2) or a lost or failed submission (#2143). R-4.3.3 is the only remover
-    /// of a departure record (R-4.3.5, MQ-4) and the directive it answers is already gone, so no reconcile step derives it: dropping it
+    /// R-4.3.3 derived again from the mirror, after a refusal (R-5.7.2) or a lost or failed submission (#2143). Besides a worker's C17b
+    /// (which removes the record with its directive, #3193), R-4.3.3 is the only remover of a departure record (R-4.3.5, MQ-4) and the
+    /// directive it answers is already gone, so no reconcile step derives it: dropping it
     /// would leave the record of a terminated id for good (NT-106). It stops when the node is no longer departed (its record moved or went)
     /// or has a directive again.
     static Option<TxDraft> refreshedRemoval(ClusterModel m, TxDraft draft) {
