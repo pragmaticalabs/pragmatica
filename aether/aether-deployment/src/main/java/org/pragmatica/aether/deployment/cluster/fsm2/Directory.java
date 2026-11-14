@@ -38,7 +38,8 @@ import org.pragmatica.lang.Verify;
 /// Directives, communities and governor announcements (spec C13, C14, J5, B-066, B-069, B-070, R-4.3.3).
 ///
 /// - A **directive** names a node's role; the FSM assigns a CORE directive to a joining non-seed core (J5) and a WORKER
-///   directive, minting the community when needed, to a joining worker (B-069, B-070). It **never removes** one (R-4.3.1).
+///   directive, minting the community when needed, to a joining worker (B-069, B-070). It removes a departed WORKER's directive in C17b
+///   (#3193, `DepartureFlow#cleanup`), never a core's (R-4.3.1).
 /// - A **community** is chosen by incumbency, then by the lowest fill ratio, counting only live, non-departed assignments
 ///   (R-3.3.9, N4-4, NT-39).
 /// - An **announcement** refreshes the leader-local freshness clock of its community (R-2.14c).

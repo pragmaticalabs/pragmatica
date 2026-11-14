@@ -17,6 +17,7 @@ import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
 import org.pragmatica.aether.deployment.cluster.fsm2.TimerId.Kind;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -37,7 +38,8 @@ import org.pragmatica.lang.Option;
 ///   them. It never touches an observed key or the directive.
 /// - **C17s** (the backstop's inference, step 7): the Put alone, with cause STALE, fenced the same way. It removes nothing.
 /// - **C17b** (after a current DEPARTED commits): the removal of the node's observed rows, each at its exact value, and of
-///   any desired and route keys still present, guarded on that exact record. Never the directive or the placement key.
+///   any desired and route keys still present, guarded on that exact record. A WORKER's directive goes with them (#3193, owner ruling
+///   2026-11-14, as LEGACY at `NodeRemoved`); a core's directive and the placement key never do.
 /// - A DEPARTED record of a node that is **joined** (R-2.11) with the same process is **superseded on read** (R-4.3.0): the node
 ///   counts, no C17b is built for it, and the ADMITTED rewrite (`ADMITTED(e_d + 1)`, expecting the DEPARTED value) replaces it. The
 ///   `Rebuild` seed never supersedes (D-4 (ii)).
@@ -337,7 +339,11 @@ public sealed interface DepartureFlow {
 
     // -- C17b ------------------------------------------------------------------------------------------------------
     /// One transaction, guarded on the committed DEPARTED record: the node's observed rows at their exact values (current
-    /// or stale alike), and any desired, route and topic-row (#1337) keys still present. Never the directive or the placement key.
+    /// or stale alike), any desired, route and topic-row (#1337) keys still present, and a WORKER's directive at its exact value (#3193).
+    /// Never a core's directive or the placement key. The directive's removal is what retires the worker from its community: the governor's
+    /// roster is derived from the directives, so its next announcement drops the worker and `COMMUNITY_MEMBER_LEFT` is projected from that
+    /// roster put; and its commit takes R-4.3.3 ([Directory#onDirectiveRemove]), which retires the record. A worker that comes back joins
+    /// without a directive and J5 assigns it one (#3028).
     ///
     /// Not built for a **joined** node: a departed node is joined only when its admission names a different known process than its record, which
     /// J8's core arm admits (a joined node of the same process is superseded, so not departed; a token learned after the join, C11d, reaches
@@ -362,9 +368,19 @@ public sealed interface DepartureFlow {
         return Stream.of(observedRemovals(m, node),
                          desiredRemovals(m, node),
                          routeRemovals(m, node),
-                         topicRowRemovals(m, node))
+                         topicRowRemovals(m, node),
+                         workerDirectiveRemoval(m, node))
                      .flatMap(List::stream)
                      .toList();
+    }
+
+    /// #3193: a departed WORKER's directive at its exact value; nothing for a core or a node without a directive.
+    private static List<KVCommand.Mutation<AetherKey, AetherValue>> workerDirectiveRemoval(ClusterModel m, NodeId node) {
+        return m.directives.get(node)
+                           .filter(directive -> ActivationDirectiveValue.WORKER.equals(directive.role()))
+                           .map(directive -> removal(new ActivationDirectiveKey(node), directive))
+                           .stream()
+                           .toList();
     }
 
     /// The node's observed rows at their exact values, current or stale alike.
