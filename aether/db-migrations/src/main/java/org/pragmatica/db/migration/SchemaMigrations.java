@@ -19,6 +19,10 @@ import org.pragmatica.db.migration.SchemaHistoryRepository.MigrationProgress;
 import org.pragmatica.db.migration.SchemaHistoryRepository.MigrationStatus;
 import org.pragmatica.aether.pg.split.Statement;
 import org.pragmatica.aether.pg.split.StatementSplitter;
+import org.pragmatica.aether.resource.db.DatabaseConnectorError;
+import org.pragmatica.aether.resource.db.DatabaseType;
+import org.pragmatica.aether.resource.db.PgSchemaName;
+import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -32,6 +36,8 @@ import static org.pragmatica.db.migration.MigrationError.BaselineConflict.baseli
 import static org.pragmatica.db.migration.MigrationError.ChecksumMismatch.checksumMismatch;
 import static org.pragmatica.db.migration.MigrationError.InvalidIndexLeftBehind.invalidIndexLeftBehind;
 import static org.pragmatica.db.migration.MigrationError.NonTransactionalScriptUnfenced.nonTransactionalScriptUnfenced;
+import static org.pragmatica.db.migration.MigrationError.SchemaCreateDenied.schemaCreateDenied;
+import static org.pragmatica.db.migration.MigrationError.SchemaQualifierUnsupported.schemaQualifierUnsupported;
 import static org.pragmatica.db.migration.MigrationError.UndoNotAvailable.undoNotAvailable;
 import static org.pragmatica.db.migration.SchemaHistoryRepository.AppliedMigration.appliedMigration;
 
@@ -65,7 +71,17 @@ public interface SchemaMigrations {
     /// `statementTimeout` bounds every statement on the migration's pinned database session (FDB-2a, #2591); the
     /// caller passes its own per-attempt migration timeout, so no single statement outlives the attempt.
     static SchemaMigrations schemaMigrations(TimeSpan statementTimeout) {
-        return new DefaultSchemaMigrations(SchemaHistoryRepository.schemaHistoryRepository(), statementTimeout);
+        return schemaMigrations(statementTimeout, Option.none());
+    }
+
+    /// Migrations scoped to a PostgreSQL schema (#2100 E-B, know 932bb4b546: one migration path, the schema a
+    /// provisioning parameter). Every history, meta and owner table lives in `schema`, so each schema carries its own
+    /// version sequence and ownership claim; the database fence stays per database. After the fence is held and before
+    /// bootstrap the runner creates the schema if it is absent: a role that may not is refused with
+    /// [MigrationError.SchemaCreateDenied], an engine without schemas with [MigrationError.SchemaQualifierUnsupported].
+    /// With `none` every statement is byte-identical to [#schemaMigrations(TimeSpan)].
+    static SchemaMigrations schemaMigrations(TimeSpan statementTimeout, Option<PgSchemaName> schema) {
+        return new DefaultSchemaMigrations(SchemaHistoryRepository.schemaHistoryRepository(schema), statementTimeout, schema);
     }
 
     record SchemaResult(int appliedCount, int currentVersion, long totalMs) {
@@ -77,11 +93,19 @@ public interface SchemaMigrations {
 
 final class DefaultSchemaMigrations implements SchemaMigrations {
     private final SchemaHistoryRepository historyRepo;
-    private final TimeSpan statementTimeout;
+    private static final RowMapper<Integer> PRESENT_MAPPER = row -> row.getInt("present");
+    private static final RowMapper<String> ROLE_MAPPER = row -> row.getString("role");
+    private static final String CURRENT_ROLE_SQL = "SELECT current_user AS role";
+    private static final String INSUFFICIENT_PRIVILEGE = "42501";
+    private static final String UNKNOWN_ROLE = "<unknown role>";
 
-    DefaultSchemaMigrations(SchemaHistoryRepository historyRepo, TimeSpan statementTimeout) {
+    private final TimeSpan statementTimeout;
+    private final Option<PgSchemaName> schema;
+
+    DefaultSchemaMigrations(SchemaHistoryRepository historyRepo, TimeSpan statementTimeout, Option<PgSchemaName> schema) {
         this.historyRepo = historyRepo;
         this.statementTimeout = statementTimeout;
+        this.schema = schema;
     }
 
     /// Claim ownership of the physical database IMMEDIATELY after bootstrap and BEFORE
@@ -152,6 +176,22 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                   SqlConnector connector,
                                   String nodeId,
                                   SqlConnector.TransactionCallback<T> body) {
+        return qualifierRefusal(connector.databaseType()).fold(() -> fencedRun(datasource, connector, nodeId, body),
+                                                                cause -> cause.promise());
+    }
+
+    /// Only PostgreSQL has the schemas a scoped migration needs (the history table is spliced as `"<schema>".table`);
+    /// every other engine is refused before the fence is even taken, never given an unqualified table instead.
+    private Option<Cause> qualifierRefusal(DatabaseType type) {
+        return schema.filter(_ -> type != DatabaseType.POSTGRESQL)
+                     .map(name -> schemaQualifierUnsupported(name.value(),
+                                                            type.name()));
+    }
+
+    private <T> Promise<T> fencedRun(String datasource,
+                                     SqlConnector connector,
+                                     String nodeId,
+                                     SqlConnector.TransactionCallback<T> body) {
         return MigrationFence.isSessionFenced(connector.databaseType())
                ? connector.pinned(statementTimeout.duration(),
                                   session -> acquireThen(datasource, session, nodeId, body),
@@ -247,9 +287,47 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
     /// Bootstrap, then the ownership claim, then the applied-history read: on a fenced session all three run only
     /// after the fence is held (design §1: history is read ONLY after acquire).
     private Promise<List<AppliedMigration>> claimAndReadHistory(String datasource, SqlConnector session, String owner) {
-        return historyRepo.bootstrap(session)
+        return ensureSchema(session).flatMap(_ -> historyRepo.bootstrap(session))
                           .flatMap(_ -> historyRepo.claimOwnership(session, datasource, owner))
                           .flatMap(_ -> historyRepo.queryApplied(session));
+    }
+
+    /// The scoped schema must exist before its tables can: a catalog read first, so a role that may only USE a
+    /// pre-created schema never attempts a `CREATE SCHEMA`; only an absent schema is created.
+    private Promise<Unit> ensureSchema(SqlConnector session) {
+        return schema.fold(Promise::unitPromise, name -> createWhenAbsent(session, name));
+    }
+
+    private static Promise<Unit> createWhenAbsent(SqlConnector session, PgSchemaName name) {
+        return session.queryOptional(SchemaHistoryEvolution.schemaExistsSql(), PRESENT_MAPPER, name.value())
+                      .flatMap(present -> present.fold(() -> createSchema(session, name), _ -> Promise.unitPromise()));
+    }
+
+    private static Promise<Unit> createSchema(SqlConnector session, PgSchemaName name) {
+        return session.update(SchemaHistoryEvolution.createSchemaSql(name))
+                      .mapToUnit()
+                      .fold(outcome -> outcome.fold(cause -> deniedOrFailed(session, name, cause), _ -> Promise.unitPromise()));
+    }
+
+    private static Promise<Unit> deniedOrFailed(SqlConnector session, PgSchemaName name, Cause cause) {
+        return isPermissionDenied(cause)
+               ? currentRole(session).flatMap(role -> schemaCreateDenied(name.value(), role).promise())
+               : cause.promise();
+    }
+
+    /// SQLSTATE 42501 (insufficient_privilege) names a refused `CREATE SCHEMA`; a transport that reports no SQLSTATE is
+    /// read by the server's `permission denied` message, as the SQLite arm of the history collision check is.
+    private static boolean isPermissionDenied(Cause cause) {
+        return cause instanceof DatabaseConnectorError error
+               && (error.sqlState().map(INSUFFICIENT_PRIVILEGE::equals).or(false)
+                   || error.message().contains("permission denied"));
+    }
+
+    /// FER (degrade forward): the role name only decorates the refusal, so a failed lookup names an unknown role and
+    /// the run still ends in [MigrationError.SchemaCreateDenied], which is what the operator needs to act on.
+    private static Promise<String> currentRole(SqlConnector session) {
+        return session.queryOne(CURRENT_ROLE_SQL, ROLE_MAPPER)
+                      .fold(outcome -> Promise.success(outcome.or(UNKNOWN_ROLE)));
     }
 
     private static Result<List<ParsedMigration>> parseAll(List<MigrationScript> scripts) {
