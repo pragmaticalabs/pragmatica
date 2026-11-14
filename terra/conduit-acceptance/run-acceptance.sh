@@ -124,15 +124,17 @@ for f in "$SUITE"/*.hurl; do
     --variable "host=http://127.0.0.1:$APP_PORT" --variable "uid=$UID_VAL" "/suite/$name.hurl" >"$WORK/report/$name.out" 2>&1
   rc=$?
   set -e
-  n_req=$(python3 -I - "$WORK/report/$name" <<'PY'
+  read -r n_req n_asserts < <(python3 -I - "$WORK/report/$name" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1] + "/report.json"))
-print(sum(len(f.get("entries", [])) for f in d) if isinstance(d, list) else 0)
+entries = [e for f in d for e in f.get("entries", [])] if isinstance(d, list) else []
+print(len(entries), sum(len(e.get("asserts", [])) for e in entries))
 PY
-  ) || n_req=0
+  ) || { n_req=0; n_asserts=0; }
   requests=$(( requests + n_req ))
+  assertions=$(( assertions + n_asserts ))
   if [ "$rc" = 0 ] && [ "$n_req" -gt 0 ]; then
-    passed=$(( passed + 1 )); echo "PASS  $name ($n_req requests)"
+    passed=$(( passed + 1 )); echo "PASS  $name ($n_req requests, $n_asserts asserts)"
   else
     failed=$(( failed + 1 )); failed_files="$failed_files $name"
     echo "FAIL  $name (exit $rc, $n_req requests)"
@@ -141,7 +143,7 @@ PY
 done
 
 echo "-------------------------------------------------------------------------------"
-echo "Conduit acceptance: files $((passed + failed)), passed $passed, failed $failed, requests executed $requests, error-body assertions exempt $exempt"
+echo "Conduit acceptance: files $((passed + failed)), passed $passed, failed $failed, requests executed $requests, asserts evaluated $assertions, error-body assertions exempt $exempt"
 if [ "$failed" -gt 0 ] || [ "$passed" -eq 0 ]; then
   echo "RESULT: FAIL ($failed_files )"
   exit 1
