@@ -6,3 +6,7 @@
 - **Delivery is at-least-once on a leader change**: the markers are cleared by a follow-up WARNINGS write after the publish
   (one extra write per published batch), so a leader dying in between makes the successor publish the marked rows again.
   Several raise/close cycles of one key inside one in-flight window keep only the latest opener and recovery message.
+- **Late settle and late rows**: a deposed leader publishes nothing once it mirrors the successor's `LeaderKey` (the successor
+  replays the committed markers), and a marked row the deposed leader commits after the successor's snapshot is replayed and
+  adopted like an inherited one. A settlement processed before the deposed leader sees the new `LeaderKey` still publishes
+  (term-stamped warnings to close it: #3203).
