@@ -24,6 +24,7 @@ import org.pragmatica.aether.slice.kvstore.ObservedSliceFeed;
 import org.pragmatica.aether.slice.kvstore.ObservedSliceListener;
 import org.pragmatica.aether.slice.kvstore.SliceRowSource;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterState;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
@@ -226,6 +227,20 @@ public final class DeploymentWiring {
 
     public DeploymentEngine engine() {
         return engine;
+    }
+
+    /// The committed model the FSM2 cluster FSM holds, for the management API's community count (#3159): none under LEGACY; under FSM2 a read
+    /// of the interpreter's published state at answer time, a dormant state while the system is not attached.
+    public Option<Supplier<ClusterState>> clusterModel() {
+        return isFsm2()
+               ? Option.some(this::clusterState)
+               : Option.none();
+    }
+
+    private ClusterState clusterState() {
+        return system.map(fsm2 -> fsm2.clusterInterpreter()
+                                      .state())
+                     .or(ClusterState.initial());
     }
 
     public boolean isFsm2() {

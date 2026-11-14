@@ -17,6 +17,7 @@ import java.util.function.Supplier;
 
 import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.deployment.cluster.CommunityPolicyView;
+import org.pragmatica.aether.deployment.cluster.community.CommunityLivenessView;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.write.FsmWriter;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
@@ -424,12 +425,6 @@ public final class ClusterDeploymentContext {
     /// [CommunityLivenessView#unwired], which reports nothing absent.
     public CommunityLivenessView communityLiveness() {
         return communityLiveness;
-    }
-
-    /// `true` once a real observed liveness view is wired (#1652). While unwired, every member reads as
-    /// present — a count taken then would claim liveness nobody observed.
-    public boolean hasCommunityLiveness() {
-        return communityLiveness != CommunityLivenessView.unwired();
     }
 
     /// Inject the observed community-liveness view. The pre-wiring default is

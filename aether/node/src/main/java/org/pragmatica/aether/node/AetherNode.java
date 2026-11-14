@@ -62,6 +62,8 @@ import org.pragmatica.aether.node.deployment.Fsm2System;
 import org.pragmatica.aether.node.deployment.MembershipInputs;
 import org.pragmatica.aether.node.deployment.SeamPoller;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.aether.deployment.cluster.community.CommunityLiveMembers;
+import org.pragmatica.aether.deployment.cluster.community.CommunityLivenessView;
 import org.pragmatica.aether.deployment.cluster.TerminationRetirement;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementService;
@@ -1792,6 +1794,8 @@ public interface AetherNode extends ManageableNode {
                           ObservabilityBaseline observabilityBaseline,
                           SpokesmanPingLoop spokesmanPingLoop,
                           AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
+                          // #3159: the leader's observed community liveness, served as the live-member count under every engine.
+                          CommunityLivenessView communityLiveness,
                           RetentionEnforcer streamRetentionEnforcer,
                           SegmentSealer streamSegmentSealer,
                           StreamConsumerRuntime streamConsumerRuntime,
@@ -2418,7 +2422,11 @@ public interface AetherNode extends ManageableNode {
 
             @Override
             public Option<Integer> communityLiveMembers(String communityId) {
-                return clusterDeploymentManager.communityLiveMembers(communityId);
+                return CommunityLiveMembers.observedByLeader(clusterNode.leaderManager().isLeader(),
+                                                             deploymentWiring.clusterModel(),
+                                                             kvStore,
+                                                             communityLiveness,
+                                                             communityId);
             }
 
             @Override
@@ -3346,15 +3354,14 @@ public interface AetherNode extends ManageableNode {
                                                                                                periodicTasks::defer));
         var quorumLossChain = quorumLossDrain.quorumLossChain();
         var coreAbsenceDetector = quorumLossDrain.coreAbsenceDetector();
-
-        WorkerHierarchyAssembly.communityReachability(new WorkerHierarchyAssembly.CommunityReachabilityInputs(config,
-                                                                                                              clusterDeploymentManager,
-                                                                                                              metricsCollector,
-                                                                                                              communityDirectory,
-                                                                                                              allEntries,
-                                                                                                              membershipFsm,
-                                                                                                              communityHealth,
-                                                                                                              communityHealthRuntime));
+        var communityLiveness = WorkerHierarchyAssembly.communityReachability(new WorkerHierarchyAssembly.CommunityReachabilityInputs(config,
+                                                                                                                                      clusterDeploymentManager,
+                                                                                                                                      metricsCollector,
+                                                                                                                                      communityDirectory,
+                                                                                                                                      allEntries,
+                                                                                                                                      membershipFsm,
+                                                                                                                                      communityHealth,
+                                                                                                                                      communityHealthRuntime));
         var membershipEdgesOut = MembershipAssembly.membershipEdges(new MembershipAssembly.MembershipEdgesInputs(config,
                                                                                                                  delegateRouter,
                                                                                                                  kvStore,
@@ -3721,6 +3728,7 @@ public interface AetherNode extends ManageableNode {
                                   observabilityBaseline,
                                   spokesmanPingLoop,
                                   governorAnnouncerHolder,
+                                  communityLiveness,
                                   streamRetentionEnforcer,
                                   streamSegmentSealer,
                                   streamConsumerRuntime,
@@ -3939,6 +3947,7 @@ public interface AetherNode extends ManageableNode {
                                                                             observabilityBaseline,
                                                                             spokesmanPingLoop,
                                                                             governorAnnouncerHolder,
+                                                                            communityLiveness,
                                                                             streamRetentionEnforcer,
                                                                             streamSegmentSealer,
                                                                             streamConsumerRuntime,
