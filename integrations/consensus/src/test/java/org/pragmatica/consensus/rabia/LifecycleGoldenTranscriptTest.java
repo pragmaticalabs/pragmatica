@@ -326,12 +326,13 @@ class LifecycleGoldenTranscriptTest {
             }
             var view = new ClusterConfig(List.of(N2, N4, N5));
 
-            for (long round = 1; round <= 2; round++) {
-                for (var sender : List.of(N4, N5)) {
-                    rig.engine.genesisAnnouncement(new RabiaProtocolMessage.Asynchronous.GenesisAnnouncement(sender, round, Option.some(view), Option.none()));
+            rig.submitTogether(() -> {
+                for (long round = 1; round <= 2; round++) {
+                    for (var sender : List.of(N4, N5)) {
+                        rig.engine.genesisAnnouncement(new RabiaProtocolMessage.Asynchronous.GenesisAnnouncement(sender, round, Option.some(view), Option.none()));
+                    }
                 }
-            }
-            rig.settle();
+            });
 
             return "named/" + name + " " + rig.delta() + " voters=" + rig.engine.voterConfiguration() + " joined=" + rig.engine.joinedFormedElectorate() + " pending=" + rig.engine.isGenesisPending();
         } finally {
