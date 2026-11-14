@@ -14,6 +14,7 @@ postgres:16-alpine aether/aether-deployment
 mysql:8.0 aether/db-migrations,aether/pg-tools/sql-splitter,aether/aether-deployment!
 localstack/localstack:3.8 aether/environment/aws
 edoburu/pgbouncer:v1.26.1-p0 aether/db-migrations
+apache/kafka:4.1.0 integrations/kafka-client
 
 # heavy-db (excluded by surefire.excludedGroups / heavyDb.excludedGroups in the module poms): ~1.5 GB images, run on demand.
 gvenzl/oracle-free:23-slim-faststart aether/db-migrations!,aether/pg-tools/sql-splitter!
