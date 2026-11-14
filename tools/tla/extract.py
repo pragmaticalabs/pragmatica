@@ -52,6 +52,9 @@ def scan(path, rel):
                 raise Fail(f'{rel}:{start}: fragment {tag} is not closed before end of file')
             if CLOSE.match(lines[i]):
                 break
+            o = OPEN.match(lines[i])
+            if o:
+                raise Fail(f'{rel}:{start}: fragment {tag} is not closed before fragment {o.group(2) or ""} opens (line {i + 1})')
             d = DOC.match(lines[i])
             if not d:
                 raise Fail(f'{rel}:{start}: fragment {tag} is not closed before the doc comment ends (line {i + 1})')
