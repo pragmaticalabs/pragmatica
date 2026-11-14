@@ -103,7 +103,7 @@ public final class DHTTopologyListener {
     ///     /\ x \in drainers /\ phase[x] = "halted"
     ///     /\ x \notin pruned[o]
     ///     /\ pruned' = [pruned EXCEPT ![o] = @ \cup {x}]
-    ///     /\ UNCHANGED <<drainers, stale, drainSet, known, flapped, store, phase, leaving, rfAt, pages, claimed, strayNack>>
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, flapped, store, phase, leaving, rfAt, pages, claimed, strayNack>>
     /// ```
     @Contract
     public void onNodeRemoved(MembershipDecision.NodeRemoved event) {
@@ -155,7 +155,7 @@ public final class DHTTopologyListener {
     ///        \/ x \in stale /\ x \notin flapped[o]
     ///     /\ pruned' = [pruned EXCEPT ![o] = @ \cup {x}]
     ///     /\ flapped' = IF x \in stale THEN [flapped EXCEPT ![o] = @ \cup {x}] ELSE flapped
-    ///     /\ UNCHANGED <<drainers, stale, drainSet, known, store, phase, leaving, rfAt, pages, claimed, strayNack>>
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, store, phase, leaving, rfAt, pages, claimed, strayNack>>
     /// ```
     @Contract
     public void onNodeDeparting(NodeId departingNodeId) {
@@ -178,7 +178,7 @@ public final class DHTTopologyListener {
     ///     /\ phase[o] # "halted"
     ///     /\ x \in stale /\ x \in pruned[o]
     ///     /\ pruned' = [pruned EXCEPT ![o] = @ \ {x}]
-    ///     /\ UNCHANGED <<drainers, stale, drainSet, known, flapped, store, phase, leaving, rfAt, pages, claimed, strayNack>>
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, flapped, store, phase, leaving, rfAt, pages, claimed, strayNack>>
     /// ```
     @Contract
     public void onNodeRecovered(NodeId recoveredNodeId) {

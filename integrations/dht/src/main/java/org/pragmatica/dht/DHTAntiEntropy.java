@@ -1290,7 +1290,7 @@ public final class DHTAntiEntropy {
     ///             /\ UNCHANGED strayNack
     ///        ELSE /\ strayNack' = (strayNack \/ Accepted(t, d))
     ///             /\ UNCHANGED <<store, pages>>
-    ///     /\ UNCHANGED <<drainers, stale, drainSet, known, pruned, flapped, phase, leaving, rfAt, claimed>>
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, pruned, flapped, phase, leaving, rfAt, claimed>>
     /// ```
     private void acceptDeparturePush(DHTMessage.MigrationDataResponse response) {
         if (departingSenders.test(response.sender()) || response.entries()

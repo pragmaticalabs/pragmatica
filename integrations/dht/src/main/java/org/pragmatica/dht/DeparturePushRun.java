@@ -317,7 +317,7 @@ final class DeparturePushRun {
     ///           /\ claimed' = [claimed EXCEPT ![d] = tgts]
     ///           /\ pages' = pages \cup {Page(d, t) : t \in tgts}
     ///     /\ phase' = [phase EXCEPT ![d] = "pushing"]
-    ///     /\ UNCHANGED <<drainers, stale, drainSet, known, pruned, flapped, store, strayNack>>
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, pruned, flapped, store, strayNack>>
     /// ```
     private List<Promise<Unit>> plan(List<KeyStamp> stamps) {
         var ringNodes = Set.copyOf(node.ring().nodes());
@@ -563,7 +563,7 @@ final class DeparturePushRun {
     ///        IN /\ leaving' = [leaving EXCEPT ![d] = lv]
     ///           /\ claimed' = [claimed EXCEPT ![d] = @ \cup new]
     ///           /\ pages' = (pages \ {Page(d, t)}) \cup {Page(d, n) : n \in new}
-    ///     /\ UNCHANGED <<drainers, stale, drainSet, known, pruned, flapped, store, phase, rfAt, strayNack>>
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, pruned, flapped, store, phase, rfAt, strayNack>>
     /// ```
     private Promise<Unit> replan(Page page) {
         leaving.add(page.target);
@@ -606,7 +606,7 @@ final class DeparturePushRun {
     ///     /\ leaving' = [leaving EXCEPT ![d] = {}]
     ///     /\ rfAt' = [rfAt EXCEPT ![d] = 0]
     ///     /\ claimed' = [claimed EXCEPT ![d] = {}]
-    ///     /\ UNCHANGED <<drainers, stale, drainSet, strayNack>>
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, strayNack>>
     /// ```
     private boolean shouldStop(Page page) {
         return window.halted()

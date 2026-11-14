@@ -29,19 +29,22 @@ Stalled	aether/aether-stream/src/main/java	settled	pass	-	-	#3155 narrowed: sett
 Stalled	aether/aether-stream/src/main/java	settledweak	fail	SettledIsBacked	-	a pass that does not re-derive the stream, replica and counter leaves an unbacked report settled
 Stalled	aether/aether-stream/src/main/java	early	pass	-	-	#3156 fixed: the stall counter is dropped on destroy
 Stalled	aether/aether-stream/src/main/java	earlynoreset	fail	NoEarlyRaise	-	#3156 negative control: without the reset the counter survives destroy and recreate
-DHTDepartureDrain	integrations/dht/src/main/java	code	pass	-	N=4,RF=2,MaxDrain=1	the code: no last-copy loss, targets outside the drain set, receiver agrees with pusher (#3049)
+DHTDepartureDrain	integrations/dht/src/main/java	code	pass	-	N=4,RF=2,MaxDrain=1	the code with Waves=FALSE (every co-drainer named in the first ping) and Deadline=FALSE (every page settles in its window): no last-copy loss, receiver agrees with pusher, replica degree kept (#3049); TargetsOutsideDrainSet is a tautology here; Retarget and the exhaust fallback are unreached at this bound
 DHTDepartureDrain	integrations/dht/src/main/java	live	pass	-	N=3,RF=2	the code: every drainer's push resolves and halts
 DHTDepartureDrain	integrations/dht/src/main/java	emptyset	fail	NoLastCopyLoss	N=4,RF=3	no leader drain set (the empty-set arm of DHTDepartureStaleDrainSetTest)
 DHTDepartureDrain	integrations/dht/src/main/java	noexhaust	fail	NoLastCopyLoss	N=4,RF=3	#1818: no whole-set fallback when the exclusion exhausts the ring
 DHTDepartureDrain	integrations/dht/src/main/java	noselfcheck	fail	NoLastCopyLoss	N=4,RF=3	no fallback when self is not in the key's current set (a stray copy)
 DHTDepartureDrain	integrations/dht/src/main/java	nofallback	fail	NoLastCopyLoss	N=4,RF=3	delta-only targets: stale entries counted as holders leave no target
-DHTDepartureDrain	integrations/dht/src/main/java	abandon	fail	NoLastCopyLoss	N=4,RF=3	a drainer halts with pages unacknowledged (legacy deadline budget)
+DHTDepartureDrain	integrations/dht/src/main/java	abandon	fail	NoLastCopyLoss	N=4,RF=3	a drainer halts with pages unacknowledged: the code's normal deadline path (backstopDeadline, pastDeadline), so the code pass holds only when every page settles in its window
 DHTDepartureDrain	integrations/dht/src/main/java	wavesset	fail	TargetsOutsideDrainSet	N=4,RF=3	drain commands arriving in waves: a target inside the final drain set
 DHTDepartureDrain	integrations/dht/src/main/java	nocodrain	fail	NoLastCopyLoss	N=4,RF=2	#1818: the push does not exclude known co-drainers
 DHTDepartureDrain	integrations/dht/src/main/java	noview	fail	ReceiverAgrees	N=4,RF=2	#1818 L1: receiver judges placement without the pusher's leaving set
 DHTDepartureDrain	integrations/dht/src/main/java	waves	fail	NoLastCopyLoss	N=4,RF=2	drain commands in waves: a page lands on a co-drainer after its plan
-DHTDepartureDrain	integrations/dht/src/main/java	nopruned	pass	-	N=4,RF=2,MaxDrain=1	#2684 F3 dropped: no violation within this bound (the protection is not exercised here)
-DHTDepartureDrain	integrations/dht/src/main/java	wideaccept	pass	-	N=4,RF=2,MaxDrain=1	accept guard dropped: no violation within this bound (the guard is not exercised here)
+DHTDepartureDrain	integrations/dht/src/main/java	nopruned	fail	ReplicaDegree	N=4,RF=2,MaxStale=0	#2684 F3 dropped: a pruned co-drainer's slot is counted as a holder and the key keeps one copy instead of two (NoLastCopyLoss cannot go red without this guard: not expressible)
+DHTDepartureDrain	integrations/dht/src/main/java	wideaccept	pass	-	N=4,RF=2,MaxDrain=1	accept guard dropped: not expressible (the guard refuses pushes from a sender neither departing nor a replica, which the model never produces; dropping a refusal only adds deliveries)
+DHTDepartureDrain	integrations/dht/src/main/java	allnamed	fail	NoLastCopyLoss	N=3,RF=2	#3208: two drainers and a stale entry name every other node; the drainer finds no target and halts with the last copy while the stale node lives
+DHTDepartureDrain	integrations/dht/src/main/java	strand	fail	ReplicaPlacement	N=4,RF=2,MaxDrain=1	#3209: the only copy lands on a node outside the final replica set (where reads miss it and a stray purge may drop it)
+DHTDepartureDrain	integrations/dht/src/main/java	nohaltfair	fail	DrainCompletes	N=3,RF=2	negative control of DrainCompletes: Halt without fairness
 Fsm2Leader	aether/aether-deployment/src/main/java	code_inv	pass	-	-	the code (#3146): only the committed leader's writes are accepted, no submit while suspended, one live leader, published is committed, a refused WARNINGS write re-drafts
 Fsm2Leader	aether/aether-deployment/src/main/java	code_goals	pass	-	-	the code: desired and observed converge after the last leader change
 Fsm2Leader	aether/aether-deployment/src/main/java	code_goals_inv	pass	-	-	the code, goals on: only the committed leader's writes are accepted, no submit while suspended, one live leader
