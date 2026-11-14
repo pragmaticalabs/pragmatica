@@ -71,7 +71,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// sole, so its page continues to `soleDeadline`. A key with an empty `existingAtPlan` (a pruned leaving node) is never promoted:
 /// its survivors are unknown, which is disclosed rather than guessed. A key's death detected later than `baseDeadline` is not seen.
 ///
-/// **Events.** `onSoleCopyAtRisk` once, at the first of: plan time (a sole key without a target, or a window already used up), the
+/// **Delivery.** Only an applied ack from a target outside `leaving` delivers a key. A target the drain set names is pushed to only
+/// because the entry may be stale (#3208, [#finalPrimaryCandidates]); it may equally halt with the copy, so its ack ends the page and
+/// proves nothing.
+///
+/// **Events.** `onSoleCopyAtRisk` once, at the first of: plan time (a sole key without a target outside `leaving`, or a window already used up), the
 /// re-evaluation, or an inventory not enumerated in time. `onSoleCopyDelivered` at the end iff it was raised and no sole key is left
 /// unacknowledged. `onIncompleteReport` at the end iff any key is unacknowledged. Each event's promise is awaited until the window's
 /// event deadline. After a halt nothing more is sent or raised.
@@ -157,23 +161,26 @@ final class DeparturePushRun {
         private final String correlationId;
         private final NodeId target;
         private final List<DepartureKey> keys;
+        private final boolean delivers;
 
         private final AtomicReference<Promise<AttemptResult>> attempt = new AtomicReference<>(Promise.promise());
 
-        private Page(String correlationId, NodeId target, List<DepartureKey> keys) {
+        private Page(String correlationId, NodeId target, List<DepartureKey> keys, boolean delivers) {
             this.correlationId = correlationId;
             this.target = target;
             this.keys = keys;
+            this.delivers = delivers;
         }
 
         String correlationId() {
             return correlationId;
         }
 
-        /// An ack for this page's correlation id: an applied ack delivers every key, then settles the current attempt.
+        /// An ack for this page's correlation id: an applied ack delivers every key, then settles the current attempt. A target the
+        /// drain set names (#3208) may halt with the copy, so its applied ack ends the page without delivering the keys.
         @Contract
         void settle(boolean applied) {
-            if (applied) {
+            if (applied && delivers) {
                 keys.forEach(DepartureKey::markDelivered);
             }
 
@@ -333,7 +340,7 @@ final class DeparturePushRun {
     /// A replicated key with no target already has every post-departure replica (a copy self held outside its responsible set):
     /// nothing is owed. A sole key with no target is unpushable and stays at risk.
     private Stream<TargetedKey> initialTargets(DepartureKey key) {
-        var targets = departureTargets(key.stamp.key(), Set.copyOf(leaving));
+        var targets = drainTargets(key.stamp.key(), Set.copyOf(leaving));
 
         if (targets.isEmpty() && !key.isSole()) {
             key.markDelivered();
@@ -356,6 +363,46 @@ final class DeparturePushRun {
                        .map(entry -> runChain(registerPages(entry.getKey(),
                                                             entry.getValue()),
                                               0));
+    }
+
+    /// Every target of one key: the delta targets ([#departureTargets]) plus, when the drain set may be stale, the primary of every
+    /// possible final replica set ([#finalPrimaryCandidates]). The second list only ever adds targets (#3208, #3209).
+    private List<NodeId> drainTargets(byte[] key, Set<NodeId> excluded) {
+        return Stream.concat(departureTargets(key, excluded).stream(),
+                             finalPrimaryCandidates(key, excluded).stream())
+                     .distinct()
+                     .toList();
+    }
+
+    /// The primary of the key's FINAL replica set, whichever drain-set entries turn out stale (#3208, #3209). Truly departing are
+    /// this node (`DHTRebalancer.leavingSet` adds self) and every node already gone from the ring (pruned at its DEPARTING edge,
+    /// `DHTTopologyListener.onNodeDeparting`, or removed mid-push). A drain-set entry still in the ring is only advisory: it may be a
+    /// live node named by a stale entry (#1818). The final ring is therefore the ring without self and without SOME subset of the
+    /// named ring members, and its replica set's primary is the first unnamed node of the walk without self, or any named node before
+    /// it. Targeting that whole prefix puts a copy on a member of every possible final replica set, without assuming that a current
+    /// replica outside the drain set already holds the key: an under-replicated key breaks that assumption, and a stale entry then
+    /// shifts the delta newcomer past the final replica set (#3209). When no unnamed node follows, the prefix is every named ring
+    /// member: the only candidates that may survive (#3208), whose acks cannot prove it ([Page#settle]).
+    ///
+    /// Empty when no named node lies within the first `replicationFactor` nodes of the walk: no subset of the named nodes can then
+    /// change the final replica set, which is the delta targets' own `newSet`.
+    private List<NodeId> finalPrimaryCandidates(byte[] key, Set<NodeId> excluded) {
+        var walk = node.ring().nodesFor(key,
+                                        node.ring().nodeCount(),
+                                        candidate -> !candidate.equals(node.nodeId()));
+        var namedAhead = walk.stream().limit(replicationFactor).anyMatch(excluded::contains);
+
+        return namedAhead
+               ? namedPrefixWithFirstUnnamed(walk, excluded)
+               : List.of();
+    }
+
+    private static List<NodeId> namedPrefixWithFirstUnnamed(List<NodeId> walk, Set<NodeId> excluded) {
+        var named = walk.stream().takeWhile(excluded::contains).toList();
+
+        return Stream.concat(named.stream(),
+                             walk.stream().skip(named.size()).limit(1))
+                     .toList();
     }
 
     /// Post-departure delta target set for one key (issue #427, D3). `newSet` is the responsible set with every `leaving` node
@@ -407,7 +454,7 @@ final class DeparturePushRun {
     }
 
     private Page registerPage(NodeId target, List<DepartureKey> pageKeys) {
-        var page = new Page(IdGenerator.generate(), target, pageKeys);
+        var page = new Page(IdGenerator.generate(), target, pageKeys, !leaving.contains(target));
 
         registry.put(page.correlationId(), page);
         pages.add(page);
@@ -556,10 +603,10 @@ final class DeparturePushRun {
     }
 
     private Stream<TargetedKey> retargets(DepartureKey key, Set<NodeId> excluded) {
-        return departureTargets(key.stamp.key(),
-                                excluded).stream()
-                               .filter(key::claimTarget)
-                               .map(target -> new TargetedKey(target, key));
+        return drainTargets(key.stamp.key(),
+                            excluded).stream()
+                           .filter(key::claimTarget)
+                           .map(target -> new TargetedKey(target, key));
     }
 
     private boolean shouldStop(Page page) {
@@ -613,9 +660,10 @@ final class DeparturePushRun {
     }
 
     // --- events ---
-    /// Plan time: a sole key without a target can never be delivered, and a window already used up delivers nothing.
+    /// Plan time: a sole key without a target outside the drain set can never be shown delivered (no target at all, or only named
+    /// targets that may halt with it, #3208), and a window already used up delivers nothing.
     private void raiseAtPlan() {
-        var unpushable = keys.stream().anyMatch(key -> key.isSole() && key.plannedTargets.isEmpty());
+        var unpushable = keys.stream().anyMatch(key -> key.isSole() && leaving.containsAll(key.plannedTargets));
 
         if (!window.halted().getAsBoolean() && (unpushable || System.nanoTime() >= attemptsDeadline)) {
             transition(this::raiseIfSoleAtRisk);

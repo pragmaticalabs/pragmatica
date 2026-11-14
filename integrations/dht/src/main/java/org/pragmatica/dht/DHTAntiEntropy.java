@@ -1311,7 +1311,8 @@ public final class DHTAntiEntropy {
     }
 
     /// The post-departure view keeps only the nodes the pusher's ring held (its carried `view`) and excludes
-    /// the pusher, the pusher's carried leaving set, and this node's own departing set (#1818 L1, N1).
+    /// the pusher, the pusher's carried leaving set, and this node's own departing set (#1818 L1, N1), but never this node itself
+    /// when the pusher named it ([#leftInDepartureView], #3208).
     /// Why that is sound: the pusher chose this node as within RF of ITS ring without ITS leaving set. This
     /// node's view is a subset of that ring: it drops every joiner the pusher had not heard of, and it
     /// excludes a superset of the leaving set. Removing nodes from a ring only moves the remaining nodes
@@ -1342,8 +1343,15 @@ public final class DHTAntiEntropy {
         return pusherView.isEmpty() || pusherView.contains(candidate);
     }
 
+    /// A pusher that names THIS node in its leaving set and still targets it does so knowingly: the entry may be stale (#1818), and
+    /// this node may be the only one that survives (#3208). This node then keeps itself in the view, or it would refuse that last copy.
+    /// The pusher does not count such an ack as delivery, so keeping the copy here can never hide a loss.
     private boolean leftInDepartureView(NodeId candidate, NodeId pusher, Set<NodeId> pusherLeaving) {
-        return candidate.equals(pusher) || pusherLeaving.contains(candidate) || departingSenders.test(candidate);
+        return candidate.equals(pusher) || !namedSelf(candidate, pusherLeaving) && (pusherLeaving.contains(candidate) || departingSenders.test(candidate));
+    }
+
+    private boolean namedSelf(NodeId candidate, Set<NodeId> pusherLeaving) {
+        return candidate.equals(node.nodeId()) && pusherLeaving.contains(candidate);
     }
 
     private static DHTMessage.MigrationDataResponse withEntries(DHTMessage.MigrationDataResponse response,
