@@ -71,11 +71,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// sole, so its page continues to `soleDeadline`. A key with an empty `existingAtPlan` (a pruned leaving node) is never promoted:
 /// its survivors are unknown, which is disclosed rather than guessed. A key's death detected later than `baseDeadline` is not seen.
 ///
-/// **Delivery.** Only an applied ack from a target outside `leaving` delivers a key. A target the drain set names is pushed to only
-/// because the entry may be stale (#3208, [#finalPrimaryCandidates]); it may equally halt with the copy, so its ack ends the page and
-/// proves nothing.
+/// **Delivery.** A key is delivered by an applied ack from one of its deliverers ([#drainTargets]): the delta targets, or, when the
+/// drain set names a node ahead of the final replica set, only the first node the set does not name. A target the drain set names is
+/// pushed to only because the entry may be stale (#3208, [#finalPrimaryCandidates]); it may equally halt with the copy, so its ack ends
+/// the page and proves nothing.
 ///
-/// **Events.** `onSoleCopyAtRisk` once, at the first of: plan time (a sole key without a target outside `leaving`, or a window already used up), the
+/// **Events.** `onSoleCopyAtRisk` once, at the first of: plan time (a sole key without a deliverer, or a window already used up), the
 /// re-evaluation, or an inventory not enumerated in time. `onSoleCopyDelivered` at the end iff it was raised and no sole key is left
 /// unacknowledged. `onIncompleteReport` at the end iff any key is unacknowledged. Each event's promise is awaited until the window's
 /// event deadline. After a halt nothing more is sent or raised.
@@ -109,6 +110,8 @@ final class DeparturePushRun {
         private final Set<NodeId> existingAtPlan;
         private final AtomicBoolean delivered = new AtomicBoolean(false);
         private final Set<NodeId> plannedTargets = ConcurrentHashMap.newKeySet();
+        private final Set<NodeId> deliverers = ConcurrentHashMap.newKeySet();
+        private final Set<NodeId> acked = ConcurrentHashMap.newKeySet();
 
         private DepartureKey(KeyStamp stamp, boolean sole, Set<NodeId> existingAtPlan) {
             this.stamp = stamp;
@@ -141,6 +144,30 @@ final class DeparturePushRun {
             delivered.set(true);
         }
 
+        /// Names a target whose applied ack shows the key delivered (#3208, #3209): an ack already received counts at once.
+        @Contract
+        void allowDelivery(NodeId target) {
+            deliverers.add(target);
+            deliverIfAcked();
+        }
+
+        boolean hasDeliverer() {
+            return !deliverers.isEmpty();
+        }
+
+        /// An applied ack from `target` for a page carrying this key: it delivers only if the target is one of the key's deliverers.
+        @Contract
+        void ackedBy(NodeId target) {
+            acked.add(target);
+            deliverIfAcked();
+        }
+
+        private void deliverIfAcked() {
+            if (deliverers.stream().anyMatch(acked::contains)) {
+                markDelivered();
+            }
+        }
+
         /// True when this target was not yet planned for the key (and records it).
         boolean claimTarget(NodeId target) {
             return plannedTargets.add(target);
@@ -161,27 +188,25 @@ final class DeparturePushRun {
         private final String correlationId;
         private final NodeId target;
         private final List<DepartureKey> keys;
-        private final boolean delivers;
 
         private final AtomicReference<Promise<AttemptResult>> attempt = new AtomicReference<>(Promise.promise());
 
-        private Page(String correlationId, NodeId target, List<DepartureKey> keys, boolean delivers) {
+        private Page(String correlationId, NodeId target, List<DepartureKey> keys) {
             this.correlationId = correlationId;
             this.target = target;
             this.keys = keys;
-            this.delivers = delivers;
         }
 
         String correlationId() {
             return correlationId;
         }
 
-        /// An ack for this page's correlation id: an applied ack delivers every key, then settles the current attempt. A target the
-        /// drain set names (#3208) may halt with the copy, so its applied ack ends the page without delivering the keys.
+        /// An ack for this page's correlation id: an applied ack is recorded on every key (a key is delivered only when the ack comes
+        /// from one of its deliverers, [DepartureKey#allowDelivery]), then settles the current attempt.
         @Contract
         void settle(boolean applied) {
-            if (applied && delivers) {
-                keys.forEach(DepartureKey::markDelivered);
+            if (applied) {
+                keys.forEach(key -> key.ackedBy(target));
             }
 
             attempt.get().succeed(applied
@@ -340,7 +365,7 @@ final class DeparturePushRun {
     /// A replicated key with no target already has every post-departure replica (a copy self held outside its responsible set):
     /// nothing is owed. A sole key with no target is unpushable and stays at risk.
     private Stream<TargetedKey> initialTargets(DepartureKey key) {
-        var targets = drainTargets(key.stamp.key(), Set.copyOf(leaving));
+        var targets = drainTargets(key, Set.copyOf(leaving));
 
         if (targets.isEmpty() && !key.isSole()) {
             key.markDelivered();
@@ -367,11 +392,22 @@ final class DeparturePushRun {
 
     /// Every target of one key: the delta targets ([#departureTargets]) plus, when the drain set may be stale, the primary of every
     /// possible final replica set ([#finalPrimaryCandidates]). The second list only ever adds targets (#3208, #3209).
-    private List<NodeId> drainTargets(byte[] key, Set<NodeId> excluded) {
-        return Stream.concat(departureTargets(key, excluded).stream(),
-                             finalPrimaryCandidates(key, excluded).stream())
-                     .distinct()
-                     .toList();
+    ///
+    /// Also records which of them may show the key delivered. Without candidates the delta targets do. With candidates only the first
+    /// unnamed node does: the named prefix may halt with the copy (#3208), and a delta target may lie outside the final replica set
+    /// while the candidate that is its primary never answers (#3209). A copy on the first unnamed node, plus the pushes to the named
+    /// prefix, puts a holder in every possible final replica set.
+    private List<NodeId> drainTargets(DepartureKey key, Set<NodeId> excluded) {
+        var delta = departureTargets(key.stamp.key(), excluded);
+        var candidates = finalPrimaryCandidates(key.stamp.key(), excluded);
+
+        var deliverers = candidates.isEmpty()
+                         ? delta
+                         : candidates.stream().filter(candidate -> !excluded.contains(candidate)).toList();
+
+        deliverers.forEach(key::allowDelivery);
+
+        return Stream.concat(delta.stream(), candidates.stream()).toList();
     }
 
     /// The primary of the key's FINAL replica set, whichever drain-set entries turn out stale (#3208, #3209). Truly departing are
@@ -454,7 +490,7 @@ final class DeparturePushRun {
     }
 
     private Page registerPage(NodeId target, List<DepartureKey> pageKeys) {
-        var page = new Page(IdGenerator.generate(), target, pageKeys, !leaving.contains(target));
+        var page = new Page(IdGenerator.generate(), target, pageKeys);
 
         registry.put(page.correlationId(), page);
         pages.add(page);
@@ -603,7 +639,7 @@ final class DeparturePushRun {
     }
 
     private Stream<TargetedKey> retargets(DepartureKey key, Set<NodeId> excluded) {
-        return drainTargets(key.stamp.key(),
+        return drainTargets(key,
                             excluded).stream()
                            .filter(key::claimTarget)
                            .map(target -> new TargetedKey(target, key));
@@ -663,7 +699,7 @@ final class DeparturePushRun {
     /// Plan time: a sole key without a target outside the drain set can never be shown delivered (no target at all, or only named
     /// targets that may halt with it, #3208), and a window already used up delivers nothing.
     private void raiseAtPlan() {
-        var unpushable = keys.stream().anyMatch(key -> key.isSole() && leaving.containsAll(key.plannedTargets));
+        var unpushable = keys.stream().anyMatch(key -> key.isSole() && !key.hasDeliverer());
 
         if (!window.halted().getAsBoolean() && (unpushable || System.nanoTime() >= attemptsDeadline)) {
             transition(this::raiseIfSoleAtRisk);

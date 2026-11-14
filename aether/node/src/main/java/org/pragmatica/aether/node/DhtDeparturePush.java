@@ -32,10 +32,11 @@ import org.pragmatica.utility.warning.OperatorWarningCode;
 /// The push excludes every node the leader commanded to drain alongside this one. That set is read
 /// from the collector WHEN the push runs, not when the supplier is built: the leader ping carrying the
 /// drain command records its global `drainNodes` before the drain handler fires, so the push sees every
-/// node commanded in the same ping. The set can only ever ADD targets — a node wrongly in it is skipped
-/// as a target and not counted as a surviving holder, so the push goes one node further along the ring
-/// instead, or, when the exclusion exhausts the ring, to every remaining node; a stale entry can
-/// therefore cost an extra copy, never a missing one. A cleared set is the pre-#1818 behaviour: a
+/// node commanded in the same ping. A node in it is not counted as a surviving holder, and its ack never
+/// proves delivery, because the entry may be stale (a live node) or true (a node that halts with the copy).
+/// The push therefore also targets the named nodes that precede the first unnamed node of the ring walk, and
+/// that first unnamed node (#3208, #3209): the copy reaches the primary of every possible final replica set,
+/// and a stale entry can cost extra copies (to a co-drainer, to an existing replica), never a missing one. A cleared set is the pre-#1818 behaviour: a
 /// co-drainer missing from it can still absorb the push or be counted as a survivor.
 ///
 /// #2034: the push runs inside the drain's [DrainWindow] and reports a [DepartureOutcome]. Its events carry the subject
