@@ -78,12 +78,16 @@ public final class RedisClient implements RedisCommands {
     }
 
     private static Promise<RedisClient> start(RedisConfig config, Option<SslContext> tls) {
-        return start(config, tls, () -> new MultiThreadIoEventLoopGroup(Math.min(config.poolSize(), 4), NioIoHandler.newFactory()));
+        return start(config,
+                     tls,
+                     () -> new MultiThreadIoEventLoopGroup(Math.min(config.poolSize(), 4),
+                                                           NioIoHandler.newFactory()));
     }
 
     /// As above with the event loop group construction supplied, so a construction failure can be forced.
     static Promise<RedisClient> start(RedisConfig config, Option<SslContext> tls, ThrowingFn0<EventLoopGroup> groups) {
-        return Result.lift(thrown -> connectionFailed(Causes.fromThrowable(thrown)), groups)
+        return Result.lift(thrown -> connectionFailed(Causes.fromThrowable(thrown)),
+                           groups)
                      .async()
                      .flatMap(group -> new RedisClient(config, tls, group).open());
     }

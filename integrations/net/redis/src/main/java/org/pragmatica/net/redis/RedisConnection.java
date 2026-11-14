@@ -126,7 +126,8 @@ public final class RedisConnection implements RedisCommands {
     static Promise<RedisConnection> connectOwning(RedisConfig config,
                                                   Option<SslContext> tls,
                                                   ThrowingFn0<EventLoopGroup> groups) {
-        return Result.lift(thrown -> connectionFailed(Causes.fromThrowable(thrown)), groups)
+        return Result.lift(thrown -> connectionFailed(Causes.fromThrowable(thrown)),
+                           groups)
                      .async()
                      .flatMap(group -> connect(config,
                                                group,
