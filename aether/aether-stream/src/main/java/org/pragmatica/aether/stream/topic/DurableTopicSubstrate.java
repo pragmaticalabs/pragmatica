@@ -93,10 +93,10 @@ public interface DurableTopicSubstrate {
                                                                    DurableTopicSpec spec,
                                                                    ProvisioningContext context) {
         return activate(manager, topicAddress, spec).flatMap(_ -> StreamPublisherFactory.assemblePublisher(manager,
-                                                                                                       serializer,
-                                                                                                       topicStreamConfig(topicAddress,
-                                                                                                                         spec),
-                                                                                                       context))
+                                                                                                           serializer,
+                                                                                                           topicStreamConfig(topicAddress,
+                                                                                                                             spec),
+                                                                                                           context))
                        .map(inner -> new DurableTopicPublisher<>(serializer,
                                                                  (StreamPublisher<TopicEventEnvelope>) inner));
     }

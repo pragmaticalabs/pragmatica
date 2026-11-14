@@ -88,12 +88,12 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
                                                     StreamConfig config,
                                                     ProvisioningContext context) {
         return ensureStreamExists(manager, config).flatMap(_ -> StreamPublisherFactory.routedPartitions(manager, config))
-                                                  .map(partitions -> assembleAccess(manager,
-                                                                                    serializer,
-                                                                                    deserializer,
-                                                                                    config,
-                                                                                    partitions,
-                                                                                    context));
+                                 .map(partitions -> assembleAccess(manager,
+                                                                   serializer,
+                                                                   deserializer,
+                                                                   config,
+                                                                   partitions,
+                                                                   context));
     }
 
     @SuppressWarnings("unchecked")
