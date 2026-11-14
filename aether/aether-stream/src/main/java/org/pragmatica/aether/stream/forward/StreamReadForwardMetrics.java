@@ -43,8 +43,7 @@ public interface StreamReadForwardMetrics {
         public void recordReplyNotSent() {}
 
         @Override
-        @Override
-    public long replyNotSent() {
+        public long replyNotSent() {
             return 0L;
         }
     };
