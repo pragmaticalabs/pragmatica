@@ -55,6 +55,14 @@ class SchemaScopedStatementsTest {
 
     @ParameterizedTest
     @EnumSource(DatabaseType.class)
+    void scopedVersionTwoAlter_isQualifiedOnEveryEngine(DatabaseType type) {
+        assertThat(SchemaHistoryEvolution.STEP_V2.ddl().render(type, SCHEMA))
+            .isNotEmpty()
+            .allMatch(statement -> statement.startsWith("ALTER TABLE \"entity_orders\".aether_schema_history ADD "));
+    }
+
+    @ParameterizedTest
+    @EnumSource(DatabaseType.class)
     void explicitNoneSchema_issuesTheSameStatementsAsTheUnscopedRepository(DatabaseType type) {
         assertThat(HistoryOperations.record(type, SchemaHistoryRepository.schemaHistoryRepository(Option.none())))
             .isEqualTo(HistoryOperations.record(type, SchemaHistoryRepository.schemaHistoryRepository()));
