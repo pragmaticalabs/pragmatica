@@ -137,7 +137,7 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
             case UNLOAD -> onArtifact(op, this::unload);
             case EVICT -> onArtifact(op, this::evict);
             case FORCED_CLEANUP -> onArtifact(op, this::forcedCleanup);
-            case SUSPEND -> onArtifact(op, artifact -> unpublish(artifact, false));
+            case SUSPEND -> onArtifact(op, this::suspend);
             case NOTIFY_CONFIG -> settled(notifyConfig(op.argument()));
         };
     }
@@ -362,6 +362,18 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
     /// below, and the next `PUBLISH_ROUTES` of the artifact, which replaces what is there.
     private Promise<LocalOutcome> unpublish(Artifact artifact, boolean includingConfig) {
         return severing(artifact, includingConfig).map(_ -> LocalOutcome.done());
+    }
+
+    /// `SUSPEND` runs on a quorum loss, the stop drain included (design 7, 2a), and it does not wait for the cluster half of the unpublish
+    /// (#3174): that is a consensus write, and without quorum it can only fail when the engine stops, which is after the drain, so awaiting it
+    /// held every stop for the whole drain bound. Fire and forget rather than a shorter bound: no bound can let a quorum-less write commit, so
+    /// any wait is pure delay. LEGACY's `suspendSlice` does the same. The local half (the route table, the bridge) is removed before the
+    /// publisher returns, so the node stops serving the slice at once; the node's routes key, if it lingers, is replaced by the next
+    /// `PUBLISH_ROUTES` of the artifact or removed by the survivors' departure flow when the node leaves.
+    private Promise<LocalOutcome> suspend(Artifact artifact) {
+        severing(artifact, false);
+
+        return Promise.success(LocalOutcome.done());
     }
 
     private Promise<Unit> severing(Artifact artifact, boolean includingConfig) {

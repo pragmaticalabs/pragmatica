@@ -119,8 +119,14 @@ abstract class FsmRuntime<I, K, A> {
     }
 
     /// Design 7 (2a): resolves once the consumer has handled everything enqueued before this call and [#drained()] holds. Already resolved when
-    /// the interpreter is closed (nothing is left to wait for; the offer is counted `result=closed`).
+    /// the interpreter is closed (nothing is left to wait for; the offer is counted `result=closed`), and when the consumer was never started
+    /// (#3173): a node refused or stopped before `start()` has no consumer to take the marker, so a marker would only wait out the stop bound
+    /// while the node lingers past the cluster's own stop bound. Nothing was stepped, so no local op is owed either and [#drained()] is skipped.
     public Promise<Unit> drain() {
+        if (!mailbox.started()) {
+            return Promise.unitPromise();
+        }
+
         var reached = Promise.<Unit> promise();
 
         return offered(mailbox.offer(new FsmItem.Barrier<>(reached)), "Drain")
