@@ -2,15 +2,17 @@ package org.pragmatica.kafka;
 
 import java.time.Duration;
 
-import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.Producer;
-import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.clients.producer.RecordMetadata;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.Producer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
+
 
 /// Promise bridge over a Kafka producer.
 ///
@@ -36,12 +38,14 @@ public final class KafkaProducerClient {
     }
 
     public static Result<KafkaProducerClient> kafkaProducerClient(KafkaConfig config) {
-        return Result.lift(KafkaError::fromOperation, () -> new KafkaProducer<byte[], byte[]>(config.producerProperties()))
+        return Result.lift(KafkaError::fromOperation,
+                           () -> new KafkaProducer<byte[], byte[]>(config.producerProperties()))
                      .map(producer -> kafkaProducerClient(producer, config));
     }
 
     static KafkaProducerClient kafkaProducerClient(Producer<byte[], byte[]> producer, KafkaConfig config) {
-        return new KafkaProducerClient(producer, config.closeTimeout().duration());
+        return new KafkaProducerClient(producer,
+                                       config.closeTimeout().duration());
     }
 
     public Promise<SendReceipt> send(OutboundRecord record) {
@@ -65,14 +69,17 @@ public final class KafkaProducerClient {
     }
 
     private Promise<SendReceipt> sendOpen(OutboundRecord record) {
-        var receipt = Promise.<SendReceipt>promise();
+        var receipt = Promise.<SendReceipt> promise();
+
         return submitter.submit(() -> dispatch(record, receipt))
                         .flatMap(_ -> receipt)
                         .continueOn();
     }
 
     private Result<Unit> dispatch(OutboundRecord record, Promise<SendReceipt> receipt) {
-        return Result.lift(KafkaError::fromSend, () -> producer.send(toKafka(record), (metadata, failure) -> complete(receipt, metadata, failure)))
+        return Result.lift(KafkaError::fromSend,
+                           () -> producer.send(toKafka(record),
+                                               (metadata, failure) -> complete(receipt, metadata, failure)))
                      .mapToUnit();
     }
 
@@ -83,18 +90,24 @@ public final class KafkaProducerClient {
     }
 
     private static ProducerRecord<byte[], byte[]> toKafka(OutboundRecord record) {
-        return new ProducerRecord<>(record.topic(), record.partition().or((Integer) null), record.key().or((byte[]) null), record.value());
+        return new ProducerRecord<>(record.topic(),
+                                    record.partition().or((Integer) null),
+                                    record.key().or((byte[]) null),
+                                    record.value());
     }
 
     /// Kafka producer callback: exactly one of `metadata` and `failure` is set.
     @Contract
     private static void complete(Promise<SendReceipt> receipt, RecordMetadata metadata, Exception failure) {
-        receipt.resolve(Option.option(failure)
-                              .fold(() -> receiptOf(metadata), failed -> KafkaError.fromSend(failed).result()));
+        receipt.resolve(Option.option(failure).fold(() -> receiptOf(metadata),
+                                                    failed -> KafkaError.fromSend(failed).result()));
     }
 
     private static Result<SendReceipt> receiptOf(RecordMetadata metadata) {
-        return Partition.partition(metadata.topic(), metadata.partition())
-                        .map(partition -> SendReceipt.sendReceipt(partition, metadata.offset(), metadata.timestamp()));
+        return Partition.partition(metadata.topic(),
+                                   metadata.partition())
+                        .map(partition -> SendReceipt.sendReceipt(partition,
+                                                                  metadata.offset(),
+                                                                  metadata.timestamp()));
     }
 }

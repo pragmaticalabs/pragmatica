@@ -6,6 +6,12 @@ import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Supplier;
 
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.admin.TopicDescription;
@@ -14,11 +20,7 @@ import org.apache.kafka.common.KafkaFuture;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.TopicPartitionInfo;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
+
 
 /// Promise bridge over the Kafka admin client: topic creation, partition metadata and committed offsets of any group.
 ///
@@ -36,12 +38,14 @@ public final class KafkaAdmin {
     }
 
     public static Result<KafkaAdmin> kafkaAdmin(KafkaConfig config) {
-        return Result.lift(KafkaError::fromOperation, () -> Admin.create(config.adminProperties()))
+        return Result.lift(KafkaError::fromOperation,
+                           () -> Admin.create(config.adminProperties()))
                      .map(admin -> kafkaAdmin(admin, config));
     }
 
     static KafkaAdmin kafkaAdmin(Admin admin, KafkaConfig config) {
-        return new KafkaAdmin(admin, config.closeTimeout().duration());
+        return new KafkaAdmin(admin,
+                              config.closeTimeout().duration());
     }
 
     /// Creates a topic; an already existing topic fails as [KafkaError.Fatal].
@@ -60,6 +64,7 @@ public final class KafkaAdmin {
     /// Committed offset of `group` for `partition`; absent when the group never committed there.
     public Promise<Option<Long>> committedOffset(String group, Partition partition) {
         var tp = KafkaConsumerClient.kafkaPartition(partition);
+
         return guarded(() -> admin.listConsumerGroupOffsets(group)
                                   .partitionsToOffsetAndMetadata()
                                   .thenApply(offsets -> offsetOf(offsets, tp)));
@@ -78,7 +83,8 @@ public final class KafkaAdmin {
     }
 
     private <T> Promise<T> bridge(Supplier<KafkaFuture<T>> call) {
-        var promise = Promise.<T>promise();
+        var promise = Promise.<T> promise();
+
         return Result.lift(KafkaError::fromOperation, call::get)
                      .async()
                      .flatMap(future -> completeFrom(future, promise))
@@ -87,13 +93,14 @@ public final class KafkaAdmin {
 
     private static <T> Promise<T> completeFrom(KafkaFuture<T> future, Promise<T> promise) {
         future.whenComplete((value, failure) -> deliver(promise, value, failure));
+
         return promise;
     }
 
     @Contract
     private static <T> void deliver(Promise<T> promise, T value, Throwable failure) {
-        promise.resolve(Option.option(failure)
-                              .fold(() -> Result.success(value), f -> KafkaError.fromOperation(unwrap(f)).result()));
+        promise.resolve(Option.option(failure).fold(() -> Result.success(value),
+                                                    f -> KafkaError.fromOperation(unwrap(f)).result()));
     }
 
     private static Throwable unwrap(Throwable failure) {
@@ -108,17 +115,14 @@ public final class KafkaAdmin {
     }
 
     private static Option<Long> offsetOf(Map<TopicPartition, OffsetAndMetadata> offsets, TopicPartition tp) {
-        return Option.option(offsets.get(tp))
-                     .map(OffsetAndMetadata::offset);
+        return Option.option(offsets.get(tp)).map(OffsetAndMetadata::offset);
     }
 
     private static TopicLayout firstLayout(Map<String, TopicDescription> described) {
         var description = described.values().iterator().next();
+
         return TopicLayout.topicLayout(description.name(),
-                                       description.partitions()
-                                                  .stream()
-                                                  .map(KafkaAdmin::layoutOf)
-                                                  .toList());
+                                       description.partitions().stream().map(KafkaAdmin::layoutOf).toList());
     }
 
     private static TopicLayout.PartitionLayout layoutOf(TopicPartitionInfo info) {

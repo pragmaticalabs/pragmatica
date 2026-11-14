@@ -9,6 +9,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
+
 /// One platform thread that owns a non-thread-safe resource (the Kafka consumer). Tasks run in submission order; the
 /// thread is the confinement boundary and `isOwner` is its guard.
 final class OwnedThread {
@@ -24,10 +25,8 @@ final class OwnedThread {
     }
 
     private Thread start(String name, Runnable runnable) {
-        owner = Thread.ofPlatform()
-                      .daemon()
-                      .name(name)
-                      .unstarted(runnable);
+        owner = Thread.ofPlatform().daemon().name(name).unstarted(runnable);
+
         return owner;
     }
 
@@ -37,9 +36,11 @@ final class OwnedThread {
 
     /// Runs `task` on the owned thread. After [#shutdown] it refuses with [KafkaError.General#CLOSED].
     <T> Promise<T> submit(Supplier<Result<T>> task) {
-        var promise = Promise.<T>promise();
+        var promise = Promise.<T> promise();
+
         try {
             executor.execute(() -> promise.resolve(task.get()));
+
             return promise;
         } catch (RejectedExecutionException e) {
             return KafkaError.General.CLOSED.promise();

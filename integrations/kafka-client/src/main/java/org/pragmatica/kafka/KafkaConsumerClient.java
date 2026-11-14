@@ -6,11 +6,6 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
-import org.apache.kafka.clients.consumer.Consumer;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
-import org.apache.kafka.clients.consumer.OffsetAndMetadata;
-import org.apache.kafka.common.TopicPartition;
 import org.pragmatica.lang.Functions.ThrowingFn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -18,7 +13,14 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
+import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.common.TopicPartition;
+
 import static org.pragmatica.lang.Unit.unit;
+
 
 /// Promise bridge over a manually assigned Kafka consumer: no group membership, no rebalancing. `group` names only the
 /// commit target.
@@ -45,12 +47,14 @@ public final class KafkaConsumerClient {
     }
 
     public static Result<KafkaConsumerClient> kafkaConsumerClient(KafkaConfig config, String group) {
-        return Result.lift(KafkaError::fromOperation, () -> new KafkaConsumer<byte[], byte[]>(config.consumerProperties(group)))
+        return Result.lift(KafkaError::fromOperation,
+                           () -> new KafkaConsumer<byte[], byte[]>(config.consumerProperties(group)))
                      .map(consumer -> kafkaConsumerClient(consumer, config));
     }
 
     static KafkaConsumerClient kafkaConsumerClient(Consumer<byte[], byte[]> consumer, KafkaConfig config) {
-        return new KafkaConsumerClient(consumer, config.closeTimeout().duration());
+        return new KafkaConsumerClient(consumer,
+                                       config.closeTimeout().duration());
     }
 
     /// Replaces the assignment. Positions of newly assigned partitions start at the committed offset, else at the
@@ -131,34 +135,39 @@ public final class KafkaConsumerClient {
 
     private Unit closeWith(Consumer<byte[], byte[]> c) {
         c.close(closeTimeout);
+
         return unit();
     }
 
     private static Unit assignTo(Consumer<byte[], byte[]> c, List<Partition> partitions) {
         c.assign(kafkaPartitions(partitions));
+
         return unit();
     }
 
     private static Unit seekTo(Consumer<byte[], byte[]> c, Partition partition, long offset) {
         c.seek(kafkaPartition(partition), offset);
+
         return unit();
     }
 
     private static Unit rewind(Consumer<byte[], byte[]> c, List<Partition> partitions) {
         c.seekToBeginning(kafkaPartitions(partitions));
+
         return unit();
     }
 
     private static Unit commit(Consumer<byte[], byte[]> c, Map<Partition, Long> offsets) {
         c.commitSync(offsets.entrySet()
                             .stream()
-                            .collect(Collectors.toMap(e -> kafkaPartition(e.getKey()), e -> new OffsetAndMetadata(e.getValue()))));
+                            .collect(Collectors.toMap(e -> kafkaPartition(e.getKey()),
+                                                      e -> new OffsetAndMetadata(e.getValue()))));
+
         return unit();
     }
 
     private static List<InboundRecord> fetched(Consumer<byte[], byte[]> c, TimeSpan timeout) {
-        return StreamSupport.stream(c.poll(timeout.duration())
-                                     .spliterator(),
+        return StreamSupport.stream(c.poll(timeout.duration()).spliterator(),
                                     false)
                             .map(KafkaConsumerClient::inbound)
                             .toList();
@@ -169,14 +178,14 @@ public final class KafkaConsumerClient {
                 .entrySet()
                 .stream()
                 .collect(Collectors.toMap(e -> partitionOf(e.getKey()),
-                                          e -> Option.option(e.getValue())
-                                                     .map(OffsetAndMetadata::offset)));
+                                          e -> Option.option(e.getValue()).map(OffsetAndMetadata::offset)));
     }
 
     private static Map<Partition, Long> offsets(Map<TopicPartition, Long> raw) {
         return raw.entrySet()
                   .stream()
-                  .collect(Collectors.toMap(e -> partitionOf(e.getKey()), Map.Entry::getValue));
+                  .collect(Collectors.toMap(e -> partitionOf(e.getKey()),
+                                            Map.Entry::getValue));
     }
 
     private static InboundRecord inbound(ConsumerRecord<byte[], byte[]> record) {
@@ -188,7 +197,8 @@ public final class KafkaConsumerClient {
     }
 
     static Partition partitionOf(TopicPartition tp) {
-        return Partition.partition(tp.topic(), tp.partition())
+        return Partition.partition(tp.topic(),
+                                   tp.partition())
                         .unwrap();
     }
 

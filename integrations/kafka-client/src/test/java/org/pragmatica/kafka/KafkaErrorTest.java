@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+
 class KafkaErrorTest {
     @Test
     void fromSend_metadataTimeout_isRetriable() {
@@ -23,8 +24,7 @@ class KafkaErrorTest {
 
     @Test
     void fromSend_deliveryTimeout_isOutcomeUnknown() {
-        assertThat(KafkaError.fromSend(new TimeoutException("Expiring 1 record(s) for t-0: 3000 ms has passed since batch creation")))
-            .isInstanceOf(KafkaError.OutcomeUnknown.class);
+        assertThat(KafkaError.fromSend(new TimeoutException("Expiring 1 record(s) for t-0: 3000 ms has passed since batch creation"))).isInstanceOf(KafkaError.OutcomeUnknown.class);
     }
 
     @Test

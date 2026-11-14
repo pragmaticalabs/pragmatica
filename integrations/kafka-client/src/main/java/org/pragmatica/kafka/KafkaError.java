@@ -1,5 +1,9 @@
 package org.pragmatica.kafka;
 
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.utils.Causes;
+
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.errors.NotEnoughReplicasException;
 import org.apache.kafka.common.errors.NotLeaderOrFollowerException;
@@ -7,9 +11,7 @@ import org.apache.kafka.common.errors.RetriableException;
 import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.apache.kafka.common.errors.WakeupException;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Functions.Fn1;
-import org.pragmatica.lang.utils.Causes;
+
 
 /// Typed failures of the Kafka bridge. Three classes matter to a caller, and the classes are the contract:
 ///
@@ -30,13 +32,10 @@ public sealed interface KafkaError extends Cause {
     enum General implements KafkaError {
         CLOSED("Kafka client is closed"),
         THREAD_CONFINEMENT_VIOLATED("Kafka consumer touched off its owning thread");
-
         private final String message;
-
         General(String message) {
             this.message = message;
         }
-
         @Override
         public String message() {
             return message;
@@ -46,7 +45,8 @@ public sealed interface KafkaError extends Cause {
     /// Rejected or not sent; safe to repeat.
     @SuppressWarnings("JBCT-CAUSE-04")
     record Retriable(Cause origin, String message) implements KafkaError, Cause.Wrapped {
-        static final Fn1<Retriable, Cause> FACTORY = Causes.forOneValue("Kafka operation failed, retriable", Retriable::new);
+        static final Fn1<Retriable, Cause> FACTORY = Causes.forOneValue("Kafka operation failed, retriable",
+                                                                        Retriable::new);
 
         @Override
         public boolean isTransient() {
@@ -63,7 +63,8 @@ public sealed interface KafkaError extends Cause {
     /// duplicate is acceptable.
     @SuppressWarnings("JBCT-CAUSE-04")
     record OutcomeUnknown(Cause origin, String message) implements KafkaError, Cause.Wrapped {
-        static final Fn1<OutcomeUnknown, Cause> FACTORY = Causes.forOneValue("Kafka produce outcome unknown", OutcomeUnknown::new);
+        static final Fn1<OutcomeUnknown, Cause> FACTORY = Causes.forOneValue("Kafka produce outcome unknown",
+                                                                             OutcomeUnknown::new);
 
         @Override
         public boolean isTransient() {
@@ -116,11 +117,11 @@ public sealed interface KafkaError extends Cause {
 
     private static boolean isMetadataTimeout(TimeoutException failure) {
         var text = String.valueOf(failure.getMessage());
+
         return text.startsWith(METADATA_FAILED) || text.startsWith(METADATA_MISSING) && text.contains("not present in metadata");
     }
 
     private static boolean isForcedClose(KafkaException failure) {
-        return String.valueOf(failure.getMessage())
-                     .startsWith(FORCED_CLOSE);
+        return String.valueOf(failure.getMessage()).startsWith(FORCED_CLOSE);
     }
 }

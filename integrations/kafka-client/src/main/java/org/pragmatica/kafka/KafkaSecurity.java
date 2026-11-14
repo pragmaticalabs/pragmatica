@@ -10,6 +10,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Result.all;
 
+
 /// Transport security of a Kafka connection: PLAINTEXT, SSL, SASL_PLAINTEXT or SASL_SSL. Secrets never print:
 /// every record carrying a password redacts it in `toString`.
 public sealed interface KafkaSecurity {
@@ -20,10 +21,8 @@ public sealed interface KafkaSecurity {
         PLAIN("PLAIN", "org.apache.kafka.common.security.plain.PlainLoginModule"),
         SCRAM_SHA_256("SCRAM-SHA-256", "org.apache.kafka.common.security.scram.ScramLoginModule"),
         SCRAM_SHA_512("SCRAM-SHA-512", "org.apache.kafka.common.security.scram.ScramLoginModule");
-
         private final String wire;
         private final String loginModule;
-
         Mechanism(String wire, String loginModule) {
             this.wire = wire;
             this.loginModule = loginModule;
@@ -42,10 +41,14 @@ public sealed interface KafkaSecurity {
     }
 
     /// TLS. Without a trust store the JVM default trust is used; a key store enables mutual TLS.
-    record Ssl(Option<String> trustStore, Option<String> trustStorePassword,
-               Option<String> keyStore, Option<String> keyStorePassword) implements KafkaSecurity {
-        public static Result<Ssl> ssl(Option<String> trustStore, Option<String> trustStorePassword,
-                                      Option<String> keyStore, Option<String> keyStorePassword) {
+    record Ssl(Option<String> trustStore,
+               Option<String> trustStorePassword,
+               Option<String> keyStore,
+               Option<String> keyStorePassword) implements KafkaSecurity {
+        public static Result<Ssl> ssl(Option<String> trustStore,
+                                      Option<String> trustStorePassword,
+                                      Option<String> keyStore,
+                                      Option<String> keyStorePassword) {
             return all(Verify.ensureOption(trustStore, Verify.Is::present),
                        Verify.ensureOption(trustStorePassword, Verify.Is::present),
                        Verify.ensureOption(keyStore, Verify.Is::present),
@@ -59,10 +62,12 @@ public sealed interface KafkaSecurity {
 
         Map<String, Object> sslProperties(String protocol) {
             var props = new HashMap<String, Object>(Map.of("security.protocol", protocol));
+
             trustStore.onPresent(v -> props.put("ssl.truststore.location", v));
             trustStorePassword.onPresent(v -> props.put("ssl.truststore.password", v));
             keyStore.onPresent(v -> props.put("ssl.keystore.location", v));
             keyStorePassword.onPresent(v -> props.put("ssl.keystore.password", v));
+
             return props;
         }
 
@@ -81,13 +86,19 @@ public sealed interface KafkaSecurity {
         }
 
         private static Result<String> jaasSafe(String value) {
-            return Verify.ensure(value, v -> v.indexOf('"') < 0 && v.indexOf('\\') < 0,
+            return Verify.ensure(value,
+                                 v -> v.indexOf('"') < 0 && v.indexOf('\\') < 0,
                                  Causes.cause("SASL credential may not contain a quote or backslash"));
         }
 
         Map<String, Object> saslProperties() {
-            return Map.of("sasl.mechanism", mechanism.wire,
-                          "sasl.jaas.config", mechanism.loginModule + " required username=\"" + username + "\" password=\"" + password + "\";");
+            return Map.of("sasl.mechanism",
+                          mechanism.wire,
+                          "sasl.jaas.config",
+                          mechanism.loginModule
+                         + " required username=\"" + username
+                         + "\" password=\"" + password
+                         + "\";");
         }
 
         @Override
@@ -104,7 +115,9 @@ public sealed interface KafkaSecurity {
         @Override
         public Map<String, Object> properties() {
             var props = new HashMap<String, Object>(sasl.saslProperties());
+
             props.put("security.protocol", "SASL_PLAINTEXT");
+
             return props;
         }
     }
@@ -117,7 +130,9 @@ public sealed interface KafkaSecurity {
         @Override
         public Map<String, Object> properties() {
             var props = new HashMap<String, Object>(ssl.sslProperties("SASL_SSL"));
+
             props.putAll(sasl.saslProperties());
+
             return props;
         }
     }

@@ -8,6 +8,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+
 /// Close-once state shared by the three clients. The first close starts its action; every later call gets the same
 /// promise, so close is idempotent. Boundedness is the action's: each one ends in a kafka-clients `close(Duration)`,
 /// which force-closes at its deadline.
@@ -41,11 +42,13 @@ final class Lifecycle {
     }
 
     private Promise<Unit> onFreshThread(ThrowingRunnable action) {
-        var done = Promise.<Unit>promise();
+        var done = Promise.<Unit> promise();
+
         Thread.ofPlatform()
               .daemon()
               .name(name + "-closer")
               .start(() -> done.resolve(Result.lift(KafkaError::fromOperation, action)));
+
         return done;
     }
 }
