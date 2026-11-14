@@ -58,6 +58,9 @@ class OwnerActivationFenceTest {
     private final List<String> fenceProbes = new CopyOnWriteArrayList<>();
     private final List<NodeId> confirmed = new CopyOnWriteArrayList<>();
     private final List<String> confirmedAt = new CopyOnWriteArrayList<>();
+    private final List<String> pulled = new CopyOnWriteArrayList<>();
+    /// What every overlap read returns: empty unless a test needs the comparison to reach a record (the pull is gated behind it).
+    private final AtomicReference<List<OffHeapRingBuffer.RawEvent>> overlap = new AtomicReference<>(List.of());
     private final Map<NodeId, Long> renewals = new ConcurrentHashMap<>();
     private FenceDeadlines deadlines;
     private final Map<NodeId, AtomicInteger> rounds = new ConcurrentHashMap<>();
@@ -73,9 +76,12 @@ class OwnerActivationFenceTest {
                                                    () -> live,
                                                    this::probe,
                                                    (_, _) -> watermark.get(),
-                                                   (_, _, _, _) -> Promise.success(0L),
+                                                   (_, _, source, tail) -> {
+                                                       pulled.add(source.id() + "=" + tail);
+                                                       return Promise.success(0L);
+                                                   },
                                                    () -> true,
-                                                   (_, _, _, _, _) -> Promise.success(List.of()),
+                                                   (_, _, _, _, _) -> Promise.success(overlap.get()),
                                                    new OwnerActivation.BlockAlarm() {
                                                        @Override
                                                        public Unit raise(OwnerActivation.ActivationBlock block) {
@@ -146,6 +152,8 @@ class OwnerActivationFenceTest {
         fenceProbes.clear();
         confirmed.clear();
         confirmedAt.clear();
+        pulled.clear();
+        overlap.set(List.of());
     }
 
     /// `L` answered first: it is probed although it is no live member, with the record's epoch and term, and its answer joins the
@@ -349,6 +357,18 @@ class OwnerActivationFenceTest {
         gate.activate(STREAM, PARTITION).await(AWAIT);
 
         assertThat(confirmedAt).containsExactlyInAnyOrder("node-2=49", "node-1=-1");
+    }
+
+    @Test
+    void watermarkOfL_aheadOfSelf_isPulledFromL() {
+        record.set(Option.some(movedFrom(Option.some(L))));
+        answerOfL.set(Promise.success(60L));
+        overlap.set(List.of(new OffHeapRingBuffer.RawEvent(49L, new byte[]{1}, 0L)));
+        var gate = activation(LONG_WAIT);
+
+        gate.activate(STREAM, PARTITION).await(AWAIT);
+
+        assertThat(pulled).containsExactly("node-2=60");
     }
 
     /// `L` answering does not excuse another member's silence: the silent `X` still blocks the activation.
