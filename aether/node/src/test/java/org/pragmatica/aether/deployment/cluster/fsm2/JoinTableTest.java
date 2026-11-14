@@ -264,8 +264,8 @@ class JoinTableTest {
         assertThat(w.h.held).as("control: the ADMITTED rewrite is in flight").isNotEmpty();
         assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::state)).as("control: the record is still DEPARTED")
                   .isEqualTo(Option.some(DepartureState.DEPARTED));
-        w.h.advance(w.h.settings.timing().tick());
-        assertThat(w.h.submits(SubmitKind.CLEANUP)).as("no C17b while the node is joined").isEmpty();
+        w.h.advance(120_000L);
+        assertThat(w.h.submits(SubmitKind.CLEANUP)).as("no C17b while the node is joined, after the lost one expired").isEmpty();
     }
 
     // NT-88 J5
