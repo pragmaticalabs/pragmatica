@@ -52,8 +52,10 @@ final class JwtSignatureVerifier {
     }
 
     private static Result<JwtTokenParser.ParsedJwt> checkMac(JwtTokenParser.ParsedJwt jwt, JwtSecret secret) {
-        return Result.lift(JwtSignatureVerifier::verificationFailed, () -> macOf(jwt.signedContent(), secret)).flatMap(mac -> macMatches(jwt,
-                                                                                                                         mac));
+        return Result.lift(JwtSignatureVerifier::verificationFailed,
+                           () -> macOf(jwt.signedContent(),
+                                       secret))
+                     .flatMap(mac -> macMatches(jwt, mac));
     }
 
     private static Result<JwtTokenParser.ParsedJwt> macMatches(JwtTokenParser.ParsedJwt jwt, byte[] mac) {

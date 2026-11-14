@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
-
 package org.pragmatica.aether.http.security;
 
 import java.nio.charset.StandardCharsets;
@@ -20,6 +19,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+
 
 /// Issues HS256 login tokens (#2895) the HS256 verifier of #2880 accepts. It is built from the SAME [JwtConfig] the
 /// verifier reads: the shared secret, the issuer and the audience, so a token is valid for the verifier configured
@@ -52,7 +52,7 @@ public record JwtSigner(JwtConfig config, JwtSecret secret, Clock clock) {
     public static Result<JwtSigner> jwtSigner(JwtConfig config, Clock clock) {
         return requireHs256(config).flatMap(_ -> config.sharedSecret()
                                                        .toResult(NO_SECRET))
-                                   .map(secret -> new JwtSigner(config, secret, clock));
+                           .map(secret -> new JwtSigner(config, secret, clock));
     }
 
     private static Result<JwtConfig> requireHs256(JwtConfig config) {
@@ -64,21 +64,30 @@ public record JwtSigner(JwtConfig config, JwtSecret secret, Clock clock) {
     private Result<String> signContent(String payloadJson) {
         var signed = encode(HEADER_JSON) + "." + encode(payloadJson);
 
-        return Result.lift(JwtSigner::signingFailed, () -> JwtSignatureVerifier.macOf(signed, secret))
+        return Result.lift(JwtSigner::signingFailed,
+                           () -> JwtSignatureVerifier.macOf(signed, secret))
                      .map(mac -> signed + "." + BASE64URL.encodeToString(mac));
     }
 
     private Map<String, Object> payload(JwtClaims claims) {
         var iat = clock.instant().getEpochSecond();
-        var registered = Stream.of(Option.some(Map.entry("sub", (Object) claims.subject())),
-                                   Option.some(Map.entry("iat", (Object) iat)),
-                                   Option.some(Map.entry("exp", (Object) (iat + claims.lifetime().toSeconds()))),
-                                   config.issuer().map(iss -> Map.entry("iss", (Object) iss)),
-                                   config.audience().map(aud -> Map.entry("aud", (Object) aud)))
+        var registered = Stream.of(Option.some(Map.entry("sub",
+                                                         (Object) claims.subject())),
+                                   Option.some(Map.entry("iat",
+                                                         (Object) iat)),
+                                   Option.some(Map.entry("exp",
+                                                         (Object)(iat + claims.lifetime().toSeconds()))),
+                                   config.issuer().map(iss -> Map.entry("iss",
+                                                                        (Object) iss)),
+                                   config.audience().map(aud -> Map.entry("aud",
+                                                                          (Object) aud)))
                                .flatMap(Option::stream);
 
-        return Stream.concat(claims.extra().entrySet().stream(), registered)
-                     .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (_, later) -> later,
+        return Stream.concat(claims.extra().entrySet().stream(),
+                             registered)
+                     .collect(Collectors.toMap(Map.Entry::getKey,
+                                               Map.Entry::getValue,
+                                               (_, later) -> later,
                                                LinkedHashMap::new));
     }
 
