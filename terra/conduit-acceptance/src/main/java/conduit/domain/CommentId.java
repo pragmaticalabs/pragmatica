@@ -2,7 +2,7 @@ package conduit.domain;
 
 import java.util.regex.Pattern;
 
-import org.pragmatica.aether.slice.mapping.ValueMapping;
+import org.pragmatica.lang.vo.ValueMapping;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -23,7 +23,7 @@ public record CommentId(long value) {
 
     /// The column representation (`ValueMapping`): `value()` out, `stored` back in.
     public static ValueMapping<CommentId, Long> valueMapping() {
-        return ValueMapping.of(CommentId::value, CommentId::stored);
+        return ValueMapping.valueMapping(CommentId::value, CommentId::stored);
     }
 
     /// The minimal stable invariant: a positive id. A rule that tightens later must not make old rows unreadable.

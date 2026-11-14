@@ -1,6 +1,6 @@
 package conduit.domain;
 
-import org.pragmatica.aether.slice.mapping.ValueMapping;
+import org.pragmatica.lang.vo.ValueMapping;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
@@ -12,7 +12,7 @@ import static org.pragmatica.lang.Option.option;
 public record ArticleId(long value) {
     /// The column representation (`ValueMapping`): `value()` out, `stored` back in.
     public static ValueMapping<ArticleId, Long> valueMapping() {
-        return ValueMapping.of(ArticleId::value, ArticleId::stored);
+        return ValueMapping.valueMapping(ArticleId::value, ArticleId::stored);
     }
 
     /// The minimal stable invariant: a positive id. A rule that tightens later must not make old rows unreadable.

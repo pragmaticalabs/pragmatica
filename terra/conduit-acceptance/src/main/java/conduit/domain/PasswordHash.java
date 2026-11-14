@@ -1,6 +1,6 @@
 package conduit.domain;
 
-import org.pragmatica.aether.slice.mapping.ValueMapping;
+import org.pragmatica.lang.vo.ValueMapping;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
@@ -24,7 +24,7 @@ public record PasswordHash(String value) {
 
     /// The column representation (`ValueMapping`): `value()` out, `stored` back in.
     public static ValueMapping<PasswordHash, String> valueMapping() {
-        return ValueMapping.of(PasswordHash::value, PasswordHash::stored);
+        return ValueMapping.valueMapping(PasswordHash::value, PasswordHash::stored);
     }
 
     /// Rebuilds the value from its column through the same minimal check.

@@ -3,7 +3,7 @@ package conduit.domain;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
-import org.pragmatica.aether.slice.mapping.ValueMapping;
+import org.pragmatica.lang.vo.ValueMapping;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -56,7 +56,7 @@ public record Email(String value) {
 
     /// The column representation (`ValueMapping`): `value()` out, `stored` back in.
     public static ValueMapping<Email, String> valueMapping() {
-        return ValueMapping.of(Email::value, Email::stored);
+        return ValueMapping.valueMapping(Email::value, Email::stored);
     }
 
     /// Rebuilds the value from its column. Checks only the stable minimum, non-blank: a registration rule that

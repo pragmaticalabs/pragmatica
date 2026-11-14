@@ -5,7 +5,7 @@ import java.util.random.RandomGenerator;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import org.pragmatica.aether.slice.mapping.ValueMapping;
+import org.pragmatica.lang.vo.ValueMapping;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -65,7 +65,7 @@ public record Slug(String value) {
 
     /// The column representation (`ValueMapping`): `value()` out, `stored` back in.
     public static ValueMapping<Slug, String> valueMapping() {
-        return ValueMapping.of(Slug::value, Slug::stored);
+        return ValueMapping.valueMapping(Slug::value, Slug::stored);
     }
 
     /// The minimal stable invariant: non-blank. Generated slugs are shaped by `generate`; a stored one may predate

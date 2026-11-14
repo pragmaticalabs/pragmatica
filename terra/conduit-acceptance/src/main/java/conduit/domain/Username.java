@@ -1,6 +1,6 @@
 package conduit.domain;
 
-import org.pragmatica.aether.slice.mapping.ValueMapping;
+import org.pragmatica.lang.vo.ValueMapping;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -30,7 +30,7 @@ public record Username(String value) {
 
     /// The column representation (`ValueMapping`): `value()` out, `stored` back in.
     public static ValueMapping<Username, String> valueMapping() {
-        return ValueMapping.of(Username::value, Username::stored);
+        return ValueMapping.valueMapping(Username::value, Username::stored);
     }
 
     /// Rebuilds the value from its column. Checks only the stable minimum, non-blank: a registration rule that
