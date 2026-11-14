@@ -114,7 +114,7 @@ class SchemaScopedMigrationPgTest {
     /// leaves nothing behind; after the grant a retry completes and creates it.
     @Test
     void migrate_withoutDatabaseCreate_usesAPreCreatedSchemaAndRefusesAnAbsentOne() throws SQLException {
-        freshDatabase("postgres");
+        freshDatabase(postgres.getUsername());
         execute("CREATE SCHEMA pre_made AUTHORIZATION " + LIMITED);
         var connector = connector(LIMITED);
 
@@ -153,7 +153,7 @@ class SchemaScopedMigrationPgTest {
         return migrations.migrate(DATASOURCE, List.of(scripts), connector, "node-1", owner).await();
     }
 
-    /// A fresh database owned by `owner`; `postgres` leaves the superuser the owner, so `LIMITED` has no CREATE on it.
+    /// A fresh database owned by `owner`; the container superuser owns it, so `LIMITED` has no CREATE on it.
     private void freshDatabase(String owner) throws SQLException {
         database = "scoped_" + DATABASES.incrementAndGet();
 

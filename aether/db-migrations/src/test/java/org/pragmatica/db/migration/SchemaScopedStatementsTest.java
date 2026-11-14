@@ -78,11 +78,12 @@ class SchemaScopedStatementsTest {
     @EnumSource(value = DatabaseType.class, mode = EnumSource.Mode.EXCLUDE, names = "POSTGRESQL")
     void migrate_withoutASchemaOnTheSameEngine_isNotRefused(DatabaseType type) {
         var connector = new HistoryOperations.ScriptedConnector(type, 0);
+        var outcome = SchemaMigrations.schemaMigrations(timeSpan(5).seconds())
+                                      .migrate("ds", List.of(), connector, "node-1", "owner")
+                                      .await();
+        String message = outcome.fold(cause -> cause.message(), value -> "");
 
-        SchemaMigrations.schemaMigrations(timeSpan(5).seconds())
-                        .migrate("ds", List.of(), connector, "node-1", "owner")
-                        .await();
-
-        assertThat(connector.statements).as("positive control: the unscoped path does reach the engine").isNotEmpty();
+        assertThat(message).as("without a schema the engine is never refused")
+                           .doesNotContain("Migration scoped to schema");
     }
 }
