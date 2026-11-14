@@ -1,0 +1,3 @@
+### Changed (2026-11-14 — #3223: transport allow-list cited compensators by line number)
+- **`transport-outcome-allowlist.txt` cited compensators as `path.java:LINE@anchor`**, so any edit that shifted lines in a cited file failed `TransportOutcomeDisciplineTest`.
+- Citations are now `path.java@anchor[#n]`: the anchor must occur in the cited file exactly once (exactly n times with `#n`). A deleted or renamed compensator or an ambiguous anchor still fails; a line shift does not. The old `:LINE@` form is rejected with "cite by anchor, see #3223". [verified: aether/node/src/test/java/org/pragmatica/aether/node/TransportOutcomeDisciplineTest.java]
