@@ -401,6 +401,9 @@ public final class EngineMarkerGuard {
 
     /// Appends the parked actions behind any drained work still pending (#3261): an opening whose evaluating thread has not yet got `running`
     /// leaves its drain in `drained`, and a close and reopen before it does must not discard that work.
+    /// Invariant: an action parks only while `drained` is empty, and `drain()` clears `parked`, so `parked` is empty whenever `drained` is pending.
+    /// The append order is therefore unobservable; the append itself is still required, because a second `drain()` while older work is pending
+    /// must keep that work (#3261).
     private void drain() {
         drained = Stream.concat(drained.stream(),
                                 parked.values().stream().flatMap(List::stream)).toList();
