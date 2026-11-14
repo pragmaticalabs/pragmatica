@@ -282,6 +282,23 @@ class Fsm2SystemTest {
             }
         }
 
+        /// #3253: two leader changes parked behind a closed guard reach the cluster FSM as `Deactivate` then `Activate` (the re-incarnation), not
+        /// as the `Activate` alone, which an FSM that is still Active ignores.
+        @Test
+        void twoLeaderChanges_parkedBehindAClosedGuard_reachTheClusterFsmAsDeactivateThenActivate() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false, false).assembled()) {
+                harness.router.route(LeaderNotification.leaderChange(Option.some(Fsm2Harness.PEER), false));
+                harness.router.route(LeaderNotification.leaderChange(Option.some(Fsm2Harness.SELF), true));
+                assertThat(stepped(harness, "cluster", "Activate")).as("closed: nothing ran").isZero();
+
+                harness.markerCommitted.set(true);
+                harness.commitLeader();
+                harness.guard.evaluate();
+
+                harness.awaitThat(() -> stepped(harness, "cluster", "Deactivate") == 1 && stepped(harness, "cluster", "Activate") == 1);
+            }
+        }
+
         /// B10, B11 on the leader (#2762): the active cluster FSM records each worker's admission, the joined worker with the token the registry
         /// has now and the placement re-drive for the worker its record names, which is what its directive is written from (Joins, J5/J6).
         @Test

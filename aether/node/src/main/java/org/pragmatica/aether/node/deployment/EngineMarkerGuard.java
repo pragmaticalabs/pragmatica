@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node.deployment;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -116,7 +117,7 @@ public final class EngineMarkerGuard {
     private final LongSupplier wallClock;
     private final OperatorWarningSink warnings;
     private final Consumer<String> exit;
-    private final Map<String, Runnable> parked = new LinkedHashMap<>();
+    private final Map<String, List<Runnable>> parked = new LinkedHashMap<>();
     /// Serializes the actions; held while one runs, never by a thread that is only deciding.
     private final ReentrantLock running = new ReentrantLock();
     private List<Runnable> drained = List.of();
@@ -168,14 +169,28 @@ public final class EngineMarkerGuard {
         return state == State.OPEN;
     }
 
-    /// Runs `action` now if the guard is open; otherwise parks it under `name`, replacing an earlier parked action of that name (an activation
-    /// is level-triggered: a later `Deactivate` supersedes a parked `Activate`). Parked actions run, in the order they were first parked, when
-    /// the guard opens; a refused node drops them.
+    /// Runs `action` now if the guard is open; otherwise parks it under `name`, replacing everything parked under that name (an activation
+    /// is level-triggered: a later `Deactivate` supersedes a parked `Activate`, and a parked `Deactivate`-then-`Activate` pair). Parked actions
+    /// run, in the order they were first parked, when the guard opens; a refused node drops them.
     @Contract
     public void whenOpen(String name, Runnable action) {
         running.lock();
         try {
-            runAdmitted(name, action);
+            runAdmitted(name, action, false);
+        } finally {
+            running.unlock();
+        }
+    }
+
+    /// Like [#whenOpen], but a parked action of that name is kept and `action` runs after it (#3253): a parked `Activate` must not erase a parked
+    /// `Deactivate`, because the pair re-incarnates the FSM (`Deactivate`, then `Activate`, the B14 rule) while the `Activate` alone is ignored by
+    /// an FSM that is still Active. A later [#whenOpen] under the same name still replaces the whole parked sequence. The guard cannot tell the
+    /// kinds apart (the actions are opaque), so the caller picks the method.
+    @Contract
+    public void whenOpenAfterParked(String name, Runnable action) {
+        running.lock();
+        try {
+            runAdmitted(name, action, true);
         } finally {
             running.unlock();
         }
@@ -206,17 +221,17 @@ public final class EngineMarkerGuard {
     }
 
     /// With `running` held: runs `action` behind everything drained so far, or parks it.
-    private void runAdmitted(String name, Runnable action) {
-        admitted(name, action).forEach(Runnable::run);
+    private void runAdmitted(String name, Runnable action, boolean keepParked) {
+        admitted(name, action, keepParked).forEach(Runnable::run);
     }
 
     /// Run or park, decided in one step, and only once nothing drained is left ahead (P2, v-2643 finding 2). Drained work is handed back first,
     /// followed by a fresh decision for `action`: an opening that lands while that work runs drains more, and the fresh decision runs it ahead
     /// too, so an older parked action never runs after a newer admitted one. Actions themselves never run under the decision monitor.
-    private synchronized List<Runnable> admitted(String name, Runnable action) {
+    private synchronized List<Runnable> admitted(String name, Runnable action, boolean keepParked) {
         if (!drained.isEmpty()) {
             return Stream.concat(takeDrained().stream(),
-                                 Stream.<Runnable> of(() -> runAdmitted(name, action)))
+                                 Stream.<Runnable> of(() -> runAdmitted(name, action, keepParked)))
                          .toList();
         }
 
@@ -225,10 +240,19 @@ public final class EngineMarkerGuard {
         }
 
         if (state != State.REFUSED) {
-            parked.put(name, action);
+            park(name, action, keepParked);
         }
 
         return List.of();
+    }
+
+    private void park(String name, Runnable action, boolean keepParked) {
+        var sequence = keepParked
+                       ? new ArrayList<>(parked.getOrDefault(name, List.of()))
+                       : new ArrayList<Runnable>();
+
+        sequence.add(action);
+        parked.put(name, sequence);
     }
 
     private synchronized List<Runnable> takeDrained() {
@@ -375,7 +399,7 @@ public final class EngineMarkerGuard {
     }
 
     private void drain() {
-        drained = List.copyOf(parked.values());
+        drained = parked.values().stream().flatMap(List::stream).toList();
         parked.clear();
     }
 

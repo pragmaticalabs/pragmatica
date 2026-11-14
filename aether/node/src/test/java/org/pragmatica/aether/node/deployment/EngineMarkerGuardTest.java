@@ -304,6 +304,53 @@ class EngineMarkerGuardTest {
 
             assertThat(activations).as("level-triggered: the latest wins").containsExactly("deactivate");
         }
+
+        @Test
+        void aParkedActivation_keepsAParkedDeactivationAheadOfIt_soTheFsmReincarnates() {
+            var guard = guard(DeploymentEngine.FSM2);
+
+            marker = Option.some(FSM2_MARKER);
+            incarnation = true;
+            guard.evaluate();
+            marker = Option.none();
+            incarnation = false;
+            guard.evaluate();
+            assertThat(guard.state()).isEqualTo(State.WAITING);
+
+            guard.whenOpen("leader", () -> activations.add("deactivate"));
+            guard.whenOpenAfterParked("leader", () -> activations.add("activate"));
+            marker = Option.some(FSM2_MARKER);
+            incarnation = true;
+            guard.evaluate();
+
+            assertThat(activations).as("#3253: Deactivate then Activate, in order").containsExactly("deactivate", "activate");
+        }
+
+        @Test
+        void aLaterDeactivation_supersedesAParkedDeactivateActivatePair() {
+            var guard = guard(DeploymentEngine.FSM2);
+
+            guard.whenOpen("leader", () -> activations.add("deactivate-1"));
+            guard.whenOpenAfterParked("leader", () -> activations.add("activate"));
+            guard.whenOpen("leader", () -> activations.add("deactivate-2"));
+            marker = Option.some(FSM2_MARKER);
+            incarnation = true;
+            guard.evaluate();
+
+            assertThat(activations).as("level-triggered: the latest Deactivate wins").containsExactly("deactivate-2");
+        }
+
+        @Test
+        void aParkedActivation_withNothingParkedUnderTheName_runsAlone() {
+            var guard = guard(DeploymentEngine.FSM2);
+
+            guard.whenOpenAfterParked("leader", () -> activations.add("activate"));
+            marker = Option.some(FSM2_MARKER);
+            incarnation = true;
+            guard.evaluate();
+
+            assertThat(activations).containsExactly("activate");
+        }
     }
 
     @Nested
