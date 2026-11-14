@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db;
 
+import java.lang.reflect.Modifier;
 import java.util.Arrays;
 import java.util.List;
 
@@ -78,5 +79,17 @@ class PgSchemaNameTest {
 
         assertThat(refused.isFailure()).isTrue();
         refused.onFailure(cause -> assertThat(cause).isEqualTo(PgSchemaNameError.reserved("pg_temp")));
+    }
+
+    @Test
+    void noPublicConstructionPathExists() {
+        var permitted = PgSchemaName.class.getPermittedSubclasses();
+
+        assertThat(PgSchemaName.class.isSealed()).isTrue();
+        assertThat(permitted).isNotEmpty();
+        for (var implementation : permitted) {
+            assertThat(Modifier.isPublic(implementation.getModifiers())).as("%s is not public", implementation).isFalse();
+            assertThat(implementation.getConstructors()).as("%s public constructors", implementation).isEmpty();
+        }
     }
 }
