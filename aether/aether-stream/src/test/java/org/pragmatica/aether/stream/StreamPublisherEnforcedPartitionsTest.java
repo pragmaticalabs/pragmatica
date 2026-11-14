@@ -10,10 +10,12 @@ import org.apache.logging.log4j.core.LogEvent;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamAccess;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.testlogging.LogCapture;
 
@@ -67,6 +69,88 @@ class StreamPublisherEnforcedPartitionsTest {
         assertThat(provisionCapturingLog(ENFORCED)).isEmpty();
     }
 
+    /// #3263 review item 1: a slice declaring M over an UNCOMMITTED local life of N != M republishes the config. The
+    /// republish must not change the life's count: the committed count the publisher reads equals the ring's, and no
+    /// key routes outside the ring (`PartitionOutOfRange`).
+    @Test
+    void declaredOverAnUncommittedLife_republishKeepsTheRingCount_andRoutingStaysInsideTheRing() {
+        var holder = new StreamPartitionManager[1];
+        var node = uncommittedLife(holder);
+        var manager = holder[0];
+
+        try {
+            node.deliverCommittedTo(manager::onStreamConfigPut);
+            publishEveryKeyAndAssertEnforcedPartition(manager, 8);
+
+            assertThat(manager.committedPartitions(STREAM).or(-1)).as("committed count equals the ring's")
+                                                                  .isEqualTo(manager.enforcedConfig(STREAM).map(StreamConfig::partitions).or(-2))
+                                                                  .isEqualTo(ENFORCED);
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// #3263 review item 2: a non-system stream whose committed count this node does not hold is REFUSED retriably, not
+    /// routed by the declared count.
+    @Test
+    void nonSystemStreamWithNoCommittedConfig_isRefusedRetriably_notRoutedByTheDeclaredCount() {
+        var holder = new StreamPartitionManager[1];
+        uncommittedLife(holder);
+        var manager = holder[0];
+
+        try {
+            var outcome = new StreamPublisherFactory().provision(config(8), context(manager)).await();
+
+            assertThat((Object) outcome.fold(cause -> cause, _ -> "provisioned")).isInstanceOf(StreamError.StreamConfigNotYetVisible.class);
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// The system arm of item 2: a `system:` stream's count is runtime-owned, so with no committed config its declaration
+    /// is the count, stated explicitly rather than reached through a silent fallback.
+    @Test
+    void systemStreamWithNoCommittedConfig_routesByItsRuntimeOwnedCount() {
+        var node = new StreamPartitionManagerTest.StubClusterNode(StreamPartitionManagerTest.StubApply.SUCCESS);
+        var manager = streamPartitionManager(Long.MAX_VALUE, node);
+
+        try {
+            manager.createStream(systemConfig(ENFORCED)).onFailure(cause -> fail(cause.message()));
+            var provisioned = new StreamPublisherFactory().provision(systemConfig(ENFORCED), context(manager)).await();
+
+            assertThat(provisioned.isSuccess()).as("system stream provisions: %s", provisioned).isTrue();
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// #3263 review item 3: the consumer side reads the SAME committed count as the publisher. Over an enforced-4 stream
+    /// declared 8, every key the publisher wrote is read back from the partition it was written to, and the access
+    /// reports the enforced count.
+    @Test
+    @SuppressWarnings("unchecked")
+    void accessDeclaredHigherThanEnforced_readsEveryKeyFromThePartitionThePublisherWrote() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+
+        try {
+            manager.createStream(config(ENFORCED)).onFailure(cause -> fail(cause.message()));
+            var publisher = provision(manager, 8);
+            IntStream.range(0, KEYS).forEach(key -> publisher.publish(payload(key)).await().onFailure(cause -> fail(cause.message())));
+
+            var access = (StreamAccess<byte[]>) new StreamAccessFactory().provision(config(8), accessContext(manager))
+                                                                         .await()
+                                                                         .fold(cause -> fail(cause.message()), a -> a);
+            var events = access.fetch(0L, 1_000).await().fold(cause -> fail(cause.message()), list -> list);
+
+            assertThat(access.metadata().await().fold(cause -> fail(cause.message()), meta -> meta.partitionCount())).isEqualTo(ENFORCED);
+            assertThat(events).hasSize(KEYS);
+            events.forEach(event -> assertThat(event.partition()).as(new String(event.payload(), UTF_8))
+                                                                  .isEqualTo(expectedPartition(Integer.parseInt(new String(event.payload(), UTF_8).substring(1)))));
+        } finally {
+            manager.close();
+        }
+    }
+
     private static List<LogEvent> provisionCapturingLog(int declared) {
         var manager = streamPartitionManager(Long.MAX_VALUE);
 
@@ -84,34 +168,56 @@ class StreamPublisherEnforcedPartitionsTest {
 
         try {
             manager.createStream(config(ENFORCED)).onFailure(cause -> fail(cause.message()));
-            var publisher = provision(manager, declared);
-
-            IntStream.range(0, KEYS)
-                     .forEach(key -> publisher.publish(payload(key))
-                                              .await()
-                                              .onFailure(cause -> fail("key " + key + ": " + cause.message())));
-
-            IntStream.range(0, KEYS)
-                     .forEach(key -> assertThat(payloadsIn(manager, expectedPartition(key))).as("key %d", key)
-                                                                                           .contains("k" + key));
+            publishEveryKeyAndAssertEnforcedPartition(manager, declared);
         } finally {
             manager.close();
         }
+    }
+
+    private static void publishEveryKeyAndAssertEnforcedPartition(StreamPartitionManager manager, int declared) {
+        var publisher = provision(manager, declared);
+
+        IntStream.range(0, KEYS)
+                 .forEach(key -> publisher.publish(payload(key))
+                                          .await()
+                                          .onFailure(cause -> fail("key " + key + ": " + cause.message())));
+
+        IntStream.range(0, KEYS)
+                 .forEach(key -> assertThat(payloadsIn(manager, expectedPartition(key))).as("key %d", key)
+                                                                                       .contains("k" + key));
+    }
+
+    /// A manager holding an UNCOMMITTED local life of `ENFORCED` partitions: the proposal's commit has not reached this
+    /// node, as with a REST/auto-created default or a losing proposal.
+    private static StreamPartitionManagerTest.StubClusterNode uncommittedLife(StreamPartitionManager[] holder) {
+        var node = new StreamPartitionManagerTest.StubClusterNode(StreamPartitionManagerTest.StubApply.SUCCESS);
+
+        holder[0] = streamPartitionManager(Long.MAX_VALUE, node);
+        holder[0].createStream(config(ENFORCED)).onFailure(cause -> fail(cause.message()));
+
+        return node;
     }
 
     private static int expectedPartition(int key) {
         return (int) Math.floorMod(ReplicaPlacement.stableHash64("k" + key), (long) ENFORCED);
     }
 
+    private static ProvisioningContext context(StreamPartitionManager manager) {
+        Fn1<String, Object> keyOf = bytes -> new String((byte[]) bytes, UTF_8);
+
+        return ProvisioningContext.provisioningContext()
+                                  .withExtension(StreamPartitionManager.class, manager)
+                                  .withExtension(Serializer.class, identitySerializer())
+                                  .withKeyExtractor(keyOf);
+    }
+
+    private static ProvisioningContext accessContext(StreamPartitionManager manager) {
+        return context(manager).withExtension(Deserializer.class, identityDeserializer());
+    }
+
     @SuppressWarnings("unchecked")
     private static StreamPublisher<byte[]> provision(StreamPartitionManager manager, int declared) {
-        Fn1<String, Object> keyOf = bytes -> new String((byte[]) bytes, UTF_8);
-        var context = ProvisioningContext.provisioningContext()
-                                         .withExtension(StreamPartitionManager.class, manager)
-                                         .withExtension(Serializer.class, identitySerializer())
-                                         .withKeyExtractor(keyOf);
-
-        return (StreamPublisher<byte[]>) new StreamPublisherFactory().provision(config(declared), context)
+        return (StreamPublisher<byte[]>) new StreamPublisherFactory().provision(config(declared), context(manager))
                                                                      .await()
                                                                      .fold(cause -> fail(cause.message()),
                                                                            publisher -> publisher);
@@ -129,11 +235,30 @@ class StreamPublisherEnforcedPartitionsTest {
                       .toList();
     }
 
+    private static StreamConfig systemConfig(int partitions) {
+        return StreamConfig.streamConfig("system:enforced-partitions",
+                                         partitions,
+                                         RetentionPolicy.retentionPolicy(100_000, 64L * 1024 * 1024, 3_600_000),
+                                         "earliest");
+    }
+
     private static StreamConfig config(int partitions) {
         return StreamConfig.streamConfig(STREAM,
                                          partitions,
                                          RetentionPolicy.retentionPolicy(100_000, 64L * 1024 * 1024, 3_600_000),
                                          "earliest");
+    }
+
+    private static Deserializer identityDeserializer() {
+        return new Deserializer() {
+            @SuppressWarnings("unchecked") @Override public <T> T decode(byte[] bytes) {return (T) bytes;}
+
+            @SuppressWarnings("unchecked") @Override public <T> T read(ByteBuf byteBuf) {
+                var bytes = new byte[byteBuf.readableBytes()];
+                byteBuf.readBytes(bytes);
+                return (T) bytes;
+            }
+        };
     }
 
     private static Serializer identitySerializer() {
