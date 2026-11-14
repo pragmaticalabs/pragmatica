@@ -399,6 +399,9 @@ class OperatorWarningCodeTest {
         OperatorWarningCode.STORAGE_WAL_TAIL_CUT,
         // D1, added on purpose: a failed KV dispatcher stops (in production, halts) its node; the only end is a restart.
         OperatorWarningCode.KV_DISPATCHER_FAILED,
+        // #3193, added on purpose: a live worker whose own directive was retired halts (EXIT_DRAINED); the halt ends the process, so nothing
+        // is left to publish a recovery, and the only end is a fresh WorkerJoin, which is a new admission.
+        OperatorWarningCode.OWN_DIRECTIVE_RETIRED,
         OperatorWarningCode.STORAGE_VOLUME_GUARD_INACTIVE,
         OperatorWarningCode.STORAGE_STREAM_DISK_CAP_OVER_SPACE,
         OperatorWarningCode.STORAGE_STREAM_DISK_SPACE_UNREADABLE,
