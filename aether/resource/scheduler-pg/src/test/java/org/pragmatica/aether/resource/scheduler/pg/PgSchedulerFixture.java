@@ -3,8 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.scheduler.pg;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BooleanSupplier;
 
 import org.pragmatica.aether.resource.db.PgSqlConnector;
@@ -27,7 +27,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 /// per simulated instance), configs in milliseconds, deadline polling, and a gate a handler can hang on.
 final class PgSchedulerFixture {
     private static PostgreSQLContainer<?> postgres;
-    private static final List<PgSqlConnector> connectors = new ArrayList<>();
+    private static final List<PgSqlConnector> connectors = new CopyOnWriteArrayList<>();
 
     private PgSchedulerFixture() {}
 
