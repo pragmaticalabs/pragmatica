@@ -63,6 +63,10 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
+# The app does not migrate: the schema the @PgSql queries were validated against is applied to the fresh database, as the upstream run did.
+docker exec -i "$PG_NAME" psql -v ON_ERROR_STOP=1 -U conduit -d conduit -h 127.0.0.1 -q < "$HERE/schema/V1__conduit.sql" >/dev/null \
+  || { echo "ACCEPTANCE ERROR: applying schema/V1__conduit.sql failed" >&2; exit 2; }
+
 # --- application -------------------------------------------------------------------------------------------------------------------------
 APP_PORT="${APP_PORT:-$(free_port)}"
 export TERRA_JWT__SECRET="$CONDUIT_JWT_SECRET"
