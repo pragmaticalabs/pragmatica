@@ -24,9 +24,9 @@ import org.pragmatica.serialization.Codec;
 /// majority, so its most advanced state is safe to adopt; COLD responders carry no such guarantee.
 @Codec
 public enum ResponderState {
-    /// Served from a live engine (Active, Observing or Paused): the current state machine and phase.
+    /// Served from a live engine (Active, Observing, or Paused after it activated): the current state machine and phase.
     LIVE,
-    /// Served from a Stopped or Syncing engine: the persisted snapshot, or empty.
+    /// Served from a Stopped or Syncing engine, or one paused before it activated (#3211): the persisted snapshot, or empty.
     COLD,
     /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
     /// Counted as COLD by adoption, so an unreadable flag can never loosen the bound. Must stay
