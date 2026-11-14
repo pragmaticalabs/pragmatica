@@ -50,6 +50,27 @@ class KafkaConfigTest {
     }
 
     @Test
+    void producerProperties_inFlightIsOneUnlessIdempotent() {
+        assertThat(inFlight(Acks.NONE)).isEqualTo(1);
+        assertThat(inFlight(Acks.LEADER)).isEqualTo(1);
+        assertThat(inFlight(Acks.ALL)).isEqualTo(5);
+    }
+
+    private static Object inFlight(Acks acks) {
+        return KafkaConfig.kafkaConfig("a:9092",
+                                       KafkaSecurity.Plaintext.plaintext(),
+                                       acks,
+                                       "c",
+                                       timeSpan(10).seconds(),
+                                       timeSpan(30).seconds(),
+                                       timeSpan(10).seconds(),
+                                       timeSpan(10).seconds())
+                          .unwrap()
+                          .producerProperties()
+                          .get("max.in.flight.requests.per.connection");
+    }
+
+    @Test
     void producerProperties_mapAcksAndTimeouts() {
         var props = KafkaConfig.kafkaConfig("a:9092", "c").unwrap().producerProperties();
 

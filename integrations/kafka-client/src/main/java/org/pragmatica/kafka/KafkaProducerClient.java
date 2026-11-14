@@ -17,15 +17,22 @@ import org.apache.kafka.clients.producer.RecordMetadata;
 /// Promise bridge over a Kafka producer.
 ///
 /// Threads: `send` returns at once. `producer.send` can block up to `maxBlock` on a metadata wait, so it runs on one
-/// owned submitter thread, which also fixes the order in which sends reach the producer: records sent to the same
-/// partition are appended in call order. The broker callback runs on a Kafka I/O thread and only resolves the promise;
+/// owned submitter thread, which also fixes the order in which sends reach the producer. Records sent to the same
+/// partition are appended in call order within one producer session: `ALL` uses the idempotent producer (ordered across
+/// retries), `NONE` and `LEADER` run with one request in flight per connection (`max.in.flight.requests.per.connection`
+/// = 1). The submitter queue is bounded ([OwnedThread#DEFAULT_CAPACITY]); a send past the bound fails as
+/// [KafkaError.Retriable] without blocking the caller. The broker callback runs on a Kafka I/O thread and only resolves the promise;
 /// every step chained on a returned promise runs on the built-in virtual-thread pool, never on a Kafka thread.
 ///
 /// Guarantee per `send`, at the strength of `acks` (`ALL` also enables the idempotent producer, which removes
 /// producer-retry duplicates within one producer session):
-/// success = the broker acknowledged the append (`NONE`: not acknowledged, the receipt offset is -1);
-/// [KafkaError.Retriable] = rejected or never sent, repeating is safe;
-/// [KafkaError.OutcomeUnknown] = the record may be in the log; [KafkaError.Fatal] = repeating cannot help.
+/// success = the broker acknowledged the append (`LEADER`, `ALL`); with `NONE` success means only that the record was
+/// handed to the producer, not acknowledged, and the receipt offset is -1;
+/// [KafkaError.Retriable] = never sent (metadata wait timed out, submitter queue full), repeating is safe;
+/// [KafkaError.OutcomeUnknown] = the record may be in the log, including every error the broker returns for a send,
+/// because the producer retries internally and an earlier attempt may have been appended;
+/// [KafkaError.General#CLOSED] = the client was closing and the record was not sent;
+/// [KafkaError.Fatal] = repeating cannot help.
 public final class KafkaProducerClient {
     private final Producer<byte[], byte[]> producer;
     private final Duration closeTimeout;
@@ -61,8 +68,9 @@ public final class KafkaProducerClient {
                         .continueOn();
     }
 
-    /// Idempotent. Pending records are flushed for at most `closeTimeout`; those still unsent then fail as
-    /// [KafkaError.OutcomeUnknown]. Resolves when the producer is closed.
+    /// Idempotent. Records already handed to the producer are flushed for at most `closeTimeout`; those still unsent then
+    /// fail as [KafkaError.OutcomeUnknown]. Sends accepted but not yet handed over (queued on the submitter, or blocked
+    /// in the metadata wait) fail as [KafkaError.General#CLOSED]. Resolves when the producer is closed.
     public Promise<Unit> close() {
         return lifecycle.close(this::closeProducer)
                         .continueOn();
@@ -77,10 +85,18 @@ public final class KafkaProducerClient {
     }
 
     private Result<Unit> dispatch(OutboundRecord record, Promise<SendReceipt> receipt) {
-        return Result.lift(KafkaError::fromSend,
-                           () -> producer.send(toKafka(record),
-                                               (metadata, failure) -> complete(receipt, metadata, failure)))
-                     .mapToUnit();
+        return lifecycle.isClosing()
+               ? KafkaError.General.CLOSED.result()
+               : Result.lift(this::classifySend,
+                             () -> producer.send(toKafka(record),
+                                                 (metadata, failure) -> complete(receipt, metadata, failure)))
+                       .mapToUnit();
+    }
+
+    private KafkaError classifySend(Throwable failure) {
+        return lifecycle.isClosing()
+               ? KafkaError.fromSendWhileClosing(failure)
+               : KafkaError.fromSend(failure);
     }
 
     @Contract

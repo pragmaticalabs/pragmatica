@@ -59,8 +59,9 @@ public final class KafkaConsumerClient {
                                        config.closeTimeout().duration());
     }
 
-    /// Replaces the assignment. Positions of newly assigned partitions start at the committed offset, else at the
-    /// beginning (`auto.offset.reset` default is `latest` in Kafka; callers that care `seek` explicitly).
+    /// Replaces the assignment. Positions of newly assigned partitions start at the committed offset, else at
+    /// `auto.offset.reset`, which this client leaves at the Kafka default `latest` (callers that care `seek` explicitly,
+    /// e.g. [#seekToBeginning]).
     public Promise<Unit> assign(List<Partition> partitions) {
         return submit(c -> assignTo(c, partitions));
     }
@@ -96,8 +97,11 @@ public final class KafkaConsumerClient {
         return submit(c -> offsets(c.endOffsets(kafkaPartitions(partitions))));
     }
 
-    /// Idempotent and bounded. `wakeup` (the one thread-safe consumer call) cuts a running `poll` short; the close
-    /// then runs on the owned thread behind whatever is queued, for at most `closeTimeout`.
+    /// Idempotent. `wakeup` (the one thread-safe consumer call) cuts the running `poll` short (it resolves
+    /// [KafkaError.General#CLOSED]); operations queued behind it fail as `CLOSED` without running, because each checks
+    /// the closing flag on the owned thread before touching the consumer. The close then runs for at most `closeTimeout`.
+    /// Bound on the whole: the remaining time of the one running non-poll operation (at most `requestTimeout`) plus
+    /// `closeTimeout`.
     public Promise<Unit> close() {
         return lifecycle.closeAsync(this::closeConsumer)
                         .continueOn();
@@ -114,8 +118,14 @@ public final class KafkaConsumerClient {
     private <T> Promise<T> submit(ThrowingFn1<T, Consumer<byte[], byte[]>> operation) {
         return lifecycle.isClosing()
                ? KafkaError.General.CLOSED.promise()
-               : owner.submit(() -> onOwner(operation))
+               : owner.submit(() -> openOnOwner(operation))
                       .continueOn();
+    }
+
+    private <T> Result<T> openOnOwner(ThrowingFn1<T, Consumer<byte[], byte[]>> operation) {
+        return lifecycle.isClosing()
+               ? KafkaError.General.CLOSED.result()
+               : onOwner(operation);
     }
 
     private <T> Result<T> onOwner(ThrowingFn1<T, Consumer<byte[], byte[]>> operation) {

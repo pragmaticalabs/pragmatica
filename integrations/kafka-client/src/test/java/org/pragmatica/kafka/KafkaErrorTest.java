@@ -28,10 +28,22 @@ class KafkaErrorTest {
     }
 
     @Test
-    void fromSend_brokerRejectionBeforeAppend_isRetriable() {
-        assertThat(KafkaError.fromSend(new NotEnoughReplicasException("isr"))).isInstanceOf(KafkaError.Retriable.class);
-        assertThat(KafkaError.fromSend(new NotLeaderOrFollowerException("leader"))).isInstanceOf(KafkaError.Retriable.class);
-        assertThat(KafkaError.fromSend(new UnknownTopicOrPartitionException("topic"))).isInstanceOf(KafkaError.Retriable.class);
+    void fromSend_brokerRejection_isOutcomeUnknownBecauseEarlierRetriesMayHaveAppended() {
+        assertThat(KafkaError.fromSend(new NotEnoughReplicasException("isr"))).isInstanceOf(KafkaError.OutcomeUnknown.class);
+        assertThat(KafkaError.fromSend(new NotLeaderOrFollowerException("leader"))).isInstanceOf(KafkaError.OutcomeUnknown.class);
+        assertThat(KafkaError.fromSend(new UnknownTopicOrPartitionException("topic"))).isInstanceOf(KafkaError.OutcomeUnknown.class);
+    }
+
+    @Test
+    void fromSendWhileClosing_closeInducedFailures_areClosed() {
+        assertThat(KafkaError.fromSendWhileClosing(new IllegalStateException("Cannot perform operation after producer has been closed"))).isSameAs(KafkaError.General.CLOSED);
+        assertThat(KafkaError.fromSendWhileClosing(new KafkaException("Producer closed while send in progress"))).isSameAs(KafkaError.General.CLOSED);
+    }
+
+    @Test
+    void fromSendWhileClosing_otherFailures_classifyAsSend() {
+        assertThat(KafkaError.fromSendWhileClosing(new AuthenticationException("bad"))).isInstanceOf(KafkaError.Fatal.class);
+        assertThat(KafkaError.fromSendWhileClosing(new KafkaException("Producer is closed forcefully."))).isInstanceOf(KafkaError.OutcomeUnknown.class);
     }
 
     @Test

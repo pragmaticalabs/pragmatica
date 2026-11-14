@@ -3,6 +3,7 @@ package org.pragmatica.kafka;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Supplier;
 
@@ -50,7 +51,7 @@ public final class KafkaAdmin {
                               config.closeTimeout().duration());
     }
 
-    /// Creates a topic; an already existing topic fails as [KafkaError.Fatal].
+    /// Creates a topic; an already existing topic fails as [KafkaError.Fatal] (`TopicExistsException` is not retriable).
     public Promise<Unit> createTopic(String topic, int partitions, short replicationFactor) {
         return guarded(() -> admin.createTopics(List.of(new NewTopic(topic, partitions, replicationFactor)))
                                   .all()
@@ -106,9 +107,14 @@ public final class KafkaAdmin {
     }
 
     private static Throwable unwrap(Throwable failure) {
-        return failure instanceof ExecutionException && failure.getCause() != null
-               ? failure.getCause()
+        return isWrapper(failure) && failure.getCause() != null
+               ? unwrap(failure.getCause())
                : failure;
+    }
+
+    /// `KafkaFuture.get` wraps in `ExecutionException`; a dependent stage (`thenApply`) delivers `CompletionException`.
+    private static boolean isWrapper(Throwable failure) {
+        return failure instanceof ExecutionException || failure instanceof CompletionException;
     }
 
     @Contract

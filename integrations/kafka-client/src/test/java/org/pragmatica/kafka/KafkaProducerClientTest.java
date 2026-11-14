@@ -1,12 +1,19 @@
 package org.pragmatica.kafka;
 
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
+import org.apache.kafka.clients.producer.Callback;
 import org.apache.kafka.clients.producer.MockProducer;
 import org.apache.kafka.clients.producer.Partitioner;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.errors.DisconnectException;
@@ -71,14 +78,14 @@ class KafkaProducerClientTest {
     }
 
     @Test
-    void send_brokerRejectsBeforeAppend_failsRetriable() {
+    void send_brokerRejectsAfterInternalRetries_failsOutcomeUnknown() {
         var mock = producer(false);
         var client = KafkaProducerClient.kafkaProducerClient(mock, CONFIG);
         var pending = client.send(record());
 
         awaitSent(mock);
         mock.errorNext(new NotEnoughReplicasException("isr"));
-        assertThat(pending.await().<Cause> fold(c -> c, _ -> fail("expected failure"))).isInstanceOf(KafkaError.Retriable.class);
+        assertThat(pending.await().<Cause> fold(c -> c, _ -> fail("expected failure"))).isInstanceOf(KafkaError.OutcomeUnknown.class);
     }
 
     @Test
@@ -121,6 +128,78 @@ class KafkaProducerClientTest {
         assertThat(client.close().await().isSuccess()).isTrue();
         assertThat(client.close().await().isSuccess()).isTrue();
         assertThat(mock.closed()).isTrue();
+    }
+
+    /// Producer whose `flush` holds the submitter thread until released.
+    private static final class HeldFlush extends MockProducer<byte[], byte[]> {
+        final CountDownLatch release = new CountDownLatch(1);
+        final CountDownLatch holding = new CountDownLatch(1);
+
+        HeldFlush() {
+            super(true, new FirstPartition(), new ByteArraySerializer(), new ByteArraySerializer());
+        }
+
+        @Override
+        public void flush() {
+            holding.countDown();
+            awaitQuietly(release);
+        }
+    }
+
+    /// Producer whose `send` blocks like a metadata wait, then fails the way Kafka does when closed meanwhile.
+    private static final class ClosedMidSend extends MockProducer<byte[], byte[]> {
+        final CountDownLatch release = new CountDownLatch(1);
+        final CountDownLatch inSend = new CountDownLatch(1);
+
+        ClosedMidSend() {
+            super(true, new FirstPartition(), new ByteArraySerializer(), new ByteArraySerializer());
+        }
+
+        @Override
+        public synchronized Future<RecordMetadata> send(ProducerRecord<byte[], byte[]> record, Callback callback) {
+            inSend.countDown();
+            awaitQuietly(release);
+            throw new KafkaException("Producer closed while send in progress");
+        }
+    }
+
+    private static void awaitQuietly(CountDownLatch latch) {
+        try {
+            latch.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    @Test
+    void send_queuedBehindWorkWhenClientCloses_failsClosedAndIsNeverSent() throws InterruptedException {
+        var mock = new HeldFlush();
+        var client = KafkaProducerClient.kafkaProducerClient(mock, CONFIG);
+        var flushing = client.flush();
+
+        assertThat(mock.holding.await(5, TimeUnit.SECONDS)).isTrue();
+        var queued = client.send(record());
+        var closing = client.close();
+
+        mock.release.countDown();
+        assertThat(queued.await().<Cause> fold(c -> c, _ -> fail("expected failure"))).isSameAs(KafkaError.General.CLOSED);
+        assertThat(mock.history()).isEmpty();
+        assertThat(flushing.await().isSuccess()).isTrue();
+        assertThat(closing.await().isSuccess()).isTrue();
+    }
+
+    @Test
+    void send_blockedInMetadataWaitWhenClientCloses_failsClosed() throws InterruptedException {
+        var mock = new ClosedMidSend();
+        var client = KafkaProducerClient.kafkaProducerClient(mock, CONFIG);
+        var blocked = client.send(record());
+
+        assertThat(mock.inSend.await(5, TimeUnit.SECONDS)).isTrue();
+        var closing = client.close();
+
+        mock.release.countDown();
+        assertThat(blocked.await().<Cause> fold(c -> c, _ -> fail("expected failure"))).isSameAs(KafkaError.General.CLOSED);
+        assertThat(closing.await().isSuccess()).isTrue();
     }
 
     private static void awaitSent(MockProducer<byte[], byte[]> mock) {

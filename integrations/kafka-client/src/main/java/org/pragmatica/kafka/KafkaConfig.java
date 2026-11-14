@@ -95,12 +95,22 @@ public record KafkaConfig(String bootstrapServers,
         var props = commonProperties();
 
         props.put("acks", acks.wire());
+        props.put("max.in.flight.requests.per.connection", maxInFlight());
         props.put("delivery.timeout.ms", (int) deliveryTimeout.millis());
         props.put("max.block.ms", maxBlock.millis());
         props.put("key.serializer", BYTES_SERIALIZER);
         props.put("value.serializer", BYTES_SERIALIZER);
 
         return props;
+    }
+
+    /// `ALL` enables the idempotent producer, which keeps per-partition order across retries with up to 5 requests in
+    /// flight. `NONE` and `LEADER` do not, so one request at a time is what keeps a retried batch from landing after a
+    /// later one.
+    private int maxInFlight() {
+        return acks == Acks.ALL
+               ? 5
+               : 1;
     }
 
     /// Manual assignment: `group.id` only names the commit target, `enable.auto.commit` is off, no rebalancing happens.
