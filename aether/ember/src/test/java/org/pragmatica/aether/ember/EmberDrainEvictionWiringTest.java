@@ -85,7 +85,8 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///   first effective start is the seam sample that sees the drainee, whose `Lifecycle.onSeams` requests a reconcile at once (not the
 ///   tick), and `Drains.resume` starts the loop. There is no synchronous entry, so thread attribution does not apply. The precondition is the
 ///   cluster interpreter's state being `ClusterState.Active` (raised when the rebuild completes, the counterpart of `REBUILT_MARKER`), and
-///   the observable is `ClusterEffect.Log` "Drain complete for node X" (`Drains.advance`, logged by `EffectTranslator` on
+///   the drainee keeps reporting at the ping interval (one pong is forgotten by the readiness sweep within three pings, before a 5 s
+///   sample), and the observable is `ClusterEffect.Log` "Drain complete for node X" (`Drains.advance`, logged by `EffectTranslator` on
 ///   [#FSM2_LOGGER]). It must arrive within one seam interval (`SeamPoller.INTERVAL_MS`) plus [#FSM2_SLACK_MS] of the pong.
 ///
 /// A fabricated worker id is used as the drainee (as in `EmberDrainAcknowledgementWiringTest`) so the
@@ -114,6 +115,8 @@ class EmberDrainEvictionWiringTest {
     /// Well inside the 30s reconcile interval, so the tick is not a plausible producer within it.
     private static final long EVICTION_BOUND_MS = 10_000L;
     private static final long POLL_MS = 100;
+    /// The cluster ping interval (`ClusterTimeouts.pingInterval`, 1 s by default): how often a real drainee reports.
+    private static final long PING_MS = 1_000L;
     /// Beyond the test's `@Timeout(300)`: the periodic tick of either engine cannot fire within the test.
     private static final TimeSpan RECONCILE_INTERVAL = TimeSpan.timeSpan(1).hours();
     /// Logger `EffectTranslator` writes `ClusterEffect.Log` to under FSM2.
@@ -193,14 +196,29 @@ class EmberDrainEvictionWiringTest {
                        System.currentTimeMillis() + 60_000L,
                        () -> clusterFsmActive(leader),
                        () -> List.of(String.valueOf(leader.deploymentWiring().system().map(system -> system.clusterInterpreter().state()))));
+        var lastPongMs = new long[]{System.currentTimeMillis()};
+
         leader.metricsCollector().onClusterSyncPong(drainingPong(drainee));
 
-        awaitCondition("under FSM2 the DRAINING pong must lead to the drain loop completing within one seam interval ("
-                       + SeamPoller.INTERVAL_MS + " ms) plus " + FSM2_SLACK_MS + " ms, with the reconcile tick " + RECONCILE_INTERVAL
+        // A draining node keeps reporting every ping; one pong would be forgotten by the readiness sweep within three pings, before the
+        // 5 s seam sample can see it. So the report is repeated at the ping interval, as a real drainee's is.
+        awaitCondition("under FSM2 the DRAINING reports must lead to the drain loop completing within one seam interval ("
+                       + SeamPoller.INTERVAL_MS + " ms) plus " + FSM2_SLACK_MS + " ms of the first, with the reconcile tick " + RECONCILE_INTERVAL
                        + " away",
                        System.currentTimeMillis() + SeamPoller.INTERVAL_MS + FSM2_SLACK_MS,
-                       () -> contains(capture, "Drain complete for node " + drainee),
+                       () -> repeatReport(leader, drainee, lastPongMs) || contains(capture, "Drain complete for node " + drainee),
                        capture::messages);
+    }
+
+    /// Re-sends the DRAINING report once per ping interval; false, so the caller's own condition decides.
+    private static boolean repeatReport(AetherNode leader, NodeId drainee, long[] lastPongMs) {
+        var now = System.currentTimeMillis();
+
+        if (now - lastPongMs[0] >= PING_MS) {
+            lastPongMs[0] = now;
+            leader.metricsCollector().onClusterSyncPong(drainingPong(drainee));
+        }
+        return false;
     }
 
     private static boolean clusterFsmActive(AetherNode leader) {
