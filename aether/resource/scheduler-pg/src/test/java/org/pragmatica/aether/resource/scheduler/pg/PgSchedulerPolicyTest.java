@@ -189,6 +189,52 @@ class PgSchedulerPolicyTest extends PgSchedulerTestBase {
     }
 
     @Test
+    void close_waitsForInFlightFiringWithinGrace_thenItsCompletionIsApplied() {
+        var fired = new AtomicInteger();
+        var finished = new AtomicBoolean();
+        var holder = start(instance("holder", 20, 60_000, 100, 5_000, 1, Clock.systemUTC(), _ -> {
+            fired.incrementAndGet();
+
+            return after(700).onSuccessRun(() -> finished.set(true));
+        }));
+        schedule(holder, "settles-in-grace", DUE);
+
+        awaitTrue("holder started the firing", DEADLINE_MS, () -> fired.get() == 1);
+        assertThat(finished.get()).as("the handler is still running when close is called").isFalse();
+        assertThat(holder.close().await(timeSpan(10).seconds()).isSuccess()).as("close settles").isTrue();
+        assertThat(finished.get()).as("close waited for the in-flight handler").isTrue();
+        assertThat(count()).as("the completion was applied before close returned, so the job is deleted").isZero();
+        assertThat(fired.get()).as("the job was neither released nor re-fired").isEqualTo(1);
+    }
+
+    @Test
+    void tick_afterClose_claimsNothing() {
+        var scheduler = start(instance("solo", 60_000, 30_000, 100, 200, 1, Clock.systemUTC(), _ -> done()));
+        var id = schedule(scheduler, "late", DUE);
+
+        scheduler.close().await().unwrap();
+        scheduler.tick();
+        sleep(500);
+        assertThat(tokenOf(id)).as("a tick that runs after close must not claim: token still 0").isZero();
+        assertThat(statusOf(id)).isEqualTo("SCHEDULED");
+    }
+
+    @Test
+    void tick_beforeClose_claimsDueJob_controlForTheClosedCheck() {
+        var fired = new AtomicBoolean();
+        var scheduler = instance("solo", 60_000, 30_000, 100, 200, 1, Clock.systemUTC(), _ -> {
+            fired.set(true);
+
+            return done();
+        });
+
+        started.add(scheduler);
+        schedule(scheduler, "now", DUE);
+        scheduler.tick();
+        awaitTrue("a direct tick on an open scheduler claims and fires the due job", 10_000, fired::get);
+    }
+
+    @Test
     void schedule_delayBeyondMillisRange_failsThePromiseInsteadOfThrowing() {
         var scheduler = instance("solo", 20, 500, 100, 200, 1, Clock.systemUTC(), _ -> done());
 

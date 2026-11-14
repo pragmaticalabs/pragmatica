@@ -163,9 +163,10 @@ public final class PgScheduler {
 
     /// The next poll is scheduled when the CLAIM of this one settles, not when its firings do, so polls of one instance
     /// never overlap but a running handler never delays the next poll. The closed check and the `inFlight` assignment
-    /// share the lock with [#stopPolling()], so close always sees the claim that runs.
+    /// share the lock with [#stopPolling()], so close always sees the claim that runs. Package-private so a test can
+    /// drive the tick that was already dequeued when close ran, which the cancel in [#stopPolling()] cannot stop.
     @Contract
-    private void tick() {
+    void tick() {
         synchronized (lifecycle) {
             if (!closed.get()) {
                 inFlight = pollOnce().onResultRun(this::scheduleTick);
