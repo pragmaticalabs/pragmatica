@@ -5,7 +5,6 @@ package org.pragmatica.aether.slice;
 
 import java.io.IOException;
 import java.net.JarURLConnection;
-import java.net.URI;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
@@ -549,10 +548,13 @@ public interface SliceStore {
         }
 
         /// Adapter boundary: opening the archive throws only `IOException` (not a zip, missing, unreadable).
+        /// The `jar:` URL is built with the `URL` constructor, which reports a malformed spec as
+        /// `MalformedURLException` (an `IOException`), so it lands in the same failure; `URI.create` would
+        /// throw `IllegalArgumentException` for a raw (unencoded) space that the file URL itself tolerates.
         @SuppressWarnings("JBCT-EX-01")
         private static Result<Unit> requireZip(URL sliceJarUrl) {
             try {
-                var connection = (JarURLConnection) URI.create("jar:" + sliceJarUrl + "!/").toURL().openConnection();
+                var connection = (JarURLConnection) new URL("jar:" + sliceJarUrl + "!/").openConnection();
 
                 connection.setUseCaches(false);
                 try (var _ = connection.getJarFile()) {

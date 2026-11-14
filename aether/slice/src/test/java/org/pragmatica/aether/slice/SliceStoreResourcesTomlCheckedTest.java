@@ -139,4 +139,41 @@ class SliceStoreResourcesTomlCheckedTest {
         assertThat(outcome(SliceStore.readSliceResourcesTomlChecked(url))).isEqualTo(Option.some(toml));
         assertThat(SliceStore.readSliceResourcesToml(url)).isEqualTo(Option.some(toml));
     }
+
+    @Test
+    void checked_urlWithRawSpace_isReadByBothReaders() throws IOException {
+        var toml = randomToml();
+        var dir = Files.createDirectories(tempDir.resolve("a b"));
+
+        Files.write(dir.resolve("o.jar"), jarBytes(ENTRY, toml));
+
+        var url = new URL("file:" + dir + "/o.jar");
+
+        assertThat(outcome(SliceStore.readSliceResourcesTomlChecked(url))).isEqualTo(Option.some(toml));
+        assertThat(SliceStore.readSliceResourcesToml(url)).isEqualTo(Option.some(toml));
+    }
+
+    @Test
+    void checked_missingFile_isZipOpenFailureAndLenientIsNone() throws IOException {
+        var missing = tempDir.resolve("absent.jar");
+        var url = missing.toUri().toURL();
+
+        var message = ((Cause) outcome(SliceStore.readSliceResourcesTomlChecked(url))).message();
+
+        assertThat(message).startsWith("Slice jar cannot be opened as a zip archive: java.nio.file.NoSuchFileException: ");
+        assertThat(message).contains("absent.jar");
+        assertThat(SliceStore.readSliceResourcesToml(url)).isEqualTo(Option.none());
+    }
+
+    @Test
+    void checked_directoryInsteadOfJar_isZipOpenFailureAndLenientIsNone() throws IOException {
+        var directory = Files.createDirectories(tempDir.resolve("dir.jar"));
+        var url = directory.toUri().toURL();
+
+        var outcome = outcome(SliceStore.readSliceResourcesTomlChecked(url));
+
+        assertThat(outcome).isInstanceOf(Cause.class);
+        assertThat(((Cause) outcome).message()).startsWith("Slice jar cannot be opened as a zip archive: ");
+        assertThat(SliceStore.readSliceResourcesToml(url)).isEqualTo(Option.none());
+    }
 }
