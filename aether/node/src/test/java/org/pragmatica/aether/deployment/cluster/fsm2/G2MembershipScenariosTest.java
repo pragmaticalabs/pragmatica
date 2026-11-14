@@ -53,6 +53,7 @@ class G2MembershipScenariosTest {
                    SliceObservedState.ACTIVE,
                    gen(1),
                    TOKEN)
+         .c17bLost()
          .activate();
 
         return w;
@@ -121,6 +122,7 @@ class G2MembershipScenariosTest {
          .directive(W1,
                     Fixtures.worker("east-w-0"))
          .record(W1, DepartureState.DEPARTED, 1L, TOKEN, DepartureCause.WORKER_LEAVE)
+         .c17bLost()
          .activate();
         w.h.advance(120_000L);
         assertThat(w.counts(W1)).as("the departed worker is not counted").isFalse();
