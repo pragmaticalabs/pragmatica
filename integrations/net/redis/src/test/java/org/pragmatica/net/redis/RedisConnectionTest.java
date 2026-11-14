@@ -190,8 +190,8 @@ class RedisConnectionTest {
 
         assertThat(first).isSameAs(second);
         assertThat(first.await(WAIT).isSuccess()).isTrue();
-        assertThat(kind(pending.await(WAIT))).isNotEqualTo("success");
-        assertThat(kind(conn.incr("b").await(WAIT))).isNotEqualTo("success");
+        assertThat(TestKinds.message(pending.await(WAIT))).isEqualTo(RedisError.General.CLOSED.message());
+        assertThat(TestKinds.message(conn.incr("b").await(WAIT))).isEqualTo(RedisError.General.CLOSED.message());
         assertThat(conn.close().await(WAIT).isSuccess()).isTrue();
     }
 

@@ -2,6 +2,7 @@ package org.pragmatica.net.redis;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.pragmatica.lang.Contract;
@@ -9,6 +10,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
@@ -19,6 +21,7 @@ import io.netty.handler.ssl.SslContextBuilder;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.net.redis.RedisError.ConnectionFailed.connectionFailed;
 import static org.pragmatica.net.redis.RedisError.PoolSaturated.poolSaturated;
 import static org.pragmatica.net.redis.RedisError.TlsSetupFailed.tlsSetupFailed;
 
@@ -34,9 +37,11 @@ import static org.pragmatica.net.redis.RedisError.TlsSetupFailed.tlsSetupFailed;
 ///  - At most `poolSize` connections exist or are being opened at once. Earned by the pool lock, which
 ///    covers the count and the decision to open.
 ///  - [#close] is idempotent and returns the same promise every time; it resolves after every
-///    connection was closed and the event loop group was shut down. A command issued after close fails
-///    with [RedisError.General#CLOSED] without being sent. Earned by the `closing` flag, read before a
-///    connection is chosen.
+///    connection was closed, including the ones that were still being opened when it was called, and the
+///    event loop group terminated. A command issued after close fails with [RedisError.General#CLOSED]
+///    without being sent, and no connection is opened after close began. Earned by the `closing` flag,
+///    checked under the pool lock before a connection is chosen or opened, and by the list of connections
+///    being opened, which close waits for.
 ///  - There is no ordering between commands: each may take a different connection.
 public final class RedisClient implements RedisCommands {
     private final RedisConfig config;
@@ -46,14 +51,16 @@ public final class RedisClient implements RedisCommands {
     private final List<RedisConnection> ready = new ArrayList<>();
     private final AtomicBoolean closing = new AtomicBoolean();
     private final Promise<Unit> closed = Promise.promise();
+    /// Under the lock: connections being opened right now, which close() must wait for.
+    private final List<Promise<RedisConnection>> openings = new ArrayList<>();
     private int opening;
     private Promise<RedisConnection> lastOpening = RedisError.General.CLOSED.promise();
 
-    private RedisClient(RedisConfig config, Option<SslContext> tls) {
+    /// The client owns `group` and shuts it down on close.
+    RedisClient(RedisConfig config, Option<SslContext> tls, EventLoopGroup group) {
         this.config = config;
         this.tls = tls;
-        this.group = new MultiThreadIoEventLoopGroup(Math.min(config.poolSize(), 4),
-                                                     NioIoHandler.newFactory());
+        this.group = group;
     }
 
     /// Create a client and prove it can reach the server by opening its first connection. TLS, when
@@ -69,11 +76,17 @@ public final class RedisClient implements RedisCommands {
     }
 
     private static Promise<RedisClient> start(RedisConfig config, Option<SslContext> tls) {
-        var client = new RedisClient(config, tls);
+        return Result.lift(thrown -> connectionFailed(Causes.fromThrowable(thrown)),
+                           () -> new MultiThreadIoEventLoopGroup(Math.min(config.poolSize(), 4),
+                                                                 NioIoHandler.newFactory()))
+                     .async()
+                     .flatMap(group -> new RedisClient(config, tls, group).open());
+    }
 
-        return client.acquire()
-                     .map(_ -> client)
-                     .onFailure(_ -> client.close());
+    /// Prove the server is reachable by opening the first connection; on failure the client is closed.
+    Promise<RedisClient> open() {
+        return acquire().map(_ -> this)
+                        .onFailure(_ -> close());
     }
 
     static Result<Option<SslContext>> tlsContext(RedisConfig config) {
@@ -99,6 +112,10 @@ public final class RedisClient implements RedisCommands {
 
     private Promise<RedisConnection> acquire() {
         synchronized (lock) {
+            if (closing.get()) {
+                return RedisError.General.CLOSED.promise();
+            }
+
             ready.removeIf(connection -> !connection.isActive());
 
             return ready.stream()
@@ -124,6 +141,8 @@ public final class RedisClient implements RedisCommands {
 
         opening++;
         lastOpening = RedisConnection.connect(config, group, tls, none()).fold(this::opened);
+        openings.add(lastOpening);
+        lastOpening.onResultRun(this::forgetSettledOpenings);
 
         return lastOpening;
     }
@@ -136,6 +155,13 @@ public final class RedisClient implements RedisCommands {
 
             return result.onSuccess(this::register)
                          .async();
+        }
+    }
+
+    @Contract
+    private void forgetSettledOpenings() {
+        synchronized (lock) {
+            openings.removeIf(Promise::isResolved);
         }
     }
 
@@ -163,16 +189,22 @@ public final class RedisClient implements RedisCommands {
         List<Promise<Unit>> closes;
 
         synchronized (lock) {
-            closes = ready.stream().map(RedisConnection::close).toList();
+            closes = new ArrayList<>(ready.stream().map(RedisConnection::close).toList());
+            openings.forEach(opening -> closes.add(closeWhenOpened(opening)));
             ready.clear();
         }
 
         Promise.allOf(closes).onResultRun(this::release);
     }
 
+    /// Resolves once an opening connection settled and, if it opened, was closed ([#register] closes it,
+    /// and close is idempotent, so asking again returns the same promise).
+    private static Promise<Unit> closeWhenOpened(Promise<RedisConnection> opening) {
+        return opening.fold(result -> result.fold(_ -> Promise.success(unit()), RedisConnection::close));
+    }
+
     @Contract
     private void release() {
-        group.shutdownGracefully();
-        closed.succeed(unit());
+        group.shutdownGracefully(0, 2, TimeUnit.SECONDS).addListener(_ -> closed.succeed(unit()));
     }
 }

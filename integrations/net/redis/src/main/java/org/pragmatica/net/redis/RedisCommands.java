@@ -35,7 +35,9 @@ import static org.pragmatica.net.redis.RedisError.InvalidArgument.invalidArgumen
 ///
 ///  - **Reply to command pairing**: each command's promise is resolved with the reply that the server
 ///    produced for THAT command. Earned by FIFO correlation: replies on one connection arrive in the
-///    order the commands were written, and the write and the queue entry happen in one event-loop task.
+///    order the commands were written, the frame is encoded BEFORE the command is queued (a frame the codec
+///    refuses fails with [RedisError.InvalidArgument] and never enters the queue), and the write and the
+///    queue entry happen in one event-loop task.
 ///  - **Order of commands**: commands issued from one thread to one [RedisConnection] are executed by the
 ///    server in issue order (same mechanism). Through a [RedisClient] there is NO order between commands:
 ///    each may take a different connection.

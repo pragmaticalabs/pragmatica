@@ -28,7 +28,9 @@ import io.netty.handler.codec.ByteToMessageDecoder;
 /// Netty adapter over [RespCodec#decode]: emits one [RespValue] per complete reply, however the bytes
 /// were split across reads. A protocol violation is not thrown: the cause is fired as a user event
 /// (the handler that owns the correlation queue fails the pipeline with it), the unread bytes are
-/// dropped because the stream position is lost, and the channel is closed.
+/// dropped because the stream position is lost, and the channel is closed AFTER the values decoded before
+/// the violation were passed on (the close is queued on the event loop behind the current read), so a reply
+/// that arrived complete in the same read as a malformed frame is still delivered.
 final class RespFrameDecoder extends ByteToMessageDecoder {
     @Override
     @Contract
@@ -47,6 +49,6 @@ final class RespFrameDecoder extends ByteToMessageDecoder {
     private static void abandon(ChannelHandlerContext ctx, ByteBuf in, Cause cause) {
         in.skipBytes(in.readableBytes());
         ctx.fireUserEventTriggered(cause);
-        ctx.close();
+        ctx.executor().execute(ctx::close);
     }
 }

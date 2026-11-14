@@ -18,6 +18,7 @@ package org.pragmatica.net.redis;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Queue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -31,6 +32,7 @@ import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.utils.Causes;
 
 import io.netty.bootstrap.Bootstrap;
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
@@ -45,6 +47,7 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslHandler;
+import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.Future;
 
 import static org.pragmatica.lang.Option.none;
@@ -72,14 +75,19 @@ import static org.pragmatica.net.redis.RedisError.Timeout.timeout;
 ///
 ///  - Every accepted command is resolved exactly once: with its reply, or, when the connection ends
 ///    first, with the connection's terminal failure. Earned by the FIFO queue, which is drained on
-///    the channel's `closeFuture`; the queue is touched only on the channel's event loop.
+///    the channel's `closeFuture`; the queue is touched only on the channel's event loop. A command whose
+///    frame the codec refuses (see [RespCodec#MAX_COMMAND]) fails with [RedisError.InvalidArgument] before
+///    it is queued or written, so it never takes a reply that belongs to another command. Replies decoded
+///    before a malformed frame in the same read are delivered before the queue is failed.
 ///  - [#close] is idempotent and returns the same promise every time; it resolves after every pending
-///    command was failed with [RedisError.General#CLOSED] and the socket was closed.
+///    command was failed with [RedisError.General#CLOSED], the socket was closed and, for a connection
+///    that owns its event loop, that loop terminated.
 ///  - At most `maxInFlight` commands are unresolved at once; the next one fails with
 ///    [RedisError.PoolSaturated] without being sent. Earned by an atomic counter taken before the write.
 public final class RedisConnection implements RedisCommands {
     private final RedisConfig config;
     private final Option<EventLoopGroup> ownedGroup;
+    private final long frameLimit;
     /// Touched only on the event loop.
     private final Queue<Promise<RespValue>> pending = new ArrayDeque<>();
     private final AtomicInteger inFlight = new AtomicInteger();
@@ -88,9 +96,10 @@ public final class RedisConnection implements RedisCommands {
     /// Assigned by the channel initializer, which runs on the event loop before the first read.
     private volatile Channel channel;
 
-    private RedisConnection(RedisConfig config, Option<EventLoopGroup> ownedGroup) {
+    private RedisConnection(RedisConfig config, Option<EventLoopGroup> ownedGroup, long frameLimit) {
         this.config = config;
         this.ownedGroup = ownedGroup;
+        this.frameLimit = frameLimit;
     }
 
     /// Open a connection on a private single-thread event loop that is shut down with the connection.
@@ -107,9 +116,10 @@ public final class RedisConnection implements RedisCommands {
     }
 
     private static Promise<RedisConnection> connectOwning(RedisConfig config, Option<SslContext> tls) {
-        var group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
-
-        return connect(config, group, tls, some(group));
+        return Result.lift(thrown -> connectionFailed(Causes.fromThrowable(thrown)),
+                           () -> new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory()))
+                     .async()
+                     .flatMap(group -> connect(config, group, tls, some(group)));
     }
 
     /// Open a connection on a shared event loop that the caller keeps owning.
@@ -117,7 +127,16 @@ public final class RedisConnection implements RedisCommands {
                                             EventLoopGroup group,
                                             Option<SslContext> tls,
                                             Option<EventLoopGroup> ownedGroup) {
-        var connection = new RedisConnection(config, ownedGroup);
+        return connect(config, group, tls, ownedGroup, RespCodec.MAX_COMMAND);
+    }
+
+    /// As above with an explicit command frame limit.
+    static Promise<RedisConnection> connect(RedisConfig config,
+                                            EventLoopGroup group,
+                                            Option<SslContext> tls,
+                                            Option<EventLoopGroup> ownedGroup,
+                                            long frameLimit) {
+        var connection = new RedisConnection(config, ownedGroup, frameLimit);
 
         return connection.open(group, tls)
                          .flatMap(_ -> connection.handshake()
@@ -229,16 +248,33 @@ public final class RedisConnection implements RedisCommands {
         return inFlight.get();
     }
 
+    /// The channel, for tests that must act on the event loop or the pipeline; null until initialized.
+    Channel channel() {
+        return channel;
+    }
+
     boolean isActive() {
         return channel != null
                && channel.isActive()
                && terminal.get() == null;
     }
 
+    /// Encode first: a frame the codec refuses never touches the queue, so FIFO correlation cannot shift.
     private Promise<RespValue> enqueue(List<byte[]> command) {
+        return RespCodec.encode(channel.alloc(), command, frameLimit)
+                        .fold(this::refusedBeforeSend, this::submit);
+    }
+
+    private Promise<RespValue> refusedBeforeSend(Cause cause) {
+        inFlight.decrementAndGet();
+
+        return cause.promise();
+    }
+
+    private Promise<RespValue> submit(ByteBuf frame) {
         var reply = Promise.<RespValue> promise();
 
-        runOnEventLoop(() -> send(command, reply)).onFailure(cause -> refuse(reply, cause));
+        runOnEventLoop(() -> send(frame, reply)).onFailure(cause -> refuseUnsent(frame, reply, cause));
 
         return reply.timeout(config.commandTimeout())
                     .onFailure(this::closeOnTimeout)
@@ -247,17 +283,21 @@ public final class RedisConnection implements RedisCommands {
 
     /// Runs on the event loop, which orders the queue entry with the write.
     @Contract
-    private void send(List<byte[]> command, Promise<RespValue> reply) {
+    private void send(ByteBuf frame, Promise<RespValue> reply) {
         if (terminal.get() != null || !channel.isActive()) {
-            refuse(reply, terminalCause());
+            refuseUnsent(frame, reply, terminalCause());
 
             return;
         }
 
         pending.add(reply);
-        channel.writeAndFlush(RespCodec.encode(channel.alloc(),
-                                               command))
-               .addListener((ChannelFuture write) -> onWritten(write));
+        channel.writeAndFlush(frame).addListener((ChannelFuture write) -> onWritten(write));
+    }
+
+    @Contract
+    private void refuseUnsent(ByteBuf frame, Promise<RespValue> reply, Cause cause) {
+        ReferenceCountUtil.safeRelease(frame);
+        refuse(reply, cause);
     }
 
     @Contract
@@ -324,8 +364,14 @@ public final class RedisConnection implements RedisCommands {
     /// The connection is over: stop the private event loop, if any, and resolve [#close]'s promise.
     @Contract
     private void release() {
-        ownedGroup.onPresent(EventLoopGroup::shutdownGracefully);
-        closed.succeed(unit());
+        ownedGroup.onEmpty(() -> closed.succeed(unit()));
+        ownedGroup.onPresent(group -> group.shutdownGracefully(0, 2, TimeUnit.SECONDS)
+                                           .addListener(_ -> closed.succeed(unit())));
+    }
+
+    /// The event loop this connection shuts down on close, if it owns one.
+    Option<EventLoopGroup> ownedGroup() {
+        return ownedGroup;
     }
 
     /// Runs on the event loop once the channel is closed, whether or not it ever became active: every

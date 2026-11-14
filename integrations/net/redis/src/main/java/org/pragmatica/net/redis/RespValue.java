@@ -89,7 +89,7 @@ public sealed interface RespValue {
                : unexpectedReply("+OK", describe()).result();
     }
 
-    /// `+PONG` or the echoed argument of PING.
+    /// `+PONG`: the reply to a PING without an argument.
     default Result<Unit> asPong() {
         return this instanceof SimpleString simple && "PONG".equals(simple.text())
                ? success(unit())

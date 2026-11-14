@@ -162,6 +162,7 @@ class RespCodecTest {
     void bareLfAndBulkCrWithoutLfAreViolations() {
         assertThat(violation("+OK\n")).isEqualTo("ProtocolViolation");
         assertThat(violation("$3\r\nabc\rX")).isEqualTo("ProtocolViolation");
+        assertThat(violation("$3\r\nabcX\n")).isEqualTo("ProtocolViolation");
     }
 
     @Test
@@ -196,15 +197,38 @@ class RespCodecTest {
     @Test
     void commandIsAnArrayOfBulkStrings() {
         var out = RespCodec.encode(ByteBufAllocator.DEFAULT,
-                                   List.of("SET".getBytes(), "k".getBytes(), "va\r\nl".getBytes()));
+                                   List.of("SET".getBytes(), "k".getBytes(), "va\r\nl".getBytes())).unwrap();
 
         assertThat(out.toString(StandardCharsets.ISO_8859_1)).isEqualTo("*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$5\r\nva\r\nl\r\n");
     }
 
     @Test
     void emptyArgumentIsEncodedAsEmptyBulk() {
-        var out = RespCodec.encode(ByteBufAllocator.DEFAULT, List.of("GET".getBytes(), new byte[0]));
+        var out = RespCodec.encode(ByteBufAllocator.DEFAULT, List.of("GET".getBytes(), new byte[0])).unwrap();
 
         assertThat(out.toString(StandardCharsets.ISO_8859_1)).isEqualTo("*2\r\n$3\r\nGET\r\n$0\r\n\r\n");
+    }
+
+    @Test
+    void commandBeyondTheFrameLimitIsRefusedTypedWithoutABuffer() {
+        var parts = List.of("SET".getBytes(), "k".getBytes(), new byte[100]);
+        var frame = "*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$100\r\n".length() + 100 + 2;
+        var refused = RespCodec.encode(ByteBufAllocator.DEFAULT, parts, frame - 1);
+        var accepted = RespCodec.encode(ByteBufAllocator.DEFAULT, parts, frame);
+
+        assertThat(TestKinds.kind(refused)).isEqualTo("InvalidArgument");
+        assertThat(accepted.unwrap().readableBytes()).isEqualTo(frame);
+    }
+
+    @Test
+    void declaredArraySizeDoesNotPreallocate() {
+        var bean = (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
+        var in = Unpooled.copiedBuffer("*16777216\r\n", StandardCharsets.ISO_8859_1);
+        var before = bean.getCurrentThreadAllocatedBytes();
+        var result = RespCodec.decode(in);
+        var allocated = bean.getCurrentThreadAllocatedBytes() - before;
+
+        assertThat(result.unwrap().isEmpty()).isTrue();
+        assertThat(allocated).isLessThan(1_000_000L);
     }
 }

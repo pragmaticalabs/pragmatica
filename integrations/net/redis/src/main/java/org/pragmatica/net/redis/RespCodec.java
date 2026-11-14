@@ -37,6 +37,7 @@ import io.netty.buffer.ByteBufUtil;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.net.redis.RedisError.InvalidArgument.invalidArgument;
 import static org.pragmatica.net.redis.RedisError.ProtocolViolation.protocolViolation;
 
 
@@ -47,9 +48,14 @@ import static org.pragmatica.net.redis.RedisError.ProtocolViolation.protocolViol
 /// reply split anywhere (inside a length line, between CR and LF, inside a bulk body, between array
 /// elements) is retried from its first byte, the cost of one reply is quadratic in the number of
 /// arrivals it spans for an array and constant per arrival for a bulk string (the length is checked
-/// against the readable bytes before anything is copied). Memory is bounded by the limits below: a
-/// frame beyond them, an unknown type byte, a malformed length or a missing CRLF is a
-/// [RedisError.ProtocolViolation] and the stream position is lost.
+/// against the readable bytes before anything is copied). The limits below bound each LENGTH FIELD, not
+/// the memory one frame can take: a bulk is at most [#MAX_BULK] bytes and an array at most [#MAX_ARRAY]
+/// elements, so one frame may still hold gigabytes if the server really sends them; the pre-allocation is
+/// capped, and bytes are only held once they have arrived. A length beyond a limit, an unknown type byte,
+/// a malformed length or a missing CRLF is a [RedisError.ProtocolViolation] and the stream position is lost.
+///
+/// Encoding refuses, with [RedisError.InvalidArgument] and without producing a buffer, a command whose
+/// frame would exceed the frame limit ([#MAX_COMMAND] by default).
 final class RespCodec {
     /// Longest header, simple-string or error line accepted, in bytes.
     static final int MAX_LINE = 64 * 1024;
@@ -58,6 +64,8 @@ final class RespCodec {
     static final long MAX_ARRAY = 16L * 1024 * 1024;
     /// Nesting limit: an adversarial `*1\r\n*1\r\n...` must not exhaust the stack.
     static final int MAX_DEPTH = 32;
+    /// Largest command frame written: Redis' own client-query-buffer-limit default (1 GiB).
+    static final long MAX_COMMAND = 1024L * 1024 * 1024;
     private static final int INITIAL_CAPACITY_CAP = 1024;
     private static final byte CR = '\r';
     private static final byte LF = '\n';
@@ -81,7 +89,32 @@ final class RespCodec {
     }
 
     /// Encode a command as an array of bulk strings: `*N\r\n` then `$len\r\n<bytes>\r\n` per part.
-    static ByteBuf encode(ByteBufAllocator allocator, List<byte[]> parts) {
+    static Result<ByteBuf> encode(ByteBufAllocator allocator, List<byte[]> parts) {
+        return encode(allocator, parts, MAX_COMMAND);
+    }
+
+    /// As [#encode(ByteBufAllocator, List)] with an explicit frame limit. The size is checked before any
+    /// buffer is allocated, and the write itself is lifted, so a refused command never reaches the channel.
+    static Result<ByteBuf> encode(ByteBufAllocator allocator, List<byte[]> parts, long limit) {
+        var size = frameSize(parts);
+
+        return size > limit
+               ? invalidArgument("command frame of " + size + " bytes exceeds the limit of " + limit).result()
+               : Result.lift(thrown -> invalidArgument("command could not be encoded: " + thrown),
+                             () -> write(allocator, parts));
+    }
+
+    private static long frameSize(List<byte[]> parts) {
+        var total = (long) ("*" + parts.size()).length() + 2;
+
+        for (var part : parts) {
+            total += String.valueOf(part.length).length() + 5L + part.length;
+        }
+
+        return total;
+    }
+
+    private static ByteBuf write(ByteBufAllocator allocator, List<byte[]> parts) {
         var out = allocator.buffer();
 
         ByteBufUtil.writeAscii(out, "*" + parts.size() + "\r\n");
