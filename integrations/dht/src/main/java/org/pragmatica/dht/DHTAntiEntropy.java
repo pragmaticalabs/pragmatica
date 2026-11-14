@@ -1277,6 +1277,21 @@ public final class DHTAntiEntropy {
     /// second covers a node that drains itself on quorum loss: no signal reaches its peers in time, and it
     /// halts with its in-memory store, so a copy it holds last would otherwise be lost. A current replica
     /// already holds those partitions legitimately, so its push carries no authority it lacks.
+    /// ```tla DHTDepartureDrain:Deliver
+    /// \* d sends a page to t (attempt: t is in d's ring) with its leaving set and its ring as the view; t accepts and places it
+    /// \* (stores, acks) or nacks it: the page stays pending and is resent. A nack of an accepted sender is a stray refusal.
+    /// Deliver(d, t) ==
+    ///     /\ Pending(d, t)
+    ///     /\ t \in Ring(d)
+    ///     /\ phase[t] # "halted"
+    ///     /\ IF Accepted(t, d) /\ Placed(t, d)
+    ///        THEN /\ store' = [store EXCEPT ![t] = TRUE]
+    ///             /\ pages' = pages \ {Page(d, t)}
+    ///             /\ UNCHANGED strayNack
+    ///        ELSE /\ strayNack' = (strayNack \/ Accepted(t, d))
+    ///             /\ UNCHANGED <<store, pages>>
+    ///     /\ UNCHANGED <<drainers, stale, drainSet, known, pruned, flapped, phase, leaving, rfAt, claimed>>
+    /// ```
     private void acceptDeparturePush(DHTMessage.MigrationDataResponse response) {
         if (departingSenders.test(response.sender()) || response.entries()
                                                                 .stream()

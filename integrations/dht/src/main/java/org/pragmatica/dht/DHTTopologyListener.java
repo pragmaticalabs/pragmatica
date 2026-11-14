@@ -96,6 +96,15 @@ public final class DHTTopologyListener {
 
     /// Handle a node-removed decision by removing the node from the consistent hash ring
     /// and triggering rebalance to restore replication factor.
+    /// ```tla DHTDepartureDrain:Removed
+    /// \* A halted drainer reaches `o` as NodeRemoved: `o` prunes it from its ring. The departing set keeps it.
+    /// Removed(o, x) ==
+    ///     /\ phase[o] # "halted"
+    ///     /\ x \in drainers /\ phase[x] = "halted"
+    ///     /\ x \notin pruned[o]
+    ///     /\ pruned' = [pruned EXCEPT ![o] = @ \cup {x}]
+    ///     /\ UNCHANGED <<drainers, stale, drainSet, known, flapped, store, phase, leaving, rfAt, pages, claimed, strayNack>>
+    /// ```
     @Contract
     public void onNodeRemoved(MembershipDecision.NodeRemoved event) {
         removeFromRing(event.nodeId());
@@ -136,6 +145,18 @@ public final class DHTTopologyListener {
     /// sustained-absence down-hysteresis). The transient transport-disconnect edge that caused the
     /// reverted rebalance storm never reaches `Departing` — see the not-wired note below — so this
     /// seam cannot reintroduce the per-flap storm.
+    /// ```tla DHTDepartureDrain:DepartingEdge
+    /// \* `o` sees `x` enter DEPARTING (a drainer once its drain began, or a stale entry flapping once): departing add, ring prune.
+    /// \* `o` may be `x` itself: nothing in the listener skips self.
+    /// DepartingEdge(o, x) ==
+    ///     /\ phase[o] # "halted"
+    ///     /\ x \notin pruned[o]
+    ///     /\ \/ x \in drainers /\ phase[x] \in {"draining", "pushing"}
+    ///        \/ x \in stale /\ x \notin flapped[o]
+    ///     /\ pruned' = [pruned EXCEPT ![o] = @ \cup {x}]
+    ///     /\ flapped' = IF x \in stale THEN [flapped EXCEPT ![o] = @ \cup {x}] ELSE flapped
+    ///     /\ UNCHANGED <<drainers, stale, drainSet, known, store, phase, leaving, rfAt, pages, claimed, strayNack>>
+    /// ```
     @Contract
     public void onNodeDeparting(NodeId departingNodeId) {
         log.info("DHT: Node {} entering DEPARTING, pruning ring ahead of halt", departingNodeId.id());
@@ -151,6 +172,14 @@ public final class DHTTopologyListener {
     /// from the ring → under-replication. This re-adds it via the SAME `ConsistentHashRing.addNode`
     /// seam [`#onNodeJoined`] uses, which is idempotent (a no-op for a node already in the ring), so
     /// it is harmless even if a `NodeJoined` also fires.
+    /// ```tla DHTDepartureDrain:Recover
+    /// \* A flapped stale entry recovers on `o`: departing remove, ring re-add.
+    /// Recover(o, x) ==
+    ///     /\ phase[o] # "halted"
+    ///     /\ x \in stale /\ x \in pruned[o]
+    ///     /\ pruned' = [pruned EXCEPT ![o] = @ \ {x}]
+    ///     /\ UNCHANGED <<drainers, stale, drainSet, known, flapped, store, phase, leaving, rfAt, pages, claimed, strayNack>>
+    /// ```
     @Contract
     public void onNodeRecovered(NodeId recoveredNodeId) {
         log.info("DHT: Node {} recovered from DEPARTING, re-adding to ring", recoveredNodeId.id());
