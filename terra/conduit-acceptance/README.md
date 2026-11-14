@@ -25,6 +25,19 @@ Registration, login, current user and update; profiles, follow and unfollow; art
 author and favorited filters, pagination, feed); comments; favorites; tags; and the error paths (`errors_*`: validation, auth and
 authorization status codes). 154 requests and 651 assertions at the first green run.
 
+## Project-owned requests (`local/hurl`)
+
+`spec/hurl` stays byte-identical to the vendored upstream suite. Coverage the upstream suite lacks lives in `local/hurl`, which the runner
+executes after it and counts in the summary (`project-owned N`):
+
+- `pagination_extra.hurl`: which article each page returns for the unfiltered, tag, favorited and combined-filter listings and for `/feed`
+  (limit and offset; #3236 finding A).
+- `auth_tokens.hurl`: a forged signature, `alg=none`, an expired but validly signed token and a wrong scheme each answer 401, with a freshly
+  minted valid token as the control that answers 200 (#3236 finding B). The runner registers a user and mints the variants with
+  `local/mint_tokens.py` from that user's token and the signing secret.
+
+`check-fail-closed.sh` checks that the runner refuses (exit 2, with a message) a missing distribution and an `APP_PORT` that is already in use.
+
 ## Exclusions (what is not the upstream suite verbatim)
 
 - **Error-response bodies are not asserted.** Terra answers RFC 9457 problem details (owner ruling 2026-11-08), where the spec expects

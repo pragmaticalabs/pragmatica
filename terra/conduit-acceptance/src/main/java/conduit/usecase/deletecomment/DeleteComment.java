@@ -15,7 +15,9 @@ import conduit.domain.CommentId;
 import conduit.domain.ConduitError.Forbidden;
 import conduit.domain.ConduitError.NotFound;
 import conduit.domain.Slug;
+import conduit.persistence.ArticlePersistence;
 import conduit.persistence.ArticlePersistenceFactory;
+import conduit.persistence.CommentPersistence;
 import conduit.persistence.CommentPersistenceFactory;
 import conduit.persistence.Transaction;
 import conduit.shared.Ownership;
@@ -52,9 +54,15 @@ public interface DeleteComment {
         }
 
         private static Promise<Unit> delete(PgSqlConnector tx, Target target) {
-            var comments = CommentPersistenceFactory.commentPersistence(tx);
+            return delete(ArticlePersistenceFactory.articlePersistence(tx),
+                          CommentPersistenceFactory.commentPersistence(tx),
+                          target);
+        }
 
-            return Ownership.existing(ArticlePersistenceFactory.articlePersistence(tx),
+        /// The steps over the two stores, public so that a test can run them on stubs: no database is needed to pin
+        /// the 404-before-403 order and the author check.
+        static Promise<Unit> delete(ArticlePersistence articles, CommentPersistence comments, Target target) {
+            return Ownership.existing(articles,
                                       target.slug())
                             .flatMap(article -> target.id()
                                                       .async(NotFound.COMMENT)

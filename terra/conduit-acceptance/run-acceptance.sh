@@ -8,8 +8,11 @@
 #
 # Environment (all optional): DIST (distribution dir), APP_PORT (default: a free port), WORK (scratch dir, default mktemp; kept when
 # KEEP_WORK=1), HURL_IMAGE (default: the pinned image below), PG_IMAGE, STARTUP_TIMEOUT (seconds, default 120), JAVA_OPTS.
+# Also runs the project-owned requests in local/hurl (not upstream: pagination order and token rejection, #3236) and counts them in the
+# summary. Fails closed (exit 2) when APP_PORT is preset and already in use, so the suite can never run against another listener.
 # Requires: docker, java 25 on PATH (or JAVA_HOME), curl, awk, python3. Never touches a database other than its own container.
 #
+# local/hurl is project-owned and is added after the upstream copy; spec/hurl itself is never modified.
 # What is NOT the upstream suite verbatim: assertions on the BODY of an error response (`jsonpath "$.errors..."` under an `HTTP 4xx`/`5xx`
 # response line) are removed from a scratch copy before the run, because Terra answers RFC 9457 problem details (owner ruling 2026-11-08),
 # not the spec's {"errors":{...}} shape. Every status line, every success-body assertion and every capture is kept; the number removed
@@ -45,7 +48,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+port_free() { python3 -c 'import socket,sys; s=socket.socket(); s.bind(("127.0.0.1",int(sys.argv[1]))); s.close()' "$1" 2>/dev/null; }
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'; }
+
+APP_PORT="${APP_PORT:-$(free_port)}"
+# Fail closed: a preset port that is already bound would let the startup poll accept another listener, and the suite would run against it.
+port_free "$APP_PORT" || { echo "ACCEPTANCE ERROR: APP_PORT $APP_PORT is already in use; refusing to run against another listener" >&2; exit 2; }
 
 # --- database ---------------------------------------------------------------------------------------------------------------------------
 docker run -d --name "$PG_NAME" -e POSTGRES_USER=conduit -e POSTGRES_PASSWORD=conduit -e POSTGRES_DB=conduit \
@@ -68,7 +76,6 @@ docker exec -i "$PG_NAME" psql -v ON_ERROR_STOP=1 -U conduit -d conduit -h 127.0
   || { echo "ACCEPTANCE ERROR: applying schema/V1__conduit.sql failed" >&2; exit 2; }
 
 # --- application -------------------------------------------------------------------------------------------------------------------------
-APP_PORT="${APP_PORT:-$(free_port)}"
 export TERRA_JWT__SECRET="$CONDUIT_JWT_SECRET"
 export TERRA_HTTP__PORT="$APP_PORT"
 export TERRA_DATABASE__HOST=127.0.0.1
@@ -107,9 +114,27 @@ for f in "$HERE"/spec/hurl/*.hurl; do
     { print }
     END { print n + 0 >> out }' "$f" > "$SUITE/$(basename "$f")"
 done
+local_files=0
+for f in "$HERE"/local/hurl/*.hurl; do
+  [ -e "$f" ] || continue
+  cp "$f" "$SUITE/$(basename "$f")"
+  local_files=$(( local_files + 1 ))
+done
 exempt=$(awk '{s+=$1} END{print s+0}' "$WORK/exempt.count")
 files=$(ls "$SUITE"/*.hurl | wc -l | tr -d ' ')
 [ "$files" -gt 0 ] || { echo "ACCEPTANCE ERROR: no suite files found under $HERE/spec/hurl" >&2; exit 2; }
+
+# --- token variants for local/hurl/auth_tokens.hurl: a real user, then tokens minted from its token ------------------------------------------
+PROBE_USER="tokprobe$(date +%s)$$"
+REAL_TOKEN="$(curl -s -X POST "http://127.0.0.1:$APP_PORT/api/users" -H 'Content-Type: application/json' \
+  -d "{\"user\":{\"username\":\"$PROBE_USER\",\"email\":\"$PROBE_USER@test.com\",\"password\":\"password123\"}}" \
+  | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["user"]["token"])')" \
+  || { echo "ACCEPTANCE ERROR: could not register the token-probe user" >&2; exit 2; }
+TOKEN_ARGS=()
+while IFS='=' read -r name value; do TOKEN_ARGS+=(--variable "$name=$value"); done \
+  < <(python3 -I "$HERE/local/mint_tokens.py" "$CONDUIT_JWT_SECRET" "$REAL_TOKEN") \
+  || { echo "ACCEPTANCE ERROR: minting the token variants failed" >&2; exit 2; }
+[ "${#TOKEN_ARGS[@]}" -eq 10 ] || { echo "ACCEPTANCE ERROR: expected 5 token variants, got $(( ${#TOKEN_ARGS[@]} / 2 ))" >&2; exit 2; }
 
 # --- run: one hurl invocation per file, all against the same application ----------------------------------------------------------------------
 UID_VAL="$(date +%s)$$"
@@ -121,7 +146,7 @@ for f in "$SUITE"/*.hurl; do
   set +e
   docker run --rm --network host --user "$(id -u):$(id -g)" -v "$SUITE:/suite:ro" -v "$WORK/report:/report" "$HURL_IMAGE" \
     --test --jobs 1 --report-json "/report/$name" \
-    --variable "host=http://127.0.0.1:$APP_PORT" --variable "uid=$UID_VAL" "/suite/$name.hurl" >"$WORK/report/$name.out" 2>&1
+    --variable "host=http://127.0.0.1:$APP_PORT" --variable "uid=$UID_VAL" "${TOKEN_ARGS[@]}" "/suite/$name.hurl" >"$WORK/report/$name.out" 2>&1
   rc=$?
   set -e
   read -r n_req n_asserts < <(python3 -I - "$WORK/report/$name" <<'PY'
@@ -143,7 +168,7 @@ PY
 done
 
 echo "-------------------------------------------------------------------------------"
-echo "Conduit acceptance: files $((passed + failed)), passed $passed, failed $failed, requests executed $requests, asserts evaluated $assertions, error-body assertions exempt $exempt"
+echo "Conduit acceptance: files $((passed + failed)) (project-owned $local_files), passed $passed, failed $failed, requests executed $requests, asserts evaluated $assertions, error-body assertions exempt $exempt"
 if [ "$failed" -gt 0 ] || [ "$passed" -eq 0 ]; then
   echo "RESULT: FAIL ($failed_files )"
   exit 1

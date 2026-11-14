@@ -150,6 +150,15 @@ class ValueObjectsTest {
             assertThat(tags.names()).containsExactly("AA", "aa", "mm", "zz", "é", "😀");
         }
 
+        /// Through `tagList`, the only path that sorts: U+E000 is three UTF-8 bytes (EE..), U+1F600 four (F0..), so byte order puts U+E000 first,
+        /// whereas UTF-16 code-unit order (a surrogate, D83D) puts the supplementary character first. The store orders by `COLLATE "C"`.
+        @Test
+        void tagListIsSortedInUtf8ByteOrder_notUtf16CodeUnitOrder() {
+            var names = success(TagList.tagList(Option.option(List.of("\uD83D\uDE00", "\uE000")))).names();
+
+            assertThat(names).containsExactly("\uE000", "\uD83D\uDE00");
+        }
+
         @Test
         void supplementaryCharactersSortAfterBmpPrivateUse_asUtf8Does() {
             assertThat(TagList.compareUtf8("😀", "�")).isPositive();
