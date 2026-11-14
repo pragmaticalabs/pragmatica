@@ -9,7 +9,7 @@
 testcontainers/ryuk:0.12.0 *
 
 postgres:15-alpine aether/slice-testkit,aether/pg-tools/sql-splitter,integrations/db/postgres-async
-postgres:16 aether/db-migrations,aether/pg-tools/pg-codegen,aether/resource/db-async,aether/resource/db-jdbc,aether/resource/db-jooq,aether/resource/db-jooq-async,aether/resource/db-jooq-r2dbc,aether/resource/db-r2dbc,integrations/db/jdbc,integrations/db/postgres-r2dbc-adapter
+postgres:16 aether/db-migrations,aether/pg-tools/pg-codegen,aether/resource/db-async,aether/resource/db-jdbc,aether/resource/db-jooq,aether/resource/db-jooq-async,aether/resource/db-jooq-r2dbc,aether/resource/db-r2dbc,aether/resource/durable-entity-pg,integrations/db/jdbc,integrations/db/postgres-r2dbc-adapter
 postgres:16-alpine aether/aether-deployment
 mysql:8.0 aether/db-migrations,aether/pg-tools/sql-splitter,aether/aether-deployment!
 localstack/localstack:3.8 aether/environment/aws
