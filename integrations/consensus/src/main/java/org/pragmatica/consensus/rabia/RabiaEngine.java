@@ -4387,17 +4387,6 @@ public class RabiaEngine<C extends Command> {
 
     /// Handles a round 1 vote from another node.
     ///
-    /// ```tla RabiaSlot:Equivocate
-    /// \* Assumption removal only: a voter that sends two different ballots for one (slot, round). The code
-    /// \* assumes none.
-    /// Equivocate(n) ==
-    ///     /\ n \in Byz /\ active[n]
-    ///     /\ \E x \in msgs, v \in {"V0", "V1"} :
-    ///         /\ x.src = n /\ x.t \in {"R1", "R2"} /\ x.val # v
-    ///         /\ [x EXCEPT !.val = v] \notin msgs
-    ///         /\ msgs' = msgs \cup {[x EXCEPT !.val = v]}
-    ///     /\ UNCHANGED <<reg, has, rnd, dflag, capped, cur, pending, active, fresh, marker, logv, napp, pend0>>
-    /// ```
     private void handleVoteRound1(VoteRound1 vote) {
         if (deferIfNewerEpoch(vote.sender(), vote.epoch(), vote)) {
             return;
@@ -4736,9 +4725,11 @@ public class RabiaEngine<C extends Command> {
     /// a full sync round on resume, which the new design explicitly avoids.
     ///
     /// ```tla RabiaSlot:Learn
+    /// \* handleDecision accepts any trusted peer (isTrustedPeer: a voter or an admitted consensus member), so an
+    /// \* observer's Decision is learned too.
     /// Learn(n, d) ==
     ///     /\ Acts(n) /\ active[n]
-    ///     /\ d.t = "D" /\ d.src \in Voters /\ d.src # n
+    ///     /\ d.t = "D" /\ d.src \in Nodes /\ d.src # n
     ///     /\ IF Fix("curslot") THEN d.slot = cur[n] ELSE TRUE
     ///     /\ d.slot \notin dflag[n]
     ///     /\ Commit(n, d.slot, d.val, FALSE)

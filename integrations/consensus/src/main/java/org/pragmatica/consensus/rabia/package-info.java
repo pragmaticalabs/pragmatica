@@ -53,12 +53,13 @@
 /// \*   emptyprop   - D8 (liveness): a voter with an empty queue joins (or opens, after activation) a slot with an
 /// \*                 empty proposal instead of staying silent.
 /// \*
-/// \* Environment and assumption constants. RogueVoter has cfgs that set it TRUE; every cfg fixes CommonCoin = TRUE and
-/// \* Byz = {} (the code's assumptions), so the FALSE coin and equivocation arms are written but never checked:
+/// \* Environment and assumption constants. RogueVoter has cfgs that set it TRUE; the ctl_byz_* cfgs set Byz (negative
+/// \* controls for Agreement and Validity); every cfg fixes CommonCoin = TRUE, so the FALSE coin arm is never checked:
 /// \*   RogueVoter  - the observer runs the voter logic: a non-roster node whose stale local roster says it votes
 /// \*                 (RabiaVoterReconfigurationTest.removedVoter_ballotAtCurrentEpoch_isNotCounted). Adversity, not a fix.
 /// \*   CommonCoin  - D1: TRUE = coinFlip, a function of (slot, epoch, round) only; FALSE = any coin per replica (control).
-/// \*   Byz         - voters that may equivocate (send two values for one ballot). The code assumes Byz = {}.
+/// \*   Byz         - voters that may equivocate (send two values for one ballot) or send a Decision nobody decided.
+/// \*                 The code assumes Byz = {}.
 /// \*
 /// \* Abstractions (what each loses): one epoch, no reconfiguration (RabiaEpoch); no sync, snapshot,
 /// \* crash or amnesia (RabiaAdopt); a message is a member of a set that is never removed, so it may be delivered
@@ -141,6 +142,25 @@
 ///     /\ pending' = [pending EXCEPT ![n] = @ \ {v}]
 ///     /\ cur' = [cur EXCEPT ![n] = IF s + 1 > @ THEN s + 1 ELSE @]
 ///     /\ msgs' = IF bcast THEN msgs \cup {[t |-> "D", src |-> n, slot |-> s, rnd |-> 0, val |-> v]} ELSE msgs
+///
+/// \* Environment moves (not code; they sit in the skeleton).
+/// \* Assumption removal only: a voter that sends two different ballots for one (slot, round). The code
+/// \* assumes none.
+/// Equivocate(n) ==
+///     /\ n \in Byz /\ active[n]
+///     /\ \E x \in msgs, v \in {"V0", "V1"} :
+///         /\ x.src = n /\ x.t \in {"R1", "R2"} /\ x.val # v
+///         /\ [x EXCEPT !.val = v] \notin msgs
+///         /\ msgs' = msgs \cup {[x EXCEPT !.val = v]}
+///     /\ UNCHANGED <<reg, has, rnd, dflag, capped, cur, pending, active, fresh, marker, logv, napp, pend0>>
+///
+/// \* Assumption removal only: a Byzantine voter sends a Decision for any value, decided or not.
+/// ForgeDecision(n) ==
+///     /\ n \in Byz
+///     /\ \E s \in Slots, v \in Values :
+///         /\ [t |-> "D", src |-> n, slot |-> s, rnd |-> 0, val |-> v] \notin msgs
+///         /\ msgs' = msgs \cup {[t |-> "D", src |-> n, slot |-> s, rnd |-> 0, val |-> v]}
+///     /\ UNCHANGED <<reg, has, rnd, dflag, capped, cur, pending, active, fresh, marker, logv, napp, pend0>>
 /// ```
 ///
 /// ```tla RabiaSlot:tail
@@ -167,7 +187,7 @@
 ///     \/ \E s \in Slots : Round1(n, s) \/ Round2(n, s) \/ Decide(n, s)
 ///
 /// Next == \/ \E n \in Nodes : Step(n)
-///         \/ \E n \in Byz : Equivocate(n)
+///         \/ \E n \in Byz : Equivocate(n) \/ ForgeDecision(n)
 ///
 /// Sym == Permutations(Voters)   \* voters are interchangeable (pending is chosen per node); safety cfgs without Byz only
 ///
@@ -176,12 +196,13 @@
 /// LiveSpec == Spec /\ \A n \in Voters : WF_vars(Step(n))
 ///
 /// \* ---------------- properties ----------------
-/// Agreement == \A n, m \in Voters, s \in Slots :
+/// \* Agreement, NoRedecide, Validity and LogPrefix range over every node: an observer applies the log too.
+/// Agreement == \A n, m \in Nodes, s \in Slots :
 ///                 logv[n][s] # NoVal /\ logv[m][s] # NoVal => logv[n][s] = logv[m][s]
-/// NoRedecide == \A n \in Voters, s \in Slots : napp[n][s] <= 1
-/// Validity == \A n \in Voters, s \in Slots :
+/// NoRedecide == \A n \in Nodes, s \in Slots : napp[n][s] <= 1
+/// Validity == \A n \in Nodes, s \in Slots :
 ///                 logv[n][s] \in Values => logv[n][s] \in UNION {pend0[v] : v \in Voters}
-/// LogPrefix == \A n \in Voters, s \in Slots : s < cur[n] => logv[n][s] # NoVal
+/// LogPrefix == \A n \in Nodes, s \in Slots : s < cur[n] => logv[n][s] # NoVal
 /// VotedImpliesMarker == \A m \in msgs : m.src \in Voters => marker[m.src]
 ///
 /// Opened(s) == \E m \in msgs : m.t = "P" /\ m.slot = s /\ m.src \in Voters
@@ -654,6 +675,155 @@
 /// SYMMETRY Sym
 /// ```
 ///
+/// ```tlacfg RabiaSlot:code_r2
+/// \* RabiaSlot config code_r2: the expected verdict is its row in tools/tla/models.tsv
+/// \* the code at two rounds and two batch ids: carry-forward and the coin (D1) are exercised
+/// SPECIFICATION Spec
+/// CONSTANTS
+///     Voters = {n1, n2, n3}
+///     Observers = {}
+///     MaxSlot = 1
+///     MaxRound = 2
+///     GcDepth = 0
+///     NVals = 2
+///     Fixed = {"pastguard", "curslot", "rosterballot", "markerfirst", "emptyprop"}
+///     RogueVoter = TRUE
+///     CommonCoin = TRUE
+///     Byz = {}
+/// INVARIANTS Agreement NoRedecide Validity LogPrefix VotedImpliesMarker
+/// SYMMETRY Sym
+/// ```
+///
+/// ```tlacfg RabiaSlot:code_obs
+/// \* RabiaSlot config code_obs: the expected verdict is its row in tools/tla/models.tsv
+/// \* the code with a rogue observer whose Decisions are learned (trusted peer)
+/// SPECIFICATION Spec
+/// CONSTANTS
+///     Voters = {n1, n2, n3}
+///     Observers = {o}
+///     MaxSlot = 1
+///     MaxRound = 1
+///     GcDepth = 0
+///     NVals = 2
+///     Fixed = {"pastguard", "curslot", "rosterballot", "markerfirst", "emptyprop"}
+///     RogueVoter = TRUE
+///     CommonCoin = TRUE
+///     Byz = {}
+/// INVARIANTS Agreement NoRedecide Validity LogPrefix VotedImpliesMarker
+/// SYMMETRY Sym
+/// ```
+///
+/// ```tlacfg RabiaSlot:norosterballot
+/// \* RabiaSlot config norosterballot: the expected verdict is its row in tools/tla/models.tsv
+/// \* D11 receiver-side roster check dropped, with a rogue observer voting
+/// SPECIFICATION Spec
+/// CONSTANTS
+///     Voters = {n1, n2, n3}
+///     Observers = {o}
+///     MaxSlot = 1
+///     MaxRound = 1
+///     GcDepth = 0
+///     NVals = 2
+///     Fixed = {"pastguard", "curslot", "markerfirst", "emptyprop"}
+///     RogueVoter = TRUE
+///     CommonCoin = TRUE
+///     Byz = {}
+/// INVARIANTS Agreement NoRedecide Validity LogPrefix VotedImpliesMarker
+/// SYMMETRY Sym
+/// ```
+///
+/// ```tlacfg RabiaSlot:nopastguard2
+/// \* RabiaSlot config nopastguard2: the expected verdict is its row in tools/tla/models.tsv
+/// \* D9 past-slot guard dropped alone, two slots, no GC
+/// SPECIFICATION Spec
+/// CONSTANTS
+///     Voters = {n1, n2, n3}
+///     Observers = {}
+///     MaxSlot = 2
+///     MaxRound = 1
+///     GcDepth = 0
+///     NVals = 1
+///     Fixed = {"curslot", "rosterballot", "markerfirst", "emptyprop"}
+///     RogueVoter = TRUE
+///     CommonCoin = TRUE
+///     Byz = {}
+/// INVARIANTS Agreement NoRedecide Validity LogPrefix VotedImpliesMarker
+/// SYMMETRY Sym
+/// ```
+///
+/// ```tlacfg RabiaSlot:live
+/// \* RabiaSlot config live: the expected verdict is its row in tools/tla/models.tsv
+/// \* positive control for noemptyprop: every fix on, Live holds
+/// SPECIFICATION LiveSpec
+/// CONSTANTS
+///     Voters = {n1, n2, n3}
+///     Observers = {}
+///     MaxSlot = 1
+///     MaxRound = 1
+///     GcDepth = 0
+///     NVals = 1
+///     Fixed = {"pastguard", "curslot", "rosterballot", "markerfirst", "emptyprop"}
+///     RogueVoter = FALSE
+///     CommonCoin = TRUE
+///     Byz = {}
+/// PROPERTIES Live
+/// ```
+///
+/// ```tlacfg RabiaSlot:ctl_byz_agree
+/// \* RabiaSlot config ctl_byz_agree: the expected verdict is its row in tools/tla/models.tsv
+/// \* negative control: a Byzantine voter (equivocation, forged Decision) breaks Agreement
+/// SPECIFICATION Spec
+/// CONSTANTS
+///     Voters = {n1, n2, n3}
+///     Observers = {}
+///     MaxSlot = 1
+///     MaxRound = 1
+///     GcDepth = 0
+///     NVals = 2
+///     Fixed = {"pastguard", "curslot", "rosterballot", "markerfirst", "emptyprop"}
+///     RogueVoter = TRUE
+///     CommonCoin = TRUE
+///     Byz = {n1}
+/// INVARIANTS Agreement
+/// ```
+///
+/// ```tlacfg RabiaSlot:ctl_byz_valid
+/// \* RabiaSlot config ctl_byz_valid: the expected verdict is its row in tools/tla/models.tsv
+/// \* negative control: a Byzantine voter's forged Decision breaks Validity
+/// SPECIFICATION Spec
+/// CONSTANTS
+///     Voters = {n1, n2, n3}
+///     Observers = {}
+///     MaxSlot = 1
+///     MaxRound = 1
+///     GcDepth = 0
+///     NVals = 2
+///     Fixed = {"pastguard", "curslot", "rosterballot", "markerfirst", "emptyprop"}
+///     RogueVoter = TRUE
+///     CommonCoin = TRUE
+///     Byz = {n1}
+/// INVARIANTS Validity
+/// ```
+///
+/// ```tlacfg RabiaSlot:ctl_logprefix
+/// \* RabiaSlot config ctl_logprefix: the expected verdict is its row in tools/tla/models.tsv
+/// \* negative control: current-slot gates dropped at two slots, a later slot is applied before an earlier one
+/// SPECIFICATION Spec
+/// CONSTANTS
+///     Voters = {n1, n2, n3}
+///     Observers = {}
+///     MaxSlot = 2
+///     MaxRound = 1
+///     GcDepth = 0
+///     NVals = 1
+///     Fixed = {"pastguard", "rosterballot", "markerfirst", "emptyprop"}
+///     RogueVoter = TRUE
+///     CommonCoin = TRUE
+///     Byz = {}
+/// INVARIANTS LogPrefix
+/// SYMMETRY Sym
+/// ```
+///
 /// ```tlacfg RabiaSlot:paper_d9
 /// \* RabiaSlot config paper_d9: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
@@ -913,6 +1083,103 @@
 /// INVARIANTS
 ///     TypeOK
 ///     Agreement
+/// ```
+///
+/// ```tlacfg RabiaEpoch:norelayexact_noprefix
+/// \* RabiaEpoch config norelayexact_noprefix: the expected verdict is its row in tools/tla/models.tsv
+/// \* D2 relay epoch check AND D6 exact-epoch counting dropped under sync adoption
+/// SPECIFICATION Spec
+/// CONSTANTS
+///     Fixed = {"retainmaj"}
+///     Assume = {"crashstop"}
+///     Paper = {}
+///     Roster0 = {"A", "B", "C"}
+///     TargetSet = {{"A", "B", "D"}, {"A", "C", "D"}}
+///     Batches = {"b1", "b2"}
+///     MaxSlot = 2
+///     MaxRequests = 2
+///     RequestEpochs = {0, 1}
+///     MaxJump = 1
+///     MaxForge = 1
+///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
+/// INVARIANTS
+///     TypeOK
+///     Agreement
+///     OneRosterPerEpoch
+/// ```
+///
+/// ```tlacfg RabiaEpoch:ctl_oldtally
+/// \* RabiaEpoch config ctl_oldtally: the expected verdict is its row in tools/tla/models.tsv
+/// \* negative control for NoOldEpochTally: exact-epoch counting dropped under sync adoption
+/// SPECIFICATION Spec
+/// CONSTANTS
+///     Fixed = {"relayepoch", "retainmaj"}
+///     Assume = {"crashstop"}
+///     Paper = {}
+///     Roster0 = {"A", "B", "C"}
+///     TargetSet = {{"A", "B", "D"}, {"A", "C", "D"}}
+///     Batches = {"b1", "b2"}
+///     MaxSlot = 2
+///     MaxRequests = 2
+///     RequestEpochs = {0, 1}
+///     MaxJump = 1
+///     MaxForge = 1
+///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
+/// INVARIANTS
+///     TypeOK
+///     NoOldEpochTally
+/// ```
+///
+/// ```tlacfg RabiaEpoch:ctl_oneroster
+/// \* RabiaEpoch config ctl_oneroster: the expected verdict is its row in tools/tla/models.tsv
+/// \* negative control for OneRosterPerEpoch: exact-epoch counting dropped under sync adoption
+/// SPECIFICATION Spec
+/// CONSTANTS
+///     Fixed = {"relayepoch", "retainmaj"}
+///     Assume = {"crashstop"}
+///     Paper = {}
+///     Roster0 = {"A", "B", "C"}
+///     TargetSet = {{"A", "B", "D"}, {"A", "C", "D"}}
+///     Batches = {"b1", "b2"}
+///     MaxSlot = 2
+///     MaxRequests = 2
+///     RequestEpochs = {0, 1}
+///     MaxJump = 1
+///     MaxForge = 1
+///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
+/// INVARIANTS
+///     TypeOK
+///     OneRosterPerEpoch
+/// ```
+///
+/// ```tlacfg RabiaEpoch:ctl_oneroster_cs
+/// \* RabiaEpoch config ctl_oneroster_cs: the expected verdict is its row in tools/tla/models.tsv
+/// \* negative control for OneRosterPerEpoch: crash-stop assumption removed
+/// SPECIFICATION Spec
+/// CONSTANTS
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Assume = {"prefix"}
+///     Paper = {}
+///     Roster0 = {"A", "B", "C"}
+///     TargetSet = {{"A", "B", "D"}, {"A", "C", "D"}}
+///     Batches = {"b1", "b2"}
+///     MaxSlot = 2
+///     MaxRequests = 2
+///     RequestEpochs = {0, 1}
+///     MaxJump = 1
+///     MaxForge = 1
+///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
+/// INVARIANTS
+///     TypeOK
+///     OneRosterPerEpoch
 /// ```
 ///
 /// ```tlacfg RabiaEpoch:norelayepoch
@@ -1235,6 +1502,46 @@
 /// SPECIFICATION Spec
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Paper = {}
+///   KeepBallots = FALSE
+///   FaultyResp = FALSE
+///   SameEpochAdopt = FALSE
+///   Probe = "none"
+///   MaxCrash = 1
+///   MaxRestart = 1
+///   MaxPause = 1
+///   Rejoin = "none"
+///   SaveFails = FALSE
+/// INVARIANTS TypeOK Agreement Held
+/// PROPERTIES DurableDecision
+/// ```
+///
+/// ```tlacfg RabiaAdopt:ballotlossD5_nooneconfig
+/// \* RabiaAdopt config ballotlossD5_nooneconfig: the expected verdict is its row in tools/tla/models.tsv
+/// \* D5 one-configuration check dropped, ballots lost on pause, newer-epoch path only (ballotlossD5 is the green base)
+/// SPECIFICATION Spec
+/// CONSTANTS
+///   Fixed = {"amnesiafence", "selfvouch"}
+///   Paper = {}
+///   KeepBallots = FALSE
+///   FaultyResp = FALSE
+///   SameEpochAdopt = FALSE
+///   Probe = "none"
+///   MaxCrash = 1
+///   MaxRestart = 1
+///   MaxPause = 1
+///   Rejoin = "none"
+///   SaveFails = FALSE
+/// INVARIANTS TypeOK Agreement Held
+/// PROPERTIES DurableDecision
+/// ```
+///
+/// ```tlacfg RabiaAdopt:ballotlossD5_noselfvouch
+/// \* RabiaAdopt config ballotlossD5_noselfvouch: the expected verdict is its row in tools/tla/models.tsv
+/// \* D4 self-vouch dropped, ballots lost on pause, newer-epoch path only (ballotlossD5 is the green base)
+/// SPECIFICATION Spec
+/// CONSTANTS
+///   Fixed = {"amnesiafence", "oneconfig"}
 ///   Paper = {}
 ///   KeepBallots = FALSE
 ///   FaultyResp = FALSE
@@ -1572,6 +1879,25 @@
 ///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement
 /// PROPERTIES DurableDecision
+/// ```
+///
+/// ```tlacfg RabiaAdopt:ctl_held
+/// \* RabiaAdopt config ctl_held: the expected verdict is its row in tools/tla/models.tsv
+/// \* negative control for Held: a responder answering with an arbitrary log hands over a value nobody chose
+/// SPECIFICATION Spec
+/// CONSTANTS
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Paper = {}
+///   KeepBallots = TRUE
+///   FaultyResp = TRUE
+///   SameEpochAdopt = TRUE
+///   Probe = "none"
+///   MaxCrash = 1
+///   MaxRestart = 1
+///   MaxPause = 1
+///   Rejoin = "none"
+///   SaveFails = FALSE
+/// INVARIANTS TypeOK Held
 /// ```
 ///
 /// ```tlacfg RabiaAdopt:faultyrespD5
