@@ -140,8 +140,10 @@ class StreamPublisherEnforcedPartitionsTest {
     }
 
     /// The system arm: a `system:` stream's count is runtime-owned, so with no committed config the routed count is the
-    /// one this node ENFORCES (created with 1), never what a slice declares (4). Read through the routing site itself:
-    /// a slice publish to a `system:` stream is refused before it routes.
+    /// one this node ENFORCES (created with 1), never what a slice declares (4). Read through the routing site itself.
+    /// Provisioning a publisher or access for a HELD `system:` stream does reach this site (`StreamCreateOutcome.ensureExists`
+    /// passes it, then `assemblePublisher` / `StreamAccessFactory.buildAccess`); only the later write is refused (#1338).
+    /// No test here provisions through that path.
     @Test
     void systemStreamWithNoCommittedConfig_routesByTheEnforcedCount_notTheSliceDeclaration() {
         var node = new StreamPartitionManagerTest.StubClusterNode(StreamPartitionManagerTest.StubApply.SUCCESS);
