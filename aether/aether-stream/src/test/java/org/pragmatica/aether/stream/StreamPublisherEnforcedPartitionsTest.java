@@ -5,6 +5,8 @@
 package org.pragmatica.aether.stream;
 
 import io.netty.buffer.ByteBuf;
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.core.LogEvent;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.RetentionPolicy;
@@ -13,6 +15,7 @@ import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.testlogging.LogCapture;
 
 import java.util.List;
 import java.util.stream.IntStream;
@@ -47,6 +50,33 @@ class StreamPublisherEnforcedPartitionsTest {
     @Test
     void declaredEqualToEnforced_routesByEnforcedCount() {
         assertEveryKeyRoutedByEnforcedCount(ENFORCED);
+    }
+
+    /// The operator is told the declared count was not applied: one WARN naming the stream and both counts.
+    @Test
+    void declaredDiffersFromEnforced_warnsOnceNamingBothCounts() {
+        var events = provisionCapturingLog(8);
+
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst().getLevel()).isEqualTo(Level.WARN);
+        assertThat(events.getFirst().getMessage().getFormattedMessage()).contains(STREAM, "declares 8", "enforces 4");
+    }
+
+    @Test
+    void declaredEqualToEnforced_doesNotWarn() {
+        assertThat(provisionCapturingLog(ENFORCED)).isEmpty();
+    }
+
+    private static List<LogEvent> provisionCapturingLog(int declared) {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+
+        try (var log = LogCapture.capture(StreamPublisherFactory.class, Level.TRACE, true)) {
+            manager.createStream(config(ENFORCED)).onFailure(cause -> fail(cause.message()));
+            provision(manager, declared);
+            return log.events();
+        } finally {
+            manager.close();
+        }
     }
 
     private static void assertEveryKeyRoutedByEnforcedCount(int declared) {
