@@ -175,7 +175,9 @@ class EmberConsensusLaneHoldTest {
             assertThat(gaveUp).as("held frames older than the frame budget are counted as RETRY_GAVE_UP").isPositive();
             awaitTrue("no backlog and no retry in flight after the release",
                       () -> senders.stream().allMatch(sender -> backlogCount(sender) == 0 && network(sender).consensusRetriesInFlight() == 0));
-            assertThat(entered).as("every episode that entered also cleared (none lost)").hasSameSizeAs(cleared);
+            // An episode opened by a post-release flap is closed by the next write that finds the lane writable, which the
+            // catch-up traffic supplies: wait for the books to balance, each evaluation reading ONE snapshot.
+            awaitTrue("every episode that entered also cleared (none lost)", () -> balanced(List.copyOf(arrivals), heldId));
             // (3) THE #3194 ASSERTION.
             var releaseNanos = releasedAt;
 
@@ -234,6 +236,10 @@ class EmberConsensusLaneHoldTest {
     /// The cleared summaries written after `markersAt`: the episodes that were open while the hold ran.
     private static List<Arrival> holdEpisodes(List<Arrival> arrivals, NodeId peer, long markersAt) {
         return clearedFor(arrivals, peer).stream().filter(a -> a.nanos() >= markersAt).toList();
+    }
+
+    private static boolean balanced(List<Arrival> snapshot, NodeId peer) {
+        return enteredFor(snapshot, peer).size() == clearedFor(snapshot, peer).size();
     }
 
     /// At least one episode per sender and, summing each episode capped at the marker-to-release span, the hold on every sender.
