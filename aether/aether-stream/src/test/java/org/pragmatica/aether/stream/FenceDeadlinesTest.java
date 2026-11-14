@@ -100,14 +100,57 @@ class FenceDeadlinesTest {
         assertThat(deadlines.deadline(KEY, 5L)).isEqualTo(4_000L + W);
     }
 
+    /// v3186 F1: a term with no delivered base (restart, snapshot) uses now at the FIRST read and keeps it, so a re-reading gate's
+    /// deadline passes instead of moving with every read.
     @Test
-    void deadline_noEntryForTheTerm_isNowPlusW() {
+    void deadline_noEntryForTheTerm_capturesNowAtTheFirstRead_andLaterReadsKeepIt() {
         renewals.put(L, 500L);
         deadlines.onOwnershipDelivered(KEY, movedToSelf(5L));
         now.set(7_000L);
 
         assertThat(deadlines.deadline(KEY, 6L)).as("a term with no captured base (restart, snapshot) uses now").isEqualTo(7_000L + W);
         assertThat(deadlines.deadline(PartitionKey.partitionKey("orders", 1), 5L)).isEqualTo(7_000L + W);
+
+        now.set(7_000L + 2 * W);
+
+        assertThat(deadlines.deadline(KEY, 6L)).as("the first read's base stands").isEqualTo(7_000L + W);
+        assertThat(deadlines.deadline(PartitionKey.partitionKey("orders", 1), 5L)).isEqualTo(7_000L + W);
+        assertThat(deadlines.nanosLeft(KEY, 6L)).as("so the deadline has passed").isEqualTo(-W);
+    }
+
+    /// A base captured by a gate's read is not moved by the record's later delivery for the same term (the listener may lag the
+    /// applied view the gate read).
+    @Test
+    void deadline_capturedByAGateRead_isNotMovedByTheTermsLaterDelivery() {
+        now.set(7_000L);
+        deadlines.deadline(KEY, 5L);
+        renewals.put(L, 9_000L);
+        now.set(9_500L);
+        deadlines.onOwnershipDelivered(KEY, movedToSelf(5L));
+
+        assertThat(deadlines.deadline(KEY, 5L)).isEqualTo(7_000L + W);
+    }
+
+    /// A read for an OLDER term (a stale gate) neither replaces the newer term's base nor stores one of its own.
+    @Test
+    void deadline_readForAnOlderTerm_keepsTheNewerTermsBase() {
+        renewals.put(L, 500L);
+        deadlines.onOwnershipDelivered(KEY, movedToSelf(5L));
+        now.set(7_000L);
+
+        assertThat(deadlines.deadline(KEY, 4L)).as("a stale term gets now + W").isEqualTo(7_000L + W);
+        now.set(8_000L);
+        assertThat(deadlines.deadline(KEY, 4L)).as("and stores nothing").isEqualTo(8_000L + W);
+        assertThat(deadlines.deadline(KEY, 5L)).as("the newer term's base stands").isEqualTo(500L + W);
+    }
+
+    @Test
+    void nanosLeft_isTheDeadlineLessNow() {
+        renewals.put(L, 500L);
+        deadlines.onOwnershipDelivered(KEY, movedToSelf(5L));
+        now.set(1_500L);
+
+        assertThat(deadlines.nanosLeft(KEY, 5L)).isEqualTo(W - 1_000L);
     }
 
     @Test
