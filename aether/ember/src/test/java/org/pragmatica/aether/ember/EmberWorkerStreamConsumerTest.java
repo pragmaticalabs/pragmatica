@@ -72,7 +72,6 @@ class EmberWorkerStreamConsumerTest {
     private static final Artifact SLICE = Artifact.artifact("org.example:w2600-consumer-slice:1.0.0").unwrap();
 
     private EmberCluster cluster;
-    private final StringBuilder timeline = new StringBuilder();
 
     @AfterEach
     void tearDown() {
@@ -89,6 +88,7 @@ class EmberWorkerStreamConsumerTest {
         return built;
     }
 
+    /// Under LEGACY the stream-consumer placement view (`DeploymentMap`) is fed by `NodeArtifactKey` rows. FSM2 would condemn this hand-committed row as a stray instance (no desired row), so the test pins LEGACY.
     @Test
     @Timeout(900)
     void consumerSliceActiveOnlyOnAWorker_isAssignedToThatWorker() {
@@ -110,15 +110,6 @@ class EmberWorkerStreamConsumerTest {
         awaitCondition("the leader's DeploymentMap shows the worker ACTIVE",
                        () -> leader().deploymentMap().byArtifact(SLICE).containsKey(worker),
                        this::diagnostics);
-        for (var i = 0; i < 12; i++) {
-            timeline.append(" t").append(i).append("[map=").append(leader().deploymentMap().byArtifact(SLICE))
-                    .append(" token=").append(leader().deploymentWiring().admissions().tokenOf(worker))
-                    .append(" workers=").append(leader().membershipFsm().workerCountedMembers().contains(worker))
-                    .append(" assignee=").append(assignee(AetherKey.ConsumerAssignmentKey.consumerAssignmentKey(engineKey(STREAM), 0, GROUP)))
-                    .append("]");
-            StreamTripwireSupport.sleepQuietly(1_000L);
-        }
-
         var assignment = AetherKey.ConsumerAssignmentKey.consumerAssignmentKey(engineKey(STREAM), 0, GROUP);
 
         awaitUntil(() -> assignee(assignment).equals(Option.some(worker)),
@@ -126,7 +117,6 @@ class EmberWorkerStreamConsumerTest {
                    "the partition is assigned to the only worker the slice is ACTIVE on, got " + assignee(assignment) + diagnostics());
     }
 
-    /// Under LEGACY the stream-consumer placement view (`DeploymentMap`) is fed by `NodeArtifactKey` rows. FSM2 would condemn this hand-committed row as a stray instance (no desired row), so the test pins LEGACY.
     private NodeId startedWorker() {
         var added = cluster.addWorkerNode().await(START_BOUND);
 
@@ -174,7 +164,7 @@ class EmberWorkerStreamConsumerTest {
                                                                          .body())
                               .fold(Cause::message, body -> body);
 
-        return "; timeline=" + timeline + "; placement(leader)=" + leader().deploymentMap().byArtifact(SLICE) + "; workerCounted(leader)=" + leader().membershipFsm().workerCountedMembers() + "; rows=" + rows + "; declarative-consumers=" + consumers;
+        return "; placement(leader)=" + leader().deploymentMap().byArtifact(SLICE) + "; workerCounted(leader)=" + leader().membershipFsm().workerCountedMembers() + "; rows=" + rows + "; declarative-consumers=" + consumers;
     }
 
     private static AetherKey.StreamRegistrationKey registrationKey() {
