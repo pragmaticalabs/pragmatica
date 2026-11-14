@@ -142,7 +142,11 @@ class StreamPublisherEnforcedPartitionsTest {
                                                                          .fold(cause -> fail(cause.message()), a -> a);
             var events = access.fetch(0L, 1_000).await().fold(cause -> fail(cause.message()), list -> list);
 
-            assertThat(access.metadata().await().fold(cause -> fail(cause.message()), meta -> meta.partitionCount())).isEqualTo(ENFORCED);
+            int reportedPartitions = access.metadata()
+                                           .await()
+                                           .fold(cause -> fail(cause.message()), meta -> meta.partitionCount());
+
+            assertThat(reportedPartitions).isEqualTo(ENFORCED);
             assertThat(events).hasSize(KEYS);
             events.forEach(event -> assertThat(event.partition()).as(new String(event.payload(), UTF_8))
                                                                   .isEqualTo(expectedPartition(Integer.parseInt(new String(event.payload(), UTF_8).substring(1)))));
