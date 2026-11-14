@@ -92,7 +92,7 @@ public interface DurableTopicSubstrate {
                                                                    String topicAddress,
                                                                    DurableTopicSpec spec,
                                                                    ProvisioningContext context) {
-        return activate(manager, topicAddress, spec).map(_ -> StreamPublisherFactory.assemblePublisher(manager,
+        return activate(manager, topicAddress, spec).flatMap(_ -> StreamPublisherFactory.assemblePublisher(manager,
                                                                                                        serializer,
                                                                                                        topicStreamConfig(topicAddress,
                                                                                                                          spec),
