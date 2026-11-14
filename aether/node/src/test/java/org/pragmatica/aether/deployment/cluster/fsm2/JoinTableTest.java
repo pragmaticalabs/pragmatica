@@ -128,7 +128,7 @@ class JoinTableTest {
          .directive(W1,
                     Fixtures.worker("c1"))
          .record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.STALE)
-         .activate();
+         .activateBeforeC17b();
         w.h.clearLog();
         w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, B)));
         assertThat(w.recordOf(W1).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.ADMITTED));
@@ -155,7 +155,7 @@ class JoinTableTest {
          .directive(W1,
                     Fixtures.worker("c1"))
          .record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.WORKER_LEAVE)
-         .activate();
+         .activateBeforeC17b();
         w.h.clearLog();
         w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, B)));
         var submit = w.h.submits(SubmitKind.ADMISSION).getFirst();
@@ -178,7 +178,7 @@ class JoinTableTest {
          .directive(W1,
                     Fixtures.worker("c1"))
          .record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.WORKER_LEAVE)
-         .activate();
+         .activateBeforeC17b();
         var unknown = w.admit(W1, 0L);
 
         assertThat(unknown.tokenKnown()).as("the real registry has recorded no token").isFalse();
@@ -197,7 +197,7 @@ class JoinTableTest {
          .directive(W1,
                     Fixtures.worker("c1"))
          .record(W1, DepartureState.DEPARTED, 1L, A, DepartureCause.WORKER_LEAVE)
-         .activate();
+         .activateBeforeC17b();
         w.h.clearLog();
         w.tokens.admit(W1, B);
         w.h.deliver(new ClusterInput.WorkerJoin(W1, new Admission(process(B))));
@@ -237,6 +237,35 @@ class JoinTableTest {
                   .isZero();
         assertThat(w.h.model().hasStray(MbWorld.pair(CORE_2, ORDERS))).as("a stale row is never a stray").isFalse();
         assertThat(w.h.warns("identity-process-mismatch")).hasSize(1);
+    }
+
+    // NT-88 J8 core, C17b guard (#3227 verifier m8)
+    // Red when: C17b is built for a node that is both departed and joined, so a tick while the different process's admission write is still
+    // in flight removes the rows of the process being admitted (W3', CTO ruling 2026-10-14).
+    @Test
+    void j8_differentProcessCore_admissionInFlight_noC17bRemovesItsRows() {
+        var w = world();
+
+        w.directive(CORE_2,
+                    ActivationDirectiveValue.core())
+         .target(ORDERS, 1, "CORE_ONLY")
+         .record(CORE_2, DepartureState.DEPARTED, 1L, A, DepartureCause.NODE_REMOVED)
+         .instance(CORE_2,
+                   ORDERS,
+                   SliceGoal.ACTIVE,
+                   SliceObservedState.ACTIVE,
+                   gen(1),
+                   A)
+         .activateBeforeC17b();
+        w.h.clearLog();
+        w.tokens.admit(CORE_2, B);
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, new Admission(process(B))));
+        assertThat(w.h.held).as("control: the ADMITTED rewrite is in flight").isNotEmpty();
+        assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::state)).as("control: the record is still DEPARTED")
+                  .isEqualTo(Option.some(DepartureState.DEPARTED));
+        w.h.advance(120_000L);
+        assertThat(w.h.submits(SubmitKind.CLEANUP)).as("no C17b while the node is joined, after the lost one expired").isEmpty();
     }
 
     // NT-88 J5
@@ -406,7 +435,7 @@ class JoinTableTest {
                     Fixtures.worker("gone"))
          .record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.WORKER_LEAVE)
          .target(ORDERS, 1, "WORKERS_ONLY")
-         .activate();
+         .activateBeforeC17b();
         w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, B)));
         assertThat(w.counts(W1)).isFalse();
         assertThat(w.present(new SliceDesiredKey(W1, ORDERS))).isFalse();

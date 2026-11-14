@@ -88,7 +88,7 @@ class IncarnationTest {
          .directive(W1,
                     Fixtures.worker(C))
          .record(W1, DepartureState.DEPARTED, 1L, P1, DepartureCause.WORKER_LEAVE)
-         .activate();
+         .c17bLost().activate();
         w.h.clearLog();
         w.tokens.admit(W1, P2);
         w.h.deliver(new ClusterInput.WorkerJoin(W1, new Admission(process(P2))));

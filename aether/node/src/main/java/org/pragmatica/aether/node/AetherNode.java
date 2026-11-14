@@ -3158,7 +3158,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               growthLog,
                                                                                                                               selfId,
                                                                                                                               gossipKeyRotationHandler,
-                                                                                                                              reactors.executor("WorkerActivation")));
+                                                                                                                              reactors.executor("WorkerActivation"),
+                                                                                                                              drainProcedure,
+                                                                                                                              nodeReportedStateHolder,
+                                                                                                                              operatorWarningSink));
         var governorAnnouncerHolder = workerActivationOut.governorAnnouncerHolder();
         var communityDirectory = workerActivationOut.communityDirectory();
         var activationKvRouter = workerActivationOut.activationKvRouter();
