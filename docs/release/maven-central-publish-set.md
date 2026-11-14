@@ -106,6 +106,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `aether/resource/db-jooq-r2dbc` | `org.pragmatica-lite.aether:resource-db-jooq-r2dbc` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/db-r2dbc` | `org.pragmatica-lite.aether:resource-db-r2dbc` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/durable-entity` | `org.pragmatica-lite.aether:resource-durable-entity` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
+| `aether/resource/durable-entity-pg` | `org.pragmatica-lite.aether:resource-durable-entity-pg` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/http` | `org.pragmatica-lite.aether:resource-http` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/interceptors` | `org.pragmatica-lite.aether:resource-interceptors` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/json` | `org.pragmatica-lite.aether:resource-json` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
