@@ -1590,7 +1590,8 @@ public class RabiaEngine<C extends Command> {
     /// (#3211, #2287): otherwise a restarted node behind the decided slot could vote on that slot again.
     ///
     /// In-flight stall/sync timers are cancelled. State is also persisted to durable
-    /// storage so that a crash during the pause leaves a recoverable snapshot.
+    /// storage so that a crash during the pause leaves a recoverable snapshot (not when paused from
+    /// `Syncing`: an unsynchronised node has no authoritative state to save, see [#doPauseForQuorumLoss]).
     private void pauseForQuorumLoss() {
         safeExecute(this::doPauseForQuorumLoss);
     }
@@ -1607,11 +1608,21 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        var oldState = engineState.getAndSet(new EngineState.Paused(!(current instanceof EngineState.Syncing)));
+        var wasSyncing = current instanceof EngineState.Syncing;
+        var oldState = engineState.getAndSet(new EngineState.Paused(!wasSyncing));
 
         closeSyncRound();
         exitState(oldState);
         notifyConsensusStateTransition();
+        if (wasSyncing) {
+            // A node still synchronising has nothing authoritative to persist: its live state is the
+            // empty restart state, and saving it would overwrite a durable phase P with phase 0, after which
+            // the restart self-vouch on resume would answer COLD without P (#3211).
+            log.info("Node {} paused (quorum lost) while synchronising. Nothing persisted. currentPhase={}",
+                     self,
+                     currentPhase.get());
+            return;
+        }
         saveState().onSuccessRun(() -> log.info("Node {} paused (quorum lost). State retained, snapshot persisted. currentPhase={}, pendingBatches={}",
                                                 self,
                                                 currentPhase.get(),

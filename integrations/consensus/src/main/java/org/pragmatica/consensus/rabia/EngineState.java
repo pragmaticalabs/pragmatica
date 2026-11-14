@@ -48,7 +48,9 @@ sealed interface EngineState {
     /// `activated` records whether the engine had completed synchronisation (adoption or the restart
     /// self-vouch, and the participation record) before the pause. Only an activated engine resumes
     /// to `Idle`/`Observing`; one paused from `Syncing` resumes into `Syncing` (#3211, #2287), so it
-    /// cannot vote before it has adopted state by the same path an uninterrupted sync takes.
+    /// cannot vote before it has adopted state by the same path an uninterrupted sync takes. The pause
+    /// persists nothing in that case: an unsynchronised node's live state is not authoritative, and saving it
+    /// would overwrite a durable persisted phase with the empty restart state.
     record Paused(boolean activated) implements EngineState {}
 
     default boolean isActive() {

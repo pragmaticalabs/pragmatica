@@ -186,10 +186,13 @@ class RabiaNoReplayWhileInactiveTest {
 
         assertThat(engine.isActive()).as("#3211: the resume enters a fresh sync round, not a serving state").isFalse();
         assertThat(effectsWithin(machine, hooks)).as("nothing is announced before the fresh round activates").isFalse();
-        engine.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
+        // Behind the floor (the restored phase is PEER_PHASE): the round activates without adopting, so no second
+        // restore re-arms the announce and only the deferred mark can carry it.
+        engine.processSyncResponse(cold(Phase.phase(9), PEER_SNAPSHOT));
 
         assertThat(awaitCondition(engine::isActive)).as("the fresh round leaves Syncing for a serving state").isTrue();
         assertThat(awaitCondition(() -> machine.replays.get() >= 1 && hooks.get() >= 1)).as("the deferred announce ran on the activation").isTrue();
+        assertThat(machine.restores.get()).as("the resume did not restore again").isEqualTo(1);
         assertThat(awaitCondition(() -> machine.replays.get() > 1 || hooks.get() > 1, SETTLE_MILLIS)).as("and only once").isFalse();
 
         engine.clusterState(ClusterStateNotification.passive());

@@ -191,6 +191,68 @@ class RabiaPauseWhileSyncingTest {
                                             .containsExactly(ResponderState.LIVE);
     }
 
+    /// (f) F1 (#3211): a node restarted on DURABLE persistence holds its history only in `persistence.load()` (phase P)
+    /// while its live state is empty at phase 0. The pause taken while `Syncing` must not save that empty live state over P:
+    /// afterwards the resume round's `activateWithoutAdoption` would see no persisted-ahead state, self-vouch on an empty
+    /// store and answer COLD without P. RED without the guard in `doPauseForQuorumLoss`.
+    @Test
+    void pausedWhileSyncing_doesNotOverwriteDurablePersistedState_andResumeRestoresIt() {
+        var durable = new DurablePersistence(Phase.phase(9));
+        var network = new TestClusterNetwork();
+        var engine = new RabiaEngine<>(new TestTopologyManager(NODE_1, 3),
+                                       network,
+                                       new TestStateMachine(),
+                                       ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds()),
+                                       ConsensusMetrics.noop(),
+                                       false,
+                                       durable,
+                                       timeSpan(50).millis());
+
+        engines.add(engine);
+        engine.clusterState(ClusterStateNotification.active());
+        settle(engine);
+        assertThat(engine.isActive()).as("control: with no sync responses the engine stays Syncing").isFalse();
+
+        pauseAndResume(engine, network);
+
+        assertThat(durable.saves.get()).as("F1: a node that never activated has nothing authoritative to persist").isZero();
+        assertThat(durable.load().map(RabiaPersistence.SavedState::lastCommittedPhase).or(Phase.ZERO))
+            .as("F1: the durable phase survives the pause").isEqualTo(Phase.phase(9));
+
+        engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+        engine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+        settle(engine);
+
+        assertThat(engine.isActive()).as("the fresh round activates").isTrue();
+        assertThat(engine.currentPhaseForTesting()).as("F1: the node restored its own durable phase instead of self-vouching on an empty store")
+                                                   .isEqualTo(Phase.phase(9));
+    }
+
+    /// Durable stand-in: preloaded with a state at `phase`, counts saves, and keeps what a save writes.
+    private static final class DurablePersistence implements RabiaPersistence<TestCommand> {
+        private final java.util.concurrent.atomic.AtomicReference<Option<SavedState<TestCommand>>> state;
+        private final AtomicInteger saves = new AtomicInteger();
+
+        DurablePersistence(Phase phase) {
+            state = new java.util.concurrent.atomic.AtomicReference<>(Option.some(SavedState.savedState(new byte[]{1}, phase, List.of())));
+        }
+
+        @Override
+        public Result<Unit> save(org.pragmatica.consensus.StateMachine<TestCommand> stateMachine,
+                                 Phase lastCommittedPhase,
+                                 java.util.Collection<Batch<TestCommand>> pendingBatches) {
+            saves.incrementAndGet();
+            state.set(Option.some(SavedState.savedState(new byte[]{1}, lastCommittedPhase, List.copyOf(pendingBatches))));
+
+            return Result.unitResult();
+        }
+
+        @Override
+        public Option<SavedState<TestCommand>> load() {
+            return state.get();
+        }
+    }
+
     private static List<ResponderState> responderStates(TestClusterNetwork network) {
         return network.getMessages()
                       .stream()

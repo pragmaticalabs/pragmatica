@@ -92,7 +92,15 @@ class WorkerMetadataStaleViewAfterRefusedRestoreTest {
     @Test
     void refusedObserver_pausedThenResumed_servesTheRestoredProjection() throws Exception {
         var router = MessageRouter.mutable();
-        var core = new KVStore<AetherKey, AetherValue>(router, codec, codec);
+        var restores = new AtomicInteger();
+        var core = new KVStore<AetherKey, AetherValue>(router, codec, codec) {
+            @Override
+            public Result<Unit> restoreCommittedSnapshot(byte[] snapshot, long nextSlot) {
+                restores.incrementAndGet();
+
+                return super.restoreCommittedSnapshot(snapshot, nextSlot);
+            }
+        };
         var worker = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), codec, codec);
         var requests = new ArrayDeque<ProtocolMessage>();
         var responses = new ArrayDeque<ProtocolMessage>();
@@ -151,12 +159,16 @@ class WorkerMetadataStaleViewAfterRefusedRestoreTest {
             }
             assertThat(engine.isPaused()).as("PRECONDITION: applying Decisions does not resume the paused engine").isTrue();
             marker.refuse.set(false);
+            var restoresBeforeResume = restores.get();
             var syncRequestsBefore = network.syncRequests();
             engine.clusterState(ClusterStateNotification.active());
             assertThat(await(() -> network.syncRequests() > syncRequestsBefore)).as("PRECONDITION: the quorum ACTIVE resumed into a fresh sync round").isTrue();
             assertThat(engine.isObserving()).as("PRECONDITION: resumed into synchronisation, not Observing").isFalse();
             deliver(engine, source("restored", 13), 13);
             assertThat(await(engine::isObserving)).as("PRECONDITION: the sync round activated the observer").isTrue();
+            assertThat(restores.get()).as("PRECONDITION: decisions 9..13 advanced the phase past the response, so the round activated without a "
+                                          + "second restore and only the deferred mark can announce it")
+                                      .isEqualTo(restoresBeforeResume);
             assertThat(servingGate(engine)).as("PRECONDITION: the production gate is open for a non-voter observer").isTrue();
 
             // phase D: the worker polls the serving observer. On a correct engine the second restore has been announced by
