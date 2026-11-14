@@ -107,7 +107,8 @@ class DepartureTest {
 
     // NT-79 (#3193: the directive no longer survives; C17b retires a WORKER's directive, as legacy does)
     // Red when: a zero-footprint departure submits an empty transaction or anything beyond the DEPARTED Put, or a directive
-    // mutation rides in the departure itself; or C17b leaves the worker's directive behind.
+    // mutation rides in the departure itself; or the committed record is not DEPARTED at epoch 0 (MQ-4); or C17b leaves the worker's
+    // directive behind.
     @Test
     void workerLeave_withNoFootprint_isTheDepartedPutAlone_andC17bRetiresTheDirective() {
         var w = MbWorld.world(CORE_1);
@@ -127,13 +128,16 @@ class DepartureTest {
 
         w.h.policy = FsmHarness.SettlePolicy.APPLY;
         w.h.applyHeld(submits.getFirst().correlationId());
+        assertThat(w.recordOf(worker).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.DEPARTED));
+        assertThat(w.recordOf(worker).map(NodeDepartureValue::epoch)).as("names epochOf(n): no record yet, so 0 (the epoch is leader-assigned, MQ-4)")
+                  .isEqualTo(Option.some(0L));
         w.h.drain();
         w.h.advance(w.h.settings.timing().tick() * 3);
         w.h.drain();
 
         assertThat(w.h.submits(SubmitKind.CLEANUP)).as("C17b follows the committed record").isNotEmpty();
         assertThat(w.present(new ActivationDirectiveKey(worker))).as("C17b retired the worker's directive").isFalse();
-        assertThat(w.recordOf(worker).isPresent()).as("R-4.3.3 retired the record once the directive went").isFalse();
+        assertThat(w.recordOf(worker).isPresent()).as("C17b retired the record with the directive (#3193 ruling 6b6de53d51 item 3)").isFalse();
     }
 
     // NT-92 (a, b)
@@ -328,7 +332,8 @@ class DepartureTest {
     }
 
     // NT-106 (b) (MQ-4: R-4.3.5 (b) is withdrawn)
-    // Red when: a STALE record with no residue is garbage-collected by the reconcile: a record leaves only through R-4.3.3.
+    // Red when: a STALE record with no residue is garbage-collected by the reconcile: a record leaves only through R-4.3.3, or with its
+    // WORKER directive in that worker's C17b (#3193); this worker has no directive.
     @Test
     void staleRecord_withNoResidue_isKept() {
         var w = MbWorld.world(CORE_1);
