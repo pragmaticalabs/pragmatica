@@ -211,6 +211,12 @@ public final class PgScheduler {
         run(job).onResult(outcome::resolve);
     }
 
+    /// Entries tracked per firing (claimed or awaiting its outcome); package-private so a test can pin that every
+    /// settled firing, completed or failed, is forgotten.
+    int firingsTracked() {
+        return running.size();
+    }
+
     @Contract
     private void forget(FiredJob job) {
         held.remove(job.id());

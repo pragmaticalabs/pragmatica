@@ -208,6 +208,21 @@ class PgSchedulerPolicyTest extends PgSchedulerTestBase {
     }
 
     @Test
+    void settledFirings_completedAndFailed_areForgotten() {
+        var scheduler = start(instance("solo", 20, 30_000, 100, 200, 4, Clock.systemUTC(), job -> job.name().equals("flaky") && job.attempt() == 1
+                                                                                                   ? SchedulerError.General.CLOSED.promise()
+                                                                                                   : done()));
+
+        schedule(scheduler, "flaky", DUE);
+        for (var i = 0; i < 3; i++) {
+            schedule(scheduler, "job-" + i, DUE);
+        }
+
+        awaitTrue("all four jobs, including the retried one, completed", 10_000, () -> count() == 0);
+        awaitTrue("no firing is tracked once all have settled", 5_000, () -> scheduler.firingsTracked() == 0);
+    }
+
+    @Test
     void tick_afterClose_claimsNothing() {
         var scheduler = start(instance("solo", 60_000, 30_000, 100, 200, 1, Clock.systemUTC(), _ -> done()));
         var id = schedule(scheduler, "late", DUE);
