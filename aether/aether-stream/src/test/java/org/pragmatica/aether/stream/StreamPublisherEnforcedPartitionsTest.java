@@ -151,7 +151,9 @@ class StreamPublisherEnforcedPartitionsTest {
             manager.createStream(systemConfig(1)).onFailure(cause -> fail(cause.message()));
 
             assertThat(manager.committedPartitions(SYSTEM_STREAM).isEmpty()).as("no committed config").isTrue();
-            assertThat(StreamPublisherFactory.routedPartitions(manager, systemConfig(4)).fold(cause -> -1, count -> count)).isEqualTo(1);
+            int routed = StreamPublisherFactory.routedPartitions(manager, systemConfig(4)).fold(cause -> -1, count -> count);
+
+            assertThat(routed).isEqualTo(1);
         } finally {
             manager.close();
         }
