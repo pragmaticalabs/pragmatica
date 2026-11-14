@@ -253,6 +253,11 @@ public final class EmberCluster {
     /// [Option#none] keeps the default. Nodes already started keep theirs.
     private final AtomicReference<Option<TimeSpan>> communityAbsence = new AtomicReference<>(Option.none());
 
+    /// The `timeouts.deployment.reconciliationInterval` every node created FROM NOW ON is configured with, in place of the default
+    /// (#3243). Both engines read this one setting: legacy through `ClusterDeploymentManager`'s tick, FSM2 through `Timing.withTick`.
+    /// [Option#none] keeps the default. Nodes already started keep theirs.
+    private final AtomicReference<Option<TimeSpan>> reconciliationInterval = new AtomicReference<>(Option.none());
+
     /// The `coreAbsence` window (the worker-side fence) every node created FROM NOW ON is configured with, in place of the
     /// default. [Option#none] keeps the default. Nodes already started keep theirs.
     private final AtomicReference<Option<TimeSpan>> coreAbsence = new AtomicReference<>(Option.none());
@@ -549,6 +554,14 @@ public final class EmberCluster {
     @Contract
     public void withCommunityAbsenceForNewNodes(TimeSpan window) {
         communityAbsence.set(Option.some(window));
+    }
+
+    /// TEST SEAM (#3243) — the periodic reconcile tick (`timeouts.deployment.reconciliationInterval`) of every node created after
+    /// this call, so a test can set it beyond its own deadline and thereby exclude the tick as a producer of whatever it observes.
+    /// Applies to both deployment engines. Nodes already started keep their interval. Harness-scoped; production paths never call this.
+    @Contract
+    public void withReconciliationIntervalForNewNodes(TimeSpan interval) {
+        reconciliationInterval.set(Option.some(interval));
     }
 
     /// TEST SEAM (#3028) — the `coreAbsence` window of every node created after this call, so a test can order a worker's
@@ -1669,6 +1682,36 @@ public final class EmberCluster {
                                   base.storageMaintenance());
     }
 
+    private static TimeoutsConfig withReconciliation(TimeoutsConfig base, Option<TimeSpan> interval) {
+        var d = base.deployment();
+        var deployment = new TimeoutsConfig.DeploymentTimeouts(d.loading(),
+                                                               d.activating(),
+                                                               d.deactivating(),
+                                                               d.unloading(),
+                                                               d.activationChain(),
+                                                               d.transitionRetryDelay(),
+                                                               interval.or(d.reconciliationInterval()),
+                                                               d.maxLifecycleRetries(),
+                                                               d.applyDeadline(),
+                                                               d.applySchemaPauseMax());
+
+        return new TimeoutsConfig(base.invocation(),
+                                  base.forwarding(),
+                                  deployment,
+                                  base.rollingUpdate(),
+                                  base.cluster(),
+                                  base.consensus(),
+                                  base.election(),
+                                  base.swim(),
+                                  base.observability(),
+                                  base.dht(),
+                                  base.worker(),
+                                  base.security(),
+                                  base.repository(),
+                                  base.scaling(),
+                                  base.storageMaintenance());
+    }
+
     private AetherNode createNode(NodeId nodeId,
                                   int port,
                                   int mgmtPort,
@@ -1682,7 +1725,8 @@ public final class EmberCluster {
         var baseTimeouts = raised
                            ? RAISED_TIMEOUTS
                            : TimeoutsConfig.timeoutsConfig();
-        var nodeTimeouts = withAbsence(baseTimeouts, coreAbsence.get(), communityAbsence.get());
+        var nodeTimeouts = withReconciliation(withAbsence(baseTimeouts, coreAbsence.get(), communityAbsence.get()),
+                                              reconciliationInterval.get());
         Option<MembershipConfig> membership = raised
                                               ? RAISED_MEMBERSHIP
                                               : Option.empty();
