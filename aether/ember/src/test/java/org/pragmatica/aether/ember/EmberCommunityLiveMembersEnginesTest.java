@@ -4,9 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ember;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.List;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
+import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -24,7 +29,9 @@ import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
@@ -50,6 +57,8 @@ class EmberCommunityLiveMembersEnginesTest {
     private static final TimeSpan APPLY_BOUND = TimeSpan.timeSpan(30).seconds();
     private static final long WAIT_BOUND_MS = 60_000L;
     private static final String COMMUNITY = "east";
+
+    private static final HttpClient HTTP = HttpClient.newHttpClient();
 
     private EmberCluster cluster;
 
@@ -87,9 +96,29 @@ class EmberCommunityLiveMembersEnginesTest {
         commit(leader, GovernorAnnouncementKey.forCommunity(COMMUNITY), GovernorAnnouncementValue.governorAnnouncementValue(member, List.of(member), ""));
 
         await("the leader serves the roster count (engine " + engine + ")", () -> leader.communityLiveMembers(COMMUNITY).equals(Option.some(1)));
+        await("the management route serves the same count (engine " + engine + ")", () -> routeLiveMembers().equals(Option.some("1")));
         var follower = cluster.allNodes().stream().filter(node -> !node.self().equals(leader.self())).findFirst().orElseThrow();
 
         assertThat(follower.communityLiveMembers(COMMUNITY)).as("a follower is not the observer (engine %s)", engine).isEqualTo(Option.none());
+    }
+
+    /// `liveMembers` of the single-community route over real HTTP on the leader's management port: the instance the route reads is the one
+    /// handed to the management server, not the node `leader()` returns, so a wiring gap on that instance shows only here (#3159).
+    private Option<String> routeLiveMembers() {
+        var port = cluster.getLeaderManagementPort().unwrap();
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/cluster/communities/" + COMMUNITY))
+                                 .GET()
+                                 .build();
+        var body = Result.lift(Causes::fromThrowable, () -> HTTP.send(request, HttpResponse.BodyHandlers.ofString()))
+                         .filter(Causes.cause("community route did not answer 200"), response -> response.statusCode() == 200)
+                         .map(HttpResponse::body)
+                         .or("");
+        var matcher = Pattern.compile("\"liveMembers\":\"?([A-Za-z0-9_-]+)\"?").matcher(body);
+
+        return matcher.find()
+               ? Option.some(matcher.group(1))
+               : Option.none();
     }
 
     private AetherNode leader() {
