@@ -32,6 +32,11 @@ public record MemberDescriptor(Option<NodeAddress> address, String role, String 
         return isCoreRole(role);
     }
 
+    /// An explicitly admitted worker-tier role (`worker` or `spot`); an unknown role is neither core nor worker.
+    public boolean isWorker() {
+        return "worker".equalsIgnoreCase(role) || "spot".equalsIgnoreCase(role);
+    }
+
     public static boolean isCoreRole(String role) {
         return "core".equalsIgnoreCase(role);
     }
