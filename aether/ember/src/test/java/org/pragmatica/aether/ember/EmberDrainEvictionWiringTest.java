@@ -196,6 +196,11 @@ class EmberDrainEvictionWiringTest {
                        System.currentTimeMillis() + 60_000L,
                        () -> clusterFsmActive(leader),
                        () -> List.of(String.valueOf(leader.deploymentWiring().system().map(system -> system.clusterInterpreter().state()))));
+        awaitCondition("the leader's cluster FSM must hold a real seam sample that already counts and finds ready every node, so the sample "
+                       + "that first lists the drainee changes ONLY the draining set (the first sample changes every field against UNWIRED)",
+                       System.currentTimeMillis() + 60_000L,
+                       () -> seamsSettled(leader),
+                       () -> List.of(String.valueOf(leader.deploymentWiring().system().map(system -> system.clusterInterpreter().state()))));
         var lastPongMs = new long[]{System.currentTimeMillis()};
 
         leader.metricsCollector().onClusterSyncPong(drainingPong(drainee));
@@ -219,6 +224,16 @@ class EmberDrainEvictionWiringTest {
             leader.metricsCollector().onClusterSyncPong(drainingPong(drainee));
         }
         return false;
+    }
+
+    private static boolean seamsSettled(AetherNode leader) {
+        return leader.deploymentWiring()
+                     .system()
+                     .map(system -> system.clusterInterpreter().state())
+                     .filter(state -> state instanceof ClusterState.Active)
+                     .map(state -> ((ClusterState.Active) state).model().seams())
+                     .map(seams -> seams.countedCores().size() == CLUSTER_SIZE && seams.ready().size() == CLUSTER_SIZE)
+                     .or(false);
     }
 
     /// True once the sampled seams list the drainee. From then on no further report is sent: a later report would pass `Drains.start`'s
