@@ -362,7 +362,7 @@ class StreamForwardReplyNotSentTest {
     }
 
     @Test
-    void resendAfterTheRequesterLeft_isSkipped_andLeavesNoEpisodeOrBackoff() {
+    void resendAfterTheRequesterLeft_stillTerminates() {
         var handler = handlerAnswering(refused());
 
         readTo(handler, REQUESTER);

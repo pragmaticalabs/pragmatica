@@ -193,6 +193,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     private final Option<TieredStreamReader> tieredReader;
     private final Option<ControlLog> controlLog;
     private final Set<NodeId> unsentRequesters = ConcurrentHashMap.newKeySet();
+    private final Set<NodeId> departedRequesters = ConcurrentHashMap.newKeySet();
     private final RefusalBackoff<StreamForwardMessage> replyBackoff;
     private final Fn2<ScheduledFuture<?>, Runnable, TimeSpan> resendScheduler;
 
@@ -254,11 +255,16 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// own that case. A reply still refused after the last re-send is dropped, counted and warned, as before the re-send.
     @Contract
     private void reply(NodeId requester, StreamForwardMessage response) {
+        departedRequesters.remove(requester);
         sendReply(requester, response, 0);
     }
 
     @Contract
     private void sendReply(NodeId requester, StreamForwardMessage response, int resends) {
+        if (departedRequesters.contains(requester)) {
+            replyBackoff.sent(response);
+            return;
+        }
         transport.send(requester, response)
                  .onSuccess(outcome -> observeReply(requester, response, resends, outcome))
                  .onFailure(cause -> replyPromiseFailed(requester, response, cause));
@@ -297,7 +303,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     @Contract
     private void countUnsentReply(NodeId requester, String detail) {
         metrics.recordReplyNotSent();
-        if (unsentRequesters.add(requester)) {
+        if (!departedRequesters.contains(requester) && unsentRequesters.add(requester)) {
             log.warn("Forward reply to {} not sent ({}); further unsent replies to it are counted, not logged",
                      requester,
                      detail);
@@ -314,6 +320,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     @Contract
     @Override
     public void onNodeRemoved(MembershipDecision.NodeRemoved removed) {
+        departedRequesters.add(removed.nodeId());
         unsentRequesters.remove(removed.nodeId());
     }
 
