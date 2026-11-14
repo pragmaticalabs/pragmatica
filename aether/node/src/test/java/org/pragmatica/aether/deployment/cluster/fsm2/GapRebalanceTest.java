@@ -46,8 +46,8 @@ class GapRebalanceTest {
         h.activate();
         assertThat(h.submitsBesides(ClusterModel.SubmitKind.WARNINGS)).as("first imbalanced tick: hysteresis, no move")
                   .isEmpty();
-        assertThat(h.warningPuts()).as("the worker-absence-unjudgeable warning of the core class is persisted, once")
-                  .containsExactly(new FsmWarningKey("worker-absence-unjudgeable", "core"));
+        assertThat(h.warningPuts()).as("the worker-absence-unjudgeable warning of the core class is persisted: the marker write, then its clear write (#3160)")
+                  .containsExactly(new FsmWarningKey("worker-absence-unjudgeable", "core"), new FsmWarningKey("worker-absence-unjudgeable", "core"));
         assertThat(h.model().imbalancedTicks.size()).isEqualTo(3);
         h.deliver(new ClusterInput.Reconcile());
         assertThat(h.submitsBesides(ClusterModel.SubmitKind.WARNINGS)).as("the second tick moves exactly one artifact: a load and an unload")
@@ -78,8 +78,8 @@ class GapRebalanceTest {
         h.deliver(new ClusterInput.Reconcile());
         h.deliver(new ClusterInput.Reconcile());
         assertThat(h.submitsBesides(ClusterModel.SubmitKind.WARNINGS)).isEmpty();
-        assertThat(h.warningPuts()).as("the worker-absence-unjudgeable warning of the core class is persisted, once")
-                  .containsExactly(new FsmWarningKey("worker-absence-unjudgeable", "core"));
+        assertThat(h.warningPuts()).as("the worker-absence-unjudgeable warning of the core class is persisted: the marker write, then its clear write (#3160)")
+                  .containsExactly(new FsmWarningKey("worker-absence-unjudgeable", "core"), new FsmWarningKey("worker-absence-unjudgeable", "core"));
     }
 
     /// Red when: the donor is chosen among all allocatable cores instead of the cores that host the artifact, so a move names a
