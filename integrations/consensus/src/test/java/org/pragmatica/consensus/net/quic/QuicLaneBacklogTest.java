@@ -60,13 +60,23 @@ class QuicLaneBacklogTest {
     private static final class Lane {
         final AtomicBoolean writable = new AtomicBoolean(false);
         final AtomicBoolean active = new AtomicBoolean(true);
+        /// Armed: the next writability check throws once, as a fault inside a drain pass would.
+        final AtomicBoolean faultOnNextWritableCheck = new AtomicBoolean(false);
         final List<Integer> written = new CopyOnWriteArrayList<>();
         final QuicStreamChannel ch = mock(QuicStreamChannel.class);
 
         Lane(ChannelFuture future, int throwOnFrame) {
-            when(ch.isWritable()).thenAnswer(_ -> writable.get());
+            when(ch.isWritable()).thenAnswer(_ -> writableOrFault());
             when(ch.isActive()).thenAnswer(_ -> active.get());
             when(ch.writeAndFlush(any())).thenAnswer(invocation -> record(invocation.getArgument(0), future, throwOnFrame));
+        }
+
+        private boolean writableOrFault() {
+            if (faultOnNextWritableCheck.compareAndSet(true, false)) {
+                throw new IllegalStateException("fault inside the drain pass");
+            }
+
+            return writable.get();
         }
 
         private ChannelFuture record(ByteBuf frame, ChannelFuture future, int throwOnFrame) {
@@ -252,6 +262,28 @@ class QuicLaneBacklogTest {
         assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.WRITE_FAILED)).isEqualTo(1L);
         assertThat(network.quicMetrics().writeFailureCount()).isEqualTo(1L);
         assertThat(network.consensusRetriesInFlight()).isZero();
+    }
+
+    // --- D1: a throw inside a drain pass abandons the backlog instead of leaving it without a drainer ---
+
+    @Test
+    void drain_passThrows_backlogIsAbandoned_framesCountedLost_andNothingStaysInFlight() {
+        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var lane = new Lane(succeeded(), -1);
+
+        holdFrames(network, lane, StreamType.CONSENSUS, 1, 2);
+        assertThat(network.consensusRetriesInFlight()).isEqualTo(2);
+
+        lane.faultOnNextWritableCheck.set(true);
+        lane.writable.set(true);
+
+        awaitWithin("the faulted backlog's entry is removed", AWAIT, () -> network.laneBacklogCountForTests() == 0);
+
+        assertThat(network.consensusRetriesInFlight()).as("both held frames left the pressure count").isZero();
+        assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP))
+            .as("each abandoned frame is counted lost once")
+            .isEqualTo(2L);
+        assertThat(lane.faultOnNextWritableCheck).as("the fault was injected and consumed").isFalse();
     }
 
     // --- item 8: a frame held only behind others on a writable stream is not a backpressured write ---

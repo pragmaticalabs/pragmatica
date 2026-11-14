@@ -40,7 +40,8 @@ import org.pragmatica.lang.Contract;
 ///
 /// A backlog is retired once the last held frame is written or discarded; an [#admit] that finds a retired backlog
 /// reports [Admission#RETIRED] and the caller starts from a fresh one. Not a general queue: one stream, one drainer
-/// (the caller that got [Admission#HELD_FIRST]).
+/// (the caller that got [Admission#HELD_FIRST]); a caller ON the stream's event loop, which writes inline without
+/// admitting, is not a drainer and is excluded from that rule.
 final class LaneBacklog<F> {
     /// What [#admit] did with a frame.
     enum Admission {

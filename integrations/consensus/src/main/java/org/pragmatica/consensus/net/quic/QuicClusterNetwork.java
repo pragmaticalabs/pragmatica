@@ -2855,8 +2855,35 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// [#heldFrameBudgetNanos] or longer, the per-frame budget of the retry this replaced. So a held frame waits at most
     /// one budget (plus one interval), and a stream holds at most the frames sent to it within that time, however slowly
     /// the peer drains: progress on older frames never extends a newer frame's wait, nor the reverse.
+    ///
+    /// A throw out of the pass (a counter, a log call, the stream's own writability check) would leave the backlog with no
+    /// drainer: nothing reschedules it, later frames are held behind it for good and the pressure count never returns to
+    /// zero. Recovery is FER (degrade forward): the backlog is abandoned through [#abandonBacklog], so every held frame
+    /// is counted lost once and leaves the pressure count, and the fault is logged once; the callers were told `Sent`
+    /// and the layer above's retransmit owns the frames, as for any lost frame. The next write starts a fresh backlog.
     @Contract
     private void drainTick(LaneBacklog<HeldFrame> backlog, QuicStreamChannel ch, NodeId peerId) {
+        Result.lift(() -> drainPass(backlog, ch, peerId)).onFailure(cause -> abandonAfterDrainFault(backlog,
+                                                                                                    ch,
+                                                                                                    peerId,
+                                                                                                    cause));
+    }
+
+    @Contract
+    private void abandonAfterDrainFault(LaneBacklog<HeldFrame> backlog,
+                                        QuicStreamChannel ch,
+                                        NodeId peerId,
+                                        Cause fault) {
+        log.warn("Drain pass for peer {} failed — abandoning the backlog, held frames counted lost: {}",
+                 peerId,
+                 fault.message());
+        abandonBacklog(backlog,
+                       ch,
+                       Causes.cause("drain pass to " + peerId + " failed: " + fault.message()));
+    }
+
+    @Contract
+    private void drainPass(LaneBacklog<HeldFrame> backlog, QuicStreamChannel ch, NodeId peerId) {
         if (isPeerRemoved(peerId)) {
             abandonBacklog(backlog, ch, Causes.cause("stream dropped: peer " + peerId + " is REMOVED (terminal)"));
 
