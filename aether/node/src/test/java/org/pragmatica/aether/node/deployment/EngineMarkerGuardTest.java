@@ -13,6 +13,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -351,6 +352,131 @@ class EngineMarkerGuardTest {
 
             assertThat(activations).containsExactly("activate");
         }
+
+        /// Every closed-guard Deactivate/Activate sequence of length 1-4 under one name, a second name parked at every position (or not at all),
+        /// from both FSM start states: the FSM outcome of what runs on open equals the outcome of the sequence applied directly, and the second
+        /// name's action runs exactly once. Red when: `whenOpenAfterParked` stops keeping the parked sequence, or appends in the wrong place.
+        @Test
+        void everyParkedSequenceUpToFour_reachesTheFsmOutcomeOfTheDirectSequence() {
+            var mismatches = new ArrayList<String>();
+            int cases = 0;
+
+            for (var sequence : allSequences(4)) {
+                for (int other = -1; other <= sequence.length(); other++) {
+                    for (var start : List.of(new FsmModel(true, 1), new FsmModel(false, 1))) {
+                        cases++;
+                        parkAndOpen(sequence, other).onPresent(mismatches::add);
+                        var ranOnOpen = activations.stream().filter(s -> !s.equals("E")).collect(Collectors.joining());
+                        var expected = start.run(sequence).verdict(start);
+                        var actual = start.run(ranOnOpen).verdict(start);
+                        long entries = activations.stream().filter("E"::equals).count();
+
+                        if (!expected.equals(actual) || entries != (other >= 0 ? 1 : 0)) {
+                            mismatches.add(sequence + " other@" + other + " start=" + start + " ran=" + activations + " expected=" + expected
+                                           + " actual=" + actual);
+                        }
+                    }
+                }
+            }
+            assertThat(cases).as("cases enumerated").isEqualTo(316);
+            assertThat(mismatches).as("sequences whose parked run differs from the direct run (of %d)", cases).isEmpty();
+        }
+
+        /// Drain order across names is the order each name was first parked, and a re-put under a name keeps that position.
+        @Test
+        void drainOrder_isFirstParkedPosition_andARePutKeepsIt() {
+            var guard = guard(DeploymentEngine.FSM2);
+
+            guard.whenOpen("leader", () -> activations.add("D1"));
+            guard.whenOpen("entry", () -> activations.add("E1"));
+            guard.whenOpenAfterParked("leader", () -> activations.add("A1"));
+            guard.whenOpen("heal", () -> activations.add("H1"));
+            guard.whenOpen("entry", () -> activations.add("E2"));
+            marker = Option.some(FSM2_MARKER);
+            incarnation = true;
+            guard.evaluate();
+
+            assertThat(activations).containsExactly("D1", "A1", "E2", "H1");
+        }
+
+        /// Parks the sequence under "leader" with the "entry" action at position `other` (-1: none), then opens the gate; `activations` is cleared first.
+        private Option<String> parkAndOpen(String sequence, int other) {
+            var guard = guard(DeploymentEngine.FSM2);
+
+            marker = Option.none();
+            incarnation = false;
+            activations.clear();
+            guard.evaluate();
+            for (int i = 0; i < sequence.length(); i++) {
+                parkEntryAt(guard, i, other);
+                parkLeaderAction(guard, sequence.charAt(i));
+            }
+            parkEntryAt(guard, sequence.length(), other);
+            marker = Option.some(FSM2_MARKER);
+            incarnation = true;
+            guard.evaluate();
+
+            return guard.isOpen() ? Option.none() : Option.some("did not open: " + sequence);
+        }
+
+        private void parkEntryAt(EngineMarkerGuard guard, int position, int other) {
+            if (position == other) {
+                guard.whenOpen("entry", () -> activations.add("E"));
+            }
+        }
+
+        /// Mirrors Fsm2System.onLeaderChange: Activate parks with whenOpenAfterParked, Deactivate with whenOpen.
+        private void parkLeaderAction(EngineMarkerGuard guard, char input) {
+            if (input == 'A') {
+                guard.whenOpenAfterParked("leader", () -> activations.add("A"));
+            } else {
+                guard.whenOpen("leader", () -> activations.add("D"));
+            }
+        }
+
+        private List<String> allSequences(int maxLength) {
+            var all = new ArrayList<String>();
+            var frontier = List.of("");
+
+            for (int length = 1; length <= maxLength; length++) {
+                var next = new ArrayList<String>();
+
+                for (var sequence : frontier) {
+                    next.add(sequence + "D");
+                    next.add(sequence + "A");
+                }
+                all.addAll(next);
+                frontier = next;
+            }
+            return all;
+        }
+    }
+
+    /// The ClusterFsm activation rule (whileDormant / whileActive / whileRebuilding): Dormant + Activate mints a new incarnation; Dormant +
+    /// Deactivate is dropped; Active + Deactivate goes Dormant; Active + Activate is ignored. Rebuilding behaves as Active for both.
+    private record FsmModel(boolean active, int incarnation) {
+        FsmModel step(char input) {
+            if (input == 'D') {
+                return new FsmModel(false, incarnation);
+            }
+
+            return active ? this : new FsmModel(true, incarnation + 1);
+        }
+
+        FsmModel run(String inputs) {
+            var fsm = this;
+
+            for (var input : inputs.toCharArray()) {
+                fsm = fsm.step(input);
+            }
+            return fsm;
+        }
+
+        /// Observable class: final activity, and whether the incarnation moved at all (a Dormant FSM's next Activate always mints
+        /// last + 1, so the number is observable only while Active).
+        String verdict(FsmModel start) {
+            return active ? "Active/" + (incarnation > start.incarnation ? "reincarnated" : "same") : "Dormant";
+        }
     }
 
     @Nested
@@ -487,6 +613,51 @@ class EngineMarkerGuardTest {
             }
             assertThat(aWon).as("the interleaving was reached").isGreaterThan(0);
             assertThat(inversions).as("older parked activation ran after a newer admitted one, in %d runs that reached the interleaving", aWon).isZero();
+        }
+
+        /// The window between `takeDrained` and the recursive decision: a drained action closes the gate and re-entrantly parks a Deactivate
+        /// under the name before the recursive decision for a `whenOpenAfterParked` Activate. The Activate must be appended behind the parked
+        /// Deactivate (#3253 inside the window). Red when: the recursive `runAdmitted` is called with `keepParked=false` (the Deactivate is
+        /// erased, so a drained FSM that is Active again sees only the ignored Activate).
+        @Test
+        @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+        void m5Window_reentrantParkBeforeTheRecursiveDecision_keepsTheDeactivateAhead() throws Exception {
+            var marker = new AtomicReference<>(Option.some(FSM2_MARKER));
+            var guard = sharedMarkerGuard(marker);
+            var order = Collections.synchronizedList(new ArrayList<String>());
+            var openers = new CopyOnWriteArrayList<Thread>();
+
+            guard.evaluate();
+            guard.whenOpen("hold", () -> {
+                close(guard, marker);
+                guard.whenOpen("leader", () -> order.add("D_old"));
+                guard.whenOpenAfterParked("leader", () -> {
+                    order.add("A_mid");
+                    close(guard, marker);
+                    guard.whenOpen("leader", () -> order.add("D2"));
+                });
+                marker.set(Option.some(FSM2_MARKER));
+                openers.add(Thread.ofPlatform().start(guard::evaluate));
+                awaitOpen(guard);
+                guard.whenOpenAfterParked("leader", () -> order.add("A_new"));
+            });
+            assertThat(guard.isOpen()).as("the gate is closed again after the drained work").isFalse();
+            marker.set(Option.some(FSM2_MARKER));
+            guard.evaluate();
+            for (var opener : openers) {
+                opener.join(10_000);
+            }
+
+            assertThat(order).as("the window was reached: D_old and A_mid ran from the drain, then D2 was parked re-entrantly")
+                             .startsWith("D_old", "A_mid");
+            assertThat(order).as("A_mid made the FSM Active again, so D2 then A_new must re-incarnate it once more")
+                             .containsExactly("D_old", "A_mid", "D2", "A_new");
+        }
+
+        private void close(EngineMarkerGuard guard, AtomicReference<Option<DeploymentEngineValue>> marker) {
+            marker.set(Option.some(LEGACY_MARKER));
+            guard.evaluate();
+            assertThat(guard.isOpen()).as("the gate closed").isFalse();
         }
 
         /// Closes the gate, parks `action` under `name`, and reopens it from a new thread, returning once that thread's decision has drained it.
