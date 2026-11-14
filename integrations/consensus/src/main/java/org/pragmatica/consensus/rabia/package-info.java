@@ -5,7 +5,8 @@
 ///
 /// The TLA+ models `RabiaSlot` (slot sequence, #3164), `RabiaEpoch` (in-log reconfiguration) and `RabiaAdopt` (recovery and state
 /// adoption) live in doc-comment fragments: this skeleton carries each model's constants, variables, helpers, `Init`, `Next`,
-/// fairness, properties and configs; each action sits on the method that implements it ([RabiaEngine], [PhaseData]).
+/// fairness, properties, configs and the environment moves (crash, restart, forged or equivocal messages, jumps that
+/// are not code); each code action sits on the method that implements it ([RabiaEngine], [PhaseData]).
 /// `tools/tla/check.sh <Module> <variant> integrations/consensus/src/main/java` extracts and checks one config;
 /// `tools/tla/run.sh` runs every config with its expected verdict (`tools/tla/models.tsv`). Results are bounds, not
 /// proofs: a passing config says no violation exists within its constants.
@@ -361,8 +362,7 @@
 /// ```tla RabiaEpoch:tail
 /// \* Environment move (not code; moved out of the code region it used to sit on).
 /// \* "crashstop" removed: a trusted peer relays a Decision nobody decided, tagged with the receiver's epoch.
-/// \* Not code: an environment move enabled only when the crashstop assumption is removed (a fabricated
-/// \* Decision).
+/// \* An environment move enabled only when the crashstop assumption is removed (a fabricated Decision).
 /// Forge(q) ==
 ///     /\ ~Has("crashstop")
 ///     /\ forged < MaxForge
