@@ -41,7 +41,7 @@ cleanup() {
     kill -9 "$APP_PID" 2>/dev/null || true
   fi
   docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
-  if [ "${KEEP_WORK:-0}" != 1 ]; then rm -rf "$WORK"; else echo "work dir kept: $WORK"; fi
+  if [ "${KEEP_WORK:-0}" != 1 ]; then rm -rf "$WORK" || true; else echo "work dir kept: $WORK"; fi
 }
 trap cleanup EXIT
 
@@ -119,7 +119,7 @@ failed_files=""
 for f in "$SUITE"/*.hurl; do
   name="$(basename "$f" .hurl)"
   set +e
-  docker run --rm --network host -v "$SUITE:/suite:ro" -v "$WORK/report:/report" "$HURL_IMAGE" \
+  docker run --rm --network host --user "$(id -u):$(id -g)" -v "$SUITE:/suite:ro" -v "$WORK/report:/report" "$HURL_IMAGE" \
     --test --jobs 1 --report-json "/report/$name" \
     --variable "host=http://127.0.0.1:$APP_PORT" --variable "uid=$UID_VAL" "/suite/$name.hurl" >"$WORK/report/$name.out" 2>&1
   rc=$?
