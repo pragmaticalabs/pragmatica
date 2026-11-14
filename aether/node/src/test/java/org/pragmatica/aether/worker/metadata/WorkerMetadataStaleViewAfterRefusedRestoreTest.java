@@ -141,16 +141,22 @@ class WorkerMetadataStaleViewAfterRefusedRestoreTest {
             assertThat(engine.isObserving()).as("refused: not serving").isFalse();
             assertThat(servingGate(engine)).as("the production gate keeps the worker out while refused").isFalse();
 
-            // phase C: quorum loss, Decisions are applied while paused (applying does not resume the engine), then the quorum
-            // ACTIVE resumes the paused observer to Observing, the legitimate way back
+            // phase C: quorum loss while the activation is still refused (the engine was paused from Syncing), Decisions are
+            // applied while paused (applying does not resume the engine). The quorum ACTIVE resumes it into a fresh sync round,
+            // not into Observing (#3211); once the participation record is writable again that round adopts and activates.
             engine.clusterState(ClusterStateNotification.passive());
             assertThat(await(engine::isPaused)).isTrue();
             for (long p = 9; p <= 13; p++) {
                 engine.processDecision(new Decision<KVCommand<AetherKey>>(NODE_2, Phase.phase(p), StateValue.V0, Batch.<KVCommand<AetherKey>>emptyBatch()));
             }
             assertThat(engine.isPaused()).as("PRECONDITION: applying Decisions does not resume the paused engine").isTrue();
+            marker.refuse.set(false);
+            var syncRequestsBefore = network.syncRequests();
             engine.clusterState(ClusterStateNotification.active());
-            assertThat(await(engine::isObserving)).as("PRECONDITION: the quorum ACTIVE resumed the observer to Observing").isTrue();
+            assertThat(await(() -> network.syncRequests() > syncRequestsBefore)).as("PRECONDITION: the quorum ACTIVE resumed into a fresh sync round").isTrue();
+            assertThat(engine.isObserving()).as("PRECONDITION: resumed into synchronisation, not Observing").isFalse();
+            deliver(engine, source("restored", 13), 13);
+            assertThat(await(engine::isObserving)).as("PRECONDITION: the sync round activated the observer").isTrue();
             assertThat(servingGate(engine)).as("PRECONDITION: the production gate is open for a non-voter observer").isTrue();
 
             // phase D: the worker polls the serving observer. On a correct engine the second restore has been announced by
@@ -220,6 +226,7 @@ class WorkerMetadataStaleViewAfterRefusedRestoreTest {
 
     static final class Net implements ClusterNetwork {
         final List<ProtocolMessage> messages = new CopyOnWriteArrayList<>();
+        long syncRequests() { return messages.stream().filter(RabiaProtocolMessage.Asynchronous.SyncRequest.class::isInstance).count(); }
         boolean sawSyncRequest() { return messages.stream().anyMatch(RabiaProtocolMessage.Asynchronous.SyncRequest.class::isInstance); }
         public <M extends ProtocolMessage> Unit broadcast(M m) { messages.add(m); return Unit.unit(); }
         public void connect(NetworkServiceMessage.ConnectNode c) {}

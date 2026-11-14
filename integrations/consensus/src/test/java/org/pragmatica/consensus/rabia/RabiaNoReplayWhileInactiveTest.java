@@ -164,8 +164,8 @@ class RabiaNoReplayWhileInactiveTest {
     }
 
     /// The lost-notification case: activation is refused (the participation record cannot be written), the restore is
-    /// installed silently, quorum is lost and returns, and the node resumes straight to serving with NO second restore.
-    /// The deferred announce must run on that resume, once, with the hooks.
+    /// installed silently, quorum is lost and returns, and the node resumes into a fresh sync round (#3211). The deferred
+    /// announce must run on the activation that round completes, once, with the hooks.
     @Test
     void restoreWhileRefused_thenPauseAndResume_announcesOnceOnTheResume() {
         var marker = new GateMarker();
@@ -184,10 +184,13 @@ class RabiaNoReplayWhileInactiveTest {
         marker.allow.set(true);
         engine.clusterState(ClusterStateNotification.active());
 
-        assertThat(awaitCondition(engine::isActive)).as("the resume leaves Paused for a serving state").isTrue();
-        assertThat(awaitCondition(() -> machine.replays.get() >= 1 && hooks.get() >= 1)).as("the deferred announce ran on the resume").isTrue();
+        assertThat(engine.isActive()).as("#3211: the resume enters a fresh sync round, not a serving state").isFalse();
+        assertThat(effectsWithin(machine, hooks)).as("nothing is announced before the fresh round activates").isFalse();
+        engine.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
+
+        assertThat(awaitCondition(engine::isActive)).as("the fresh round leaves Syncing for a serving state").isTrue();
+        assertThat(awaitCondition(() -> machine.replays.get() >= 1 && hooks.get() >= 1)).as("the deferred announce ran on the activation").isTrue();
         assertThat(awaitCondition(() -> machine.replays.get() > 1 || hooks.get() > 1, SETTLE_MILLIS)).as("and only once").isFalse();
-        assertThat(machine.restores.get()).as("the resume did not restore again").isEqualTo(1);
 
         engine.clusterState(ClusterStateNotification.passive());
         assertThat(awaitCondition(engine::isPaused)).isTrue();
@@ -212,6 +215,7 @@ class RabiaNoReplayWhileInactiveTest {
         assertThat(awaitCondition(engine::isPaused)).isTrue();
         marker.allow.set(true);
         engine.clusterState(ClusterStateNotification.active());
+        engine.processSyncResponse(cold(PEER_PHASE, new byte[0]));
 
         assertThat(awaitCondition(() -> machine.replays.get() == 1 && hooks.get() == 1)).isTrue();
     }
@@ -233,9 +237,10 @@ class RabiaNoReplayWhileInactiveTest {
         assertThat(awaitCondition(engine::isPaused)).isTrue();
         marker.allow.set(true);
         engine.clusterState(ClusterStateNotification.active());
+        engine.processSyncResponse(cold(Phase.phase(12), PEER_SNAPSHOT));
 
         assertThat(awaitCondition(() -> machine.replays.get() >= 1 && hooks.get() >= 1)).isTrue();
-        assertThat(awaitCondition(() -> machine.replays.get() > 1 || hooks.get() > 1, SETTLE_MILLIS)).as("one announce for two restores").isFalse();
+        assertThat(awaitCondition(() -> machine.replays.get() > 1 || hooks.get() > 1, SETTLE_MILLIS)).as("one announce for the restores").isFalse();
     }
 
     /// A stopped engine is not serving: with the participation record writable again, nothing announces, because no
@@ -277,6 +282,7 @@ class RabiaNoReplayWhileInactiveTest {
         assertThat(awaitCondition(engine::isPaused)).isTrue();
         marker.allow.set(true);
         engine.clusterState(ClusterStateNotification.active());
+        engine.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
 
         assertThat(awaitCondition(() -> view.invalidations.get() == 1)).as("invalidated by the deferred announce").isTrue();
         assertThat(view.initialized).as("the next capture rebuilds it from the restored store").isFalse();
@@ -298,7 +304,8 @@ class RabiaNoReplayWhileInactiveTest {
     }
 
     /// A refused OBSERVER applies a Decision while Paused: applying does not resume it (`advancePhaseAsObserver` keeps `Paused`), so nothing
-    /// is announced yet. The quorum ACTIVE resumes it to `Observing`, which is the transition into a serving state that must announce, once.
+    /// is announced yet. The quorum ACTIVE resumes it into a fresh sync round (#3211); the activation that round completes is the
+    /// transition into `Observing`, which must announce, once.
     @Test
     void refusedObserver_pausedThenDecisionApplied_announcesOnceOnResumingToObserving() {
         var marker = new GateMarker();
@@ -320,9 +327,14 @@ class RabiaNoReplayWhileInactiveTest {
         assertThat(awaitCondition(() -> engine.currentPhaseForTesting().compareTo(before) > 0)).as("precondition: the decision was applied").isTrue();
         assertThat(engine.isPaused()).as("applying the decision does not resume the paused observer").isTrue();
         assertThat(effectsWithin(machine, hooks)).as("still paused: nothing announced").isFalse();
+        marker.allow.set(true);
         engine.clusterState(ClusterStateNotification.active());
 
-        assertThat(awaitCondition(engine::isObserving)).as("the quorum ACTIVE resumes the observer").isTrue();
+        assertThat(engine.isObserving()).as("#3211: the quorum ACTIVE resumes the observer into a fresh sync round, not Observing").isFalse();
+        engine.processSyncResponse(cold(PEER_PHASE, PEER_SNAPSHOT));
+        engine.processSyncResponse(new SyncResponse<>(NODE_3, SavedState.savedState(PEER_SNAPSHOT, PEER_PHASE, List.of()), ResponderState.COLD));
+
+        assertThat(awaitCondition(engine::isObserving)).as("the fresh round activates the observer").isTrue();
         assertThat(awaitCondition(() -> machine.replays.get() >= 1 && hooks.get() >= 1)).as("reaching Observing announced the restore").isTrue();
         assertThat(awaitCondition(() -> machine.replays.get() > 1 || hooks.get() > 1, SETTLE_MILLIS)).as("once").isFalse();
     }
