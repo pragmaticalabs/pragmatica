@@ -29,3 +29,16 @@ Stalled	aether/aether-stream/src/main/java	settled	pass	-	-	#3155 narrowed: sett
 Stalled	aether/aether-stream/src/main/java	settledweak	fail	SettledIsBacked	-	a pass that does not re-derive the stream, replica and counter leaves an unbacked report settled
 Stalled	aether/aether-stream/src/main/java	early	pass	-	-	#3156 fixed: the stall counter is dropped on destroy
 Stalled	aether/aether-stream/src/main/java	earlynoreset	fail	NoEarlyRaise	-	#3156 negative control: without the reset the counter survives destroy and recreate
+DHTDepartureDrain	integrations/dht/src/main/java	code	pass	-	N=4,RF=2,MaxDrain=1	the code: no last-copy loss, targets outside the drain set, receiver agrees with pusher (#3049)
+DHTDepartureDrain	integrations/dht/src/main/java	live	pass	-	N=3,RF=2	the code: every drainer's push resolves and halts
+DHTDepartureDrain	integrations/dht/src/main/java	emptyset	fail	NoLastCopyLoss	N=4,RF=3	no leader drain set (the empty-set arm of DHTDepartureStaleDrainSetTest)
+DHTDepartureDrain	integrations/dht/src/main/java	noexhaust	fail	NoLastCopyLoss	N=4,RF=3	#1818: no whole-set fallback when the exclusion exhausts the ring
+DHTDepartureDrain	integrations/dht/src/main/java	noselfcheck	fail	NoLastCopyLoss	N=4,RF=3	no fallback when self is not in the key's current set (a stray copy)
+DHTDepartureDrain	integrations/dht/src/main/java	nofallback	fail	NoLastCopyLoss	N=4,RF=3	delta-only targets: stale entries counted as holders leave no target
+DHTDepartureDrain	integrations/dht/src/main/java	abandon	fail	NoLastCopyLoss	N=4,RF=3	a drainer halts with pages unacknowledged (legacy deadline budget)
+DHTDepartureDrain	integrations/dht/src/main/java	wavesset	fail	TargetsOutsideDrainSet	N=4,RF=3	drain commands arriving in waves: a target inside the final drain set
+DHTDepartureDrain	integrations/dht/src/main/java	nocodrain	fail	NoLastCopyLoss	N=4,RF=2	#1818: the push does not exclude known co-drainers
+DHTDepartureDrain	integrations/dht/src/main/java	noview	fail	ReceiverAgrees	N=4,RF=2	#1818 L1: receiver judges placement without the pusher's leaving set
+DHTDepartureDrain	integrations/dht/src/main/java	waves	fail	NoLastCopyLoss	N=4,RF=2	drain commands in waves: a page lands on a co-drainer after its plan
+DHTDepartureDrain	integrations/dht/src/main/java	nopruned	pass	-	N=4,RF=2,MaxDrain=1	#2684 F3 dropped: no violation within this bound (the protection is not exercised here)
+DHTDepartureDrain	integrations/dht/src/main/java	wideaccept	pass	-	N=4,RF=2,MaxDrain=1	accept guard dropped: no violation within this bound (the guard is not exercised here)

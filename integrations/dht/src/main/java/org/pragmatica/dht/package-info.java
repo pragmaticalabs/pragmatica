@@ -30,6 +30,19 @@
 /// its ack are one step (the receiver judges the page against its state at receipt, the pusher's carried leaving set and view
 /// are its state at that step).
 ///
+/// Bounds, with the rest of the run record (TLC, 2026-11-14, `code` config unless named; "distinct" = distinct states):
+/// - Exhaustive, TLC reported completion with an empty queue and no violation: N=3 RF=2 MaxDrain=2 MaxStale=1 (132,546 distinct,
+///   `live` too); N=4 RF=2 MaxDrain=1 MaxStale=1 (5,464,960); N=4 RF=2 MaxDrain=2 MaxStale=0 (863,800); N=4 RF=3 MaxDrain=1
+///   MaxStale=1 (6,230,502). `nopruned` and `wideaccept` also complete without violation at N=4 RF=2 MaxDrain=1 (5,543,296 and 5,605,376).
+/// - Not proven, stopped after 25 minutes with the queue non-empty and no violation seen: N=4 RF=2 MaxDrain=2 MaxStale=1 (92,952,889
+///   distinct, 10,883,308 queued); N=4 RF=3 MaxDrain=2 MaxStale=1 (104,545,313; 25,390,445 queued); N=5 RF=3 MaxDrain=2 MaxStale=1
+///   (135,641,865; 80,645,238 queued). The constants written in the `common` config are the last of these.
+/// - The exhaustive bounds have at most one co-drainer or no stale entry: two co-drainers together with a stale entry on a
+///   4-node ring is the unproven corner. Every config that drops a protection or switches on `Waves` or `Deadline` is red
+///   at its `models.tsv` bound; `nopruned` and `wideaccept` are not red at any bound searched, so the model does not
+///   show that those two protections are needed. A liveness twin of `noview` (DrainCompletes without the `view` fix) was
+///   not red at N=3 RF=2 or N=4 RF=2 MaxDrain=1 (6,607,744 distinct, complete) and was removed: the safety config `noview` is the red one.
+///
 /// ```tla DHTDepartureDrain:head
 /// EXTENDS Naturals, FiniteSets, Sequences
 ///
@@ -38,7 +51,9 @@
 /// \* which stale entries the drain set carries and which nodes hold the key (any non-empty set: under-replicated, strays).
 /// \* RF is DHTConfig.replicationFactor; the effective factor is min(RF, ring size) on the node that computes it.
 /// \* MaxDrain bounds the co-drainers, MaxStale the stale drain-set entries (named by the leader, never draining; one may
-/// \* flap: enter DEPARTING on an observer and recover).
+/// \* flap: enter DEPARTING on an observer and recover). At least one node is in neither set: draining every node is a
+/// \* cluster shutdown with no survivor to hold the key, not a departure (N=3 RF=2 with a 3-node drain set reported a loss
+/// \* for exactly that reason).
 /// \* Waves: drain commands arrive in separate leader pings, so a drainer may plan before a later co-drainer is named.
 /// \* FALSE models the drain DhtDeparturePush documents: every co-drainer is named in the ping that commands the first.
 /// \* Deadline: a drainer may halt with pages unacknowledged (the grace fork, a window used up: the #3049 legacy budget).
@@ -137,7 +152,7 @@
 ///
 /// Init ==
 ///     /\ drainers \in {D \in SUBSET Nodes : Cardinality(D) \in 1..MaxDrain}
-///     /\ stale \in {S \in SUBSET (Nodes \ drainers) : Cardinality(S) <= MaxStale}
+///     /\ stale \in {S \in SUBSET (Nodes \ drainers) : Cardinality(S) <= MaxStale /\ Cardinality(drainers \cup S) < N}
 ///     /\ drainSet = IF ~Fix("drainset") THEN {} ELSE IF Waves THEN stale ELSE drainers \cup stale
 ///     /\ known = [n \in Nodes |-> {}]
 ///     /\ pruned = [n \in Nodes |-> {}]
@@ -251,13 +266,6 @@
 ///           Deadline = FALSE
 ///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "accept"}
 /// INVARIANT ReceiverAgrees
-/// ```
-///
-/// ```tlacfg DHTDepartureDrain:noviewlive
-/// CONSTANTS Waves = FALSE
-///           Deadline = FALSE
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "accept"}
-/// PROPERTY DrainCompletes
 /// ```
 ///
 /// ```tlacfg DHTDepartureDrain:nopruned
