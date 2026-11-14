@@ -26,7 +26,9 @@ import org.pragmatica.lang.utils.Causes;
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-EX-01"})
 public interface BlueprintArtifactParser {
     Cause MISSING_BLUEPRINT_TOML = Causes.cause("Blueprint artifact missing META-INF/blueprint.toml");
+
     Fn1<Cause, String> RESERVED_AT_IN_SCHEMA_PATH = Causes.forOneValue("Schema path '%s' contains '@', which is reserved for derived datasource keys");
+
     Fn1<Cause, String> PARSE_ERROR = Causes.forOneValue("Failed to parse blueprint artifact: %s");
     /// Spec event-stream-namespaces §11: stream alias is the part after `streams.` in the
     /// `[streams.X]` section header — slice manifests record the full `configSection` (e.g.
@@ -71,7 +73,8 @@ public interface BlueprintArtifactParser {
         }
 
         if (!refusals.isEmpty()) {
-            return refusals.getFirst().result();
+            return refusals.getFirst()
+                           .result();
         }
 
         var resourcesConfig = Option.option(resourcesToml);
@@ -195,9 +198,7 @@ public interface BlueprintArtifactParser {
 
         var sql = readEntry(zis);
 
-        migrations.computeIfAbsent(datasource,
-                                   _ -> new ArrayList<>())
-                  .add(MigrationEntry.migrationEntry(filename, sql));
+        migrations.computeIfAbsent(datasource, _ -> new ArrayList<>()).add(MigrationEntry.migrationEntry(filename, sql));
 
         return Option.none();
     }

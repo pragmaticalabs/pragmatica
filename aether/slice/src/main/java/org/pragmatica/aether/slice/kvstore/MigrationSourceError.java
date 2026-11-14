@@ -13,7 +13,6 @@ public sealed interface MigrationSourceError extends Cause {
     /// The string is null or blank: the record names no source.
     enum Absent implements MigrationSourceError {
         ABSENT;
-
         @Override
         public String message() {
             return "Migration source is absent";
@@ -22,7 +21,8 @@ public sealed interface MigrationSourceError extends Cause {
 
     /// The string is neither artifact coordinates nor `set:<id>@<version>`. `raw` is kept so a sink can still print it.
     record Malformed(String raw, String message) implements MigrationSourceError {
-        static final Fn1<Malformed, String> FACTORY = Causes.forOneValue("Malformed migration source '%s'", Malformed::new);
+        static final Fn1<Malformed, String> FACTORY = Causes.forOneValue("Malformed migration source '%s'",
+                                                                         Malformed::new);
 
         public static Malformed malformed(String raw) {
             return FACTORY.apply(raw);

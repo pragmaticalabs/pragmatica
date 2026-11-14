@@ -70,7 +70,9 @@ public sealed interface MigrationSource {
     }
 
     private static String rawOfMalformed(Cause cause, String raw) {
-        return cause instanceof MigrationSourceError.Malformed ? raw : "";
+        return cause instanceof MigrationSourceError.Malformed
+               ? raw
+               : "";
     }
 
     private static Result<MigrationSource> parseNonBlank(String raw) {
@@ -95,7 +97,8 @@ public sealed interface MigrationSource {
         return at < 0
                ? MigrationSourceError.Malformed.malformed(body).result()
                : Number.parseInt(body.substring(at + 1))
-                       .flatMap(version -> FromSet.fromSet(body.substring(0, at), version))
+                       .flatMap(version -> FromSet.fromSet(body.substring(0, at),
+                                                           version))
                        .map(MigrationSource.class::cast);
     }
 }
