@@ -1344,8 +1344,16 @@ public final class OwnerActivation {
                                         int partition,
                                         PartitionKey key,
                                         Option<StreamPartitionOwnershipValue> record) {
-        return moveFence.flatMap(fence -> record.map(committed -> fenced(stream, partition, key, fence, committed)))
+        return moveFence.flatMap(fence -> fencedRecord(stream, partition, key, fence, record))
                         .or(() -> catchUpToLiveHolders(stream, partition));
+    }
+
+    private Option<Promise<Unit>> fencedRecord(String stream,
+                                               int partition,
+                                               PartitionKey key,
+                                               MoveFence fence,
+                                               Option<StreamPartitionOwnershipValue> record) {
+        return record.map(committed -> fenced(stream, partition, key, fence, committed));
     }
 
     private Promise<Unit> fenced(String stream,
@@ -1396,15 +1404,26 @@ public final class OwnerActivation {
                                  committed.ownershipTerm())
                           .map(Option::some);
 
-        return Promise.any(List.of(answer, afterDeadline(left).map(_ -> Option.<Long> none()))).flatMap(answered -> answered.fold(() -> catchUpWith(stream,
-                                                                                                                                                    partition,
-                                                                                                                                                    others),
-                                                                                                                                  watermark -> withTargetAnswer(stream,
-                                                                                                                                                                partition,
-                                                                                                                                                                others,
-                                                                                                                                                                firstRound,
-                                                                                                                                                                new PeerWatermark(target,
-                                                                                                                                                                                  watermark))));
+        return Promise.any(List.of(answer, afterDeadline(left).map(_ -> Option.<Long> none()))).flatMap(answered -> afterRace(stream,
+                                                                                                                              partition,
+                                                                                                                              others,
+                                                                                                                              firstRound,
+                                                                                                                              target,
+                                                                                                                              answered));
+    }
+
+    private Promise<Unit> afterRace(String stream,
+                                    int partition,
+                                    List<NodeId> others,
+                                    Promise<List<Result<PeerWatermark>>> firstRound,
+                                    NodeId target,
+                                    Option<Long> answered) {
+        return answered.fold(() -> catchUpWith(stream, partition, others),
+                             watermark -> withTargetAnswer(stream,
+                                                           partition,
+                                                           others,
+                                                           firstRound,
+                                                           new PeerWatermark(target, watermark)));
     }
 
     private Promise<Unit> withTargetAnswer(String stream,

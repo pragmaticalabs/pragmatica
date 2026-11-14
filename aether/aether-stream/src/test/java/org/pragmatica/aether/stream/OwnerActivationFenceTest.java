@@ -116,7 +116,7 @@ class OwnerActivationFenceTest {
     }
 
     private Promise<Long> fenceProbe(NodeId target, String stream, int partition, Epoch ownerEpoch, long ownershipTerm) {
-        fenceProbes.add(target.id() + "@" + ownerEpoch.counter() + "/" + ownershipTerm);
+        fenceProbes.add(target.id() + "@" + ownerEpoch.localCounter() + "/" + ownershipTerm);
 
         return answerOfL.get();
     }
@@ -151,7 +151,7 @@ class OwnerActivationFenceTest {
 
         assertThat(gate.activate(STREAM, PARTITION).await(AWAIT).isSuccess()).isTrue();
 
-        assertThat(fenceProbes).containsExactly("node-2@" + epoch(TERM).counter() + "/" + TERM);
+        assertThat(fenceProbes).containsExactly("node-2@" + epoch(TERM).localCounter() + "/" + TERM);
         assertThat(probed).as("the others are probed once, in the same fan-out").containsExactly(X);
         assertThat(confirmed).as("L's answer is used beside the others'").containsExactlyInAnyOrder(X, L);
         assertThat(gate.isActivated(STREAM, PARTITION)).isTrue();
