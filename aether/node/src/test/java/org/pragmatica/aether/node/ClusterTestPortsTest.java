@@ -133,7 +133,45 @@ class ClusterTestPortsTest {
 
             assertThat(got).as("a port with cluster UDP held must not be issued").isNotEqualTo(taken);
         }
-        assertThat(ClusterTestPorts.freeClusterPort(offering(taken))).as("control: the same port, released").isEqualTo(taken);
+        assertAcceptedUnlessTakenMeanwhile(ClusterTestPorts.freeClusterPort(offering(taken)), taken, ClusterTestPorts.isFreeClusterPort(taken), "control: the same port, released");
+    }
+
+    /// #3188: the released-port control cannot promise the SAME port back. The lock held since [#occupiableClusterCandidate] keeps every
+    /// cooperating allocator out, but a process that binds an explicit window port without the lock (another module under `-T 1C`) can take the
+    /// released port between the release and the re-probe, and the allocator then correctly issues another one. This forces that contender into
+    /// the window deterministically: the control must hold, and the allocator must have skipped the port because it is taken.
+    @Test
+    void releasedPortControl_holdsWhenAThirdPartyTakesThePortInTheWindow() throws IOException {
+        var taken = occupiableClusterCandidate(true);
+
+        try (var contender = new DatagramSocket(new InetSocketAddress(taken))) {
+            var got = ClusterTestPorts.freeClusterPort(offering(taken));
+
+            assertThat(got).as("the contender holds " + taken + ", so it must not be issued").isNotEqualTo(taken);
+            assertAcceptedUnlessTakenMeanwhile(got, taken, ClusterTestPorts.isFreeClusterPort(taken), "control: the same port, released");
+        }
+    }
+
+    /// The control still bites: a port reported free that the allocator refused fails it, so it cannot pass vacuously.
+    @Test
+    void releasedPortControl_failsWhenAFreePortWasRefused() {
+        var taken = occupiableClusterCandidate(true);
+
+        assertThatThrownBy(() -> assertAcceptedUnlessTakenMeanwhile(taken + 1, taken, true, "refused"))
+            .isInstanceOf(AssertionError.class);
+    }
+
+    /// #3188: "released, so accepted again" holds unless another process took the port after the release. Either the allocator returned the
+    /// port, or the port is observably taken by now; a free port that was refused is a real defect and still fails. The residual: a contender
+    /// that binds and releases the port inside the allocator's probe leaves a free port refused. No retry hides that.
+    private static void assertAcceptedUnlessTakenMeanwhile(int got, int taken, boolean stillFree, String label) {
+        if (got != taken) {
+            assertThat(stillFree).as(label + ": " + taken + " was refused although it is free").isFalse();
+        }
+    }
+
+    private static boolean isFreeOnBothProtocols(int port) {
+        return ClusterTestPorts.udpFree(port) && ClusterTestPorts.tcpFree(port);
     }
 
     @Test
@@ -143,7 +181,7 @@ class ClusterTestPortsTest {
         try (var held = new DatagramSocket(new InetSocketAddress(taken + SWIM))) {
             assertThat(ClusterTestPorts.freeClusterPort(offering(taken))).as("SWIM UDP held").isNotEqualTo(taken);
         }
-        assertThat(ClusterTestPorts.freeClusterPort(offering(taken))).as("control: SWIM released").isEqualTo(taken);
+        assertAcceptedUnlessTakenMeanwhile(ClusterTestPorts.freeClusterPort(offering(taken)), taken, ClusterTestPorts.isFreeClusterPort(taken), "control: SWIM released");
     }
 
     /// The both-protocol helper must skip a candidate whose TCP side is taken, and one whose UDP side is taken.
@@ -155,7 +193,7 @@ class ClusterTestPortsTest {
             held.bind(new InetSocketAddress(taken));
             assertThat(ClusterTestPorts.freeTcpAndUdpPort(offering(taken))).as("TCP held").isNotEqualTo(taken);
         }
-        assertThat(ClusterTestPorts.freeTcpAndUdpPort(offering(taken))).as("control: TCP released").isEqualTo(taken);
+        assertAcceptedUnlessTakenMeanwhile(ClusterTestPorts.freeTcpAndUdpPort(offering(taken)), taken, isFreeOnBothProtocols(taken), "control: TCP released");
     }
 
     @Test
@@ -165,7 +203,7 @@ class ClusterTestPortsTest {
         try (var held = new DatagramSocket(new InetSocketAddress(taken))) {
             assertThat(ClusterTestPorts.freeTcpAndUdpPort(offering(taken))).as("UDP held").isNotEqualTo(taken);
         }
-        assertThat(ClusterTestPorts.freeTcpAndUdpPort(offering(taken))).as("control: UDP released").isEqualTo(taken);
+        assertAcceptedUnlessTakenMeanwhile(ClusterTestPorts.freeTcpAndUdpPort(offering(taken)), taken, isFreeOnBothProtocols(taken), "control: UDP released");
     }
 
     /// #2731 proof (cooperating allocators in two JVMs): a child JVM allocates ports and holds them WITHOUT binding, i.e.
