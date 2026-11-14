@@ -38,6 +38,7 @@ RabiaSlot	integrations/consensus/src/main/java	nomarkerfirst	fail	VotedImpliesMa
 RabiaSlot	integrations/consensus/src/main/java	noemptyprop	fail	Live	-	D8: a voter with an empty queue stays silent and the slot never reaches a proposal quorum
 RabiaEpoch	integrations/consensus/src/main/java	code	pass	-	-	in-order commit (prefix) abstraction, not the code: one reconfiguration, 4 nodes, 2 slots (the code-shaped Jump is codesync_*)
 RabiaEpoch	integrations/consensus/src/main/java	live	pass	-	-	the code: progress under a reconfiguration
+RabiaEpoch	integrations/consensus/src/main/java	codesync_live	pass	-	-	the code without prefix, LIVE and COLD responses: progress under a reconfiguration
 RabiaEpoch	integrations/consensus/src/main/java	noexactepoch	pass	-	-	D6 exact-epoch counting dropped, in-order commit: stays green (redundant on the in-log path)
 RabiaEpoch	integrations/consensus/src/main/java	norelayepoch	pass	-	-	D2 relay epoch check dropped, in-order commit: stays green (redundant on the in-log path)
 RabiaEpoch	integrations/consensus/src/main/java	noprefixsafe	pass	-	-	all fixes, a replica may enter a slot without committing its predecessor (sync adoption): Agreement holds
@@ -50,10 +51,12 @@ RabiaEpoch	integrations/consensus/src/main/java	paper_d12_np	pass	-	-	D12 paper 
 RabiaEpoch	integrations/consensus/src/main/java	noretainmaj	fail	Progress	-	D6 target-majority check dropped: a reconfiguration can leave a roster that cannot decide
 RabiaEpoch	integrations/consensus/src/main/java	noprefix	fail	GovernedVote	-	in-order commit assumption removed: a ballot carries an epoch that does not govern its slot
 RabiaEpoch	integrations/consensus/src/main/java	codesync_gov	fail	GovernedVote	-	the code without prefix, LIVE and COLD responses: a COLD answer carries the phase without the roster, so a lagging replica casts a ballot at an epoch that does not govern its slot (acceptsBallot does not count it)
+RabiaEpoch	integrations/consensus/src/main/java	codesync_agree	fail	Agreement	-	#3213: a configuration-less (COLD) sync installs a later phase at epoch 0, and two lagging replicas re-decide a slot at epoch 0 that the new roster decided at epoch 1
 RabiaEpoch	integrations/consensus/src/main/java	nocrashstop	fail	Agreement	-	crash-stop assumption removed (relay without vote evidence): two values committed
 RabiaEpoch	integrations/consensus/src/main/java	noexactepoch_noprefix	fail	Agreement	-	D6 exact-epoch counting dropped under sync adoption: two values committed
 RabiaEpoch	integrations/consensus/src/main/java	paper_d6_np	fail	Agreement	-	D6 paper rule under sync adoption: two values committed (the paper rule is unsafe against sync adoption)
 RabiaAdopt	integrations/consensus/src/main/java	allfixes	pass	-	-	every adoption fix on, under a permanent fence (Rejoin = none); the code's per-process token memory is rjT_*
+RabiaAdopt	integrations/consensus/src/main/java	allfixes_savefail	pass	-	-	permanent fence, a save on pause may fail: the adoption floor max(persisted, live phase) keeps every decision
 RabiaAdopt	integrations/consensus/src/main/java	allfixesD5	pass	-	-	the code, same-epoch adoption off: isolates the newer-epoch path
 RabiaAdopt	integrations/consensus/src/main/java	allfixesD5q	pass	-	-	comparison: newer epoch needs a live majority (not the code)
 RabiaAdopt	integrations/consensus/src/main/java	ballotlossD5	pass	-	-	ballots lost on pause, newer-epoch path only: insensitive
@@ -62,12 +65,15 @@ RabiaAdopt	integrations/consensus/src/main/java	faultyrespD5q	pass	-	-	compariso
 RabiaAdopt	integrations/consensus/src/main/java	nooneconfig	pass	-	-	D5 one-configuration check dropped: stays green (fence prevents the case)
 RabiaAdopt	integrations/consensus/src/main/java	nooneconfigD5	pass	-	-	D5 one-configuration check dropped, newer-epoch path only: stays green
 RabiaAdopt	integrations/consensus/src/main/java	noselfvouch	pass	-	-	D4 self-vouch rule dropped: stays green
+RabiaAdopt	integrations/consensus/src/main/java	noselfvouch_savefail	pass	-	-	as allfixes_savefail with D4 self-vouch dropped: stays green
 RabiaAdopt	integrations/consensus/src/main/java	paperD4	pass	-	-	D4 paper rule (adopt from any single response): stays green
 RabiaAdopt	integrations/consensus/src/main/java	paperD5	pass	-	-	D5 paper rule (newer epoch from any single response): stays green
 RabiaAdopt	integrations/consensus/src/main/java	paperD5iso	pass	-	-	D5 paper rule, newer-epoch path only: stays green
-RabiaAdopt	integrations/consensus/src/main/java	rjT_allfixes	pass	-	-	token-memory rejoin, all fixes (vacuous for rejoin: see ctl_rjTAny)
+RabiaAdopt	integrations/consensus/src/main/java	rjT_allfixes	fail	Agreement	-	#3211: a restarted voter pauses from Syncing and resumes straight to active with no sync round, then decides a slot again
 RabiaAdopt	integrations/consensus/src/main/java	rjT_nooneconfig	pass	-	-	token-memory rejoin, D5 one-configuration check dropped (vacuous for rejoin)
-RabiaAdopt	integrations/consensus/src/main/java	rjT_noselfvouch	pass	-	-	token-memory rejoin, D4 self-vouch dropped (vacuous for rejoin)
+RabiaAdopt	integrations/consensus/src/main/java	rjT_noselfvouch	fail	Agreement	-	#3211 with D4 self-vouch dropped: same pause-from-Syncing resume, two values chosen
+RabiaAdopt	integrations/consensus/src/main/java	rjT_allfixes_savefail	fail	Agreement	-	#3211 with a failing save on pause: the pause-from-Syncing resume still decides a slot again
+RabiaAdopt	integrations/consensus/src/main/java	rjT_noselfvouch_savefail	fail	Agreement	-	#3211 with a failing save on pause, D4 self-vouch dropped
 RabiaAdopt	integrations/consensus/src/main/java	rjT_paperD4	pass	-	-	token-memory rejoin, D4 paper rule (vacuous for rejoin)
 RabiaAdopt	integrations/consensus/src/main/java	rjT_paperD5	pass	-	-	token-memory rejoin, D5 paper rule (vacuous for rejoin)
 RabiaAdopt	integrations/consensus/src/main/java	ctl_rjTAmnesiac	pass	-	-	control: under token memory a rejoined amnesiac never adopts
