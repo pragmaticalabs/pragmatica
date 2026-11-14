@@ -30,6 +30,7 @@ g2 integrations/db/jooq  # 0.5 s at run 41351583462
 g2 integrations/db/postgres-r2dbc-adapter  # 11.4 s at run 41351583462
 g2 integrations/dht  # 282.2 s at run 41351583462
 g2 integrations/http-routing  # 4.5 s at run 41351583462
+g2 integrations/kafka-client  # unmeasured (new module, est. 25 s): LPT tie g2/g4 at 1152.5 s, g2 first
 g2 integrations/json/jackson  # 2.5 s at run 41351583462
 g2 integrations/metrics/micrometer  # 1.6 s at run 41351583462
 g2 integrations/net/http-server  # 133.4 s at run 41351583462

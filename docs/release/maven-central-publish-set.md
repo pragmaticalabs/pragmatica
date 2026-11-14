@@ -169,6 +169,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `integrations/http-routing` | `org.pragmatica-lite:http-routing` | jar | publish | compile/runtime dependency of http-routing-adapter |
 | `integrations/json` | `org.pragmatica-lite:json` | pom | publish | parent pom of a published module; a consumer resolves it to read the child (parent of jackson) |
 | `integrations/json/jackson` | `org.pragmatica-lite:jackson` | jar | publish | compile/runtime dependency of http-routing-adapter |
+| `integrations/kafka-client` | `org.pragmatica-lite:kafka-client` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/messaging` | `org.pragmatica-lite:messaging` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/metrics` | `org.pragmatica-lite:metrics` | pom | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/metrics/micrometer` | `org.pragmatica-lite:micrometer` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
