@@ -3564,7 +3564,7 @@ Recovery: `aether cluster bootstrap <aether-cluster.toml>`.
 
 Apply a cluster configuration change. Computes a diff against the stored config and executes actionable changes.
 
-**Scale-only in rc4 (#686).** The only actionable changes are a role's core/worker count going up or
+**Scale-only in rc5 (#686); rollout of the other changes is not available in this release.** The only actionable changes are a role's core/worker count going up or
 down (`ScaleUp`/`ScaleDown`), applied as a fenced desired-count write that the leader's reconciler
 actuates. Non-scale changes — sources, roles, runtime, source fields, cluster-level fields — are not
 applicable through this route; a plan containing any of them is rejected in full (typed
@@ -3690,8 +3690,8 @@ is 3. Worker and spot counts carry no quorum constraint and are required only to
 
 **Refusals** (both HTTP 400):
 
-- Undeclared `(source, role)` — the topology is changed with `aether cluster apply`, not with a
-  scale. Adding the pair here would turn a mistyped source name into a real provisioning target.
+- Undeclared `(source, role)` — the topology is not changed with a scale (and `aether cluster apply`
+  is scale-only in rc5). Adding the pair here would turn a mistyped source name into a real provisioning target.
 - Blank `source` when several sources declare the role. The response names the candidates.
 
 **Conflicts** (HTTP 409):

@@ -2704,6 +2704,8 @@ Destroy takes every slice below its `minAvailable` floor by definition (it drain
 
 Apply cluster configuration changes with desired-state reconciliation.
 
+**In rc5, `apply` is scale-only: it changes a role's worker/core count and nothing else. Rollout of other changes (adding, modifying or removing sources or roles) is not available in this release; it moves server-side later.**
+
 A change of a source role's runtime profile name is refused (#1543): rolling it meant stopping a node and starting another in its place under the same id, and a node id never returns. Nodes move onto new software by replacement under a fresh id (`aether cluster upgrade --version X.Y.Z --wait`, or `POST /api/v1/nodes/replace/{id}` for one node). There is no supported way today to change a source role's runtime profile on a running cluster.
 
 ```bash
@@ -2731,7 +2733,7 @@ Recovery: split the file so scale changes go through plain `apply` and everythin
 separately, or wait for the change to be supported.
 
 **Non-scale changes — sources, roles, runtime, source fields, cluster-level fields — are not
-applicable through `apply` in rc4.** `apply` performs scale-only plans via the leader (a fenced
+applicable through `apply` in rc5.** `apply` performs scale-only plans via the leader (a fenced
 desired-count write that the leader's reconciler actuates); a rollout of the other changes needs a
 new cluster. There is no first-time path to a wave rollout: the terraform-style plan and the
 wave-based executor (`ApplyOrchestrator` → `WaveExecutor`, actuating from the operator's machine
@@ -2752,7 +2754,7 @@ is a separate ticket).
 (`No apply state found for cluster '<name>'. Nothing to resume.` / `... Nothing to roll back.`). The ledger is written by the client-side
 wave rollout, which the default `cluster apply` does not yet start (#686), so unless a pre-rc5 CLI left a ledger behind (a schema other than 2 is refused, by file name, and left untouched) both report that message.
 
-**Dormant in rc4 (#686): applies only if a wave rollout runs through `--resume`.** **If a wave rollout fails part-way,** it destroys the VMs of the failing step, best-effort. Its error then lists
+**Dormant in rc5 (#686): applies only if a wave rollout runs through `--resume`.** **If a wave rollout fails part-way,** it destroys the VMs of the failing step, best-effort. Its error then lists
 each VM the rollout created (node id, provider, server id, IP), because the apply records none of them:
 - `destroyed`: gone, nothing to do;
 - `STILL RUNNING AND BILLED` (its destroy failed): remove it with the printed steps, `aether cluster drain <node-id>
