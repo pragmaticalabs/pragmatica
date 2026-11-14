@@ -1353,8 +1353,7 @@ public final class OwnerActivation {
                                  PartitionKey key,
                                  MoveFence fence,
                                  StreamPartitionOwnershipValue committed) {
-        var left = fence.deadlines()
-                        .nanosLeft(key, committed.ownershipTerm());
+        var left = fence.deadlines().nanosLeft(key, committed.ownershipTerm());
 
         return switch (FenceTarget.fenceTarget(committed, self)) {
             case FenceTarget.NoFence _ -> catchUpToLiveHolders(stream, partition);
@@ -1390,16 +1389,22 @@ public final class OwnerActivation {
         var others = othersThan(target);
         var firstRound = probeAll(stream, partition, others);
         var answer = fence.probe()
-                          .probe(target, stream, partition, committed.ownerEpoch(), committed.ownershipTerm())
+                          .probe(target,
+                                 stream,
+                                 partition,
+                                 committed.ownerEpoch(),
+                                 committed.ownershipTerm())
                           .map(Option::some);
 
-        return Promise.any(List.of(answer, afterDeadline(left).map(_ -> Option.<Long>none())))
-                      .flatMap(answered -> answered.fold(() -> catchUpWith(stream, partition, others),
-                                                         watermark -> withTargetAnswer(stream,
-                                                                                       partition,
-                                                                                       others,
-                                                                                       firstRound,
-                                                                                       new PeerWatermark(target, watermark))));
+        return Promise.any(List.of(answer, afterDeadline(left).map(_ -> Option.<Long> none()))).flatMap(answered -> answered.fold(() -> catchUpWith(stream,
+                                                                                                                                                    partition,
+                                                                                                                                                    others),
+                                                                                                                                  watermark -> withTargetAnswer(stream,
+                                                                                                                                                                partition,
+                                                                                                                                                                others,
+                                                                                                                                                                firstRound,
+                                                                                                                                                                new PeerWatermark(target,
+                                                                                                                                                                                  watermark))));
     }
 
     private Promise<Unit> withTargetAnswer(String stream,
@@ -1414,22 +1419,24 @@ public final class OwnerActivation {
     }
 
     private static <T> List<T> plus(List<T> list, T last) {
-        return Stream.concat(list.stream(), Stream.of(last))
+        return Stream.concat(list.stream(),
+                             Stream.of(last))
                      .toList();
     }
 
     /// Resolves once `nanos` have passed (at once when none are left).
     private static Promise<Unit> afterDeadline(long nanos) {
         return nanos > 0L
-               ? Promise.promise(TimeSpan.timeSpan(nanos).nanos(), promise -> promise.succeed(Unit.unit()))
+               ? Promise.promise(TimeSpan.timeSpan(nanos).nanos(),
+                                 promise -> promise.succeed(Unit.unit()))
                : Promise.success(Unit.unit());
     }
 
     /// The members the fence's "others" are: every live member but self and `L` (whose probe is the fence's own).
     private List<NodeId> othersThan(NodeId target) {
         return otherLiveMembers().stream()
-                                 .filter(member -> !member.equals(target))
-                                 .toList();
+                               .filter(member -> !member.equals(target))
+                               .toList();
     }
 
     private List<NodeId> otherLiveMembers() {
@@ -1450,7 +1457,10 @@ public final class OwnerActivation {
             return Promise.success(Unit.unit());
         }
 
-        return probeAll(stream, partition, peers).flatMap(results -> reconcileWithPeers(stream, partition, peers, results));
+        return probeAll(stream, partition, peers).flatMap(results -> reconcileWithPeers(stream,
+                                                                                        partition,
+                                                                                        peers,
+                                                                                        results));
     }
 
     private Promise<List<Result<PeerWatermark>>> probeAll(String stream, int partition, List<NodeId> peers) {

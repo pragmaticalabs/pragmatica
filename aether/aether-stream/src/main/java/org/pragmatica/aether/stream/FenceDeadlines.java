@@ -85,7 +85,8 @@ public final class FenceDeadlines {
     public long deadline(PartitionKey key, long ownershipTerm) {
         var now = nanoTime.getAsLong();
 
-        return Option.option(bases.compute(key, (_, known) -> keptOrNow(known, ownershipTerm, now)))
+        return Option.option(bases.compute(key,
+                                           (_, known) -> keptOrNow(known, ownershipTerm, now)))
                      .filter(base -> base.ownershipTerm() == ownershipTerm)
                      .map(Base::nanos)
                      .or(now) + waitNanos;
