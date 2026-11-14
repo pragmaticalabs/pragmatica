@@ -251,6 +251,9 @@ class BackstopTest {
     void inferredDeparture_isConfirmed_whenItsIdentityIsRetired() {
         var w = lostDeparture();
 
+        // #3193: C17b would retire the worker's directive, hence its identity, at once; the "record stands" window is observed by losing it.
+        w.h.loseKinds = Set.of(SubmitKind.CLEANUP);
+
         w.evolve(C, GOV, ALIVE_WITHOUT_W1, WITHOUT_W1, 5_000L);
         var since = w.since(W1).or(0L);
 
