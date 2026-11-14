@@ -15,12 +15,17 @@ import org.pragmatica.consensus.net.quic.ConnectionDirection;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Option;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.lang.Unit.unit;
 
 
 /// Control connections and direct probes have a hierarchy-sized audience. Application dependency
 /// connections are supplied independently and never enlarge the health observation scope.
 public record HierarchyPeerPolicy(NodeId self, boolean worker, AtomicReference<View> current) {
+    private static final Logger log = LoggerFactory.getLogger(HierarchyPeerPolicy.class);
+
     public record View(Set<NodeId> directPeers, Set<NodeId> swimPeers, boolean forwardsPeerMetrics) {
         public View {
             directPeers = Set.copyOf(directPeers);
@@ -72,9 +77,18 @@ public record HierarchyPeerPolicy(NodeId self, boolean worker, AtomicReference<V
                         Option<NodeId> ownGovernor,
                         Option<NodeId> leader,
                         Set<NodeId> reachableCores) {
-        current.set(worker
-                    ? workerView(cores, ownCommunity, ownGovernor, leader, reachableCores)
-                    : coreView(cores, governors));
+        var next = worker
+                   ? workerView(cores, ownCommunity, ownGovernor, leader, reachableCores)
+                   : coreView(cores, governors);
+        var previous = current.getAndSet(next);
+
+        if (!previous.directPeers().equals(next.directPeers())) {
+            log.info("Hierarchy direct peers changed on {} (worker={}): {} -> {}",
+                     self.id(),
+                     worker,
+                     previous.directPeers(),
+                     next.directPeers());
+        }
 
         return unit();
     }
