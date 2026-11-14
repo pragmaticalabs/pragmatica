@@ -1,5 +1,6 @@
 package org.pragmatica.kafka;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -29,7 +30,9 @@ class KafkaBridgeBrokerTest {
 
     @BeforeAll
     static void startBroker() {
-        broker = new KafkaContainer(IMAGE);
+        // #3257: CI start failures (exit 126, missed RUNNING line) are rare and load-dependent; retry the start and give it CI-sized room.
+        broker = new KafkaContainer(IMAGE).withStartupAttempts(3)
+                                          .withStartupTimeout(Duration.ofMinutes(3));
         broker.start();
         config = KafkaConfig.kafkaConfig(broker.getBootstrapServers().replace("PLAINTEXT://", ""),
                                          "bridge-test")
@@ -193,35 +196,59 @@ class KafkaBridgeBrokerTest {
         assertThat(consumer.close().await().isSuccess()).isTrue();
     }
 
+    /// Probes the shared broker until it answers a metadata-changing call, so a test that paused it leaves it serving.
+    private static void awaitBrokerServing() {
+        var deadline = System.nanoTime() + 60_000_000_000L;
+
+        while (System.nanoTime() < deadline) {
+            var admin = KafkaAdmin.kafkaAdmin(config).unwrap();
+            var probe = admin.createTopic("ready-" + UUID.randomUUID(), 1, (short) 1).await(timeSpan(5).seconds());
+
+            admin.close().await();
+            if (probe.isSuccess()) {
+                return;
+            }
+        }
+        fail("shared broker not serving 60 s after unpause");
+    }
+
+    /// Pauses the SHARED broker (no second container to start, #3257); unpause plus a readiness wait run in `finally`,
+    /// so the broker is never left paused or half-awake for the tests that follow.
     @Test
     void send_brokerPausedMidSend_neverReportsSuccess() {
-        try (var own = new KafkaContainer(IMAGE)) {
-            own.start();
-            var cfg = KafkaConfig.kafkaConfig(own.getBootstrapServers().replace("PLAINTEXT://", ""),
-                                              KafkaSecurity.Plaintext.plaintext(),
-                                              Acks.ALL,
-                                              "pause-test",
-                                              timeSpan(2).seconds(),
-                                              timeSpan(4).seconds(),
-                                              timeSpan(3).seconds(),
-                                              timeSpan(3).seconds())
-                                 .unwrap();
-            var topic = "pause-" + UUID.randomUUID();
-            var admin = KafkaAdmin.kafkaAdmin(cfg).unwrap();
+        var cfg = KafkaConfig.kafkaConfig(config.bootstrapServers(),
+                                          KafkaSecurity.Plaintext.plaintext(),
+                                          Acks.ALL,
+                                          "pause-test",
+                                          timeSpan(2).seconds(),
+                                          timeSpan(4).seconds(),
+                                          timeSpan(3).seconds(),
+                                          timeSpan(3).seconds())
+                             .unwrap();
+        var topic = newTopic(1);
+        var producer = KafkaProducerClient.kafkaProducerClient(cfg).unwrap();
 
-            admin.createTopic(topic, 1, (short) 1).await();
-            admin.close().await();
-            var producer = KafkaProducerClient.kafkaProducerClient(cfg).unwrap();
-
+        try {
             assertThat(producer.send(record(topic, 0, "warm")).await().isSuccess()).isTrue();
-            own.getDockerClient().pauseContainerCmd(own.getContainerId()).exec();
+            broker.getDockerClient().pauseContainerCmd(broker.getContainerId()).exec();
             var outcome = producer.send(record(topic, 0, "lost")).await(timeSpan(30).seconds());
 
-            own.getDockerClient().unpauseContainerCmd(own.getContainerId()).exec();
+            broker.getDockerClient().unpauseContainerCmd(broker.getContainerId()).exec();
             assertThat(outcome.isFailure()).isTrue();
             assertThat(outcome.<Cause> fold(c -> c, _ -> fail("must not succeed"))).isInstanceOfAny(KafkaError.OutcomeUnknown.class,
                                                                                                     KafkaError.Retriable.class);
+        } finally {
+            unpauseIfPaused();
             producer.close().await();
+            awaitBrokerServing();
+        }
+    }
+
+    private static void unpauseIfPaused() {
+        var paused = broker.getDockerClient().inspectContainerCmd(broker.getContainerId()).exec().getState().getPaused();
+
+        if (Boolean.TRUE.equals(paused)) {
+            broker.getDockerClient().unpauseContainerCmd(broker.getContainerId()).exec();
         }
     }
 }
