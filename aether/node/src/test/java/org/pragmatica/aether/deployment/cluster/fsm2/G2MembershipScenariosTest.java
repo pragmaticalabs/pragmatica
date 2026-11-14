@@ -51,6 +51,19 @@ class G2MembershipScenariosTest {
         return workerWorldBase().activate();
     }
 
+    /// A worker with a directive and no slice footprint: the record's exact-value removal is then the only guard of its C17b.
+    private static MbWorld bareWorkerWorld() {
+        var w = MbWorld.world(CORE_1);
+
+        w.admit(W1, TOKEN);
+        w.community("east-w-0", 5, CommunityState.ACTIVE)
+         .directive(W1,
+                    Fixtures.worker("east-w-0"))
+         .activate();
+
+        return w;
+    }
+
     private static MbWorld workerWorldBase() {
         var w = MbWorld.world(CORE_1);
 
@@ -167,7 +180,7 @@ class G2MembershipScenariosTest {
     // to the late C17b (the record's exact-value removal must refuse it), or a later R-4.3.3 removes its rows.
     @Test
     void departure_sameIdRejoinsBeforeRetire_recordSuperseded_workerRegistered() {
-        var w = liveWorkerWorld();
+        var w = bareWorkerWorld();
 
         w.h.holdKinds = Set.of(SubmitKind.CLEANUP);
         w.h.deliver(new ClusterInput.WorkerLeave(W1));
