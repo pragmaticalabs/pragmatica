@@ -132,6 +132,22 @@ class EmberShardTest(unittest.TestCase):
             self.assertEqual(shard.verify(d, ["EmberATest", "EmberBTest"])[0], [])
             self.assertEqual(shard.verify(d, ["EmberATest", "EmberCTest"])[0], ["EmberCTest"])
 
+    def test_fsm2_engine_runs_the_same_shard_count_as_ci(self):
+        # fsm2-engine.yml shards the same Ember corpus against the same budget; 4 shards went over it (#3237)
+        fsm2 = (CI.parent / "fsm2-engine.yml").read_text()
+        job = re.search(r"^  fsm2-ember-shard:\n(.*?)(?=^  \S|\Z)", fsm2, re.MULTILINE | re.DOTALL).group(1)
+        self.assertEqual(len(re.search(r"shard: \[([^\]]*)\]", job).group(1).split(",")), matrix_shards())
+
+    def test_no_workflow_writes_a_step_output_from_an_inline_command_substitution(self):
+        # `echo "x=$(cmd)" >> "$GITHUB_OUTPUT"` discards cmd's exit status: a refused plan became an empty -Dtest (#3237)
+        pattern = re.compile(r'echo\s+"[A-Za-z_][A-Za-z0-9_-]*=[^"]*\$\(.*GITHUB_OUTPUT')
+        workflows = sorted(CI.parent.glob("*.yml"))
+        self.assertGreaterEqual(len(workflows), 2)  # guards the guard: the directory is read
+        self.assertTrue(pattern.search('echo "classes=$(python3 x.py)" >> "$GITHUB_OUTPUT"'))  # positive control
+        offenders = [f"{w.name}:{n}" for w in workflows for n, line in enumerate(w.read_text().splitlines(), 1)
+                     if not line.lstrip().startswith("#") and pattern.search(line)]
+        self.assertEqual(offenders, [], "assign first (v=$(...)), then echo the variable")
+
 
 if __name__ == "__main__":
     unittest.main()
