@@ -14,6 +14,7 @@ SharedPools	aether/resource/api/src/main/java	wedgeslice	fail	NoWedge	MaxAcquire
 SharedPools	aether/resource/api/src/main/java	stale	fail	NoStaleRelease	MaxAcquires=3	v2978a F3: a stop releases another holding
 SharedPools	aether/resource/api/src/main/java	leak	fail	NoLeakAfterStop	MaxAcquires=3	v2978a F2: no post-admission drain
 SharedPools	aether/resource/api/src/main/java	afterclosed	fail	NoHandleAfterClosed	MaxAcquires=3	v2978c F3: a view after closed was seen
+SharedPools	aether/resource/api/src/main/java	noguard	fail	NoHandleAfterClosed	MaxAcquires=3	#3176: no stop re-read before the view is handed out
 SharedPools	aether/resource/api/src/main/java	isemptydrain	fail	NoLeakAfterStop	MaxAcquires=3	N1: closeAll drains on isEmpty()
 SharedPools	aether/resource/api/src/main/java	strict	fail	NoOpenAfterStop	MaxAcquires=3	closeAll returns before in-flight closes
 SharedPools	aether/resource/api/src/main/java	liveadb7	fail	CloseAllCompletes,AllSharedSettle	MaxAcquires=2	adb7a765da: a shared pool never settles

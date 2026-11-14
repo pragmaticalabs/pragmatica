@@ -13,6 +13,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.pragmatica.aether.resource.SpiResourceProvider.Provisioned;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.NullReturn;
@@ -233,15 +234,61 @@ final class SharedPools {
 
         logAdmission(admission, label, scope);
         if (admission.created) {
-            // Contained: a factory that throws synchronously fails the pool (and is evicted) instead of leaving the
-            // placeholder unresolved, which would wedge the key and every release waiting on it.
-            Promise.unitPromise()
-                   .flatMap(_ -> provisioning(provision, scope, key))
-                   .onSuccess(_ -> LOG.log(System.Logger.Level.INFO, "opened shared pool {0} for {1}", label, scope))
-                   .onResult(result -> resolved(pool, result));
+            provisionUnlessStopped(pool, provision, label, scope, key);
         }
 
         return attached.flatMap(_ -> slot);
+    }
+
+    /// Opens the pool this call inserted, unless node stop began since the admission check: then the pool is resolved with
+    /// `ProviderClosed` instead, so nothing is provisioned only to be closed by the drain. The skip is an optimisation
+    /// that no invariant detects the removal of: with it removed, [#fillSlot] still refuses through [#unlessStopped] and
+    /// the drain still closes the pool exactly once (the flag is a final `AtomicBoolean`, no seam reads it between the
+    /// check and the factory call). It is modelled all the same (`Acq_Skip`), so the recorded run of a skip is a
+    /// behaviour of the spec. Contained: a factory that
+    /// throws synchronously fails the pool (and is evicted) instead of leaving the placeholder unresolved, which would
+    /// wedge the key and every release waiting on it.
+    private Promise<Provisioned<?>> provisionUnlessStopped(Promise<Provisioned<?>> pool,
+                                                           Fn0<Promise<Provisioned<?>>> provision,
+                                                           String label,
+                                                           String scope,
+                                                           Object key) {
+        return stoppedBeforeProvision(scope, key)
+               ? pool.resolve(ResourceProvisioningError.ProviderClosed.INSTANCE.<Provisioned<?>> result())
+               : Promise.unitPromise()
+                        .flatMap(_ -> provisioning(provision, scope, key))
+                        .onSuccess(_ -> LOG.log(System.Logger.Level.INFO, "opened shared pool {0} for {1}", label, scope))
+                        .onResult(result -> resolved(pool, result));
+    }
+
+    /// The re-read of `closed` that gates provisioning. A clear flag records nothing: the factory call that follows is
+    /// `Acq_Provision`, which the spec takes whatever `closed` says (the read and the call are not one step). A set flag
+    /// is `Acq_Skip`, recorded at the read; the resolve follows at once, outside the region, and the eviction it triggers
+    /// is its own recorded step (`Evict`, inside the bin lock), so a drain that captures the entry in between is a
+    /// behaviour of the spec.
+    ///
+    /// ```tla SharedPools:Acq_Skip
+    /// \* The node stop began before the pool this thread created was opened: the pool is resolved with ProviderClosed
+    /// \* and the factory is never called. The eviction the failure triggers is the separate step Evict. No fault is
+    /// \* consumed: the failure is the code's own, not the factory's.
+    /// Acq_Skip(t) ==
+    ///     LET p == tpool[t]
+    ///     IN /\ pc[t] = "provision"
+    ///        /\ closed
+    ///        /\ pc' = [pc EXCEPT ![t] = "wait"]
+    ///        /\ poolSt' = [poolSt EXCEPT ![p] = "failed"]
+    ///        /\ UNCHANGED <<entry, count, closed, shared, inflight, closing, captures, closes, caVars, created, newHolder,
+    ///                       tslot, tpool, sawClosed, afterClosedHit, slotSt, slotOf, nAcq, nPools, faults, staleHit,
+    ///                       sliceCache, spc>>
+    /// ```
+    private boolean stoppedBeforeProvision(String scope, Object key) {
+        return region(closed::get, seen -> skipEvent(scope, key, seen));
+    }
+
+    private static Object[] skipEvent(String scope, Object key, boolean stopped) {
+        return stopped
+               ? new Object[]{"Acq_Skip", scope, key}
+               : new Object[0];
     }
 
     private Promise<Provisioned<?>> provisioning(Fn0<Promise<Provisioned<?>>> provision, String scope, Object key) {
@@ -269,11 +316,16 @@ final class SharedPools {
                               : new Object[]{"Acq_Post", scope, key, "nodrain"});
     }
 
-    /// Store-then-load against `closeAll`'s flag: either the drain sees this acquirer's insert, or this acquirer sees
-    /// the flag and drains its own key through the same capture. An acquire that saw the flag AFTER its own admission
-    /// fails with `ProviderClosed`, never a view: when this call created the entry, its pool is resolved with
-    /// `ProviderClosed` instead of being provisioned, so the drain's close completes on a failed pool, and holders that
-    /// joined the entry meanwhile fail with the same cause.
+    /// Store-then-load against `closeAll`'s flag; three cases, by where the acquirer's flag read falls.
+    /// 1. The flag is already visible after the admission (this method): the acquirer fails with `ProviderClosed`, never
+    ///    a view. When this call created the entry, its pool is resolved with `ProviderClosed` instead of being
+    ///    provisioned, so the drain's close completes on a failed pool; holders that joined the entry meanwhile fail with
+    ///    the same cause.
+    /// 2. The flag is not yet visible, but the drain sees the insert: the drain registers its close on the pool before
+    ///    this acquirer registers its holder slot, so the close runs first. [#fillSlot] re-reads the flag AFTER making the
+    ///    view, which is always set before the drain registers anything, and fails the slot with `ProviderClosed`
+    ///    instead of handing out a view of a pool the drain has closed.
+    /// 3. The flag is set after the view was issued: the holder was served from an open pool, which node stop closes.
     ///
     /// ```tla SharedPools:Acq_Post
     /// \* Runs after the admission compute returned: re-reads `closed` and, when set, fails with ProviderClosed: a pool
@@ -410,23 +462,26 @@ final class SharedPools {
         return admission.entry;
     }
 
-    /// Resolves the slot of the holder this thread added: the view on success, the pool's failure otherwise. It runs as
+    /// Resolves the slot of the holder this thread added: the view on success, the pool's failure otherwise, and
+    /// `ProviderClosed` once node stop began before the view was made (see [#unlessStopped]). It runs as
     /// a dependent of the pool, which is after `compute` returned, so outside the bin lock.
     ///
     /// ```tla SharedPools:Acq_Fill
-    /// \* The holder's slot resolves from the pool: the view on success, the failure otherwise. A re-joining holder
-    /// \* receives its existing slot.
+    /// \* The holder's slot resolves from the pool: the view on success, the failure otherwise, and (guard "stopguard",
+    /// \* [#unlessStopped]) the failure when node stop began, read after the view was made. A re-joining holder receives
+    /// \* its existing slot. The ghost records a view of a pool that node stop closed (flag set, so the guard refuses it
+    /// \* when present), alongside a view after the post-admission read saw closed.
     /// Acq_Fill(t) ==
     ///     LET p == tpool[t]
     ///         sl == tslot[t]
-    ///         view == IF newHolder[t] THEN poolSt[p] # "failed" ELSE slotSt[sl] # "failed"
+    ///         view == ~SlotFails(t)
     ///     IN /\ pc[t] = "wait"
     ///        /\ IF newHolder[t]
     ///           THEN /\ poolSt[p] \in {"open", "failed", "closed"}
-    ///                /\ slotSt' = [slotSt EXCEPT ![sl] = IF poolSt[p] = "failed" THEN "failed" ELSE "view"]
+    ///                /\ slotSt' = [slotSt EXCEPT ![sl] = IF SlotFails(t) THEN "failed" ELSE "view"]
     ///           ELSE /\ slotSt[sl] # "pending"
     ///                /\ UNCHANGED slotSt
-    ///        /\ afterClosedHit' = (afterClosedHit \/ (view /\ sawClosed[t]))
+    ///        /\ afterClosedHit' = (afterClosedHit \/ (view /\ (sawClosed[t] \/ (newHolder[t] /\ closed /\ poolSt[p] = "closed"))))
     ///        /\ pc' = [pc EXCEPT ![t] = "idle"]
     ///        /\ created' = [created EXCEPT ![t] = FALSE]
     ///        /\ newHolder' = [newHolder EXCEPT ![t] = FALSE]
@@ -442,15 +497,35 @@ final class SharedPools {
                                     NodeShareable<T, ?> shareable,
                                     Object key,
                                     String scope) {
-        note("Acq_Fill",
-             scope,
-             key,
-             result.isSuccess()
-             ? "view"
-             : "failed");
+        return slot.resolve(result.fold(cause -> failedFill(cause, key, scope),
+                                        provisioned -> unlessStopped(shareable.view((T) provisioned.resource(),
+                                                                                    () -> releaseSlot(key, scope, slot)),
+                                                                     key,
+                                                                     scope)));
+    }
 
-        return slot.resolve(result.map(provisioned -> shareable.view((T) provisioned.resource(),
-                                                                     () -> releaseSlot(key, scope, slot))));
+    private <T> Result<T> failedFill(Cause cause, Object key, String scope) {
+        note("Acq_Fill", scope, key, "failed");
+
+        return cause.result();
+    }
+
+    /// Hands the view out only if node stop had not begun when this check runs, after the view was made. The flag is set
+    /// before the drain registers or runs any close, so a flag still clear here means the drain's close had not run yet;
+    /// a flag already set means the pool may be closed, and the view is discarded, never handed out. The read is the
+    /// `Acq_Fill` step of a successful pool, recorded with its final outcome: "failed" when the flag was set, so the
+    /// trace never says "view" for a slot this guard refused. Scope: node stop
+    /// only. A holder's own release racing its provisioning can still close the pool before the view is made (#3178).
+    private <T> Result<T> unlessStopped(T view, Object key, String scope) {
+        return region(closed::get, stopped -> fillEvent(scope, key, stopped))
+               ? ResourceProvisioningError.ProviderClosed.INSTANCE.<T> result()
+               : Result.success(view);
+    }
+
+    private static Object[] fillEvent(String scope, Object key, boolean stopped) {
+        return new Object[]{"Acq_Fill", scope, key, stopped
+                                                    ? "failed"
+                                                    : "view"};
     }
 
     /// A failed pool was never opened, so it has nothing to close. Its holders all receive the failure, and the next
@@ -474,16 +549,36 @@ final class SharedPools {
     ///                    staleHit, spc>>
     /// ```
     private Unit evictFailed(Object key, Promise<Provisioned<?>> failed) {
-        entries.compute(key, (_, current) -> unlessFailed(current, failed));
+        entries.compute(key,
+                        (_, current) -> region(() -> unlessFailed(current, failed), _ -> evictEvent(current, failed)));
 
         return Unit.unit();
     }
 
     /// `null` (the `compute` contract for "remove") when `current` holds the failed pool; otherwise `current` unchanged.
+    /// The step is recorded only when it removes: the entry it finds gone (a drain took it first) or replaced is no step.
+    ///
+    /// ```tla SharedPools:Evict
+    /// \* The eviction dependent of a failed pool: the compute removes the entry that still holds it (by identity). A
+    /// \* failure Resolve already evicted leaves nothing to remove here, which is a stutter; Acq_Skip's failure leaves the
+    /// \* entry for this step.
+    /// Evict(p) ==
+    ///     /\ poolSt[p] = "failed"
+    ///     /\ entry' = [k \in Keys |-> IF entry[k].pool = p THEN NoEntry ELSE entry[k]]
+    ///     /\ count' = [k \in Keys |-> IF entry[k].pool = p THEN count[k] - 1 ELSE count[k]]
+    ///     /\ UNCHANGED <<poolSt, closed, shared, inflight, closing, captures, closes, caVars, thr, slotSt, slotOf, nAcq,
+    ///                    nPools, faults, staleHit, sliceCache, spc>>
+    /// ```
     @NullReturn
     private static SharedEntry unlessFailed(SharedEntry current, Promise<Provisioned<?>> failed) {
         return option(current).filter(entry -> entry.pool() != failed)
                      .or((SharedEntry) null);
+    }
+
+    private static Object[] evictEvent(SharedEntry current, Promise<Provisioned<?>> failed) {
+        return option(current).filter(entry -> entry.pool() == failed)
+                     .map(_ -> new Object[]{"Evict", failed})
+                     .or(new Object[0]);
     }
 
     /// Removes `scope` as a holder of `key`; closes the pool when this removed the last holder. Idempotent: a scope that
