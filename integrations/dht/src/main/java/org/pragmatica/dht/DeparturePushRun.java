@@ -391,7 +391,7 @@ final class DeparturePushRun {
     }
 
     /// Every target of one key: the delta targets ([#departureTargets]) plus, when the drain set may be stale, the primary of every
-    /// possible final replica set ([#finalPrimaryCandidates]). The second list only ever adds targets (#3208, #3209).
+    /// possible final replica set ([#finalPrimaryCandidates]). The second list only ever adds targets (#3208, #3209); a node in both lists is deduplicated by `claimTarget` at each call site.
     ///
     /// Also records which of them may show the key delivered. Without candidates the delta targets do. With candidates only the first
     /// unnamed node does: the named prefix may halt with the copy (#3208), and a delta target may lie outside the final replica set
