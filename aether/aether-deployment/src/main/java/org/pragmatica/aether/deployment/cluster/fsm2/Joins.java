@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -23,6 +24,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Verify;
 
 
 /// Admission (spec C15, C16, C11d and the join table J0 to J9): a core joins (`NodeJoined`) or a worker joins
@@ -36,6 +38,21 @@ public sealed interface Joins {
     String DEFAULT_SOURCE = "default";
 
     // -- C15 / C16 -------------------------------------------------------------------------------------------------
+    /// #3172: a worker join, with the source label read at enqueue time overlaid on the seam snapshot before placement reads it. A blank or absent
+    /// source never replaces a snapshot value; a later `SeamsRefreshed` replaces the whole snapshot, and both come from the same descriptor.
+    static ClusterModel onWorkerJoin(ClusterModel m, Ctx ctx, ClusterInput.WorkerJoin join) {
+        join.source().filter(Verify.Is::notBlank).onPresent(source -> overlaySource(m, join.node(), source));
+
+        return onJoin(m, ctx, join.node(), join.admission(), true);
+    }
+
+    private static void overlaySource(ClusterModel m, NodeId node, String source) {
+        var merged = new HashMap<>(m.seams.memberSource());
+
+        merged.put(node, source);
+        m.seams = m.seams.withMemberSource(merged);
+    }
+
     /// A join input: update `admissions[n]`, re-classify n's rows (R-3.3.1), clear `absentSince[n]`, then evaluate the table. A row that
     /// admits n marks it joined (R-2.11 (a)).
     static ClusterModel onJoin(ClusterModel m, Ctx ctx, NodeId node, Admission admission, boolean worker) {

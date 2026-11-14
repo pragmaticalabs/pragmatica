@@ -27,14 +27,13 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.SliceState;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.SliceRowSource;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskPauseValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -286,6 +285,7 @@ public final class ScheduledTaskRoutes implements RouteSource {
         var node = nodeSupplier.get();
 
         return new InjectError.SliceNotLocal(selectHostingHint(node.kvStore(),
+                                                               node.sliceRows(),
                                                                node.self(),
                                                                task.artifact(),
                                                                task.registeredBy()),
@@ -293,21 +293,21 @@ public final class ScheduledTaskRoutes implements RouteSource {
     }
 
     /// Pick a node ID to point the rejected caller at. Reads CURRENT slice placement from the
-    /// authoritative KV-Store (`NodeArtifactKey(nodeId, artifact) → NodeArtifactValue(state)`),
-    /// the same source of truth as `SliceOwnershipQuery`. Prefers a node whose entry for THIS
+    /// authoritative KV-Store through the engine's [SliceRowSource] (`NodeArtifactKey` rows under LEGACY,
+    /// the current `SliceObservedKey` rows under FSM2, deployment state machine spec 1.6.1: a stale row
+    /// or a tombstone is never named), the same source of truth as `SliceOwnershipQuery`. Prefers a node whose entry for THIS
     /// artifact is `ACTIVE` (a usable local bridge exists there), excluding the receiving node.
     /// Falls back to `registeredBy` (registration history) only when no ACTIVE placement is found —
     /// the hint is never empty. The earlier `registeredBy`-only hint was circular: it could name
     /// the very node that just refused the request once the slice had moved off the registrant.
     static String selectHostingHint(KVStore<AetherKey, AetherValue> kvStore,
+                                    SliceRowSource rows,
                                     NodeId self,
                                     Artifact artifact,
                                     NodeId registeredBy) {
         var active = new AtomicReference<NodeId>();
 
-        kvStore.forEach(NodeArtifactKey.class,
-                        NodeArtifactValue.class,
-                        (key, value) -> recordActiveHost(active, self, artifact, key, value));
+        rows.forEachRow(kvStore, (node, hosted, state) -> recordActiveHost(active, self, artifact, node, hosted, state));
 
         return Option.option(active.get())
                      .or(registeredBy)
@@ -317,10 +317,11 @@ public final class ScheduledTaskRoutes implements RouteSource {
     private static void recordActiveHost(AtomicReference<NodeId> active,
                                          NodeId self,
                                          Artifact artifact,
-                                         NodeArtifactKey key,
-                                         NodeArtifactValue value) {
-        if (!key.nodeId().equals(self) && key.artifact().equals(artifact) && value.state() == SliceState.ACTIVE) {
-            active.compareAndSet(null, key.nodeId());
+                                         NodeId node,
+                                         Artifact hosted,
+                                         SliceState state) {
+        if (!node.equals(self) && hosted.equals(artifact) && state == SliceState.ACTIVE) {
+            active.compareAndSet(null, node);
         }
     }
 

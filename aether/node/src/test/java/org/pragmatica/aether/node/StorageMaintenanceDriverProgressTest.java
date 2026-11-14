@@ -22,6 +22,7 @@ import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -37,6 +38,7 @@ class StorageMaintenanceDriverProgressTest {
     private final PromotionManager promotion = mock(PromotionManager.class);
     private final List<OperatorWarning> raised = new CopyOnWriteArrayList<>();
     private final AtomicInteger retries = new AtomicInteger();
+    private volatile boolean retryThrows = false;
 
     @Test
     void progress_beforeAnyTick_neverRun() {
@@ -171,6 +173,30 @@ class StorageMaintenanceDriverProgressTest {
         assertThat(retries.get()).isEqualTo(1);
     }
 
+    /// #3087: a throwing retry of the pending activation is the tick's failed pass, reported as itself: the tick completes
+    /// (so the overdue watchdog does not take over), its progress record shows the real cause, and the warning names the part.
+    @Test
+    void failingRetryPending_isReportedAsTheFailedPass_andTheTickStillRecordsProgress() throws InterruptedException {
+        var driver = driver();
+
+        retryThrows = true;
+        doReturn(2).when(gc).collectGarbage();
+
+        assertThatCode(driver::tick).as("the tick survives a throwing retry").doesNotThrowAnyException();
+        assertThat(driver.progress().outcome()).as("the tick recorded its progress").isEqualTo(Outcome.FAILED);
+        assertThat(driver.progress().lastFailure().fold(() -> "", message -> message)).contains("retry boom");
+        assertThat(driver.progress().collected()).as("passes before the retry still counted").isEqualTo(2);
+        assertThat(codes(1)).containsExactly(FAILED);
+        assertThat(raised.getFirst().subject()).isEqualTo("storage-maintenance/retry-pending");
+        assertThat(raised.getFirst().message()).contains("retry boom");
+
+        retryThrows = false;
+        driver.tick();
+
+        assertThat(driver.progress().outcome()).isEqualTo(Outcome.OK);
+        assertThat(codes(2)).containsExactly(FAILED, RECOVERED);
+    }
+
     /// Waits for `expected` warnings to reach the hand-off sink, then lets a spurious extra one arrive before the caller asserts
     /// the list is exactly what it expects.
     private List<OperatorWarningCode> codes(int expected) throws InterruptedException {
@@ -209,6 +235,9 @@ class StorageMaintenanceDriverProgressTest {
 
     private Unit countRetry() {
         retries.incrementAndGet();
+        if (retryThrows) {
+            throw new IllegalStateException("retry boom");
+        }
 
         return Unit.unit();
     }

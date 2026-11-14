@@ -13,7 +13,6 @@
 2|AetherNode.java|a parameter carrying the manager to its LEGACY binding sites|ClusterDeploymentManager clusterDeploymentManager,
 1|AetherNode.java|the LEGACY stop step handed to DeploymentWiring (B13): the FSM2 stop does not call it (F1: moved into rc5's releaseWatchesThenDeactivate)|.flatMap(() -> deploymentWiring.deactivateCluster(clusterDeploymentManager::deactivate));
 1|AetherNode.java|a comment: names the legacy manager, binds nothing (rc5 #774, merged in by F1; not a new reference)|// #774: the config change feed is registered BEFORE the FSM listener (`nodeDeploymentManager::onConfigChanged`,
-1|AetherNode.java|an engine-neutral read for the management API; the manager is inert under FSM2|return clusterDeploymentManager.communityLiveMembers(communityId);
 1|AetherNode.java|an engine-neutral read for the management API; the manager is inert under FSM2|return clusterDeploymentManager.schemaOrchestrator();
 1|AetherNode.java|construction: both managers are constructed under either engine and unbound under FSM2 (B15, design 8.3)|var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
 1|AetherNode.java|construction: both managers are constructed under either engine and unbound under FSM2 (B15, design 8.3)|var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
@@ -64,7 +63,7 @@
 1|WorkerHierarchyAssembly.java|an import of the manager type the phase carries to its engine-neutral setters|import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 1|WorkerHierarchyAssembly.java|a phase input carrying the manager to its engine-neutral setters|ClusterDeploymentManager clusterDeploymentManager,
 1|WorkerHierarchyAssembly.java|the phase's unpack of that input|var clusterDeploymentManager = in.clusterDeploymentManager();
-1|WorkerHierarchyAssembly.java|an engine-neutral setter: it configures the manager; no input reaches a manager unbound under FSM2|clusterDeploymentManager.setCommunityLiveness(node -> communityDirectory.assignment(node)
+1|WorkerHierarchyAssembly.java|an engine-neutral setter: it configures the manager; no input reaches a manager unbound under FSM2|clusterDeploymentManager.setCommunityLiveness(livenessView);
 1|WorkerHierarchyAssembly.java|an engine-neutral setter: it configures the manager; no input reaches a manager unbound under FSM2|clusterDeploymentManager.setLocalAliveMembersSupplier(() -> communityHealthRuntime.aliveNodes(membershipFsm.dhtRoutableMembers()));
 1|DrainAssembly.java|an import of the manager type of the drain report listener's LEGACY overload|import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 1|DrainAssembly.java|a parameter carrying the manager to its LEGACY binding sites|ClusterDeploymentManager clusterDeploymentManager) {

@@ -42,3 +42,36 @@ DHTDepartureDrain	integrations/dht/src/main/java	noview	fail	ReceiverAgrees	N=4,
 DHTDepartureDrain	integrations/dht/src/main/java	waves	fail	NoLastCopyLoss	N=4,RF=2	drain commands in waves: a page lands on a co-drainer after its plan
 DHTDepartureDrain	integrations/dht/src/main/java	nopruned	pass	-	N=4,RF=2,MaxDrain=1	#2684 F3 dropped: no violation within this bound (the protection is not exercised here)
 DHTDepartureDrain	integrations/dht/src/main/java	wideaccept	pass	-	N=4,RF=2,MaxDrain=1	accept guard dropped: no violation within this bound (the guard is not exercised here)
+Fsm2Leader	aether/aether-deployment/src/main/java	code_inv	pass	-	-	the code (#3146): only the committed leader's writes are accepted, no submit while suspended, one live leader, published is committed, a refused WARNINGS write re-drafts
+Fsm2Leader	aether/aether-deployment/src/main/java	code_goals	pass	-	-	the code: desired and observed converge after the last leader change
+Fsm2Leader	aether/aether-deployment/src/main/java	code_goals_inv	pass	-	-	the code, goals on: only the committed leader's writes are accepted, no submit while suspended, one live leader
+# FINDING (#3181, tlaemb6/7): the four codeA_resume_* rows are RED at the code as it stands, so they are pinned as expected-fail; the model is not edited to make them pass.
+# Trace (codeA_resume_inv, 6 s, MaxTerm=3 A2834=TRUE RESUME=TRUE): n1 Activate; n2 takes leadership without a Deactivate reaching n1; n1 regains leadership at term 3 via SeeLeader while still Active, so no Rebuild/inherit runs and the open set disagrees. WarningsClose, WarningsShow and PersistedOrCleared follow from the same trace.
+Fsm2Leader	aether/aether-deployment/src/main/java	codeA_resume_inv	fail	OpenSetAgreement	-	FINDING, RESUME=TRUE red: the code, A2834 on, RESUME on (a still-Active node regains leadership at a new term): the code_inv properties and open-set agreement
+Fsm2Leader	aether/aether-deployment/src/main/java	codeA_resume_close	fail	WarningsClose	-	FINDING, RESUME=TRUE red: the code, A2834 and RESUME on: an ended condition's warning closes
+Fsm2Leader	aether/aether-deployment/src/main/java	codeA_resume_show	fail	WarningsShow	-	FINDING, RESUME=TRUE red: the code, A2834 and RESUME on: a holding condition is shown
+Fsm2Leader	aether/aether-deployment/src/main/java	codeA_resume_persist	fail	PersistedOrCleared	-	FINDING, RESUME=TRUE red: the code, A2834 and RESUME on: a shown warning is persisted or cleared
+Fsm2Leader	aether/aether-deployment/src/main/java	codeA_inv	pass	-	-	the code, A2834 on: the code_inv properties and open-set agreement
+Fsm2Leader	aether/aether-deployment/src/main/java	codeA_close	pass	-	-	the code, A2834 on: an ended condition's warning closes
+Fsm2Leader	aether/aether-deployment/src/main/java	codeA_show	pass	-	-	the code, A2834 on: a holding condition is shown
+Fsm2Leader	aether/aether-deployment/src/main/java	codeA_persist	pass	-	-	the code, A2834 on: a shown warning is persisted or cleared
+Fsm2Leader	aether/aether-deployment/src/main/java	code_close	fail	WarningsClose	-	#3160 close side, open defect: WarningsClose violated, a shown warning whose condition ended stays open across a leader change
+Fsm2Leader	aether/aether-deployment/src/main/java	code_show	fail	WarningsShow	-	#3160 raise side, documented residual in Warnings: WarningsShow violated, a holding condition is never shown after a leader change and crash
+Fsm2Leader	aether/aether-deployment/src/main/java	code_persist	fail	PersistedOrCleared	-	#3160: PersistedOrCleared violated, a shown warning with no committed row stays open
+Fsm2Leader	aether/aether-deployment/src/main/java	code_agree	fail	OpenSetAgreement	-	#3160: OpenSetAgreement violated, a settled leader's committed set differs from the shown set
+Fsm2Leader	aether/aether-deployment/src/main/java	pre3085_close	fail	WarningsClose	-	pre-#3085 (publish before commit): WarningsClose violated
+Fsm2Leader	aether/aether-deployment/src/main/java	pre3085_show	fail	WarningsShow	-	pre-#3085: WarningsShow violated
+Fsm2Leader	aether/aether-deployment/src/main/java	pre3085_persist	fail	PersistedOrCleared	-	pre-#3085: PersistedOrCleared violated, a warning published without a committed row
+Fsm2Leader	aether/aether-deployment/src/main/java	pre3085_agree	fail	OpenSetAgreement	-	pre-#3085: OpenSetAgreement violated
+Fsm2Leader	aether/aether-deployment/src/main/java	pre2834_close	fail	WarningsClose	-	pre-#2834 (no attention inherit): WarningsClose violated
+Fsm2Leader	aether/aether-deployment/src/main/java	pre2834_agree	fail	OpenSetAgreement	-	pre-#2834: OpenSetAgreement violated
+Fsm2Leader	aether/aether-deployment/src/main/java	pre3085A_show	pass	-	-	control for the pre3085 mutants: pre-#3085 with A2834 on satisfies WarningsShow
+Fsm2Leader	aether/aether-deployment/src/main/java	pre3085A_persist	pass	-	-	control for the pre3085 mutants: pre-#3085 with A2834 on satisfies PersistedOrCleared
+Fsm2Leader	aether/aether-deployment/src/main/java	mut_fence	fail	AcceptedOnlyForLeader	-	mutant, no leader fence: AcceptedOnlyForLeader violated
+Fsm2Leader	aether/aether-deployment/src/main/java	mut_fence_goals	fail	AcceptedOnlyForLeader	-	mutant, no leader fence, goals on: AcceptedOnlyForLeader violated
+Fsm2Leader	aether/aether-deployment/src/main/java	mut_twoleaders_inv	fail	AtMostOneLiveLeader	-	mutant, Activate without kvLeader = n and the view naming the node itself: AtMostOneLiveLeader violated
+Fsm2Leader	aether/aether-deployment/src/main/java	mut_noinherit_agree	fail	OpenSetAgreement	-	mutant, no inherit: OpenSetAgreement violated
+Fsm2Leader	aether/aether-deployment/src/main/java	mut_noinherit_close	fail	WarningsClose	-	mutant, no inherit: WarningsClose violated
+Fsm2Leader	aether/aether-deployment/src/main/java	mut_noremove_show	fail	WarningsShow	-	mutant of pre-#3085, no remove: WarningsShow violated
+Fsm2Leader	aether/aether-deployment/src/main/java	mut_nodraft_persist	fail	PersistedOrCleared	-	mutant of pre-#3085, no draft: PersistedOrCleared violated
+Fsm2Leader	aether/aether-deployment/src/main/java	mut_noexpire_goals	fail	Converges	-	mutant, no expiry: Converges violated

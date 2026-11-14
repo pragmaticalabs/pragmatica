@@ -30,6 +30,30 @@ public sealed interface Lifecycle {
     /// (R-2.11 (b)). Then schedule the two timers (NT-07) and queue the first reconcile; strays, intake re-drive and departed rows are
     /// handled by that reconcile. A family warning the rebuild raises after `inherit` (a schema hold re-raised at activation) is held until
     /// its WARNINGS row commits, as a step's is (#3085, `Warnings.noteRaised`); the recoveries `inherit` raises stay immediate.
+    ///
+    /// ```tla Fsm2Leader:Activate
+    /// \* CI-1 Activate, then Rebuild(Snapshot) in the same dispatch: ClusterFsm.java; Lifecycle.java.
+    /// \* code, pre3085: rows from the snapshot (Indexer), Warnings.inherit (Warnings.java) seeds the family sets and marks dirty.
+    /// \* pre2834: Lifecycle.rebuild has no inherit; family sets start empty.
+    /// Activate(n) ==
+    ///   /\ fsm[n] = "Dormant" /\ (kvLeader = n \/ MUT = "twoleaders")   \* the mutant names the node itself as leader, whatever is committed
+    ///   /\ LET w == IF Persists /\ MUT # "noinherit" THEN kv ELSE {}
+    ///      IN /\ fsm' = [fsm EXCEPT ![n] = "Active"]
+    ///         /\ inc' = [inc EXCEPT ![n] = inc[n] + 1]
+    ///         /\ view' = [view EXCEPT ![n] = IF MUT = "twoleaders" THEN <<n, term>> ELSE Current]
+    ///         /\ warned' = [warned EXCEPT ![n] = w]
+    ///         /\ rows' = [rows EXCEPT ![n] = IF Persists THEN kv ELSE {}]
+    ///         /\ dirty' = [dirty EXCEPT ![n] = Persists]
+    ///         /\ flushQ' = [flushQ EXCEPT ![n] = FALSE]
+    ///         /\ wInfl' = [wInfl EXCEPT ![n] = FALSE]
+    ///         /\ gInfl' = [gInfl EXCEPT ![n] = FALSE]
+    ///         /\ gIntent' = [gIntent EXCEPT ![n] = FALSE]
+    ///         /\ fired' = [fired EXCEPT ![n] = {}]
+    ///         /\ held' = [held EXCEPT ![n] = <<>>]
+    ///         /\ redo' = [redo EXCEPT ![n] = {}]
+    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, shown, net, settles, condBudget,
+    ///                  faultBudget>>
+    /// ```
     static ClusterModel rebuild(Ctx ctx, long incarnation, Snapshot snapshot) {
         var m = new ClusterModel();
 
@@ -115,6 +139,16 @@ public sealed interface Lifecycle {
     // -- the leader mirror and the witness (3.2, R-5.7.1 (a), C23) ---------------------------------------------------
     /// CI-16. Naming this node after a stretch of not naming it: resume, re-deriving the intents that were dropped.
     /// Naming another node: stay suspended (the CI-1 `Deactivate` follows). While suspended nothing is submitted.
+    ///
+    /// ```tla Fsm2Leader:SeeLeader
+    /// \* CI-16 LeaderChange input: Lifecycle.java onLeader (a resume requests a reconcile; Tick models it).
+    /// SeeLeader(n) ==
+    ///   /\ fsm[n] = "Active" /\ view[n] # Current
+    ///   /\ view' = [view EXCEPT ![n] = Current]
+    ///   /\ Apply(n, warned[n], rows[n], dirty[n], wInfl[n], gInfl[n], gIntent[n], FALSE, flushQ[n], shown, held[n])
+    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, fired, net, settles,
+    ///                  condBudget, faultBudget, redo>>
+    /// ```
     static ClusterModel onLeader(ClusterModel m, Ctx ctx, LeaderValue value) {
         var wasSuspended = isSuspended(m, ctx);
 
