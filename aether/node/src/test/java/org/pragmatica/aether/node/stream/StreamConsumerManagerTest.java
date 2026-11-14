@@ -2009,6 +2009,7 @@ class StreamConsumerManagerTest {
             declareStringConsumer();
             placement.activeOn(WORKER);
             ownership.ownedBy(PEER, 0, 1, 2, 3);
+            when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
             ownership.withLiveWorkers(WORKER);
             var workerRuntime = new RecordingRuntime();
 
@@ -2043,6 +2044,7 @@ class StreamConsumerManagerTest {
             placement.activeOn(WORKER, WORKER_TWO);
             ownership.ownedBy(PEER, 0, 1, 2, 3);
             ownership.withLiveWorkers(WORKER, WORKER_TWO);
+            when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
             var claimed = new ArrayList<Integer>();
 
             for (var node : List.of(WORKER, WORKER_TWO)) {
@@ -2108,7 +2110,7 @@ class StreamConsumerManagerTest {
             assertThat(warnings).extracting(OperatorWarning::code)
                       .containsExactly(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE,
                                        OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED);
-            assertThat(warnings).extracting(OperatorWarning::subject).doesNotHaveDuplicates();
+            assertThat(warnings).extracting(OperatorWarning::subject).describedAs("the recovery closes the condition on the same subject").containsOnly(warnings.getFirst().subject());
         }
 
         /// A slice that is deployed but ACTIVE nowhere is a deploy in flight, not a gap: no warning.
