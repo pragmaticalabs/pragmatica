@@ -150,6 +150,22 @@ class PgEntityStoreTest {
     }
 
     @Test
+    void update_rowLockMissing_theVersionCasStillLetsExactlyOneWrite() {
+        var parties = 4;
+        var store = store(GatedConnector.unlocked(connector, parties));
+        var key = freshKey();
+        store.create(key, 0L).await().unwrap();
+
+        var results = race(parties, () -> store.update(key, INCREMENT));
+
+        assertThat(results.stream().filter(Result::isSuccess).count()).as("every contender read version 1; one write may win").isEqualTo(1);
+        results.stream()
+               .filter(Result::isFailure)
+               .forEach(result -> assertThat(((EntityError.StorageUnavailable) failureOf(result)).cause()).isInstanceOf(PgEntityError.VersionConflict.class));
+        assertThat(store.getVersioned(key).await().unwrap()).isEqualTo(Option.some(Versioned.versioned(2L, 1L)));
+    }
+
+    @Test
     void delete_isRepeatable_firstDeletedThenAbsent() {
         var store = store(connector);
         var key = freshKey();

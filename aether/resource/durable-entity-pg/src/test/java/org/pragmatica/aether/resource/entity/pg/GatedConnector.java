@@ -13,10 +13,10 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-/// Test instrument: holds the result of every UNLOCKED versioned read (the optimistic path's read) until `parties`
-/// of them have been read, then releases all together. That forces N optimistic updates to have read the same row
-/// version before any of them writes, so the version compare-and-set is the only thing separating them. Non-blocking:
-/// the gate is a promise, no event-loop thread waits.
+/// Test instrument: strips the row lock (` FOR UPDATE`) from every versioned read, then holds the result of each of
+/// those reads until `parties` of them have been read, and releases all together. That forces N updates to have read
+/// the same row version before any of them writes, so the version compare-and-set is the only thing separating them.
+/// Non-blocking: the gate is a promise, no event-loop thread waits.
 final class GatedConnector implements SqlConnector {
     private final SqlConnector delegate;
     private final int parties;
@@ -30,14 +30,18 @@ final class GatedConnector implements SqlConnector {
         this.open = open;
     }
 
-    static GatedConnector gated(SqlConnector delegate, int parties) {
+    static GatedConnector unlocked(SqlConnector delegate, int parties) {
         return new GatedConnector(delegate, parties, new AtomicInteger(), Promise.promise());
     }
 
+    private static String withoutLock(String sql) {
+        return sql.replace(" FOR UPDATE", "");
+    }
+
     private <T> Promise<T> gate(String sql, Promise<T> read) {
-        return sql.contains("FOR UPDATE") || !sql.startsWith("SELECT version")
-               ? read
-               : read.flatMap(value -> arrive().map(_ -> value));
+        return sql.startsWith("SELECT version")
+               ? read.flatMap(value -> arrive().map(_ -> value))
+               : read;
     }
 
     private Promise<Unit> arrive() {
@@ -49,12 +53,14 @@ final class GatedConnector implements SqlConnector {
 
     @Override
     public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
-        return gate(sql, delegate.queryOne(sql, mapper, params));
+        var unlocked = withoutLock(sql);
+        return gate(unlocked, delegate.queryOne(unlocked, mapper, params));
     }
 
     @Override
     public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params) {
-        return gate(sql, delegate.queryOptional(sql, mapper, params));
+        var unlocked = withoutLock(sql);
+        return gate(unlocked, delegate.queryOptional(unlocked, mapper, params));
     }
 
     @Override
