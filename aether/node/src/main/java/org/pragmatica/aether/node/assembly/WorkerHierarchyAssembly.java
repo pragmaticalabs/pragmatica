@@ -222,54 +222,52 @@ public sealed interface WorkerHierarchyAssembly {
 
         aetherEntries.add(MessageRouter.Entry.route(GovernorAuthorityMessage.Response.class,
                                                     governorAuthorityClient::onResponse));
-        var activationKvRouter = withOwnDirectiveRetirement(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
-                                                     .onPut(AetherKey.ActivationDirectiveKey.class,
-                                                            (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> handleActivationDirective(put,
-                                                                                                                                                                                selfId,
-                                                                                                                                                                                clusterNode,
-                                                                                                                                                                                switchableCluster,
-                                                                                                                                                                                forwardingClusterNode,
-                                                                                                                                                                                config,
-                                                                                                                                                                                delegateRouter,
-                                                                                                                                                                                kvStore,
-                                                                                                                                                                                sliceStore,
-                                                                                                                                                                                sliceInvoker,
-                                                                                                                                                                                swimHealthDetectorHolder::get,
-                                                                                                                                                                                communityDirectory,
-                                                                                                                                                                                governorAnnouncerHolder,
-                                                                                                                                                                                governorAuthorityClient,
-                                                                                                                                                                                () -> runtimeReady(clusterNode) && workerProjectionFreshRef.get()
-                                                                                                                                                                                                                                           .getAsBoolean(),
-                                                                                                                                                                                growthLog,
-                                                                                                                                                                                react)),
-                                                                                    ownDirectiveRetirement)
-                                                     .onPut(AetherKey.CommunityPlacementOperationKey.class,
-                                                            (ValuePut<AetherKey.CommunityPlacementOperationKey, AetherValue.CommunityPlacementOperationValue> put) -> communityRetirements.put(put.cause()
-                                                                                                                                                                                                  .value()))
-                                                     .onRemove(AetherKey.CommunityPlacementOperationKey.class,
-                                                               (ValueRemove<AetherKey.CommunityPlacementOperationKey, AetherValue.CommunityPlacementOperationValue> remove) -> communityRetirements.remove(remove.cause()
-                                                                                                                                                                                                                 .key()
-                                                                                                                                                                                                                 .communityId()))
-                                                     .onPut(AetherKey.NodeReplacementKey.class,
-                                                            (ValuePut<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> put) -> NodeReplacementWiring.absorbPut(nodeReplacements,
-                                                                                                                                                                              kvStore::isReplaying,
-                                                                                                                                                                              put))
-                                                     .onRemove(AetherKey.NodeReplacementKey.class,
-                                                               (ValueRemove<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> remove) -> nodeReplacements.remove(remove.cause()
-                                                                                                                                                                                     .key()))
-                                                     .onPut(AetherKey.UpgradeRunKey.class,
-                                                            (ValuePut<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue> put) -> UpgradeRunWiring.absorbPut(upgradeRuns,
-                                                                                                                                                               kvStore::isReplaying,
-                                                                                                                                                               put))
-                                                     .onRemove(AetherKey.UpgradeRunKey.class,
-                                                               (ValueRemove<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue>_) -> upgradeRuns.remove())
-                                                     .onPut(AetherKey.NodePlacementKey.class,
-                                                            (ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> put) -> retryPlacedWorker(put,
-                                                                                                                                                            membershipFsmRef::get,
-                                                                                                                                                            placementRedrive))
-                                                     .onPut(AetherKey.GossipKeyRotationKey.class,
-                                                            gossipKeyRotationHandler::onGossipKeyRotationPut)
-                                                     .build();
+        var activationKvRouter = withOwnDirectiveRetirement(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.ActivationDirectiveKey.class,
+                                                                                                                                         (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> handleActivationDirective(put,
+                                                                                                                                                                                                                                                             selfId,
+                                                                                                                                                                                                                                                             clusterNode,
+                                                                                                                                                                                                                                                             switchableCluster,
+                                                                                                                                                                                                                                                             forwardingClusterNode,
+                                                                                                                                                                                                                                                             config,
+                                                                                                                                                                                                                                                             delegateRouter,
+                                                                                                                                                                                                                                                             kvStore,
+                                                                                                                                                                                                                                                             sliceStore,
+                                                                                                                                                                                                                                                             sliceInvoker,
+                                                                                                                                                                                                                                                             swimHealthDetectorHolder::get,
+                                                                                                                                                                                                                                                             communityDirectory,
+                                                                                                                                                                                                                                                             governorAnnouncerHolder,
+                                                                                                                                                                                                                                                             governorAuthorityClient,
+                                                                                                                                                                                                                                                             () -> runtimeReady(clusterNode) && workerProjectionFreshRef.get()
+                                                                                                                                                                                                                                                                                                                        .getAsBoolean(),
+                                                                                                                                                                                                                                                             growthLog,
+                                                                                                                                                                                                                                                             react)),
+                                                            ownDirectiveRetirement).onPut(AetherKey.CommunityPlacementOperationKey.class,
+                                                                                          (ValuePut<AetherKey.CommunityPlacementOperationKey, AetherValue.CommunityPlacementOperationValue> put) -> communityRetirements.put(put.cause()
+                                                                                                                                                                                                                                .value()))
+                                                           .onRemove(AetherKey.CommunityPlacementOperationKey.class,
+                                                                     (ValueRemove<AetherKey.CommunityPlacementOperationKey, AetherValue.CommunityPlacementOperationValue> remove) -> communityRetirements.remove(remove.cause()
+                                                                                                                                                                                                                       .key()
+                                                                                                                                                                                                                       .communityId()))
+                                                           .onPut(AetherKey.NodeReplacementKey.class,
+                                                                  (ValuePut<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> put) -> NodeReplacementWiring.absorbPut(nodeReplacements,
+                                                                                                                                                                                    kvStore::isReplaying,
+                                                                                                                                                                                    put))
+                                                           .onRemove(AetherKey.NodeReplacementKey.class,
+                                                                     (ValueRemove<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> remove) -> nodeReplacements.remove(remove.cause()
+                                                                                                                                                                                           .key()))
+                                                           .onPut(AetherKey.UpgradeRunKey.class,
+                                                                  (ValuePut<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue> put) -> UpgradeRunWiring.absorbPut(upgradeRuns,
+                                                                                                                                                                     kvStore::isReplaying,
+                                                                                                                                                                     put))
+                                                           .onRemove(AetherKey.UpgradeRunKey.class,
+                                                                     (ValueRemove<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue>_) -> upgradeRuns.remove())
+                                                           .onPut(AetherKey.NodePlacementKey.class,
+                                                                  (ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> put) -> retryPlacedWorker(put,
+                                                                                                                                                                  membershipFsmRef::get,
+                                                                                                                                                                  placementRedrive))
+                                                           .onPut(AetherKey.GossipKeyRotationKey.class,
+                                                                  gossipKeyRotationHandler::onGossipKeyRotationPut)
+                                                           .build();
 
         return new WorkerActivationOutputs(governorAnnouncerHolder, communityDirectory, activationKvRouter);
     }
@@ -947,10 +945,8 @@ public sealed interface WorkerHierarchyAssembly {
     /// Registers the own-directive observer on both edges of `ActivationDirectiveKey`: the put latches DIRECTED, the remove may halt.
     static KVNotificationRouter.Builder<AetherKey, AetherValue> withOwnDirectiveRetirement(KVNotificationRouter.Builder<AetherKey, AetherValue> builder,
                                                                                            OwnDirectiveRetirement ownDirectiveRetirement) {
-        return builder.onPut(AetherKey.ActivationDirectiveKey.class,
-                             ownDirectiveRetirement::onPut)
-                      .onRemove(AetherKey.ActivationDirectiveKey.class,
-                                ownDirectiveRetirement::onRemove);
+        return builder.onPut(AetherKey.ActivationDirectiveKey.class, ownDirectiveRetirement::onPut)
+                      .onRemove(AetherKey.ActivationDirectiveKey.class, ownDirectiveRetirement::onRemove);
     }
 
     /// Submits `halt` as an undo (#3193): an undo is never dropped by a closed gate, so a stopping engine cannot lose the halt.
