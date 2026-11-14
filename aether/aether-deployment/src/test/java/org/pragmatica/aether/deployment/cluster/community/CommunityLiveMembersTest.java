@@ -2,7 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-package org.pragmatica.aether.deployment.cluster.fsm;
+package org.pragmatica.aether.deployment.cluster.community;
 
 import java.util.List;
 import java.util.UUID;
@@ -77,7 +77,42 @@ class CommunityLiveMembersTest {
         assertThat(CommunityLiveMembers.communityLiveMembers(kvStore, CommunityLivenessView.unwired(), COMMUNITY)).isEqualTo(none());
     }
 
-    /// `hasCommunityLiveness` tells "not wired" from "wired, nothing absent" by identity, so `unwired()`
+    /// #3159: the management-API reading is the leader's observation. A node that is not the leader never reports a count.
+    @Test
+    void observedByLeader_isAbsent_onANodeThatIsNotTheLeader() {
+        commitOneMemberRoster();
+
+        assertThat(CommunityLiveMembers.observedByLeader(false, none(), kvStore, node -> false, COMMUNITY)).isEqualTo(none());
+    }
+
+    /// #3159: nor does a leader whose liveness view is unwired — that count would come from the everyone-alive default.
+    @Test
+    void observedByLeader_isAbsent_whileTheLivenessViewIsUnwired() {
+        commitOneMemberRoster();
+
+        assertThat(CommunityLiveMembers.observedByLeader(true, none(), kvStore, CommunityLivenessView.unwired(), COMMUNITY)).isEqualTo(none());
+    }
+
+    @Test
+    void observedByLeader_isTheObservedCount_onTheLeaderWithAWiredView() {
+        commitOneMemberRoster();
+
+        assertThat(CommunityLiveMembers.observedByLeader(true, none(), kvStore, node -> false, COMMUNITY)).isEqualTo(some(1));
+    }
+
+    @Test
+    void observedByLeader_excludesAMemberTheWiredViewObservesAbsent() {
+        commitOneMemberRoster();
+
+        assertThat(CommunityLiveMembers.observedByLeader(true, none(), kvStore, node -> true, COMMUNITY)).isEqualTo(some(0));
+    }
+
+    private void commitOneMemberRoster() {
+        commit(GovernorAnnouncementKey.forCommunity(COMMUNITY), roster(List.of(LIVE), false));
+        commit(ActivationDirectiveKey.activationDirectiveKey(LIVE), ActivationDirectiveValue.worker(COMMUNITY, ""));
+    }
+
+    /// `isWired` tells "not wired" from "wired, nothing absent" by identity, so `unwired()`
     /// must hand out one instance.
     @Test
     void unwired_returnsOneInstance_soAnUnwiredViewIsRecognisable() {

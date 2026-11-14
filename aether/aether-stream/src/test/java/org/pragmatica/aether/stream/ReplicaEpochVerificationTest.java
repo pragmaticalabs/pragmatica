@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
+import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,7 +44,7 @@ class ReplicaEpochVerificationTest {
         manager.createStream(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 600_000), "earliest"))
                .onFailure(cause -> fail(cause.message()));
         manager.placementRoleSupplier((_, _) -> role.get());
-        manager.epochStarts((_, _) -> List.of(new EpochStart(E2, 5L)));
+        manager.epochStarts((_, _) -> List.of(EpochStart.epochStart(E2, 5L, Option.none())));
     }
 
     @AfterEach

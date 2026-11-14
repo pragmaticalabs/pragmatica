@@ -59,7 +59,8 @@ public interface OwningBlueprintResolver {
     /// assignment. That is false: `SliceNodeKey` is never written to consensus at all. What actually
     /// holds is stronger — allocation is TRIGGERED BY the committed `SliceTargetKey` Put, which
     /// `ClusterDeploymentState.handleSliceTargetChange` reacts to and only then emits the
-    /// `NodeArtifactKey` Put that tells a node to load the slice. The leader cannot issue the load
+    /// `NodeArtifactKey` Put that tells a node to load the slice (under FSM2 the load trigger is the
+    /// leader's `SliceDesiredKey` goal, deployment state machine spec 1.6.1). The leader cannot issue the load
     /// trigger before observing the owner committed, and every node applies the log in the same order,
     /// so both the provisioning-time (publisher) and activation-time (subscriber) reads see the owner.
     /// Verified structurally by reading the call chain, not by a runtime probe (#1216 review).

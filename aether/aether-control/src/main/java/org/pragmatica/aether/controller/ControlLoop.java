@@ -21,9 +21,13 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
+import org.pragmatica.aether.slice.kvstore.ObservedSliceListener;
+import org.pragmatica.aether.slice.kvstore.ObservedSlices;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -51,8 +55,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
+/// Under FSM2 the per-node slice states the loop tracks come from the observed rows: it is an [ObservedSliceListener] on the state feed
+/// (deployment state machine spec 1.6.1), fed only current, non-tombstone rows. Under LEGACY it is fed the `NodeArtifactKey` rows.
 @Contract
-public interface ControlLoop {
+public interface ControlLoop extends ObservedSliceListener {
     Promise<Unit> activate();
     Promise<Unit> deactivate();
     boolean isActive();
@@ -255,6 +261,20 @@ public interface ControlLoop {
         public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
             var key = valueRemove.cause().key();
 
+            ctx.clearSliceState(new SliceNodeKey(key.artifact(), key.nodeId()));
+        }
+
+        /// FSM2: a shown row's state is the pair's tracked state. The feed shows no tombstone, so the mapping always yields a state.
+        @Override
+        public void onObservedSlice(SliceObservedKey key, SliceObservedValue row) {
+            ObservedSlices.sliceState(row.state()).onPresent(state -> ctx.recordSliceState(new SliceNodeKey(key.artifact(),
+                                                                                                            key.nodeId()),
+                                                                                           state));
+        }
+
+        /// FSM2: the pair's row is no longer shown.
+        @Override
+        public void onObservedSliceGone(SliceObservedKey key) {
             ctx.clearSliceState(new SliceNodeKey(key.artifact(), key.nodeId()));
         }
 

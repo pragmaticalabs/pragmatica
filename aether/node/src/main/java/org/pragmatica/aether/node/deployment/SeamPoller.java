@@ -104,6 +104,12 @@ public final class SeamPoller {
                            sources.coreRoleMembers().get());
     }
 
+    /// #3172: the membership `source` label of one node, read from the same supplier [#sample] reads, so an overlay built from it and a later
+    /// snapshot cannot disagree. Absent when the descriptor has none yet.
+    public Option<String> memberSource(NodeId node) {
+        return Option.option(sources.memberSource().get().get(node));
+    }
+
     /// Starts the 5 s cadence. The first sample is taken at once so the FSM does not wait a full interval for its first view. A poller already
     /// stopped samples nothing and arms nothing: the stop is terminal.
     @Contract

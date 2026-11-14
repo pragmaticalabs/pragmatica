@@ -93,7 +93,7 @@ class ReplicaAckGateTest {
         replica.ownerEpochSource((_, _) -> committed.get());
         replica.placementRoleSupplier((_, _) -> Role.REPLICA);
         // the committed record lists every epoch's start, the current one included (#1873: committed before activation)
-        replica.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E2, E2_START)));
+        replica.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, E2_START, Option.none())));
         handler = replicationReceiveHandler(self,
                                             replica::appendRecovered,
                                             (stream, partition) -> Math.min(replica.nextExpectedOffset(stream, partition),

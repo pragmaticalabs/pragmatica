@@ -15,14 +15,24 @@ import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.function.ToLongFunction;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.invoke.SliceFailureEvent.AllInstancesFailed;
 import org.pragmatica.aether.metrics.ExecutionOutcomeKeys;
 import org.pragmatica.aether.metrics.ExecutionOutcomeKeys.ParsedKey;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
+import org.pragmatica.aether.slice.kvstore.ObservedSlices;
 import org.pragmatica.cluster.metrics.MetricObservation;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -96,6 +106,43 @@ public final class AllInstancesFailedDetector {
                                                                         Consumer<AllInstancesFailed> publisher,
                                                                         LongSupplier clockMs) {
         return new AllInstancesFailedDetector(observations, activeInstances, isLeader, publisher, clockMs);
+    }
+
+    /// F5b (phase-3 design 8.2 D-10): the `activeInstances` source under FSM2, which writes no `NodeArtifactKey`. Every
+    /// artifact version with a current `SliceObservedKey` row (R-1.6.2: a stale row, judged against the node's admitted
+    /// boot token, reads as absent) is present; its hosts are the nodes membership counts whose current row is ACTIVE. A
+    /// version whose rows are all non-ACTIVE maps to an empty set, as the legacy source does, so its latch clears.
+    public static Map<Artifact, Set<NodeId>> observedActiveInstances(KVStore<AetherKey, AetherValue> kvStore,
+                                                                     Predicate<NodeId> countedMember,
+                                                                     ToLongFunction<NodeId> admittedToken) {
+        var result = new HashMap<Artifact, Set<NodeId>>();
+
+        kvStore.forEach(SliceObservedKey.class,
+                        SliceObservedValue.class,
+                        (key, row) -> collectCurrent(result, key, row, countedMember, admittedToken));
+
+        return result.entrySet()
+                     .stream()
+                     .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                                                           entry -> Set.copyOf(entry.getValue())));
+    }
+
+    @Contract
+    private static void collectCurrent(Map<Artifact, Set<NodeId>> result,
+                                       SliceObservedKey key,
+                                       SliceObservedValue row,
+                                       Predicate<NodeId> countedMember,
+                                       ToLongFunction<NodeId> admittedToken) {
+        if (ObservedSlices.isStale(row,
+                                   admittedToken.applyAsLong(key.nodeId()))) {
+            return;
+        }
+
+        var hosts = result.computeIfAbsent(key.artifact(), _ -> new HashSet<>());
+
+        if (row.state() == SliceObservedState.ACTIVE && countedMember.test(key.nodeId())) {
+            hosts.add(key.nodeId());
+        }
     }
 
     /// One detection pass. Runs on a fixed cadence on every node; does nothing but forget on a non-leader.

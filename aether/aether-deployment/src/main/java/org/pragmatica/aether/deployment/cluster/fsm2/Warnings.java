@@ -101,6 +101,15 @@ public sealed interface Warnings {
     FsmWarningValue NO_MEMBERS = FsmWarningValue.fsmWarningValue(Map.of());
 
     // -- the mirror ------------------------------------------------------------------------------------------------
+    /// ```tla Fsm2Leader:Notify
+    /// \* KV notification of a committed FsmWarningKey put/remove: the mirror follows (Indexer.java ->
+    /// \* Warnings.indexRow/removeRow, Warnings.java); no family set changes. Abstracted to a whole-set sync.
+    /// Notify(n) ==
+    ///   /\ fsm[n] = "Active" /\ rows[n] # kv
+    ///   /\ Apply(n, warned[n], kv, dirty[n], wInfl[n], gInfl[n], gIntent[n], FALSE, flushQ[n], shown, held[n])
+    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, net, settles,
+    ///                  condBudget, faultBudget, redo>>
+    /// ```
     static ClusterModel indexRow(ClusterModel m, FsmWarningKey key, FsmWarningValue value) {
         m.warningRows = m.warningRows.put(key, value);
 

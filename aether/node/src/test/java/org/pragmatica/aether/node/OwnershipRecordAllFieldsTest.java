@@ -13,6 +13,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
 
@@ -26,8 +27,8 @@ class OwnershipRecordAllFieldsTest {
     private static final NodeId OWNER = new NodeId("node-a");
     private static final NodeId GONE = new NodeId("node-x");
     private static final Epoch EPOCH = Epoch.epoch(1L, 2L, 9L);
-    private static final EpochStart FOLDED = new EpochStart(Epoch.epoch(1L, 2L, 7L), 100L, Epoch.epoch(1L, 2L, 3L));
-    private static final EpochStart EXACT = new EpochStart(EPOCH, 150L);
+    private static final EpochStart FOLDED = new EpochStart(Epoch.epoch(1L, 2L, 7L), 100L, Epoch.epoch(1L, 2L, 3L), Option.none());
+    private static final EpochStart EXACT = EpochStart.epochStart(EPOCH, 150L, Option.none());
 
     @Test
     void everyFieldNonDefault_survivesTheNodeCodec() {

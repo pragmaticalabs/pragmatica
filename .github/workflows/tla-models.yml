@@ -1,0 +1,105 @@
+# Model-checks the TLA+ models embedded in the Java sources (tools/tla/README.md).
+# On demand only: never on a pull request, a push or a schedule, and not a required check.
+# Trigger: gh workflow run tla-models.yml -f profile=small -f modules='.*'
+# Every config in tools/tla/models.tsv runs with its expected verdict: the known-bad configs must FAIL, so a model
+# that stopped reaching its code turns the run red, and a known-bad row is satisfied only by a violation of the property
+# it names. Results are bounds, never proofs; the sim profile is random sampling, the weakest of the three.
+name: TLA+ models
+
+on:
+  workflow_dispatch:
+    inputs:
+      modules:
+        description: 'Model filter: a regex over models.tsv module names (e.g. SharedPools, Stalled, .* for all)'
+        required: false
+        default: '.*'
+        type: string
+      profile:
+        description: 'Bounds: small (reduced constants, minutes), full (every config as written, hours) or sim (random simulation of every config as written, a time budget each; sampling, not a proof)'
+        required: false
+        default: small
+        type: choice
+        options:
+          - small
+          - full
+          - sim
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tla-models-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TLA_VERSION: v1.8.0
+  TLA_SHA256: e1f11b75c4b5bc4478ba0ac5cb6ae28e40a01b0016bc33e0aa97da22dfdbcd7f
+  TLA_JAR: ${{ github.workspace }}/.tla/tla2tools.jar
+
+jobs:
+  model-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.profile == 'full' && 350 || 45 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: 'zulu'
+
+      - name: Cache tla2tools.jar
+        id: tla-cache
+        uses: actions/cache@v4
+        with:
+          path: .tla/tla2tools.jar
+          key: tla2tools-${{ env.TLA_VERSION }}-${{ env.TLA_SHA256 }}
+
+      - name: Download tla2tools.jar
+        if: steps.tla-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .tla
+          curl -fsSL -o .tla/tla2tools.jar "https://github.com/tlaplus/tlaplus/releases/download/${TLA_VERSION}/tla2tools.jar"
+
+      - name: Verify tla2tools.jar checksum
+        run: echo "${TLA_SHA256}  .tla/tla2tools.jar" | sha256sum -c -
+
+      - name: Extractor self-test
+        env:
+          MODULES: ${{ inputs.modules }}
+        run: |
+          set -euo pipefail
+          grep -vE '^[[:space:]]*(#|$)' tools/tla/models.tsv | awk -F'\t' -v f="$MODULES" '$1 ~ "^(" f ")$" { print $1 "\t" $2 }' | sort -u > modules.tsv
+          test -s modules.tsv || { echo "no model matches '$MODULES'"; exit 2; }
+          while IFS=$'\t' read -r module root; do
+            echo "::group::selftest $module"
+            bash tools/tla/selftest.sh "$module" "$root"
+            echo "::endgroup::"
+          done < modules.tsv
+
+      - name: Runner self-test
+        run: bash tools/tla/runselftest.sh
+
+      - name: Model check (${{ inputs.profile }})
+        env:
+          MODULES: ${{ inputs.modules }}
+          PROFILE: ${{ inputs.profile }}
+          TLC_WORKERS: auto
+          TLA_OUT: target/tla
+        run: |
+          set -euo pipefail
+          case "$PROFILE" in full) export TLC_TIMEOUT=18000 ;; sim) export TLC_TIMEOUT=300 ;; *) export TLC_TIMEOUT=1200 ;; esac
+          bash tools/tla/run.sh "$PROFILE" "$MODULES" | tee target-tla-summary.txt
+
+      - name: Upload TLC output
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: tla-models-${{ inputs.profile }}-${{ github.run_id }}
+          path: |
+            target/tla/
+            target-tla-summary.txt
+          if-no-files-found: warn
+          retention-days: 30

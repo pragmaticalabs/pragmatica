@@ -16,9 +16,11 @@
 
 package org.pragmatica.consensus.net.quic;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import io.netty.buffer.ByteBuf;
+
 import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -44,8 +46,16 @@ import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.stream;
 class QuicRefusalCostTest {
     private static final String LOGGER = "org.pragmatica.consensus.net.quic.QuicClusterNetwork";
     private static final String REFUSAL_WARN = "refusing message (backpressure)";
+    private static final String GAVE_UP_WARN = "gave up after retries";
     private static final int REFUSALS = 50;
     private static final TimeSpan SHORT = TimeSpan.timeSpan(5).millis();
+
+    /// The capture is on the QuicClusterNetwork logger name, so it sees every network instance in the JVM. A held DHT frame
+    /// of a sibling test giving up late logs the give-up WARN into this capture (#3168); that WARN is not a refusal of
+    /// this test's writes, so the assertions count only the backpressure WARNs these tests drive.
+    private static List<String> ownWarns(LogCapture capture) {
+        return capture.messages(Level.WARN).stream().filter(m -> !m.contains(GAVE_UP_WARN)).toList();
+    }
 
     private static LaneProbe probe(StreamType lane) {
         return LaneProbe.laneProbe(SELF, lane, "m");
@@ -174,8 +184,8 @@ class QuicRefusalCostTest {
             var outcome = network.writeToStreamForTests(PEER, probe(StreamType.FORWARD), forward);
 
             assertThat(outcome).isInstanceOf(WriteOutcome.BackpressureRefused.class);
-            assertThat(capture.messages(Level.WARN)).as("one WARN for the refusal that opened the episode").hasSize(1);
-            assertThat(capture.messages(Level.WARN).getFirst()).contains("entered");
+            assertThat(ownWarns(capture)).as("one WARN for the refusal that opened the episode").hasSize(1);
+            assertThat(ownWarns(capture).getFirst()).contains("entered");
         }
     }
 
@@ -188,7 +198,7 @@ class QuicRefusalCostTest {
             var outcome = network.writeIfWritableForTest(stream(false), new byte[]{1}, PEER, StreamType.FORWARD);
 
             assertThat(outcome).isInstanceOf(WriteOutcome.BackpressureRefused.class);
-            assertThat(capture.messages(Level.WARN)).as("one WARN for the refusal that opened the episode").hasSize(1);
+            assertThat(ownWarns(capture)).as("one WARN for the refusal that opened the episode").hasSize(1);
         }
     }
 
@@ -203,7 +213,7 @@ class QuicRefusalCostTest {
             var outcome = network.writeIfWritableForTest(inactive, new byte[]{1}, PEER, StreamType.DHT);
 
             assertThat(outcome).isInstanceOf(WriteOutcome.BackpressureRefused.class);
-            assertThat(capture.messages(Level.WARN)).as("one WARN for the refusal that opened the episode").hasSize(1);
+            assertThat(ownWarns(capture)).as("one WARN for the refusal that opened the episode").hasSize(1);
         }
     }
 
@@ -220,7 +230,7 @@ class QuicRefusalCostTest {
             var outcome = network.writeIfWritableForTest(inactive, new byte[]{1}, PEER, StreamType.DHT);
 
             assertThat(outcome).isInstanceOf(WriteOutcome.BackpressureRefused.class);
-            assertThat(capture.messages(Level.WARN).stream().filter(m -> m.contains(REFUSAL_WARN)).toList())
+            assertThat(ownWarns(capture).stream().filter(m -> m.contains(REFUSAL_WARN)).toList())
                 .as("the refusal did not open the episode, so its own WARN is logged")
                 .hasSize(1);
         }
@@ -237,13 +247,13 @@ class QuicRefusalCostTest {
                 network.writeToStreamForTests(PEER, probe(StreamType.FORWARD), forward);
             }
 
-            assertThat(capture.messages(Level.WARN))
+            assertThat(ownWarns(capture))
                 .as("%d refusals on one (peer, lane): one WARN", REFUSALS)
                 .hasSize(1);
 
             network.writeToStreamForTests(PEER, probe(StreamType.METRICS), metrics);
 
-            assertThat(capture.messages(Level.WARN))
+            assertThat(ownWarns(capture))
                 .as("another lane of the same peer has its own window")
                 .hasSize(2);
         }

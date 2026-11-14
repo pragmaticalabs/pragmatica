@@ -141,11 +141,18 @@ public final class WorkerMetadataIndex {
                 }
             }
             case AetherKey.NodeArtifactKey assignment -> selected.add(artifact(assignment.artifact()));
+            case AetherKey.SliceDesiredKey assignment when isInstanceGoal(value) -> selected.add(artifact(assignment.artifact()));
             case AetherKey.SliceNodeKey assignment -> selected.add(artifact(assignment.artifact()));
             case AetherKey.EntityKeyspaceRegistrationKey entity -> selected.add("entity:" + entity.keyspace());
             case AetherKey.StorageStatusKey storage -> selected.add("storage:" + storage.instanceName());
             default -> {}
         }
+    }
+
+    /// FSM2 (deployment state machine spec 1.6.1, R-2.6): a desired goal of LOADED or ACTIVE assigns the artifact to the node; UNLOADED does
+    /// not.
+    private static boolean isInstanceGoal(Object value) {
+        return value instanceof AetherValue.SliceDesiredValue desired && (desired.goal() == AetherValue.SliceGoal.LOADED || desired.goal() == AetherValue.SliceGoal.ACTIVE);
     }
 
     private void expandArtifacts(Set<String> selected) {
@@ -202,19 +209,21 @@ public final class WorkerMetadataIndex {
 
         for (var scope : scopesForWorker(worker)) {
             if (scope.startsWith("artifact:")) {
-                scopes.getOrDefault(scope,
-                                    Map.of())
-                      .forEach((key, value) -> {
-                                   if (key instanceof AetherKey.NodeArtifactKey endpoint
-                                       && value instanceof AetherValue.NodeArtifactValue state
-                                       && state.state() == SliceState.ACTIVE) {
-                                       peers.add(endpoint.nodeId());
-                                   }
-                               });
+                scopes.getOrDefault(scope, Map.of()).forEach((key, value) -> addEndpointPeer(peers, key, value));
             }
         }
 
         return Set.copyOf(peers);
+    }
+
+    /// A node with an ACTIVE row of the artifact: a LEGACY `NodeArtifactKey` row, or (FSM2, spec 1.6.1) an observed row. The index has no
+    /// access to the admission seam, so an observed row reads current (C8: no seam means fail-open).
+    private static void addEndpointPeer(Set<NodeId> peers, StructuredKey key, Object value) {
+        if (key instanceof AetherKey.NodeArtifactKey endpoint && value instanceof AetherValue.NodeArtifactValue state && state.state() == SliceState.ACTIVE) {
+            peers.add(endpoint.nodeId());
+        } else if (key instanceof AetherKey.SliceObservedKey observed && value instanceof AetherValue.SliceObservedValue row && row.state() == AetherValue.SliceObservedState.ACTIVE) {
+            peers.add(observed.nodeId());
+        }
     }
 
     private static void addPeer(Set<NodeId> peers, StructuredKey key) {
@@ -236,6 +245,8 @@ public final class WorkerMetadataIndex {
             case AetherKey.NodeArtifactKey entry -> Set.of(node(entry.nodeId()), artifact(entry.artifact()));
             case AetherKey.NodeRoutesKey entry -> Set.of(node(entry.nodeId()), artifact(entry.artifact()));
             case AetherKey.SliceNodeKey entry -> Set.of(node(entry.nodeId()), artifact(entry.artifact()));
+            case AetherKey.SliceDesiredKey entry -> Set.of(node(entry.nodeId()), artifact(entry.artifact()));
+            case AetherKey.SliceObservedKey entry -> Set.of(node(entry.nodeId()), artifact(entry.artifact()));
             case AetherKey.EndpointKey entry -> Set.of(artifact(entry.artifact()));
             case AetherKey.SliceTargetKey entry -> Set.of("artifact:" + entry.artifactBase().asString());
             case AetherKey.VersionRoutingKey entry -> Set.of("artifact:" + entry.artifactBase().asString());
@@ -267,7 +278,7 @@ public final class WorkerMetadataIndex {
             case AetherKey.EntityKeyspaceRegistrationKey entry -> Set.of(node(entry.node()),
                                                                          "entity:" + entry.keyspace());
             case AetherKey.EntityCheckpointKey entry -> Set.of("entity:" + entry.keyspace());
-            case AetherKey.DeploymentOutcomeKey _, AetherKey.ArtifactVersionsKey _, AetherKey.ArtifactContentKey _, AetherKey.DeploymentKey _, AetherKey.AbTestKey _, AetherKey.ApiKeyAuditKey _, AetherKey.ClusterConfigKey _, AetherKey.ClusterIncarnationKey _, AetherKey.DeploymentEngineKey _, AetherKey.DhtReplicationChangeKey _, AetherKey.DhtReplicationReportKey _, AetherKey.StreamPartitionRecoveryKey _, AetherKey.CapacityLedgerKey _, AetherKey.CapacityReservationKey _, AetherKey.NodeReplacementKey _, AetherKey.UpgradeRunKey _, AetherKey.WorkflowRunKey _, AetherKey.WorkflowClaimKey _, AetherKey.UnconfirmedTerminationKey _, AetherKey.CapacityAdmissionKey _, AetherKey.CommunityPlacementAvailabilityKey _, AetherKey.ProvisioningSlotKey _, AetherKey.AutoHealStateKey _, AetherKey.SliceDesiredKey _, AetherKey.SliceObservedKey _, AetherKey.DeploymentApplyKey _, AetherKey.ArtifactJudgmentKey _, AetherKey.NodeDepartureKey _, AetherKey.NodeIdentityKey _, AetherKey.NodeLeaseKey _, AetherKey.NodeIdHighWaterKey _, AetherKey.FsmWarningKey _ -> Set.of();
+            case AetherKey.DeploymentOutcomeKey _, AetherKey.ArtifactVersionsKey _, AetherKey.ArtifactContentKey _, AetherKey.DeploymentKey _, AetherKey.AbTestKey _, AetherKey.ApiKeyAuditKey _, AetherKey.ClusterConfigKey _, AetherKey.ClusterIncarnationKey _, AetherKey.DeploymentEngineKey _, AetherKey.DhtReplicationChangeKey _, AetherKey.DhtReplicationReportKey _, AetherKey.StreamPartitionRecoveryKey _, AetherKey.CapacityLedgerKey _, AetherKey.CapacityReservationKey _, AetherKey.NodeReplacementKey _, AetherKey.UpgradeRunKey _, AetherKey.WorkflowRunKey _, AetherKey.WorkflowClaimKey _, AetherKey.UnconfirmedTerminationKey _, AetherKey.CapacityAdmissionKey _, AetherKey.CommunityPlacementAvailabilityKey _, AetherKey.ProvisioningSlotKey _, AetherKey.AutoHealStateKey _, AetherKey.DeploymentApplyKey _, AetherKey.ArtifactJudgmentKey _, AetherKey.NodeDepartureKey _, AetherKey.NodeIdentityKey _, AetherKey.NodeLeaseKey _, AetherKey.NodeIdHighWaterKey _, AetherKey.FsmWarningKey _ -> Set.of();
             case AetherKey.LogLevelKey _, AetherKey.ObservabilityConfigKey _, AetherKey.AlertThresholdKey _, AetherKey.SchemaVersionKey _, AetherKey.SchemaMigrationLockKey _, AetherKey.GossipKeyRotationKey _, AetherKey.StreamConfigKey _, AetherKey.ApiKeyKey _, AetherKey.DhtPartitionOwnershipKey _, AetherKey.StreamPartitionOwnershipKey _, AetherKey.SpokesmanKey _, AetherKey.ClusterPhaseKey _, AetherKey.BackupRestoreKey _, AetherKey.StreamRegistryHolderKey _, AetherKey.StreamRegistryKey _ -> Set.of(GLOBAL);
         };
     }

@@ -30,6 +30,17 @@ B19.ForceClearDirectiveDelete -> off
 B2.ClusterStateNotification -> legacy+gate
 B20.EngineMarkerGuard -> guard
 B20.LineageMint -> marker=LEGACY
+B21.SliceRows -> legacy
+B21.controlLoop.NodeArtifactKey.put -> legacy
+B21.controlLoop.NodeArtifactKey.remove -> legacy
+B21.deploymentMap.NodeArtifactKey.put -> legacy
+B21.deploymentMap.NodeArtifactKey.remove -> legacy
+B21.endpoints.NodeArtifactKey.put -> legacy
+B21.endpoints.NodeArtifactKey.remove -> legacy
+B21.events.NodeArtifactKey.put -> legacy
+B21.tracker.NodeArtifactKey.put -> legacy
+B21.tracker.NodeArtifactKey.remove -> legacy
+B22.AllInstancesFailedDetector.activeInstances -> legacy
 B3.ActivationDriver -> legacy+gate
 B4.PassiveClientSwitch -> legacy+gate
 B5.ConfigApplied -> legacy

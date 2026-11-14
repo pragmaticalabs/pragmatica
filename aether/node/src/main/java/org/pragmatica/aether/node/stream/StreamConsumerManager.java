@@ -267,7 +267,8 @@ public interface StreamConsumerManager {
 
     /// Where a slice is deployed, cluster-wide, as this node currently sees it (#535).
     ///
-    /// Mirrored locally from committed `NodeArtifactKey` state, so answering needs no consensus round
+    /// Mirrored locally from committed state through the node's `DeploymentMap` (the `NodeArtifactKey`
+    /// rows under LEGACY, the current `SliceObservedKey` rows under FSM2, spec 1.6.1), so answering needs no consensus round
     /// and no leader — every node computes the same assignment from the same mirrored inputs, and a
     /// departed node drops out of the candidate set without anything having to evict it.
     ///

@@ -81,7 +81,7 @@ class WalReplicaOfLoglessOwnerTest {
                                        Option.<Path> none(),
                                        LastSealedOffsetSource.none());
         replica = streamPartitionManager(Long.MAX_VALUE, Option.some(replicaWal));
-        replica.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E2, 3L)));
+        replica.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 3L, Option.none())));
         owner.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
         replica.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
         handler = streamForwardHandler(OWNER, owner, AcceptingStreamForwardTransport.accepting((_, message) -> client.onReadForwardResponse((ReadForwardResponse) message)));
@@ -128,7 +128,7 @@ class WalReplicaOfLoglessOwnerTest {
     void ownerRead_isTheOnlySnapshot_aStartCommittedAfterItDoesNotLabelTheDeposedOwnersRecords() {
         publish(E1, 3);
         publish(E2, 3);
-        replica.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E2, 3L), new EpochStart(E3, 4L)));
+        replica.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 3L, Option.none()), EpochStart.epochStart(E3, 4L, Option.none())));
         backfill(committedOwner(OWNER));
         replica.ownerEpochSource((_, _) -> E3);
         replica.placementRoleSupplier((_, _) -> Role.REPLICA);

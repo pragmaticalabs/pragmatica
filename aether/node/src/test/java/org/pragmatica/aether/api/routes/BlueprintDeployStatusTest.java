@@ -57,6 +57,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.SliceRowSource;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
@@ -496,6 +497,8 @@ class BlueprintDeployStatusTest {
                                         AppHttpServer appHttpServer) implements ManageableNode {
         @Override
         public NodeId self() { return unsupported("self"); }
+        @Override
+        public SliceRowSource sliceRows() { return SliceRowSource.legacy(); }
         @Override
         public KVStore<AetherKey, AetherValue> kvStore() { return unsupported("kvStore"); }
         @Override

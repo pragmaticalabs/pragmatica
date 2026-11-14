@@ -49,7 +49,7 @@ public sealed interface Handlers {
             case ClusterInput.WitnessStale _ -> Lifecycle.onWitnessStale(m);
             case ClusterInput.SeamsRefreshed seams -> Lifecycle.onSeams(m, ctx, seams.seams());
             case ClusterInput.NodeJoined join -> Joins.onJoin(m, ctx, join.node(), join.admission(), false);
-            case ClusterInput.WorkerJoin join -> Joins.onJoin(m, ctx, join.node(), join.admission(), true);
+            case ClusterInput.WorkerJoin join -> Joins.onWorkerJoin(m, ctx, join);
             case ClusterInput.NodeRemoved gone -> DepartureFlow.onDeparture(m,
                                                                             ctx,
                                                                             gone.node(),
