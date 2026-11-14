@@ -133,10 +133,10 @@ public final class RedisClient implements RedisCommands {
     private Promise<RedisConnection> opened(Result<RedisConnection> result) {
         synchronized (lock) {
             opening--;
-            result.onSuccess(this::register);
-        }
 
-        return result.async();
+            return result.onSuccess(this::register)
+                         .async();
+        }
     }
 
     /// Under the lock. A connection that finished opening after close is closed, not pooled.
