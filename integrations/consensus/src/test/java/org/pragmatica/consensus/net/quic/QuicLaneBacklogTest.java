@@ -40,6 +40,7 @@ import org.pragmatica.testlogging.LogCapture;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockingDetails;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -301,6 +302,138 @@ class QuicLaneBacklogTest {
             .isEqualTo(1L);
         assertThat(network.laneBacklogCountForTests()).as("a REMOVED peer's frame is never held").isZero();
         assertThat(network.consensusRetriesInFlight()).isZero();
+    }
+
+    // --- item 11 (+18 success path): a drain that wrote every frame gave nothing up ---
+
+    @Test
+    void drain_writesEveryHeldFrame_countsNoGiveUp_warnsNothing_andTheEntryGoes() {
+        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var lane = new Lane(succeeded(), -1);
+
+        try (var capture = LogCapture.capture(LOGGER, Level.WARN, false)) {
+            holdFrames(network, lane, StreamType.CONSENSUS, 1, 2, 3);
+            lane.writable.set(true);
+
+            awaitWithin("the entry is removed once the drain wrote the frames", AWAIT, () -> network.laneBacklogCountForTests() == 0);
+
+            assertThat(lane.written).containsExactly(1, 2, 3);
+            assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP))
+                .as("a backlog that drained empty gave nothing up")
+                .isZero();
+            assertThat(capture.messages(Level.WARN)).filteredOn(message -> message.contains("gave up")).isEmpty();
+            assertThat(network.consensusRetriesInFlight()).isZero();
+        }
+    }
+
+    // --- item 18 (expiry path): a backlog whose every frame expired is retired and removed ---
+
+    @Test
+    void drain_everyHeldFrameExpires_entryGoes_andEachFrameIsCountedLostOnce() {
+        var network = LossAccountingFixtures.network(5, TimeSpan.timeSpan(10).millis());
+        var lane = new Lane(succeeded(), -1);
+
+        holdFrames(network, lane, StreamType.CONSENSUS, 1, 2, 3);
+
+        awaitWithin("the expired backlog's entry is removed", AWAIT, () -> network.laneBacklogCountForTests() == 0);
+
+        assertThat(lane.written).isEmpty();
+        assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP)).isEqualTo(3L);
+        assertThat(network.consensusRetriesInFlight()).isZero();
+    }
+
+    // --- item 14: exactly one drainer per backlog ---
+
+    /// A drain pass asks the stream `isWritable()` once, so those calls over a window count the passes. One drainer runs
+    /// at most window/interval + 1 of them; a drainer started per held frame (here 8) runs about eight times that.
+    @Test
+    void drain_framesHeldBehindStartNoDrainOfTheirOwn_onePassPerIntervalPerBacklog() {
+        var network = LossAccountingFixtures.network(100, TimeSpan.timeSpan(20).millis());
+        var lane = new Lane(succeeded(), -1);
+
+        holdFrames(network, lane, StreamType.CONSENSUS, 1, 2, 3, 4, 5, 6, 7, 8);
+
+        var before = writableChecks(lane);
+
+        LockSupport.parkNanos(TimeSpan.timeSpan(500).millis().nanos());
+
+        var passes = writableChecks(lane) - before;
+
+        assertThat(passes).as("control: the drain is running").isPositive();
+        assertThat(passes).as("passes in 500 ms at a 20 ms interval, one drainer").isLessThanOrEqualTo(30);
+        assertThat(network.heldFrameCountForTests(lane.ch)).isEqualTo(8);
+    }
+
+    private static long writableChecks(Lane lane) {
+        return mockingDetails(lane.ch).getInvocations()
+                                      .stream()
+                                      .filter(invocation -> invocation.getMethod().getName().equals("isWritable"))
+                                      .count();
+    }
+
+    // --- item 17: a stream that closes inside a pass is not written to ---
+
+    /// The pass's liveness check passes, then the stream closes before the write loop asks it: the write loop's own
+    /// `isActive()` guard keeps the frames off the dead stream, and the next pass gives them up.
+    @Test
+    void drain_streamClosesBetweenTheLivenessCheckAndTheWrites_framesAreNotWritten_butGivenUp() {
+        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var lane = new Lane(succeeded(), -1);
+        var activeAnswers = new AtomicInteger(1);
+
+        when(lane.ch.isActive()).thenAnswer(_ -> !lane.writable.get() || activeAnswers.getAndDecrement() > 0);
+        holdFrames(network, lane, StreamType.CONSENSUS, 1, 2, 3);
+        lane.writable.set(true);
+
+        awaitWithin("the dead stream's entry goes", AWAIT, () -> network.laneBacklogCountForTests() == 0);
+
+        assertThat(lane.written).as("nothing is written to a stream that closed").isEmpty();
+        assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP)).isEqualTo(3L);
+    }
+
+    // --- item 20: a held write ends the backpressure episode its frame opened ---
+
+    @Test
+    void heldWrite_endsTheBackpressureEpisode_theUnwritableFrameOpened() {
+        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var lane = new Lane(succeeded(), -1);
+
+        holdFrames(network, lane, StreamType.CONSENSUS, 1);
+        assertThat(network.openBackpressureEpisodesForTests()).as("the unwritable frame opened an episode").isEqualTo(1);
+
+        lane.writable.set(true);
+        awaitWithin("the held frame is written", AWAIT, () -> lane.written.size() == 1);
+
+        assertThat(network.openBackpressureEpisodesForTests()).as("the held write ended the episode").isZero();
+    }
+
+    // --- item 21: held AND direct writes are counted as sent ---
+
+    @Test
+    void sentCounters_directWrite_countsOneMessageAndItsBytes() {
+        var network = LossAccountingFixtures.network(10, TimeSpan.timeSpan(20).millis());
+        var lane = writableLane();
+
+        network.writeIfWritableForTest(lane.ch, new byte[3], PEER, StreamType.CONSENSUS);
+
+        assertThat(network.quicMetrics().messagesSentCount()).isEqualTo(1L);
+        assertThat(network.quicMetrics().bytesSentCount()).isEqualTo(3L);
+    }
+
+    @Test
+    void sentCounters_heldWrite_countsEachMessageAndItsBytes_onceTheDrainWroteIt() {
+        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var lane = new Lane(succeeded(), -1);
+
+        network.writeIfWritableForTest(lane.ch, new byte[5], PEER, StreamType.CONSENSUS);
+        network.writeIfWritableForTest(lane.ch, new byte[7], PEER, StreamType.CONSENSUS);
+        assertThat(network.quicMetrics().messagesSentCount()).as("held frames are not sent yet").isZero();
+
+        lane.writable.set(true);
+        awaitWithin("both held frames are written", AWAIT, () -> lane.written.size() == 2);
+
+        assertThat(network.quicMetrics().messagesSentCount()).isEqualTo(2L);
+        assertThat(network.quicMetrics().bytesSentCount()).isEqualTo(12L);
     }
 
     // --- helpers ---

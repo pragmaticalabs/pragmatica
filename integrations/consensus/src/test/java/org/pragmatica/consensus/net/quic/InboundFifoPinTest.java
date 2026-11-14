@@ -42,7 +42,10 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.starte
 ///     the frames sent after it overtook it (1 failure in 40 runs at host load 20-25, 2026-11-13).
 ///   - OVERRUN: a tight burst of large frames outruns the lane's writability; the refused frames are held in send order
 ///     by the stream's `LaneBacklog` and written head first, so no frame overtakes another. This pin was a tripwire
-///     asserting the opposite (A-07.3, mechanism 3) until #3168 made the held frames ordered.
+///     asserting the opposite (A-07.3, mechanism 3) until #3168 made the held frames ordered. This stress test pins
+///     delivery without inversion under real backpressure (it fails if the burst never hit backpressure); the order in
+///     which a drain writes held frames is pinned by `LaneBacklogTest` and `QuicLaneBacklogTest`, which this test's load
+///     does not reach reliably.
 ///
 /// The receive side cannot reorder: a frame is decoded and routed on the stream's own event loop, synchronously.
 @Timeout(120)
@@ -127,9 +130,13 @@ class InboundFifoPinTest {
     /// Frames of both senders seen out of send order after an overrun burst; every frame still arrives (loss is not the point).
     private long inversionsAfterAnOverrunBurst() {
         var frames = OVERRUN_FRAMES;
+        var senders = connectedSenders();
 
-        sendInterleaved(connectedSenders(), frames, "x".repeat(OVERRUN_PAD_BYTES), false);
+        sendInterleaved(senders, frames, "x".repeat(OVERRUN_PAD_BYTES), false);
         awaitTrue(() -> received.size() == 2 * frames, AWAIT, "all " + 2 * frames + " frames delivered (retries included)");
+        assertThat(senders.a().quicMetrics().backpressureRetryCount() + senders.c().quicMetrics().backpressureRetryCount())
+            .as("precondition: the burst hit backpressure and frames were held; without that the order assertion is vacuous")
+            .isPositive();
 
         return inversions(arrivalOrderOf("a-")) + inversions(arrivalOrderOf("c-"));
     }
