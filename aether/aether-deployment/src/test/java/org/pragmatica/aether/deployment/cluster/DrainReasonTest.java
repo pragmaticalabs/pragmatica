@@ -20,4 +20,10 @@ class DrainReasonTest {
                          .filter(DrainReason::isSurplusTrim)).containsExactlyInAnyOrder(DrainReason.OVERPROVISION_SCALE_DOWN,
                                                                                          DrainReason.OVERPROVISION_PARTITION_HEAL);
     }
+
+    /// #3193: a retired worker's halt is a decision, not a surplus trim, so the grace backstop must not re-check it.
+    @Test
+    void isSurplusTrim_directiveRetired_isFalse() {
+        assertThat(DrainReason.DIRECTIVE_RETIRED.isSurplusTrim()).isFalse();
+    }
 }

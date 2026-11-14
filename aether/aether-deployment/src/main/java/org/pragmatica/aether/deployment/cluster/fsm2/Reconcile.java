@@ -71,7 +71,7 @@ public sealed interface Reconcile {
 
     /// Step 10: the desired keys of finished unloads, the rows of departed nodes, the ADMITTED rewrite, the stale topic rows (#1337), the
     /// pending joins.
-    /// No record is removed here (R-4.3.5 narrowed by MQ-4).
+    /// No record is removed here except a departed worker's, with its directive in its C17b (#3193; R-4.3.5 narrowed by MQ-4).
     private static ClusterModel collect(ClusterModel m, Ctx ctx) {
         m.unloadedDesired.toList()
                          .stream()

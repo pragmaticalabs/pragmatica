@@ -134,7 +134,7 @@ class BackstopTest {
     // not remove w1's rows, desired keys and routes in one guarded transaction; placed(a) is not restored; the directive or
     // placement key is touched by any FSM write; the record is not collected with the directive; assignedByCommunity counted w1.
     @Test
-    void lostDeparture_afterTheBound_recordsStale_thenC17bRemovesRows_directiveWaits() {
+    void lostDeparture_afterTheBound_recordsStale_thenC17bRemovesRowsAndTheWorkerDirective() {
         var w = lostDeparture();
 
         w.h.deliver(new ClusterInput.WorkerJoin(W2, w.admit(W2, tokenOf(W2))));
@@ -158,27 +158,26 @@ class BackstopTest {
         var cleanup = w.h.submits(SubmitKind.CLEANUP);
 
         assertThat(cleanup).hasSize(1);
-        assertThat(cleanup.getFirst().transaction().guards()).anyMatch(g -> g.key()
-                                                                             .equals(new NodeDepartureKey(W1)));
+        assertThat(cleanup.getFirst().transaction().mutations()).as("a worker with a directive: the record is removed in the same transaction (exact-value), not guarded")
+                  .anyMatch(m -> m.key().equals(new NodeDepartureKey(W1)) && m.replacement().isEmpty());
         assertThat(w.present(new SliceObservedKey(W1, ORDERS))).isFalse();
         assertThat(w.present(new SliceDesiredKey(W1, ORDERS))).isFalse();
         assertThat(w.present(new NodeRoutesKey(W1, ORDERS))).isFalse();
-        assertThat(w.present(new ActivationDirectiveKey(W1))).as("the directive waits (Q1)").isTrue();
+        assertThat(w.present(new ActivationDirectiveKey(W1))).as("C17b retires the worker's directive, inferred departure included (#3193; supersedes Q1 for workers)").isFalse();
         assertThat(w.present(new NodePlacementKey(W1))).isTrue();
+        assertThat(cleanup.getFirst().transaction().mutations()).as("C17b carries the worker's directive removal")
+                  .anyMatch(m -> m.key() instanceof ActivationDirectiveKey k && k.nodeId().equals(W1) && m.replacement().isEmpty());
         assertThat(w.h.submits()
                       .stream()
                       .flatMap(s -> s.transaction()
                                      .mutations()
                                      .stream())
-                      .anyMatch(m -> m.key() instanceof ActivationDirectiveKey k && k.nodeId()
-                                                                                     .equals(W1) || m.key() instanceof NodePlacementKey p && p.nodeId()
-                                                                                                                                              .equals(W1))).isFalse();
+                      .anyMatch(m -> m.key() instanceof NodePlacementKey p && p.nodeId().equals(W1))).isFalse();
         assertThat(Rows.placed(w.h.model(), ORDERS)).as("placed(a) restored by a fresh goal").isEqualTo(2);
         assertThat(w.h.model().assignedByCommunity.get(C).map(set -> set.contains(W1))).as("not counted by the community accounting")
                   .isEqualTo(Option.some(false));
-        w.h.seedRemove(new ActivationDirectiveKey(W1));
         w.h.drain();
-        assertThat(w.recordOf(W1).isEmpty()).as("R-4.3.3: confirmed termination collects the record").isTrue();
+        assertThat(w.recordOf(W1).isEmpty()).as("R-4.3.3: the directive's retirement collects the record").isTrue();
     }
 
     // NT-126 (c) first arm
@@ -251,6 +250,9 @@ class BackstopTest {
     @Test
     void inferredDeparture_isConfirmed_whenItsIdentityIsRetired() {
         var w = lostDeparture();
+
+        // #3193: C17b would retire the worker's directive, hence its identity, at once; the "record stands" window is observed by losing it.
+        w.h.loseKinds = Set.of(SubmitKind.CLEANUP);
 
         w.evolve(C, GOV, ALIVE_WITHOUT_W1, WITHOUT_W1, 5_000L);
         var since = w.since(W1).or(0L);
