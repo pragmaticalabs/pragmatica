@@ -140,6 +140,11 @@ public final class H3Probe {
 
             quic.closeFuture().addListener(_ -> reader.finish("quic-closed"));
 
+            // #2746: connection statistics every 500 ms (packets and bytes sent, received, lost, retransmitted), so a
+            // connection that goes silent shows whether the server's packets stopped arriving or the client's stopped
+            // being acknowledged
+            var sampler = group.next()
+                               .scheduleAtFixedRate(() -> sampleStats(quic, trace), 500, 500, TimeUnit.MILLISECONDS);
             var stream = Http3.newRequestStream(quic, reader).sync().getNow();
 
             trace.add("stream-open");
@@ -151,12 +156,21 @@ public final class H3Probe {
 
             var answer = awaitAnswer(reader, trace);
 
+            sampler.cancel(false);
+
             quic.close().sync();
             channel.close().sync();
 
             return answer;
         } finally {
             group.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
+        }
+    }
+
+    private static void sampleStats(QuicChannel quic, Trace trace) {
+        if (quic.isActive()) {
+            quic.collectStats(quic.eventLoop().<io.netty.handler.codec.quic.QuicConnectionStats>newPromise())
+                .addListener(done -> trace.add("stats(" + done.getNow() + ")"));
         }
     }
 
