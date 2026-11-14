@@ -127,8 +127,9 @@ class SchemaScopedMigrationPgTest {
         var absent = migrate(SchemaMigrations.schemaMigrations(GENEROUS, Option.some(schemaName("not_made"))), connector, "entity-app",
                              script(1, "t", "CREATE TABLE not_made.t (id BIGINT)"));
 
-        assertThat(absent.fold(cause -> cause.message(), value -> "unexpected success: " + value))
-            .isEqualTo(MigrationError.SchemaCreateDenied.schemaCreateDenied("not_made", LIMITED).message());
+        String refusal = absent.fold(cause -> cause.message(), value -> "unexpected success: " + value);
+
+        assertThat(refusal).isEqualTo(MigrationError.SchemaCreateDenied.schemaCreateDenied("not_made", LIMITED).message());
         assertThat(scalar("SELECT count(*) FROM pg_namespace WHERE nspname = 'not_made'")).as("nothing was created").isZero();
 
         execute("GRANT CREATE ON DATABASE " + database + " TO " + LIMITED);

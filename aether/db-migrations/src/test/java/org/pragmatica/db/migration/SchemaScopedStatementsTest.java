@@ -68,8 +68,9 @@ class SchemaScopedStatementsTest {
                                       .migrate("ds", List.of(), connector, "node-1", "owner")
                                       .await();
 
-        assertThat(outcome.fold(cause -> cause.message(), value -> "unexpected success: " + value))
-            .isEqualTo(MigrationError.SchemaQualifierUnsupported.schemaQualifierUnsupported("entity_orders", type.name()).message());
+        String refusal = outcome.fold(cause -> cause.message(), value -> "unexpected success: " + value);
+
+        assertThat(refusal).isEqualTo(MigrationError.SchemaQualifierUnsupported.schemaQualifierUnsupported("entity_orders", type.name()).message());
         assertThat(connector.statements).as("nothing ran, not even the fence").isEmpty();
     }
 
