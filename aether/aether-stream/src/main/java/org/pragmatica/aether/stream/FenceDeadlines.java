@@ -29,7 +29,8 @@ import org.pragmatica.lang.io.TimeSpan;
 ///
 /// The entry ends only with its term: a record of a new term replaces it (or drops it when another node owns that term). A
 /// same-term re-gate (quorum loss cleared the activation) reuses it. A node with no entry for the term (restarted, joined
-/// later, loaded the record from a snapshot) uses the current time, which only waits longer.
+/// later, loaded the record from a snapshot) uses the current time at its gate's first read, which only waits longer, and keeps
+/// it for the term like a delivered base.
 ///
 /// Monotonic times are compared by difference only, as [NodeLease] does.
 public final class FenceDeadlines {
@@ -76,12 +77,31 @@ public final class FenceDeadlines {
     }
 
     /// The monotonic instant at which the gate of `key` in `ownershipTerm` may skip the fence target: the captured base plus
-    /// `W`, or now plus `W` when no base was captured for that term.
+    /// `W`. With no base for that term (restart, late join, snapshot load, or a gate that read the record before its delivery
+    /// reached the listener) the FIRST read captures now as the base (#2981 step 3b, v3186 F1): a re-reading gate (a same-term
+    /// re-gate after quorum loss) then finds the same deadline, which therefore passes, where an uncaptured now + `W` would move
+    /// with every read and never expire. A base of a NEWER term is kept, and a read for an older term (a stale gate, which its
+    /// guarded lineage write refuses anyway) captures nothing and gets now + `W`.
     public long deadline(PartitionKey key, long ownershipTerm) {
-        return Option.option(bases.get(key))
+        var now = nanoTime.getAsLong();
+
+        return Option.option(bases.compute(key, (_, known) -> keptOrNow(known, ownershipTerm, now)))
                      .filter(base -> base.ownershipTerm() == ownershipTerm)
                      .map(Base::nanos)
-                     .or(nanoTime::getAsLong) + waitNanos;
+                     .or(now) + waitNanos;
+    }
+
+    /// How long the gate of `key` in `ownershipTerm` still waits before it may skip the fence target; zero or negative once the
+    /// deadline passed. Reads (and on the first read captures) the deadline as [#deadline] does.
+    public long nanosLeft(PartitionKey key, long ownershipTerm) {
+        return deadline(key, ownershipTerm) - nanoTime.getAsLong();
+    }
+
+    /// `known` is the map's current entry, absent as `null` (the [Map#compute] callback contract).
+    private static Base keptOrNow(Base known, long ownershipTerm, long now) {
+        return Option.option(known)
+                     .filter(base -> base.ownershipTerm() >= ownershipTerm)
+                     .or(() -> Base.base(ownershipTerm, now));
     }
 
     private void captureOnce(PartitionKey key, StreamPartitionOwnershipValue record) {
