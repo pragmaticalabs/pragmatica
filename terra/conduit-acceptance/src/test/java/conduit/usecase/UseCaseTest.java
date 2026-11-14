@@ -168,6 +168,22 @@ class UseCaseTest {
         }
 
         @Test
+        void malformedEmail_is422BeforeTheLookup() {
+            var looked = new ArrayList<String>();
+            var login = Login.login(email -> {
+                                        looked.add(email.value());
+                                        return Promise.success(Option.<User>none());
+                                    },
+                                    new StubHasher().verify,
+                                    ISSUER,
+                                    CLOCK);
+            var result = login.execute(Login.Request.request(Login.Request.Credentials.credentials("a@", "password123")));
+
+            assertThat(errors(failure(result))).containsExactly(FieldError.fieldError("email", "is invalid"));
+            assertThat(looked).isEmpty();
+        }
+
+        @Test
         void unknownEmailAndWrongPassword_areTheSame401() {
             var credentials = Login.Request.request(Login.Request.Credentials.credentials("a@b.c", "password124"));
 

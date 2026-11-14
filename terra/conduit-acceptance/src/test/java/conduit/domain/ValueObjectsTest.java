@@ -58,13 +58,6 @@ class ValueObjectsTest {
         void malformedIsInvalid(String raw) {
             assertThat(errors(failure(Email.email(Option.option(raw))))).containsExactly(FieldError.fieldError("email", "is invalid"));
         }
-
-        @Test
-        void loginChecksOnlyPresence() {
-            assertThat(success(Email.loginEmail(Option.option("NOT-AN-EMAIL"))).value()).isEqualTo("not-an-email");
-            assertThat(errors(failure(Email.loginEmail(Option.option(""))))).containsExactly(FieldError.fieldError("email",
-                                                                                                   "can't be blank"));
-        }
     }
 
     @Nested

@@ -25,7 +25,7 @@ import static org.pragmatica.lang.Option.option;
 /// `POST /users/login`: check credentials and mint a token (B-07).
 ///
 /// A wrong password and an unknown email are the same 401 `credentials: invalid`; no dummy bcrypt runs for an
-/// unknown email (B-09). The email is lowercased before the lookup (B-12).
+/// unknown email (B-09). A malformed email is a 422 `email: is invalid` before any lookup; the email is lowercased before the lookup (B-12).
 @Slice
 public interface Login {
     record Request(Credentials user) {
@@ -51,7 +51,7 @@ public interface Login {
         }
 
         private static Result<ValidRequest> parsed(Request.Credentials user) {
-            return Result.all(Email.loginEmail(user.email()),
+            return Result.all(Email.email(user.email()),
                               Password.loginPassword(user.password()))
                          .map(ValidRequest::new)
                          .mapError(RequestInvalid::merged);

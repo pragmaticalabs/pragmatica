@@ -27,16 +27,11 @@ public record Email(String value) {
     private static final RequestInvalid BLANK = RequestInvalid.blank("email");
     private static final RequestInvalid INVALID = RequestInvalid.requestInvalid("email", "is invalid");
 
-    /// Register and update: blank, then format.
+    /// Register, update and login: blank, then format. Login validates before the credential lookup (RealWorld spec, upstream b8a37f107c):
+    /// a malformed address is a 422 `email: is invalid`, not the 401 an unknown address gets (B-09).
     public static Result<Email> email(Option<String> raw) {
         return blankChecked(raw).flatMap(value -> Verify.ensure(value, Verify.Is::matches, FORMAT, INVALID))
                            .map(Email::normalized);
-    }
-
-    /// Login: blank only. A malformed address cannot match a stored one, so it ends in the same 401 as an unknown
-    /// email (B-09) instead of revealing which check failed.
-    public static Result<Email> loginEmail(Option<String> raw) {
-        return blankChecked(raw).map(Email::normalized);
     }
 
     private static Result<String> blankChecked(Option<String> raw) {

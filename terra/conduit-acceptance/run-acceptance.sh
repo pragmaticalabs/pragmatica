@@ -14,9 +14,8 @@
 #
 # local/hurl is project-owned and is added after the upstream copy; spec/hurl itself is never modified.
 # What is NOT the upstream suite verbatim: assertions on the BODY of an error response (`jsonpath "$.errors..."` under an `HTTP 4xx`/`5xx`
-# response line) are removed from a scratch copy before the run, because Terra answers RFC 9457 problem details (owner ruling 2026-11-08),
-# not the spec's {"errors":{...}} shape. Every status line, every success-body assertion and every capture is kept; the number removed
-# is printed. See README.md.
+# response line) are rewritten in a scratch copy to `$.detail contains "<field>: <msg>"` (Terra answers RFC 9457 problem details, owner ruling
+# 2026-11-08); the cases in local/exempt-by-name.txt are dropped. check-vendored.sh runs first. Counts are printed. See README.md.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -101,26 +100,46 @@ done
 [ "$up" = 1 ] || { echo "ACCEPTANCE ERROR: GET /api/tags did not answer 200 within ${STARTUP_TIMEOUT}s; tail of the app log:" >&2; tail -40 "$WORK/app.log" >&2; exit 2; }
 echo "application up on port $APP_PORT, PostgreSQL on port $PG_PORT, suite image $HURL_IMAGE"
 
-# --- suite copy without error-body assertions ----------------------------------------------------------------------------------------------
+# --- suite copy: error-body assertions rewritten to RFC 9457 detail ---------------------------------------------------------------------------
+# `jsonpath "$.errors.<field>[0]" == "<msg>"` under an `HTTP 4xx/5xx` line becomes `jsonpath "$.detail" contains "<field>: <msg>"`, except the
+# cases listed by name in local/exempt-by-name.txt, which are dropped (and counted). spec/hurl itself is never modified.
+"$HERE/check-vendored.sh" || { echo "ACCEPTANCE ERROR: spec/hurl drifted from the recorded upstream commit" >&2; exit 2; }
 SUITE="$WORK/suite"
 mkdir -p "$SUITE"
-exempt=0
+EXEMPT_LIST="$(grep -v '^#' "$HERE/local/exempt-by-name.txt" | awk 'NF {print $1}')"
+want_exempt=$(printf '%s\n' "$EXEMPT_LIST" | awk 'NF' | wc -l | tr -d ' ')
 for f in "$HERE"/spec/hurl/*.hurl; do
-  awk -v out="$WORK/exempt.count" '
+  b="$(basename "$f")"
+  awk -v base="$b" -v list="$EXEMPT_LIST" -v out="$WORK/rewrite.count" -v ex="$WORK/exempt.count" -v bad="$WORK/exempt.bad" '
+    BEGIN { n = split(list, a, "\n"); for (i = 1; i <= n; i++) named[a[i]] = 1 }
     /^(GET|POST|PUT|DELETE|PATCH) / { err = 0 }
     /^HTTP [45][0-9][0-9]/ { err = 1 }
     /^HTTP [123][0-9][0-9]/ { err = 0 }
-    err && /^jsonpath "\$\.errors/ { n++; next }
+    err && /^jsonpath "\$\.errors\./ {
+      key = base ":" FNR
+      if (key in named) {
+        if ($0 ~ /^jsonpath "\$\.errors\.token\[0\]"/) { e++ } else { print key >> bad }
+        next
+      }
+      if ($0 !~ /^jsonpath "\$\.errors\.[a-z_]+\[0\]" == "/) { print key >> bad; next }
+      field = $0; sub(/^jsonpath "\$\.errors\./, "", field); sub(/\[0\]".*$/, "", field)
+      msg = $0; sub(/^jsonpath "\$\.errors\.[a-z_]+\[0\]" == "/, "", msg)
+      print "jsonpath \"$.detail\" contains \"" field ": " msg
+      r++; next
+    }
     { print }
-    END { print n + 0 >> out }' "$f" > "$SUITE/$(basename "$f")"
+    END { print r + 0 >> out; print e + 0 >> ex }' "$f" > "$SUITE/$b"
 done
+[ ! -s "$WORK/exempt.bad" ] || { echo "ACCEPTANCE ERROR: unexpected error-body assertion shape or exemption target:" >&2; cat "$WORK/exempt.bad" >&2; exit 2; }
+rewritten=$(awk '{s+=$1} END{print s+0}' "$WORK/rewrite.count")
+exempt=$(awk '{s+=$1} END{print s+0}' "$WORK/exempt.count")
+[ "$exempt" = "$want_exempt" ] || { echo "ACCEPTANCE ERROR: $exempt exemptions applied, $want_exempt listed in local/exempt-by-name.txt" >&2; exit 2; }
 local_files=0
 for f in "$HERE"/local/hurl/*.hurl; do
   [ -e "$f" ] || continue
   cp "$f" "$SUITE/$(basename "$f")"
   local_files=$(( local_files + 1 ))
 done
-exempt=$(awk '{s+=$1} END{print s+0}' "$WORK/exempt.count")
 files=$(ls "$SUITE"/*.hurl | wc -l | tr -d ' ')
 [ "$files" -gt 0 ] || { echo "ACCEPTANCE ERROR: no suite files found under $HERE/spec/hurl" >&2; exit 2; }
 
@@ -168,7 +187,7 @@ PY
 done
 
 echo "-------------------------------------------------------------------------------"
-echo "Conduit acceptance: files $((passed + failed)) (project-owned $local_files), passed $passed, failed $failed, requests executed $requests, asserts evaluated $assertions, error-body assertions exempt $exempt"
+echo "Conduit acceptance: files $((passed + failed)) (project-owned $local_files), passed $passed, failed $failed, requests executed $requests, asserts evaluated $assertions, error-body assertions rewritten to detail $rewritten, exempt by name $exempt"
 if [ "$failed" -gt 0 ] || [ "$passed" -eq 0 ]; then
   echo "RESULT: FAIL ($failed_files )"
   exit 1
