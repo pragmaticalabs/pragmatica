@@ -30,7 +30,7 @@ public sealed interface PgSchemaName permits PgSchemaNameValue {
                              PgSchemaNameError.malformed(raw))
                      .flatMap(PgSchemaNameValue::matchGrammar)
                      .flatMap(PgSchemaNameValue::rejectReserved)
-                     .map(PgSchemaNameValue::new);
+                     .map(PgSchemaNameValue::pgSchemaNameValue);
     }
 
     /// The name as a double-quoted identifier. The grammar admits no quote character, so no escaping is needed.

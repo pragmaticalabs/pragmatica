@@ -17,6 +17,10 @@ record PgSchemaNameValue(String value) implements PgSchemaName {
     private static final String RESERVED_PREFIX = "pg_";
     private static final Set<String> RESERVED_EXACT = Set.of("information_schema", "public");
 
+    static PgSchemaNameValue pgSchemaNameValue(String validated) {
+        return new PgSchemaNameValue(validated);
+    }
+
     static Result<String> matchGrammar(String raw) {
         return Verify.ensure(raw, Verify.Is::matches, GRAMMAR, PgSchemaNameError.malformed(raw));
     }
@@ -26,6 +30,6 @@ record PgSchemaNameValue(String value) implements PgSchemaName {
     }
 
     private static boolean isUnreserved(String name) {
-        return !name.startsWith(RESERVED_PREFIX) && !RESERVED_EXACT.contains(name);
+        return ! name.startsWith(RESERVED_PREFIX) && !RESERVED_EXACT.contains(name);
     }
 }
