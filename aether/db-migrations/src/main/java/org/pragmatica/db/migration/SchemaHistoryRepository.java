@@ -166,18 +166,26 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
         this.queryOwnerSql = "SELECT blueprint_base FROM " + ownerTable;
         this.insertOwnerSql = "INSERT INTO " + ownerTable + " (blueprint_base) VALUES (?)";
         this.queryAppliedSql = "SELECT version, type, description, script, checksum, applied_by, applied_at, execution_ms "
-                               + "FROM " + history + " WHERE status = 'SUCCESS' ORDER BY version";
-        this.insertSql = "INSERT INTO " + history + " (version, type, description, script, checksum, applied_by, applied_at, execution_ms) "
-                         + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
-        this.insertProgressSql = "INSERT INTO " + history + " "
-                                 + "(version, type, description, script, checksum, applied_by, applied_at, execution_ms, status, statements_completed) "
-                                 + "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)";
-        this.updateProgressSql = "UPDATE " + history + " SET statements_completed = ? " + "WHERE version = ? AND type = ?";
+                             + "FROM " + history
+                             + " WHERE status = 'SUCCESS' ORDER BY version";
+        this.insertSql = "INSERT INTO " + history
+                       + " (version, type, description, script, checksum, applied_by, applied_at, execution_ms) "
+                       + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+        this.insertProgressSql = "INSERT INTO " + history
+                               + " "
+                               + "(version, type, description, script, checksum, applied_by, applied_at, execution_ms, status, statements_completed) "
+                               + "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)";
+        this.updateProgressSql = "UPDATE " + history
+                               + " SET statements_completed = ? "
+                               + "WHERE version = ? AND type = ?";
         this.updateStatusSql = "UPDATE " + history + " SET status = ? WHERE version = ? AND type = ?";
-        this.finalizeSuccessSql = "UPDATE " + history + " "
-                                  + "SET status = ?, checksum = ?, applied_at = ?, execution_ms = ?, statements_completed = ? "
-                                  + "WHERE version = ? AND type = ?";
-        this.queryProgressSql = "SELECT status, statements_completed, checksum FROM " + history + " " + "WHERE version = ? AND type = ?";
+        this.finalizeSuccessSql = "UPDATE " + history
+                                + " "
+                                + "SET status = ?, checksum = ?, applied_at = ?, execution_ms = ?, statements_completed = ? "
+                                + "WHERE version = ? AND type = ?";
+        this.queryProgressSql = "SELECT status, statements_completed, checksum FROM " + history
+                              + " "
+                              + "WHERE version = ? AND type = ?";
         this.deleteSql = "DELETE FROM " + history + " WHERE version = ? AND type = ?";
         this.queryRepeatableSql = "SELECT checksum FROM " + history + " WHERE type = 'REPEATABLE' AND description = ?";
     }
@@ -205,7 +213,8 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
     /// at the latest version runs no evolution DDL — the flow is idempotent.
     @Override
     public Promise<Unit> bootstrap(SqlConnector connector) {
-        return connector.update(SchemaHistoryEvolution.createMetaTableSql(connector.databaseType(), schema))
+        return connector.update(SchemaHistoryEvolution.createMetaTableSql(connector.databaseType(),
+                                                                          schema))
                         .flatMap(_ -> readSchemaVersion(connector))
                         .flatMap(version -> evolveFrom(connector, version));
     }
@@ -260,7 +269,8 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
     /// history read or write, so a refusal leaves the database exactly as it was found.
     @Override
     public Promise<Unit> claimOwnership(SqlConnector connector, String datasourceName, String owner) {
-        return connector.update(SchemaHistoryEvolution.createOwnerTableSql(connector.databaseType(), schema))
+        return connector.update(SchemaHistoryEvolution.createOwnerTableSql(connector.databaseType(),
+                                                                           schema))
                         .flatMap(_ -> readOwnerBase(connector))
                         .flatMap(stored -> resolveClaim(connector, datasourceName, owner, stored));
     }

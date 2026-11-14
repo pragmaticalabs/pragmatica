@@ -81,7 +81,9 @@ public interface SchemaMigrations {
     /// [MigrationError.SchemaCreateDenied], an engine without schemas with [MigrationError.SchemaQualifierUnsupported].
     /// With `none` every statement is byte-identical to [#schemaMigrations(TimeSpan)].
     static SchemaMigrations schemaMigrations(TimeSpan statementTimeout, Option<PgSchemaName> schema) {
-        return new DefaultSchemaMigrations(SchemaHistoryRepository.schemaHistoryRepository(schema), statementTimeout, schema);
+        return new DefaultSchemaMigrations(SchemaHistoryRepository.schemaHistoryRepository(schema),
+                                           statementTimeout,
+                                           schema);
     }
 
     record SchemaResult(int appliedCount, int currentVersion, long totalMs) {
@@ -93,6 +95,7 @@ public interface SchemaMigrations {
 
 final class DefaultSchemaMigrations implements SchemaMigrations {
     private final SchemaHistoryRepository historyRepo;
+
     private static final RowMapper<Integer> PRESENT_MAPPER = row -> row.getInt("present");
     private static final RowMapper<String> ROLE_MAPPER = row -> row.getString("role");
     private static final String CURRENT_ROLE_SQL = "SELECT current_user AS role";
@@ -102,7 +105,9 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
     private final TimeSpan statementTimeout;
     private final Option<PgSchemaName> schema;
 
-    DefaultSchemaMigrations(SchemaHistoryRepository historyRepo, TimeSpan statementTimeout, Option<PgSchemaName> schema) {
+    DefaultSchemaMigrations(SchemaHistoryRepository historyRepo,
+                            TimeSpan statementTimeout,
+                            Option<PgSchemaName> schema) {
         this.historyRepo = historyRepo;
         this.statementTimeout = statementTimeout;
         this.schema = schema;
@@ -177,7 +182,7 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                   String nodeId,
                                   SqlConnector.TransactionCallback<T> body) {
         return qualifierRefusal(connector.databaseType()).fold(() -> fencedRun(datasource, connector, nodeId, body),
-                                                                cause -> cause.promise());
+                                                               cause -> cause.promise());
     }
 
     /// Only PostgreSQL has the schemas a scoped migration needs (the history table is spliced as `"<schema>".table`);
@@ -185,7 +190,7 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
     private Option<Cause> qualifierRefusal(DatabaseType type) {
         return schema.filter(_ -> type != DatabaseType.POSTGRESQL)
                      .map(name -> schemaQualifierUnsupported(name.value(),
-                                                            type.name()));
+                                                             type.name()));
     }
 
     private <T> Promise<T> fencedRun(String datasource,
@@ -288,8 +293,8 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
     /// after the fence is held (design §1: history is read ONLY after acquire).
     private Promise<List<AppliedMigration>> claimAndReadHistory(String datasource, SqlConnector session, String owner) {
         return ensureSchema(session).flatMap(_ -> historyRepo.bootstrap(session))
-                          .flatMap(_ -> historyRepo.claimOwnership(session, datasource, owner))
-                          .flatMap(_ -> historyRepo.queryApplied(session));
+                           .flatMap(_ -> historyRepo.claimOwnership(session, datasource, owner))
+                           .flatMap(_ -> historyRepo.queryApplied(session));
     }
 
     /// The scoped schema must exist before its tables can: a catalog read first, so a role that may only USE a
@@ -299,14 +304,18 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
     }
 
     private static Promise<Unit> createWhenAbsent(SqlConnector session, PgSchemaName name) {
-        return session.queryOptional(SchemaHistoryEvolution.schemaExistsSql(), PRESENT_MAPPER, name.value())
-                      .flatMap(present -> present.fold(() -> createSchema(session, name), _ -> Promise.unitPromise()));
+        return session.queryOptional(SchemaHistoryEvolution.schemaExistsSql(),
+                                     PRESENT_MAPPER,
+                                     name.value())
+                      .flatMap(present -> present.fold(() -> createSchema(session, name),
+                                                       _ -> Promise.unitPromise()));
     }
 
     private static Promise<Unit> createSchema(SqlConnector session, PgSchemaName name) {
         return session.update(SchemaHistoryEvolution.createSchemaSql(name))
                       .mapToUnit()
-                      .fold(outcome -> outcome.fold(cause -> deniedOrFailed(session, name, cause), _ -> Promise.unitPromise()));
+                      .fold(outcome -> outcome.fold(cause -> deniedOrFailed(session, name, cause),
+                                                    _ -> Promise.unitPromise()));
     }
 
     private static Promise<Unit> deniedOrFailed(SqlConnector session, PgSchemaName name, Cause cause) {
@@ -318,9 +327,10 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
     /// SQLSTATE 42501 (insufficient_privilege) names a refused `CREATE SCHEMA`; a transport that reports no SQLSTATE is
     /// read by the server's `permission denied` message, as the SQLite arm of the history collision check is.
     private static boolean isPermissionDenied(Cause cause) {
-        return cause instanceof DatabaseConnectorError error
-               && (error.sqlState().map(INSUFFICIENT_PRIVILEGE::equals).or(false)
-                   || error.message().contains("permission denied"));
+        return cause instanceof DatabaseConnectorError error && (error.sqlState()
+                                                                      .map(INSUFFICIENT_PRIVILEGE::equals)
+                                                                      .or(false) || error.message()
+                                                                                         .contains("permission denied"));
     }
 
     /// FER (degrade forward): the role name only decorates the refusal, so a failed lookup names an unknown role and

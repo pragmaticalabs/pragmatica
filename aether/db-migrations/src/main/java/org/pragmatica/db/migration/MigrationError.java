@@ -182,7 +182,8 @@ public sealed interface MigrationError extends Cause {
 
         @Override
         public String message() {
-            return "Schema " + schema + " does not exist and role '" + role
+            return "Schema " + schema
+                 + " does not exist and role '" + role
                  + "' may not create it. No statement was run. To recover: create the schema (CREATE SCHEMA " + schema
                  + ") or grant CREATE on the database to that role, then retry the migration"
                  + " ('aether schema retry'). A schema created by hand also needs USAGE and CREATE for the role.";
@@ -198,7 +199,8 @@ public sealed interface MigrationError extends Cause {
 
         @Override
         public String message() {
-            return "Migration scoped to schema " + schema + " refused: " + engine
+            return "Migration scoped to schema " + schema
+                 + " refused: " + engine
                  + " is not supported for schema-scoped migration (PostgreSQL only). No statement was run."
                  + " To recover: point the datasource at a PostgreSQL database, or remove the schema setting.";
         }

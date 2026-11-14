@@ -82,7 +82,6 @@ public sealed interface SchemaHistoryEvolution {
 
     /// The history table's own name, before any schema qualification.
     String HISTORY_TABLE = "aether_schema_history";
-
     /// v1: the original 8-column history table, created only when absent (dialect-aware guard).
     Step STEP_V1 = Step.step(1, SchemaHistoryEvolution::stepOne);
     /// v2: add `status` + `statements_completed`, dialect-aware (#338-B2 consumes these columns).
@@ -106,7 +105,8 @@ public sealed interface SchemaHistoryEvolution {
     /// `table` as it appears in a statement: unchanged with no schema, `"<schema>".table` with one. The quoted form is
     /// the only spelling [PgSchemaName] offers, so no caller can splice an unvalidated name.
     static String qualified(Option<PgSchemaName> schema, String table) {
-        return schema.fold(() -> table, name -> name.quoted() + "." + table);
+        return schema.fold(() -> table,
+                           name -> name.quoted() + "." + table);
     }
 
     /// The statement that tests whether `schema` exists; it takes the schema name as its one parameter.
