@@ -377,10 +377,12 @@ public sealed interface DepartureFlow {
     /// #3193: a departed WORKER's directive at its exact value, on EVERY departed record, inferred (STALE) included, as legacy
     /// `ClusterDeploymentState.handleNodeRemoval` does (CTO ruling f407aba5dd: supersedes design rule Q1 for worker directives). A falsely
     /// declared-dead worker returns through C11f re-admission and gets a new WORKER directive (#3028). Nothing for a core or a node without one.
-    private static List<KVCommand.Mutation<AetherKey, AetherValue>> workerDirectiveRemoval(ClusterModel m, NodeId node) {
+    private static List<KVCommand.Mutation<AetherKey, AetherValue>> workerDirectiveRemoval(ClusterModel m,
+                                                                                           NodeId node) {
         return m.directives.get(node)
                            .filter(directive -> ActivationDirectiveValue.WORKER.equals(directive.role()))
-                           .map(directive -> removal(new ActivationDirectiveKey(node), directive))
+                           .map(directive -> removal(new ActivationDirectiveKey(node),
+                                                     directive))
                            .stream()
                            .toList();
     }
