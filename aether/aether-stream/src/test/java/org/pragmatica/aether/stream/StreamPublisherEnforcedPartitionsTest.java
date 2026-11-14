@@ -59,7 +59,7 @@ class StreamPublisherEnforcedPartitionsTest {
 
         assertThat(events).hasSize(1);
         assertThat(events.getFirst().getLevel()).isEqualTo(Level.WARN);
-        assertThat(events.getFirst().getMessage().getFormattedMessage()).contains(STREAM, "declares 8", "enforces 4");
+        assertThat(events.getFirst().getMessage().getFormattedMessage()).contains(STREAM, "declares 8", "committed stream has 4");
     }
 
     @Test

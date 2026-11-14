@@ -1687,6 +1687,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         return committedConfigOf(streamName).map(StreamConfig::retention);
     }
 
+    /// The partition count of the committed config this node has applied for `streamName`, else of a locally committed
+    /// entry (#3263): the one count a publisher routes by. None while this node has neither.
+    public Option<Integer> committedPartitions(String streamName) {
+        return committedConfigOf(streamName).map(StreamConfig::partitions);
+    }
+
     private Option<StreamConfig> committedConfigOf(String streamName) {
         return option(entries.appliedConfigs().get(streamName)).orElse(() -> option(streams.get(streamName)).filter(StreamEntry::isCommitted)
                                                                                    .map(StreamEntry::config));
