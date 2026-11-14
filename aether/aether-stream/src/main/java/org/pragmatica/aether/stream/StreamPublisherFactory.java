@@ -22,8 +22,13 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Serializer;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 
 public final class StreamPublisherFactory implements ResourceFactory<StreamPublisher, StreamConfig> {
+    private static final Logger log = LoggerFactory.getLogger(StreamPublisherFactory.class);
+
     private static final Cause REQUIRES_CONTEXT = Causes.cause("StreamPublisher requires ProvisioningContext with runtime extensions");
 
     @Override
@@ -100,6 +105,7 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
         // placement authority) instead of the STREAMING leader. Absent (test / minimal runtime) => the
         // publish path keeps the arg-less leader resolver, and the self identity gates the self-guard.
         var streamName = config.name();
+        var partitions = enforcedPartitions(manager, config);
         Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver = governor.flatMap(GovernorResolver::partitionOwnerResolver)
                                                                                    .map(resolver -> partition -> resolver.apply(streamName,
                                                                                                                                 partition));
@@ -107,7 +113,7 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
         return DefaultStreamPublisher.streamPublisher(manager,
                                                       serializer,
                                                       config.name(),
-                                                      config.partitions(),
+                                                      partitions,
                                                       keyExtractor,
                                                       config.consistencyMode(),
                                                       Option.none(),
@@ -115,6 +121,30 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
                                                       governorResolver,
                                                       partitionOwnerResolver,
                                                       self);
+    }
+
+    /// #3263: routing uses the partition count the stream ENFORCES, never the one this declaration asks for. An
+    /// existing stream keeps its count (the `STREAM_CONFIG_CHANGE_NOT_APPLIED` contract, [StreamPartitionManager#notAppliedReason]),
+    /// so a publisher routing by a different count either fails `PartitionOutOfRange` (declared higher) or maps keys
+    /// to partitions no other producer uses (declared lower). The declared count is the fallback only while this node
+    /// holds no entry for the stream.
+    private static int enforcedPartitions(StreamPartitionManager manager, StreamConfig declared) {
+        return manager.enforcedConfig(declared.name())
+                      .map(enforced -> routedPartitions(declared, enforced))
+                      .or(declared.partitions());
+    }
+
+    private static int routedPartitions(StreamConfig declared, StreamConfig enforced) {
+        if (declared.partitions() != enforced.partitions()) {
+            log.warn("Stream '{}' declares {} partitions but the existing stream enforces {}: the declared count is NOT applied,"
+                    + " this publisher routes by {}",
+                     declared.name(),
+                     declared.partitions(),
+                     enforced.partitions(),
+                     enforced.partitions());
+        }
+
+        return enforced.partitions();
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
