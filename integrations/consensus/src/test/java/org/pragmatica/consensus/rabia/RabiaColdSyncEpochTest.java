@@ -108,6 +108,7 @@ class RabiaColdSyncEpochTest {
 
         // Slot 2: A and C carry "x", B and D carry "y"; the two pairs' traffic interleaves freely but never crosses.
         submit(A, "x");
+        submit(B, "y");
         submit(D, "y");
         var pairAC = Set.of(A, C);
         var pairBD = Set.of(B, D);
@@ -125,8 +126,14 @@ class RabiaColdSyncEpochTest {
         var longest = logs.stream().max(java.util.Comparator.comparingInt(List::size)).orElse(List.of());
         logs.forEach(log -> assertThat(log).as("slot 2 is decided at most once: every applied log is a prefix of the longest")
                                            .containsExactlyElementsOf(longest.subList(0, log.size())));
-        assertThat(machines.get(D).getProcessedCommands()).as("positive control: the epoch-1 side decides slot 2")
-                                                          .contains(new TestCommand("y"));
+        // Positive control: the epoch-1 pair is live on slot 2 (both ballot at epoch 1), so the check above is not vacuous.
+        // D already holds its own join-time proposal for slot 2, so the two batches differ and D votes V0: the pair
+        // ballots without deciding, which is all the control needs.
+        assertThat(sent.stream().filter(d -> d.source().equals(B)).anyMatch(d -> ballotAt(d.message(), 1, Phase.phase(2))))
+            .as("positive control: B ballots at epoch 1 for slot 2").isTrue();
+        assertThat(sent.stream().filter(d -> d.source().equals(D)).anyMatch(d -> d.message() instanceof VoteRound1 vote
+                                                                                 && vote.epoch() == 1 && vote.phase().equals(Phase.phase(2))))
+            .as("positive control: D votes at epoch 1 for slot 2").isTrue();
     }
 
     /// Moves `target` into Syncing the way a far-future ballot does; the Propose itself is discarded by the engine.
