@@ -44,6 +44,7 @@ import org.pragmatica.cluster.state.kvstore.WitnessedRemoval;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
 
@@ -2380,6 +2381,9 @@ public sealed interface AetherValue {
     /// for a datasource another blueprint already migrates, and the activation gate in
     /// `ClusterDeploymentState.areSchemasReady` matches records to slices by this owner so one
     /// blueprint's failed migration cannot hold an unrelated blueprint's slices.
+    ///
+    /// `artifactCoords` is the migration source: artifact coordinates, or `set:<id>@<version>`. It is read
+    /// only through [#source()]; no reader parses the string by hand.
     record SchemaVersionValue(String datasourceName,
                               int currentVersion,
                               String lastMigration,
@@ -2419,6 +2423,12 @@ public sealed interface AetherValue {
                                           owningBlueprint,
                                           attemptCount,
                                           System.currentTimeMillis());
+        }
+
+        /// The typed reading of `artifactCoords`: [MigrationSourceError.Absent] when blank,
+        /// [MigrationSourceError.Malformed] when it is neither artifact coordinates nor `set:<id>@<version>`.
+        public Result<MigrationSource> source() {
+            return MigrationSource.migrationSource(artifactCoords);
         }
 
         /// The same record with only `status` replaced — every other field, `updatedAt` included, kept.

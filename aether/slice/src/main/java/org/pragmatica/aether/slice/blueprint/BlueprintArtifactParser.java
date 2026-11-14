@@ -13,7 +13,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
-import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -27,6 +26,9 @@ import org.pragmatica.lang.utils.Causes;
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-EX-01"})
 public interface BlueprintArtifactParser {
     Cause MISSING_BLUEPRINT_TOML = Causes.cause("Blueprint artifact missing META-INF/blueprint.toml");
+
+    Fn1<Cause, String> RESERVED_AT_IN_SCHEMA_PATH = Causes.forOneValue("Schema path '%s' contains '@', which is reserved for derived datasource keys");
+
     Fn1<Cause, String> PARSE_ERROR = Causes.forOneValue("Failed to parse blueprint artifact: %s");
     /// Spec event-stream-namespaces §11: stream alias is the part after `streams.` in the
     /// `[streams.X]` section header — slice manifests record the full `configSection` (e.g.
@@ -49,6 +51,7 @@ public interface BlueprintArtifactParser {
         String resourcesToml = null;
         var schemaMigrations = new LinkedHashMap<String, List<MigrationEntry>>();
         var sliceManifestProps = new ArrayList<Properties>();
+        var refusals = new ArrayList<Cause>();
         ZipEntry entry;
 
         while ((entry = zis.getNextEntry()) != null) {
@@ -61,12 +64,17 @@ public interface BlueprintArtifactParser {
             } else if (name.startsWith("META-INF/slice/") && name.endsWith(".manifest") && !entry.isDirectory()) {
                 addSliceManifest(zis, sliceManifestProps);
             } else if (name.startsWith("schema/") && name.endsWith(".sql") && !entry.isDirectory()) {
-                addMigrationEntry(zis, name, schemaMigrations);
+                addMigrationEntry(zis, name, schemaMigrations).onPresent(refusals::add);
             }
         }
 
         if (blueprintToml == null) {
             return MISSING_BLUEPRINT_TOML.result();
+        }
+
+        if (!refusals.isEmpty()) {
+            return refusals.getFirst()
+                           .result();
         }
 
         var resourcesConfig = Option.option(resourcesToml);
@@ -166,9 +174,10 @@ public interface BlueprintArtifactParser {
         return ROLE_CONSUMER;
     }
 
-    private static void addMigrationEntry(ZipInputStream zis,
-                                          String entryPath,
-                                          Map<String, List<MigrationEntry>> migrations) throws IOException {
+    /// `@` in the datasource directory is refused: `<datasource>@<entity>` keys are derived, never path-derived.
+    private static Option<Cause> addMigrationEntry(ZipInputStream zis,
+                                                   String entryPath,
+                                                   Map<String, List<MigrationEntry>> migrations) throws IOException {
         var parts = entryPath.split("/");
         String datasource;
         String filename;
@@ -180,22 +189,17 @@ public interface BlueprintArtifactParser {
             datasource = "database." + parts[1];
             filename = parts[parts.length - 1];
         } else {
-            return;
+            return Option.none();
+        }
+
+        if (datasource.indexOf('@') >= 0) {
+            return Option.some(RESERVED_AT_IN_SCHEMA_PATH.apply(entryPath));
         }
 
         var sql = readEntry(zis);
-        var checksum = computeChecksum(sql);
 
-        migrations.computeIfAbsent(datasource,
-                                   _ -> new ArrayList<>())
-                  .add(MigrationEntry.migrationEntry(filename, sql, checksum));
-    }
+        migrations.computeIfAbsent(datasource, _ -> new ArrayList<>()).add(MigrationEntry.migrationEntry(filename, sql));
 
-    private static long computeChecksum(String content) {
-        var crc = new CRC32();
-
-        crc.update(content.getBytes(StandardCharsets.UTF_8));
-
-        return crc.getValue();
+        return Option.none();
     }
 }
