@@ -23,6 +23,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodePlacementValue;
@@ -89,6 +90,26 @@ class CommunityBackstopTest {
             case NodeRoutesKey k -> k.nodeId().equals(node) && m.replacement().isEmpty();
             default -> false;
         }));
+    }
+
+    /// The cause the C17s Put recorded for `node`: the record itself is gone once R-4.3.3 retires it, so the submission is the evidence.
+    private static List<Option<DepartureCause>> inferredCauses(MbWorld w, NodeId node) {
+        return w.inferred()
+                .stream()
+                .flatMap(s -> s.transaction()
+                               .mutations()
+                               .stream())
+                .filter(m -> m.key().equals(new NodeDepartureKey(node)) && m.replacement().isPresent())
+                .map(m -> ((NodeDepartureValue) m.replacement().unwrap()).cause())
+                .toList();
+    }
+
+    /// The reversal of a worker's inference (`departure-inferred-reversed`, its metric) is unreachable once C17b retired the worker's
+    /// directive (#3193): C11f needs a recorded WORKER directive, so only the worker's own join (WorkerJoin) re-admits it. Pinned so that
+    /// a path that starts reversing it again is a visible change rather than a silent one.
+    private static void assertNoReversal(MbWorld w) {
+        assertThat(w.h.warns("departure-inferred-reversed")).as("the view alone cannot reverse a retired worker's inference").isEmpty();
+        assertThat(w.h.metricTotal("aether_deployment_fsm_departures_inferred_reversed_total", t -> true)).isZero();
     }
 
     /// The real placement reconciler (CPR) over the harness's store; its provider effects are inert stubs.
@@ -271,6 +292,7 @@ class CommunityBackstopTest {
 
         w.evolveUntil(since + bounds().workerRemoval() + 1_000_000L + 31_000_000_000L, C, GOV, aliveOthers, others);
         assertThat(w.h.warns("departure-inferred")).as("the residual is reachable: the inference was made").hasSize(1);
+        assertThat(inferredCauses(w, w10)).as("the C17s Put records cause STALE").containsExactly(Option.some(DepartureCause.STALE));
         assertThat(w.present(new SliceObservedKey(w10, ORDERS)) || w.present(new SliceObservedKey(w10, BILLING))).isFalse();
         assertThat(w.present(new ActivationDirectiveKey(w10))).as("C17b retired the worker's directive (#3193)").isFalse();
         assertThat(w.recordOf(w10).isEmpty()).as("R-4.3.3 retired the STALE record with the directive").isTrue();
@@ -286,6 +308,7 @@ class CommunityBackstopTest {
 
         w.evolve(C, GOV, Set.copyOf(all), all, 31_000L);
         assertThat(w.recordOf(w10).isEmpty()).as("the view alone does not re-admit a retired identity").isTrue();
+        assertNoReversal(w);
         w.h.deliver(new ClusterInput.WorkerJoin(w10, w.admissionOf(w10)));
         w.h.drain();
         assertThat(w.stored(new ActivationDirectiveKey(w10)).map(v -> ((ActivationDirectiveValue) v).role()))
@@ -308,10 +331,12 @@ class CommunityBackstopTest {
 
         w.evolveUntil(since + bounds().workerRemoval() + 1_000_000L + 31_000_000_000L, C, GOV, aliveOthers, others);
         assertThat(w.h.warns("departure-inferred")).hasSize(1);
+        assertThat(inferredCauses(w, w10)).as("the C17s Put records cause STALE").containsExactly(Option.some(DepartureCause.STALE));
         assertThat(w.recordOf(w10).isEmpty()).as("the STALE record is retired with the directive (#3193)").isTrue();
         w.refreshSeams(s -> s.withLocalAlive(Option.some(Set.of(w10, M1, M2, M3, M4))));
         w.h.drain();
         assertThat(w.recordOf(w10).isEmpty()).as("localAlive alone does not re-admit a retired identity").isTrue();
+        assertNoReversal(w);
         w.h.deliver(new ClusterInput.WorkerJoin(w10, w.admissionOf(w10)));
         w.h.drain();
         assertThat(w.stored(new ActivationDirectiveKey(w10)).map(v -> ((ActivationDirectiveValue) v).role()))

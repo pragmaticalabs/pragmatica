@@ -239,6 +239,35 @@ class JoinTableTest {
         assertThat(w.h.warns("identity-process-mismatch")).hasSize(1);
     }
 
+    // NT-88 J8 core, C17b guard (#3227 verifier m8)
+    // Red when: C17b is built for a node that is both departed and joined, so a tick while the different process's admission write is still
+    // in flight removes the rows of the process being admitted (W3', CTO ruling 2026-10-14).
+    @Test
+    void j8_differentProcessCore_admissionInFlight_noC17bRemovesItsRows() {
+        var w = world();
+
+        w.directive(CORE_2,
+                    ActivationDirectiveValue.core())
+         .target(ORDERS, 1, "CORE_ONLY")
+         .record(CORE_2, DepartureState.DEPARTED, 1L, A, DepartureCause.NODE_REMOVED)
+         .instance(CORE_2,
+                   ORDERS,
+                   SliceGoal.ACTIVE,
+                   SliceObservedState.ACTIVE,
+                   gen(1),
+                   A)
+         .activateBeforeC17b();
+        w.h.clearLog();
+        w.tokens.admit(CORE_2, B);
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, new Admission(process(B))));
+        assertThat(w.h.held).as("control: the ADMITTED rewrite is in flight").isNotEmpty();
+        assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::state)).as("control: the record is still DEPARTED")
+                  .isEqualTo(Option.some(DepartureState.DEPARTED));
+        w.h.advance(w.h.settings.timing().tick());
+        assertThat(w.h.submits(SubmitKind.CLEANUP)).as("no C17b while the node is joined").isEmpty();
+    }
+
     // NT-88 J5
     // Red when: a fresh NodeId gets no assign (core) or no mint (worker).
     @Test
