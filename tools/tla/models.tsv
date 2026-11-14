@@ -36,6 +36,14 @@ RabiaSlot	integrations/consensus/src/main/java	nopastcur	fail	NoRedecide	-	D9 gu
 RabiaSlot	integrations/consensus/src/main/java	nocurslot	fail	NoRedecide	-	current-slot gates dropped: a decision for a collected slot is applied again through Learn
 RabiaSlot	integrations/consensus/src/main/java	nomarkerfirst	fail	VotedImpliesMarker	-	D11: activation before the participation marker is durable lets a node vote without one
 RabiaSlot	integrations/consensus/src/main/java	noemptyprop	fail	Live	-	D8: a voter with an empty queue stays silent and the slot never reaches a proposal quorum
+RabiaSlot	integrations/consensus/src/main/java	code_r2	pass	-	-	the code at two rounds and two batch ids (carry-forward and the coin, D1): OWED, run unfinished at the 06:40Z cutoff, no violation in 20.5M distinct states seen; expected verdict not yet observed
+RabiaSlot	integrations/consensus/src/main/java	code_obs	pass	-	-	the code with a rogue observer whose Decisions are learned (trusted peer): OWED, run unfinished at the 06:40Z cutoff, no violation in 25.7M distinct states seen; expected verdict not yet observed
+RabiaSlot	integrations/consensus/src/main/java	nopastguard2	pass	-	-	D9 past-slot guard dropped alone at two slots, no GC: OWED, run unfinished at the 06:40Z cutoff, no violation in 24.9M distinct states seen; expected verdict not yet observed
+RabiaSlot	integrations/consensus/src/main/java	norosterballot	fail	Agreement,NoRedecide,Validity,LogPrefix,VotedImpliesMarker	-	D11 receiver-side roster check dropped with a rogue observer voting: OWED, run unfinished at the 06:40Z cutoff with NO violation in 28.9M distinct states; the fail expectation is the intent, not an observation
+RabiaSlot	integrations/consensus/src/main/java	live	pass	-	-	positive control for noemptyprop, every fix on, Live holds: OWED, run unfinished at the 06:40Z cutoff; expected verdict not yet observed
+RabiaSlot	integrations/consensus/src/main/java	ctl_byz_agree	fail	Agreement	-	negative control: a Byzantine voter (equivocation, forged Decision) breaks Agreement
+RabiaSlot	integrations/consensus/src/main/java	ctl_byz_valid	fail	Validity	-	negative control: a Byzantine voter's forged Decision breaks Validity
+RabiaSlot	integrations/consensus/src/main/java	ctl_logprefix	fail	LogPrefix	-	negative control: current-slot gates dropped at two slots, a later slot is applied before an earlier one
 RabiaEpoch	integrations/consensus/src/main/java	code	pass	-	-	in-order commit (prefix) abstraction, not the code: one reconfiguration, 4 nodes, 2 slots (the code-shaped Jump is codesync_*)
 RabiaEpoch	integrations/consensus/src/main/java	live	pass	-	-	the code: progress under a reconfiguration
 RabiaEpoch	integrations/consensus/src/main/java	codesync_live	pass	-	-	the code without prefix, LIVE and COLD responses: progress under a reconfiguration
@@ -55,6 +63,10 @@ RabiaEpoch	integrations/consensus/src/main/java	codesync_agree	fail	Agreement	-	
 RabiaEpoch	integrations/consensus/src/main/java	nocrashstop	fail	Agreement	-	crash-stop assumption removed (relay without vote evidence): two values committed
 RabiaEpoch	integrations/consensus/src/main/java	noexactepoch_noprefix	fail	Agreement	-	D6 exact-epoch counting dropped under sync adoption: two values committed
 RabiaEpoch	integrations/consensus/src/main/java	paper_d6_np	fail	Agreement	-	D6 paper rule under sync adoption: two values committed (the paper rule is unsafe against sync adoption)
+RabiaEpoch	integrations/consensus/src/main/java	norelayexact_noprefix	fail	Agreement	-	D2 relay epoch check and D6 exact-epoch counting both dropped under sync adoption: two values committed
+RabiaEpoch	integrations/consensus/src/main/java	ctl_oldtally	fail	NoOldEpochTally	-	negative control for NoOldEpochTally: exact-epoch counting dropped under sync adoption
+RabiaEpoch	integrations/consensus/src/main/java	ctl_oneroster	pass	-	-	FINDING: intended negative control for OneRosterPerEpoch (exact-epoch counting dropped under sync adoption) does NOT go red; OneRosterPerEpoch holds where Agreement fails (noexactepoch_noprefix), so this control does not discriminate
+RabiaEpoch	integrations/consensus/src/main/java	ctl_oneroster_cs	fail	OneRosterPerEpoch	-	negative control for OneRosterPerEpoch: crash-stop assumption removed
 RabiaAdopt	integrations/consensus/src/main/java	allfixes	pass	-	-	every adoption fix on, under a permanent fence (Rejoin = none); the code's per-process token memory is rjT_*
 RabiaAdopt	integrations/consensus/src/main/java	allfixes_savefail	pass	-	-	permanent fence, a save on pause may fail: the adoption floor max(persisted, live phase) keeps every decision
 RabiaAdopt	integrations/consensus/src/main/java	allfixesD5	pass	-	-	the code, same-epoch adoption off: isolates the newer-epoch path
@@ -111,6 +123,9 @@ RabiaAdopt	integrations/consensus/src/main/java	rjW_nooneconfig	fail	Agreement	-
 RabiaAdopt	integrations/consensus/src/main/java	rjW_noselfvouch	fail	Agreement	-	Rejoin=wiped (over-permissive, not the code), D4 self-vouch dropped: an amnesiac incarnation is admitted and a second value is chosen
 RabiaAdopt	integrations/consensus/src/main/java	rjW_paperD4	fail	Agreement	-	Rejoin=wiped (over-permissive, not the code), D4 paper rule: an amnesiac incarnation is admitted and a second value is chosen
 RabiaAdopt	integrations/consensus/src/main/java	rjW_paperD5	fail	Agreement	-	Rejoin=wiped (over-permissive, not the code), D5 paper rule: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	integrations/consensus/src/main/java	ballotlossD5_nooneconfig	fail	Agreement	-	ballots lost on pause, newer-epoch path only, D5 one-configuration check dropped: two values chosen
+RabiaAdopt	integrations/consensus/src/main/java	ballotlossD5_noselfvouch	fail	Agreement	-	ballots lost on pause, newer-epoch path only, D4 self-vouch dropped: two values chosen
+RabiaAdopt	integrations/consensus/src/main/java	ctl_held	fail	Held	-	negative control for Held: a responder answering with an arbitrary log hands over a value nobody chose
 Fsm2Leader	aether/aether-deployment/src/main/java	code_inv	pass	-	-	the code (#3146): only the committed leader's writes are accepted, no submit while suspended, one live leader, published is committed, a refused WARNINGS write re-drafts
 Fsm2Leader	aether/aether-deployment/src/main/java	code_goals	pass	-	-	the code: desired and observed converge after the last leader change
 Fsm2Leader	aether/aether-deployment/src/main/java	code_goals_inv	pass	-	-	the code, goals on: only the committed leader's writes are accepted, no submit while suspended, one live leader
