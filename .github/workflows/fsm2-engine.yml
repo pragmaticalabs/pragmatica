@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
     env:
       SHARDS: ${{ strategy.job-total }}
       SHARD: ${{ matrix.shard }}
@@ -51,9 +51,14 @@ jobs:
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
 
+      # Prints every shard's predicted total; fails if one is over budget (raise the matrix list) or this shard is empty.
+      # Assign before echo: an exit status inside `echo "x=$(...)"` is discarded, and an empty -Dtest runs the whole corpus (#3237).
       - name: Plan this shard
         id: plan
-        run: echo "classes=$(python3 -B tools/ember-shard.py --shards "$SHARDS" --index "$SHARD")" >> "$GITHUB_OUTPUT"
+        run: |
+          python3 -B -m unittest discover -s tools -p test_ember_shard.py
+          classes=$(python3 -B tools/ember-shard.py --shards "$SHARDS" --index "$SHARD")
+          echo "classes=$classes" >> "$GITHUB_OUTPUT"
 
       - name: Install Ember's upstream modules
         run: mvn install -B -DskipTests -pl aether/ember -am
