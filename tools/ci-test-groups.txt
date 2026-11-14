@@ -90,6 +90,7 @@ g4 aether/resource/api  # 10.4 s at run 41351583462
 g4 aether/resource/db-jooq  # 7.0 s at run 41351583462
 g4 aether/resource/db-jooq-async  # 21.8 s at run 41351583462
 g4 aether/resource/json  # 2.2 s at run 41351583462
+g4 aether/resource/scheduler-pg  # 4.0 s, new module (no run 41351583462 sample)
 g4 aether/slice-testkit  # 7.3 s at run 41351583462
 g4 integrations/cloud/aws  # 5.3 s at run 41351583462
 g4 integrations/db/jdbc  # 25.3 s at run 41351583462
