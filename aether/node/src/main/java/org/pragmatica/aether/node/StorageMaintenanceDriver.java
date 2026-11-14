@@ -65,6 +65,7 @@ public final class StorageMaintenanceDriver {
     static final String PART_DEMOTION = "demotion";
     static final String PART_PROMOTION = "promotion";
     static final String PART_GARBAGE_COLLECTION = "garbage-collection";
+    static final String PART_RETRY_PENDING = "retry-pending";
     /// The whole tick, as the overdue warning names it: no tick completed, whichever pass holds it.
     static final String PART_TICK = "tick";
     /// How many maintenance intervals a pass may take before it is overdue.
@@ -160,7 +161,7 @@ public final class StorageMaintenanceDriver {
     }
 
     /// Runs one demotion pass, starts one promotion cycle unless the previous one is still running, then runs one GC
-    /// pass. Logs only when a pass actually moved something, so an inactive or idle cluster does not spam the log every
+    /// pass and the retry of a pending activation. Logs only when a pass actually moved something, so an inactive or idle cluster does not spam the log every
     /// tick. Fire-and-forget scheduler entry point (`storageMaintenanceDriver::tick` on a fixed-rate timer),
     /// same shape as `EntityCheckpointDriver.tick()` — a `void` tick is the established convention for
     /// this integration point, not a return-type omission.
@@ -170,11 +171,10 @@ public final class StorageMaintenanceDriver {
 
         startPromotionUnlessRunning();
         var collection = runPass(PART_GARBAGE_COLLECTION, garbageCollector::collectGarbage);
-
-        retryPending.get();
+        var retry = runPass(PART_RETRY_PENDING, this::retryPendingPass);
         var promotion = promotionResult.getAndSet(Option.none());
 
-        progress.updateAndGet(before -> before.after(clock.getAsLong(), demotion, promotion, collection));
+        progress.updateAndGet(before -> before.after(clock.getAsLong(), demotion, promotion, collection, retry));
         raisePassCompleted(PART_TICK);
         logMoved(demotion.or(0), collection.or(0));
     }
@@ -284,6 +284,14 @@ public final class StorageMaintenanceDriver {
                              part,
                              "Storage maintenance {} completed again",
                              part);
+    }
+
+    /// The retry of a pending activation or deactivation as a pass of the tick (#3087), so that a throw is the tick's failed pass,
+    /// reported as itself, instead of escaping the tick and leaving it without a progress record.
+    private int retryPendingPass() {
+        retryPending.get();
+
+        return 0;
     }
 
     /// One pass of the tick. A throw is the pass's failure (BER-free: nothing is retried here, the next tick runs the pass
