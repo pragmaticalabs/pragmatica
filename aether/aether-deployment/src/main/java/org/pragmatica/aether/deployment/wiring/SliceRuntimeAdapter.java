@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.wiring;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.LongSupplier;
@@ -42,7 +43,9 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -113,9 +116,14 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
     /// settle callback (remove of that same instance), read by `publishRoutes`; a `ConcurrentHashMap`, so the three are safe from any thread
     /// (the op lane serialises ops of one artifact, but the settle callback runs on whichever thread resolves the removal).
     private final ConcurrentMap<Artifact, Promise<Unit>> pendingUnpublish = new ConcurrentHashMap<>();
+    /// The removals whose bound expiry has been reported and that have not settled yet, so the expiry is raised once per removal.
+    private final Set<Promise<Unit>> warned = ConcurrentHashMap.newKeySet();
 
-    private SliceRuntimeAdapter(Collaborators collaborators) {
+    private final TimeSpan unpublishAwaitBound;
+
+    private SliceRuntimeAdapter(Collaborators collaborators, TimeSpan unpublishAwaitBound) {
         this.c = collaborators;
+        this.unpublishAwaitBound = unpublishAwaitBound;
         this.builders = new SliceLegBuilders(new SliceLegBuilders.Sources(collaborators.self(),
                                                                           collaborators.sliceStore(),
                                                                           collaborators.kvStore(),
@@ -130,7 +138,12 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
     }
 
     public static SliceRuntimeAdapter sliceRuntimeAdapter(Collaborators collaborators) {
-        return new SliceRuntimeAdapter(collaborators);
+        return new SliceRuntimeAdapter(collaborators, UNPUBLISH_AWAIT_BOUND);
+    }
+
+    /// A shorter bound, so a test can reach the expiry without waiting 100 s. Production code uses [#UNPUBLISH_AWAIT_BOUND] only.
+    static SliceRuntimeAdapter sliceRuntimeAdapter(Collaborators collaborators, TimeSpan unpublishAwaitBound) {
+        return new SliceRuntimeAdapter(collaborators, unpublishAwaitBound);
     }
 
     @Override
@@ -413,11 +426,38 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
 
         pending.onResultRun(() -> gate.succeed(Unit.unit()));
 
-        return gate.timeout(UNPUBLISH_AWAIT_BOUND)
-                   .onFailure(cause -> log.warn("Publishing routes of {} proceeds, the earlier unpublish did not settle: {}",
-                                                artifact,
-                                                cause.message()))
+        return gate.timeout(unpublishAwaitBound)
+                   .onFailure(_ -> boundExpired(artifact, pending))
                    .recover(_ -> Unit.unit());
+    }
+
+    /// The transition into the degraded condition: raised once per unsettled removal, however many publishes expire on it, and closed by the
+    /// recovery event when that removal settles. `warned` holds the removals with an open warning; the settle callback removes its own entry.
+    private void boundExpired(Artifact artifact, Promise<Unit> pending) {
+        if (!warned.add(pending)) {
+            return;
+        }
+
+        var subject = c.self().id() + " " + artifact;
+
+        OperatorWarnings.raise(log,
+                               c.warnings().get(),
+                               OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_EXPIRED,
+                               subject,
+                               "Publishing routes of {} proceeds, the earlier unpublish did not settle within {}: it may still remove the fresh routes",
+                               artifact,
+                               unpublishAwaitBound);
+        pending.onResultRun(() -> settledAfterExpiry(artifact, pending, subject));
+    }
+
+    private void settledAfterExpiry(Artifact artifact, Promise<Unit> pending, String subject) {
+        warned.remove(pending);
+        OperatorWarnings.raise(log,
+                               c.warnings().get(),
+                               OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_SETTLED,
+                               subject,
+                               "The earlier unpublish of {} that outlived the publish bound has settled",
+                               artifact);
     }
 
     private Promise<Unit> severing(Artifact artifact, boolean includingConfig) {

@@ -1222,7 +1222,14 @@ public enum OperatorWarningCode {
     DHT_DEPARTURE_SOLE_COPY_DELIVERED("dht-departure-sole-copy-delivered",
                                       "dht",
                                       WarningLevel.INFO,
-                                      DHT_DEPARTURE_SOLE_COPY_AT_RISK);
+                                      DHT_DEPARTURE_SOLE_COPY_AT_RISK),
+    /// A `PUBLISH_ROUTES` went ahead after waiting its whole bound (100 s) for the artifact's earlier `SUSPEND` route removal, which had not settled
+    /// (#3174, H3b): the removal's cluster write may still land late and delete the fresh routes. Raised once per unsettled removal, on the
+    /// transition, however many publishes wait on it. Subject is the node and the artifact. Closed by [#ROUTE_UNPUBLISH_AWAIT_SETTLED].
+    ROUTE_UNPUBLISH_AWAIT_EXPIRED("route-unpublish-await-expired", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#ROUTE_UNPUBLISH_AWAIT_EXPIRED], same subject: the removal that outlived the bound has settled (success or failure).
+    /// Published by the node that raised the warning, only after its published warning.
+    ROUTE_UNPUBLISH_AWAIT_SETTLED("route-unpublish-await-settled", "deployment", WarningLevel.INFO, ROUTE_UNPUBLISH_AWAIT_EXPIRED);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;
