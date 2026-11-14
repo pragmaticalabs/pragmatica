@@ -28,6 +28,8 @@ import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.resource.scheduler.pg.PgSchedulerFixture.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Policy of one instance: catch-up order, retry, cancel, close releasing the lease.
@@ -131,7 +133,7 @@ class PgSchedulerPolicyTest extends PgSchedulerTestBase {
         start(holder);
         awaitTrue("holder claimed the job", DEADLINE_MS, claimed::get);
         assertThat(statusOf(id)).isEqualTo("CLAIMED");
-        holder.close().await();
+        assertThat(holder.close().await(timeSpan(5).seconds()).isSuccess()).as("close settles within its grace").isTrue();
         assertThat(statusOf(id)).as("close releases the claim").isEqualTo("SCHEDULED");
         start(instance("next",
                        20,
@@ -147,5 +149,56 @@ class PgSchedulerPolicyTest extends PgSchedulerTestBase {
                        }));
         awaitTrue("another instance claimed it long before the 60 s lease", 10_000, () -> !takeover.isEmpty());
         assertThat(takeover.getFirst().fenceToken()).isEqualTo(2);
+    }
+
+    @Test
+    void failedHandler_isDueAgainOnlyAfterRetryDelay() {
+        var startsNs = new CopyOnWriteArrayList<Long>();
+        var scheduler = start(instance("flaky",
+                                       20,
+                                       30_000,
+                                       3_000,
+                                       1_000,
+                                       1,
+                                       Clock.systemUTC(),
+                                       job -> {
+                                           startsNs.add(System.nanoTime());
+
+                                           return job.attempt() == 1
+                                                  ? SchedulerError.General.CLOSED.promise()
+                                                  : done();
+                                       }));
+
+        schedule(scheduler, "flaky", DUE);
+        awaitTrue("job retried", DEADLINE_MS, () -> startsNs.size() >= 2);
+        assertThat((startsNs.get(1) - startsNs.get(0)) / 1_000_000L).as("ms between the failed attempt and its retry")
+                                                                    .isGreaterThanOrEqualTo(2_500);
+    }
+
+    @Test
+    void afterClose_dueJobIsNeverClaimed() {
+        var scheduler = start(instance("solo", 300, 30_000, 100, 200, 1, Clock.systemUTC(), _ -> done()));
+
+        scheduler.close().await().unwrap();
+
+        var id = schedule(scheduler, "late", DUE);
+
+        sleep(800);
+        assertThat(tokenOf(id)).as("the poll armed before close (due at 300 ms) must not claim: token still 0").isZero();
+        assertThat(statusOf(id)).isEqualTo("SCHEDULED");
+    }
+
+    @Test
+    void schedule_delayBeyondMillisRange_failsThePromiseInsteadOfThrowing() {
+        var scheduler = instance("solo", 20, 500, 100, 200, 1, Clock.systemUTC(), _ -> done());
+
+        assertThatCode(() -> scheduler.schedule("x", Duration.ofSeconds(Long.MAX_VALUE), PAYLOAD)).doesNotThrowAnyException();
+
+        boolean outOfRange = scheduler.schedule("x", Duration.ofSeconds(Long.MAX_VALUE), PAYLOAD)
+                                      .await()
+                                      .fold(cause -> cause instanceof SchedulerError.DelayOutOfRange, _ -> false);
+
+        assertThat(outOfRange).as("schedule fails with DelayOutOfRange").isTrue();
+        assertThat(count()).as("nothing was written").isZero();
     }
 }

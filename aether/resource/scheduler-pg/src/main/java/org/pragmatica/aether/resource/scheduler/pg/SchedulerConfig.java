@@ -16,12 +16,14 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// Settings of one [PgScheduler] instance.
 ///
 /// @param instanceId    written to `claimed_by` for diagnostics only; no decision reads it
-/// @param pollInterval  delay between the end of one poll and the start of the next
-/// @param leaseDuration how long a claim is held, measured on the DATABASE clock; must exceed the longest handler run,
-///                      or the job can be re-claimed and fired concurrently (the token fences the late writes)
+/// @param pollInterval  delay between the end of one claim and the start of the next (firings do not delay it)
+/// @param leaseDuration how long a claim is held, measured on the DATABASE clock; also the handler's run limit: a
+///                      handler unresolved after this long is abandoned locally and its job retried; it must exceed
+///                      the longest handler run, or the job can be re-claimed and fired concurrently (the token
+///                      fences the late writes)
 /// @param retryDelay    a failed firing is due again this long after the failure (database clock)
 /// @param closeGrace    how long [PgScheduler#close()] waits for in-flight firings before releasing their claims
-/// @param batchSize     at most this many due jobs are claimed per poll
+/// @param batchSize     at most this many firings are in flight per instance; a poll claims only the free slots
 public record SchedulerConfig(NonBlankString instanceId,
                               TimeSpan pollInterval,
                               TimeSpan leaseDuration,

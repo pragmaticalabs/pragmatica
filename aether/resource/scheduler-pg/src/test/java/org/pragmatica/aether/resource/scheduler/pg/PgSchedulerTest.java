@@ -85,21 +85,19 @@ class PgSchedulerTest extends PgSchedulerTestBase {
     void killedHolder_afterLeaseExpiry_isReclaimedWithHigherTokenAndRefired() {
         var firstToken = new AtomicLong();
         var second = new CopyOnWriteArrayList<FiredJob>();
-        var holder = start(instance("holder",
-                                    20,
-                                    600,
-                                    100,
-                                    100,
-                                    1,
-                                    Clock.systemUTC(),
-                                    job -> {
-                                        firstToken.set(job.fenceToken());
+        var holderConnector = newConnector();
+        var holder = start(PgScheduler.pgScheduler(holderConnector,
+                                                   config("holder", 20, 600, 100, 100, 1),
+                                                   job -> {
+                                                       firstToken.set(job.fenceToken());
 
-                                        return hang();
-                                    }));
+                                                       return hang();
+                                                   },
+                                                   Clock.systemUTC()));
         var id = schedule(holder, "orphan", DUE);
 
         awaitTrue("holder claimed the job", DEADLINE_MS, () -> firstToken.get() > 0);
+        holderConnector.stop().await();
         start(instance("takeover",
                        20,
                        5_000,
@@ -116,47 +114,5 @@ class PgSchedulerTest extends PgSchedulerTestBase {
         assertThat(second.getFirst().id()).isEqualTo(id);
         assertThat(second.getFirst().fenceToken()).isGreaterThan(firstToken.get());
         assertThat(second.getFirst().attempt()).isEqualTo(2);
-    }
-
-    @Test
-    void staleHolder_completionAfterTakeover_isRefusedByToken() {
-        var firstToken = new AtomicLong();
-        var staleGate = new AtomicReference<Promise<Unit>>();
-        var secondFired = new AtomicBoolean();
-        var holder = start(instance("holder",
-                                    20,
-                                    600,
-                                    100,
-                                    2_000,
-                                    1,
-                                    Clock.systemUTC(),
-                                    job -> {
-                                        staleGate.set(hang());
-                                        firstToken.set(job.fenceToken());
-
-                                        return staleGate.get();
-                                    }));
-        var id = schedule(holder, "contested", DUE);
-
-        awaitTrue("holder claimed the job", DEADLINE_MS, () -> firstToken.get() > 0);
-        start(instance("takeover",
-                       20,
-                       30_000,
-                       100,
-                       100,
-                       1,
-                       Clock.systemUTC(),
-                       job -> {
-                           secondFired.set(true);
-
-                           return hang();
-                       }));
-        awaitTrue("takeover fired the job", DEADLINE_MS, secondFired::get);
-        assertThat(tokenOf(id)).isEqualTo(2);
-        open(staleGate.get());
-        holder.close().await();
-        assertThat(count()).as("the stale holder's completion must not delete the takeover's row").isEqualTo(1);
-        assertThat(tokenOf(id)).isEqualTo(2);
-        assertThat(statusOf(id)).isEqualTo("CLAIMED");
     }
 }

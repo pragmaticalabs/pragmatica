@@ -11,10 +11,12 @@ import org.pragmatica.aether.resource.db.PgSqlConnector;
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.RowMapper.RowAccessor;
 import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.vo.NonBlankString;
 
 
@@ -93,7 +95,14 @@ final class PgJobStore {
 
     /// Inserts a job due `delay` after the database's `now()`; a negative delay schedules it in the past.
     Promise<JobId> schedule(String name, Duration delay, byte[] payload) {
-        return connector.queryOne(INSERT, JOB_ID, name, delay.toMillis(), payload);
+        return Result.lift(PgJobStore::delayOutOfRange, delay::toMillis)
+                     .async()
+                     .flatMap(millis -> connector.queryOne(INSERT, JOB_ID, name, millis, payload));
+    }
+
+    /// `Duration.toMillis` throws ArithmeticException beyond about 292 million years; lifted here, where it is called.
+    private static Cause delayOutOfRange(Throwable thrown) {
+        return SchedulerError.DelayOutOfRange.delayOutOfRange(Causes.fromThrowable(thrown));
     }
 
     Promise<Unit> cancel(JobId id) {

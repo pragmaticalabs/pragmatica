@@ -35,7 +35,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// |---|---|---|
 /// | [#schedule] | durable once the promise succeeds; due `delay` after the database clock's `now()` | one INSERT, committed |
 /// | claim (each poll) | at most one instance holds an unexpired claim on a job at any database instant; every claim of a job carries a greater token than every earlier claim | `FOR UPDATE SKIP LOCKED` claim statement, token raised under the row lock, expiry judged by `now()` (see [PgJobStore]) |
-/// | firing | AT-LEAST-ONCE, not exactly-once | lease expiry + re-claim |
+/// | firing | AT-LEAST-ONCE, not exactly-once; a handler that has not resolved within `leaseDuration` of its claim is abandoned locally and the job goes back to SCHEDULED (due after `retryDelay`), so a hung handler never blocks the job or the instance | lease expiry + re-claim, per-firing timeout at the lease, fenced reschedule |
+/// | latency | a due job is claimed within one `pollInterval` plus one claim round trip of a poll that has a free slot (at most `batchSize` firings in flight per instance; when all slots are busy, until one settles, at most `leaseDuration` + one fenced write) | polling is decoupled from firing: the next poll is armed when the claim settles; claim size = `batchSize` minus firings in flight |
 /// | completion | applied only by the current claimer; a superseded claimer's completion is refused | `DELETE ... WHERE fence_token = ?` |
 /// | failed firing | due again after `retryDelay`, retried without limit (the handler sees `attempt`) | fenced UPDATE back to SCHEDULED |
 /// | [#cancel] | prevents every firing not yet claimed; a firing already running finishes, and its completion is refused | DELETE |
@@ -49,7 +50,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// **Missed fires and catch-up.** Jobs are one-time; there are no recurring jobs. A job whose due time passed while no
 /// instance polled, or that was scheduled with a negative delay, fires once at the next poll. Due jobs are claimed
 /// oldest due time first, `batchSize` per poll; nothing is skipped or coalesced. The delay between the due time and the
-/// firing is bounded by the poll interval plus the backlog ahead of the job, and is not otherwise guaranteed.
+/// firing is bounded by the poll interval plus the backlog ahead of the job when a slot is free, and by the lease plus a
+/// fenced write when every slot is held by a slow handler; the bound assumes the database answers (a claim that never
+/// returns stalls that instance's polling) and is not a real-time guarantee.
 ///
 /// **Clock.** Every time decision is taken by the database's `now()`, so clock skew between instances changes nothing;
 /// the local clock is read only to log the observed skew at [#start()].
@@ -67,6 +70,7 @@ public final class PgScheduler {
     private final AtomicBoolean started = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final Map<JobId, FiredJob> held = new ConcurrentHashMap<>();
+    private final Map<JobId, Promise<Completion>> running = new ConcurrentHashMap<>();
     private final Promise<Unit> closing = Promise.promise();
     private volatile Option<ScheduledFuture<?>> nextTick = Option.none();
     private volatile Promise<Unit> inFlight = Promise.unitPromise();
@@ -157,8 +161,9 @@ public final class PgScheduler {
         }
     }
 
-    /// The next poll is scheduled only after this one settles, so polls of one instance never overlap. The closed check
-    /// and the `inFlight` assignment share the lock with [#stopPolling()], so close always sees the batch that runs.
+    /// The next poll is scheduled when the CLAIM of this one settles, not when its firings do, so polls of one instance
+    /// never overlap but a running handler never delays the next poll. The closed check and the `inFlight` assignment
+    /// share the lock with [#stopPolling()], so close always sees the claim that runs.
     @Contract
     private void tick() {
         synchronized (lifecycle) {
@@ -169,33 +174,60 @@ public final class PgScheduler {
     }
 
     /// FER: a failed claim is logged and the next poll tries again. Nothing is lost: a claim whose commit happened but
-    /// whose reply was lost holds a lease that expires, after which the job is claimed again (at-least-once).
+    /// whose reply was lost holds a lease that expires, after which the job is claimed again (at-least-once). At most
+    /// `batchSize` firings are in flight per instance: a poll claims only the free slots and claims nothing when none is
+    /// free.
     private Promise<Unit> pollOnce() {
-        return store.claimDue(config.instanceId(),
-                              config.leaseDuration(),
-                              config.batchSize())
-                    .flatMap(this::fireAll)
-                    .onFailure(this::reportPollFailure);
+        return claimUpTo(config.batchSize() - held.size());
     }
 
-    /// FER: `allOf` keeps every firing's outcome and the batch never fails. A firing whose fenced write failed stays
-    /// claimed until its lease expires and is then fired again (at-least-once), so dropping that failure here loses
-    /// nothing.
-    private Promise<Unit> fireAll(List<FiredJob> jobs) {
-        return Promise.allOf(jobs.stream().map(this::fireOne).toList()).mapToUnit();
+    private Promise<Unit> claimUpTo(int free) {
+        return free > 0
+               ? store.claimDue(config.instanceId(),
+                                config.leaseDuration(),
+                                free)
+                      .map(this::launchAll)
+                      .onFailure(this::reportPollFailure)
+               : Promise.unitPromise();
     }
 
-    private Promise<Completion> fireOne(FiredJob job) {
+    private Unit launchAll(List<FiredJob> jobs) {
+        jobs.forEach(this::fireOne);
+
+        return Unit.unit();
+    }
+
+    /// FER: the firing's outcome is not awaited by the poll. A firing whose fenced write failed stays claimed until its
+    /// lease expires and is then fired again (at-least-once), so dropping that failure loses nothing; [#drain] waits for
+    /// every outcome in `running`. `outcome` is registered before the handler starts so a handler that settles at once
+    /// still finds its entry to remove.
+    @Contract
+    private void fireOne(FiredJob job) {
+        Promise<Completion> outcome = Promise.promise();
+
         held.put(job.id(), job);
-
-        return invoke(job).fold(result -> settle(job, result))
-                     .onResultRun(() -> held.remove(job.id()));
+        running.put(job.id(), outcome.onResultRun(() -> forget(job)));
+        run(job).onResult(outcome::resolve);
     }
 
+    @Contract
+    private void forget(FiredJob job) {
+        held.remove(job.id());
+        running.remove(job.id());
+    }
+
+    private Promise<Completion> run(FiredJob job) {
+        return invoke(job).fold(result -> settle(job, result));
+    }
+
+    /// A handler that has not resolved when its lease has run out is abandoned: the timeout fails the derived promise
+    /// returned by `invoke` (never the handler's own promise), so a late resolution is ignored and cannot complete the job
+    /// against a newer token; the firing is settled as failed and goes back to SCHEDULED, fenced by its token.
     private Promise<Unit> invoke(FiredJob job) {
         return Promise.lift(Causes::fromThrowable,
                             () -> handler.fire(job))
-                      .flatMap(firing -> firing);
+                      .flatMap(firing -> firing)
+                      .timeout(config.leaseDuration());
     }
 
     private Promise<Completion> settle(FiredJob job, Result<Unit> firing) {
@@ -245,13 +277,18 @@ public final class PgScheduler {
         }
     }
 
-    /// FER: the batch's outcome, including the grace timeout, is deliberately not inspected: a firing that settled has
-    /// already written its own fenced outcome, and one still running is released below; its late completion is then
-    /// refused or re-fires the job (at-least-once). The timeout acts on a derived promise, never on the batch itself.
-    private Promise<Unit> drain(Promise<Unit> batch) {
-        return batch.mapToUnit()
-                    .timeout(config.closeGrace())
-                    .fold(_ -> releaseHeld());
+    /// FER: the outcome of the last claim and of the firings, including the grace timeout, is deliberately not
+    /// inspected: a firing that settled has already written its own fenced outcome, and one still running is released
+    /// below; its late completion is then refused or re-fires the job (at-least-once). The timeout acts on a derived
+    /// promise, never on a firing itself.
+    private Promise<Unit> drain(Promise<Unit> lastClaim) {
+        return lastClaim.fold(_ -> allFirings())
+                        .timeout(config.closeGrace())
+                        .fold(_ -> releaseHeld());
+    }
+
+    private Promise<Unit> allFirings() {
+        return Promise.allOf(List.copyOf(running.values())).mapToUnit();
     }
 
     /// Design-out: a release that fails leaves the claim to expire with its lease, after which any instance claims the
