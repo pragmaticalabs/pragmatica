@@ -101,13 +101,13 @@ class StreamForwardReplyNotSentTest {
         neverFires.shutdownNow();
     }
 
-    private StreamForwardHandler handlerAnswering(WriteOutcome... outcomes) {
+    private DefaultStreamForwardHandler handlerAnswering(WriteOutcome... outcomes) {
         return handlerOver(partitionManager, outcomes);
     }
 
     /// The handler under test, with the re-send scheduler and jitter source replaced; a re-send runs only when the test runs it.
     /// `outcomes` are answered in order, and the last one repeats.
-    private StreamForwardHandler handlerOver(StreamPartitionManager manager, WriteOutcome... outcomes) {
+    private DefaultStreamForwardHandler handlerOver(StreamPartitionManager manager, WriteOutcome... outcomes) {
         for (var outcome : outcomes) {
             script.add(Promise.success(outcome));
         }
@@ -220,14 +220,14 @@ class StreamForwardReplyNotSentTest {
     @Test
     void readEpochDivergedReply_refused_isCounted() {
         var manager = streamPartitionManager();
-        var record = new AtomicReference<Option<StreamPartitionOwnershipValue>>(Option.some(owned(E1, List.of(new EpochStart(E1, 0L)))));
+        var record = new AtomicReference<Option<StreamPartitionOwnershipValue>>(Option.some(owned(E1, List.of(EpochStart.epochStart(E1, 0L, Option.none())))));
         manager.createStream(streamConfig(STREAM));
         manager.ownerLease(OwnerLease.TEST_VALID);
         manager.ownershipRecords((_, _) -> record.get());
         for (var i = 0; i < 5; i++) {
             manager.publishLocal(STREAM, 0, ("r" + i).getBytes(UTF_8), i).unwrap();
         }
-        record.set(Option.some(owned(E2, List.of(new EpochStart(E1, 0L), new EpochStart(E2, 3L)))));
+        record.set(Option.some(owned(E2, List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 3L, Option.none())))));
         var handler = handlerOver(manager, dead());
 
         handler.onReadForward(validatedReadForward(REQUESTER, CORRELATION_ID, STREAM, 0, 5L, 10, E1));
@@ -362,7 +362,7 @@ class StreamForwardReplyNotSentTest {
     }
 
     @Test
-    void resendAfterTheRequesterLeft_stillTerminates() {
+    void resendAfterTheRequesterLeft_isSkipped_andLeavesNoEpisodeOrBackoff() {
         var handler = handlerAnswering(refused());
 
         readTo(handler, REQUESTER);
@@ -371,7 +371,35 @@ class StreamForwardReplyNotSentTest {
             runNextResend();
         }
 
-        assertThat(replies).as("bounded even when the peer never comes back").hasSize(5);
+        assertThat(replies).as("the departed requester gets no re-send").hasSize(1);
+        assertThat(handler.openEpisodes()).as("NodeRemoved's eviction is not undone by a late refusal").isZero();
+        assertThat(handler.trackedReplies()).isZero();
+    }
+
+    @Test
+    void backoffEntry_isClearedWhenTheResendsAreGivenUp() {
+        var handler = handlerAnswering(refused());
+
+        readTo(handler, REQUESTER);
+        while (!scheduled.isEmpty()) {
+            runNextResend();
+        }
+
+        assertThat(replies).hasSize(5);
+        assertThat(handler.trackedReplies()).as("a dropped reply leaves no backoff entry").isZero();
+    }
+
+    @Test
+    void backoffEntry_isClearedWhenAResendPromiseFails() {
+        var handler = handlerAnswering(refused());
+
+        readTo(handler, REQUESTER);
+        assertThat(handler.trackedReplies()).as("control: the refusal is tracked").isEqualTo(1);
+        script.clear();
+        script.add(Causes.cause("link torn down").promise());
+        runNextResend();
+
+        assertThat(handler.trackedReplies()).as("a failed send promise resets the key").isZero();
     }
 
     // ---- episode: W1-W4 (WARN open, dedup, per-peer), I1-I4 (INFO clear) ----

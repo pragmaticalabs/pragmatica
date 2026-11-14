@@ -317,6 +317,16 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         unsentRequesters.remove(removed.nodeId());
     }
 
+    /// Test-visible: requesters with an open WARN episode.
+    int openEpisodes() {
+        return unsentRequesters.size();
+    }
+
+    /// Test-visible: replies the reply backoff still tracks.
+    int trackedReplies() {
+        return replyBackoff.tracked();
+    }
+
     /// #1236: the replica floor (`CF - 1` peers) is checked BEFORE the owner appends, so a forwarded
     /// publish refused with `NOT_ENOUGH_REPLICAS` is genuinely not in the log — and AFTER the #1230 owner
     /// admission, so a forward that lands on a non-owner is answered retryable ([StreamError.NotOwnerAppend])
