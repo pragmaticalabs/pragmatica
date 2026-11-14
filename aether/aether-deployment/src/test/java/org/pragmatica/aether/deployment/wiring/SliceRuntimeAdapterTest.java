@@ -33,6 +33,8 @@ import org.pragmatica.config.ProviderBasedConfigService;
 import org.pragmatica.config.source.TomlConfigSource;
 import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.utility.warning.OperatorWarning;
@@ -316,6 +318,34 @@ class SliceRuntimeAdapterTest {
         assertThat(bridge.calls).containsExactly("unregister " + ORDERS);
         configNotifications.notifyChange("database.pool", artifact -> RuntimeFixtures.noConfig());
         await().atMost(Duration.ofSeconds(5)).until(() -> ConfigProbe.calls.contains("database"));
+    }
+
+    /// #3174: SUSPEND runs in the stop drain after quorum is lost, so the route removal it asks the cluster for cannot settle until the engine
+    /// stops. Awaiting it held the stop for the whole drain bound.
+    @Test
+    void suspend_isDoneAtOnce_withoutWaitingForAnUnpublishThatCannotSettle() {
+        publisher.unpublishPending = Promise.promise();
+
+        var outcome = adapter(true).run(new NodeFsmEffect.LocalOp(1, 7, Option.some(ORDERS), LocalStep.SUSPEND, 0, Option.none()));
+
+        await().atMost(Duration.ofSeconds(1)).until(outcome::isResolved);
+        assertThat(outcome.await().unwrap()).isInstanceOf(LocalOutcome.Done.class);
+        assertThat(publisher.calls).as("the unpublish was still asked for").containsExactly("unpublish " + ORDERS);
+        assertThat(bridge.calls).containsExactly("unregister " + ORDERS);
+    }
+
+    /// The other half of #3174's choice: UNPUBLISH runs under quorum in a teardown chain and still waits for the publisher.
+    @Test
+    void unpublish_stillWaitsForThePublisher() {
+        var pending = Promise.<Unit> promise();
+        publisher.unpublishPending = pending;
+
+        var outcome = adapter(true).run(new NodeFsmEffect.LocalOp(1, 7, Option.some(ORDERS), LocalStep.UNPUBLISH, 0, Option.none()));
+
+        await().during(Duration.ofMillis(300)).atMost(Duration.ofSeconds(2)).until(() -> !outcome.isResolved());
+        pending.succeed(Unit.unit());
+        await().atMost(Duration.ofSeconds(5)).until(outcome::isResolved);
+        assertThat(outcome.await().unwrap()).isInstanceOf(LocalOutcome.Done.class);
     }
 
     @Test
