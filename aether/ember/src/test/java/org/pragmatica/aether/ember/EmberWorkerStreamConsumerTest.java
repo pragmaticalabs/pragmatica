@@ -103,7 +103,7 @@ class EmberWorkerStreamConsumerTest {
                        () -> membership(worker));
         StreamTripwireSupport.createStream(leader(), StreamTripwireSupport.smallRingStream(STREAM, 1, 1_000L, 3_600_000L));
         commit(registrationKey(), AetherValue.StreamRegistrationValue.streamRegistrationValue(worker, GROUP, false, "java.lang.String"));
-        commit(new AetherKey.SliceObservedKey(worker, SLICE), activeObservedRow());
+        commit(new AetherKey.SliceObservedKey(worker, SLICE), activeObservedRow(worker));
 
         var assignment = AetherKey.ConsumerAssignmentKey.consumerAssignmentKey(engineKey(STREAM), 0, GROUP);
 
@@ -113,11 +113,13 @@ class EmberWorkerStreamConsumerTest {
     }
 
     /// Under FSM2 the stream-consumer placement view (`DeploymentMap`) is fed by the observed rows, not by `NodeArtifactKey`.
-    private static AetherValue.SliceObservedValue activeObservedRow() {
+    /// The row carries the worker's REAL process incarnation as the leader's admission seam knows it: the observed feed hides a row whose
+    /// boot token differs from the registry's, so a made-up incarnation is silently dropped.
+    private AetherValue.SliceObservedValue activeObservedRow(NodeId worker) {
         return new AetherValue.SliceObservedValue(AetherValue.SliceObservedState.ACTIVE,
                                                   1L,
                                                   new AetherValue.Generation(0L, 0L),
-                                                  new AetherValue.ProcessIncarnation(1L, 1L),
+                                                  leader().deploymentWiring().admissions().admission(worker).process(),
                                                   Option.none(),
                                                   false,
                                                   0,
