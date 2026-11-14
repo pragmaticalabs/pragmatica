@@ -75,7 +75,7 @@ class KafkaAdminTest {
     }
 
     private static DescribeTopicsResult resultOf(KafkaFuture<Map<String, TopicDescription>> all) {
-        return new DescribeTopicsResult(Map.of(), Map.of()) {
+        return new DescribeTopicsResult(null, Map.of()) {
             @Override
             public KafkaFuture<Map<String, TopicDescription>> allTopicNames() {
                 return all;
