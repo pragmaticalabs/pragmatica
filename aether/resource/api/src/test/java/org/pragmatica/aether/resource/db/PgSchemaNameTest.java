@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db;
 
+import java.lang.reflect.Modifier;
 import java.util.Arrays;
 import java.util.List;
 
@@ -27,7 +28,7 @@ class PgSchemaNameTest {
 
     @Test
     void pgSchemaName_refusesOutsideGrammar() {
-        var table = Arrays.asList(null, "", " ", "Upper", "9lives", "a b", "x;", "x\";drop table t;--", "x\"y", "a-b", "x'y", SIXTY_FOUR);
+        var table = Arrays.asList(null, "", " ", "Upper", "9lives", "a b", "x;", "x\";drop table t;--", "x\"y", "a-b", "x'y", "a\n", "x$", "é", SIXTY_FOUR);
 
         for (var raw : table) {
             var result = PgSchemaName.pgSchemaName(raw);
@@ -53,5 +54,42 @@ class PgSchemaNameTest {
 
         assertThat(name.isSuccess()).isTrue();
         name.onSuccess(schema -> assertThat(schema.quoted()).isEqualTo("\"entity_orders\""));
+    }
+
+    @Test
+    void pgSchemaName_acceptsTheReservedPrefixBoundary() {
+        assertThat(PgSchemaName.pgSchemaName("pgx").isSuccess()).isTrue();
+        assertThat(PgSchemaName.pgSchemaName("publicx").isSuccess()).isTrue();
+    }
+
+    @Test
+    void pgSchemaName_malformedRefusalCarriesTheValue() {
+        var refused = PgSchemaName.pgSchemaName("Bad;");
+        var nullRefused = PgSchemaName.pgSchemaName(null);
+
+        assertThat(refused.isFailure()).isTrue();
+        assertThat(nullRefused.isFailure()).isTrue();
+        refused.onFailure(cause -> assertThat(cause).isEqualTo(PgSchemaNameError.malformed("Bad;")));
+        nullRefused.onFailure(cause -> assertThat(cause).isEqualTo(PgSchemaNameError.malformed(null)));
+    }
+
+    @Test
+    void pgSchemaName_reservedRefusalCarriesTheValue() {
+        var refused = PgSchemaName.pgSchemaName("pg_temp");
+
+        assertThat(refused.isFailure()).isTrue();
+        refused.onFailure(cause -> assertThat(cause).isEqualTo(PgSchemaNameError.reserved("pg_temp")));
+    }
+
+    @Test
+    void noPublicConstructionPathExists() {
+        var permitted = PgSchemaName.class.getPermittedSubclasses();
+
+        assertThat(PgSchemaName.class.isSealed()).isTrue();
+        assertThat(permitted).isNotEmpty();
+        for (var implementation : permitted) {
+            assertThat(Modifier.isPublic(implementation.getModifiers())).as("%s is not public", implementation).isFalse();
+            assertThat(implementation.getConstructors()).as("%s public constructors", implementation).isEmpty();
+        }
     }
 }

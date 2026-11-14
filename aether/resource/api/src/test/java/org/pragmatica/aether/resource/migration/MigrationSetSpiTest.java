@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class MigrationSetSpiTest {
     @Test
     void migrationSetId_acceptsGrammar() {
-        for (var raw : List.of("durable-entity-pg", "a", "x9-y")) {
+        for (var raw : List.of("durable-entity-pg", "a", "x9-y", "a".repeat(63))) {
             var result = MigrationSetId.migrationSetId(raw);
 
             assertThat(result.isSuccess()).as("'%s' accepted", raw).isTrue();
@@ -54,5 +54,64 @@ class MigrationSetSpiTest {
         assertThat(RenderedScript.renderedScript("a\\b.sql", "SELECT 1").isFailure()).isTrue();
         assertThat(RenderedScript.renderedScript("V1.sql", " ").isFailure()).isTrue();
         assertThat(RenderedScript.renderedScript("V1.sql", null).isFailure()).isTrue();
+    }
+
+    @Test
+    void migrationSetId_refusalCarriesTheValue() {
+        var refused = MigrationSetId.migrationSetId("Bad:id");
+
+        assertThat(refused.isFailure()).isTrue();
+        refused.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(MigrationSetError.InvalidSetId.class, refusal -> assertThat(refusal.value()).isEqualTo("Bad:id")));
+    }
+
+    @Test
+    void migrationTarget_successCarriesSectionAndSchema() {
+        var schema = PgSchemaName.pgSchemaName("entity_orders").unwrap();
+        var target = MigrationTarget.migrationTarget("database.main", schema);
+
+        assertThat(target.isSuccess()).isTrue();
+        target.onSuccess(value -> assertThat(value.datasourceSection()).isEqualTo("database.main"));
+        target.onSuccess(value -> assertThat(value.schema()).isSameAs(schema));
+    }
+
+    @Test
+    void migrationTarget_refusalCarriesTheSection() {
+        var schema = PgSchemaName.pgSchemaName("entity_orders").unwrap();
+        var separator = MigrationTarget.migrationTarget("db@x", schema);
+        var blank = MigrationTarget.migrationTarget(" ", schema);
+
+        separator.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(MigrationSetError.InvalidTarget.class, refusal -> assertThat(refusal.section()).isEqualTo("db@x")));
+        blank.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(MigrationSetError.InvalidTarget.class, refusal -> assertThat(refusal.section()).isEqualTo(" ")));
+        assertThat(separator.isFailure()).isTrue();
+        assertThat(blank.isFailure()).isTrue();
+    }
+
+    @Test
+    void renderedScript_successCarriesFilenameAndSql() {
+        var script = RenderedScript.renderedScript("V1__entity.sql", "CREATE TABLE t();");
+
+        assertThat(script.isSuccess()).isTrue();
+        script.onSuccess(value -> assertThat(value.filename()).isEqualTo("V1__entity.sql"));
+        script.onSuccess(value -> assertThat(value.sql()).isEqualTo("CREATE TABLE t();"));
+    }
+
+    @Test
+    void renderedScript_refusesInnerWhitespaceInTheFilename() {
+        assertThat(RenderedScript.renderedScript("V1 entity.sql", "SELECT 1").isFailure()).isTrue();
+        assertThat(RenderedScript.renderedScript("V1\tentity.sql", "SELECT 1").isFailure()).isTrue();
+    }
+
+    @Test
+    void renderedScript_refusalCarriesTheFilename() {
+        var badName = RenderedScript.renderedScript("a/b.sql", "SELECT 1");
+        var blankSql = RenderedScript.renderedScript("V1.sql", " ");
+        var blankName = RenderedScript.renderedScript(" ", "SELECT 1");
+
+        assertThat(badName.isFailure()).isTrue();
+        assertThat(blankSql.isFailure()).isTrue();
+        assertThat(blankName.isFailure()).isTrue();
+        badName.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(MigrationSetError.InvalidScript.class, refusal -> assertThat(refusal.filename()).isEqualTo("a/b.sql")));
+        blankSql.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(MigrationSetError.InvalidScript.class, refusal -> assertThat(refusal.filename()).isEqualTo("V1.sql")));
+        blankName.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(MigrationSetError.InvalidScript.class, refusal -> assertThat(refusal.filename()).isEqualTo(" ")));
     }
 }

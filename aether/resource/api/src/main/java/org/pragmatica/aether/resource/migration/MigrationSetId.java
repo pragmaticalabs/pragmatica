@@ -21,11 +21,11 @@ public record MigrationSetId(String value) {
         return Verify.ensure(raw,
                              Verify.Is::notNull,
                              MigrationSetError.invalidSetId(raw))
-                     .flatMap(MigrationSetId::checkGrammar)
+                     .flatMap(MigrationSetId::matchGrammar)
                      .map(MigrationSetId::new);
     }
 
-    private static Result<String> checkGrammar(String raw) {
+    private static Result<String> matchGrammar(String raw) {
         return Verify.ensure(raw, Verify.Is::matches, GRAMMAR, MigrationSetError.invalidSetId(raw));
     }
 }
