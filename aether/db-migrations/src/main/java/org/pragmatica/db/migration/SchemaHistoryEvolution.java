@@ -6,6 +6,8 @@ package org.pragmatica.db.migration;
 import java.util.List;
 
 import org.pragmatica.aether.resource.db.DatabaseType;
+import org.pragmatica.aether.resource.db.PgSchemaName;
+import org.pragmatica.lang.Option;
 
 
 /// Internally-versioned, self-evolving schema for the `aether_schema_history` table (#338-B1).
@@ -66,12 +68,20 @@ public sealed interface SchemaHistoryEvolution {
         }
     }
 
-    /// Renders the dialect-aware DDL statements for a step against a concrete [DatabaseType].
+    /// Renders the dialect-aware DDL statements for a step against a concrete [DatabaseType], optionally scoped to a
+    /// PostgreSQL schema (#2100 E-B): with a schema the history table is `"<schema>".aether_schema_history`, with
+    /// `none` every statement is byte-identical to the unscoped form (pinned by `SchemaHistoryStatementsFixtureTest`).
     @FunctionalInterface
     interface DdlRenderer {
-        List<String> render(DatabaseType type);
+        List<String> render(DatabaseType type, Option<PgSchemaName> schema);
+
+        default List<String> render(DatabaseType type) {
+            return render(type, Option.none());
+        }
     }
 
+    /// The history table's own name, before any schema qualification.
+    String HISTORY_TABLE = "aether_schema_history";
     /// v1: the original 8-column history table, created only when absent (dialect-aware guard).
     Step STEP_V1 = Step.step(1, SchemaHistoryEvolution::stepOne);
     /// v2: add `status` + `statements_completed`, dialect-aware (#338-B2 consumes these columns).
@@ -92,6 +102,23 @@ public sealed interface SchemaHistoryEvolution {
                     .toList();
     }
 
+    /// `table` as it appears in a statement: unchanged with no schema, `"<schema>".table` with one. The quoted form is
+    /// the only spelling [PgSchemaName] offers, so no caller can splice an unvalidated name.
+    static String qualified(Option<PgSchemaName> schema, String table) {
+        return schema.fold(() -> table,
+                           name -> name.quoted() + "." + table);
+    }
+
+    /// The statement that tests whether `schema` exists; it takes the schema name as its one parameter.
+    static String schemaExistsSql() {
+        return "SELECT 1 AS present FROM pg_namespace WHERE nspname = ?";
+    }
+
+    /// The statement that creates `schema` when absent.
+    static String createSchemaSql(PgSchemaName schema) {
+        return "CREATE SCHEMA IF NOT EXISTS " + schema.quoted();
+    }
+
     /// `CREATE TABLE` that is a no-op when the table exists. SQL Server has no `IF NOT EXISTS` for tables (#3050), so it
     /// gets the `OBJECT_ID` guard. Oracle gets it only from 23ai, so earlier releases (19c+) get a PL/SQL block that
     /// swallows ORA-00955 (name already used) and re-raises anything else; every other engine takes `IF NOT EXISTS`.
@@ -107,19 +134,29 @@ public sealed interface SchemaHistoryEvolution {
 
     /// The dialect's `CREATE TABLE ... IF absent` for [#META_TABLE].
     static String createMetaTableSql(DatabaseType type) {
-        return createTableIfAbsent(type, META_TABLE, "schema_version INTEGER NOT NULL");
+        return createMetaTableSql(type, Option.none());
+    }
+
+    /// The dialect's `CREATE TABLE ... IF absent` for [#META_TABLE] in `schema` (unqualified with `none`).
+    static String createMetaTableSql(DatabaseType type, Option<PgSchemaName> schema) {
+        return createTableIfAbsent(type, qualified(schema, META_TABLE), "schema_version INTEGER NOT NULL");
     }
 
     /// The dialect's `CREATE TABLE ... IF absent` for [#OWNER_TABLE].
     static String createOwnerTableSql(DatabaseType type) {
-        return createTableIfAbsent(type, OWNER_TABLE, "blueprint_base VARCHAR(256) NOT NULL");
+        return createOwnerTableSql(type, Option.none());
+    }
+
+    /// The dialect's `CREATE TABLE ... IF absent` for [#OWNER_TABLE] in `schema` (unqualified with `none`).
+    static String createOwnerTableSql(DatabaseType type, Option<PgSchemaName> schema) {
+        return createTableIfAbsent(type, qualified(schema, OWNER_TABLE), "blueprint_base VARCHAR(256) NOT NULL");
     }
 
     /// `DEFAULT` precedes `NOT NULL` (#3069): Oracle refuses the reverse with ORA-03076, every other engine accepts both.
     /// The 64-bit columns use [#bigintType] (found by the live Oracle IT: `BIGINT` is ORA-00902).
-    private static List<String> stepOne(DatabaseType type) {
+    private static List<String> stepOne(DatabaseType type, Option<PgSchemaName> schema) {
         return List.of(createTableIfAbsent(type,
-                                           "aether_schema_history",
+                                           qualified(schema, HISTORY_TABLE),
                                            """
 
                 version        INTEGER      NOT NULL,
@@ -149,12 +186,14 @@ public sealed interface SchemaHistoryEvolution {
     /// - SQL Server: a single `ALTER TABLE ... ADD col1 ..., col2 ...` (no `COLUMN` keyword, no parens).
     /// - H2 / SQLite (unwired execution dialects): use the portable two-`ADD COLUMN` spelling, which
     ///   both accept — keeping the meta-gated evolution path usable everywhere the history table runs.
-    private static List<String> stepTwo(DatabaseType type) {
+    private static List<String> stepTwo(DatabaseType type, Option<PgSchemaName> schema) {
+        var table = qualified(schema, HISTORY_TABLE);
+
         return switch (type) {
-            case ORACLE, DB2 -> List.of("ALTER TABLE aether_schema_history ADD (" + "status VARCHAR(16) DEFAULT 'SUCCESS' NOT NULL, " + "statements_completed INTEGER DEFAULT 0 NOT NULL)");
-            case SQLSERVER -> List.of("ALTER TABLE aether_schema_history ADD " + "status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS', " + "statements_completed INTEGER NOT NULL DEFAULT 0");
-            case POSTGRESQL, COCKROACHDB, MYSQL, MARIADB, H2, SQLITE -> List.of("ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'",
-                                                                                "ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0");
+            case ORACLE, DB2 -> List.of("ALTER TABLE " + table + " ADD (" + "status VARCHAR(16) DEFAULT 'SUCCESS' NOT NULL, " + "statements_completed INTEGER DEFAULT 0 NOT NULL)");
+            case SQLSERVER -> List.of("ALTER TABLE " + table + " ADD " + "status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS', " + "statements_completed INTEGER NOT NULL DEFAULT 0");
+            case POSTGRESQL, COCKROACHDB, MYSQL, MARIADB, H2, SQLITE -> List.of("ALTER TABLE " + table + " ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'",
+                                                                                "ALTER TABLE " + table + " ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0");
         };
     }
 }
