@@ -1,0 +1,2 @@
+### Changed (2026-11-14 — #3195: CommunityObservabilityForgeTest flake, a surviving worker fenced for core absence)
+- **Diagnostics:** a node now logs, at INFO and only on change, when its set of hierarchy direct peers changes (the cores and governors it pings or is pinged by). The line names the node, whether it is a worker, and the old and new sets, so a recurrence of #3195 shows whether a surviving worker dropped out of the pinged set.
