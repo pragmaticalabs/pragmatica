@@ -1,0 +1,4 @@
+### Added (2026-11-14 — #2100 E-B L2: typed migration source and checked slice resource reads)
+- **`SchemaVersionValue.source()`** reads `artifactCoords` as a typed `MigrationSource` (`FromArtifact` or `FromSet`, `set:<id>@<version>`); a blank string is `MigrationSourceError.Absent`, an unreadable one `Malformed`. The stored string and the wire shape are unchanged. `MigrationSource.display(raw)` is the sink-safe rendering.
+- **`SliceStore.readSliceResourcesTomlChecked(URL)`** reports an unreadable `resources.toml` entry as a failure; the lenient reader delegates to it and keeps logging and answering "no file".
+- **`BlueprintArtifactParser` refuses `@`** in a schema datasource directory (reserved for derived keys); a migration script's CRC is now computed by `MigrationEntry.migrationEntry(filename, sql)`.

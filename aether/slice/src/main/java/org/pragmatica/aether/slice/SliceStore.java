@@ -211,6 +211,14 @@ public interface SliceStore {
         return sliceStore.readSliceResourcesTomlFromJar(sliceJarUrl);
     }
 
+    /// The same read as [#readSliceResourcesToml(URL)], but a failure to read the entry is reported, not
+    /// logged and dropped: `success(none)` is a jar that ships no `resources.toml`, `failure` is a jar whose
+    /// entry exists but cannot be read. The deploy-time publish refuses on the failure; the loader keeps the
+    /// lenient form, so a publish can only refuse more than the loader admits, never less.
+    static Result<Option<String>> readSliceResourcesTomlChecked(URL sliceJarUrl) {
+        return sliceStore.readSliceResourcesTomlCheckedFromJar(sliceJarUrl);
+    }
+
     interface LoadedSlice {
         Artifact artifact();
         Slice slice();
@@ -515,9 +523,13 @@ public interface SliceStore {
         }
 
         private static Option<String> readSliceResourcesTomlFromJar(URL sliceJarUrl) {
+            return lenientRead(readSliceResourcesTomlCheckedFromJar(sliceJarUrl));
+        }
+
+        private static Result<Option<String>> readSliceResourcesTomlCheckedFromJar(URL sliceJarUrl) {
             var jarClassLoader = new UncachedResourceClassLoader(new URL[]{sliceJarUrl},
                                                                  ClassLoader.getPlatformClassLoader());
-            var resourcesToml = readSliceResourcesTomlThrough(jarClassLoader);
+            var resourcesToml = readSliceResourcesTomlCheckedThrough(jarClassLoader);
 
             closeJarClassLoader(sliceJarUrl, jarClassLoader);
 
@@ -537,18 +549,31 @@ public interface SliceStore {
                          .or(Unit.unit());
         }
 
-        @SuppressWarnings("JBCT-EX-01")
         private static Option<String> readSliceResourcesTomlThrough(ClassLoader classLoader) {
+            return lenientRead(readSliceResourcesTomlCheckedThrough(classLoader));
+        }
+
+        /// FER: the lenient reader degrades a failed read to "no file" and logs it. Guarantee earned: the
+        /// slice loads without its intrinsic layer, as before the checked reader existed; what is given up
+        /// is that layer's keys. Mechanism: the failure is logged here, then dropped; the deploy-time
+        /// publish reads through the checked form and refuses instead.
+        private static Option<String> lenientRead(Result<Option<String>> checked) {
+            return checked.onFailure(cause -> log.warn("Failed to read {} from slice classloader: {}",
+                                                       SLICE_RESOURCES_TOML,
+                                                       cause.message()))
+                          .or(Option.none());
+        }
+
+        private static Result<Option<String>> readSliceResourcesTomlCheckedThrough(ClassLoader classLoader) {
+            return Result.lift(Causes::fromThrowable, () -> readResourcesTomlEntry(classLoader));
+        }
+
+        @SuppressWarnings("JBCT-EX-01")
+        private static Option<String> readResourcesTomlEntry(ClassLoader classLoader) throws IOException {
             try (var in = classLoader.getResourceAsStream(SLICE_RESOURCES_TOML)) {
-                if (in == null) {
-                    return Option.none();
-                }
-
-                return Option.some(new String(in.readAllBytes(), StandardCharsets.UTF_8));
-            } catch (IOException e) {
-                log.warn("Failed to read {} from slice classloader: {}", SLICE_RESOURCES_TOML, e.getMessage());
-
-                return Option.none();
+                return in == null
+                       ? Option.none()
+                       : Option.some(new String(in.readAllBytes(), StandardCharsets.UTF_8));
             }
         }
 
