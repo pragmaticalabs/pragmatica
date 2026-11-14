@@ -54,8 +54,12 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///  2. a frame held longer than the 5 s frame budget is given up and counted (`RETRY_GAVE_UP`), and once the hold is released
 ///     no backlog and no retry stays behind;
 ///  3. THE #3194 ASSERTION: a write committed during the hold reaches the held peer within [#CATCH_UP_BOUND_MS] of the release,
-///     so a frame the hold made the transport give up is recovered by a layer above it. Which layer is NOT pinned: on the
-///     senders, ignoring `SyncRequest`, `RoundRequest` or `KVSyncRequest` (each alone, then all three) left this green.
+///     so a frame the hold made the transport give up is recovered by a layer above the lane. Measured (mutation probes):
+///     the lane's held-frame backlog re-send is NOT what recovers it (discarding the backlog on release left this green);
+///     neither are the `SyncRequest`, `RoundRequest` or `KVSyncRequest` handlers (ignored on the senders, alone or together
+///     with the discard, still green). What does: the senders' past-slot Decision replay (`RabiaEngine.repairPastSlot`),
+///     triggered by the held peer's own later propose/vote; with it also disabled the write never arrives. Which layer
+///     recovers is not asserted, only that one does.
 ///
 /// Not pinned, and part of the cost being measured: recovery may depend on the traffic submitted after the release (the
 /// `kick-` puts), and each sender writes up to [#FILL_PUTS_MAX] puts of [#FILL_VALUE_CHARS] chars (about 120 MB) before
@@ -181,7 +185,7 @@ class EmberConsensusLaneHoldTest {
             // (3) THE #3194 ASSERTION.
             var releaseNanos = releasedAt;
 
-            awaitTrue("the held peer holds every write committed during the hold, within " + CATCH_UP_BOUND_MS + " ms of the release",
+            awaitTrue("writes committed during the hold reach the held peer (recovered above the lane: Decision replay, not the backlog re-send), within " + CATCH_UP_BOUND_MS + " ms of the release",
                       CATCH_UP_BOUND_MS,
                       () -> senders.stream().allMatch(sender -> holds(held, marker(sender))));
             System.out.printf("LANE-HOLD caughtUpMs=%d markersAgeAtRelease=%d%n",
