@@ -1200,11 +1200,12 @@ by one `[rule] field — message` line per failure (not the structured triples a
 (`resources-toml-parse`), a blueprint whose own namespace cannot be derived
 (`blueprint-namespace-invalid`, `namespace-reserved`) while it declares at least one stream, and an
 `External` source naming a runtime-provisioned stream kind (`source-reserved-kind`, #1282 — refused here
-exactly as the management API refuses it on every mint path). Every other rule costs only its own alias:
+exactly as the management API refuses it on every mint path), and #576's inert keys (`inert-stream-config-key`,
+`inert-consumer-config-key`; #3269, owner ruling 2026-11-14, amending #1336 — a key leaves the refused set when it is wired). Every other rule costs only its own alias:
 the parser's per-section rules — `version-and-source-mutually-exclusive`, `producer-version-must-be-exact`,
 `partitions-over-ceiling`, `replication-policy-invalid` (#1564: `1 <= confirmation_factor <= replication_factor` does not hold, or a `replication_factor` below 3 came from the cluster default rather than the declaration), `replication-exceeds-core-count` (#1564: `replication_factor` above the cluster's desired core count), `unknown-stream-key` (a key under `[streams.X]` the stream parser does not read, #1549; the removed #1564 keys `replicas`, `min-sync-replicas` and `min_sync_replicas` land here, naming `replication_factor` / `confirmation_factor`), `stream-key-invalid` (a malformed, overflowing, non-integer or below-minimum value), `source-address-invalid`, `namespace-invalid`,
 `stream-name-invalid`, `version-format-invalid`, and `stream-resource-invalid` for a parser refusal no rule
-names yet — and #576's inert keys (`inert-stream-config-key`, `inert-consumer-config-key`). The rule is
+names yet. The rule is
 derived from the parser's typed cause, never from message text. Before #1336 any one failing rule silently emptied the whole bindings entry, valid
 declarations included.
 
