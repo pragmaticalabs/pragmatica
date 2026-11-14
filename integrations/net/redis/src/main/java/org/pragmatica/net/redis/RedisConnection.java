@@ -117,9 +117,13 @@ public final class RedisConnection implements RedisCommands {
 
     private static Promise<RedisConnection> connectOwning(RedisConfig config, Option<SslContext> tls) {
         return Result.lift(thrown -> connectionFailed(Causes.fromThrowable(thrown)),
-                           () -> new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory()))
+                           () -> new MultiThreadIoEventLoopGroup(1,
+                                                                 NioIoHandler.newFactory()))
                      .async()
-                     .flatMap(group -> connect(config, group, tls, some(group)));
+                     .flatMap(group -> connect(config,
+                                               group,
+                                               tls,
+                                               some(group)));
     }
 
     /// Open a connection on a shared event loop that the caller keeps owning.
@@ -261,7 +265,9 @@ public final class RedisConnection implements RedisCommands {
 
     /// Encode first: a frame the codec refuses never touches the queue, so FIFO correlation cannot shift.
     private Promise<RespValue> enqueue(List<byte[]> command) {
-        return RespCodec.encode(channel.alloc(), command, frameLimit)
+        return RespCodec.encode(channel.alloc(),
+                                command,
+                                frameLimit)
                         .fold(this::refusedBeforeSend, this::submit);
     }
 

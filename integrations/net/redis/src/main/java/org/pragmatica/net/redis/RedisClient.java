@@ -77,7 +77,8 @@ public final class RedisClient implements RedisCommands {
 
     private static Promise<RedisClient> start(RedisConfig config, Option<SslContext> tls) {
         return Result.lift(thrown -> connectionFailed(Causes.fromThrowable(thrown)),
-                           () -> new MultiThreadIoEventLoopGroup(Math.min(config.poolSize(), 4),
+                           () -> new MultiThreadIoEventLoopGroup(Math.min(config.poolSize(),
+                                                                          4),
                                                                  NioIoHandler.newFactory()))
                      .async()
                      .flatMap(group -> new RedisClient(config, tls, group).open());
@@ -86,7 +87,7 @@ public final class RedisClient implements RedisCommands {
     /// Prove the server is reachable by opening the first connection; on failure the client is closed.
     Promise<RedisClient> open() {
         return acquire().map(_ -> this)
-                        .onFailure(_ -> close());
+                      .onFailure(_ -> close());
     }
 
     static Result<Option<SslContext>> tlsContext(RedisConfig config) {

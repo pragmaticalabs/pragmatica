@@ -105,7 +105,7 @@ final class RespCodec {
     }
 
     private static long frameSize(List<byte[]> parts) {
-        var total = (long) ("*" + parts.size()).length() + 2;
+        var total = (long)("*" + parts.size()).length() + 2;
 
         for (var part : parts) {
             total += String.valueOf(part.length).length() + 5L + part.length;
