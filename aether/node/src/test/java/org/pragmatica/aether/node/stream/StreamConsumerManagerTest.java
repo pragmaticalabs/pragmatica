@@ -1994,6 +1994,139 @@ class StreamConsumerManagerTest {
         }
     }
 
+    /// #2600: a slice placed WORKERS_ONLY is ACTIVE only on worker-tier nodes, which the core-only ownership view
+    /// never lists, so its candidate set was empty and every partition stayed unassigned with no error.
+    @Nested
+    class WorkerTier {
+        private static final NodeId WORKER = NodeId.nodeId("worker-1").unwrap();
+        private static final NodeId WORKER_TWO = NodeId.nodeId("worker-2").unwrap();
+        private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
+
+        /// Red at base: the live set is the core view only, so the worker is filtered out of the candidates and
+        /// nothing attaches on it. Mutant: drop `liveWorkers` from the union and this goes red.
+        @Test
+        void reconcile_attachesOnTheWorker_whenTheSliceIsActiveOnlyOnALiveWorker() {
+            declareStringConsumer();
+            placement.activeOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            ownership.withLiveWorkers(WORKER);
+            var workerRuntime = new RecordingRuntime();
+
+            managerFor(WORKER, workerRuntime).reconcile();
+
+            assertThat(workerRuntime.subscribedPartitions()).describedAs("the only candidate is the worker, so it consumes every partition, reading from the core owners")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+        }
+
+        /// A core that is not a candidate must not attach, and the assignment must name the worker: the leader's
+        /// committed record is computed from the same candidate set.
+        @Test
+        void reconcile_assignsEveryPartitionToTheWorker_whenTheSliceIsActiveOnlyOnALiveWorker() {
+            declareStringConsumer();
+            placement.activeOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            ownership.withLiveWorkers(WORKER);
+            var manager = manager();
+
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("a core that does not host the slice consumes nothing").isEmpty();
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.partitionAssignments()).allSatisfy(assignment -> assertThat(assignment.consumerNode()).isEqualTo(Option.some(WORKER))));
+        }
+
+        /// The exactly-once invariant over a worker-only candidate set: two workers split the partitions with no gap
+        /// and no duplicate.
+        @Test
+        void reconcile_assignsEveryPartitionToExactlyOneWorker_whenTheSliceIsActiveOnTwoLiveWorkers() {
+            declareStringConsumer();
+            placement.activeOn(WORKER, WORKER_TWO);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            ownership.withLiveWorkers(WORKER, WORKER_TWO);
+            var claimed = new ArrayList<Integer>();
+
+            for (var node : List.of(WORKER, WORKER_TWO)) {
+                var nodeRuntime = new RecordingRuntime();
+
+                managerFor(node, nodeRuntime).reconcile();
+                claimed.addAll(nodeRuntime.subscribedPartitions());
+            }
+
+            assertThat(claimed).containsExactlyInAnyOrder(0, 1, 2, 3);
+        }
+
+        /// A worker the slice is ACTIVE on but membership no longer counts must not be assigned: the committed row of a
+        /// departed worker lingers until cleanup, and assigning to it would consume nothing while looking healthy.
+        @Test
+        void reconcile_assignsNothing_whenTheActiveWorkerIsNotLive() {
+            declareStringConsumer();
+            placement.activeOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            var workerRuntime = new RecordingRuntime();
+
+            managerFor(WORKER, workerRuntime).reconcile();
+
+            assertThat(workerRuntime.subscribedPartitions()).isEmpty();
+        }
+
+        /// Red at base: the "ACTIVE on no live node" state read as a deploy in flight (INFO "not consumed YET") with no
+        /// operator warning. Red under "no raise": no warning arrives. Red under a raise per pass: more than one arrives.
+        @Test
+        void reconcile_raisesOneWarning_whenTheSliceIsActiveButNoHostIsLive() {
+            declareStringConsumer();
+            placement.activeOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            var manager = manager();
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            manager.reconcile();
+
+            assertThat(warnings).singleElement()
+                      .satisfies(warning -> {
+                                     assertThat(warning.code()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE);
+                                     assertThat(warning.message()).contains("worker-1").contains(STREAM);
+                                 });
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.diagnostic().or("")).doesNotContain("YET"));
+        }
+
+        /// The recovery, same subject, once: the worker becomes a live member. Red under "no restored report".
+        @Test
+        void reconcile_reportsRestored_onceTheActiveWorkerIsLive() {
+            declareStringConsumer();
+            placement.activeOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            var manager = manager();
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            ownership.withLiveWorkers(WORKER);
+            manager.reconcile();
+            manager.reconcile();
+
+            assertThat(warnings).extracting(OperatorWarning::code)
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE,
+                                       OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED);
+            assertThat(warnings).extracting(OperatorWarning::subject).doesNotHaveDuplicates();
+        }
+
+        /// A slice that is deployed but ACTIVE nowhere is a deploy in flight, not a gap: no warning.
+        @Test
+        void reconcile_raisesNothing_whenTheSliceIsStillLoading() {
+            declareStringConsumer();
+            placement.activatingOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            var manager = manager();
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+
+            assertThat(warnings).isEmpty();
+        }
+    }
+
+
     /// #752, adopted from v1890's probes for #1923: `abandonAll` (the quorum-loss path) must not run while a pass is
     /// between `attach`'s `active.putIfAbsent` and the runtime subscribe (here: held inside the local-slice lookup, which
     /// sits exactly there). Red under "abandonAll does not take passLock": a false divergence warning, and an orphan
@@ -2151,6 +2284,11 @@ class StreamConsumerManagerTest {
         private volatile boolean streamKnown = true;
         private volatile int partitions = PARTITION_COUNT;
         private volatile List<NodeId> members = CLUSTER;
+        private volatile List<NodeId> workers = List.of();
+
+        void withLiveWorkers(NodeId... live) {
+            workers = List.of(live);
+        }
 
         void withPartitionCount(int count) {
             partitions = count;
@@ -2190,6 +2328,11 @@ class StreamConsumerManagerTest {
         @Override
         public List<NodeId> liveMembers() {
             return members;
+        }
+
+        @Override
+        public List<NodeId> liveWorkers() {
+            return workers;
         }
     }
 

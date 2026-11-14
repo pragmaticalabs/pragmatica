@@ -292,6 +292,11 @@ class DurableTopicContextDeliveryTest {
         public List<NodeId> liveMembers() {
             return List.of(SELF);
         }
+
+        @Override
+        public List<NodeId> liveWorkers() {
+            return List.of();
+        }
     }
 
     private static void subscribe(TopicSubscriptionRegistry topics, MethodName method) {
