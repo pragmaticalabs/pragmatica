@@ -89,7 +89,7 @@ class StreamForwardReplyNotSentTest {
         replies = new CopyOnWriteArrayList<>();
         targets = new CopyOnWriteArrayList<>();
         script = new ArrayDeque<>();
-        scheduled = new ArrayList<>();
+        scheduled = new CopyOnWriteArrayList<>();
         neverFires = Executors.newSingleThreadScheduledExecutor();
         handlerLog = LogCapture.capture(StreamForwardHandler.class, Level.INFO, true);
         partitionManager.createStream(streamConfig(STREAM));
@@ -385,10 +385,21 @@ class StreamForwardReplyNotSentTest {
         readTo(handler, REQUESTER);
         handler.onNodeRemoved(removed(REQUESTER));
         inFlight.succeed(refused());
+        awaitHandlerCallback();
 
         assertThat(metrics.replyNotSent()).as("the refusal is still counted").isEqualTo(1L);
         assertThat(handler.openEpisodes()).as("but it re-opens no episode for the departed node").isZero();
         assertThat(episodeLines(Level.WARN)).isEmpty();
+    }
+
+    /// A promise resolved after the handler subscribed runs the handler's callback on another thread. The callback's last
+    /// act for a refused reply is scheduling the re-send, so a non-empty `scheduled` means it has finished.
+    private void awaitHandlerCallback() {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+        while (scheduled.isEmpty() && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
     }
 
     @Test
