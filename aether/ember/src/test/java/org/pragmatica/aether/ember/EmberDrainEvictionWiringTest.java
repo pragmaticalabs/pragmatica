@@ -206,7 +206,7 @@ class EmberDrainEvictionWiringTest {
                        + SeamPoller.INTERVAL_MS + " ms) plus " + FSM2_SLACK_MS + " ms of the first, with the reconcile tick " + RECONCILE_INTERVAL
                        + " away",
                        System.currentTimeMillis() + SeamPoller.INTERVAL_MS + FSM2_SLACK_MS,
-                       () -> repeatReport(leader, drainee, lastPongMs) || contains(capture, "Drain complete for node " + drainee),
+                       () -> repeatReport(leader, drainee, lastPongMs) || contains(capture, "Drain complete for node " + drainee.id()),
                        capture::messages);
     }
 
