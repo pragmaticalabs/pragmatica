@@ -3048,6 +3048,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.UPGRADE_PAUSED,
                 OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
                 OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE,
                 OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
                 OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
                 OperatorWarningCode.STREAM_CONSUMER_BEHIND_RING,
