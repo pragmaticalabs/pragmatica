@@ -15,6 +15,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -43,7 +44,9 @@ class EmberClusterStopBoundTest {
         var outcome = cluster.stop().await(PAST_THE_BOUND);
 
         assertThat(outcome.isFailure()).as("a node whose stop expired its bound must fail the cluster stop, got %s", outcome).isTrue();
-        outcome.onFailure(cause -> assertThat(cause.message()).contains("sb-2").doesNotContain("sb-1"));
+        outcome.onFailure(cause -> assertThat(cause.message()).contains("sb-2").doesNotContain("sb-1")
+                                                                      .as("the failure names the bound that expired")
+                                                                      .contains(TimeSpan.timeSpan(10).seconds().toString()));
         assertThat(cluster.allNodes()).as("the registry is still cleared").isEmpty();
     }
 
@@ -94,6 +97,102 @@ class EmberClusterStopBoundTest {
         cluster.onNodeExit("sb-1", AetherNode.EXIT_DRAINED);
 
         assertThat(cluster.exitCodeOf("sb-1")).isEqualTo(Option.some(AetherNode.EXIT_DRAINED));
+    }
+
+    /// F1: a node removed by a self-drain with its stop still in flight is not in the registry, but still holds its ports.
+    @Test
+    @Timeout(40)
+    void clusterStop_failsNamingTheNode_whenARemovedNodesStopIsStillInFlight() {
+        var cluster = emberCluster(2, PORT, PORT + 100, "sb");
+
+        adopt(cluster, "sb-1", PORT, () -> Promise.success(unit()));
+        adopt(cluster, "sb-2", PORT + 1, Promise::<Unit> promise);
+        cluster.onNodeExit("sb-2", AetherNode.EXIT_DRAINED);
+
+        var outcome = cluster.stop().await(PAST_THE_BOUND);
+
+        assertThat(outcome.isFailure()).as("a removed node still stopping must fail the cluster stop, got %s", outcome).isTrue();
+        outcome.onFailure(cause -> assertThat(cause.message()).contains("sb-2").doesNotContain("sb-1"));
+    }
+
+    /// F2 (documented contract): a failed stop clears the registry, so a retry does not re-stop the leaked node, but it
+    /// awaits that node's pending stop and fails naming it again instead of reporting success.
+    @Test
+    @Timeout(40)
+    void retriedClusterStop_stillFailsNamingTheLeakedNode_whileItsStopIsPending() {
+        var cluster = emberCluster(1, PORT, PORT + 100, "sb");
+
+        adopt(cluster, "sb-1", PORT, Promise::<Unit> promise);
+
+        assertThat(cluster.stop().await(PAST_THE_BOUND).isFailure()).isTrue();
+        var retry = cluster.stop().await(PAST_THE_BOUND);
+
+        assertThat(retry.isFailure()).as("the leaked node's stop is still pending, got %s", retry).isTrue();
+        retry.onFailure(cause -> assertThat(cause.message()).contains("sb-1"));
+    }
+
+    /// F4: a second exit report for a node whose first self-drain stop is pending waits for that stop too.
+    @Test
+    @Timeout(40)
+    void secondSelfExit_whileTheStopIsPending_isNotReportedUntilItResolves() {
+        var cluster = emberCluster(1, PORT, PORT + 100, "sb");
+        var stop = Promise.<Unit> promise();
+
+        adopt(cluster, "sb-1", PORT, () -> stop);
+        cluster.onNodeExit("sb-1", AetherNode.EXIT_DRAINED);
+        cluster.onNodeExit("sb-1", AetherNode.EXIT_DRAINED);
+
+        assertThat(cluster.exitCodeOf("sb-1")).as("the stop is in flight: not exited yet").isEqualTo(Option.none());
+        stop.succeed(unit());
+        awaitExitCode(cluster, "sb-1");
+        assertThat(cluster.exitCodeOf("sb-1")).isEqualTo(Option.some(AetherNode.EXIT_DRAINED));
+    }
+
+    /// A stop that expires its bound and resolves later still reports the exit, once it has.
+    @Test
+    @Timeout(40)
+    void selfExit_isReported_whenTheStopResolvesAfterItsBound() {
+        var cluster = emberCluster(1, PORT, PORT + 100, "sb");
+        var stop = Promise.<Unit> promise();
+
+        adopt(cluster, "sb-1", PORT, () -> stop);
+        cluster.onNodeExit("sb-1", AetherNode.EXIT_IDENTITY_REFUSED);
+        Promise.<Unit> promise().await(PAST_THE_BOUND);
+        assertThat(cluster.exitCodeOf("sb-1")).as("still stopping past the bound").isEqualTo(Option.none());
+
+        stop.succeed(unit());
+        awaitExitCode(cluster, "sb-1");
+
+        assertThat(cluster.exitCodeOf("sb-1")).isEqualTo(Option.some(AetherNode.EXIT_IDENTITY_REFUSED));
+    }
+
+    /// The bound inside stopRemoved is what lets killNode return, and killNode swallows the expiry (behaviour kept from before
+    /// #3173): without the bound killNode would hang, without the recover it would fail.
+    @Test
+    @Timeout(40)
+    void killNode_succeeds_whenTheStopNeverResolves() {
+        var cluster = emberCluster(1, PORT, PORT + 100, "sb");
+
+        adopt(cluster, "sb-1", PORT, Promise::<Unit> promise);
+
+        assertThat(cluster.killNode("sb-1", false).await(TimeSpan.timeSpan(5).seconds()).isSuccess()).isTrue();
+    }
+
+    @Test
+    @Timeout(40)
+    void selfExit_whoseStopExpires_logsAWarningNamingTheNode() {
+        var cluster = emberCluster(1, PORT, PORT + 100, "sb");
+        var capture = StreamTripwireSupport.captureLogs();
+
+        try {
+            adopt(cluster, "sb-1", PORT, Promise::<Unit> promise);
+            cluster.onNodeExit("sb-1", AetherNode.EXIT_DRAINED);
+            Promise.<Unit> promise().await(PAST_THE_BOUND);
+
+            assertThat(StreamTripwireSupport.logLines(capture, Level.WARN)).anyMatch(line -> line.contains("Self-drain stop of sb-1 did not resolve"));
+        } finally {
+            capture.close();
+        }
     }
 
     private static void awaitExitCode(EmberCluster cluster, String id) {
