@@ -69,8 +69,8 @@ class PgSchemaNameTest {
 
         assertThat(refused.isFailure()).isTrue();
         assertThat(nullRefused.isFailure()).isTrue();
-        refused.onFailure(cause -> assertThat(cause).isEqualTo(PgSchemaNameError.malformed("Bad;")));
-        nullRefused.onFailure(cause -> assertThat(cause).isEqualTo(PgSchemaNameError.malformed(null)));
+        refused.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(PgSchemaNameError.Malformed.class, malformed -> assertThat(malformed.value()).isEqualTo("Bad;")));
+        nullRefused.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(PgSchemaNameError.Malformed.class, malformed -> assertThat(malformed.value()).isNull()));
     }
 
     @Test
@@ -78,7 +78,7 @@ class PgSchemaNameTest {
         var refused = PgSchemaName.pgSchemaName("pg_temp");
 
         assertThat(refused.isFailure()).isTrue();
-        refused.onFailure(cause -> assertThat(cause).isEqualTo(PgSchemaNameError.reserved("pg_temp")));
+        refused.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(PgSchemaNameError.Reserved.class, reserved -> assertThat(reserved.value()).isEqualTo("pg_temp")));
     }
 
     @Test
