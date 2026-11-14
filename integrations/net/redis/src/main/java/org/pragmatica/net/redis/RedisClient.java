@@ -20,6 +20,7 @@ import io.netty.handler.ssl.SslContextBuilder;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.net.redis.RedisError.ConnectionFailed.connectionFailed;
 import static org.pragmatica.net.redis.RedisError.PoolSaturated.poolSaturated;
@@ -94,7 +95,7 @@ public final class RedisClient implements RedisCommands {
         return config.tls()
                ? Result.lift(thrown -> tlsSetupFailed(String.valueOf(thrown.getMessage())),
                              () -> some(SslContextBuilder.forClient().build()))
-               : Result.success(none());
+               : success(none());
     }
 
     @Override

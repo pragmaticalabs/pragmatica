@@ -51,7 +51,9 @@ import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.Future;
 
 import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Promise.promise;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.net.redis.RedisCommands.command;
@@ -167,7 +169,7 @@ public final class RedisConnection implements RedisCommands {
     /// certificate or a plaintext server is a typed [RedisError.ConnectionFailed] here, not a failure of
     /// the first command.
     private static Promise<Channel> handshaken(Channel ch) {
-        return Promise.promise(promise -> ch.pipeline()
+        return promise(promise -> ch.pipeline()
                                             .get(SslHandler.class)
                                             .handshakeFuture()
                                             .addListener(future -> settleHandshake(future, ch, promise)));
@@ -290,7 +292,7 @@ public final class RedisConnection implements RedisCommands {
     /// A loop that rejected the task because the connection already ended (an owned loop shuts down with it)
     /// reports the connection's terminal cause, not the rejection.
     private Cause endedBefore(Cause rejection) {
-        return Option.option(terminal.get()).or(rejection);
+        return option(terminal.get()).or(rejection);
     }
 
     /// Runs on the event loop, which orders the queue entry with the write.
@@ -361,14 +363,14 @@ public final class RedisConnection implements RedisCommands {
     }
 
     private Cause terminalCause() {
-        return Option.option(terminal.get()).or(RedisError.General.CLOSED);
+        return option(terminal.get()).or(RedisError.General.CLOSED);
     }
 
     /// Close the connection. Idempotent: every call returns the same promise.
     public Promise<Unit> close() {
         terminal.compareAndSet(null, RedisError.General.CLOSED);
-        Option.option(channel).onPresent(Channel::close);
-        Option.option(channel).onEmpty(this::release);
+        option(channel).onPresent(Channel::close);
+        option(channel).onEmpty(this::release);
 
         return closed;
     }
@@ -420,7 +422,7 @@ public final class RedisConnection implements RedisCommands {
         @Override
         @Contract
         protected void channelRead0(ChannelHandlerContext ctx, RespValue value) {
-            Option.option(pending.poll())
+            option(pending.poll())
                   .onPresent(reply -> complete(reply, value))
                   .onEmpty(() -> fail(protocolViolation("reply without a command in flight")));
         }
