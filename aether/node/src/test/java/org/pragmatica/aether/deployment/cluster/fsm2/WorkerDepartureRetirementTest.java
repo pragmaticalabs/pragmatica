@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.List;
 import java.util.Set;
 
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
@@ -11,11 +12,14 @@ import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.junit.jupiter.api.Test;
@@ -264,5 +268,92 @@ class WorkerDepartureRetirementTest {
 
         assertThat(w.present(new ActivationDirectiveKey(worker))).as("the inferred departure's directive is retired").isFalse();
         assertThat(w.recordOf(worker).isPresent()).as("C17b retires the record with the directive").isFalse();
+    }
+
+    /// A held C17b of a worker that wrote a slice row, refused because its DIRECTIVE moved (rewritten with a new governor hint); the record
+    /// is unmoved. Returns the resubmission, which the harness holds.
+    private ClusterEffect.Submit refusedForMovedDirective(MbWorld w) {
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        new NodeSim(w.h, worker, process(TOKEN)).writes(ORDERS, SliceObservedState.DEACTIVATING, gen(1));
+        w.h.deliver(new ClusterInput.WorkerLeave(worker));
+        w.h.applyHeld(w.h.submits(SubmitKind.DEPARTURE).getFirst().correlationId());
+        w.h.drain();
+        settle(w);
+        var cleanup = w.h.submits(SubmitKind.CLEANUP).getLast();
+
+        assertThat(List.of(new ActivationDirectiveKey(worker), new NodeDepartureKey(worker), new SliceObservedKey(worker, ORDERS)))
+                  .as("the C17b under test retires the directive, the record and the row together")
+                  .allMatch(key -> removes(cleanup, key));
+        w.h.seed(new ActivationDirectiveKey(worker), ActivationDirectiveValue.worker("c1", "hint-2"));
+        w.h.drain();
+        var verdict = w.h.applyHeld(cleanup.correlationId());
+
+        assertThat(verdict).as("the moved directive refuses the whole C17b").isInstanceOf(Settlement.Refused.class);
+        var before = w.h.submits(SubmitKind.CLEANUP).size();
+
+        w.h.settleHeld(cleanup, verdict);
+        var resubmissions = w.h.submits(SubmitKind.CLEANUP);
+
+        assertThat(resubmissions).as("the unmoved row is resubmitted at once").hasSize(before + 1);
+        return resubmissions.getLast();
+    }
+
+    // D8/D11 — Red when: a refused worker C17b is resubmitted with the record's removal but without the directive's (the retirement is
+    // not kept whole), which would retire the record against a directive that still stands.
+    @Test
+    void refusedWorkerCleanup_directiveMoved_resubmissionKeepsTheRetirementWhole() {
+        var again = refusedForMovedDirective(world());
+
+        assertThat(removes(again, new NodeDepartureKey(worker))).as("the record's removal is split out with the moved directive").isFalse();
+        assertThat(removes(again, new ActivationDirectiveKey(worker))).as("the moved directive is not removed on a stale expectation").isFalse();
+    }
+
+    // D10 — Red when: the resubmission that no longer removes the record drops the witness on it, so it could commit after the
+    // record moved on (a rejoin), with no guard to refuse it.
+    @Test
+    void refusedWorkerCleanup_directiveMoved_resubmissionStaysGuardedByTheUnchangedRecord() {
+        var w = world();
+        var again = refusedForMovedDirective(w);
+        var departedRecord = w.recordOf(worker);
+
+        assertThat(departedRecord.map(NodeDepartureValue::state)).as("the record stands, DEPARTED").isEqualTo(Option.some(DepartureState.DEPARTED));
+        assertThat(again.transaction().guards())
+                  .as("a witness on the record, expecting the DEPARTED value the mirror holds")
+                  .containsExactly(new KVCommand.ReadWitness<AetherKey>(new NodeDepartureKey(worker), departedRecord.map(v -> (Object) v)));
+    }
+
+    // D11 — Red when: the resubmission carries the mutations whose keys moved, not only the unmoved ones (the row, alone, is what
+    // still stands on its expectation).
+    @Test
+    void refusedWorkerCleanup_directiveMoved_resubmitsOnlyTheUnmovedMutations() {
+        var again = refusedForMovedDirective(world());
+
+        assertThat(again.transaction().mutations()).extracting(KVCommand.Mutation::key)
+                  .containsExactly(new SliceObservedKey(worker, ORDERS));
+    }
+
+    // D8 — Red when: the only unmoved part of a refused worker C17b is the record's own removal, and it is resubmitted alone (the
+    // directive moved, so the record must stay until a fresh C17b retires both).
+    @Test
+    void refusedWorkerCleanup_directiveMovedAndNothingElseUnmoved_resubmitsNothing() {
+        var w = world();
+
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.deliver(new ClusterInput.WorkerLeave(worker));
+        w.h.applyHeld(w.h.submits(SubmitKind.DEPARTURE).getFirst().correlationId());
+        w.h.drain();
+        settle(w);
+        var cleanup = w.h.submits(SubmitKind.CLEANUP).getLast();
+
+        w.h.seed(new ActivationDirectiveKey(worker), ActivationDirectiveValue.worker("c1", "hint-2"));
+        w.h.drain();
+        var verdict = w.h.applyHeld(cleanup.correlationId());
+
+        assertThat(verdict).isInstanceOf(Settlement.Refused.class);
+        w.h.settleHeld(cleanup, verdict);
+
+        assertThat(w.h.submits(SubmitKind.CLEANUP)).as("no C17b removes the record without the directive")
+                  .noneMatch(submit -> removes(submit, new NodeDepartureKey(worker)) && !removes(submit, new ActivationDirectiveKey(worker)));
+        assertThat(w.recordOf(worker).isPresent()).as("the record stands with the moved directive").isTrue();
     }
 }
