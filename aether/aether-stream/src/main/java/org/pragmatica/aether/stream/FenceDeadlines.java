@@ -81,7 +81,9 @@ public final class FenceDeadlines {
     /// reached the listener) the FIRST read captures now as the base (#2981 step 3b, v3186 F1): a re-reading gate (a same-term
     /// re-gate after quorum loss) then finds the same deadline, which therefore passes, where an uncaptured now + `W` would move
     /// with every read and never expire. A base of a NEWER term is kept, and a read for an older term (a stale gate, which its
-    /// guarded lineage write refuses anyway) captures nothing and gets now + `W`.
+    /// guarded lineage write refuses anyway) captures nothing and gets now + `W`. With NO entry
+    /// (after [#onOwnershipDelivered] dropped another owner's record) that older-term read does store its own base; harmless: a later
+    /// term replaces it and there is at most one entry per partition.
     public long deadline(PartitionKey key, long ownershipTerm) {
         var now = nanoTime.getAsLong();
 

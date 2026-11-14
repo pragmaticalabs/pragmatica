@@ -144,6 +144,20 @@ class FenceDeadlinesTest {
         assertThat(deadlines.deadline(KEY, 5L)).as("the newer term's base stands").isEqualTo(500L + W);
     }
 
+    /// With no entry (after another owner's record dropped it) an older-term read stores its own base at the first read; it is
+    /// harmless: the entry is that older term's, a later term replaces it and there is at most one per partition.
+    @Test
+    void deadline_olderTermReadWithNoEntry_capturesItsOwnBase_andALaterTermReplacesIt() {
+        now.set(7_000L);
+        assertThat(deadlines.deadline(KEY, 4L)).isEqualTo(7_000L + W);
+        now.set(8_000L);
+        assertThat(deadlines.deadline(KEY, 4L)).as("the first read's base stands").isEqualTo(7_000L + W);
+        now.set(9_000L);
+        assertThat(deadlines.deadline(KEY, 5L)).as("a later term replaces it").isEqualTo(9_000L + W);
+        now.set(9_500L);
+        assertThat(deadlines.deadline(KEY, 5L)).isEqualTo(9_000L + W);
+    }
+
     @Test
     void nanosLeft_isTheDeadlineLessNow() {
         renewals.put(L, 500L);

@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.stream.replication.PartitionKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
@@ -56,6 +57,10 @@ class OwnerActivationFenceTest {
     private final List<Long> probedAtNanos = new CopyOnWriteArrayList<>();
     private final List<String> fenceProbes = new CopyOnWriteArrayList<>();
     private final List<NodeId> confirmed = new CopyOnWriteArrayList<>();
+    private final List<String> confirmedAt = new CopyOnWriteArrayList<>();
+    private final List<String> catchUps = new CopyOnWriteArrayList<>();
+    private final Map<NodeId, Long> renewals = new ConcurrentHashMap<>();
+    private FenceDeadlines deadlines;
     private final Map<NodeId, AtomicInteger> rounds = new ConcurrentHashMap<>();
     /// What member `X` answers in its first probe of a gate run; later probes answer -1 (holds nothing).
     private final AtomicReference<Result<Long>> firstAnswerOfX = new AtomicReference<>(Result.success(-1L));
@@ -69,7 +74,7 @@ class OwnerActivationFenceTest {
                                                    () -> live,
                                                    this::probe,
                                                    (_, _) -> watermark.get(),
-                                                   (_, _, _, _) -> Promise.success(0L),
+                                                   this::catchUp,
                                                    () -> true,
                                                    (_, _, _, _, _) -> Promise.success(List.of()),
                                                    new OwnerActivation.BlockAlarm() {
@@ -87,9 +92,9 @@ class OwnerActivationFenceTest {
                                                    (_, _) -> 1L,
                                                    lineage);
 
-        gate.peerLineageConfirm((_, _, peer, _) -> confirmed(peer));
-        gate.moveFence(OwnerActivation.MoveFence.moveFence(FenceDeadlines.fenceDeadlines(SELF, _ -> Option.none(), now::get, wait),
-                                                           this::fenceProbe));
+        deadlines = FenceDeadlines.fenceDeadlines(SELF, node -> Option.option(renewals.get(node)), now::get, wait);
+        gate.peerLineageConfirm((_, _, peer, peerWatermark) -> confirmed(peer, peerWatermark));
+        gate.moveFence(OwnerActivation.MoveFence.moveFence(deadlines, this::fenceProbe));
 
         return gate;
     }
@@ -98,8 +103,15 @@ class OwnerActivationFenceTest {
         return activation(wait, this::commit);
     }
 
-    private Promise<Unit> confirmed(NodeId peer) {
+    private Promise<Long> catchUp(String stream, int partition, NodeId source, long sourceTail) {
+        catchUps.add(source.id() + "@" + sourceTail);
+
+        return Promise.success(sourceTail);
+    }
+
+    private Promise<Unit> confirmed(NodeId peer, long peerWatermark) {
         confirmed.add(peer);
+        confirmedAt.add(peer.id() + "=" + peerWatermark);
 
         return Promise.success(Unit.unit());
     }
@@ -116,7 +128,7 @@ class OwnerActivationFenceTest {
     }
 
     private Promise<Long> fenceProbe(NodeId target, String stream, int partition, Epoch ownerEpoch, long ownershipTerm) {
-        fenceProbes.add(target.id() + "@" + ownerEpoch.localCounter() + "/" + ownershipTerm);
+        fenceProbes.add(target.id() + "@" + ownerEpoch.localCounter() + "/" + ownershipTerm + "#" + partition);
 
         return answerOfL.get();
     }
@@ -140,6 +152,8 @@ class OwnerActivationFenceTest {
         probedAtNanos.clear();
         fenceProbes.clear();
         confirmed.clear();
+        confirmedAt.clear();
+        catchUps.clear();
     }
 
     /// `L` answered first: it is probed although it is no live member, with the record's epoch and term, and its answer joins the
@@ -151,7 +165,7 @@ class OwnerActivationFenceTest {
 
         assertThat(gate.activate(STREAM, PARTITION).await(AWAIT).isSuccess()).isTrue();
 
-        assertThat(fenceProbes).containsExactly("node-2@" + epoch(TERM).localCounter() + "/" + TERM);
+        assertThat(fenceProbes).containsExactly("node-2@" + epoch(TERM).localCounter() + "/" + TERM + "#" + PARTITION);
         assertThat(probed).as("the others are probed once, in the same fan-out").containsExactly(X);
         assertThat(confirmed).as("L's answer is used beside the others'").containsExactlyInAnyOrder(X, L);
         assertThat(gate.isActivated(STREAM, PARTITION)).isTrue();
@@ -183,6 +197,7 @@ class OwnerActivationFenceTest {
     @Test
     void sameTermRegate_afterTheDeadline_reusesTheTermsBase_andNeitherWaitsNorProbesL() {
         record.set(Option.some(movedFrom(Option.some(L))));
+        live.add(L);
         var gate = activation(SHORT_WAIT);
 
         assertThat(gate.activate(STREAM, PARTITION).await(AWAIT).isSuccess()).isTrue();
@@ -196,7 +211,7 @@ class OwnerActivationFenceTest {
         assertThat(gate.activate(STREAM, PARTITION).await(AWAIT).isSuccess()).isTrue();
 
         assertThat(fenceProbes).as("the deadline passed, nothing left to race").isEmpty();
-        assertThat(probed).containsExactly(X);
+        assertThat(probed).as("L is a live member here, yet never probed as an ordinary one").containsExactly(X);
     }
 
     /// `L` unknown (the newest older start names no owner): nobody is probed before the full deadline; then the others are.
@@ -279,5 +294,81 @@ class OwnerActivationFenceTest {
         assertThat(after.epochStarts().stream().map(EpochStart::owner).toList()).as("the same-offset start replaced L's")
                                                                                .containsExactly(Option.some(SELF));
         assertThat(FenceTarget.fenceTarget(after, SELF)).isInstanceOf(FenceTarget.NoFence.class);
+    }
+
+    /// A late answer of `L`, after the deadline won, is ignored.
+    @Test
+    void lateAnswerOfL_afterTheDeadline_isIgnored() throws Exception {
+        record.set(Option.some(movedFrom(Option.some(L))));
+        var late = Promise.<Long>promise();
+        answerOfL.set(late);
+        firstAnswerOfX.set(SILENT.result());
+        var gate = activation(SHORT_WAIT);
+        var running = gate.activate(STREAM, PARTITION);
+
+        Thread.sleep(SHORT_WAIT.millis() + 200);
+        late.succeed(1_000L);
+        assertThat(running.await(AWAIT).isSuccess()).isTrue();
+        Thread.sleep(300);
+        assertThat(probed).containsExactly(X, X);
+        assertThat(confirmed).as("late L answer not used").containsExactly(X);
+        assertThat(commits).hasSize(1);
+    }
+
+    /// A FAILED probe of `L` is no answer: it does not end the race, the deadline still decides and the others are probed again
+    /// only after it.
+    @Test
+    void failedProbeOfL_isNoAnswer_theDeadlineStillDecides() {
+        record.set(Option.some(movedFrom(Option.some(L))));
+        answerOfL.set(SILENT.promise());
+        var gate = activation(SHORT_WAIT);
+        var started = System.nanoTime();
+
+        assertThat(gate.activate(STREAM, PARTITION).await(AWAIT).isSuccess()).isTrue();
+        assertThat(probed).containsExactly(X, X);
+        assertThat(probedAtNanos.get(1) - started).isGreaterThanOrEqualTo(SHORT_WAIT.nanos() - TimeSpan.timeSpan(50).millis().nanos());
+        assertThat(confirmed).containsExactly(X);
+    }
+
+    /// The deadline base delivered through `onOwnershipDelivered` is read for the record's own term: a base older than `W` has
+    /// passed, so the gate probes the others now and never races `L`.
+    @Test
+    void deliveredBase_isReadForTheRecordsTerm_andAPassedDeadlineSkipsL() {
+        record.set(Option.some(movedFrom(Option.some(L))));
+        renewals.put(L, now.get() - SHORT_WAIT.nanos() - 1L);
+        var gate = activation(SHORT_WAIT);
+
+        deadlines.onOwnershipDelivered(PartitionKey.partitionKey(STREAM, PARTITION), record.get().unwrap());
+
+        assertThat(gate.activate(STREAM, PARTITION).await(AWAIT).isSuccess()).isTrue();
+        assertThat(fenceProbes).as("the delivered base's deadline passed, nothing to race").isEmpty();
+        assertThat(probed).containsExactly(X);
+    }
+
+    /// `L`'s answer is a real watermark above the others': it is confirmed and pulled from `L`, not replaced by a placeholder.
+    @Test
+    void higherWatermarkOfL_isConfirmedAndPulledFromL() {
+        record.set(Option.some(movedFrom(Option.some(L))));
+        answerOfL.set(Promise.success(80L));
+        var gate = activation(LONG_WAIT);
+
+        assertThat(gate.activate(STREAM, PARTITION).await(AWAIT).isSuccess()).isTrue();
+        assertThat(confirmedAt).containsExactlyInAnyOrder("node-2=80", "node-1=-1");
+        assertThat(catchUps).containsExactly("node-2@80");
+    }
+
+    /// `L` answering does not excuse another member's silence: the silent `X` still blocks the activation.
+    @Test
+    void lAnswered_whileAnotherMemberIsSilent_stillBlocks() {
+        record.set(Option.some(movedFrom(Option.some(L))));
+        firstAnswerOfX.set(SILENT.result());
+        var gate = activation(LONG_WAIT);
+
+        var result = gate.activate(STREAM, PARTITION).await(AWAIT);
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause).isEqualTo(OwnerActivation.ActivationError.HOLDER_UNREACHABLE));
+        assertThat(gate.isActivated(STREAM, PARTITION)).isFalse();
+        assertThat(commits).isEmpty();
     }
 }
