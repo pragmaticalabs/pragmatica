@@ -1493,6 +1493,10 @@ public final class EmberCluster {
             return Promise.unitPromise();
         }
 
+        // Registered before the stop begins, so a relaunch that sees the node gone also sees the stop to wait for.
+        var stopped = Promise.<Unit>promise();
+
+        stopsByNodeId.put(nodeIdStr, stopped);
         var timeout = graceful
                       ? NODE_TIMEOUT
                       : TimeSpan.timeSpan(1).seconds();
@@ -1506,13 +1510,12 @@ public final class EmberCluster {
         instanceTags.remove(nodeIdStr);
         var slotOpt = Option.option(slotsByNodeId.remove(nodeIdStr));
 
-        var stopped = node.stop()
-                          .onSuccess(_ -> slotOpt.onPresent(availableSlots::offer))
-                          .timeout(timeout)
-                          .recover(_ -> Unit.unit())
-                          .onSuccess(_ -> log.info("Node {} removed from cluster", nodeIdStr));
-
-        stopsByNodeId.put(nodeIdStr, stopped);
+        node.stop()
+            .onSuccess(_ -> slotOpt.onPresent(availableSlots::offer))
+            .timeout(timeout)
+            .recover(_ -> Unit.unit())
+            .onSuccess(_ -> log.info("Node {} removed from cluster", nodeIdStr))
+            .onSuccess(stopped::succeed);
 
         return stopped;
     }
