@@ -1,0 +1,12 @@
+# Conduit on Terra: HS256 `Token` JWTs (B-01..B-04) through Terra's built-in `jwt` security mode.
+# The token-optional GETs declare `security = "optional"` in routes.toml, so a presented token is verified there too (B-03).
+# The secret is not in this file: Terra reads TERRA_JWT__SECRET. run.sh sets it from CONDUIT_JWT_SECRET, the variable the
+# token issuer signs with, so the operator sets one variable. There is no default.
+[http]
+port = 8080
+security_mode = "jwt"
+
+[jwt]
+algorithm = "HS256"
+auth_schemes = ["Token"]
+clock_skew_seconds = 0

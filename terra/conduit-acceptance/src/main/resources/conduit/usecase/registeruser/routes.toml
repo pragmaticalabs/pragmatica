@@ -1,0 +1,16 @@
+prefix = "/api"
+
+[security]
+default = "public"
+
+[routes]
+execute = { route = "POST /users", status = 201 }
+
+[errors]
+packages = ["conduit.domain"]
+default = 500
+HTTP_401 = ["Unauthorized"]
+HTTP_403 = ["Forbidden"]
+HTTP_404 = ["NotFound"]
+HTTP_409 = ["Conflict"]
+HTTP_422 = ["RequestInvalid"]

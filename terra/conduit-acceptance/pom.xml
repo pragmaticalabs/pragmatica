@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.pragmatica-lite</groupId>
+        <artifactId>terra</artifactId>
+        <version>1.0.0-rc5</version>
+    </parent>
+
+    <!-- Own coordinates, not the parent's: the slice blueprint (src/main/terra/blueprint.toml) names `conduit:conduit-terra-<slice>:0.1.0-SNAPSHOT`,
+         and keeping them fixed means a release version bump does not touch the app. -->
+    <groupId>conduit</groupId>
+    <artifactId>conduit-terra</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>Conduit (RealWorld) on Terra, acceptance app</name>
+    <description>RealWorld Conduit API as JBCT slices on Terra; the nightly acceptance suite runs the upstream API spec against it (#2898)</description>
+
+    <properties>
+        <maven.compiler.release>25</maven.compiler.release>
+        <!-- Root default is true. This module opts back in so format-check and lint examine its sources. -->
+        <jbct.skip>false</jbct.skip>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>terra-launcher</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>slice-annotations</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-api</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-db-async</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>http-handler-api</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <!-- bcrypt (B-10): Pragmatica ships no password hasher; BouncyCastle's OpenBSDBCrypt emits $2a$/$2b$. Version managed by the root pom. -->
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcprov-jdk18on</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>pg-codegen</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <!-- #2712: annotationProcessorPaths adds no reactor ordering edge, so under -T the processor may not be built yet. test scope gives
+             Maven the edge without touching the slice manifest. -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>slice-processor</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <!-- The schema, so pg-codegen validates every @Query against it at compile time. @PgSql is config "database", whose migrations
+                 pg-codegen reads from schema/. -->
+            <resource>
+                <directory>${project.basedir}/schema</directory>
+                <targetPath>schema</targetPath>
+            </resource>
+        </resources>
+        <plugins>
+            <!-- Unpublished: an acceptance app is not a release artifact. -->
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <configuration>
+                    <skipPublishing>true</skipPublishing>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <proc>full</proc>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.pragmatica-lite</groupId>
+                            <artifactId>slice-processor</artifactId>
+                            <version>${project.parent.version}</version>
+                        </path>
+                        <path>
+                            <groupId>org.pragmatica-lite.aether</groupId>
+                            <artifactId>pg-codegen</artifactId>
+                            <version>${project.parent.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                    <compilerArgs>
+                        <arg>-Aslice.target=terra</arg>
+                        <arg>-Aslice.groupId=${project.groupId}</arg>
+                        <arg>-Aslice.artifactId=${project.artifactId}</arg>
+                        <arg>-Aslice.version=${project.version}</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>terra-maven-plugin</artifactId>
+                <version>${project.parent.version}</version>
+                <configuration>
+                    <applicationDirectory>${project.basedir}/src/main/terra</applicationDirectory>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>assemble</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jbct-maven-plugin</artifactId>
+                <version>${project.parent.version}</version>
+                <executions>
+                    <execution>
+                        <id>jbct-check</id>
+                        <goals>
+                            <goal>format-check</goal>
+                            <goal>lint</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
