@@ -27,11 +27,12 @@ import org.pragmatica.lang.Verify;
 ///     `EntityAlreadyExists`. Mechanism: `INSERT ... ON CONFLICT (entity, entity_key) DO NOTHING` against the primary
 ///     key; the insert count (1 or 0) is the verdict. The loser blocks on the winner's uncommitted row until it
 ///     commits, so there is no window in which two inserts both see the key absent.
-///   - **[#get]** (any consistency): reads the committed row on the primary the connector is bound to, in one
-///     statement. It reflects every update, create and delete that committed before the statement started; it can
-///     miss work still in flight. That is the read-committed read of a single primary, which is what `LINEARIZABLE`
-///     asks for with one copy of the data. Mechanism: single-row primary read; there is no replica or cache in this
-///     path. A connector bound to a replica or a pooler that routes reads to one would void this guarantee.
+///   - **[#get]** (any consistency): the read-committed read of the primary the connector is bound to. It returns the
+///     row as committed when its single statement started: every create, update and delete that committed before
+///     that moment, never uncommitted work, and it can miss work still in flight. The guarantee is per key and per
+///     statement; it is not a linearizable read and the class does not claim one. Mechanism: one single-row `SELECT`
+///     on the primary under PostgreSQL's default read-committed isolation, no replica and no cache in the path. The
+///     guarantee is void if the connector is bound to a replica, or to a pooler that routes reads to one.
 ///   - **[#update]**: same-key updates are totally ordered and none is lost. Mechanism: `SELECT ... FOR UPDATE` takes the
 ///     row lock, the mutator runs on the locked value, and `UPDATE ... WHERE version = <read version>` writes it, all in
 ///     ONE transaction; a competing update blocks on the lock until this one commits, then reads the new value. The
