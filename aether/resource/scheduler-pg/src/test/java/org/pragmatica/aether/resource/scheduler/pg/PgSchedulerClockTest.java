@@ -27,6 +27,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.resource.scheduler.pg.PgSchedulerFixture.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 
 /// Clock skew of an instance changes nothing: only the database clock decides.

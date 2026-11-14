@@ -27,6 +27,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.resource.scheduler.pg.PgSchedulerFixture.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 
 /// The lease + fencing-token contract between instances: concurrency, takeover after expiry, stale completion.

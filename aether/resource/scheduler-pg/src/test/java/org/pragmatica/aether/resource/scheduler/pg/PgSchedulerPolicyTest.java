@@ -27,6 +27,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.resource.scheduler.pg.PgSchedulerFixture.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 
 /// Policy of one instance: catch-up order, retry, cancel, close releasing the lease.
