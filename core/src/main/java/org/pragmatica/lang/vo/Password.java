@@ -24,6 +24,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// A password that passed a [Policy], or a presented one that is merely non-blank. Core does no
 /// hashing: `value()` hands the raw text to the hasher adapter and nowhere else.
 ///
@@ -70,8 +71,8 @@ public record Password(String value) {
                                             int maxUtf8Bytes,
                                             CharacterClasses classes,
                                             Option<Normalizer.Form> normalization) {
-            return Result.success(new Policy(minCodePoints, maxCodePoints, maxUtf8Bytes, classes, normalization))
-                         .filter(PasswordError.General.INVALID_POLICY, Policy::consistent);
+            return Result.success(new Policy(minCodePoints, maxCodePoints, maxUtf8Bytes, classes, normalization)).filter(PasswordError.General.INVALID_POLICY,
+                                                                                                                         Policy::consistent);
         }
 
         /// The documented default policy, see [Password].
@@ -80,7 +81,9 @@ public record Password(String value) {
         }
 
         private boolean consistent() {
-            return minCodePoints >= 1 && maxCodePoints >= minCodePoints && maxUtf8Bytes >= 1;
+            return minCodePoints >= 1
+                   && maxCodePoints >= minCodePoints
+                   && maxUtf8Bytes >= 1;
         }
     }
 
@@ -107,27 +110,27 @@ public record Password(String value) {
         }
 
         private boolean lowercaseOk(String text) {
-            return !lowercase || text.codePoints()
-                                     .anyMatch(Character::isLowerCase);
+            return ! lowercase || text.codePoints()
+                                      .anyMatch(Character::isLowerCase);
         }
 
         private boolean uppercaseOk(String text) {
-            return !uppercase || text.codePoints()
-                                     .anyMatch(Character::isUpperCase);
+            return ! uppercase || text.codePoints()
+                                      .anyMatch(Character::isUpperCase);
         }
 
         private boolean digitOk(String text) {
-            return !digit || text.codePoints()
-                                 .anyMatch(Character::isDigit);
+            return ! digit || text.codePoints()
+                                  .anyMatch(Character::isDigit);
         }
 
         private boolean symbolOk(String text) {
-            return !symbol || text.codePoints()
-                                  .anyMatch(CharacterClasses::isSymbol);
+            return ! symbol || text.codePoints()
+                                   .anyMatch(CharacterClasses::isSymbol);
         }
 
         private static boolean isSymbol(int codePoint) {
-            return !Character.isLetterOrDigit(codePoint) && !Character.isWhitespace(codePoint);
+            return ! Character.isLetterOrDigit(codePoint) && !Character.isWhitespace(codePoint);
         }
     }
 
@@ -175,13 +178,10 @@ public record Password(String value) {
             MISSING_DIGIT("Password must contain a digit"),
             MISSING_SYMBOL("Password must contain a symbol"),
             INVALID_POLICY("Password policy bounds are inconsistent");
-
             private final String message;
-
             General(String message) {
                 this.message = message;
             }
-
             @Override
             public String message() {
                 return message;
@@ -200,10 +200,14 @@ public record Password(String value) {
                                                                               policy.minCodePoints(),
                                                                               Integer.MAX_VALUE))
                         .filter(PasswordError.TooLong.tooLong(policy.maxCodePoints()),
-                                p -> Verify.Is.codePointsBetween(p.value(), 0, policy.maxCodePoints()))
+                                p -> Verify.Is.codePointsBetween(p.value(),
+                                                                 0,
+                                                                 policy.maxCodePoints()))
                         .filter(PasswordError.TooManyBytes.tooManyBytes(policy.maxUtf8Bytes()),
-                                p -> Verify.Is.utf8LengthAtMost(p.value(), policy.maxUtf8Bytes()))
-                        .flatMap(p -> checkClasses(p, policy.classes()));
+                                p -> Verify.Is.utf8LengthAtMost(p.value(),
+                                                                policy.maxUtf8Bytes()))
+                        .flatMap(p -> checkClasses(p,
+                                                   policy.classes()));
     }
 
     /// Login: non-blank only, no policy and no normalisation.
@@ -211,8 +215,7 @@ public record Password(String value) {
     /// @param raw the raw password, untrimmed
     /// @return Result containing the Password, or [PasswordError.General#BLANK]
     public static Result<Password> presented(String raw) {
-        return Verify.ensure(raw, Verify.Is::present, PasswordError.General.BLANK)
-                     .map(Password::new);
+        return Verify.ensure(raw, Verify.Is::present, PasswordError.General.BLANK).map(Password::new);
     }
 
     /// Login under a policy that normalises: non-blank, then the policy's normalisation only, so a
@@ -240,9 +243,13 @@ public record Password(String value) {
 
     private static Result<Password> checkClasses(Password password, CharacterClasses classes) {
         return Result.success(password)
-                     .filter(PasswordError.General.MISSING_LOWERCASE, p -> classes.lowercaseOk(p.value()))
-                     .filter(PasswordError.General.MISSING_UPPERCASE, p -> classes.uppercaseOk(p.value()))
-                     .filter(PasswordError.General.MISSING_DIGIT, p -> classes.digitOk(p.value()))
-                     .filter(PasswordError.General.MISSING_SYMBOL, p -> classes.symbolOk(p.value()));
+                     .filter(PasswordError.General.MISSING_LOWERCASE,
+                             p -> classes.lowercaseOk(p.value()))
+                     .filter(PasswordError.General.MISSING_UPPERCASE,
+                             p -> classes.uppercaseOk(p.value()))
+                     .filter(PasswordError.General.MISSING_DIGIT,
+                             p -> classes.digitOk(p.value()))
+                     .filter(PasswordError.General.MISSING_SYMBOL,
+                             p -> classes.symbolOk(p.value()));
     }
 }

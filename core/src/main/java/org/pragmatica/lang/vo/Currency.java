@@ -27,6 +27,7 @@ import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// ISO 4217 currency over [java.util.Currency].
 ///
 /// Parsing trims the input and normalises it to upper case (`"usd"` and ` EUR ` are accepted), then
@@ -38,9 +39,9 @@ import org.pragmatica.lang.utils.Causes;
 /// catalog of built-in value objects.
 public record Currency(java.util.Currency value) {
     private static final Map<String, java.util.Currency> KNOWN = java.util.Currency.getAvailableCurrencies()
-                                                                   .stream()
-                                                                   .collect(Collectors.toUnmodifiableMap(java.util.Currency::getCurrencyCode,
-                                                                                                         Function.identity()));
+                                                                                   .stream()
+                                                                                   .collect(Collectors.toUnmodifiableMap(java.util.Currency::getCurrencyCode,
+                                                                                                                         Function.identity()));
 
     /// Failures of [Currency#currency(String)].
     public sealed interface CurrencyError extends Cause.Validation {
@@ -61,13 +62,10 @@ public record Currency(java.util.Currency value) {
         /// Fixed-text failures.
         enum General implements CurrencyError {
             BLANK("Currency code must not be null or blank");
-
             private final String message;
-
             General(String message) {
                 this.message = message;
             }
-
             @Override
             public String message() {
                 return message;
@@ -109,7 +107,8 @@ public record Currency(java.util.Currency value) {
     }
 
     private static String normalise(String raw) {
-        return raw.trim().toUpperCase(Locale.ROOT);
+        return raw.trim()
+                  .toUpperCase(Locale.ROOT);
     }
 
     private static Result<Currency> lookup(String code) {
