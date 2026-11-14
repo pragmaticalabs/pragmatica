@@ -367,6 +367,15 @@ final class Fsm2Harness implements AutoCloseable {
         commitAll(List.of(new KVCommand.LeaderTransaction(key, "tx-" + slot.get(), leader, List.of(), List.of(new KVCommand.Mutation(key, raw.get(key), Option.some(value))))));
     }
 
+    /// A leader-authorized removal: one `LeaderTransaction` under the committed leader whose mutation deletes the key.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void leaderRemove(AetherKey key) {
+        var raw = (KVStore) store;
+        LeaderValue leader = (LeaderValue) raw.getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap();
+
+        commitAll(List.of(new KVCommand.LeaderTransaction(key, "tx-" + slot.get(), leader, List.of(), List.of(new KVCommand.Mutation(key, raw.get(key), Option.none())))));
+    }
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     void remove(AetherKey key) {
         commitAll(List.of(new KVCommand.Remove(key)));

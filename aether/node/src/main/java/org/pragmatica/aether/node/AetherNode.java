@@ -164,6 +164,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.ReplicaFilter;
+import org.pragmatica.aether.slice.kvstore.SliceRowSource;
 import org.pragmatica.aether.slice.repository.CompositeRepository;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.update.AbTestManager;
@@ -308,6 +309,13 @@ public interface AetherNode extends ManageableNode {
     BlueprintService blueprintService();
     /// Phase-3 design 8.3: the one place the engine-dependent hooks are bound, with the FSM2 system when the engine is FSM2.
     DeploymentWiring deploymentWiring();
+
+    /// The engine's slice-row source, from the wiring (deployment state machine spec 1.6.1).
+    @Override
+    default SliceRowSource sliceRows() {
+        return deploymentWiring().sliceRows();
+    }
+
     MavenProtocolHandler mavenProtocolHandler();
     ArtifactStore artifactStore();
     TopologyManager topologyManager();
@@ -3287,6 +3295,7 @@ public interface AetherNode extends ManageableNode {
         var dialingSinceNanos = membershipJournalOut.dialingSinceNanos();
         var leaderReconcilerOut = TopologyAssembly.leaderReconciler(new TopologyAssembly.LeaderReconcilerInputs(config,
                                                                                                                 kvStore,
+                                                                                                                deploymentWiring.sliceRows(),
                                                                                                                 clusterNode,
                                                                                                                 dhtNode,
                                                                                                                 leaderTerm,
@@ -3829,6 +3838,7 @@ public interface AetherNode extends ManageableNode {
                                                   if (config.managementPort() > 0) {
                                                       var managementServer = ManagementAssembly.managementServer(new ManagementAssembly.ManagementServerInputs(config,
                                                                                                                                                                kvStore,
+                                                                                                                                                               deploymentWiring.sliceRows(),
                                                                                                                                                                clusterNode,
                                                                                                                                                                serializer,
                                                                                                                                                                deserializer,
@@ -5049,15 +5059,23 @@ public interface AetherNode extends ManageableNode {
                                                   .onPut(AetherKey.NodeArtifactKey.class,
                                                          deploymentWiring.legacy("B1.cdm.NodeArtifactKey.put",
                                                                                  clusterDeploymentManager::onNodeArtifactPut))
+                                                  // B21 (spec 1.6.1): the readers outside the two FSMs. Under FSM2 these LEGACY routes
+                                                  // are counted drops and the readers follow the observed rows (registerReaders below).
                                                   .onPut(AetherKey.NodeArtifactKey.class,
-                                                         endpointRegistry::onNodeArtifactPut)
+                                                         deploymentWiring.legacy("B21.endpoints.NodeArtifactKey.put",
+                                                                                 endpointRegistry::onNodeArtifactPut))
                                                   .onPut(AetherKey.NodeArtifactKey.class,
-                                                         artifactMetricsCollector.deploymentTracker()::onNodeArtifactPut)
+                                                         deploymentWiring.legacy("B21.tracker.NodeArtifactKey.put",
+                                                                                 artifactMetricsCollector.deploymentTracker()::onNodeArtifactPut))
                                                   .onPut(AetherKey.NodeArtifactKey.class,
-                                                         deploymentMap::onNodeArtifactPut)
-                                                  .onPut(AetherKey.NodeArtifactKey.class, controlLoop::onNodeArtifactPut)
+                                                         deploymentWiring.legacy("B21.deploymentMap.NodeArtifactKey.put",
+                                                                                 deploymentMap::onNodeArtifactPut))
                                                   .onPut(AetherKey.NodeArtifactKey.class,
-                                                         eventAggregator::onNodeArtifactPut)
+                                                         deploymentWiring.legacy("B21.controlLoop.NodeArtifactKey.put",
+                                                                                 controlLoop::onNodeArtifactPut))
+                                                  .onPut(AetherKey.NodeArtifactKey.class,
+                                                         deploymentWiring.legacy("B21.events.NodeArtifactKey.put",
+                                                                                 eventAggregator::onNodeArtifactPut))
                                                   .onPut(AetherKey.CommunityKey.class, eventAggregator::onCommunityPut)
                                                   .onPut(AetherKey.GovernorAnnouncementKey.class,
                                                          eventAggregator::onGovernorAnnouncementPut)
@@ -5068,13 +5086,17 @@ public interface AetherNode extends ManageableNode {
                                                             deploymentWiring.legacy("B1.cdm.NodeArtifactKey.remove",
                                                                                     clusterDeploymentManager::onNodeArtifactRemove))
                                                   .onRemove(AetherKey.NodeArtifactKey.class,
-                                                            endpointRegistry::onNodeArtifactRemove)
+                                                            deploymentWiring.legacy("B21.endpoints.NodeArtifactKey.remove",
+                                                                                    endpointRegistry::onNodeArtifactRemove))
                                                   .onRemove(AetherKey.NodeArtifactKey.class,
-                                                            artifactMetricsCollector.deploymentTracker()::onNodeArtifactRemove)
+                                                            deploymentWiring.legacy("B21.tracker.NodeArtifactKey.remove",
+                                                                                    artifactMetricsCollector.deploymentTracker()::onNodeArtifactRemove))
                                                   .onRemove(AetherKey.NodeArtifactKey.class,
-                                                            deploymentMap::onNodeArtifactRemove)
+                                                            deploymentWiring.legacy("B21.deploymentMap.NodeArtifactKey.remove",
+                                                                                    deploymentMap::onNodeArtifactRemove))
                                                   .onRemove(AetherKey.NodeArtifactKey.class,
-                                                            controlLoop::onNodeArtifactRemove)
+                                                            deploymentWiring.legacy("B21.controlLoop.NodeArtifactKey.remove",
+                                                                                    controlLoop::onNodeArtifactRemove))
                                                   .onPut(AetherKey.NodeRoutesKey.class,
                                                          httpRouteRegistry::onNodeRoutesPut)
                                                   .onPut(AetherKey.NodeRoutesKey.class, appHttpServer::onNodeRoutesPut)
@@ -5082,6 +5104,14 @@ public interface AetherNode extends ManageableNode {
                                                             httpRouteRegistry::onNodeRoutesRemove)
                                                   .onRemove(AetherKey.NodeRoutesKey.class,
                                                             appHttpServer::onNodeRoutesRemove);
+        // B21 (spec 1.6.1, R-1.6.6): under FSM2 the same readers follow the current observed rows; the endpoint registry, a traffic
+        // reader, also drops every endpoint of a node with a committed DEPARTED record.
+        deploymentWiring.registerReaders(kvRouterBuilder,
+                                         List.of(artifactMetricsCollector.deploymentTracker(),
+                                                 deploymentMap,
+                                                 controlLoop,
+                                                 eventAggregator),
+                                         List.of(endpointRegistry));
         // Stream-namespaces rebuild (Stage 4): the ClusterEventLogKey KV materialised-view
         // subscription is gone — cluster events now flow through the system:cluster-events:1.0.0
         // stream (publish via ClusterEventAggregator.emit, read via the stream consumer), not the
