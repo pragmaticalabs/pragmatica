@@ -197,8 +197,9 @@ public final class EngineMarkerGuard {
     }
 
     /// Reads the committed mirror and moves to the state it justifies. Idempotent; called on every notification of the three keys it depends on,
-    /// on a leader change, and when the window ends. It never waits for an action that is running: only the evaluation that opens the guard runs
-    /// what was parked, and only that one queues behind a running action.
+    /// on a leader change, and when the window ends. It does not wait for a running action unless drained work is pending: an evaluation that
+    /// finds parked work drained (its own opening, or an earlier opening whose thread has not yet run it) queues behind a running action to run it.
+    /// Otherwise it only decides and returns.
     @Contract
     public void evaluate() {
         if (decided()) {
@@ -211,7 +212,7 @@ public final class EngineMarkerGuard {
         }
     }
 
-    /// True when this evaluation opened the guard and there is parked work to run.
+    /// True when drained work is pending after this evaluation: this evaluation opened the guard, or an earlier opening is still waiting to run it.
     private synchronized boolean decided() {
         if (state != State.REFUSED) {
             decide(verdict());
@@ -398,8 +399,11 @@ public final class EngineMarkerGuard {
         windowExpired = false;
     }
 
+    /// Appends the parked actions behind any drained work still pending (#3261): an opening whose evaluating thread has not yet got `running`
+    /// leaves its drain in `drained`, and a close and reopen before it does must not discard that work.
     private void drain() {
-        drained = parked.values().stream().flatMap(List::stream).toList();
+        drained = Stream.concat(drained.stream(),
+                                parked.values().stream().flatMap(List::stream)).toList();
         parked.clear();
     }
 
