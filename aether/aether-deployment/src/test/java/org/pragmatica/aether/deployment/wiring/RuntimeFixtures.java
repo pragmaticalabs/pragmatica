@@ -236,6 +236,8 @@ final class RuntimeFixtures {
         volatile boolean hasRoutes = true;
         volatile Cause publishFailure;
         volatile Cause unpublishFailure;
+        /// When set, every unpublish answers with this promise: a cluster write that has not settled (no quorum).
+        volatile Promise<Unit> unpublishPending;
 
         @Override
         public Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, Object sliceInstance, SliceInvokerFacade invokerFacade) {
@@ -255,6 +257,10 @@ final class RuntimeFixtures {
         public Promise<Unit> unpublishRoutes(Artifact artifact) {
             calls.add("unpublish " + artifact);
             Option.option(journal).onPresent(list -> list.add("routes: unpublish " + artifact));
+
+            if (unpublishPending != null) {
+                return unpublishPending;
+            }
 
             return unpublishFailure != null
                    ? unpublishFailure.promise()

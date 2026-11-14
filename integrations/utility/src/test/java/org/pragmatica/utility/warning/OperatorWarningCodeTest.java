@@ -625,4 +625,17 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED.recoveryOf().or(OperatorWarningCode.JSON_CONFIG_APPLIED))
             .isEqualTo(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK);
     }
+
+    /// #3174 H3b: the unpublish-bound expiry is an operator-visible WARNING of the `deployment` subsystem, closed by an INFO recovery; the
+    /// literals are alert keys, so a change would orphan open alerts.
+    @Test
+    void routeUnpublishAwait_isAWarning_withAnInfoRecoveryOfTheSameSubsystem() {
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_EXPIRED.code()).isEqualTo("route-unpublish-await-expired");
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_EXPIRED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_EXPIRED.subsystem()).isEqualTo("deployment");
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_SETTLED.code()).isEqualTo("route-unpublish-await-settled");
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_SETTLED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_SETTLED.subsystem()).isEqualTo("deployment");
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_SETTLED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_EXPIRED);
+    }
 }
