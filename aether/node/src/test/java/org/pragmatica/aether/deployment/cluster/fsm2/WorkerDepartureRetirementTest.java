@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
@@ -111,5 +112,22 @@ class WorkerDepartureRetirementTest {
 
         assertThat(w.present(new ActivationDirectiveKey(worker))).as("the rejoined worker keeps its directive").isTrue();
         assertThat(w.recordOf(worker).map(NodeDepartureValue::state)).isNotEqualTo(Option.some(DepartureState.DEPARTED));
+    }
+
+    // #3193 kill symptom (ruling f407aba5dd) — Red when: C17b keeps the directive of an INFERRED (DEPARTED, STALE) worker departure, so the
+    // governor roster never drops it and COMMUNITY_MEMBER_LEFT is never projected.
+    @Test
+    void inferredStaleDeparture_retiresTheDirective_andTheRecord() {
+        var w = MbWorld.world(CORE_1);
+
+        w.admit(worker, TOKEN);
+        w.community("c1", 5, CommunityState.ACTIVE)
+         .directive(worker, Fixtures.worker("c1"))
+         .record(worker, DepartureState.DEPARTED, 0L, TOKEN, DepartureCause.STALE)
+         .activate();
+        settle(w);
+
+        assertThat(w.present(new ActivationDirectiveKey(worker))).as("the inferred departure's directive is retired").isFalse();
+        assertThat(w.recordOf(worker).isPresent()).as("R-4.3.3 retires the record once the directive is gone").isFalse();
     }
 }

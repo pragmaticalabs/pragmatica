@@ -39,8 +39,7 @@ import org.pragmatica.lang.Option;
 /// - **C17s** (the backstop's inference, step 7): the Put alone, with cause STALE, fenced the same way. It removes nothing.
 /// - **C17b** (after a current DEPARTED commits): the removal of the node's observed rows, each at its exact value, and of
 ///   any desired and route keys still present, guarded on that exact record. A WORKER's directive goes with them (#3193, owner ruling
-///   2026-11-14, as LEGACY at `NodeRemoved`) unless the departure was INFERRED (DEPARTED, STALE: the directive waits, Q1); a core's directive and
-///   the placement key never go.
+///   2026-11-14, as LEGACY at `NodeRemoved`), inferred (STALE) departures included; a core's directive and the placement key never go.
 /// - A DEPARTED record of a node that is **joined** (R-2.11) with the same process is **superseded on read** (R-4.3.0): the node
 ///   counts, no C17b is built for it, and the ADMITTED rewrite (`ADMITTED(e_d + 1)`, expecting the DEPARTED value) replaces it. The
 ///   `Rebuild` seed never supersedes (D-4 (ii)).
@@ -375,16 +374,15 @@ public sealed interface DepartureFlow {
                      .toList();
     }
 
-    /// #3193: a departed WORKER's directive at its exact value; nothing for a core, a node without a directive, or an INFERRED departure
-    /// (DEPARTED, STALE): the backstop's inference may be wrong, so its directive waits (Q1) and the node is re-admitted on evidence (C11f).
+    /// #3193: a departed WORKER's directive at its exact value, on EVERY departed record, inferred (STALE) included, as legacy
+    /// `ClusterDeploymentState.handleNodeRemoval` does (CTO ruling f407aba5dd: supersedes design rule Q1 for worker directives). A falsely
+    /// declared-dead worker returns through C11f re-admission and gets a new WORKER directive (#3028). Nothing for a core or a node without one.
     private static List<KVCommand.Mutation<AetherKey, AetherValue>> workerDirectiveRemoval(ClusterModel m, NodeId node) {
-        return m.records.get(node)
-                        .filter(record -> !isInferred(record))
-                        .flatMap(_ -> m.directives.get(node))
-                        .filter(directive -> ActivationDirectiveValue.WORKER.equals(directive.role()))
-                        .map(directive -> removal(new ActivationDirectiveKey(node), directive))
-                        .stream()
-                        .toList();
+        return m.directives.get(node)
+                           .filter(directive -> ActivationDirectiveValue.WORKER.equals(directive.role()))
+                           .map(directive -> removal(new ActivationDirectiveKey(node), directive))
+                           .stream()
+                           .toList();
     }
 
     /// The node's observed rows at their exact values, current or stale alike.

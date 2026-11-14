@@ -163,22 +163,21 @@ class BackstopTest {
         assertThat(w.present(new SliceObservedKey(W1, ORDERS))).isFalse();
         assertThat(w.present(new SliceDesiredKey(W1, ORDERS))).isFalse();
         assertThat(w.present(new NodeRoutesKey(W1, ORDERS))).isFalse();
-        assertThat(w.present(new ActivationDirectiveKey(W1))).as("the directive waits (Q1)").isTrue();
+        assertThat(w.present(new ActivationDirectiveKey(W1))).as("C17b retires the worker's directive, inferred departure included (#3193; supersedes Q1 for workers)").isFalse();
         assertThat(w.present(new NodePlacementKey(W1))).isTrue();
+        assertThat(cleanup.getFirst().transaction().mutations()).as("C17b carries the worker's directive removal")
+                  .anyMatch(m -> m.key() instanceof ActivationDirectiveKey k && k.nodeId().equals(W1) && m.replacement().isEmpty());
         assertThat(w.h.submits()
                       .stream()
                       .flatMap(s -> s.transaction()
                                      .mutations()
                                      .stream())
-                      .anyMatch(m -> m.key() instanceof ActivationDirectiveKey k && k.nodeId()
-                                                                                     .equals(W1) || m.key() instanceof NodePlacementKey p && p.nodeId()
-                                                                                                                                              .equals(W1))).isFalse();
+                      .anyMatch(m -> m.key() instanceof NodePlacementKey p && p.nodeId().equals(W1))).isFalse();
         assertThat(Rows.placed(w.h.model(), ORDERS)).as("placed(a) restored by a fresh goal").isEqualTo(2);
         assertThat(w.h.model().assignedByCommunity.get(C).map(set -> set.contains(W1))).as("not counted by the community accounting")
                   .isEqualTo(Option.some(false));
-        w.h.seedRemove(new ActivationDirectiveKey(W1));
         w.h.drain();
-        assertThat(w.recordOf(W1).isEmpty()).as("R-4.3.3: confirmed termination collects the record").isTrue();
+        assertThat(w.recordOf(W1).isEmpty()).as("R-4.3.3: the directive's retirement collects the record").isTrue();
     }
 
     // NT-126 (c) first arm
