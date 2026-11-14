@@ -29,3 +29,78 @@ Stalled	aether/aether-stream/src/main/java	settled	pass	-	-	#3155 narrowed: sett
 Stalled	aether/aether-stream/src/main/java	settledweak	fail	SettledIsBacked	-	a pass that does not re-derive the stream, replica and counter leaves an unbacked report settled
 Stalled	aether/aether-stream/src/main/java	early	pass	-	-	#3156 fixed: the stall counter is dropped on destroy
 Stalled	aether/aether-stream/src/main/java	earlynoreset	fail	NoEarlyRaise	-	#3156 negative control: without the reset the counter survives destroy and recreate
+RabiaSlot	tools/tla/standalone/RabiaSlot	code	pass	-	-	the code: one slot, 3 voters, every safety invariant
+RabiaSlot	tools/tla/standalone/RabiaSlot	nopastguard	pass	-	-	D9 past-slot guard dropped alone stays green: the current-slot gates make it redundant at this bound
+RabiaSlot	tools/tla/standalone/RabiaSlot	paper_d9	pass	-	-	D9 paper rule (no guard, log retained): safe at one slot
+RabiaSlot	tools/tla/standalone/RabiaSlot	nopastcur	fail	NoRedecide	-	D9 guards both dropped: a garbage-collected slot is decided and applied twice
+RabiaSlot	tools/tla/standalone/RabiaSlot	nocurslot	fail	NoRedecide	-	current-slot gates dropped: a decision for a collected slot is applied again through Learn
+RabiaSlot	tools/tla/standalone/RabiaSlot	nomarkerfirst	fail	VotedImpliesMarker	-	D11: activation before the participation marker is durable lets a node vote without one
+RabiaSlot	tools/tla/standalone/RabiaSlot	noemptyprop	fail	Live	-	D8: a voter with an empty queue stays silent and the slot never reaches a proposal quorum
+RabiaEpoch	tools/tla/standalone/RabiaEpoch	code	pass	-	-	the code: one reconfiguration, 4 nodes, 2 slots, in-order commit
+RabiaEpoch	tools/tla/standalone/RabiaEpoch	live	pass	-	-	the code: progress under a reconfiguration
+RabiaEpoch	tools/tla/standalone/RabiaEpoch	noexactepoch	pass	-	-	D6 exact-epoch counting dropped, in-order commit: stays green (redundant on the in-log path)
+RabiaEpoch	tools/tla/standalone/RabiaEpoch	norelayepoch	pass	-	-	D2 relay epoch check dropped, in-order commit: stays green (redundant on the in-log path)
+RabiaEpoch	tools/tla/standalone/RabiaEpoch	noprefixsafe	pass	-	-	all fixes, a replica may enter a slot without committing its predecessor (sync adoption): Agreement holds
+RabiaEpoch	tools/tla/standalone/RabiaEpoch	norelayepoch_noprefix	pass	-	-	D2 relay epoch check dropped under sync adoption: stays green (exact-epoch counting blocks the stale ballot)
+RabiaEpoch	tools/tla/standalone/RabiaEpoch	paper_d2	pass	-	-	D2 paper rule (no relay), in-order commit: safe
+RabiaEpoch	tools/tla/standalone/RabiaEpoch	paper_d6	pass	-	-	D6 paper rule (ballots counted without epoch), in-order commit: safe
+RabiaEpoch	tools/tla/standalone/RabiaEpoch	paper_d12	pass	-	-	D12 paper rule (no preferred-command rule), in-order commit: safe
+RabiaEpoch	tools/tla/standalone/RabiaEpoch	paper_d2_np	pass	-	-	D2 paper rule under sync adoption: safe (joiner liveness not checked)
+RabiaEpoch	tools/tla/standalone/RabiaEpoch	paper_d12_np	pass	-	-	D12 paper rule under sync adoption: safe
+RabiaEpoch	tools/tla/standalone/RabiaEpoch	noretainmaj	fail	Progress	-	D6 target-majority check dropped: a reconfiguration can leave a roster that cannot decide
+RabiaEpoch	tools/tla/standalone/RabiaEpoch	noprefix	fail	GovernedVote	-	in-order commit assumption removed: a ballot carries an epoch that does not govern its slot
+RabiaEpoch	tools/tla/standalone/RabiaEpoch	nocrashstop	fail	Agreement	-	crash-stop assumption removed (relay without vote evidence): two values committed
+RabiaEpoch	tools/tla/standalone/RabiaEpoch	noexactepoch_noprefix	fail	Agreement	-	D6 exact-epoch counting dropped under sync adoption: two values committed
+RabiaEpoch	tools/tla/standalone/RabiaEpoch	paper_d6_np	fail	Agreement	-	D6 paper rule under sync adoption: two values committed (the paper rule is unsafe against sync adoption)
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	allfixes	pass	-	-	the code: every adoption fix on
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	allfixesD5	pass	-	-	the code, same-epoch adoption off: isolates the newer-epoch path
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	allfixesD5q	pass	-	-	comparison: newer epoch needs a live majority (not the code)
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ballotlossD5	pass	-	-	ballots lost on pause, newer-epoch path only: insensitive
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ctl_reachClaimed2	pass	-	-	control: with the amnesia fence, two live responders claiming different rosters never occur
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	faultyrespD5q	pass	-	-	comparison: a lying responder under the live-majority rule
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	nooneconfig	pass	-	-	D5 one-configuration check dropped: stays green (fence prevents the case)
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	nooneconfigD5	pass	-	-	D5 one-configuration check dropped, newer-epoch path only: stays green
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	noselfvouch	pass	-	-	D4 self-vouch rule dropped: stays green
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	paperD4	pass	-	-	D4 paper rule (adopt from any single response): stays green
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	paperD5	pass	-	-	D5 paper rule (newer epoch from any single response): stays green
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	paperD5iso	pass	-	-	D5 paper rule, newer-epoch path only: stays green
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	rjT_allfixes	pass	-	-	token-memory rejoin, all fixes (vacuous for rejoin: see ctl_rjTAny)
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	rjT_nooneconfig	pass	-	-	token-memory rejoin, D5 one-configuration check dropped (vacuous for rejoin)
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	rjT_noselfvouch	pass	-	-	token-memory rejoin, D4 self-vouch dropped (vacuous for rejoin)
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	rjT_paperD4	pass	-	-	token-memory rejoin, D4 paper rule (vacuous for rejoin)
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	rjT_paperD5	pass	-	-	token-memory rejoin, D5 paper rule (vacuous for rejoin)
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ctl_rjTAmnesiac	pass	-	-	control: under token memory a rejoined amnesiac never adopts
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ctl_rjTAmnesiac1	pass	-	-	control: as ctl_rjTAmnesiac, 1 responder
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ctl_rjTAmnesiac1_selfvouch	pass	-	-	control: as ctl_rjTAmnesiac1 with self-vouch
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ctl_rjTClaimed2	pass	-	-	control: under token memory two live claimed rosters never occur
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ctl_rjTAny	pass	-	-	control: under token memory no rejoined incarnation completes an adoption
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ctl_rjTWiped	pass	-	-	control: under token memory a wiped rejoiner never adopts
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ballotloss	fail	Agreement	-	assumption probe: ballots lost on pause plus same-epoch adoption from a lagging peer lets a node vote twice
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ctl_reachClaimed2_nofence	fail	Reach	-	control: without the amnesia fence two live responders claim different rosters
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ctl_reachLive1NoVouch	fail	Reach	-	control: an adoption from one unvouched responder is reachable
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ctl_reachLive2NoVouch	fail	Reach	-	control: an adoption from two unvouched responders is reachable
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ctl_reachNewerLag	fail	Reach	-	control: newer-epoch adoption from a lagging responder is reachable
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ctl_reachNewerNonLive	fail	Reach	-	control: the paper D5 rule adopts from a non-live responder
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ctl_reachX2	fail	ReachX2	-	control: a fresh node id becomes active and decides slot 2
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	faultyresp	fail	DurableDecision	-	assumption probe: a responder answering with an arbitrary log loses a decision
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	faultyrespD5	fail	Agreement	-	assumption probe: a lying single responder on the newer-epoch path breaks Agreement
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	noamnesiafence	fail	Agreement	-	D3 amnesia fence dropped: a restarted node votes twice
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	noamnesiafenceD5	fail	Agreement	-	D3 amnesia fence dropped, newer-epoch path only
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	paperD3	fail	Agreement	-	D3 paper rule (restarted replica rejoins with its durable state, no fence)
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	rjT_noamnesiafence	fail	Agreement	-	token-memory rejoin, fence dropped
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ctl_rjStale	fail	Reach	-	control: Rejoin=any admits a stale incarnation that adopts
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ctl_rjStale1	fail	Reach	-	control: as ctl_rjStale, 1 responder
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ctl_rjAmnesiac	fail	Reach	-	control: Rejoin=wiped admits a wiped incarnation that adopts
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	ctl_rjAmnesiac1	fail	Reach	-	control: as ctl_rjAmnesiac, 1 responder
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	rjA_allfixes	fail	Agreement	-	Rejoin=any (over-permissive, not the code), all fixes: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	rjA_noamnesiafence	fail	Agreement	-	Rejoin=any (over-permissive, not the code), fence dropped: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	rjA_nooneconfig	fail	Agreement	-	Rejoin=any (over-permissive, not the code), D5 one-configuration check dropped: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	rjA_noselfvouch	fail	Agreement	-	Rejoin=any (over-permissive, not the code), D4 self-vouch dropped: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	rjA_paperD4	fail	Agreement	-	Rejoin=any (over-permissive, not the code), D4 paper rule: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	rjA_paperD5	fail	Agreement	-	Rejoin=any (over-permissive, not the code), D5 paper rule: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	rjW_allfixes	fail	Agreement	-	Rejoin=wiped (over-permissive, not the code), all fixes: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	rjW_noamnesiafence	fail	Agreement	-	Rejoin=wiped (over-permissive, not the code), fence dropped: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	rjW_nooneconfig	fail	Agreement	-	Rejoin=wiped (over-permissive, not the code), D5 one-configuration check dropped: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	rjW_noselfvouch	fail	Agreement	-	Rejoin=wiped (over-permissive, not the code), D4 self-vouch dropped: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	rjW_paperD4	fail	Agreement	-	Rejoin=wiped (over-permissive, not the code), D4 paper rule: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	tools/tla/standalone/RabiaAdopt	rjW_paperD5	fail	Agreement	-	Rejoin=wiped (over-permissive, not the code), D5 paper rule: an amnesiac incarnation is admitted and a second value is chosen

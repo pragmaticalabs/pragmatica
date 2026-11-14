@@ -75,7 +75,7 @@ jobs:
           test -s modules.tsv || { echo "no model matches '$MODULES'"; exit 2; }
           while IFS=$'\t' read -r module root; do
             echo "::group::selftest $module"
-            bash tools/tla/selftest.sh "$module" "$root"
+            if [ -f "$root/$module.tla" ]; then echo "standalone model: no extractor to self-test"; else bash tools/tla/selftest.sh "$module" "$root"; fi
             echo "::endgroup::"
           done < modules.tsv
 
