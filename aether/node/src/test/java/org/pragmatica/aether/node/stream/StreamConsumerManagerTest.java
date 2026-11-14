@@ -2002,6 +2002,17 @@ class StreamConsumerManagerTest {
         private static final NodeId WORKER_TWO = NodeId.nodeId("worker-2").unwrap();
         private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
 
+        /// The hand-off sink delivers on its own virtual thread: wait until `expected` warnings arrived, then let any
+        /// extra one (a raise per pass) land before the caller counts.
+        private void awaitWarnings(int expected) throws InterruptedException {
+            var deadline = System.nanoTime() + 5_000_000_000L;
+
+            while (warnings.size() < expected && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            Thread.sleep(150);
+        }
+
         /// Red at base: the live set is the core view only, so the worker is filtered out of the candidates and
         /// nothing attaches on it. Mutant: drop `liveWorkers` from the union and this goes red.
         @Test
@@ -2074,7 +2085,7 @@ class StreamConsumerManagerTest {
         /// Red at base: the "ACTIVE on no live node" state read as a deploy in flight (INFO "not consumed YET") with no
         /// operator warning. Red under "no raise": no warning arrives. Red under a raise per pass: more than one arrives.
         @Test
-        void reconcile_raisesOneWarning_whenTheSliceIsActiveButNoHostIsLive() {
+        void reconcile_raisesOneWarning_whenTheSliceIsActiveButNoHostIsLive() throws InterruptedException {
             declareStringConsumer();
             placement.activeOn(WORKER);
             ownership.ownedBy(PEER, 0, 1, 2, 3);
@@ -2083,6 +2094,7 @@ class StreamConsumerManagerTest {
             manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
             manager.reconcile();
             manager.reconcile();
+            awaitWarnings(1);
 
             assertThat(warnings).singleElement()
                       .satisfies(warning -> {
@@ -2095,7 +2107,7 @@ class StreamConsumerManagerTest {
 
         /// The recovery, same subject, once: the worker becomes a live member. Red under "no restored report".
         @Test
-        void reconcile_reportsRestored_onceTheActiveWorkerIsLive() {
+        void reconcile_reportsRestored_onceTheActiveWorkerIsLive() throws InterruptedException {
             declareStringConsumer();
             placement.activeOn(WORKER);
             ownership.ownedBy(PEER, 0, 1, 2, 3);
@@ -2106,6 +2118,7 @@ class StreamConsumerManagerTest {
             ownership.withLiveWorkers(WORKER);
             manager.reconcile();
             manager.reconcile();
+            awaitWarnings(2);
 
             assertThat(warnings).extracting(OperatorWarning::code)
                       .containsExactly(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE,
@@ -2115,7 +2128,7 @@ class StreamConsumerManagerTest {
 
         /// A slice that is deployed but ACTIVE nowhere is a deploy in flight, not a gap: no warning.
         @Test
-        void reconcile_raisesNothing_whenTheSliceIsStillLoading() {
+        void reconcile_raisesNothing_whenTheSliceIsStillLoading() throws InterruptedException {
             declareStringConsumer();
             placement.activatingOn(WORKER);
             ownership.ownedBy(PEER, 0, 1, 2, 3);
@@ -2123,6 +2136,7 @@ class StreamConsumerManagerTest {
 
             manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
             manager.reconcile();
+            awaitWarnings(1);
 
             assertThat(warnings).isEmpty();
         }

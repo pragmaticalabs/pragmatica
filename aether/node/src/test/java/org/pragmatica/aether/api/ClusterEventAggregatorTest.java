@@ -2938,6 +2938,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
                 OperatorWarningCode.AUTO_HEAL_SCALING_RESUMED,
                 OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
+                OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED,
                 OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
                 OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
                 OperatorWarningCode.STREAM_CONSUMER_BACK_IN_RING,
