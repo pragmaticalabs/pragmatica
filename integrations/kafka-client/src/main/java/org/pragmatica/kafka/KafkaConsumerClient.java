@@ -3,6 +3,7 @@ package org.pragmatica.kafka;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
@@ -174,7 +175,7 @@ public final class KafkaConsumerClient {
     }
 
     private static Map<Partition, Option<Long>> committedOf(Consumer<byte[], byte[]> c, List<Partition> partitions) {
-        return c.committed(kafkaPartitions(partitions))
+        return c.committed(Set.copyOf(kafkaPartitions(partitions)))
                 .entrySet()
                 .stream()
                 .collect(Collectors.toMap(e -> partitionOf(e.getKey()),
