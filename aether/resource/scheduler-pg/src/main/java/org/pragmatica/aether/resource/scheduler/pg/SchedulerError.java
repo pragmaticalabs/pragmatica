@@ -5,17 +5,15 @@ package org.pragmatica.aether.resource.scheduler.pg;
 
 import org.pragmatica.lang.Cause;
 
+
 /// Failures of the scheduler itself (database failures pass through unchanged).
 public sealed interface SchedulerError extends Cause {
     enum General implements SchedulerError {
         CLOSED("Scheduler is closed");
-
         private final String message;
-
         General(String message) {
             this.message = message;
         }
-
         @Override
         public String message() {
             return message;

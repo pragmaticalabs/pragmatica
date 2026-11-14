@@ -27,6 +27,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
+
 /// A PostgreSQL-backed job scheduler (#2786): one-time jobs, a per-job lease with a fencing token, at-least-once firing.
 /// Any number of instances may poll one database.
 ///
@@ -90,7 +91,8 @@ public final class PgScheduler {
 
     /// Creates the `scheduler_job` table and its index when absent; safe to run from several instances at once.
     public static Promise<Unit> installSchema(PgSqlConnector connector) {
-        return PgJobStore.pgJobStore(connector, Clock.systemUTC())
+        return PgJobStore.pgJobStore(connector,
+                                     Clock.systemUTC())
                          .installSchema();
     }
 
@@ -138,9 +140,11 @@ public final class PgScheduler {
     private Unit reportSkew(Duration skew) {
         if (skew.abs().toMillis() > config.leaseDuration().millis() / 2) {
             log.warn("Scheduler {}: local clock differs from the database clock by {}; scheduling is unaffected "
-                     + "(it uses only the database clock), local timestamps in handlers are not",
-                     config.instanceId().value(), skew);
+                    + "(it uses only the database clock), local timestamps in handlers are not",
+                     config.instanceId().value(),
+                     skew);
         }
+
         return Unit.unit();
     }
 
@@ -167,7 +171,9 @@ public final class PgScheduler {
     /// FER: a failed claim is logged and the next poll tries again. Nothing is lost: a claim whose commit happened but
     /// whose reply was lost holds a lease that expires, after which the job is claimed again (at-least-once).
     private Promise<Unit> pollOnce() {
-        return store.claimDue(config.instanceId(), config.leaseDuration(), config.batchSize())
+        return store.claimDue(config.instanceId(),
+                              config.leaseDuration(),
+                              config.batchSize())
                     .flatMap(this::fireAll)
                     .onFailure(this::reportPollFailure);
     }
@@ -176,32 +182,37 @@ public final class PgScheduler {
     /// claimed until its lease expires and is then fired again (at-least-once), so dropping that failure here loses
     /// nothing.
     private Promise<Unit> fireAll(List<FiredJob> jobs) {
-        return Promise.allOf(jobs.stream()
-                                 .map(this::fireOne)
-                                 .toList())
-                      .mapToUnit();
+        return Promise.allOf(jobs.stream().map(this::fireOne).toList()).mapToUnit();
     }
 
     private Promise<Completion> fireOne(FiredJob job) {
         held.put(job.id(), job);
+
         return invoke(job).fold(result -> settle(job, result))
-                          .onResultRun(() -> held.remove(job.id()));
+                     .onResultRun(() -> held.remove(job.id()));
     }
 
     private Promise<Unit> invoke(FiredJob job) {
-        return Promise.lift(Causes::fromThrowable, () -> handler.fire(job))
+        return Promise.lift(Causes::fromThrowable,
+                            () -> handler.fire(job))
                       .flatMap(firing -> firing);
     }
 
     private Promise<Completion> settle(FiredJob job, Result<Unit> firing) {
-        return firing.fold(cause -> retryLater(job, cause), _ -> store.complete(job))
+        return firing.fold(cause -> retryLater(job, cause),
+                           _ -> store.complete(job))
                      .onSuccess(outcome -> reportOutcome(job, outcome));
     }
 
     private Promise<Completion> retryLater(FiredJob job, Cause cause) {
         log.warn("Scheduler {}: job {} ({}) attempt {} failed, due again in {}: {}",
-                 config.instanceId().value(), job.id().value(), job.name(), job.attempt(), config.retryDelay(),
+                 config.instanceId().value(),
+                 job.id().value(),
+                 job.name(),
+                 job.attempt(),
+                 config.retryDelay(),
                  cause.message());
+
         return store.reschedule(job, config.retryDelay());
     }
 
@@ -209,13 +220,17 @@ public final class PgScheduler {
     private void reportOutcome(FiredJob job, Completion outcome) {
         if (outcome == Completion.REFUSED) {
             log.info("Scheduler {}: job {} token {} was superseded or cancelled; its write was refused",
-                     config.instanceId().value(), job.id().value(), job.fenceToken());
+                     config.instanceId().value(),
+                     job.id().value(),
+                     job.fenceToken());
         }
     }
 
     @Contract
     private void reportPollFailure(Cause cause) {
-        log.warn("Scheduler {}: poll failed, retrying at the next poll: {}", config.instanceId().value(), cause.message());
+        log.warn("Scheduler {}: poll failed, retrying at the next poll: {}",
+                 config.instanceId().value(),
+                 cause.message());
     }
 
     private Promise<Unit> shutDown() {
@@ -225,6 +240,7 @@ public final class PgScheduler {
     private Promise<Unit> stopPolling() {
         synchronized (lifecycle) {
             nextTick.onPresent(tick -> tick.cancel(false));
+
             return inFlight;
         }
     }
@@ -241,10 +257,6 @@ public final class PgScheduler {
     /// Design-out: a release that fails leaves the claim to expire with its lease, after which any instance claims the
     /// job; releasing only shortens that wait, so its failures are not reported.
     private Promise<Unit> releaseHeld() {
-        return Promise.allOf(held.values()
-                                 .stream()
-                                 .map(job -> store.reschedule(job, NO_DELAY))
-                                 .toList())
-                      .mapToUnit();
+        return Promise.allOf(held.values().stream().map(job -> store.reschedule(job, NO_DELAY)).toList()).mapToUnit();
     }
 }

@@ -6,6 +6,7 @@ package org.pragmatica.aether.resource.scheduler.pg;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+
 /// Fires a claimed job. Firing is AT-LEAST-ONCE: the same job can be fired again after a crash or a pause that
 /// outlives the lease, including after the side effect already happened, so a handler MUST be idempotent. A handler
 /// whose own writes must not be applied by a superseded firing fences them with [FiredJob#fenceToken]: the token of

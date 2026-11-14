@@ -12,6 +12,7 @@ import org.pragmatica.lang.vo.NonBlankString;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
+
 /// Settings of one [PgScheduler] instance.
 ///
 /// @param instanceId    written to `claimed_by` for diagnostics only; no decision reads it
@@ -48,12 +49,16 @@ public record SchedulerConfig(NonBlankString instanceId,
                           positiveMillis(leaseDuration, "leaseDuration"),
                           Result.success(retryDelay),
                           Result.success(closeGrace),
-                          Verify.ensure(batchSize, Is::positive, Causes.cause("batchSize must be positive")))
+                          Verify.ensure(batchSize,
+                                        Is::positive,
+                                        Causes.cause("batchSize must be positive")))
                      .map(SchedulerConfig::new);
     }
 
     private static Result<TimeSpan> positiveMillis(TimeSpan span, String name) {
-        return Verify.ensure(span.millis(), Is::positive, Causes.cause(name + " must be at least 1 ms"))
+        return Verify.ensure(span.millis(),
+                             Is::positive,
+                             Causes.cause(name + " must be at least 1 ms"))
                      .map(_ -> span);
     }
 }

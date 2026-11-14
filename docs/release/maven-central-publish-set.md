@@ -110,6 +110,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `aether/resource/interceptors` | `org.pragmatica-lite.aether:resource-interceptors` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/json` | `org.pragmatica-lite.aether:resource-json` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/notification` | `org.pragmatica-lite.aether:resource-notification` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
+| `aether/resource/scheduler-pg` | `org.pragmatica-lite.aether:resource-scheduler-pg` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/services` | `org.pragmatica-lite.aether:resource-services` | pom | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/services/artifact-repo` | `org.pragmatica-lite.aether:artifact-repo` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/slice` | `org.pragmatica-lite.aether:slice` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |

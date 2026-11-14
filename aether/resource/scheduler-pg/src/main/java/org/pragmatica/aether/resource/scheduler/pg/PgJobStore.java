@@ -17,6 +17,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.vo.NonBlankString;
 
+
 /// The SQL of the scheduler: one table, `scheduler_job`, whose row is both the job and its lease.
 ///
 /// **Clock.** Every time decision (is a job due, has a lease expired, when does a lease end, when is a failed job due
@@ -34,6 +35,7 @@ import org.pragmatica.lang.vo.NonBlankString;
 /// claimed; otherwise [Completion#REFUSED].
 final class PgJobStore {
     private static final String LOCK_SCHEMA = "SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtext('pragmatica.scheduler_job'))";
+
     private static final String CREATE_TABLE = """
         CREATE TABLE IF NOT EXISTS scheduler_job (
             id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -45,22 +47,28 @@ final class PgJobStore {
             fence_token BIGINT      NOT NULL DEFAULT 0,
             lease_until TIMESTAMPTZ,
             claimed_by  TEXT)""";
+
     private static final String CREATE_INDEX = "CREATE INDEX IF NOT EXISTS scheduler_job_due ON scheduler_job (status, fire_at)";
+
     private static final String INSERT = """
         INSERT INTO scheduler_job (name, fire_at, payload, status)
         VALUES (?, now() + ?::bigint * interval '1 millisecond', ?, 'SCHEDULED')
         RETURNING id""";
+
     private static final String DELETE = "DELETE FROM scheduler_job WHERE id = ?";
     private static final String CLAIM = claimSql("now()");
+
     private static final String COMPLETE = "DELETE FROM scheduler_job WHERE id = ? AND fence_token = ? AND status = 'CLAIMED'";
+
     private static final String RESCHEDULE = """
         UPDATE scheduler_job
            SET status = 'SCHEDULED', fire_at = now() + ?::bigint * interval '1 millisecond',
                lease_until = NULL, claimed_by = NULL
          WHERE id = ? AND fence_token = ? AND status = 'CLAIMED'""";
-    private static final String DB_NOW_MILLIS = "SELECT (extract(epoch FROM now()) * 1000)::bigint AS now_ms";
 
-    private static final RowMapper<JobId> JOB_ID = row -> row.getLong("id").map(JobId::jobId);
+    private static final String DB_NOW_MILLIS = "SELECT (extract(epoch FROM now()) * 1000)::bigint AS now_ms";
+    private static final RowMapper<JobId> JOB_ID = row -> row.getLong("id")
+                                                             .map(JobId::jobId);
     private static final RowMapper<FiredJob> FIRED_JOB = PgJobStore::firedJob;
     private static final RowMapper<Long> NOW_MS = row -> row.getLong("now_ms");
     private static final RowMapper<Integer> LOCKED = row -> row.getInt("locked");
@@ -89,7 +97,8 @@ final class PgJobStore {
     }
 
     Promise<Unit> cancel(JobId id) {
-        return connector.update(DELETE, id.value())
+        return connector.update(DELETE,
+                                id.value())
                         .mapToUnit();
     }
 
@@ -100,14 +109,19 @@ final class PgJobStore {
 
     /// Completes the job by deleting its row, only while the row still carries this firing's token.
     Promise<Completion> complete(FiredJob job) {
-        return connector.update(COMPLETE, job.id().value(), job.fenceToken())
+        return connector.update(COMPLETE,
+                                job.id().value(),
+                                job.fenceToken())
                         .map(PgJobStore::completion);
     }
 
     /// Returns the job to SCHEDULED, due `delay` after the database's `now()`, only while the row still carries this
     /// firing's token. Used after a failed firing and, with a zero delay, to release a claim on close.
     Promise<Completion> reschedule(FiredJob job, TimeSpan delay) {
-        return connector.update(RESCHEDULE, delay.millis(), job.id().value(), job.fenceToken())
+        return connector.update(RESCHEDULE,
+                                delay.millis(),
+                                job.id().value(),
+                                job.fenceToken())
                         .map(PgJobStore::completion);
     }
 
