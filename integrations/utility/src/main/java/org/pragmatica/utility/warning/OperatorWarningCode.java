@@ -438,10 +438,12 @@ public enum OperatorWarningCode {
                                    STREAM_CONSUMER_STATE_DIVERGED),
     /// A declarative stream consumer's slice is ACTIVE on at least one node, yet none of them is a live core or worker
     /// member in the raising node's membership view (#2600), so no partition can be assigned and nothing consumes the
-    /// stream. Raised once on entry, subject `<stream>/<artifact>/<method>`.
+    /// stream. Raised by the leader only, once per gap (level-triggered: a later pass re-derives it), subject
+    /// `<stream>/<artifact>/<method>`.
     STREAM_CONSUMER_NO_LIVE_CANDIDATE("stream-consumer-no-live-candidate", "stream-consumer", WarningLevel.WARNING),
-    /// The recovery of a [#STREAM_CONSUMER_NO_LIVE_CANDIDATE], same subject: the slice is ACTIVE on a live member again,
-    /// so its partitions are assigned.
+    /// The recovery of a [#STREAM_CONSUMER_NO_LIVE_CANDIDATE], same subject, with the reason in the message: the slice is
+    /// ACTIVE on a live member again, leadership moved, the declaration is no longer evaluated, the slice is no longer
+    /// deployed, or the manager stopped.
     STREAM_CONSUMER_CANDIDATE_RESTORED("stream-consumer-candidate-restored",
                                        "stream-consumer",
                                        WarningLevel.INFO,
