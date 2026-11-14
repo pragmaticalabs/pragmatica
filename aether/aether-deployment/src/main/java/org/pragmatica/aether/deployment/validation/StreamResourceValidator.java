@@ -261,8 +261,8 @@ public sealed interface StreamResourceValidator {
     /// publish path has no production caller), so deploying it would produce a stream every write refuses.
     /// `BlueprintService` runs this on every `resources.toml` it deploys, on both the artifact and the body
     /// publish path, before any command is applied — and regardless of `registerOnly`, so a STRONG blueprint
-    /// cannot even be registered. Reported under [#RULE_UNSUPPORTED_CONSISTENCY], not the non-gating
-    /// [#RULE_INERT_STREAM_CONFIG].
+    /// cannot even be registered. Reported under [#RULE_UNSUPPORTED_CONSISTENCY], not [#RULE_INERT_STREAM_CONFIG]
+    /// (which also refuses the deploy, but from [#partition], after this gate).
     static Result<Unit> ensureHonourableConsistency(Option<String> resourcesConfig) {
         var failures = resourcesConfig.map(StreamResourceValidator::consistencyFailures).or(List.of());
 

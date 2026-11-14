@@ -1198,7 +1198,7 @@ whose violation leaves nothing to bind refuse the publish outright with **`422`*
 usual problem document, whose `detail` is the text `Stream resource validation failed (N errors):` followed
 by one `[rule] field — message` line per failure (not the structured triples above): a `resources.toml` that does not parse
 (`resources-toml-parse`), a blueprint whose own namespace cannot be derived
-(`blueprint-namespace-invalid`, `namespace-reserved`) while it declares at least one stream, and an
+(`blueprint-namespace-invalid`, `namespace-reserved`) while it declares at least one stream, an
 `External` source naming a runtime-provisioned stream kind (`source-reserved-kind`, #1282 — refused here
 exactly as the management API refuses it on every mint path), and #576's inert keys (`inert-stream-config-key`,
 `inert-consumer-config-key`; #3269, owner ruling 2026-11-14, amending #1336 — a key leaves the refused set when it is wired). Every other rule costs only its own alias:
