@@ -70,6 +70,7 @@ g3 integrations/cloud/gcp  # 3.2 s at run 41351583462
 g3 integrations/config/config-service  # 11.5 s at run 41351583462
 g3 integrations/messaging  # 1.4 s at run 41351583462
 g3 integrations/net/http-client  # 18.6 s at run 41351583462
+g3 integrations/net/redis  # new module (#3231), no timing yet
 g3 integrations/serialization/json-tests  # 29.9 s at run 41351583462
 g3 integrations/statemachine  # 0.7 s at run 41351583462
 g3 integrations/storage  # 77.1 s at run 41351583462

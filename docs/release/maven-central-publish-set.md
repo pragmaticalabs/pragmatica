@@ -176,6 +176,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `integrations/net/http-client` | `org.pragmatica-lite:http-client` | jar | publish | compile/runtime dependency of jbct-core |
 | `integrations/net/http-server` | `org.pragmatica-lite:http-server` | jar | publish | seed: a library that applications built on Pragmatica consume directly (published rc1-rc3, dropped in rc4 by mistake) |
 | `integrations/net/http-types` | `org.pragmatica-lite:http-types` | jar | publish | compile/runtime dependency of http-routing |
+| `integrations/net/redis` | `org.pragmatica-lite:redis` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/net/smtp` | `org.pragmatica-lite:smtp` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/net/tcp` | `org.pragmatica-lite:tcp` | jar | publish | closure: compile dependency of `http-server` |
 | `integrations/serialization` | `org.pragmatica-lite:serialization` | pom | publish | parent pom of a published module; a consumer resolves it to read the child (parent of serialization-api) |
