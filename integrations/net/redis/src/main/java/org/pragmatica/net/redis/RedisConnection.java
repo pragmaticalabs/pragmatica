@@ -381,11 +381,6 @@ public final class RedisConnection implements RedisCommands {
                                            .addListener(_ -> closed.succeed(unit())));
     }
 
-    /// The event loop this connection shuts down on close, if it owns one.
-    Option<EventLoopGroup> ownedGroup() {
-        return ownedGroup;
-    }
-
     /// Runs on the event loop once the channel is closed, whether or not it ever became active: every
     /// queued command gets the terminal cause.
     @Contract

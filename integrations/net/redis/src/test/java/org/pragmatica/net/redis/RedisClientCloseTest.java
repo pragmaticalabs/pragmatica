@@ -105,6 +105,7 @@ class RedisClientCloseTest {
 
         var closing = client.close();
 
+        Thread.sleep(500);
         assertThat(closing.isResolved()).isFalse();
         release.countDown();
         closing.await(WAIT).unwrap();
@@ -113,6 +114,18 @@ class RedisClientCloseTest {
         assertThat(client.openConnections()).isZero();
         assertThat(peerSawClose.await(5, TimeUnit.SECONDS)).isTrue();
         assertThat(group.isTerminated()).isTrue();
+    }
+
+    @Test
+    void acquiringAfterCloseIsRefusedAsClosedWithoutOpeningAConnection() throws IOException {
+        server = FakeRedisServer.start(c -> {});
+        newClient(config(1));
+        client.close().await(WAIT).unwrap();
+
+        var refused = client.open().await(WAIT);
+
+        assertThat(TestKinds.message(refused)).isEqualTo(RedisError.General.CLOSED.message());
+        assertThat(client.openConnections()).isZero();
     }
 
     @Test
