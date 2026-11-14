@@ -1216,6 +1216,10 @@ public enum OperatorWarningCode {
     /// The recovery of [#APPLY_DEADLINE_EXCEEDED], same subject: the blueprint's outcome was replaced (a republish) or removed.
     /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`).
     APPLY_DEADLINE_CLEARED("apply-deadline-cleared", "deployment", WarningLevel.INFO, APPLY_DEADLINE_EXCEEDED, true),
+    /// A live worker saw its own activation directive removed with no replacement, and halts (#3193): the core retired it as
+    /// departed while the process still runs. Subject: the worker's node id. There is no recovery code: the halt ends the
+    /// process, and the node returns only through a fresh `WorkerJoin`.
+    OWN_DIRECTIVE_RETIRED("own-directive-retired", "worker-isolation", WarningLevel.CRITICAL),
     /// The recovery of [#DHT_DEPARTURE_SOLE_COPY_AT_RISK], same subject (#2034): every sole-copy key was acknowledged by a target in its
     /// post-departure responsible set before the node halted. INFO, published by the draining node itself, only after its published
     /// at-risk event (#752 mechanism).

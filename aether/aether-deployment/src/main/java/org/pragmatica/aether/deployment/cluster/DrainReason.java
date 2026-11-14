@@ -35,6 +35,9 @@ package org.pragmatica.aether.deployment.cluster;
 ///   is: announcing dissolve normally means writing `GovernorAnnouncementKey` through consensus — the
 ///   very thing an isolated community cannot do. Paired with the core's own longer
 ///   `timeouts.cluster.community_absence` window, which is what keeps the two from being live at once.
+/// - [`#DIRECTIVE_RETIRED`] — this live WORKER saw its own `ActivationDirectiveKey` removed with no replacement
+///   (#3193): the core decided it departed (C17b). It halts through the same local procedure as
+///   `CORE_ABSENCE`, so a wrongly inferred live worker never lingers as a member without a directive.
 public enum DrainReason {
     OPERATOR_COMMAND,
     OVERPROVISION_SCALE_DOWN,
@@ -43,6 +46,7 @@ public enum DrainReason {
     QUORUM_LOSS,
     COMMANDED,
     CORE_ABSENCE,
+    DIRECTIVE_RETIRED,
     /// #1543: the node was REPLACED by a fresh-id node and is being retired. A decision, not a surplus trim: reaped as issued.
     REPLACED;
     /// Whether this reason trims a SURPLUS — a node removed only because the cluster had more than it
@@ -55,7 +59,7 @@ public enum DrainReason {
     public boolean isSurplusTrim() {
         return switch (this) {
             case OVERPROVISION_SCALE_DOWN, OVERPROVISION_PARTITION_HEAL -> true;
-            case OPERATOR_COMMAND, JOIN_GRACE_REAP, QUORUM_LOSS, COMMANDED, CORE_ABSENCE, REPLACED -> false;
+            case OPERATOR_COMMAND, JOIN_GRACE_REAP, QUORUM_LOSS, COMMANDED, CORE_ABSENCE, DIRECTIVE_RETIRED, REPLACED -> false;
         };
     }
 }
