@@ -174,7 +174,7 @@ class EmberWorkerStreamConsumerTest {
                                                                          .body())
                               .fold(Cause::message, body -> body);
 
-        return "; rows=" + rows + "; declarative-consumers=" + consumers;
+        return "; placement(leader)=" + leader().deploymentMap().byArtifact(SLICE) + "; workerCounted(leader)=" + leader().membershipFsm().workerCountedMembers() + "; rows=" + rows + "; declarative-consumers=" + consumers;
     }
 
     private static AetherKey.StreamRegistrationKey registrationKey() {
