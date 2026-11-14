@@ -436,6 +436,18 @@ public enum OperatorWarningCode {
                                    "stream-consumer",
                                    WarningLevel.INFO,
                                    STREAM_CONSUMER_STATE_DIVERGED),
+    /// A declarative stream consumer's slice is ACTIVE on at least one node, yet none of them is a live core or worker
+    /// member in the raising node's membership view (#2600), so no partition can be assigned and nothing consumes the
+    /// stream. Raised by the leader only, once per gap (level-triggered: a later pass re-derives it), subject
+    /// `<stream>/<artifact>/<method>`.
+    STREAM_CONSUMER_NO_LIVE_CANDIDATE("stream-consumer-no-live-candidate", "stream-consumer", WarningLevel.WARNING),
+    /// The recovery of a [#STREAM_CONSUMER_NO_LIVE_CANDIDATE], same subject, with the reason in the message: the slice is
+    /// ACTIVE on a live member again, leadership moved, the declaration is no longer evaluated, the slice is no longer
+    /// deployed, or the manager stopped.
+    STREAM_CONSUMER_CANDIDATE_RESTORED("stream-consumer-candidate-restored",
+                                       "stream-consumer",
+                                       WarningLevel.INFO,
+                                       STREAM_CONSUMER_NO_LIVE_CANDIDATE),
     /// A slice's declarative stream consumer could not be registered at activation (#1935): the slice activated, but
     /// that consumer will receive nothing until the cause is fixed and the slice re-activated. CRITICAL: a declared
     /// consumer that silently never fires is a data-plane gap, not a caveat.
