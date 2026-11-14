@@ -377,6 +377,21 @@ class StreamForwardReplyNotSentTest {
     }
 
     @Test
+    void refusalArrivingAfterTheRequesterLeft_opensNoEpisode() {
+        var inFlight = Promise.<WriteOutcome>promise();
+        script.add(inFlight);
+        var handler = handlerOver(partitionManager);
+
+        readTo(handler, REQUESTER);
+        handler.onNodeRemoved(removed(REQUESTER));
+        inFlight.succeed(refused());
+
+        assertThat(metrics.replyNotSent()).as("the refusal is still counted").isEqualTo(1L);
+        assertThat(handler.openEpisodes()).as("but it re-opens no episode for the departed node").isZero();
+        assertThat(episodeLines(Level.WARN)).isEmpty();
+    }
+
+    @Test
     void backoffEntry_isClearedWhenTheResendsAreGivenUp() {
         var handler = handlerAnswering(refused());
 
