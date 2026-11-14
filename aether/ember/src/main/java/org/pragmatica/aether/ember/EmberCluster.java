@@ -1480,9 +1480,8 @@ public final class EmberCluster {
         if (!nodes.remove(nodeIdStr, node)) {
             return Promise.unitPromise();
         }
-
         // Registered before the stop begins, so a relaunch that sees the node gone also sees the stop to wait for.
-        var stopped = Promise.<Unit>promise();
+        var stopped = Promise.<Unit> promise();
 
         stopsByNodeId.put(nodeIdStr, stopped);
         var timeout = graceful
@@ -1961,8 +1960,7 @@ public final class EmberCluster {
     /// (see [#exitCodeOf]) is visible BEFORE its stop completes, while the process still holds its ports: a same-address
     /// [#relaunchNode] before this completes can fail its bind and stop with the old process's exit code (#3251).
     public Promise<Unit> stopOf(String nodeIdStr) {
-        return Option.option(stopsByNodeId.get(nodeIdStr))
-                     .or(Promise::unitPromise);
+        return Option.option(stopsByNodeId.get(nodeIdStr)).or(Promise::unitPromise);
     }
 
     private void handleSelfDrain(String nodeIdStr) {
