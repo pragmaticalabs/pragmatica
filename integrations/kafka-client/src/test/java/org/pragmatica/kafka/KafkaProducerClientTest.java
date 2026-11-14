@@ -1,9 +1,13 @@
 package org.pragmatica.kafka;
 
+import java.util.Map;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
 import org.apache.kafka.clients.producer.MockProducer;
+import org.apache.kafka.clients.producer.Partitioner;
+import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.errors.DisconnectException;
 import org.apache.kafka.common.errors.NotEnoughReplicasException;
@@ -25,8 +29,29 @@ class KafkaProducerClientTest {
                              .unwrap();
     }
 
+    private static final class FirstPartition implements Partitioner {
+        @Override
+        public int partition(String topic,
+                             Object key,
+                             byte[] keyBytes,
+                             Object value,
+                             byte[] valueBytes,
+                             Cluster cluster) {
+            return 0;
+        }
+
+        @Override
+        public void close() {}
+
+        @Override
+        public void configure(Map<String, ?> configs) {}
+    }
+
     private static MockProducer<byte[], byte[]> producer(boolean autoComplete) {
-        return new MockProducer<>(autoComplete, new ByteArraySerializer(), new ByteArraySerializer());
+        return new MockProducer<>(autoComplete,
+                                  new FirstPartition(),
+                                  new ByteArraySerializer(),
+                                  new ByteArraySerializer());
     }
 
     private static Cause failureOf(KafkaProducerClient client) {
@@ -53,7 +78,7 @@ class KafkaProducerClientTest {
 
         awaitSent(mock);
         mock.errorNext(new NotEnoughReplicasException("isr"));
-        assertThat(pending.await().fold(c -> c, _ -> fail("expected failure"))).isInstanceOf(KafkaError.Retriable.class);
+        assertThat(pending.await().<Cause> fold(c -> c, _ -> fail("expected failure"))).isInstanceOf(KafkaError.Retriable.class);
     }
 
     @Test
@@ -64,7 +89,7 @@ class KafkaProducerClientTest {
 
         awaitSent(mock);
         mock.errorNext(new DisconnectException("gone"));
-        assertThat(pending.await().fold(c -> c, _ -> fail("expected failure"))).isInstanceOf(KafkaError.OutcomeUnknown.class);
+        assertThat(pending.await().<Cause> fold(c -> c, _ -> fail("expected failure"))).isInstanceOf(KafkaError.OutcomeUnknown.class);
     }
 
     @Test
@@ -75,7 +100,7 @@ class KafkaProducerClientTest {
 
         awaitSent(mock);
         mock.errorNext(new AuthenticationException("bad"));
-        assertThat(pending.await().fold(c -> c, _ -> fail("expected failure"))).isInstanceOf(KafkaError.Fatal.class);
+        assertThat(pending.await().<Cause> fold(c -> c, _ -> fail("expected failure"))).isInstanceOf(KafkaError.Fatal.class);
     }
 
     @Test

@@ -3,6 +3,7 @@ package org.pragmatica.kafka;
 import java.util.List;
 import java.util.Map;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
 import org.apache.kafka.clients.consumer.MockConsumer;
@@ -27,7 +28,7 @@ class KafkaConsumerClientTest {
         var client = KafkaConsumerClient.kafkaConsumerClient(mock(), CONFIG);
         var result = client.probeConfinement();
 
-        assertThat(result.fold(c -> c, _ -> fail("expected refusal"))).isSameAs(KafkaError.General.THREAD_CONFINEMENT_VIOLATED);
+        assertThat(result.<Cause> fold(c -> c, _ -> fail("expected refusal"))).isSameAs(KafkaError.General.THREAD_CONFINEMENT_VIOLATED);
     }
 
     @Test
@@ -60,6 +61,6 @@ class KafkaConsumerClientTest {
         assertThat(client.close().await(timeSpan(10).seconds()).isSuccess()).isTrue();
         assertThat(client.close().await(timeSpan(10).seconds()).isSuccess()).isTrue();
         assertThat(consumer.closed()).isTrue();
-        assertThat(client.poll(timeSpan(1).millis()).await().fold(c -> c, _ -> fail("expected refusal"))).isSameAs(KafkaError.General.CLOSED);
+        assertThat(client.poll(timeSpan(1).millis()).await().<Cause> fold(c -> c, _ -> fail("expected refusal"))).isSameAs(KafkaError.General.CLOSED);
     }
 }

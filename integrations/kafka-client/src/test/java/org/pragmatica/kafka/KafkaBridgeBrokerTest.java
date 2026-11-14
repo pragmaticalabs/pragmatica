@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.testing.RequiresDocker;
@@ -218,8 +219,8 @@ class KafkaBridgeBrokerTest {
 
             own.getDockerClient().unpauseContainerCmd(own.getContainerId()).exec();
             assertThat(outcome.isFailure()).isTrue();
-            assertThat(outcome.fold(c -> c, _ -> fail("must not succeed"))).isInstanceOfAny(KafkaError.OutcomeUnknown.class,
-                                                                                            KafkaError.Retriable.class);
+            assertThat(outcome.<Cause> fold(c -> c, _ -> fail("must not succeed"))).isInstanceOfAny(KafkaError.OutcomeUnknown.class,
+                                                                                                    KafkaError.Retriable.class);
             producer.close().await();
         }
     }
