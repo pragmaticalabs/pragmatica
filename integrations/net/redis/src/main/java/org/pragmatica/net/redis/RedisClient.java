@@ -123,17 +123,20 @@ public final class RedisClient implements RedisCommands {
         }
 
         opening++;
-        lastOpening = RedisConnection.connect(config, group, tls, none()).onResult(this::opened);
+        lastOpening = RedisConnection.connect(config, group, tls, none()).fold(this::opened);
 
         return lastOpening;
     }
 
-    @Contract
-    private void opened(Result<RedisConnection> result) {
+    /// Pool bookkeeping runs before any caller continuation of the returned promise, so a caller that
+    /// reacts to the new connection already finds it in `ready` (a plain `onResult` callback gives no such order).
+    private Promise<RedisConnection> opened(Result<RedisConnection> result) {
         synchronized (lock) {
             opening--;
             result.onSuccess(this::register);
         }
+
+        return result.async();
     }
 
     /// Under the lock. A connection that finished opening after close is closed, not pooled.
