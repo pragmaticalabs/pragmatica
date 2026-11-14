@@ -150,55 +150,19 @@ class PgEntityStoreTest {
     }
 
     @Test
-    void updateIfVersion_staleVersion_surfacesTheConflictAndWritesNothing() {
+    void delete_isRepeatable_firstDeletedThenAbsent() {
         var store = store(connector);
         var key = freshKey();
-        store.create(key, 0L).await().unwrap();
-        store.update(key, INCREMENT).await().unwrap();
-
-        var cause = failureOf(store.updateIfVersion(key, 1L, INCREMENT).await());
-
-        assertThat(cause).isInstanceOf(EntityError.StorageUnavailable.class);
-        assertThat(((EntityError.StorageUnavailable) cause).cause()).isInstanceOf(PgEntityError.VersionConflict.class);
-        assertThat(store.getVersioned(key).await().unwrap()).isEqualTo(Option.some(Versioned.versioned(2L, 1L)));
-    }
-
-    @Test
-    void updateIfVersion_currentVersion_appliesAndAdvancesTheVersion() {
-        var store = store(connector);
-        var key = freshKey();
-        store.create(key, 0L).await().unwrap();
-
-        assertThat(store.updateIfVersion(key, 1L, INCREMENT).await().unwrap()).isEqualTo(1L);
-        assertThat(store.getVersioned(key).await().unwrap()).isEqualTo(Option.some(Versioned.versioned(2L, 1L)));
-    }
-
-    @Test
-    void updateIfVersion_concurrentSameVersion_theCasLetsExactlyOneWrite() {
-        var parties = 4;
-        var store = store(GatedConnector.gated(connector, parties));
-        var key = freshKey();
-        store.create(key, 0L).await().unwrap();
-
-        var results = race(parties, () -> store.updateIfVersion(key, 1L, INCREMENT));
-
-        assertThat(results.stream().filter(Result::isSuccess).count()).as("every contender read version 1; one write may win").isEqualTo(1);
-        results.stream()
-               .filter(Result::isFailure)
-               .forEach(result -> assertThat(((EntityError.StorageUnavailable) failureOf(result)).cause()).isInstanceOf(PgEntityError.VersionConflict.class));
-        assertThat(store.getVersioned(key).await().unwrap()).isEqualTo(Option.some(Versioned.versioned(2L, 1L)));
-    }
-
-    @Test
-    void delete_isIdempotent() {
-        var store = store(connector);
-        var key = freshKey();
-
-        assertThat(store.delete(key).await().isSuccess()).as("absent key").isTrue();
         store.create(key, 1L).await().unwrap();
-        assertThat(store.delete(key).await().isSuccess()).isTrue();
+
+        assertThat(store.delete(key).await().unwrap()).as("first delete").isEqualTo(DeleteOutcome.DELETED);
         assertThat(store.get(key).await().unwrap()).isEqualTo(Option.none());
-        assertThat(store.delete(key).await().isSuccess()).as("already deleted").isTrue();
+        assertThat(store.delete(key).await().unwrap()).as("second delete").isEqualTo(DeleteOutcome.ABSENT);
+    }
+
+    @Test
+    void delete_neverCreatedKey_isAbsent() {
+        assertThat(store(connector).delete(freshKey()).await().unwrap()).isEqualTo(DeleteOutcome.ABSENT);
     }
 
     @Test

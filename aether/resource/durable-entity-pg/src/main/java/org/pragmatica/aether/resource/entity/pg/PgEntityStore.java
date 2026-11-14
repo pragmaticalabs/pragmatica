@@ -38,13 +38,11 @@ import org.pragmatica.lang.Verify;
 ///     version compare-and-set is a second guard: were the lock ever missing, the loser would update zero rows and
 ///     fail with a version conflict instead of overwriting. A mutator that throws rolls the transaction back and the
 ///     row is unchanged. Different keys do not contend.
-///   - **[#updateIfVersion]**: optimistic update. It reads without locking and writes only if the row is still at
-///     `expectedVersion`; of N concurrent calls expecting the same version, at most one succeeds and the rest fail
-///     with a version conflict (`StorageUnavailable` wrapping [PgEntityError.VersionConflict]). Mechanism: the
-///     compare-and-set in the `UPDATE`'s `WHERE` clause, evaluated under the row lock the `UPDATE` takes.
-///   - **[#delete]**: removes the row; deleting an absent key succeeds (idempotent), unlike the fenced-log
-///     `DurableEntity.delete`, which fails with `EntityNotFound`. Mechanism: `DELETE ... WHERE` with the row count
-///     ignored, then the [DeleteHook] in the same transaction.
+///   - **[#delete]**: removes the row and reports [DeleteOutcome]: `DELETED` when this call removed a row, `ABSENT`
+///     when there was none (never created, or already deleted). It never fails on an absent row and is safe to
+///     repeat. The `DurableEntity` adapter (E-D, a later lane) maps `ABSENT` to `EntityNotFound`, per the
+///     `DurableEntity.delete` contract. Mechanism: `DELETE ... WHERE` on the primary key; the row count (1 or 0) is the
+///     verdict, then the [DeleteHook] runs in the same transaction (also for `ABSENT`, where it removes orphans).
 ///
 /// ## Not guaranteed
 ///
@@ -129,24 +127,18 @@ public final class PgEntityStore<K, S, C extends Mutator<S>> {
         return getAt(keyEncoder.apply(key));
     }
 
-    /// The committed state with its version, or none: the input of [#updateIfVersion].
+    /// The committed state with its version, or none: the committed state with its row version.
     public Promise<Option<Versioned<S>>> getVersioned(K key) {
         return getVersionedAt(keyEncoder.apply(key));
     }
 
     /// Pessimistic update: row lock, mutator, version CAS, one transaction. Fails with `EntityNotFound` for an absent key.
     public Promise<S> update(K key, C mutator) {
-        return mutate(keyEncoder.apply(key), mutator, SELECT_FOR_UPDATE, Option.none());
+        return mutate(keyEncoder.apply(key), mutator);
     }
 
-    /// Optimistic update: applies `mutator` only if the row is still at `expectedVersion`. Fails with
-    /// `EntityNotFound` for an absent key and with a version conflict if another writer committed first.
-    public Promise<S> updateIfVersion(K key, long expectedVersion, C mutator) {
-        return mutate(keyEncoder.apply(key), mutator, SELECT_VERSIONED, Option.some(expectedVersion));
-    }
-
-    /// Remove `key`; succeeds whether or not it existed.
-    public Promise<Unit> delete(K key) {
+    /// Remove `key`: `DELETED` if a row was removed, `ABSENT` if there was none. Never fails on an absent row.
+    public Promise<DeleteOutcome> delete(K key) {
         return deleteAt(keyEncoder.apply(key));
     }
 
@@ -195,32 +187,19 @@ public final class PgEntityStore<K, S, C extends Mutator<S>> {
                                                       state));
     }
 
-    private Promise<S> mutate(String id, C mutator, String select, Option<Long> expectedVersion) {
-        return connector.transactional(tx -> mutateIn(tx, id, mutator, select, expectedVersion))
+    private Promise<S> mutate(String id, C mutator) {
+        return connector.transactional(tx -> mutateIn(tx, id, mutator))
                         .mapError(cause -> PgEntityErrors.toEntityError(id, cause));
     }
 
-    private Promise<S> mutateIn(SqlConnector tx, String id, C mutator, String select, Option<Long> expectedVersion) {
-        return tx.queryOptional(select, VERSIONED_ROW, entity, id)
+    private Promise<S> mutateIn(SqlConnector tx, String id, C mutator) {
+        return tx.queryOptional(SELECT_FOR_UPDATE, VERSIONED_ROW, entity, id)
                  .flatMap(row -> present(row, id))
-                 .flatMap(row -> versionMatches(row, id, expectedVersion))
                  .flatMap(row -> applyAndWrite(tx, id, mutator, row));
     }
 
     private static Promise<Versioned<byte[]>> present(Option<Versioned<byte[]>> row, String id) {
         return row.fold(() -> new EntityError.EntityNotFound(id).<Versioned<byte[]>> promise(), Promise::success);
-    }
-
-    private static Promise<Versioned<byte[]>> versionMatches(Versioned<byte[]> row,
-                                                             String id,
-                                                             Option<Long> expectedVersion) {
-        return expectedVersion.fold(() -> Promise.success(row), expected -> sameVersion(row, id, expected));
-    }
-
-    private static Promise<Versioned<byte[]>> sameVersion(Versioned<byte[]> row, String id, long expected) {
-        return row.version() == expected
-               ? Promise.success(row)
-               : PgEntityError.VersionConflict.versionConflict(id, expected).promise();
     }
 
     private Promise<S> applyAndWrite(SqlConnector tx, String id, C mutator, Versioned<byte[]> row) {
@@ -250,13 +229,18 @@ public final class PgEntityStore<K, S, C extends Mutator<S>> {
                : PgEntityError.VersionConflict.versionConflict(id, readVersion).promise();
     }
 
-    private Promise<Unit> deleteAt(String id) {
+    private Promise<DeleteOutcome> deleteAt(String id) {
         return connector.transactional(tx -> deleteIn(tx, id))
                         .mapError(cause -> PgEntityErrors.toEntityError(id, cause));
     }
 
-    private Promise<Unit> deleteIn(SqlConnector tx, String id) {
+    private Promise<DeleteOutcome> deleteIn(SqlConnector tx, String id) {
         return tx.update(DELETE, entity, id)
-                 .flatMap(_ -> deleteHook.afterDelete(tx, entity, id));
+                 .flatMap(removed -> runHook(tx, id, DeleteOutcome.fromRemovedRows(removed)));
+    }
+
+    private Promise<DeleteOutcome> runHook(SqlConnector tx, String id, DeleteOutcome outcome) {
+        return deleteHook.afterDelete(tx, entity, id)
+                         .map(_ -> outcome);
     }
 }
