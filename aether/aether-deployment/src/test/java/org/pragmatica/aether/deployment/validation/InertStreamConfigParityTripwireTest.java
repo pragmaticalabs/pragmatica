@@ -65,7 +65,7 @@ class InertStreamConfigParityTripwireTest {
     void inertStreamKey_isNotBoundSilentlyAtActivation(InertKey key) {
         var toml = streamSection(key.line());
 
-        assertThat(rejectedRules(toml)).as("control: the deploy validator drops the alias, naming the rule").contains("[streams.orders]::" + key.rule());
+        assertThat(rejectedRules(toml)).as("control: the deploy validator refuses the publish, naming the rule").contains("[streams.orders]::" + key.rule());
         assertThat(rejectedRules(toml).contains("[streams.orders]::" + key.rule()) && StreamSectionBinding.bindStreamSection(providerOf(toml), "streams.orders", ACTIVATION).isSuccess())
             .as("the validator rejects `%s` as inert, yet the activation binder accepts it; satisfied by making the key effective; deleting the validation also satisfies it and is NOT the fix", key.line())
             .isFalse();
@@ -87,7 +87,7 @@ class InertStreamConfigParityTripwireTest {
     void inertConsumerKey_isNotIgnoredSilentlyAtActivation(InertKey key) {
         var toml = consumerSection(key.line());
 
-        assertThat(rejectedRules(toml)).as("control: the deploy validator drops the stream, naming the consumer section")
+        assertThat(rejectedRules(toml)).as("control: the deploy validator refuses the publish, naming the consumer section")
                                        .contains("[streams.orders.consumers.billing]::" + key.rule());
         assertThat(rejectedRules(toml).contains("[streams.orders.consumers.billing]::" + key.rule())
                    && StreamSectionBinding.bindStreamSection(providerOf(toml), "streams.orders", ACTIVATION).isSuccess())
@@ -113,11 +113,11 @@ class InertStreamConfigParityTripwireTest {
                """.formatted(line);
     }
 
+    /// Inert keys GATE the publish (#3269): the refusal carries the failures, field and rule.
     private static List<String> rejectedRules(String toml) {
         return StreamResourceValidator.partition(Option.some(toml), APP_ARTIFACT, Map.of(), ReplicationContext.BUILT_IN)
-                                      .onFailure(cause -> fail("Expected a partition, got: " + cause.message()))
-                                      .unwrap()
-                                      .rejected()
+                                      .fold(cause -> ((StreamValidationFailures) cause).failures(),
+                                            partition -> partition.rejected())
                                       .stream()
                                       .map(failure -> failure.field() + "::" + failure.rule())
                                       .toList();
