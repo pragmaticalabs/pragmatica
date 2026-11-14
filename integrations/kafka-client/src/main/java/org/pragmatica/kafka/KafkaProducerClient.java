@@ -85,14 +85,14 @@ public final class KafkaProducerClient {
     }
 
     private Result<Unit> dispatch(OutboundRecord record, Promise<SendReceipt> receipt) {
-        return lifecycle.isClosing()
-               ? KafkaError.General.CLOSED.result()
-               : Result.lift(this::classifySend,
-                             () -> producer.send(toKafka(record),
-                                                 (metadata, failure) -> complete(receipt, metadata, failure)))
-                       .mapToUnit();
+        return Result.lift(this::classifySend,
+                           () -> producer.send(toKafka(record),
+                                               (metadata, failure) -> complete(receipt, metadata, failure)))
+                     .mapToUnit();
     }
 
+    /// A send that runs after the producer closed (queued on the submitter) or is aborted by the close (blocked in the
+    /// metadata wait) is refused by the producer itself; while closing, that refusal is `CLOSED`.
     private KafkaError classifySend(Throwable failure) {
         return lifecycle.isClosing()
                ? KafkaError.fromSendWhileClosing(failure)

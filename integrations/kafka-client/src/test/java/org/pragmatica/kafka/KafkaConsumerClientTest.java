@@ -69,7 +69,7 @@ class KafkaConsumerClientTest {
         }
 
         @Override
-        public synchronized ConsumerRecords<byte[], byte[]> poll(Duration timeout) {
+        public ConsumerRecords<byte[], byte[]> poll(Duration timeout) {
             polls.incrementAndGet();
             holding.countDown();
             awaitQuietly(release);
