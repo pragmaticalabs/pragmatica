@@ -48,8 +48,11 @@ import org.pragmatica.lang.Option;
 ///   inheriting an opener nobody published or losing the recovery of a removed row (an opener open for ever). Only marked rows are
 ///   re-published, never every inherited row (the event aggregator dedups a warning only per node and within 60 s). The cost: a leader
 ///   lost after publishing and before its clearing write commits has its warnings published again by the successor (a duplicate opener or
-///   recovery, at most once per leader change); and when one key changed several times while one write was in flight, only the latest
-///   opener and recovery messages are replayed. The recoveries `inherit` raises at `Rebuild` are not held: they close committed rows, and
+///   recovery, once per activation that inherits the marked row, since `inherit` replays at every `Rebuild` and only a leader writes the
+///   clear); and when one key changed several times while one write was in flight (stray openers of several nodes included), only the
+///   latest opener and recovery messages are replayed. Two further orderings are handled: a settlement that arrives once this node mirrors
+///   another leader publishes nothing (`publish`), and a marked row the deposed leader commits after this node's snapshot is replayed
+///   like an inherited one (`onPut`). The recoveries `inherit` raises at `Rebuild` are not held: they close committed rows, and
 ///   a successor deposed before their removal commits leaves the row to the next one, which closes it again (a repeated recovery, never an
 ///   open warning).
 /// - Inherit (`Rebuild`): the family sets are seeded from the committed open rows, so a successor never raises an inherited open again
@@ -139,8 +142,13 @@ public sealed interface Warnings {
     /// The held warnings that committed, in raise order: every one when nothing is in flight and the committed open rows equal the family
     /// sets (a write landed, or the step's changes cancelled out), else the prefix the accepted WARNINGS transaction carried. #3160: what
     /// is published leaves the desired markers, so the set is dirty: the next flush clears the markers its write committed.
+    ///
+    /// #3160 (late settle): nothing is published while the committed leader this node mirrors names another node. A deposed leader whose
+    /// settlement arrives after the successor's `LeaderKey` committed leaves its held warnings to the successor, which replays them from the
+    /// markers the accepted write committed (`inherit`, `onPut`). A settlement processed before this node sees the new `LeaderKey` still
+    /// publishes, so the window is narrowed, not closed.
     private static ClusterModel publish(ClusterModel m, Ctx ctx) {
-        if (m.warningsHeld.isEmpty()) {
+        if (m.warningsHeld.isEmpty() || ledByAnother(m, ctx)) {
             return m;
         }
 
@@ -154,6 +162,12 @@ public sealed interface Warnings {
         m.warningsDirty = m.warningsDirty || count > 0;
 
         return m;
+    }
+
+    private static boolean ledByAnother(ClusterModel m, Ctx ctx) {
+        return m.leader.map(value -> !value.leader()
+                                           .equals(ctx.self()))
+                       .or(false);
     }
 
     /// Whether the committed open rows, markers aside, are what the family sets describe: a held warning then has no row change to wait
@@ -424,6 +438,24 @@ public sealed interface Warnings {
         m.warningsDirty = true;
 
         return m;
+    }
+
+    /// #3160 (a row committed after `Rebuild`): a row put that differs from the mirror while this node is suspended with no WARNINGS write
+    /// of its own in flight was written by the deposed leader after this node's snapshot (its leader fence held until this node's
+    /// `LeaderKey` committed). The row is treated as `inherit` treats a snapshot row: its markers are replayed and an open row is adopted.
+    /// The replayed warnings are raised inside the step, so they are held (`noteRaised`): with this row committed they are settled, and
+    /// they reach the sink at the resume (never while another node leads, `publish`); a node deposed before resuming leaves them to the
+    /// next successor, which replays the same committed row. A tombstone over a key this node adopted open is not un-adopted: its recovery
+    /// is published, and the family's own check closes the key in this node's set (a repeated recovery).
+    static ClusterModel onPut(ClusterModel m, Ctx ctx, FsmWarningKey key, FsmWarningValue value) {
+        var late = Lifecycle.isSuspended(m, ctx) && !inFlight(m) && !m.warningRows.get(key)
+                                                                                 .equals(Option.some(value));
+
+        indexRow(m, key, value);
+
+        return late
+               ? inheritRow(replay(m, ctx, key, value), ctx, key, value)
+               : m;
     }
 
     private static ClusterModel inheritRow(ClusterModel m, Ctx ctx, FsmWarningKey key, FsmWarningValue value) {

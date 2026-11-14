@@ -270,6 +270,16 @@ class DeploymentFsmKvRecordsCodecTest {
             roundTrip(FsmWarningKey.fsmWarningKey("schema-hold", ARTIFACT.asString()), held);
         }
 
+        /// #3160: the marker components (`open`, `opener`, `recovery`) survive the codec. Red when a decoder drops or swaps any of them:
+        /// every other round trip here carries only their defaults (open, no markers).
+        @Test
+        void fsmWarning_roundTripsATombstoneAndAMarkedOpenRow() {
+            roundTrip(FsmWarningKey.fsmWarningKey("retry-exhausted-unsettled", ARTIFACT.asString()),
+                      FsmWarningValue.fsmWarningValue(Map.of(), false, Option.some("opened"), Option.some("closed")));
+            roundTrip(FsmWarningKey.fsmWarningKey("schema-hold", ARTIFACT.asString()),
+                      FsmWarningValue.fsmWarningValue(Map.of(NODE.id(), "v1:orders"), true, Option.some("held"), Option.none()));
+        }
+
         /// Writes the command, reads it back, then writes the decoded command again: the value must come back equal
         /// AND the second encoding must be the same bytes as the first, so a decoder that loses or reorders a
         /// component cannot hide behind a lenient `equals`.

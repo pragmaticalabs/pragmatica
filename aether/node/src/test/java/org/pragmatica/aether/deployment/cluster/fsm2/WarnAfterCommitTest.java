@@ -16,12 +16,14 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.junit.jupiter.api.Test;
 
@@ -442,7 +444,8 @@ class WarnAfterCommitTest {
         assertThat(present(h, PLACEMENT_KEY)).as("nothing left committed").isFalse();
     }
 
-    /// Control for the two above: with the settlement processed before `Deactivate`, the opener is published exactly once.
+    /// Control for the two above and for the late settle: with the settlement processed while this node leads, the opener is published
+    /// exactly once.
     @Test
     void settledBeforeDeactivate_isPublishedOnce() {
         var h = exhausted();
@@ -452,6 +455,113 @@ class WarnAfterCommitTest {
 
         assertThat(committed(h)).isTrue();
         assertThat(h.warns(OPENER)).as("published once, after commit").hasSize(1);
+    }
+
+    // -- the late settle (#3160, M1) and the row committed after Rebuild (#3160, F1) ------------------------------------------------------
+    /// #3160, late settle: the WARNINGS write commits, this node mirrors the successor's `LeaderKey`, then its settlement arrives. Red when
+    /// the deposed leader publishes the opener at that late settle (`Warnings.publish` without its leader guard): the successor replays the
+    /// committed marker, so the operator sees the opener from both, or the deposed leader's opener after the successor closed the key.
+    @Test
+    void lateSettle_afterAnotherLeaderCommitted_publishesNothing_andTheSuccessorPublishesOnce() {
+        var h = exhausted();
+        var write = warningsWrite(h);
+        var settlement = h.applyHeld(write.correlationId());
+
+        assertThat(settlement).as("precondition: the write committed").isInstanceOf(Settlement.Accepted.class);
+        h.commitLeader(CORE_2, 2L);
+        h.drain();
+        h.settleHeld(write, settlement);
+
+        assertThat(h.warns(OPENER)).as("the deposed leader publishes nothing at its late settle").isEmpty();
+
+        h.deliver(new ClusterInput.Deactivate());
+        h.commitLeader(FsmHarness.SELF, 3L);
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        h.drain();
+        h.activate();
+        h.deliver(new ClusterInput.Reconcile());
+        h.drain();
+
+        assertThat(h.warns(OPENER)).as("the successor replays the committed marker once").hasSize(1);
+    }
+
+    /// `ORDERS` one failure short on core-1, with the committed leader naming the old leader (core-2): this node rebuilds suspended.
+    /// `row`, when present, is committed before the rebuild (the snapshot holds it).
+    private static FsmHarness suspendedSuccessor(Option<FsmWarningValue> row) {
+        var h = LcSupport.leader(DeploymentAtomicity.ALL_OR_NOTHING, 0.5d, CORE_1);
+
+        SlFixtures.seedTarget(h, ORDERS, 1, 1);
+        SlFixtures.seedGoal(h, CORE_1, ORDERS, SliceGoal.LOADED, SlFixtures.G1);
+        SlFixtures.seedRow(h, CORE_1, ORDERS, SliceObservedState.LOADING, SlFixtures.G1, 11L);
+        SlFixtures.seedJudgment(h, ORDERS, new ArtifactJudgmentValue(false, Map.of(CORE_1, 5), Map.of(), Set.of()));
+        h.commitLeader(CORE_2, 2L);
+        row.onPresent(value -> h.seed(KEY, value));
+        h.activate();
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+
+        return h;
+    }
+
+    private static void resume(FsmHarness h) {
+        h.commitLeader(FsmHarness.SELF, 3L);
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        h.deliver(new ClusterInput.Reconcile());
+        h.drain();
+    }
+
+    private static List<String> messages(FsmHarness h, String code) {
+        return h.warns(code)
+                .stream()
+                .map(ClusterEffect.Warn::message)
+                .toList();
+    }
+
+    private static final FsmWarningValue LATE_OPENER = FsmWarningValue.fsmWarningValue(Map.of(), true, Option.some("late opener"), Option.none());
+
+    /// #3160, F1: the old leader's marked opener row commits after this node's snapshot (its leader fence still holds). Red when the late row
+    /// is only mirrored: the resume's flush removes it and nobody publishes the opener (an event-only family never raises it again). The
+    /// replayed opener is held while the old leader is still the committed one, and published at the resume.
+    @Test
+    void openerRowCommittedAfterRebuild_isPublishedAtTheResume() {
+        var h = suspendedSuccessor(Option.none());
+
+        h.seed(KEY, LATE_OPENER);
+        h.drain();
+
+        assertThat(committed(h)).as("precondition: the late write was accepted").isTrue();
+        assertThat(h.warns(OPENER)).as("not published while another node leads").isEmpty();
+
+        resume(h);
+
+        assertThat(messages(h, OPENER)).as("the late-committed opener is published once, at the resume").containsExactly("late opener");
+        assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("and adopted").isTrue();
+        assertThat(committed(h)).as("its row is kept open").isTrue();
+    }
+
+    /// Positive control for F1: the same row committed before the rebuild is replayed by `inherit`.
+    @Test
+    void openerRowCommittedBeforeRebuild_isPublishedOnce() {
+        var h = suspendedSuccessor(Option.some(LATE_OPENER));
+
+        resume(h);
+
+        assertThat(messages(h, OPENER)).containsExactly("late opener");
+        assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).isTrue();
+    }
+
+    /// #3160, F1 mirror arm: this node adopted the committed open row, then the old leader's close commits as a tombstone carrying the
+    /// recovery. Red when the tombstone is only mirrored: the resume rewrites the row open and the recovery is never published.
+    @Test
+    void tombstoneCommittedAfterRebuild_publishesItsRecovery() {
+        var h = suspendedSuccessor(Option.some(FsmWarningValue.fsmWarningValue(Map.of())));
+
+        assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("precondition: the open row was adopted").isTrue();
+        h.seed(KEY, FsmWarningValue.fsmWarningValue(Map.of(), false, Option.none(), Option.some("late close")));
+        h.drain();
+        resume(h);
+
+        assertThat(messages(h, RECOVERY)).as("the late-committed recovery is published once").containsOnlyOnce("late close");
+        assertThat(h.warns(OPENER)).as("no opener is raised").isEmpty();
     }
 
     // -- the held-set bookkeeping ----------------------------------------------------------------------------------------------------------
@@ -512,6 +622,146 @@ class WarnAfterCommitTest {
         Warnings.draft(m);
 
         assertThat(m.warningsCovered).isZero();
+    }
+
+    // -- the marker bookkeeping, one pin per mutant the first verification found surviving ---------------------------------------------
+    private static final String UNJUDGEABLE = Warnings.UNJUDGEABLE;
+    private static final String JUDGEABLE = Warnings.FAMILIES.get(UNJUDGEABLE);
+    private static final FsmWarningKey UNJUDGEABLE_KEY = FsmWarningKey.fsmWarningKey(UNJUDGEABLE, "c1");
+
+    private static ClusterEffect.Warn warn(String code, String subject, String message) {
+        return new ClusterEffect.Warn(code, subject, message);
+    }
+
+    /// Red when: `noteRaised` cleans the set before publishing (`publish(clean(m))`): the warning published at once leaves the set dirty,
+    /// and the next flush drafts an empty write.
+    @Test
+    void warningPublishedAtOnce_leavesNothingToFlush() {
+        var m = new ClusterModel();
+        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
+
+        ctx.warn(OPENER, ORDERS.asString(), "raised");
+        Warnings.noteRaised(m, ctx, 0);
+
+        assertThat(ctx.effects()).as("precondition: published at once").hasSize(1);
+        assertThat(Warnings.pending(m)).as("nothing left to write").isFalse();
+    }
+
+    /// Red when: `inherit` leaves the set clean: the replayed markers are never cleared until some reconcile happens to mark it dirty.
+    @Test
+    void inherit_alone_queuesTheMarkerClear() {
+        var m = new ClusterModel();
+        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
+
+        Warnings.indexRow(m, UNJUDGEABLE_KEY, FsmWarningValue.fsmWarningValue(Map.of(), true, Option.some("o"), Option.none()));
+        Warnings.inherit(m, ctx);
+
+        assertThat(Warnings.pending(m)).as("dirty after inherit, before any reconcile").isTrue();
+        assertThat(Warnings.difference(m)).as("the next write clears the marker")
+                                          .singleElement()
+                                          .satisfies(mutation -> assertThat(mutation.replacement())
+                                              .isEqualTo(Option.some(FsmWarningValue.fsmWarningValue(Map.of()))));
+    }
+
+    /// Red when: replay emits an open row's markers opener first (it must end open: recovery, then opener), or emits a blank subject.
+    @Test
+    void replay_ofAnOpenRowWithBothMarkers_endsWithTheOpener() {
+        var m = new ClusterModel();
+        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
+
+        Warnings.indexRow(m, UNJUDGEABLE_KEY, FsmWarningValue.fsmWarningValue(Map.of(), true, Option.some("o"), Option.some("r")));
+        Warnings.inherit(m, ctx);
+
+        assertThat(ctx.effects()).containsExactly(warn(JUDGEABLE, "c1", "r"), warn(UNJUDGEABLE, "c1", "o"));
+    }
+
+    /// Red when: replay emits a tombstone's markers recovery first (it must end closed: opener, then recovery).
+    @Test
+    void replay_ofATombstoneWithBothMarkers_endsWithTheRecovery() {
+        var m = new ClusterModel();
+        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
+
+        Warnings.indexRow(m, UNJUDGEABLE_KEY, FsmWarningValue.fsmWarningValue(Map.of(), false, Option.some("o"), Option.some("r")));
+        Warnings.inherit(m, ctx);
+
+        assertThat(ctx.effects()).containsExactly(warn(UNJUDGEABLE, "c1", "o"), warn(JUDGEABLE, "c1", "r"));
+    }
+
+    /// Red when: `inherit` replays rows in the mirror's iteration order instead of key order (a `Rebuild` is deterministic).
+    @Test
+    void inherit_replaysRowsInKeyOrder() {
+        var m = new ClusterModel();
+        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
+        var subjects = List.of("zeta", "alpha", "mike", "bravo", "yankee", "kilo", "delta", "quebec");
+
+        subjects.forEach(subject -> Warnings.indexRow(m,
+                                                      FsmWarningKey.fsmWarningKey(UNJUDGEABLE, subject),
+                                                      FsmWarningValue.fsmWarningValue(Map.of(), true, Option.some(subject), Option.none())));
+        Warnings.inherit(m, ctx);
+
+        assertThat(ctx.effects()).extracting(effect -> ((ClusterEffect.Warn) effect).subject())
+                                 .containsExactlyElementsOf(subjects.stream().sorted().toList());
+    }
+
+    /// Red when: replay runs over a row of an unknown code (no family): the recovery lookup is null and `inherit` throws.
+    @Test
+    void inherit_ofAnUnknownCode_replaysNothing() {
+        var m = new ClusterModel();
+        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
+
+        Warnings.indexRow(m,
+                          FsmWarningKey.fsmWarningKey("not-a-family", "c1"),
+                          FsmWarningValue.fsmWarningValue(Map.of(), true, Option.some("o"), Option.some("r")));
+
+        assertThatCode(() -> Warnings.inherit(m, ctx)).doesNotThrowAnyException();
+        assertThat(ctx.effects()).isEmpty();
+    }
+
+    /// Red when: a key changed several times in one in-flight window marks an earlier message instead of the latest of each code.
+    @Test
+    void severalChangesOfOneKey_markTheLatestMessages() {
+        var m = new ClusterModel();
+
+        m.warningsHeld = List.of(warn(OPENER, ORDERS.asString(), "o1"),
+                                 warn(RECOVERY, ORDERS.asString(), "r1"),
+                                 warn(OPENER, ORDERS.asString(), "o2"),
+                                 warn(RECOVERY, ORDERS.asString(), "r2"),
+                                 warn(OPENER, ORDERS.asString(), "o3"));
+
+        assertThat(Warnings.desired(m).get(KEY)).isEqualTo(FsmWarningValue.fsmWarningValue(Map.of(), false, Option.some("o3"), Option.some("r2")));
+    }
+
+    /// Red when: a committed tombstone counts as open in the settled check: an unrelated warning with nothing to write is held instead of
+    /// published at once.
+    @Test
+    void committedTombstone_doesNotHoldAnUnrelatedWarning() {
+        var m = new ClusterModel();
+        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
+
+        Warnings.indexRow(m, UNJUDGEABLE_KEY, FsmWarningValue.fsmWarningValue(Map.of(), false, Option.none(), Option.some("r")));
+        ctx.warn(OPENER, ORDERS.asString(), "raised");
+        Warnings.noteRaised(m, ctx, 0);
+
+        assertThat(ctx.effects()).containsExactly(warn(OPENER, ORDERS.asString(), "raised"));
+        assertThat(m.warningsHeld).isEmpty();
+    }
+
+    /// Red when: the settled check drops a committed row's members: with a members-bearing family (stray) committed exactly as the family
+    /// set describes it, an unrelated warning is held instead of published at once.
+    @Test
+    void committedRowWithMembers_doesNotHoldAnUnrelatedWarning() {
+        var m = new ClusterModel();
+        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
+        var strayKey = FsmWarningKey.fsmWarningKey(Warnings.STRAY, BILLING.asString());
+
+        m.strayWarned = m.strayWarned.put(BILLING, PSet.<NodeId>empty(m.scans).add(CORE_1));
+        Warnings.indexRow(m, strayKey, Warnings.desired(m).get(strayKey));
+        assertThat(Warnings.desired(m).get(strayKey).members()).as("precondition: the row has members").containsOnlyKeys(CORE_1.id());
+        ctx.warn(OPENER, ORDERS.asString(), "raised");
+        Warnings.noteRaised(m, ctx, 0);
+
+        assertThat(ctx.effects()).containsExactly(warn(OPENER, ORDERS.asString(), "raised"));
+        assertThat(m.warningsHeld).isEmpty();
     }
 
     /// Red when: the window start is not the number of effects collected so far.
