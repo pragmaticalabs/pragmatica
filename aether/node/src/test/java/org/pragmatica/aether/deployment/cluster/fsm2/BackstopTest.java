@@ -134,7 +134,7 @@ class BackstopTest {
     // not remove w1's rows, desired keys and routes in one guarded transaction; placed(a) is not restored; the directive or
     // placement key is touched by any FSM write; the record is not collected with the directive; assignedByCommunity counted w1.
     @Test
-    void lostDeparture_afterTheBound_recordsStale_thenC17bRemovesRows_directiveWaits() {
+    void lostDeparture_afterTheBound_recordsStale_thenC17bRemovesRowsAndTheWorkerDirective() {
         var w = lostDeparture();
 
         w.h.deliver(new ClusterInput.WorkerJoin(W2, w.admit(W2, tokenOf(W2))));
