@@ -92,6 +92,7 @@ class EmberConsensusLaneHoldTest {
     private static final int FILL_PUTS_MAX = 60;
     private static final long HOLD_AFTER_MARKERS_MS = 12_000L;
     private static final long SAMPLE_INTERVAL_MS = 100L;
+    private static final long STABLE_UNWRITABLE_MS = 2_000L;
     /// The 90% is a marked guess, not a derived bound: at the verified head every sender was unwritable in 120 of 120
     /// samples (100%); a sender released at +8 s of the 12 s hold (mutant m2b8000) measured 82 of 120 (68%).
     private static final int MIN_UNWRITABLE_PERCENT = 90;
@@ -239,12 +240,16 @@ class EmberConsensusLaneHoldTest {
         return node.kvStore().get(ConfigKey.forKey(key)).isPresent();
     }
 
+    /// Puts until the lane has stayed unwritable for [#STABLE_UNWRITABLE_MS] after a put. Unwritable right after a put is not
+    /// enough: while the written bytes drain into the stream (up to the 32 MB flow-control window) the lane reads unwritable
+    /// and then turns writable again, which red the precondition below in 1 of 11 head runs and left a sender unwritable in
+    /// 84 of 120 hold samples in another. Only a window that is really full keeps it unwritable with nobody reading.
     private void fillUntilUnwritable(AetherNode sender, NodeId heldId) {
         var random = new java.util.Random(sender.self().id().hashCode());
         var puts = 0;
 
         // Incompressible, distinct per put: a repeated character would shrink on the wire and never fill the window.
-        for (var n = 0; n < FILL_PUTS_MAX && (n == 0 || laneOf(sender, heldId).isWritable()); n++) {
+        for (var n = 0; n < FILL_PUTS_MAX; n++) {
             var chars = new char[FILL_VALUE_CHARS];
 
             for (var i = 0; i < chars.length; i++) {
@@ -252,13 +257,24 @@ class EmberConsensusLaneHoldTest {
             }
             put(sender, "fill-" + sender.self().id() + "-" + n, new String(chars));
             puts++;
-            // Unwritable right after a put can be the write still draining into the flow-control window: only a lane that is
-            // still unwritable after the event loop caught up counts.
-            pause(300L);
+            if (staysUnwritable(sender, heldId, STABLE_UNWRITABLE_MS)) {
+                break;
+            }
         }
         System.out.printf("LANE-HOLD fill %s -> %s puts=%d writable=%s%n", sender.self().id(), heldId.id(), puts, laneOf(sender, heldId).isWritable());
-        // Let the stalled write settle: unwritable now and still unwritable after the event loop caught up.
-        pause(500L);
+    }
+
+    /// True when the lane is unwritable in every sample taken over `durationMs`; the first writable sample ends it.
+    private static boolean staysUnwritable(AetherNode sender, NodeId heldId, long durationMs) {
+        var deadline = System.nanoTime() + durationMs * 1_000_000L;
+
+        while (System.nanoTime() < deadline) {
+            if (laneOf(sender, heldId).isWritable()) {
+                return false;
+            }
+            pause(SAMPLE_INTERVAL_MS);
+        }
+        return !laneOf(sender, heldId).isWritable();
     }
 
     private void put(AetherNode node, String key, String value) {
