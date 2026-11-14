@@ -1251,33 +1251,43 @@ class BlueprintPublishOwnershipTest {
                          .flatMap(url -> Location.location(artifact, url));
         }
 
-        /// #1181/#1336 — #576 refuses the descoped `[streams.X]` keys, and until #1336 that refusal was
-        /// unreachable: `BlueprintService.streamBindings` ended `.or(List.of())`, which discarded the
-        /// `Cause`, so a blueprint carrying `compression = "lz4"` PUBLISHED with an EMPTY bindings entry
-        /// and the consuming slice failed far away with a generic `UnboundStreamAlias`. The enabled
-        /// tripwire that pinned that defect stood here.
-        ///
-        /// CTO ruling on #1181/#1336 (2026-09-20): "inert keys: KEEP drop + report (#576 reject-not-accept).
-        /// Not bind-and-warn." — the tripwire's expectation of a GATE is superseded by that ruling. An inert
-        /// key is a per-alias rule — the stream parses, the key does
-        /// nothing — so it drops THAT alias and is reported by field and rule; it does not refuse the
-        /// publish. Here the only declared stream is the rejected one, so the entry is still empty —
-        /// but the answer now says which key and why.
+        /// #3269 (owner ruling 2026-11-14, amending the #1181/#1336 "keep drop + report" ruling): an inert
+        /// key — one #576 refuses because the runtime would silently ignore it — GATES the publish. Dropping
+        /// the alias let the blueprint publish and the consuming slice fail far away with a generic
+        /// `UnboundStreamAlias`; refusing names the rule at deploy time and commits nothing.
         @Test
-        void publish_withDescopedStreamKey_dropsThatBinding_andNamesTheRuleOnTheAnswer() {
+        void publish_isRefused_whenAStreamDeclaresAnInertKey() {
             var repository = sliceRepository(Map.of(PUBLISHER_SLICE, sliceJar(PUBLISHER_SLICE, descopedCompression()),
                                                     CONSUMER_SLICE, sliceJar(CONSUMER_SLICE, descopedCompression())));
 
-            var published = publishBody(repository).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+            publishBody(repository).onSuccess(_ -> Assertions.fail("an inert stream key must refuse the publish"))
+                                   .onFailure(cause -> assertThat(cause.message()).contains(StreamResourceValidator.RULE_INERT_STREAM_CONFIG)
+                                                                                  .contains("compression 'LZ4'"));
+            assertThat(cluster.batches).as("the refusal must come before any batch is applied").isEmpty();
+            assertThat(boundAddresses(store)).as("nothing is committed").isEmpty();
+        }
 
-            assertThat(boundAddresses(store))
-                    .as("the rejected alias gets no binding — accepting it would bind a stream whose declared "
-                        + "compression the runtime silently ignores")
-                    .isEmpty();
-            assertThat(rejectedFieldsAndRules(published))
-                    .as("the operator is told at deploy time which key and which rule, not by a later UnboundStreamAlias")
-                    .containsExactly("[streams.order-events]::" + StreamResourceValidator.RULE_INERT_STREAM_CONFIG);
-            published.onSuccess(value -> assertThat(value.rejectedStreamBindings().getFirst().message()).contains("compression 'LZ4'"));
+        @Test
+        void publish_isRefused_whenAConsumerDeclaresAnInertKey() {
+            var repository = sliceRepository(Map.of(PUBLISHER_SLICE, sliceJar(PUBLISHER_SLICE, descopedConsumerBatchSize()),
+                                                    CONSUMER_SLICE, sliceJar(CONSUMER_SLICE, descopedConsumerBatchSize())));
+
+            publishBody(repository).onSuccess(_ -> Assertions.fail("an inert consumer key must refuse the publish"))
+                                   .onFailure(cause -> assertThat(cause.message()).contains(StreamResourceValidator.RULE_INERT_CONSUMER_CONFIG));
+            assertThat(cluster.batches).as("the refusal must come before any batch is applied").isEmpty();
+            assertThat(boundAddresses(store)).as("nothing is committed").isEmpty();
+        }
+
+        /// Same shape as [#pinnedOrderEvents], plus an inert consumer key #576 refuses.
+        private static String descopedConsumerBatchSize() {
+            return """
+                    [streams.order-events]
+                    version = "1.0.0"
+                    partitions = 1
+
+                    [streams.order-events.consumers.billing]
+                    batch_size = 50
+                    """;
         }
 
         /// Same shape as [#pinnedOrderEvents], plus the descoped `compression` key #576 refuses.
