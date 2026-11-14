@@ -95,6 +95,7 @@ public sealed interface StreamResourceValidator {
     String STREAMS_SECTION_PREFIX = "streams.";
     String STRONG = "strong";
     List<String> CONSISTENCY_KEYS = List.of("consistency_mode", "consistency");
+
     /// #1336: per-section rules whose violation refuses the deploy instead of dropping the one alias —
     /// see [#partition]. Data, so a ruling flips one line. [#RULE_UNSUPPORTED_CONSISTENCY] is not listed
     /// because [#ensureHonourableConsistency] refuses it before any partition runs.
