@@ -139,8 +139,9 @@ class StreamPublisherEnforcedPartitionsTest {
         }
     }
 
-    /// The system arm: a `system:` stream's count is runtime-owned, so with no committed config the publisher routes by
-    /// the count this node ENFORCES (created with 1), never by what a slice declares (4): every key lands on partition 0.
+    /// The system arm: a `system:` stream's count is runtime-owned, so with no committed config the routed count is the
+    /// one this node ENFORCES (created with 1), never what a slice declares (4). Read through the routing site itself:
+    /// a slice publish to a `system:` stream is refused before it routes.
     @Test
     void systemStreamWithNoCommittedConfig_routesByTheEnforcedCount_notTheSliceDeclaration() {
         var node = new StreamPartitionManagerTest.StubClusterNode(StreamPartitionManagerTest.StubApply.SUCCESS);
@@ -148,27 +149,23 @@ class StreamPublisherEnforcedPartitionsTest {
 
         try {
             manager.createStream(systemConfig(1)).onFailure(cause -> fail(cause.message()));
-            var publisher = provisionSystem(manager, 4);
-            IntStream.range(0, KEYS)
-                     .forEach(key -> publisher.publish(payload(key)).await().onFailure(cause -> fail(cause.message())));
 
-            var onPartitionZero = manager.readLocal(SYSTEM_STREAM, 0, 0, 1_000).or(List.of());
-
-            assertThat(onPartitionZero).hasSize(KEYS);
+            assertThat(manager.committedPartitions(SYSTEM_STREAM).isEmpty()).as("no committed config").isTrue();
+            assertThat(StreamPublisherFactory.routedPartitions(manager, systemConfig(4)).fold(cause -> -1, count -> count)).isEqualTo(1);
         } finally {
             manager.close();
         }
     }
 
-    /// A `system:` stream this node does not hold is refused retriably, like a non-system one.
+    /// A `system:` stream this node does not hold is refused retriably at the routing site, like a non-system one.
     @Test
     void systemStreamNotHeldByThisNode_isRefusedRetriably() {
         var manager = streamPartitionManager(Long.MAX_VALUE);
 
         try {
-            var outcome = new StreamPublisherFactory().provision(systemConfig(4), context(manager)).await();
+            var outcome = StreamPublisherFactory.routedPartitions(manager, systemConfig(4));
 
-            assertThat((Object) outcome.fold(cause -> cause, _ -> "provisioned")).isInstanceOf(StreamError.StreamConfigNotYetVisible.class);
+            assertThat((Object) outcome.fold(cause -> cause, _ -> "routed")).isInstanceOf(StreamError.StreamConfigNotYetVisible.class);
         } finally {
             manager.close();
         }
@@ -217,14 +214,6 @@ class StreamPublisherEnforcedPartitionsTest {
                                      .withExtension(StreamForwardClient.class, forwardClient)
                                      .withExtension(StreamPublisherFactory.GovernorResolver.class,
                                                     new StreamPublisherFactory.GovernorResolver(() -> Option.some(self)));
-    }
-
-    @SuppressWarnings("unchecked")
-    private static StreamPublisher<byte[]> provisionSystem(StreamPartitionManager manager, int declared) {
-        return (StreamPublisher<byte[]>) new StreamPublisherFactory().provision(systemConfig(declared), context(manager))
-                                                                     .await()
-                                                                     .fold(cause -> fail(cause.message()),
-                                                                           publisher -> publisher);
     }
 
     /// #3263 review item 3: the consumer side reads the SAME committed count as the publisher. Over an enforced-4 stream
