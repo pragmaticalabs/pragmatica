@@ -155,7 +155,7 @@ class M1StreamLoadTest {
     }
 
     private void startCluster() throws Exception {
-        int base = Integer.getInteger("m1.base", 63000);
+        int base = Integer.getInteger("m1.base", 44000);
         var configProvider = ConfigurationProvider.builder().withSystemProperties("aether.").withEnvironment("AETHER_").build();
 
         cluster = emberCluster(CORES, base, base + 1000, base + 2000, "s7", Option.some(configProvider));

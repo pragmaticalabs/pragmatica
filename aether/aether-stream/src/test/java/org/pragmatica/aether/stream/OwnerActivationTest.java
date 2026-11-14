@@ -92,12 +92,52 @@ class OwnerActivationTest {
     /// The committed-lineage end a clipped catch-up learned per peer, as `PartitionBackfill` remembers it.
     private final Map<NodeId, Long> learnedEnds = new ConcurrentHashMap<>();
 
+    /// The bound lookups the gate made before refusing a pair (#3080): `<peer>@<watermark>/<from>`.
+    private final List<String> learnCalls = new CopyOnWriteArrayList<>();
+    private final AtomicBoolean learnFails = new AtomicBoolean();
+    /// The confirmations the gate asked for (#3142 F3): `<peer>@<watermark>`; a peer in [#staleCaps] loses its cap when confirmed.
+    private final List<String> confirmCalls = new CopyOnWriteArrayList<>();
+    private final Set<NodeId> staleCaps = ConcurrentHashMap.newKeySet();
+    private final AtomicBoolean confirmFails = new AtomicBoolean();
+
     {
+        activation.peerLineageLearn(this::learn);
+        activation.peerLineageConfirm(this::confirm);
         activation.peerRingTail((_, _, _) -> Promise.success(peerTail.get()));
         activation.peerLineageEnd((stream, partition, peer, watermark) -> STREAM.equals(stream) && partition == PARTITION
                                                                           ? Math.min(watermark,
                                                                                      learnedEnds.getOrDefault(peer, Long.MAX_VALUE))
                                                                           : watermark);
+    }
+
+    private Promise<Unit> confirm(String stream, int partition, NodeId peer, long watermark) {
+        confirmCalls.add(peer.id() + "@" + watermark);
+
+        if (confirmFails.get()) {
+            return Causes.cause("page unreadable").promise();
+        }
+
+        if (staleCaps.contains(peer)) {
+            learnedEnds.remove(peer);
+        }
+
+        return Promise.success(Unit.unit());
+    }
+
+    /// What a page of `peer` at `from` teaches without installing anything: the refused tail it holds from `refusedFrom` (never below
+    /// the page), as `PartitionBackfill` learns it from the page's history.
+    private Promise<Unit> learn(String stream, int partition, NodeId peer, long watermark, long from) {
+        learnCalls.add(peer.id() + "@" + watermark + "/" + from);
+
+        if (learnFails.get()) {
+            return Causes.cause("page unreadable").promise();
+        }
+
+        Option.option(refusedFrom.get(peer))
+              .filter(first -> first <= watermark)
+              .onPresent(first -> learnedEnds.put(peer, Math.max(first, from) - 1));
+
+        return Promise.success(Unit.unit());
     }
 
     /// Every node holds the same lineage over any range the gate compares (`rec-<offset>`), except the nodes in
@@ -684,6 +724,40 @@ class OwnerActivationTest {
         assertThat(alarms).isEmpty();
     }
 
+    /// #3142 F3: B's cap (4) is an equal-tail ABA entry (B was refilled to its observed tail 8); the gate confirms before ranking, the cap
+    /// is dropped, and B (8) outranks A (6) as the source. Ranking on the stale cap would pull A.
+    @Test
+    void activate_staleCapOfAPeer_isConfirmedBeforeRanking_andTheRefilledPeerIsTheSource() {
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        localWatermark.set(2L);
+        peerWatermarks.put(PEER_A, 6L);
+        peerWatermarks.put(PEER_B, 8L);
+        learnedEnds.put(PEER_B, 4L);
+        staleCaps.add(PEER_B);
+
+        assertThat(activate()).isTrue();
+        assertThat(confirmCalls).containsExactlyInAnyOrder("peer-a@6", "peer-b@8");
+        assertThat(catchUps).containsExactly("peer-b@8");
+    }
+
+    /// #3142 F3, hook level only: a confirm hook whose promise fails does not block the gate. This pins the gate's tolerance of a failed
+    /// hook, not the cap value: the real binding never fails and an unreadable page uncaps the cap (see
+    /// `OwnerCatchupCommittedLineageTest#confirmLineageEnd_whenThePageCannotBeRead_dropsTheCap`).
+    @Test
+    void activate_failedConfirmHook_doesNotBlockTheGate() {
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        localWatermark.set(2L);
+        peerWatermarks.put(PEER_A, 6L);
+        peerWatermarks.put(PEER_B, 8L);
+        learnedEnds.put(PEER_B, 4L);
+        staleCaps.add(PEER_B);
+        confirmFails.set(true);
+
+        assertThat(activate()).isTrue();
+        assertThat(confirmCalls).hasSize(2);
+        assertThat(catchUps).containsExactly("peer-a@6");
+    }
+
     /// #3071: a peer whose committed-lineage end is at or below the owner's head is not compared pairwise with the source, even
     /// when its raw watermark is above that head: the source may have evicted that lower range, and the peer is checked against
     /// the owner's own records instead.
@@ -717,12 +791,12 @@ class OwnerActivationTest {
         assertThat(alarms).isEmpty();
     }
 
-    /// TRIPWIRE (#3071 residual, current behaviour): B's refused tail starts at the offset A holds in the lineage and its bound is
-    /// NOT yet known. Before any pull, B (raw 5) is ranked first and its records at 3 differ from A's, so the pairwise source check
-    /// refuses with DivergentPeers: the bound is learned only from a page of B, and this rule (#1555) is not changed here. When a
-    /// bound becomes knowable before the pull, this test goes red: replace it with a completion at 3.
+    /// #3080: B's refused tail starts at the offset A holds in the lineage and its bound is NOT yet known. Before any pull, B (raw 5)
+    /// is ranked first and its records at 3 differ from A's. The pair is not refused on that: the bound is learned from B's page
+    /// first, B is then compared with A only up to it, and the activation completes at 3 (B's tail is pulled once, clipped to 2,
+    /// then A's record at 3).
     @Test
-    void activate_mixed_unknownRefusedTailDivergingFromAnotherPeer_refusesAsDivergentPeers() {
+    void activate_mixed_unknownRefusedTailDivergingFromAnotherPeer_learnsTheBoundBeforeTheCheck_andCompletes() {
         members.set(List.of(SELF, PEER_A, PEER_B));
         localWatermark.set(2L);
         peerWatermarks.put(PEER_A, 3L);
@@ -731,8 +805,135 @@ class OwnerActivationTest {
         divergent.add(PEER_B);
         divergentFrom.set(3L);
 
+        assertThat(activate()).isTrue();
+        assertThat(localWatermark).hasValue(3L);
+        assertThat(catchUps).containsExactly("peer-b@5", "peer-a@3");
+        assertThat(alarms).isEmpty();
+    }
+
+    /// #3080, the symmetric order: A holds the lineage to 5 and is ranked first; B (raw 4) holds a refused tail from 3 whose bound is
+    /// not known. A is compared with B at 3, where they differ: B's bound is learned from its page and the pair agrees below it.
+    @Test
+    void activate_mixed_lineagePeerRankedFirst_unknownRefusedTailOfTheOther_learnsTheBoundAndPullsTheLineage() {
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        localWatermark.set(2L);
+        peerWatermarks.put(PEER_A, 5L);
+        peerWatermarks.put(PEER_B, 4L);
+        refusedFrom.put(PEER_B, 3L);
+        divergent.add(PEER_B);
+        divergentFrom.set(3L);
+
+        assertThat(activate()).isTrue();
+        assertThat(localWatermark).hasValue(5L);
+        assertThat(catchUps).containsExactly("peer-a@5");
+        assertThat(alarms).isEmpty();
+    }
+
+    /// #3080: the bounds are learned at the first offset the pair differs, once per side, before the pair is refused.
+    @Test
+    void activate_mixed_divergingPair_learnsEachSidesBoundAtTheFirstDifference() {
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        localWatermark.set(2L);
+        peerWatermarks.put(PEER_A, 3L);
+        peerWatermarks.put(PEER_B, 5L);
+        refusedFrom.put(PEER_B, 3L);
+        divergent.add(PEER_B);
+        divergentFrom.set(3L);
+
+        activate();
+
+        assertThat(learnCalls).containsExactlyInAnyOrder("peer-a@3/3", "peer-b@5/3");
+    }
+
+    /// #3080: a pair that differs with no bound to explain it is still refused, after one lookup per side and no more.
+    @Test
+    void activate_mixed_genuineDivergenceWithNoBound_isStillRefusedAsDivergentPeers() {
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        localWatermark.set(2L);
+        peerWatermarks.put(PEER_A, 3L);
+        peerWatermarks.put(PEER_B, 5L);
+        divergent.add(PEER_B);
+        divergentFrom.set(3L);
+
         assertThat(activate()).isFalse();
         assertThat(catchUps).isEmpty();
+        assertThat(alarms).anyMatch(OwnerActivation.ActivationBlock.DivergentPeers.class::isInstance);
+        assertThat(learnCalls).hasSize(2);
+    }
+
+    /// #3080: a page that cannot be read teaches nothing; the pair is refused as it was before learning existed.
+    @Test
+    void activate_mixed_unreadableBoundPage_refusesAsDivergentPeers() {
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        localWatermark.set(2L);
+        peerWatermarks.put(PEER_A, 3L);
+        peerWatermarks.put(PEER_B, 5L);
+        refusedFrom.put(PEER_B, 3L);
+        divergent.add(PEER_B);
+        divergentFrom.set(3L);
+        learnFails.set(true);
+
+        assertThat(activate()).isFalse();
+        assertThat(catchUps).isEmpty();
+        assertThat(alarms).anyMatch(OwnerActivation.ActivationBlock.DivergentPeers.class::isInstance);
+    }
+
+    /// #3080 (F4): a bound learned ABOVE the first offset the pair differs is not an explanation. The genuine divergence is at 3
+    /// and B's refused tail starts at 4 (learned end 3): the pair still differs at 3, below the bound, so it is refused.
+    @Test
+    void activate_mixed_learnedBoundAboveTheFirstDifference_isRefusedAsDivergentPeers() {
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        localWatermark.set(2L);
+        peerWatermarks.put(PEER_A, 3L);
+        peerWatermarks.put(PEER_B, 5L);
+        refusedFrom.put(PEER_B, 4L);
+        divergent.add(PEER_B);
+        divergentFrom.set(3L);
+
+        assertThat(activate()).isFalse();
+        assertThat(learnedEnds).as("the bound was learned").containsEntry(PEER_B, 3L);
+        assertThat(catchUps).isEmpty();
+        assertThat(alarms).anyMatch(OwnerActivation.ActivationBlock.DivergentPeers.class::isInstance);
+    }
+
+    /// #3142 F3: with no confirm hook bound the gate ranks on the caps as learned, exactly as before; the default settles.
+    @Test
+    void activate_withNoConfirmHookBound_ranksOnTheCapsAsLearned() {
+        var unhooked = gate(PromotionTestRanges.NEVER_ALARM);
+
+        unhooked.peerLineageEnd((_, _, peer, watermark) -> Math.min(watermark, learnedEnds.getOrDefault(peer, Long.MAX_VALUE)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        localWatermark.set(2L);
+        peerWatermarks.put(PEER_A, 6L);
+        peerWatermarks.put(PEER_B, 8L);
+        learnedEnds.put(PEER_B, 4L);
+        staleCaps.add(PEER_B);
+
+        var outcome = unhooked.activate(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds());
+
+        assertThat(outcome.isSuccess()).isTrue();
+        assertThat(confirmCalls).as("the test hook is not the one bound").isEmpty();
+        assertThat(catchUps).containsExactly("peer-a@6");
+    }
+
+    /// #3080: with no learn hook bound, nothing is learned and the pair is refused exactly as before learning existed; the default
+    /// hook settles (it does not leave the gate waiting).
+    @Test
+    void activate_mixed_withNoLearnHookBound_refusesAsDivergentPeersAsBefore() {
+        var unhooked = gate(PromotionTestRanges.NEVER_ALARM);
+
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        localWatermark.set(2L);
+        peerWatermarks.put(PEER_A, 3L);
+        peerWatermarks.put(PEER_B, 5L);
+        refusedFrom.put(PEER_B, 3L);
+        divergent.add(PEER_B);
+        divergentFrom.set(3L);
+
+        var outcome = unhooked.activate(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds());
+
+        assertThat(outcome.isSuccess()).isFalse();
+        assertThat(learnCalls).as("the test hook is not the one bound").isEmpty();
         assertThat(alarms).anyMatch(OwnerActivation.ActivationBlock.DivergentPeers.class::isInstance);
     }
 

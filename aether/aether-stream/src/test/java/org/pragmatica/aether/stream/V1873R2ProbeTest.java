@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipV
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
 
@@ -62,7 +63,7 @@ class V1873R2ProbeTest {
     /// Control: a FOLDED history (cap reached) for a consumer between the dropped and the kept epochs is honestly not exact.
     @Test
     void control_foldedHistory_isInexactBelowTheNextExactStart_andProvenAbove() {
-        var starts = java.util.stream.IntStream.range(0, 17).mapToObj(i -> new EpochStart(Epoch.epoch(1L, 2L, 10L + i), 100L + i * 10L)).toList();
+        var starts = java.util.stream.IntStream.range(0, 17).mapToObj(i -> EpochStart.epochStart(Epoch.epoch(1L, 2L, 10L + i), 100L + i * 10L, Option.none())).toList();
         var record = new StreamPartitionOwnershipValue(SELF, starts.getLast().epoch(), 26L, HlcTimestamp.ZERO, List.of(SELF), 1L, false, List.of(), starts);
         var diverged = divergence(EpochValidation.admit("s", 0, record, Epoch.epoch(1L, 2L, 10L), 115L));
 

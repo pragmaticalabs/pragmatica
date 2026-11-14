@@ -1,0 +1,3 @@
+### Fixed (2026-11-13 — #2840: stream replica acked a newer-epoch batch over older-epoch lineage when its placement view lags)
+- **A replica whose committed view still said E2 acked, under E3, a batch stamped E3**, counting the E2-lineage records below it as E3's: the ack gate judges the copy for the view's epoch, not the batch's.
+- A batch newer than the committed record is still applied (the owner-handoff flow) but its ack is withheld and the compare is asked for; the owner's next batch is acked once the view catches up and the copy is verified for that epoch. `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/replication/ReplicaAckGateTest.java]`

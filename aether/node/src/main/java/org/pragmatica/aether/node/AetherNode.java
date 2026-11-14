@@ -3618,7 +3618,8 @@ public interface AetherNode extends ManageableNode {
                                                                                   streamReplicaSetController,
                                                                                   committedStreamOwnerSource,
                                                                                   linearizableBarrier,
-                                                                                  streamForwardHandler));
+                                                                                  streamForwardHandler,
+                                                                                  bootToken));
         var entityCheckpointDriver = EntityAssembly.entityRuntime(new EntityAssembly.EntityRuntimeInputs(config,
                                                                                                          kvStore,
                                                                                                          clusterNode,

@@ -199,6 +199,21 @@ public enum OperatorWarningCode {
     /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
     /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
     SCHEMA_HOLD_CLEARED("schema-hold-cleared", "deployment", WarningLevel.INFO, SCHEMA_HOLD, true),
+    /// A schema migration is stalled (#2773): its record has been PENDING or MIGRATING for longer than any live attempt or scheduled
+    /// retry explains, and no live migration lock backs it (a failed lock Put leaves exactly this). Nothing re-dispatches it by itself in
+    /// this term. Subject is the datasource. The message names the recorded status, the slices it holds and the operator lever: the retry
+    /// route only for a status it accepts (PENDING); for MIGRATING the next leader's rebuild resets it to PENDING. Closed by
+    /// [#SCHEMA_MIGRATION_PROGRESSED].
+    SCHEMA_MIGRATION_STALLED("schema-migration-stalled", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#SCHEMA_MIGRATION_STALLED], same subject (#2773): the record left PENDING/MIGRATING-without-a-lock (a live lock, a
+    /// terminal status, or a fresh write by a retry), or the datasource's record was removed. Closes across nodes (#2834): the cluster
+    /// FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises it only for a subject in the inherited open
+    /// set and publishes it without holding that warning's open mark.
+    SCHEMA_MIGRATION_PROGRESSED("schema-migration-progressed",
+                                "deployment",
+                                WarningLevel.INFO,
+                                SCHEMA_MIGRATION_STALLED,
+                                true),
     /// D.6 row 17: a datasource's schema status does not decode (#964). Subject is the datasource. Closed by [#SCHEMA_STATUS_READABLE].
     SCHEMA_STATUS_UNKNOWN("schema-status-unknown", "deployment", WarningLevel.WARNING),
     /// D.6 row 18: a goal went unanswered in time; the node is excluded for the artifact. Closed by [#SLICE_UNRESPONSIVE_EXPIRED].
@@ -1194,6 +1209,13 @@ public enum OperatorWarningCode {
                                   WarningLevel.INFO,
                                   STREAM_DATA_ABANDONED,
                                   true),
+    /// R-4.1.7 (#970): an FSM2 blueprint apply (LEGACY ignores the deadline) did not resolve (every declared slice ACTIVE) within `[timeouts.deployment] apply_deadline` (less the time its schema
+    /// gate paused the clock; slice progress never resets the clock; leader churn shorter than the deadline can postpone it, see #3120) and was closed by the deadline: ROLLED_BACK under ALL_OR_NOTHING, FAILED under BEST_EFFORT, cause
+    /// `apply-deadline-exceeded`. Subject is the blueprint. Closed by [#APPLY_DEADLINE_CLEARED]. Operator action: republish or delete the blueprint.
+    APPLY_DEADLINE_EXCEEDED("apply-deadline-exceeded", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#APPLY_DEADLINE_EXCEEDED], same subject: the blueprint's outcome was replaced (a republish) or removed.
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`).
+    APPLY_DEADLINE_CLEARED("apply-deadline-cleared", "deployment", WarningLevel.INFO, APPLY_DEADLINE_EXCEEDED, true),
     /// The recovery of [#DHT_DEPARTURE_SOLE_COPY_AT_RISK], same subject (#2034): every sole-copy key was acknowledged by a target in its
     /// post-departure responsible set before the node halted. INFO, published by the draining node itself, only after its published
     /// at-risk event (#752 mechanism).

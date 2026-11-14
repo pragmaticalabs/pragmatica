@@ -696,8 +696,8 @@ class ClusterCursorStoreTest {
 
     /// TW-O11 of the worker-replica-feed design (W-OBS): the target design excludes the cursor checkpoints from a worker's replica,
     /// so a worker's committed-state mirror NEVER shows its own checkpoint. `WorkerMirrorLag` above models a mirror that is one decision
-    /// behind; this models one that holds the assignment and will never hold the cursor. Today the verdict compares the committed cursor
-    /// read back from that mirror, so a forwarded commit the core admitted is `LocalOnly` forever, however often it is retried.
+    /// behind; this models one that holds the assignment and will never hold the cursor. The verdict used to compare the committed cursor
+    /// read back from that mirror, so a forwarded commit the core admitted was `LocalOnly` forever (#2596).
     @Nested
     class WorkerMirrorWithoutCursors {
         private KVStore<AetherKey, AetherValue> core;
@@ -740,19 +740,15 @@ class ClusterCursorStoreTest {
         }
 
         @Test
-        void commit_onAWorkerWhoseMirrorNeverHoldsTheCursor_isLocalOnlyForever_today() {
+        void commit_onAWorkerWhoseMirrorNeverHoldsTheCursor_isPersisted() {
             var worker = worker();
 
             var first = worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
             var retry = worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
 
             assertThat(coreCheckpoint()).describedAs("control: the authoritative applier ADMITTED the checkpoint").isEqualTo(Option.some(10L));
-            assertThat(first.map(outcome -> outcome instanceof CommitOutcome.LocalOnly))
-                    .describedAs("TW-O11: the verdict reads the mirror, which has no cursor, so an admitted commit is LocalOnly; got %s", first)
-                    .isEqualTo(Result.success(true));
-            assertThat(retry.map(outcome -> outcome instanceof CommitOutcome.LocalOnly))
-                    .describedAs("and the retry cannot change it: this mirror never catches up")
-                    .isEqualTo(Result.success(true));
+            assertThat(List.of(first, retry)).describedAs("#2596 (TW-O11): the mirror has no cursor, yet an admitted commit is Persisted")
+                                             .isEqualTo(List.of(Result.success(CommitOutcome.persisted()), Result.success(CommitOutcome.persisted())));
         }
 
         /// Control for the test above: the identical fixture with a mirror that does receive the cursor is `Persisted`, so the
@@ -773,12 +769,11 @@ class ClusterCursorStoreTest {
             assertThat(holding.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await()).isEqualTo(Result.success(CommitOutcome.persisted()));
         }
 
-        @Disabled("W6 (cursor reads on forwarding nodes): enable when a forwarding node's verdict comes from its own forwarded batch results ([Put, Get, Get]) instead of a mirror; the fixture's command writer then returns those results")
         @Test
-        void commit_onAForwardingNode_isPersistedFromTheBatchResult_withNoMirror() {
+        void commit_onAForwardingNode_isPersistedWithNoCursorMirror() {
             var outcome = worker().commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
 
-            assertThat(outcome).describedAs("the core admitted the checkpoint and the forwarded batch's ordered results prove it, so the commit is Persisted without any mirror; got %s", outcome)
+            assertThat(outcome).describedAs("the core admitted the checkpoint and the assignment record still names this node, so the commit is Persisted without any cursor mirror; got %s", outcome)
                                .isEqualTo(Result.success(CommitOutcome.persisted()));
         }
     }
@@ -835,42 +830,90 @@ class ClusterCursorStoreTest {
             return kinds;
         }
 
-        private static boolean mirrorLagging(Result<CommitOutcome> outcome) {
-            return outcome.map(o -> o instanceof CommitOutcome.LocalOnly local && local.cause()
-                                                                                       .message()
-                                                                                       .contains("not yet visible in this node's committed state"))
-                          .or(false);
-        }
-
-        @Test
-        void commit_forwardingWorker_cursorKeyFilteredFromReplica_reportsLocalOnly() {
-            var worker = worker();
-
-            var first = worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
-            var retry = worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
-
-            assertThat(coreCheckpoint()).describedAs("control: the core's applier ADMITTED the forwarded checkpoint").isEqualTo(Option.some(10L));
-            assertThat(workerReplicaRead(CHECKPOINT_KEY)).describedAs("#2596: the worker's replica read of the cursor key is empty while the core holds it")
-                                                         .isEqualTo(Option.none());
-            assertThat(mirrorLagging(first) && mirrorLagging(retry))
-                    .describedAs("#2596 fixed? If #2590 P2 has landed, enable `commit_forwardingWorker_landedOnCore_reportsPersisted` and delete this tripwire; got %s then %s",
-                                 first,
-                                 retry)
-                    .isTrue();
-        }
-
-        @Disabled("#2590 P2: enable when a worker's checkpoint verdict no longer reads a replica that excludes the cursor key, ported onto the P2 cursor store if ClusterCursorStore and the legacy key are gone; delete the _reportsLocalOnly tripwire then")
         @Test
         void commit_forwardingWorker_landedOnCore_reportsPersisted() {
             var outcome = worker().commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
 
+            assertThat(workerReplicaRead(CHECKPOINT_KEY)).describedAs("control: the worker's replica read of the cursor key is empty").isEqualTo(Option.none());
             assertThat(coreCheckpoint()).isEqualTo(Option.some(10L));
-            assertThat(outcome).describedAs("the core holds this worker's checkpoint, so the commit is Persisted; got %s", outcome)
+            assertThat(outcome).describedAs("#2596: the core holds this worker's checkpoint, so the commit is Persisted; got %s", outcome)
                                .isEqualTo(Result.success(CommitOutcome.persisted()));
         }
 
-        /// #2596: every attempt of a forwarding worker costs two consensus commands, the `Put` and the `Noop` barrier, and since the
-        /// verdict above never reaches `Persisted`, every periodic checkpoint is retried with that same pair.
+        /// #2596: a worker whose assignment moved to a peer is still Fenced, not Persisted, even though its replica cannot show the cursor.
+        @Test
+        void commit_forwardingWorker_assignmentMovedToPeer_reportsFenced() {
+            core.process(core.createBatch(List.of(assignment(PEER, NEXT_EPOCH))));
+            var fencedWorker = ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
+                                                                     SELF,
+                                                                     this::workerReplicaRead,
+                                                                     assignmentsIn(core),
+                                                                     this::forwardToCore,
+                                                                     () -> true);
+
+            var outcome = fencedWorker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+
+            assertThat(outcome).describedAs("#2596: a deposed worker must not read Persisted; got %s", outcome)
+                               .matches(r -> r.map(o -> o instanceof CommitOutcome.Fenced).or(false));
+        }
+
+        /// #2596: the blind path is for a forwarding node only. A node that does not forward reads the authoritative state, so an
+        /// empty read of the cursor while the assignment still names it is a write that has not landed: LocalOnly, never Persisted.
+        @Test
+        void commit_nonForwardingNode_cursorNotYetReadable_staysLocalOnly() {
+            var local = ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
+                                                              SELF,
+                                                              this::workerReplicaRead,
+                                                              assignedToSelf(),
+                                                              _ -> Promise.unitPromise(),
+                                                              () -> false);
+
+            var outcome = local.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+
+            assertThat(outcome).describedAs("#2596: nothing was applied and the node does not forward, so it is not Persisted; got %s", outcome)
+                               .matches(r -> r.map(o -> o instanceof CommitOutcome.LocalOnly).or(false));
+        }
+
+        /// #2596 guess: the assignment mirror a blind worker consults lags the core by one decision. The core already moved the
+        /// assignment to a peer and refused the Put, yet the worker reports Persisted. The consequence is a redelivery, never a skip:
+        /// the core holds no checkpoint, so the successor resumes before the offset, and once the mirror catches up the same commit is Fenced.
+        @Test
+        void commit_forwardingWorker_laggingAssignmentMirror_persistedForRefusedWriteIsARedeliveryNotASkip() {
+            var mirror = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+            mirror.process(mirror.createBatch(List.of(assignment(SELF, EPOCH))));
+            core.process(core.createBatch(List.of(assignment(PEER, NEXT_EPOCH))));
+            var laggingWorker = ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
+                                                                      SELF,
+                                                                      this::workerReplicaRead,
+                                                                      assignmentsIn(mirror),
+                                                                      this::forwardToCore,
+                                                                      () -> true);
+
+            var lagging = laggingWorker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+            var successor = ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
+                                                                  PEER,
+                                                                  key -> core.getTyped(key, StreamCursorCheckpointValue.class),
+                                                                  assignmentsIn(core),
+                                                                  this::forwardToCore,
+                                                                  () -> false);
+
+            assertThat(lagging).describedAs("the lagging mirror still names this node, so the refused write reads Persisted (the guess)")
+                               .isEqualTo(Result.success(CommitOutcome.persisted()));
+            assertThat(coreCheckpoint()).describedAs("control: the applier REFUSED the write, nothing is checkpointed").isEqualTo(Option.none());
+            assertThat(successor.fetchCursor(GROUP, STREAM, PARTITION, NEXT_EPOCH).await())
+                    .describedAs("the successor resumes from no cursor, so offset 10 is re-read, not skipped")
+                    .isEqualTo(Result.success(Option.none()));
+
+            mirror.process(mirror.createBatch(List.of(assignment(PEER, NEXT_EPOCH))));
+
+            assertThat(laggingWorker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await()
+                                    .map(outcome -> outcome instanceof CommitOutcome.Fenced))
+                    .describedAs("once the mirror catches up the same commit is Fenced")
+                    .isEqualTo(Result.success(true));
+        }
+
+        /// #2596: every attempt of a forwarding worker costs two consensus commands, the `Put` and the `Noop` barrier, and a
+        /// worker's checkpoint now settles as `Persisted` on the first attempt, so the pair is no longer repeated per retry.
         @Test
         void commit_forwardingWorker_eachAttemptSendsPutAndNoop() {
             var worker = worker();
@@ -880,7 +923,7 @@ class ClusterCursorStoreTest {
             worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
             var retry = attemptKinds();
 
-            assertThat(List.of(first, retry)).describedAs("#2596 changed? #2590 P2 drops the verdict re-read and the Noop barrier: when it lands, delete this characterisation; commands per attempt")
+            assertThat(List.of(first, retry)).describedAs("commands per attempt (#2590 P2 drops the Noop barrier: when it lands, delete this characterisation)")
                                              .isEqualTo(List.of(List.of("Put", "Noop"), List.of("Put", "Noop")));
         }
     }

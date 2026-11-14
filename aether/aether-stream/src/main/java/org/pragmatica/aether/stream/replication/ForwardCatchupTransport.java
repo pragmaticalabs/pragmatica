@@ -123,6 +123,39 @@ public final class ForwardCatchupTransport implements CatchupTransport {
         return page(target, request, request.fromOffset(), new ArrayList<>(), onPage);
     }
 
+    /// One page at `request.fromOffset()`, no loop (#3080): the gate's lineage learn needs the page start, not the source's suffix.
+    /// The answer is not episode accounting: a page answered as a consumer read fails the read without feeding
+    /// `STREAM_CATCHUP_SOURCE_NOT_ANSWERING`, which describes catch-up traffic only.
+    @Override
+    public Promise<CatchupResponse> requestPage(NodeId target, ReplicationMessage.CatchupRequest request) {
+        return forwardClient.readRemoteCatchup(target,
+                                               request.streamName(),
+                                               request.partition(),
+                                               request.fromOffset(),
+                                               batchSize)
+                            .flatMap(result -> singlePage(target, request, result));
+    }
+
+    private Promise<CatchupResponse> singlePage(NodeId target,
+                                                ReplicationMessage.CatchupRequest request,
+                                                ReadForwardResult result) {
+        var events = result.events();
+
+        if (!events.isEmpty() && events.getFirst().offset() != request.fromOffset()) {
+            return CatchupError.NON_CONTIGUOUS_PAGE.promise();
+        }
+
+        if (events.isEmpty() && result.truncated()) {
+            return new OwnerPeerReads.EventExceedsReadCap(request.fromOffset()).promise();
+        }
+
+        if (!events.isEmpty() && !result.historyVouched()) {
+            return CatchupError.SOURCE_NOT_YET_REPLICA_ANSWER.promise();
+        }
+
+        return Promise.success(toResponse(target, request, events, result.history()));
+    }
+
     private Promise<CatchupResponse> page(NodeId target,
                                           ReplicationMessage.CatchupRequest request,
                                           long cursor,

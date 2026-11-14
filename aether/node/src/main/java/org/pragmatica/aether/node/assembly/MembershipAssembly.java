@@ -220,13 +220,16 @@ public sealed interface MembershipAssembly {
     }
 
     /// #2936: the membership FSM reads every peer's SWIM quorum-loss report; a core also publishes its own report on
-    /// its SWIM self-ALIVE (a worker never writes to the quorum, so it publishes nothing).
+    /// its SWIM self-ALIVE (a worker never writes to the quorum, so it publishes nothing). #3119: the FSM also reads this
+    /// node's own report, on a worker too: its detector's count derives from the same FSM, so a quorumless observer of
+    /// either kind holding quorumless peers out would wait on itself.
     @Contract
     static void wireQuorumReports(boolean worker,
                                   MembershipFsm membershipFsm,
                                   QuorumLossDetector quorumLossDetector,
                                   CoreSwimHealthDetector swimHealthDetector) {
         membershipFsm.setQuorumLossReport(swimHealthDetector::reportsQuorumLoss);
+        membershipFsm.setSelfQuorumLoss(quorumLossDetector::reportsQuorumLoss);
         if (!worker) {
             quorumLossDetector.setQuorumReportListener(swimHealthDetector::reportSelfQuorum);
         }

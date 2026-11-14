@@ -122,9 +122,6 @@ public interface SchemaHistoryRepository {
 }
 
 final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
-    private static final String CREATE_META_SQL = "CREATE TABLE IF NOT EXISTS " + SchemaHistoryEvolution.META_TABLE
-                                                + " (schema_version INTEGER NOT NULL)";
-
     private static final String QUERY_META_SQL = "SELECT schema_version FROM " + SchemaHistoryEvolution.META_TABLE;
 
     private static final String INSERT_META_SQL = "INSERT INTO " + SchemaHistoryEvolution.META_TABLE
@@ -134,10 +131,6 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
                                                 + " SET schema_version = ?";
 
     private static final RowMapper<Integer> SCHEMA_VERSION_MAPPER = row -> row.getInt("schema_version");
-
-    private static final String CREATE_OWNER_SQL = "CREATE TABLE IF NOT EXISTS " + SchemaHistoryEvolution.OWNER_TABLE
-                                                 + " (blueprint_base VARCHAR(256) NOT NULL)";
-
     private static final String QUERY_OWNER_SQL = "SELECT blueprint_base FROM " + SchemaHistoryEvolution.OWNER_TABLE;
 
     private static final String INSERT_OWNER_SQL = "INSERT INTO " + SchemaHistoryEvolution.OWNER_TABLE
@@ -194,7 +187,7 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
     /// at the latest version runs no evolution DDL — the flow is idempotent.
     @Override
     public Promise<Unit> bootstrap(SqlConnector connector) {
-        return connector.update(CREATE_META_SQL)
+        return connector.update(SchemaHistoryEvolution.createMetaTableSql(connector.databaseType()))
                         .flatMap(_ -> readSchemaVersion(connector))
                         .flatMap(version -> evolveFrom(connector, version));
     }
@@ -249,7 +242,7 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
     /// history read or write, so a refusal leaves the database exactly as it was found.
     @Override
     public Promise<Unit> claimOwnership(SqlConnector connector, String datasourceName, String owner) {
-        return connector.update(CREATE_OWNER_SQL)
+        return connector.update(SchemaHistoryEvolution.createOwnerTableSql(connector.databaseType()))
                         .flatMap(_ -> readOwnerBase(connector))
                         .flatMap(stored -> resolveClaim(connector, datasourceName, owner, stored));
     }

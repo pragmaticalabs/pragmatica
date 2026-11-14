@@ -208,10 +208,12 @@ public final class ClusterFsm {
     }
 
     /// One input against a copy of the model, then the end-of-step bookkeeping: a flush is queued if the handlers left
-    /// intents (R-5.7.4).
+    /// intents (R-5.7.4). The family warnings the handlers raised are held until their WARNINGS row commits (#3085, `Warnings.noteRaised`).
     private ClusterModel apply(ClusterModel model, ClusterInput input, Ctx ctx) {
+        var from = ctx.effectCount();
         var next = Outbox.requestFlush(Warnings.noteRaised(Handlers.handle(model.copy(), ctx, input),
-                                                           ctx),
+                                                           ctx,
+                                                           from),
                                        ctx);
 
         return reportScans(next, ctx, next.scans.count());

@@ -14,6 +14,7 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -33,7 +34,17 @@ import org.pragmatica.lang.Option;
 ///   or expired one marks the set dirty again, so the next flush drafts the difference anew. A failed one is re-drafted by the next
 ///   reconcile pass, which marks the set dirty level-triggered (never at once: a write that fails fast would loop).
 /// - Fence: the transaction is a `LeaderTransaction` and `FsmWarningValue` is `LeaderAuthorized`, so a deposed leader's write is refused.
-///   Residual: a warning a leader published in a drain that it was deposed in before its write committed is not inherited.
+/// - Publish after commit (#3085): a family warning or recovery a step raises is held (`warningsHeld`) and reaches the operator-warning sink
+///   only once the WARNINGS write reflecting it is accepted, or the committed mirror already equals the family sets. A warning `Rebuild`
+///   raises after `inherit` is held the same way (`Lifecycle.rebuild`). A leader deposed or crashed before that write commits never
+///   publishes the warning: it is dropped with the model, never published without a committed row. The cost: an event-only warning raised
+///   in that window is lost (the successor raises it only if the event recurs). A third outcome: the write commits, but the leader processes
+///   `Deactivate` (or a reincarnation drops the settlement as stale) before the settlement, since the two arrive in no fixed order. The row
+///   is then committed and open, the warning was never published, and the successor inherits it without raising it, so the operator sees no
+///   opener and may later see its recovery alone. The successor does not re-publish inherited rows: the event aggregator dedups a warning only
+///   per node and within a 60 s window, so that would repeat the opener of every published row at each leader change. The recoveries
+///   `inherit` raises at `Rebuild` are not held: they close committed rows, and a successor deposed before their removal commits leaves the
+///   row to the next one, which closes it again (a repeated recovery, never an open warning).
 /// - Inherit (`Rebuild`): the family sets are seeded from the committed rows, so a successor never raises an inherited open again (each
 ///   family's raise site checks its set), and an inherited warning whose subject left the model between the leaders is closed with
 ///   [Recoveries#SUBJECT_GONE]. The families' level-triggered checks close what ended otherwise.
@@ -41,6 +52,7 @@ public sealed interface Warnings {
     String INVALID_PLACEMENT = "invalid-placement";
     String RETRY_EXHAUSTED = "retry-exhausted-unsettled";
     String SCHEMA_UNKNOWN = "schema-status-unknown";
+    String SCHEMA_STALLED = "schema-migration-stalled";
     String STRAY = "stray-instance";
     String SCHEMA_HOLD = "schema-hold";
     String JOIN_UNMATCHED = "join-unmatched";
@@ -49,11 +61,13 @@ public sealed interface Warnings {
     String UNJUDGEABLE = "worker-absence-unjudgeable";
     String SUPPRESSED = "departure-inferred-suppressed";
     String GROWTH_BLOCKED = Directory.GROWTH_BLOCKED;
+    String APPLY_DEADLINE = Deadlines.EXCEEDED;
 
-    /// The eleven leader-local families: each opener code with its recovery code.
+    /// The twelve leader-local families: each opener code with its recovery code.
     Map<String, String> FAMILIES = Map.ofEntries(Map.entry(INVALID_PLACEMENT, Recoveries.PLACEMENT_VALID),
                                                  Map.entry(RETRY_EXHAUSTED, Recoveries.RETRY_EXHAUSTED_SETTLED),
                                                  Map.entry(SCHEMA_UNKNOWN, Recoveries.SCHEMA_STATUS_READABLE),
+                                                 Map.entry(SCHEMA_STALLED, Recoveries.SCHEMA_MIGRATION_PROGRESSED),
                                                  Map.entry(STRAY, Recoveries.STRAY_INSTANCE_REMOVED),
                                                  Map.entry(SCHEMA_HOLD, Recoveries.SCHEMA_HOLD_CLEARED),
                                                  Map.entry(JOIN_UNMATCHED, Recoveries.JOIN_MATCHED),
@@ -61,7 +75,8 @@ public sealed interface Warnings {
                                                  Map.entry(UNPLACED, Directory.ASSIGNMENT_PLACED),
                                                  Map.entry(UNJUDGEABLE, Recoveries.WORKER_ABSENCE_JUDGEABLE),
                                                  Map.entry(SUPPRESSED, Recoveries.DEPARTURE_BREAKER_CLEARED),
-                                                 Map.entry(GROWTH_BLOCKED, Directory.GROWTH_RESUMED));
+                                                 Map.entry(GROWTH_BLOCKED, Directory.GROWTH_RESUMED),
+                                                 Map.entry(APPLY_DEADLINE, Recoveries.APPLY_DEADLINE_CLEARED));
 
     /// Every code that opens or closes a warning of a family.
     Set<String> CODES = Stream.concat(FAMILIES.keySet().stream(),
@@ -86,14 +101,39 @@ public sealed interface Warnings {
     // -- the write -------------------------------------------------------------------------------------------------
     /// The end of a step: a step that raised a warning or a recovery of a family marks the open set dirty. A dirty set whose difference is
     /// empty is clean again, so a step that changed nothing queues no flush.
-    static ClusterModel noteRaised(ClusterModel m, Ctx ctx) {
-        if (ctx.effects().stream().anyMatch(Warnings::isFamilyWarn)) {
+    ///
+    /// #3085, publish after commit: the family warnings the step's handlers raised (`from` on) leave the step and join `warningsHeld`; what
+    /// committed is published now (`publish`). A warning reaches the operator-warning sink only once the open-set row reflecting it is
+    /// committed, so a leader deposed (or crashed) before its WARNINGS write commits has published nothing the successor does not inherit.
+    static ClusterModel noteRaised(ClusterModel m, Ctx ctx, int from) {
+        var raised = ctx.withdraw(from, Warnings::isFamilyWarn);
+
+        if (!raised.isEmpty()) {
             m.warningsDirty = true;
+            m.warningsHeld = Stream.concat(m.warningsHeld.stream(), raised.stream()).toList();
         }
 
         if (m.warningsDirty && !inFlight(m) && difference(m).isEmpty()) {
             m.warningsDirty = false;
         }
+
+        return publish(m, ctx);
+    }
+
+    /// The held warnings that committed, in raise order: every one when nothing is in flight and the committed mirror equals the family
+    /// sets (a write landed, or the step's changes cancelled out), else the prefix the accepted WARNINGS transaction carried.
+    private static ClusterModel publish(ClusterModel m, Ctx ctx) {
+        if (m.warningsHeld.isEmpty()) {
+            return m;
+        }
+
+        var count = !inFlight(m) && difference(m).isEmpty()
+                    ? m.warningsHeld.size()
+                    : m.warningsLanded;
+
+        m.warningsHeld.subList(0, count).forEach(ctx::emit);
+        m.warningsHeld = List.copyOf(m.warningsHeld.subList(count, m.warningsHeld.size()));
+        m.warningsLanded = 0;
 
         return m;
     }
@@ -115,10 +155,17 @@ public sealed interface Warnings {
 
         return mutations.isEmpty()
                ? m
-               : Outbox.direct(m,
-                               TxDraft.draft(SubmitKind.WARNINGS,
-                                             mutations.getFirst().key(),
-                                             mutations));
+               : covering(Outbox.direct(m,
+                                        TxDraft.draft(SubmitKind.WARNINGS,
+                                                      mutations.getFirst().key(),
+                                                      mutations)));
+    }
+
+    /// #3085: the drafted transaction carries every warning held so far (the difference is taken from the family sets they changed).
+    private static ClusterModel covering(ClusterModel m) {
+        m.warningsCovered = m.warningsHeld.size();
+
+        return m;
     }
 
     /// A flush while suspended submits nothing: the open set is clean until the resume's reconcile marks it dirty again (`reconcile`).
@@ -135,15 +182,23 @@ public sealed interface Warnings {
         return m;
     }
 
-    /// An accepted WARNINGS transaction: the mirror takes its mutations now, before the applier's notifications arrive.
+    /// An accepted WARNINGS transaction: the mirror takes its mutations now, before the applier's notifications arrive, and the warnings it
+    /// carried are published at the end of the step (#3085).
     static ClusterModel accepted(ClusterModel m, TxDraft draft) {
         return draft.kind() == SubmitKind.WARNINGS
                ? draft.mutations()
                       .stream()
-                      .reduce(m,
+                      .reduce(committed(m),
                               Warnings::landed,
                               (left, right) -> right)
                : m;
+    }
+
+    private static ClusterModel committed(ClusterModel m) {
+        m.warningsLanded = m.warningsCovered;
+        m.warningsCovered = 0;
+
+        return m;
     }
 
     /// A refused or expired WARNINGS transaction: the next flush drafts the difference again, from the mirror the refusal corrected.
@@ -215,6 +270,8 @@ public sealed interface Warnings {
                                 m.retryExhaustedWarned.toList().stream().map(Artifact::asString)),
                          single(SCHEMA_UNKNOWN,
                                 m.schemaUnknownWarned.toList().stream()),
+                         single(SCHEMA_STALLED,
+                                m.schemaStalledWarned.toList().stream()),
                          single(JOIN_UNMATCHED,
                                 m.unmatchedWarned.toList().stream().map(NodeId::id)),
                          single(NO_POLICY,
@@ -227,6 +284,8 @@ public sealed interface Warnings {
                                 m.suppressedWarned.toList().stream()),
                          single(GROWTH_BLOCKED,
                                 m.growthBlocked.toList().stream()),
+                         single(APPLY_DEADLINE,
+                                m.applyDeadlineWarned.keys().stream().map(BlueprintId::asString)),
                          strays(m),
                          holds(m))
                      .flatMap(entries -> entries)
@@ -290,6 +349,7 @@ public sealed interface Warnings {
             case INVALID_PLACEMENT -> artifactOf(key).map(artifact -> adoptPlacement(m, ctx, artifact)).or(m);
             case RETRY_EXHAUSTED -> artifactOf(key).map(artifact -> adoptRetry(m, ctx, artifact)).or(m);
             case SCHEMA_UNKNOWN -> adoptSchema(m, ctx, key.subject());
+            case SCHEMA_STALLED -> adoptStalled(m, ctx, key.subject());
             case STRAY -> artifactOf(key).map(artifact -> adoptStray(m, ctx, artifact, value)).or(m);
             case SCHEMA_HOLD -> artifactOf(key).map(artifact -> adoptHold(m, ctx, artifact, value)).or(m);
             case JOIN_UNMATCHED -> nodeOf(key).map(node -> adoptUnmatched(m, ctx, node)).or(m);
@@ -298,6 +358,9 @@ public sealed interface Warnings {
             case UNJUDGEABLE -> adoptUnjudgeable(m, key.subject());
             case SUPPRESSED -> adoptSuppressed(m, ctx, key.subject());
             case GROWTH_BLOCKED -> adoptGrowthBlocked(m, key.subject());
+            case APPLY_DEADLINE -> BlueprintId.blueprintId(key.subject()).option().map(id -> adoptApplyDeadline(m,
+                                                                                                                ctx,
+                                                                                                                id)).or(m);
             default -> m;
         };
     }
@@ -349,6 +412,18 @@ public sealed interface Warnings {
         }
 
         m.schemaUnknownWarned = m.schemaUnknownWarned.add(datasource);
+
+        return m;
+    }
+
+    /// #2773: the datasource's record was removed between the leaders (gone); else it stays open, and the successor's stall sweep closes it
+    /// once the condition ended. Not raised again (the raise site checks the set).
+    private static ClusterModel adoptStalled(ClusterModel m, Ctx ctx, String datasource) {
+        if (m.schemas.get(datasource).isEmpty()) {
+            return gone(m, ctx, SCHEMA_STALLED, datasource, "its schema record was removed between leaders");
+        }
+
+        m.schemaStalledWarned = m.schemaStalledWarned.add(datasource);
 
         return m;
     }
@@ -482,6 +557,27 @@ public sealed interface Warnings {
     /// R-CF.17: a source label never leaves the model; it closes on the next admission for the source.
     private static ClusterModel adoptGrowthBlocked(ClusterModel m, String source) {
         m.growthBlocked = m.growthBlocked.add(source);
+
+        return m;
+    }
+
+    /// R-4.1.7: the blueprint's outcome is still a deadline terminal, else the episode ended between the leaders (a republish, a removal, a
+    /// terminal that was in flight when the leader changed) and is closed; a successor's own deadline then raises a new warning.
+    private static ClusterModel adoptApplyDeadline(ClusterModel m, Ctx ctx, BlueprintId id) {
+        return m.outcomes.get(id)
+                         .filter(outcome -> Deadlines.EXCEEDED.equals(outcome.cause()))
+                         .map(outcome -> openApplyDeadline(m,
+                                                           id,
+                                                           outcome.attemptId()))
+                         .or(() -> gone(m,
+                                        ctx,
+                                        APPLY_DEADLINE,
+                                        id.asString(),
+                                        "its deadline terminal was replaced or removed between leaders"));
+    }
+
+    private static ClusterModel openApplyDeadline(ClusterModel m, BlueprintId id, String attempt) {
+        m.applyDeadlineWarned = m.applyDeadlineWarned.put(id, attempt);
 
         return m;
     }

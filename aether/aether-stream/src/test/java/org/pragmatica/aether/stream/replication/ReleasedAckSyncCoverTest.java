@@ -48,6 +48,7 @@ import static org.pragmatica.aether.stream.replication.ReplicationReceiveHandler
 class ReleasedAckSyncCoverTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
+    private static final long BOOT_TOKEN = 7L;
     private static final Epoch E1 = Epoch.epoch(1L, 1L, 1L);
     private static final Epoch E2 = Epoch.epoch(1L, 1L, 2L);
     private static final long E2_START = 3L;
@@ -75,7 +76,7 @@ class ReleasedAckSyncCoverTest {
         replica.createStream(StreamConfig.streamConfig(STREAM));
         replica.ownerEpochSource((_, _) -> committed.get());
         replica.placementRoleSupplier((_, _) -> Role.REPLICA);
-        replica.epochStarts((_, _) -> List.of(new EpochStart(E2, E2_START)));
+        replica.epochStarts((_, _) -> List.of(EpochStart.epochStart(E2, E2_START, Option.none())));
         handler = replicationReceiveHandler(self,
                                             replica::appendRecovered,
                                             replica::nextExpectedOffset,
@@ -83,7 +84,8 @@ class ReleasedAckSyncCoverTest {
                                             (_, _) -> {},
                                             replica::syncReplicated,
                                             (_, _) -> Option.some(new CommittedStreamOwnerSource.CommittedOwner(owner, committed.get())),
-                                            OperatorWarningSink.handingOffTo(_ -> {}));
+                                            OperatorWarningSink.handingOffTo(_ -> {}),
+                                            () -> BOOT_TOKEN);
         // The production wiring (StreamAssembly).
         handler.ackGate(replica::replicaVerified);
         replica.onEpochVerified(handler::releaseDeferredAck);

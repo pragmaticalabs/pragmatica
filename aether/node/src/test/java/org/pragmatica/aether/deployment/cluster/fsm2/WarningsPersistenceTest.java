@@ -171,7 +171,7 @@ class WarningsPersistenceTest {
         var m = new ClusterModel();
 
         m.warningsDirty = true;
-        Warnings.noteRaised(m, SurvivorPinSupport.ctx(1_000L, 0L));
+        Warnings.noteRaised(m, SurvivorPinSupport.ctx(1_000L, 0L), 0);
 
         assertThat(Warnings.pending(m)).isFalse();
     }

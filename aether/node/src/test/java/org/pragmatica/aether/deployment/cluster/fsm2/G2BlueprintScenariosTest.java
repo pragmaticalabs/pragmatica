@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.List;
 import java.util.Set;
 
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
@@ -232,5 +233,8 @@ class G2BlueprintScenariosTest {
         h.activate();
         h.advanceBySeconds(TICK_SECONDS * 5);
         assertThat(committedBlueprint(h).map(AppBlueprintValue::blueprint)).isEqualTo(Option.some(FIRST.blueprint()));
+        assertThat(h.store.get(new DeploymentOutcomeKey(blueprintId(APP)))
+                    .map(v -> ((DeploymentOutcomeValue) v).failingSlices())).as("the derived rollback names the marked slice (MARKED_CAUSE path)")
+                   .isEqualTo(Option.some(List.of(ORDERS_V2.asString())));
     }
 }

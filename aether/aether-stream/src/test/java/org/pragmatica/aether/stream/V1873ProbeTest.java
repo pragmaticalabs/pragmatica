@@ -139,7 +139,7 @@ class V1873ProbeTest {
     /// asserts resumeAt 250: a skip of 150 offsets, written down as the specification.
     @Test
     void cap_authorsOwnFixture_keptStartBelowTheCursor_mustNotBeSkipped() {
-        var kept = java.util.stream.IntStream.range(0, 16).mapToObj(i -> new EpochStart(Epoch.epoch(1L, 1L, 10L + i), 100L + i * 10L)).toList();
+        var kept = java.util.stream.IntStream.range(0, 16).mapToObj(i -> EpochStart.epochStart(Epoch.epoch(1L, 1L, 10L + i), 100L + i * 10L, Option.none())).toList();
         var answer = EpochValidation.admit(STREAM, PARTITION, kept.getLast().epoch(), kept, Epoch.epoch(1L, 1L, 1L), 250L);
 
         answer.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(StreamError.EpochDiverged.class,
@@ -154,7 +154,7 @@ class V1873ProbeTest {
     /// admitted. Any divergence here raises `stream-consumer-rewound` (WARN) for a loss that never happened.
     @Test
     void cap_noLoss_consumerBelowEveryStart_isAdmitted_notDiverged() {
-        var kept = java.util.stream.IntStream.range(0, 16).mapToObj(i -> new EpochStart(Epoch.epoch(1L, 1L, 10L + i), 100L + i * 10L)).toList();
+        var kept = java.util.stream.IntStream.range(0, 16).mapToObj(i -> EpochStart.epochStart(Epoch.epoch(1L, 1L, 10L + i), 100L + i * 10L, Option.none())).toList();
         var answer = EpochValidation.admit(STREAM, PARTITION, kept.getLast().epoch(), kept, Epoch.epoch(1L, 1L, 1L), 90L);
 
         assertThat(answer.isSuccess()).as("nothing re-assigned at or below 99; got %s", answer).isTrue();
@@ -163,7 +163,7 @@ class V1873ProbeTest {
     /// Control for the above: the same consumer against 15 starts (under the cap) is admitted.
     @Test
     void control_underTheCap_consumerBelowEveryStart_isAdmitted() {
-        var kept = java.util.stream.IntStream.range(0, 15).mapToObj(i -> new EpochStart(Epoch.epoch(1L, 1L, 10L + i), 100L + i * 10L)).toList();
+        var kept = java.util.stream.IntStream.range(0, 15).mapToObj(i -> EpochStart.epochStart(Epoch.epoch(1L, 1L, 10L + i), 100L + i * 10L, Option.none())).toList();
         var answer = EpochValidation.admit(STREAM, PARTITION, kept.getLast().epoch(), kept, Epoch.epoch(1L, 1L, 1L), 90L);
 
         assertThat(answer.isSuccess()).as("got %s", answer).isTrue();
@@ -222,6 +222,7 @@ class V1873ProbeTest {
         record.set(Option.some(recordAt(E1).withEpochStart(500L)));
         activation = activation();
         manager.ownerServeGate(activation::admit);
+        manager.ownerLease(OwnerLease.TEST_VALID);
         manager.ownershipRecords((_, _) -> record.get());
 
         var first = manager.readServing(STREAM, PARTITION, 400L, 10, E1);
@@ -243,6 +244,7 @@ class V1873ProbeTest {
         record.set(Option.some(recordAt(E1)));
         activation = activation();
         manager.ownerServeGate(activation::admit);
+        manager.ownerLease(OwnerLease.TEST_VALID);
         manager.ownershipRecords((_, _) -> record.get());
         assertThat(activation.activate(STREAM, PARTITION).await().isSuccess()).as("premise: first activation").isTrue();
         assertThat(commits).as("premise: the first owner recorded its start").containsExactly("start@0");

@@ -187,6 +187,7 @@ class CommunityGrowthLedgerTest {
         var w = eastWithACommunity();
 
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.warningsCommit = true;
         w.h.deliver(join(w, W1, 21L));
         for (var refusal = 1; refusal < Directory.MAX_ASSIGNMENT_ATTEMPTS; refusal++) {
             refuseTheAssignment(w, 3 + refusal);
@@ -290,6 +291,7 @@ class CommunityGrowthLedgerTest {
         var w = eastWithACommunity();
 
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.warningsCommit = true;
         w.h.deliver(join(w, W1, 21L));
         for (var refusal = 1; refusal < Directory.MAX_ASSIGNMENT_ATTEMPTS; refusal++) {
             refuseTheAssignment(w, 3 + refusal);
@@ -354,6 +356,7 @@ class CommunityGrowthLedgerTest {
         var w = eastWithACommunity();
 
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.warningsCommit = true;
         w.h.deliver(join(w, W1, 21L));
         for (var refusal = 0; refusal < Directory.MAX_ASSIGNMENT_ATTEMPTS; refusal++) {
             refuseUnmoved(w);

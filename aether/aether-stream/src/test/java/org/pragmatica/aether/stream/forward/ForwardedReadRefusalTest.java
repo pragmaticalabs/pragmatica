@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.stream.OwnerLease;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource.CommittedOwner;
 import org.pragmatica.aether.stream.EvictionListener;
@@ -251,7 +252,7 @@ class ForwardedReadRefusalTest {
         }
         owner.syncReplicated(STREAM, PARTITION).await();
         owner.placementRoleSupplier((_, _) -> Role.REPLICA);
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E2, 5L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E2, 5L, Option.none())));
         callerHoldsOnlyTheConfig(config(STREAM, 1));
         connect();
         var expected = new StreamError.ReplicaNotVerified(STREAM, PARTITION, 5L);
@@ -584,6 +585,7 @@ class ForwardedReadRefusalTest {
     /// The owner at epoch E2 whose epoch began at offset 3, over five records; a cursor of E1 past 3 is diverged.
     private void ownerCommittedAtEpochTwo() {
         publishedOnOwner(5);
+        owner.ownerLease(OwnerLease.TEST_VALID);
         owner.ownershipRecords((_, _) -> Option.some(new StreamPartitionOwnershipValue(OWNER_ID,
                                                                                        E2,
                                                                                        2L,
@@ -592,7 +594,7 @@ class ForwardedReadRefusalTest {
                                                                                        3L,
                                                                                        false,
                                                                                        List.of(),
-                                                                                       List.of(new EpochStart(E1, 0L), new EpochStart(E2, 3L)))));
+                                                                                       List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 3L, Option.none())))));
     }
 
     private void callerHoldsOnlyTheConfig(StreamConfig config) {

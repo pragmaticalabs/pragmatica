@@ -136,7 +136,10 @@ public final class QuorumLossDetector {
     /// write to the quorum NOW", which peers use to keep this node out of their forward set and to hold a refuted
     /// drain. Guarded by this object's monitor, like [#reported].
     private volatile Consumer<QuorumReport> reportListener = QuorumLossDetector::ignoreReport;
-    private QuorumReport reported = QuorumReport.HELD;
+    /// Written only under this object's monitor; volatile so [#reportsQuorumLoss] reads it without the monitor (#3119:
+    /// the membership FSM reads it inside its own dispatch, while this detector reads that FSM's member count under
+    /// its monitor, so a locking read here would invert the lock order).
+    private volatile QuorumReport reported = QuorumReport.HELD;
     /// #2936 ruling: this node is an observer BY ROLE (a #1790 demotion, or an observer applying decisions), not a
     /// voter. Its PASSIVE is no quorum loss, so the report says `OBSERVER` and never `LOST` until consensus is ACTIVE
     /// again (a re-promoted voter). Guarded by this object's monitor.
@@ -309,6 +312,13 @@ public final class QuorumLossDetector {
     public synchronized void setQuorumReportListener(Consumer<QuorumReport> newListener) {
         reportListener = newListener;
         newListener.accept(reported);
+    }
+
+    /// #3119 — whether this node's own current report is `LOST` (the value last published to [#reportListener]). Read
+    /// by this node's membership FSM: a quorumless observer cannot hold a quorumless peer out of re-admission, because
+    /// its own report clears only through that re-admission. Lock-free (see [#reported]).
+    public boolean reportsQuorumLoss() {
+        return reported == QuorumReport.LOST;
     }
 
     /// Inject the membership co-confirmation supplier (Fix C). Sampled at firing time (NOT at

@@ -111,6 +111,13 @@ jobs:
           python3 -B -m unittest discover -s tools -p test_ci_test_groups.py
           python3 -B tools/ci-test-groups.py check
 
+      # Testcontainers image inventory (#3124): tools/ci-test-images.txt names every image the tests start, and the test-group
+      # jobs pre-pull them with retry. A test that starts an unlisted image, or a listed image nothing starts, fails here.
+      - name: Testcontainers image inventory
+        run: |
+          python3 -B -m unittest discover -s tools -p test_check_ci_test_images.py
+          python3 -B tools/check-ci-test-images.py
+
       # Flaky-test quarantine (know 5544ec434b): every @Tag("quarantine") cites an issue on or above its line, and every
       # surefire/failsafe exclusion in the poms and in this workflow keeps the tag out of the required jobs. Offline by
       # design: this job is required, so it must not depend on GitHub's API. The quarantine job checks the issues are open.
@@ -197,6 +204,13 @@ jobs:
       - name: Install this group's upstream modules
         run: mvn install -B -DskipTests -pl "${{ steps.plan.outputs.modules }}" -am
         timeout-minutes: 15
+
+      # A pull from the mirror fails transiently and a failed pull ejects a green PR from the merge queue (#3124): pull this
+      # group's images first, 4 attempts at 10/20/40 s, failing the job here when one still fails. The list is checked
+      # against the test sources by the static-gates job.
+      - name: Pre-pull this group's Testcontainers images
+        run: tools/ci-prepull-images.sh "test-group-${{ matrix.group }}.txt"
+        timeout-minutes: 10
 
       # Ember's and Consensus's tests run in their shard jobs; postgres-async's integration tests are off by default and on here.
       # aether.requireDocker: a live-database test that finds no Docker daemon FAILS here instead of self-skipping (#2591, #3089).
@@ -325,6 +339,7 @@ jobs:
         run: >
           mvn verify -B -Pwith-e2e -pl aether/forge/forge-tests
           -Dfailsafe.excludedGroups=Heavy,quarantine
+          -Dfailsafe.forkedProcessTimeoutInSeconds=1800
         timeout-minutes: 30
 
       - name: Upload Forge test results

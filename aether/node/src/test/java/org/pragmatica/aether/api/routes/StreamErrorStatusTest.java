@@ -86,6 +86,9 @@ class StreamErrorStatusTest {
         all.put(new StreamError.ReplicaQuarantined("s", 0, 1, 2), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.NotOwnerAppend("s", 0, NODE), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.OwnerNotActivated("s", 0), HttpStatus.SERVICE_UNAVAILABLE);
+        all.put(new StreamError.OwnerLeaseLapsed("s", 0), HttpStatus.SERVICE_UNAVAILABLE);
+        all.put(new StreamError.OwnershipMovedBeforeAck("s", 0), HttpStatus.SERVICE_UNAVAILABLE);
+        all.put(new StreamError.OwnerLeaseLapsedBeforeAck("s", 0), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.NotCurrentOwner("s", 0, NODE, NODE), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.StaleEpochRead("s", 0, EPOCH, EPOCH), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.OwnerCatchupPending("s", 0), HttpStatus.SERVICE_UNAVAILABLE);
@@ -96,6 +99,7 @@ class StreamErrorStatusTest {
         all.put(new StreamError.RepairPreserveFailed("s", 0, "r"), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.DivergenceNotEstablished("s", 0, 3L), HttpStatus.INTERNAL_SERVER_ERROR);
         all.put(new StreamError.TruncateBelowRetained("s", 0, 1L, 5L), HttpStatus.INTERNAL_SERVER_ERROR);
+        all.put(new StreamError.TruncateBelowVisible("s", 0, 1L, 5L), HttpStatus.INTERNAL_SERVER_ERROR);
         all.put(new StreamError.PartitionFailStopped("s", 0, Causes.cause("c")), HttpStatus.SERVICE_UNAVAILABLE);
 
         return all;

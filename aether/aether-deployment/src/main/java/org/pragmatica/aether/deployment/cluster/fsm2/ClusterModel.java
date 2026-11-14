@@ -82,6 +82,10 @@ public final class ClusterModel {
     long orphanTargetScanTick = -1L;
     PMap<Artifact, AwaitedTarget> awaitedTargets = PMap.empty(scans);
     PMap<BlueprintId, Long> redriveAt = PMap.empty(scans);
+    /// R-4.1.7: the apply deadline clock of each open apply, this leader's monotonic readings.
+    PMap<BlueprintId, Deadlines.ApplyClock> applyClocks = PMap.empty(scans);
+    /// R-4.1.7: blueprints reported `apply-deadline-exceeded` whose episode is open, with the attempt it ended.
+    PMap<BlueprintId, String> applyDeadlineWarned = PMap.empty(scans);
     PMap<Artifact, PSet<Artifact>> dependencies = PMap.empty(scans);
     PMap<Artifact, PSet<Artifact>> dependents = PMap.empty(scans);
     PMap<String, SchemaVersionValue> schemas = PMap.empty(scans);
@@ -176,6 +180,10 @@ public final class ClusterModel {
     PSet<Artifact> retryExhaustedWarned = PSet.empty(scans);
     /// D.6 row 17: datasources reported `schema-status-unknown` whose episode is open.
     PSet<String> schemaUnknownWarned = PSet.empty(scans);
+    /// #2773: datasources reported `schema-migration-stalled` whose episode is open.
+    PSet<String> schemaStalledWarned = PSet.empty(scans);
+    /// #2773: when this leader last dispatched or reset the migration of a datasource (wall clock). Leader-local, not committed; empty at `Rebuild`.
+    PMap<String, Long> schemaDispatchedAt = PMap.empty(scans);
     /// D.6 row 20: condemned stray instances reported `stray-instance`, until their observed row disappears, as the nodes of each artifact
     /// (the warning's subject): `stray-instance-removed` is raised only when the last condemned instance of the artifact is gone.
     PMap<Artifact, PSet<NodeId>> strayWarned = PMap.empty(scans);
@@ -193,6 +201,13 @@ public final class ClusterModel {
     /// #2834: a step raised or closed a warning of a leader-local family, or a write of the open set did not land: the next flush compares
     /// the open sets with `warningRows` (`Warnings.draft`).
     boolean warningsDirty;
+    /// #3085: the family warnings raised (and recoveries closed) that wait for the WARNINGS row carrying them to commit, in raise order. A
+    /// deposition or a `Rebuild` discards the model, so a held warning whose row never committed is never published.
+    List<ClusterEffect.Warn> warningsHeld = List.of();
+    /// #3085: how many of `warningsHeld` the WARNINGS transaction in flight carries (the held count when it was drafted).
+    int warningsCovered;
+    /// #3085: how many of `warningsHeld` an accepted WARNINGS transaction committed: published at the end of the step (`Warnings.noteRaised`).
+    int warningsLanded;
     // -- the write side (5.7) --------------------------------------------------------------------------------------
     PMap<String, Submitted> submitted = PMap.empty(scans);
     List<TxDraft> outbox = List.of();
@@ -229,6 +244,8 @@ public final class ClusterModel {
         c.orphanTargetScanTick = orphanTargetScanTick;
         c.awaitedTargets = awaitedTargets.rebound(meter);
         c.redriveAt = redriveAt.rebound(meter);
+        c.applyClocks = applyClocks.rebound(meter);
+        c.applyDeadlineWarned = applyDeadlineWarned.rebound(meter);
         c.dependencies = dependencies.rebound(meter);
         c.dependents = dependents.rebound(meter);
         c.schemas = schemas.rebound(meter);
@@ -297,6 +314,8 @@ public final class ClusterModel {
         c.invalidPlacementWarned = invalidPlacementWarned.rebound(meter);
         c.retryExhaustedWarned = retryExhaustedWarned.rebound(meter);
         c.schemaUnknownWarned = schemaUnknownWarned.rebound(meter);
+        c.schemaStalledWarned = schemaStalledWarned.rebound(meter);
+        c.schemaDispatchedAt = schemaDispatchedAt.rebound(meter);
         c.strayWarned = strayWarned.rebound(meter);
         c.exclusionEndReasons = exclusionEndReasons.rebound(meter);
         c.assignmentRefusals = assignmentRefusals.rebound(meter);
@@ -304,6 +323,9 @@ public final class ClusterModel {
         c.withheldBlocked = withheldBlocked.rebound(meter);
         c.warningRows = warningRows.rebound(meter);
         c.warningsDirty = warningsDirty;
+        c.warningsHeld = warningsHeld;
+        c.warningsCovered = warningsCovered;
+        c.warningsLanded = warningsLanded;
         c.submitted = submitted.rebound(meter);
         c.outbox = outbox;
         c.parked = parked;

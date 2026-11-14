@@ -93,6 +93,8 @@ public final class ConfigValidator {
                                errors);
         storageMaintenanceErrors(config.timeouts().storageMaintenance(),
                                  errors);
+        applyDeadlineErrors(config.timeouts().deployment(),
+                            errors);
         streamingErrors(config.streaming(), errors);
         promotionEscapeErrors(config.streaming(),
                               config.timeouts().swim().suspectTimeout(),
@@ -171,6 +173,12 @@ public final class ConfigValidator {
                        + "re-places its slices, or both run at once").formatted(cluster.coreAbsence(),
                                                                                 cluster.communityAbsence()));
         }
+    }
+
+    /// #970 (R-4.1.7): a zero apply deadline would abandon every apply at once (or, read as unusable, never end one); it is reported rather than
+    /// floored. A negative duration never reaches here (the parser refuses it), so the schema pause cap, which may be zero, needs no check.
+    private static void applyDeadlineErrors(TimeoutsConfig.DeploymentTimeouts deployment, List<String> errors) {
+        positiveTimeSpanError(deployment.applyDeadline(), "timeouts.deployment.apply_deadline", errors);
     }
 
     /// #250 review: `StorageMaintenanceDriver` schedules `demote()`+`collectGarbage()` on this interval

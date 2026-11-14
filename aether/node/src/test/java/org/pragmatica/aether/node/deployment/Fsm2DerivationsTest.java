@@ -12,6 +12,7 @@ import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.StreamingConfig;
+import org.pragmatica.aether.config.TimeoutsConfig.DeploymentTimeouts;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
 import org.pragmatica.consensus.NodeId;
@@ -124,6 +125,29 @@ class Fsm2DerivationsTest {
 
     private static NodeInfo core(String id, int port) {
         return NodeInfo.nodeInfo(NodeId.nodeId(id).unwrap(), NodeAddress.nodeAddress("localhost", port).unwrap());
+    }
+
+    /// #970: the apply deadline and its schema-pause cap reach the FSM from `[timeouts.deployment]`. Red when: `Fsm2System.timing` leaves either at
+    /// `Timing.DEFAULT` (a configured 5 m deadline is then ignored), or swaps the two.
+    @Test
+    void theClusterFsmApplyDeadline_andPauseCap_areTheConfiguredDeploymentTimeouts() {
+        var defaults = DeploymentTimeouts.deploymentTimeouts();
+        var configured = new DeploymentTimeouts(defaults.loading(),
+                                                                                           defaults.activating(),
+                                                                                           defaults.deactivating(),
+                                                                                           defaults.unloading(),
+                                                                                           defaults.activationChain(),
+                                                                                           defaults.transitionRetryDelay(),
+                                                                                           TimeSpan.timeSpan(45).seconds(),
+                                                                                           defaults.maxLifecycleRetries(),
+                                                                                           TimeSpan.timeSpan(5).minutes(),
+                                                                                           TimeSpan.timeSpan(30).minutes());
+        var timing = Fsm2System.timing(configured);
+
+        assertThat(timing.applyDeadline()).isEqualTo(300_000L);
+        assertThat(timing.applySchemaPauseMax()).isEqualTo(1_800_000L);
+        assertThat(timing.tick()).as("the tick is the configured reconciliation interval (not Timing.DEFAULT's)").isEqualTo(45_000L);
+        assertThat(Fsm2System.timing(defaults).applyDeadline()).as("control: the defaults").isEqualTo(900_000L);
     }
 
     @Test

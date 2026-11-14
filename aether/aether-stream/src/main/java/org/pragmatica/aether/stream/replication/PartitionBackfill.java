@@ -882,6 +882,23 @@ public final class PartitionBackfill {
         return runBackfill(streamName, partition, true);
     }
 
+    /// One backfill round of a partition: quarantine and the non-owner path clear the all-stalled report; the owner path
+    /// runs the catch-up chain.
+    ///
+    /// ```tla Stalled:R_Start
+    /// \* A round of a redrive candidate (the stream exists and self is a registered replica). It first runs
+    /// \* reconcileStalled (here as one step; Rec_Read/Rec_Apply model its split reads), so an open report survives
+    /// \* only if Backed. Without the fix "level" (bcc2102db6, edge-triggered; v2967b F1/F2) a round left an open
+    /// \* report as it was.
+    /// R_Start == /\ rpc = "idle"
+    ///            /\ exists /\ replica
+    ///            /\ IF quar \/ ~owner
+    ///               THEN /\ reported' = FALSE
+    ///                    /\ UNCHANGED rpc
+    ///               ELSE /\ rpc' = "read"
+    ///                    /\ reported' = IF Fix("level") THEN reported /\ Backed ELSE reported
+    ///            /\ UNCHANGED <<live, cnt, ep, allStalled, forget, env, settled, early, rec, recNotHeld>>
+    /// ```
     private Promise<Long> runBackfill(String streamName, int partition, boolean mayRepair) {
         reconcileStalled();
         var replicas = registry.replicasFor(streamName, partition);
@@ -1489,7 +1506,7 @@ public final class PartitionBackfill {
                                                         quarantine.committedEpoch(streamName, partition)));
     }
 
-    /// The default [BackfillAckSink]: the ack goes straight out on the replication transport.
+    /// The default [BackfillAckSink]: the ack goes straight out on the replication transport, naming no replica process (#1697: production wires the receive handler's sink, whose acks name it).
     @Contract
     private void ackOnTransport(NodeId owner, String streamName, int partition, long watermark, Epoch ownerEpoch) {
         replicationTransport.send(owner, replicateAck(self, streamName, partition, watermark, ownerEpoch));
@@ -1746,6 +1763,13 @@ public final class PartitionBackfill {
     /// registration default). A FRESH HRW owner (empty ring, `localWatermark == -1`) therefore falls back to
     /// {@link #probeThenPromoteOwner}, which probes the blind survivors' REAL tails before it may self-promote.
     private Promise<Long> promoteOwner(String streamName, int partition, List<ReplicaDescriptor> replicas) {
+        return confirmCaps(streamName, partition, replicas).flatMap(_ -> promoteOwnerRanked(streamName,
+                                                                                            partition,
+                                                                                            replicas));
+    }
+
+    /// [#promoteOwner] once every learned cap on the registry rows was confirmed ([#confirmLineageEnd]).
+    private Promise<Long> promoteOwnerRanked(String streamName, int partition, List<ReplicaDescriptor> replicas) {
         var localWatermark = selfWatermark.localWatermark(streamName, partition);
         var ahead = aheadSurvivors(replicas, localWatermark);
 
@@ -1811,12 +1835,39 @@ public final class PartitionBackfill {
 
     private Result<Long> reportIfAllStalled(String streamName, int partition, Result<Long> result) {
         if (result.fold(SOURCE_STALLED::equals, _ -> false)) {
-            raiseStalled(streamName, partition);
+            raiseCountedStall(streamName, partition);
         }
 
         return result;
     }
 
+    /// The raise of a round that ended all-stalled (#3156): under [#oversizedOrder], the same monitor [#clearStalledOf] drops the counters
+    /// under, the raise needs the stream to exist and a source's counter to be at [#MAX_STALLED_ROUNDS] NOW. A round of a destroyed
+    /// incarnation that counted its last stalled round before the listener ran finds the counter gone, so it raises nothing in the recreated stream.
+    private Unit raiseCountedStall(String streamName, int partition) {
+        synchronized (oversizedOrder) {
+            return streamExists.test(streamName) && hasStalledSource(partitionKey(streamName, partition))
+                   ? raiseStalled(streamName, partition)
+                   : Unit.unit();
+        }
+    }
+
+    /// Raises the all-stalled warning once per episode, under [#oversizedOrder].
+    ///
+    /// ```tla Stalled:R_Report
+    /// \* reportIfAllStalled -> raiseCountedStall -> raiseStalled under the monitor: mayRaiseStalled = the flight is current (one
+    /// \* flight: always) and the stream still exists; with the fix "reset" the counter must still be at MAX (a round of a
+    /// \* destroyed incarnation finds it dropped). A raise during a reconcile pass lands after its snapshot (rec "dirty").
+    /// R_Report == /\ rpc = "report"
+    ///             /\ rpc' = "idle"
+    ///             /\ IF allStalled /\ (exists \/ ~Fix("level")) /\ (cnt >= MAX \/ ~Fix("reset"))
+    ///                THEN /\ reported' = TRUE
+    ///                     /\ early' = (early \/ (~reported /\ ep < MAX))
+    ///                     /\ settled' = FALSE
+    ///                     /\ rec' = IF rec = "apply" THEN "dirty" ELSE rec
+    ///                ELSE UNCHANGED <<reported, early, settled, rec>>
+    ///             /\ UNCHANGED <<live, cnt, ep, allStalled, forget, env, recNotHeld>>
+    /// ```
     Unit raiseStalled(String streamName, int partition) {
         var block = new OwnerActivation.ActivationBlock.CatchupStalled(streamName, partition, MAX_STALLED_ROUNDS);
         // `current` is read INSIDE the monitor, as in [#oversizedPeer]: a superseded flight must not raise after its successor's clear.
@@ -1847,14 +1898,37 @@ public final class PartitionBackfill {
         return Unit.unit();
     }
 
-    /// Level trigger of the all-stalled warning (#2960). The guarantee: after a call returns, no open report is for a partition that is not
-    /// all-stalled NOW and held by this node, whatever route took it out of that state. A report stays open only while the stream exists, this
+    /// Level trigger of the all-stalled warning (#2960). The guarantee, settled as of the next reconcile pass (#3155): a pass during which
+    /// nothing changed after its ownership and quarantine snapshot leaves no open report for a partition that is not all-stalled NOW and held by
+    /// this node, whatever route took it out of that state. A flip or a raise landing after the snapshot can leave a report open when the call
+    /// returns; the next pass (the next round, reconcile pass or redrive tick) closes it. A report stays open only while the stream exists, this
     /// node is still a registered replica of the partition and its owner, the partition is not quarantined, and some source's stall counter is
     /// at [#MAX_STALLED_ROUNDS]. Mechanism: every open report is re-derived from live state, so no exit has to be enumerated. Run on every
     /// backfill round, every reconcile pass of the replica set (ownership and membership changes) and every redrive tick; raising stays
     /// idempotent and dedup'd. A raise racing a replica-set removal can outlive the removal until the next of those, at most one redrive tick.
     /// The ownership and quarantine reads happen before the monitor, which stays a leaf: a flip between them and the monitor costs at worst a
     /// resolve that the next stalled round raises again, never a report left open.
+    ///
+    /// ```tla Stalled:Rec_Read
+    /// \* Outside the monitor: the ownership and quarantine reads of the reports open now (notHeld).
+    /// \* reconcileStalled exists only with the fix "level".
+    /// Rec_Read == /\ Fix("level")
+    ///             /\ rec = "idle"
+    ///             /\ rec' = "apply"
+    ///             /\ recNotHeld' = (reported /\ (quar \/ ~owner))
+    ///             /\ UNCHANGED <<live, cnt, ep, reported, rpc, allStalled, forget, env, settled, early>>
+    /// ```
+    ///
+    /// ```tla Stalled:Rec_Apply
+    /// \* Under the monitor: an open report that is notHeld, or not stalled now (stream, replica, counter), resolves. The pass
+    /// \* settles only if nothing changed after its snapshot (rec = "apply", not "dirty").
+    /// Rec_Apply == /\ rec \in {"apply", "dirty"}
+    ///              /\ rec' = "idle"
+    ///              /\ recNotHeld' = FALSE
+    ///              /\ reported' = (reported /\ ~recNotHeld /\ (Fix("recheck") => (exists /\ replica /\ cnt >= MAX)))
+    ///              /\ settled' = (rec = "apply")
+    ///              /\ UNCHANGED <<live, cnt, ep, rpc, allStalled, forget, env, early>>
+    /// ```
     public Unit reconcileStalled() {
         var notHeld = reportedStalled.keySet().stream().filter(this::isNotHeldAsOwner).collect(Collectors.toSet());
 
@@ -1897,7 +1971,18 @@ public final class PartitionBackfill {
     }
 
     /// The stream was destroyed (#2960): no partition of it can end its all-stalled state by a later round, so each open report is resolved.
-    /// Called from the stream-removed listener; a stream recreated under the same name starts with no report.
+    /// Called from the stream-removed listener; a stream recreated under the same name starts with no report and no stall round count (#3156),
+    /// so a raise in the new incarnation needs the full [#MAX_STALLED_ROUNDS] stalled rounds again.
+    ///
+    /// ```tla Stalled:ClearStalledOf
+    /// \* The stream-removed listener (StreamAssembly.forgetRemovedStream -> clearStalledOf) resolves the stream's reports and, with
+    /// \* the fix "reset", drops its stall counters (#3156).
+    /// ClearStalledOf == /\ forget
+    ///                   /\ forget' = FALSE
+    ///                   /\ reported' = FALSE
+    ///                   /\ cnt' = IF Fix("reset") THEN 0 ELSE cnt
+    ///                   /\ UNCHANGED <<live, ep, rpc, allStalled, env, settled, early, rec, recNotHeld>>
+    /// ```
     public Unit clearStalledOf(String streamName) {
         synchronized (oversizedOrder) {
             reportedStalled.keySet()
@@ -1907,11 +1992,36 @@ public final class PartitionBackfill {
                            .toList()
                            .forEach(key -> clearStalled(key.streamName(),
                                                         key.partition()));
+            stalledRounds.keySet().removeIf(key -> key.streamName()
+                                                      .equals(streamName));
         }
 
         return Unit.unit();
     }
 
+    /// One source answer of the owner catch-up chain: counts a short answer without progress per source.
+    ///
+    /// ```tla Stalled:R_Read
+    /// \* Progress (or an advanced watermark) resets the counter and clears; a short answer without progress counts, and
+    /// \* at MAX the chain ends SOURCE_STALLED; any other exit of the chain (blind-empty, oversized, escape, gate success)
+    /// \* clears without touching the counter.
+    /// R_Read == /\ rpc = "read"
+    ///           /\ \/ /\ cnt' = 0
+    ///                 /\ ep' = 0
+    ///                 /\ reported' = FALSE
+    ///                 /\ rpc' = "idle"
+    ///                 /\ UNCHANGED allStalled
+    ///              \/ /\ exists \/ ~Fix("reset")   \* a stream that no longer exists counts nothing (countStalledRound)
+    ///                 /\ cnt' = IF cnt < MAX THEN cnt + 1 ELSE MAX
+    ///                 /\ ep' = IF ep < MAX THEN ep + 1 ELSE MAX
+    ///                 /\ allStalled' = (cnt' >= MAX)
+    ///                 /\ rpc' = "report"
+    ///                 /\ UNCHANGED reported
+    ///              \/ /\ reported' = FALSE
+    ///                 /\ rpc' = "idle"
+    ///                 /\ UNCHANGED <<cnt, ep, allStalled>>
+    ///           /\ UNCHANGED <<live, forget, env, settled, early, rec, recNotHeld>>
+    /// ```
     private Result<Long> trackStall(String streamName,
                                     int partition,
                                     NodeId source,
@@ -1930,18 +2040,29 @@ public final class PartitionBackfill {
             return result;
         }
 
-        var rounds = stalledRounds.computeIfAbsent(key, _ -> new ConcurrentHashMap<>());
-
         if (selfWatermark.localWatermark(streamName, partition) > localWatermark) {
-            rounds.remove(source);
+            Option.option(stalledRounds.get(key)).onPresent(rounds -> rounds.remove(source));
             clearStalled(streamName, partition);
 
             return result;
         }
 
-        return rounds.merge(source, 1, Integer::sum) >= MAX_STALLED_ROUNDS
+        return countStalledRound(streamName, key, source) >= MAX_STALLED_ROUNDS
                ? stalled(streamName, partition, source)
                : result;
+    }
+
+    /// Counts one stalled round of a source and returns the source's count (#3156). The count belongs to one incarnation of the stream: under
+    /// [#oversizedOrder], the same monitor [#clearStalledOf] drops the counters under, a stream that no longer exists counts nothing, so a round
+    /// of a destroyed incarnation still in flight cannot put a counter back after the clear. Returns 0 for a stream that does not exist.
+    private int countStalledRound(String streamName, PartitionKey key, NodeId source) {
+        synchronized (oversizedOrder) {
+            return streamExists.test(streamName)
+                   ? stalledRounds.computeIfAbsent(key,
+                                                   _ -> new ConcurrentHashMap<>())
+                                  .merge(source, 1, Integer::sum)
+                   : 0;
+        }
     }
 
     private static Result<Long> stalled(String streamName, int partition, NodeId source) {
@@ -2015,11 +2136,102 @@ public final class PartitionBackfill {
     /// observed then.
     public long lineageEnd(String streamName, int partition, NodeId node, long tail) {
         return Option.option(committedLineageEnds.get(partitionKey(streamName, partition)))
-                     .flatMap(ends -> Option.option(ends.get(node)))
-                     .filter(lineage -> tail <= lineage.rawTail())
-                     .map(lineage -> Math.min(tail,
-                                              lineage.end()))
+                     .flatMap(ends -> Option.option(ends.get(node)).map(lineage -> capOrEvict(ends, node, lineage, tail)))
                      .or(tail);
+    }
+
+    /// #3081: the entry caps `node` only at the very tail it was learned for. A tail above the lineage end and different from it is
+    /// a replica that changed since (repaired by truncation and refilled, or grown by new data): the entry describes a history it
+    /// no longer has, so it is removed and the tail stands uncapped. A tail at or below the end is capped by nothing either way,
+    /// so it is left alone (an unknown tail, a lagging row); a lagging row (a registry `confirmedOffset` between the end and the raw
+    /// tail) is indistinguishable from a changed replica and evicts too. That errs on the side of uncapping, which costs a re-pull and
+    /// a clip, never an install. A repair that refills to exactly the remembered tail is indistinguishable HERE, because the offset
+    /// alone carries no epoch: the entry is advisory, and [#confirmLineageEnd] re-learns it before a cap is relied on.
+    private static long capOrEvict(ConcurrentHashMap<NodeId, Lineage> ends, NodeId node, Lineage lineage, long tail) {
+        if (tail == lineage.rawTail()) {
+            return Math.min(tail, lineage.end());
+        }
+
+        if (tail > lineage.end()) {
+            ends.remove(node, lineage);
+        }
+
+        return tail;
+    }
+
+    /// #3081 (the entry is advisory): before a cap is relied on, the page the entry was learned from is read again, ONE page from the
+    /// first re-assigned offset. The cap stays only if that page still ends the committed lineage where the entry says; otherwise (a
+    /// replica refilled to exactly the remembered tail, a page that cannot be read) the entry is removed and the tail stands uncapped.
+    /// Recovery: design-out. An unconfirmable cap is dropped, so the worst case is a re-pull and a clip, never an install. Nothing is
+    /// read when no entry caps `tail`.
+    public Promise<Unit> confirmLineageEnd(String streamName, int partition, NodeId node, long tail) {
+        return Option.option(committedLineageEnds.get(partitionKey(streamName, partition)))
+                     .flatMap(ends -> Option.option(ends.get(node))
+                                            .filter(lineage -> caps(lineage, tail))
+                                            .map(lineage -> relearn(ends, streamName, partition, node, lineage)))
+                     .or(Promise.success(Unit.unit()));
+    }
+
+    private static boolean caps(Lineage lineage, long tail) {
+        return tail == lineage.rawTail() && lineage.end() < tail;
+    }
+
+    private Promise<Unit> relearn(ConcurrentHashMap<NodeId, Lineage> ends,
+                                  String streamName,
+                                  int partition,
+                                  NodeId node,
+                                  Lineage lineage) {
+        return transport.requestPage(node,
+                                     catchupRequest(node,
+                                                    streamName,
+                                                    partition,
+                                                    lineage.end() + 1))
+                        .map(response -> lineageBound(response).map(bound -> Math.min(lineage.rawTail(),
+                                                                                      bound - 1))
+                                                     .filter(end -> end == lineage.end()))
+                        .recover(_ -> Option.<Long> none())
+                        .map(confirmed -> keepOrEvict(ends, node, lineage, confirmed));
+    }
+
+    private static Unit keepOrEvict(ConcurrentHashMap<NodeId, Lineage> ends,
+                                    NodeId node,
+                                    Lineage lineage,
+                                    Option<Long> confirmed) {
+        return confirmed.fold(() -> evict(ends, node, lineage), _ -> Unit.unit());
+    }
+
+    private static Unit evict(ConcurrentHashMap<NodeId, Lineage> ends, NodeId node, Lineage lineage) {
+        ends.remove(node, lineage);
+
+        return Unit.unit();
+    }
+
+    /// [#confirmLineageEnd] for every non-self replica at its registry `confirmedOffset`.
+    private Promise<Unit> confirmCaps(String streamName, int partition, List<ReplicaDescriptor> replicas) {
+        return Promise.allOf(replicas.stream()
+                                     .filter(descriptor -> !descriptor.nodeId()
+                                                                      .equals(self))
+                                     .map(descriptor -> confirmLineageEnd(streamName,
+                                                                          partition,
+                                                                          descriptor.nodeId(),
+                                                                          descriptor.confirmedOffset()))
+                                     .toList()).mapToUnit();
+    }
+
+    /// [#confirmLineageEnd] for every probed peer that answered, at its probed tail (index-aligned with `results`).
+    private Promise<Unit> confirmProbed(String streamName,
+                                        int partition,
+                                        List<NodeId> peers,
+                                        List<Result<Long>> results) {
+        return Promise.allOf(IntStream.range(0,
+                                             peers.size())
+                                      .mapToObj(i -> results.get(i)
+                                                            .<Promise<Unit>> fold(_ -> Promise.success(Unit.unit()),
+                                                                                  tail -> confirmLineageEnd(streamName,
+                                                                                                            partition,
+                                                                                                            peers.get(i),
+                                                                                                            tail)))
+                                      .toList()).mapToUnit();
     }
 
     private void rememberLineageEnd(String streamName, int partition, NodeId source, long rawTail, long end) {
@@ -2128,6 +2340,24 @@ public final class PartitionBackfill {
                                bound.map(b -> clippedBefore(response, b)).or(response));
     }
 
+    /// #3080: learn, WITHOUT installing anything, where `node`'s committed lineage ends, from the page it serves at `from`. The
+    /// activation gate calls it when two responders disagree, before it refuses: a deposed epoch's tail is told apart from a genuine
+    /// divergence by the same history and the same committed epoch starts a pull clips against ([#lineageBound]). `rawTail` is the
+    /// tail the end is learned for ([Lineage]). The read is ONE page ([CatchupTransport#requestPage]), never the source's whole
+    /// suffix: the bound lies at the page start, and a genuine divergence that stays refused is learned again on every gate pass. A
+    /// page that cannot be read teaches nothing and fails the promise; the caller decides what an unlearned bound means.
+    public Promise<Unit> learnLineageEnd(String streamName, int partition, NodeId node, long rawTail, long from) {
+        return transport.requestPage(node,
+                                     catchupRequest(node, streamName, partition, from))
+                        .map(response -> lineageBound(response).map(bound -> Math.min(rawTail, bound - 1))
+                                                     .onPresent(end -> rememberLineageEnd(streamName,
+                                                                                          partition,
+                                                                                          node,
+                                                                                          rawTail,
+                                                                                          end)))
+                        .mapToUnit();
+    }
+
     /// I-27 (#1759, CTO D1): the activating owner takes a source's records only up to the lowest offset a later committed epoch
     /// re-assigned ([AlignedRecovery#reassignedFrom]): a replica serving its WAL ships what it holds, a deposed epoch's tail
     /// included, vouched by its own history, and the receiver clips it. What is left out is never installed, and the end learned
@@ -2212,13 +2442,12 @@ public final class PartitionBackfill {
             return ownerSelfPromote(streamName, partition);
         }
 
-        return Promise.allOf(blind.stream().map(peer -> probe.probe(peer, streamName, partition)).toList()).flatMap(results -> decideOwnerCatchup(streamName,
-                                                                                                                                                  partition,
-                                                                                                                                                  settle(streamName,
-                                                                                                                                                         partition,
-                                                                                                                                                         blind,
-                                                                                                                                                         results),
-                                                                                                                                                  localWatermark));
+        return Promise.allOf(blind.stream().map(peer -> probe.probe(peer, streamName, partition)).toList())
+                      .flatMap(results -> confirmProbed(streamName, partition, blind, results).map(_ -> results))
+                      .flatMap(results -> decideOwnerCatchup(streamName,
+                                                             partition,
+                                                             settle(streamName, partition, blind, results),
+                                                             localWatermark));
     }
 
     /// The non-self survivors whose LOCAL watermark is unknown (registration default `-1`, i.e. blind under
