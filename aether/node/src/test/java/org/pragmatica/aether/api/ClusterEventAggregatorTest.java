@@ -2938,6 +2938,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
                 OperatorWarningCode.AUTO_HEAL_SCALING_RESUMED,
                 OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
+                OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED,
                 OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
                 OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
                 OperatorWarningCode.STREAM_CONSUMER_BACK_IN_RING,
@@ -3010,6 +3011,8 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER_RETURNED,
                 OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED,
                 OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED,
+                // the unpublish-bound recovery of #3174 (H3b)
+                OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_SETTLED,
                 // the datasource recoveries of #2973: demand back within the server limit, a refused server answering again
                 OperatorWarningCode.DATASOURCE_DEMAND_WITHIN_SERVER_LIMIT,
                 OperatorWarningCode.DATASOURCE_SERVER_ACCEPTING_CONNECTIONS,
@@ -3047,6 +3050,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.UPGRADE_PAUSED,
                 OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
                 OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE,
                 OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
                 OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
                 OperatorWarningCode.STREAM_CONSUMER_BEHIND_RING,
@@ -3112,6 +3116,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.KV_DISPATCH_LAGGING,
                 OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER,
                 OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK,
+                OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_EXPIRED,
                 OperatorWarningCode.DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT,
                 OperatorWarningCode.DATASOURCE_SERVER_REFUSED_CONNECTION,
                 // the 12 FSM2 openers the D.6 recoveries close (#2761)

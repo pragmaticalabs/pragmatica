@@ -16,6 +16,7 @@ g2 aether/pg-tools/pg-schema  # 3.9 s at run 41351583462
 g2 aether/pg-tools/sql-splitter  # 62.8 s at run 41351583462
 g2 aether/resource/db-r2dbc  # 6.4 s at run 41351583462
 g2 aether/resource/durable-entity  # 17.8 s at run 41351583462
+g2 aether/resource/durable-entity-pg  # new (#2100 E-B); Testcontainers Postgres, 18 tests
 g2 aether/resource/http  # 6.0 s at run 41351583462
 g2 aether/resource/interceptors  # 8.7 s at run 41351583462
 g2 aether/resource/notification  # 20.5 s at run 41351583462

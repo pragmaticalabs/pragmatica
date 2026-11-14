@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -35,18 +36,27 @@ import org.pragmatica.lang.Option;
 ///   reconcile pass, which marks the set dirty level-triggered (never at once: a write that fails fast would loop).
 /// - Fence: the transaction is a `LeaderTransaction` and `FsmWarningValue` is `LeaderAuthorized`, so a deposed leader's write is refused.
 /// - Publish after commit (#3085): a family warning or recovery a step raises is held (`warningsHeld`) and reaches the operator-warning sink
-///   only once the WARNINGS write reflecting it is accepted, or the committed mirror already equals the family sets. A warning `Rebuild`
-///   raises after `inherit` is held the same way (`Lifecycle.rebuild`). A leader deposed or crashed before that write commits never
-///   publishes the warning: it is dropped with the model, never published without a committed row. The cost: an event-only warning raised
-///   in that window is lost (the successor raises it only if the event recurs). A third outcome: the write commits, but the leader processes
-///   `Deactivate` (or a reincarnation drops the settlement as stale) before the settlement, since the two arrive in no fixed order. The row
-///   is then committed and open, the warning was never published, and the successor inherits it without raising it, so the operator sees no
-///   opener and may later see its recovery alone. The successor does not re-publish inherited rows: the event aggregator dedups a warning only
-///   per node and within a 60 s window, so that would repeat the opener of every published row at each leader change. The recoveries
-///   `inherit` raises at `Rebuild` are not held: they close committed rows, and a successor deposed before their removal commits leaves the
-///   row to the next one, which closes it again (a repeated recovery, never an open warning).
-/// - Inherit (`Rebuild`): the family sets are seeded from the committed rows, so a successor never raises an inherited open again (each
-///   family's raise site checks its set), and an inherited warning whose subject left the model between the leaders is closed with
+///   only once the WARNINGS write reflecting it is accepted, or the committed mirror already equals the family sets (no row to wait for).
+///   A warning `Rebuild` raises after `inherit` is held the same way (`Lifecycle.rebuild`). A leader deposed or crashed before that write
+///   commits never publishes the warning: it is dropped with the model, never published without a committed row. The cost: an event-only
+///   warning raised in that window is lost (the successor raises it only if the event recurs).
+/// - Published marker (#3160): the write that carries a held warning also commits it as unpublished in the warning's row
+///   (`FsmWarningValue.opener` / `recovery`, the latest message of each; a key the family closed stays as a tombstone row, `open` false).
+///   Once the accepted write's warnings are published, the set is dirty again and the next WARNINGS write clears the markers and removes
+///   the tombstones. So when the write commits but the leader processes `Deactivate` (or a reincarnation drops the settlement as stale)
+///   before the settlement, the successor's `inherit` publishes what the row names as unpublished, opener or recovery, instead of
+///   inheriting an opener nobody published or losing the recovery of a removed row (an opener open for ever). Only marked rows are
+///   re-published, never every inherited row (the event aggregator dedups a warning only per node and within 60 s). The cost: a leader
+///   lost after publishing and before its clearing write commits has its warnings published again by the successor (a duplicate opener or
+///   recovery, once per activation that inherits the marked row, since `inherit` replays at every `Rebuild` and only a leader writes the
+///   clear); and when one key changed several times while one write was in flight (stray openers of several nodes included), only the
+///   latest opener and recovery messages are replayed. Two further orderings are handled: a settlement that arrives once this node mirrors
+///   another leader publishes nothing (`publish`), and a marked row the deposed leader commits after this node's snapshot is replayed
+///   like an inherited one (`onPut`). The recoveries `inherit` raises at `Rebuild` are not held: they close committed rows, and
+///   a successor deposed before their removal commits leaves the row to the next one, which closes it again (a repeated recovery, never an
+///   open warning).
+/// - Inherit (`Rebuild`): the family sets are seeded from the committed open rows, so a successor never raises an inherited open again
+///   (each family's raise site checks its set), and an inherited warning whose subject left the model between the leaders is closed with
 ///   [Recoveries#SUBJECT_GONE]. The families' level-triggered checks close what ended otherwise.
 public sealed interface Warnings {
     String INVALID_PLACEMENT = "invalid-placement";
@@ -77,6 +87,11 @@ public sealed interface Warnings {
                                                  Map.entry(SUPPRESSED, Recoveries.DEPARTURE_BREAKER_CLEARED),
                                                  Map.entry(GROWTH_BLOCKED, Directory.GROWTH_RESUMED),
                                                  Map.entry(APPLY_DEADLINE, Recoveries.APPLY_DEADLINE_CLEARED));
+
+    /// #3160: each recovery code with its opener code (the code of the warning's key).
+    Map<String, String> OPENERS = FAMILIES.entrySet()
+                                          .stream()
+                                          .collect(Collectors.toUnmodifiableMap(Map.Entry::getValue, Map.Entry::getKey));
 
     /// Every code that opens or closes a warning of a family.
     Set<String> CODES = Stream.concat(FAMILIES.keySet().stream(),
@@ -122,29 +137,62 @@ public sealed interface Warnings {
             m.warningsHeld = Stream.concat(m.warningsHeld.stream(), raised.stream()).toList();
         }
 
+        return clean(publish(m, ctx));
+    }
+
+    private static ClusterModel clean(ClusterModel m) {
         if (m.warningsDirty && !inFlight(m) && difference(m).isEmpty()) {
             m.warningsDirty = false;
         }
 
-        return publish(m, ctx);
+        return m;
     }
 
-    /// The held warnings that committed, in raise order: every one when nothing is in flight and the committed mirror equals the family
-    /// sets (a write landed, or the step's changes cancelled out), else the prefix the accepted WARNINGS transaction carried.
+    /// The held warnings that committed, in raise order: every one when nothing is in flight and the committed open rows equal the family
+    /// sets (a write landed, or the step's changes cancelled out), else the prefix the accepted WARNINGS transaction carried. #3160: what
+    /// is published leaves the desired markers, so the set is dirty: the next flush clears the markers its write committed.
+    ///
+    /// #3160 (late settle): nothing is published while the committed leader this node mirrors names another node. A deposed leader whose
+    /// settlement arrives after the successor's `LeaderKey` committed leaves its held warnings to the successor, which replays them from the
+    /// markers the accepted write committed (`inherit`, `onPut`). A settlement processed before this node sees the new `LeaderKey` still
+    /// publishes, so the window is narrowed, not closed.
     private static ClusterModel publish(ClusterModel m, Ctx ctx) {
-        if (m.warningsHeld.isEmpty()) {
+        if (m.warningsHeld.isEmpty() || ledByAnother(m, ctx)) {
             return m;
         }
 
-        var count = !inFlight(m) && difference(m).isEmpty()
+        var count = !inFlight(m) && settled(m)
                     ? m.warningsHeld.size()
                     : m.warningsLanded;
 
         m.warningsHeld.subList(0, count).forEach(ctx::emit);
         m.warningsHeld = List.copyOf(m.warningsHeld.subList(count, m.warningsHeld.size()));
         m.warningsLanded = 0;
+        m.warningsDirty = m.warningsDirty || count > 0;
 
         return m;
+    }
+
+    private static boolean ledByAnother(ClusterModel m, Ctx ctx) {
+        return m.leader.map(value -> !value.leader()
+                                           .equals(ctx.self()))
+                       .or(false);
+    }
+
+    /// Whether the committed open rows, markers aside, are what the family sets describe: a held warning then has no row change to wait
+    /// for, and publishing it at once leaves no window.
+    private static boolean settled(ClusterModel m) {
+        return opened(m).equals(committedOpen(m));
+    }
+
+    private static Map<FsmWarningKey, FsmWarningValue> committedOpen(ClusterModel m) {
+        return m.warningRows.entries()
+                            .stream()
+                            .filter(entry -> entry.getValue()
+                                                  .open())
+                            .collect(Collectors.toMap(Map.Entry::getKey,
+                                                      entry -> FsmWarningValue.fsmWarningValue(entry.getValue()
+                                                                                                    .members())));
     }
 
     /// Whether the flush has a WARNINGS transaction to draft (`Outbox.hasIntents`).
@@ -271,8 +319,52 @@ public sealed interface Warnings {
                                         replacement);
     }
 
-    /// The open set the family sets describe.
+    /// The committed set the model describes: the open set of the family sets, each row marked with its unpublished held warnings, and a
+    /// tombstone for each key the families closed with a held warning still unpublished (#3160).
     static Map<FsmWarningKey, FsmWarningValue> desired(ClusterModel m) {
+        var open = opened(m);
+        var held = unpublished(m);
+
+        return Stream.concat(open.keySet().stream(),
+                             held.keySet().stream())
+                     .distinct()
+                     .collect(Collectors.toMap(key -> key,
+                                               key -> marked(Option.option(open.get(key)),
+                                                             key,
+                                                             held.getOrDefault(key,
+                                                                               List.of()))));
+    }
+
+    /// The held warnings by the key of their warning, in raise order.
+    private static Map<FsmWarningKey, List<ClusterEffect.Warn>> unpublished(ClusterModel m) {
+        return m.warningsHeld.stream()
+                             .collect(Collectors.groupingBy(Warnings::keyOf,
+                                                            LinkedHashMap::new,
+                                                            Collectors.toList()));
+    }
+
+    private static FsmWarningKey keyOf(ClusterEffect.Warn warn) {
+        return FsmWarningKey.fsmWarningKey(OPENERS.getOrDefault(warn.code(), warn.code()),
+                                           warn.subject());
+    }
+
+    private static FsmWarningValue marked(Option<FsmWarningValue> open,
+                                          FsmWarningKey key,
+                                          List<ClusterEffect.Warn> held) {
+        return FsmWarningValue.fsmWarningValue(open.map(FsmWarningValue::members).or(Map.of()),
+                                               open.isPresent(),
+                                               latest(held, key.code()),
+                                               latest(held,
+                                                      FAMILIES.getOrDefault(key.code(), key.code())));
+    }
+
+    private static Option<String> latest(List<ClusterEffect.Warn> held, String code) {
+        return Option.from(held.stream().filter(warn -> warn.code()
+                                                            .equals(code)).reduce((earlier, later) -> later)).map(ClusterEffect.Warn::message);
+    }
+
+    /// The open set the family sets describe.
+    private static Map<FsmWarningKey, FsmWarningValue> opened(ClusterModel m) {
         return Stream.of(single(INVALID_PLACEMENT,
                                 m.invalidPlacementWarned.toList().stream().map(Artifact::asString)),
                          single(RETRY_EXHAUSTED,
@@ -336,19 +428,67 @@ public sealed interface Warnings {
     }
 
     // -- the inheritance (Rebuild) ---------------------------------------------------------------------------------
-    /// After the snapshot is indexed: every committed open warning is adopted into its family set, or closed with the reason subject-gone
-    /// when its subject left the model between the leaders. A row this leader cannot read (an unknown code, a subject that does not parse)
-    /// joins no set, so the next flush removes it. The set is dirty afterwards: the closes are written by the first flush.
+    /// After the snapshot is indexed: every committed row first publishes what its writer committed but did not publish (#3160), then a
+    /// committed open warning is adopted into its family set, or closed with the reason subject-gone when its subject left the model between
+    /// the leaders. A tombstone and a row this leader cannot read (an unknown code, a subject that does not parse) join no set, so the next
+    /// flush removes them. The set is dirty afterwards: the closes, and the cleared markers, are written by the first flush.
     static ClusterModel inherit(ClusterModel m, Ctx ctx) {
         m.warningRows.entries()
                      .stream()
                      .sorted(Comparator.comparing(entry -> entry.getKey()
                                                                 .asString()))
-                     .forEach(entry -> adopt(m,
-                                             ctx,
-                                             entry.getKey(),
-                                             entry.getValue()));
+                     .forEach(entry -> inheritRow(replay(m,
+                                                         ctx,
+                                                         entry.getKey(),
+                                                         entry.getValue()),
+                                                  ctx,
+                                                  entry.getKey(),
+                                                  entry.getValue()));
         m.warningsDirty = true;
+
+        return m;
+    }
+
+    /// #3160 (a row committed after `Rebuild`): a row put that differs from the mirror while this node is suspended with no WARNINGS write
+    /// of its own in flight was written by the deposed leader after this node's snapshot (its leader fence held until this node's
+    /// `LeaderKey` committed). The row is treated as `inherit` treats a snapshot row: its markers are replayed and an open row is adopted.
+    /// The replayed warnings are raised inside the step, so they are held (`noteRaised`): with this row committed they are settled, and
+    /// they reach the sink at the resume (never while another node leads, `publish`); a node deposed before resuming leaves them to the
+    /// next successor, which replays the same committed row. A tombstone over a key this node adopted open is not un-adopted: its recovery
+    /// is published, and the family's own check closes the key in this node's set (a repeated recovery).
+    static ClusterModel onPut(ClusterModel m, Ctx ctx, FsmWarningKey key, FsmWarningValue value) {
+        var late = Lifecycle.isSuspended(m, ctx) && !inFlight(m) && !m.warningRows.get(key).equals(Option.some(value));
+
+        indexRow(m, key, value);
+
+        return late
+               ? inheritRow(replay(m, ctx, key, value), ctx, key, value)
+               : m;
+    }
+
+    private static ClusterModel inheritRow(ClusterModel m, Ctx ctx, FsmWarningKey key, FsmWarningValue value) {
+        return value.open()
+               ? adopt(m, ctx, key, value)
+               : m;
+    }
+
+    /// #3160: publishes the row's unpublished warnings at once (they are committed), in the order that ends in the row's state: an open
+    /// row's recovery before its opener, a tombstone's opener before its recovery. A row of an unknown family is not replayed.
+    private static ClusterModel replay(ClusterModel m, Ctx ctx, FsmWarningKey key, FsmWarningValue value) {
+        if (!FAMILIES.containsKey(key.code())) {
+            return m;
+        }
+
+        var opener = Map.entry(key.code(), value.opener());
+        var recovery = Map.entry(FAMILIES.get(key.code()),
+                                 value.recovery());
+
+        (value.open()
+         ? Stream.of(recovery, opener)
+         : Stream.of(opener, recovery)).forEach(marker -> marker.getValue()
+                                                                .onPresent(message -> ctx.warn(marker.getKey(),
+                                                                                               key.subject(),
+                                                                                               message)));
 
         return m;
     }

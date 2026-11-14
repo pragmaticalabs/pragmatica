@@ -57,6 +57,9 @@ final class ScheduledCluster {
     volatile boolean splitHealth;
     /// A test that SUBMITS identical commands twice expects them applied twice (#2011).
     volatile boolean allowIdenticalCommands;
+    private final int initialVoters;
+    private final org.pragmatica.lang.io.TimeSpan syncRetryInterval;
+    private final org.pragmatica.lang.io.TimeSpan decisionGapTimeout;
 
     ScheduledCluster(int size, int seed) { this(size, seed, size); }
 
@@ -73,56 +76,76 @@ final class ScheduledCluster {
     ScheduledCluster(int size, int seed, int initialVoters, org.pragmatica.lang.io.TimeSpan syncRetryInterval,
                      org.pragmatica.lang.io.TimeSpan decisionGapTimeout) {
         random = new Random(seed);
+        this.initialVoters = initialVoters;
+        this.syncRetryInterval = syncRetryInterval;
+        this.decisionGapTimeout = decisionGapTimeout;
         members = IntStream.range(0, size).mapToObj(index -> nodeId("voter-" + index).unwrap()).toList();
         for (int index = 0; index < size; index++) {
-            var sender = index;
-            var machine = new SnapshotMachine();
-            var topology = new TestTopologyManager(members.get(index), size) {
-                @Override
-                public java.util.Set<NodeId> coreNodes() { return java.util.Set.copyOf(members); }
-                @Override
-                public boolean isConsensusMember(NodeId id) { return members.contains(id); }
-                @Override
-                public List<NodeId> topology() {
-                    return members.stream().filter(id -> !splitHealth || members.indexOf(id) % 2 == sender % 2).toList();
-                }
-                @Override
-                public int clusterSize() { return topology().size(); }
-            };
-            var network = new TestClusterNetwork() {
-                @Override public java.util.Set<NodeId> connectedPeers() { return java.util.Set.copyOf(members); }
-                @Override
-                public <M extends ProtocolMessage> Unit broadcast(M message) {
-                    for (int target = 0; target < members.size(); target++) {
-                        if (target != sender) {
-                            emit(new Delivery(sender, target, message));
-                        }
-                    }
-                    return Unit.unit();
-                }
-
-                @Override
-                public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId id, M message) {
-                    emit(new Delivery(sender, members.indexOf(id), message));
-                    return Promise.success(new WriteOutcome.Sent(id));
-                }
-
-                @Override
-                public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
-                    return send(nodeId, message);
-                }
-            };
-            machines.add(machine);
-            var consensusEvents = new java.util.concurrent.CopyOnWriteArrayList<ConsensusEvent>();
-            events.add(consensusEvents);
-            var config = ProtocolConfig.consensusConfig(timeSpan(60).seconds(), syncRetryInterval)
-                                       .withDecisionGapTimeout(decisionGapTimeout);
-            var engine = new RabiaEngine<>(topology, network, machine, config, ConsensusMetrics.noop(), false,
-                                          RabiaPersistence.inMemory(), RabiaEngine.DEFAULT_PHASE_STALL_CHECK, consensusEvents::add);
-            assertThat(engine.initializeVoters(new VoterConfiguration(0, new ClusterConfig(members.subList(0, initialVoters)))).isSuccess()).isTrue();
-            if (index >= initialVoters) { engine.authorizeObservation(); }
-            engines.add(engine);
+            machines.add(null);
+            events.add(null);
+            engines.add(null);
+            install(index);
         }
+    }
+
+    /// Builds replica `index` with no durable state (in-memory persistence) and puts it in that slot.
+    private void install(int index) {
+        var sender = index;
+        var machine = new SnapshotMachine();
+        var topology = new TestTopologyManager(members.get(index), members.size()) {
+            @Override
+            public java.util.Set<NodeId> coreNodes() { return java.util.Set.copyOf(members); }
+            @Override
+            public boolean isConsensusMember(NodeId id) { return members.contains(id); }
+            @Override
+            public List<NodeId> topology() {
+                return members.stream().filter(id -> !splitHealth || members.indexOf(id) % 2 == sender % 2).toList();
+            }
+            @Override
+            public int clusterSize() { return topology().size(); }
+        };
+        var network = new TestClusterNetwork() {
+            @Override public java.util.Set<NodeId> connectedPeers() { return java.util.Set.copyOf(members); }
+            @Override
+            public <M extends ProtocolMessage> Unit broadcast(M message) {
+                for (int target = 0; target < members.size(); target++) {
+                    if (target != sender) {
+                        emit(new Delivery(sender, target, message));
+                    }
+                }
+                return Unit.unit();
+            }
+
+            @Override
+            public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId id, M message) {
+                emit(new Delivery(sender, members.indexOf(id), message));
+                return Promise.success(new WriteOutcome.Sent(id));
+            }
+
+            @Override
+            public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+                return send(nodeId, message);
+            }
+        };
+        machines.set(index, machine);
+        var consensusEvents = new java.util.concurrent.CopyOnWriteArrayList<ConsensusEvent>();
+        events.set(index, consensusEvents);
+        var config = ProtocolConfig.consensusConfig(timeSpan(60).seconds(), syncRetryInterval)
+                                   .withDecisionGapTimeout(decisionGapTimeout);
+        var engine = new RabiaEngine<>(topology, network, machine, config, ConsensusMetrics.noop(), false,
+                                      RabiaPersistence.inMemory(), RabiaEngine.DEFAULT_PHASE_STALL_CHECK, consensusEvents::add);
+        assertThat(engine.initializeVoters(new VoterConfiguration(0, new ClusterConfig(members.subList(0, initialVoters)))).isSuccess()).isTrue();
+        if (index >= initialVoters) { engine.authorizeObservation(); }
+        engines.set(index, engine);
+    }
+
+    /// Crash-restarts a replica as an amnesiac: a fresh engine at phase zero, delivered to and from again.
+    void restart(int index) {
+        if (!dead.contains(index)) {
+            kill(index);
+        }
+        install(index);
+        dead.remove(index);
     }
 
     void emit(Delivery delivery) {

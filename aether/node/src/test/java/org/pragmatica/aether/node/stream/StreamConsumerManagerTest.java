@@ -17,6 +17,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -191,16 +192,22 @@ class StreamConsumerManagerTest {
     /// The committed-assignment authority over [#committedAssignments]; `leader` gates its writer the
     /// way the node's leadership does.
     private AssignmentAuthority authority(boolean leader) {
+        return authority(() -> leader);
+    }
+
+    /// As [#authority(boolean)], with leadership that can move between passes.
+    private AssignmentAuthority authority(BooleanSupplier leader) {
         ConsumerAssignmentWriter.CommittedAssignments committed = (stream, partition, group) -> Option.option(committedAssignments.get(ConsumerAssignmentKey.consumerAssignmentKey(stream,
                                                                                                                                                                            partition,
                                                                                                                                                                            group)));
 
         return AssignmentAuthority.assignmentAuthority(committed,
-                                                       ConsumerAssignmentWriter.consumerAssignmentWriter(() -> leader,
+                                                       ConsumerAssignmentWriter.consumerAssignmentWriter(leader,
                                                                                                          () -> Epoch.epoch(1L, 1L, 0L),
                                                                                                          HlcClock.hlcClock(SELF),
                                                                                                          committed),
-                                                       this::applyAssignments);
+                                                       this::applyAssignments,
+                                                       leader);
     }
 
     private Promise<Unit> applyAssignments(List<KVCommand<AetherKey>> commands) {
@@ -240,7 +247,8 @@ class StreamConsumerManagerTest {
                                                                                                                                                      () -> Epoch.epoch(1L, 1L, 0L),
                                                                                                                                                      HlcClock.hlcClock(SELF),
                                                                                                                                                      committed),
-                                                                                                   this::applyAssignments));
+                                                                                                   this::applyAssignments,
+                                                                                                   () -> false));
     }
 
     /// A seam for a registry whose answer changes BETWEEN reads — a KV notification landing while a
@@ -256,6 +264,19 @@ class StreamConsumerManagerTest {
                                                            placement,
                                                            SELF,
                                                            authority(true));
+    }
+
+    /// A manager whose leadership is read on every pass, so it can move between passes (#2600).
+    private StreamConsumerManager managerLedBy(BooleanSupplier leader) {
+        return StreamConsumerManager.streamConsumerManager(registry,
+                                                           runtime,
+                                                           invoker,
+                                                           invocationHandler,
+                                                           FrameworkCodecs.frameworkCodecs(),
+                                                           ownership,
+                                                           placement,
+                                                           SELF,
+                                                           authority(leader));
     }
 
     private void declare(String eventType, boolean batchMode) {
@@ -1994,6 +2015,344 @@ class StreamConsumerManagerTest {
         }
     }
 
+    /// #2600: a slice placed WORKERS_ONLY is ACTIVE only on worker-tier nodes, which the core-only ownership view
+    /// never lists, so its candidate set was empty and every partition stayed unassigned with no error.
+    @Nested
+    class WorkerTier {
+        private static final NodeId WORKER = NodeId.nodeId("worker-1").unwrap();
+        private static final NodeId WORKER_TWO = NodeId.nodeId("worker-2").unwrap();
+        private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
+
+        /// The hand-off sink delivers on its own virtual thread: wait until `expected` warnings arrived, then let any
+        /// extra one (a raise per pass) land before the caller counts.
+        private void awaitWarnings(int expected) throws InterruptedException {
+            var deadline = System.nanoTime() + 5_000_000_000L;
+
+            while (warnings.size() < expected && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            Thread.sleep(150);
+        }
+
+        /// Red at base: the live set is the core view only, so the worker is filtered out of the candidates and
+        /// nothing attaches on it. Mutant: drop `liveWorkers` from the union and this goes red.
+        @Test
+        void reconcile_attachesOnTheWorker_whenTheSliceIsActiveOnlyOnALiveWorker() {
+            declareStringConsumer();
+            placement.activeOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
+            ownership.withLiveWorkers(WORKER);
+            var workerRuntime = new RecordingRuntime();
+
+            managerFor(WORKER, workerRuntime).reconcile();
+
+            assertThat(workerRuntime.subscribedPartitions()).describedAs("the only candidate is the worker, so it consumes every partition, reading from the core owners")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+        }
+
+        /// A core that is not a candidate must not attach, and the assignment must name the worker: the leader's
+        /// committed record is computed from the same candidate set.
+        @Test
+        void reconcile_assignsEveryPartitionToTheWorker_whenTheSliceIsActiveOnlyOnALiveWorker() {
+            declareStringConsumer();
+            placement.activeOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            ownership.withLiveWorkers(WORKER);
+            var manager = manager();
+
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("a core that does not host the slice consumes nothing").isEmpty();
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.partitionAssignments()).allSatisfy(assignment -> assertThat(assignment.consumerNode()).isEqualTo(Option.some(WORKER))));
+        }
+
+        /// The exactly-once invariant over a worker-only candidate set: two workers split the partitions with no gap
+        /// and no duplicate.
+        @Test
+        void reconcile_assignsEveryPartitionToExactlyOneWorker_whenTheSliceIsActiveOnTwoLiveWorkers() {
+            declareStringConsumer();
+            placement.activeOn(WORKER, WORKER_TWO);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            ownership.withLiveWorkers(WORKER, WORKER_TWO);
+            when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
+            var claimed = new ArrayList<Integer>();
+
+            for (var node : List.of(WORKER, WORKER_TWO)) {
+                var nodeRuntime = new RecordingRuntime();
+
+                managerFor(node, nodeRuntime).reconcile();
+                claimed.addAll(nodeRuntime.subscribedPartitions());
+            }
+
+            assertThat(claimed).containsExactlyInAnyOrder(0, 1, 2, 3);
+        }
+
+        /// A worker the slice is ACTIVE on but membership no longer counts must not be assigned: the committed row of a
+        /// departed worker lingers until cleanup, and assigning to it would consume nothing while looking healthy.
+        @Test
+        void reconcile_assignsNothing_whenTheActiveWorkerIsNotLive() {
+            declareStringConsumer();
+            placement.activeOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            var workerRuntime = new RecordingRuntime();
+
+            managerFor(WORKER, workerRuntime).reconcile();
+
+            assertThat(workerRuntime.subscribedPartitions()).isEmpty();
+        }
+
+        /// Red at base: the "ACTIVE on no live node" state read as a deploy in flight (INFO "not consumed YET") with no
+        /// operator warning. Red under "no raise": no warning arrives. Red under a raise per pass: more than one arrives.
+        @Test
+        void reconcile_raisesOneWarning_whenTheSliceIsActiveButNoHostIsLive() throws InterruptedException {
+            declareStringConsumer();
+            placement.activeOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            var manager = manager();
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            manager.reconcile();
+            awaitWarnings(1);
+
+            assertThat(warnings).singleElement()
+                      .satisfies(warning -> {
+                                     assertThat(warning.code()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE);
+                                     assertThat(warning.message()).contains("worker-1").contains(STREAM);
+                                 });
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.diagnostic().or("")).doesNotContain("YET"));
+        }
+
+        /// The recovery, same subject, once: the worker becomes a live member. Red under "no restored report".
+        @Test
+        void reconcile_reportsRestored_onceTheActiveWorkerIsLive() throws InterruptedException {
+            declareStringConsumer();
+            placement.activeOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            var manager = manager();
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            ownership.withLiveWorkers(WORKER);
+            manager.reconcile();
+            manager.reconcile();
+            awaitWarnings(2);
+
+            assertThat(warnings).extracting(OperatorWarning::code)
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE,
+                                       OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED);
+            assertThat(warnings).extracting(OperatorWarning::subject).describedAs("the recovery closes the condition on the same subject").containsOnly(warnings.getFirst().subject());
+        }
+
+        /// A slice that is deployed but ACTIVE nowhere is a deploy in flight, not a gap: no warning.
+        @Test
+        void reconcile_raisesNothing_whenTheSliceIsStillLoading() throws InterruptedException {
+            declareStringConsumer();
+            placement.activatingOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            var manager = manager();
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            awaitWarnings(1);
+
+            assertThat(warnings).isEmpty();
+        }
+
+        private static final Artifact OTHER_ARTIFACT = Artifact.artifact("org.example:payments:1.0.0").unwrap();
+
+        private void declareOn(String stream, Artifact artifact, String group) {
+            var key = StreamRegistrationKey.streamRegistrationKey(stream, "streams." + stream, artifact, METHOD);
+            var value = StreamRegistrationValue.streamRegistrationValue(SELF, group, false, "java.lang.String");
+
+            registry.onStreamRegistrationPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
+        }
+
+        private StreamConsumerManager gappedManager() throws InterruptedException {
+            declareStringConsumer();
+            placement.activeOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            var manager = manager();
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            awaitWarnings(1);
+            assertThat(warnings).as("arming: the gap is open").extracting(OperatorWarning::code)
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE);
+            return manager;
+        }
+
+        private void assertClosedOnTheSameSubject(String messagePart) {
+            assertThat(warnings).extracting(OperatorWarning::code)
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE,
+                                       OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED);
+            assertThat(warnings.get(1).subject()).isEqualTo(warnings.get(0).subject());
+            assertThat(warnings.get(1).message()).contains(messagePart);
+        }
+
+        /// R1: only the leader raises. Red when a follower raises its own warning (every node duplicates the event).
+        @Test
+        void reconcile_raisesNothing_onAFollower() throws InterruptedException {
+            declareStringConsumer();
+            placement.activeOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            manager.reconcile();
+            awaitWarnings(1);
+
+            assertThat(warnings).isEmpty();
+        }
+
+        /// R2: leader A has a gap, leadership moves to B. A closes its own warning (the aggregator pairs per node) and says
+        /// why; B raises from its own pass. Red when A keeps the warning open, or when B does not raise.
+        @Test
+        void reconcile_closesTheOldLeadersWarning_andTheNewLeaderRaises_whenLeadershipMoves() throws InterruptedException {
+            declareStringConsumer();
+            placement.activeOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            var aLeads = new AtomicBoolean(true);
+            var bWarnings = new CopyOnWriteArrayList<OperatorWarning>();
+            var a = managerLedBy(aLeads::get);
+            var b = managerLedBy(() -> !aLeads.get());
+
+            a.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            b.setOperatorWarningSink(OperatorWarningSink.handingOffTo(bWarnings::add));
+            a.reconcile();
+            b.reconcile();
+            awaitWarnings(1);
+            assertThat(bWarnings).as("arming: the follower raised nothing").isEmpty();
+            aLeads.set(false);
+            a.reconcile();
+            b.reconcile();
+            awaitWarnings(2);
+            Thread.sleep(150);
+
+            assertClosedOnTheSameSubject("leadership moved");
+            assertThat(bWarnings).extracting(OperatorWarning::code).containsExactly(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE);
+            assertThat(bWarnings.getFirst().subject()).isEqualTo(warnings.getFirst().subject());
+        }
+
+        /// R3: a declaration that left the pass (removed) takes its open gap with it. Red under "gap never closed for an absent declaration".
+        @Test
+        void reconcile_closesTheGap_whenTheDeclarationIsRemoved() throws InterruptedException {
+            var manager = gappedManager();
+
+            undeclare();
+            manager.reconcile();
+            awaitWarnings(2);
+
+            assertClosedOnTheSameSubject("no longer evaluated");
+        }
+
+        /// R3: a declaration that now collides is declined before the gap check, so the pass never evaluates it.
+        @Test
+        void reconcile_closesTheGap_whenTheDeclarationBecomesACollision() throws InterruptedException {
+            var manager = gappedManager();
+
+            declareOn(STREAM, OTHER_ARTIFACT, GROUP);
+            manager.reconcile();
+            awaitWarnings(2);
+
+            assertClosedOnTheSameSubject("no longer evaluated");
+        }
+
+        /// R3: the slice is undeployed everywhere. The close must not claim "ACTIVE on a live member".
+        @Test
+        void reconcile_closesTheGapAccurately_whenTheSliceIsNoLongerDeployed() throws InterruptedException {
+            var manager = gappedManager();
+
+            placement.activeOn();
+            manager.reconcile();
+            awaitWarnings(2);
+
+            assertClosedOnTheSameSubject("no longer deployed");
+            assertThat(warnings.get(1).message()).doesNotContain("live member");
+        }
+
+        /// R3: redeploying (rows exist, none ACTIVE) is also "no longer ACTIVE anywhere", not a restoration.
+        @Test
+        void reconcile_closesTheGapAccurately_whenTheSliceIsRedeploying() throws InterruptedException {
+            var manager = gappedManager();
+
+            placement.activatingOn(WORKER);
+            manager.reconcile();
+            awaitWarnings(2);
+
+            assertClosedOnTheSameSubject("no longer deployed");
+        }
+
+        /// S1 (a6): an ACTIVE slice with an empty assignment list (stream config unresolved) claims no gap.
+        @Test
+        void reconcile_claimsNoGap_whenAssignmentsAreEmpty() throws InterruptedException {
+            declareStringConsumer();
+            placement.activeOn(WORKER);
+            ownership.forgetStream();
+            var manager = manager();
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            awaitWarnings(1);
+
+            assertThat(warnings).isEmpty();
+        }
+
+        /// S1 (a5b): an open gap is neither closed nor claimed restored while assignments are empty, even though the
+        /// candidate set would now be live.
+        @Test
+        void reconcile_keepsTheGapOpen_whenAssignmentsGoEmpty() throws InterruptedException {
+            var manager = gappedManager();
+
+            ownership.forgetStream();
+            ownership.withLiveWorkers(WORKER);
+            manager.reconcile();
+            awaitWarnings(2);
+
+            assertThat(warnings).extracting(OperatorWarning::code).containsExactly(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE);
+        }
+
+        /// S2 (a9): two declarations on one manager each own a gap, with their own subject, and each closes on its own subject.
+        @Test
+        void reconcile_tracksOneGapPerDeclaration() throws InterruptedException {
+            declareStringConsumer();
+            declareOn("invoices", OTHER_ARTIFACT, GROUP);
+            placement.activeOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            var manager = manager();
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            manager.reconcile();
+            awaitWarnings(2);
+
+            assertThat(warnings).extracting(OperatorWarning::code).containsOnly(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE).hasSize(2);
+            assertThat(warnings).extracting(OperatorWarning::subject).doesNotHaveDuplicates();
+            ownership.withLiveWorkers(WORKER);
+            manager.reconcile();
+            awaitWarnings(4);
+            assertThat(warnings.subList(2, 4)).extracting(OperatorWarning::code).containsOnly(OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED);
+            assertThat(warnings.subList(2, 4)).extracting(OperatorWarning::subject).containsExactlyInAnyOrderElementsOf(warnings.subList(0, 2).stream().map(OperatorWarning::subject).toList());
+        }
+
+        /// S3 (a10) and R2: stop is terminal, so the observable of "no stale gap after stop" is that stop closes the
+        /// open gap on this node: a raise is never left without its recovery. Red when stop drops the gap silently.
+        @Test
+        void stop_closesTheOpenGap() throws InterruptedException {
+            var manager = gappedManager();
+
+            manager.stop();
+            awaitWarnings(2);
+
+            assertClosedOnTheSameSubject("stopped");
+        }
+    }
+
+
     /// #752, adopted from v1890's probes for #1923: `abandonAll` (the quorum-loss path) must not run while a pass is
     /// between `attach`'s `active.putIfAbsent` and the runtime subscribe (here: held inside the local-slice lookup, which
     /// sits exactly there). Red under "abandonAll does not take passLock": a false divergence warning, and an orphan
@@ -2151,6 +2510,11 @@ class StreamConsumerManagerTest {
         private volatile boolean streamKnown = true;
         private volatile int partitions = PARTITION_COUNT;
         private volatile List<NodeId> members = CLUSTER;
+        private volatile List<NodeId> workers = List.of();
+
+        void withLiveWorkers(NodeId... live) {
+            workers = List.of(live);
+        }
 
         void withPartitionCount(int count) {
             partitions = count;
@@ -2190,6 +2554,11 @@ class StreamConsumerManagerTest {
         @Override
         public List<NodeId> liveMembers() {
             return members;
+        }
+
+        @Override
+        public List<NodeId> liveWorkers() {
+            return workers;
         }
     }
 

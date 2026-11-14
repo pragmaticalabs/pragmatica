@@ -86,7 +86,7 @@ matrix/PAUSED_ACTIVE/DECISION_FAR_FUTURE mode=Paused events=[] msgs=[] completio
 matrix/PAUSED_ACTIVE/PROPOSE_CURRENT mode=Paused events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
 matrix/PAUSED_ACTIVE/PROPOSE_FAR_FUTURE mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
 matrix/PAUSED_ACTIVE/STOP mode=Stopped events=[] msgs=[] completions=[] start=resolved marker=1 replays=1 hooks=1 restores=0
-matrix/PAUSED_SYNCING/ACTIVE mode=Idle events=[ConsensusActive] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
+matrix/PAUSED_SYNCING/ACTIVE mode=Syncing events=[] msgs=[SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/PAUSED_SYNCING/PASSIVE mode=Paused events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/PAUSED_SYNCING/AUTHORIZE_ACTIVATION mode=Paused events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
 matrix/PAUSED_SYNCING/AUTHORIZE_OBSERVATION mode=Paused events=[] msgs=[] completions=[] start=pending marker=0 replays=0 hooks=0 restores=0
@@ -122,7 +122,7 @@ matrix/TERMINATED/STOP mode=Stopped events=[] msgs=[] completions=[] start=pendi
 named/restore-ok-nonempty-snapshot mode=Idle events=[ConsensusActive] msgs=[SyncRequest] completions=[10] start=resolved marker=1 replays=1 hooks=1 restores=1
 named/restore-ok-empty-snapshot mode=Idle events=[ConsensusActive] msgs=[SyncRequest] completions=[0] start=resolved marker=1 replays=1 hooks=1 restores=0
 named/restore-persist-fails-fences mode=Syncing events=[] msgs=[SyncRequest] completions=[10, 10, 10, 10] start=pending marker=0 replays=0 hooks=0 restores=4
-named/restore-refused-participation-then-pause-resume mode=Idle events=[ConsensusActive] msgs=[SyncRequest] completions=[10, 10] start=pending marker=2 replays=1 hooks=1 restores=2
+named/restore-refused-participation-then-pause-resume mode=Syncing events=[] msgs=[SyncRequest, SyncRequest] completions=[10, 10] start=pending marker=2 replays=0 hooks=0 restores=2
 named/restore-undecodable-snapshot-three-rounds mode=Syncing events=[] msgs=[SyncRequest, SyncRequest, SyncRequest, SyncRequest] completions=[] start=pending marker=0 replays=0 hooks=0 restores=3
 named/observer-restore-then-promotion mode=Idle events=[ConsensusObserving, ConsensusActive] msgs=[SyncRequest] completions=[10] start=resolved marker=1 replays=1 hooks=1 restores=1
 named/voter-demoted-by-roster-removal mode=Observing events=[ConsensusActive, ConsensusDemoted] msgs=[SyncRequest] completions=[0, 1] start=resolved marker=1 replays=1 hooks=1 restores=0

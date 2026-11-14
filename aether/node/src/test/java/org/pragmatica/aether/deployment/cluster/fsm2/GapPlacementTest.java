@@ -77,8 +77,8 @@ class GapPlacementTest {
 
         assertThat(w.h.warns("invalid-placement")).hasSize(1);
         assertThat(w.h.submitsBesides(ClusterModel.SubmitKind.WARNINGS)).isEmpty();
-        assertThat(w.h.warningPuts()).as("the open warning is persisted: exactly one WARNINGS put")
-                  .containsExactly(new FsmWarningKey("invalid-placement", ORDERS.asString()));
+        assertThat(w.h.warningPuts()).as("the open warning is persisted: the marker write, then its clear write (#3160)")
+                  .containsExactly(new FsmWarningKey("invalid-placement", ORDERS.asString()), new FsmWarningKey("invalid-placement", ORDERS.asString()));
     }
 
     /// Red when: an instance outside the audience (on a worker, under CORE_ONLY) is retired before the instance in the audience is
