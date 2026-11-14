@@ -967,10 +967,9 @@ public interface StreamConsumerManager {
             var identity = declarationIdentity(declaration);
 
             gapsEvaluated.add(identity);
-
-            if (!authority.leader()
-                          .getAsBoolean()) {
+            if (!authority.leader().getAsBoolean()) {
                 closeGap(identity, "leadership moved: this node is no longer the leader that reports it");
+
                 return;
             }
 
@@ -985,9 +984,13 @@ public interface StreamConsumerManager {
                     raiseCandidateGap(declaration, identity, hosts);
                 }
             } else if (!hasActivePlacement(declaration)) {
-                closeGap(identity, "slice " + declaration.artifact().asString() + " is no longer deployed ACTIVE anywhere, so there is no gap to report");
+                closeGap(identity,
+                         "slice " + declaration.artifact().asString()
+                        + " is no longer deployed ACTIVE anywhere, so there is no gap to report");
             } else {
-                closeGap(identity, "a live candidate again: slice " + declaration.artifact().asString() + " is ACTIVE on a live member, so its partitions are assigned");
+                closeGap(identity,
+                         "a live candidate again: slice " + declaration.artifact().asString()
+                        + " is ACTIVE on a live member, so its partitions are assigned");
             }
         }
 
@@ -1002,12 +1005,14 @@ public interface StreamConsumerManager {
                          .stream()
                          .filter(identity -> !gapsEvaluated.contains(identity))
                          .toList()
-                         .forEach(identity -> closeGap(identity, "the declaration is no longer evaluated (removed or colliding), so there is no gap to report"));
+                         .forEach(identity -> closeGap(identity,
+                                                       "the declaration is no longer evaluated (removed or colliding), so there is no gap to report"));
         }
 
         private void closeGap(String identity, String reason) {
-            Option.option(candidateGaps.remove(identity))
-                  .onPresent(declaration -> raiseCandidateRestored(declaration, identity, reason));
+            Option.option(candidateGaps.remove(identity)).onPresent(declaration -> raiseCandidateRestored(declaration,
+                                                                                                          identity,
+                                                                                                          reason));
         }
 
         private void raiseCandidateGap(ConsumerDeclaration declaration, String identity, List<String> hosts) {
@@ -1442,10 +1447,7 @@ public interface StreamConsumerManager {
             synchronized (passLock) {
                 active.keySet().stream().toList().forEach(this::detach);
                 diagnoses.clear();
-                candidateGaps.keySet()
-                             .stream()
-                             .toList()
-                             .forEach(identity -> closeGap(identity, "the manager stopped"));
+                candidateGaps.keySet().stream().toList().forEach(identity -> closeGap(identity, "the manager stopped"));
             }
 
             log.info("Declarative stream consumer manager stopped");
