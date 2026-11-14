@@ -177,10 +177,10 @@ public sealed interface Failures {
     ///   /\ LET raise == MODE = "pre2834" \/ e \notin warned[n]
     ///          adds == IF raise THEN {e} ELSE {}
     ///      IN /\ Apply(n, warned[n] \cup adds, rows[n], dirty[n], wInfl[n], gInfl[n], gIntent[n], raise, TRUE,
-    ///                    Pub(adds, {}), Hold(n, adds, {}))
+    ///                    Pub(adds, {}), Hold(n, adds, {}), lnd[n], view[n])
     ///   /\ fired' = [fired EXCEPT ![n] = fired[n] \cup {e}]
-    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, view, net, settles,
-    ///                  condBudget, faultBudget, redo>>
+    ///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, view, net,
+    ///                  settles, condBudget, faultBudget, redo>>
     /// ```
     private static ClusterModel exhausted(ClusterModel m, Ctx ctx, SlicePair pair, String reason) {
         var artifact = pair.artifact();
