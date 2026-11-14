@@ -9,6 +9,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.List;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 import java.util.UUID;
 import java.util.stream.IntStream;
 
@@ -97,6 +99,9 @@ class EmberWorkerStreamConsumerTest {
                                .toList();
         var worker = workers.getFirst();
 
+        awaitCondition("B1: the leader's membership counts every worker as a worker member",
+                       () -> workers.stream().allMatch(id -> leader().membershipFsm().workerCountedMembers().contains(id)),
+                       () -> membership(worker));
         StreamTripwireSupport.createStream(leader(), StreamTripwireSupport.smallRingStream(STREAM, 1, 1_000L, 3_600_000L));
         commit(registrationKey(), AetherValue.StreamRegistrationValue.streamRegistrationValue(worker, GROUP, false, "java.lang.String"));
         commit(new AetherKey.NodeArtifactKey(worker, SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
@@ -118,6 +123,23 @@ class EmberWorkerStreamConsumerTest {
         awaitUntil(node::isReady, WAIT_BOUND_MS, workerId.id() + " reports ready");
 
         return workerId;
+    }
+
+    private static void awaitCondition(String what, BooleanSupplier condition, Supplier<String> state) {
+        var deadline = System.currentTimeMillis() + WAIT_BOUND_MS;
+
+        while (!condition.getAsBoolean()) {
+            if (System.currentTimeMillis() > deadline) {
+                throw new AssertionError("timed out waiting: " + what + state.get());
+            }
+            StreamTripwireSupport.sleepQuietly(250L);
+        }
+    }
+
+    private String membership(NodeId worker) {
+        var fsm = leader().membershipFsm();
+
+        return "; workerCounted=" + fsm.workerCountedMembers() + "; counted=" + fsm.countedMembers() + "; descriptor(" + worker.id() + ")=" + fsm.memberDescriptor(worker);
     }
 
     /// Printed with the timeout: the committed rows the manager reads and the leader's own view of its declared consumers.
