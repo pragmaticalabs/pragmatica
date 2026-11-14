@@ -29,6 +29,7 @@
         <module>services</module>
         <module>notification</module>
         <module>durable-entity</module>
+        <module>scheduler-pg</module>
     </modules>
 
     <properties>
