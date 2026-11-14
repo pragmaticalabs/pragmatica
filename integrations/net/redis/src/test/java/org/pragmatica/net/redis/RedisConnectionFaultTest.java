@@ -170,8 +170,11 @@ class RedisConnectionFaultTest {
         blocked.await();
         conn.close();
 
-        assertThat(conn.isActive()).isFalse();
-        release.countDown();
+        try {
+            assertThat(conn.isActive()).isFalse();
+        } finally {
+            release.countDown();
+        }
         conn.close().await(WAIT);
     }
 
