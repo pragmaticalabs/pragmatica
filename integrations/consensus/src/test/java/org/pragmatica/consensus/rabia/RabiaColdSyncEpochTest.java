@@ -62,35 +62,7 @@ class RabiaColdSyncEpochTest {
     @AfterEach void stopAll() { engines.values().forEach(engine -> engine.stop().await()); }
 
     @Test void laggardGenesisVoters_neverDecideASlotTheNewerEpochGoverns_fromAColdAnswer() {
-        ALL.forEach(id -> disks.put(id, RabiaPersistence.inMemory()));
-        start(A); start(B); start(C);
-        deliverAllWhile(() -> !(engine(A).isActive() && engine(B).isActive() && engine(C).isActive()));
-        queue.clear();
-
-        // B decides the change to {A,B,D} at slot 0 and a batch at slot 1; A and C miss both decisions.
-        decideSetup(B);
-        assertThat(engine(B).voterConfiguration().unwrap()).isEqualTo(new VoterConfiguration(1, REPLACED));
-        assertThat(engine(A).voterConfiguration().unwrap()).isEqualTo(new VoterConfiguration(0, GENESIS_ROSTER));
-        assertThat(engine(C).voterConfiguration().unwrap()).isEqualTo(new VoterConfiguration(0, GENESIS_ROSTER));
-        queue.clear();
-
-        // D joins the newer epoch from B's LIVE answer.
-        start(D);
-        deliverOnly(d -> d.source().equals(D) && d.target().equals(B) && d.message() instanceof SyncRequest);
-        deliverOnly(d -> d.source().equals(B) && d.target().equals(D) && d.message() instanceof SyncResponse<?>);
-        assertThat(engine(D).voterConfiguration().unwrap()).isEqualTo(new VoterConfiguration(1, REPLACED));
-        assertThat(engine(D).currentPhaseForTesting()).isEqualTo(Phase.phase(2));
-        queue.clear();
-
-        // B loses and regains quorum: the pause persists phase 2 under epoch 1.
-        engine(B).clusterState(ClusterStateNotification.passive());
-        settle();
-        engine(B).clusterState(ClusterStateNotification.active());
-        settle();
-        var persistedB = disks.get(B).load().unwrap();
-        assertThat(persistedB.lastCommittedPhase()).isEqualTo(Phase.phase(2));
-        assertThat(persistedB.configuration().unwrap()).isEqualTo(new VoterConfiguration(1, REPLACED));
-        queue.clear();
+        persistedEpochOneOnB();
 
         // B, A and C each go Syncing; B now answers COLD from its persisted phase 2.
         triggerResync(B, D, 1);
@@ -134,6 +106,73 @@ class RabiaColdSyncEpochTest {
         assertThat(sent.stream().filter(d -> d.source().equals(D)).anyMatch(d -> d.message() instanceof VoteRound1 vote
                                                                                  && vote.epoch() == 1 && vote.phase().equals(Phase.phase(2))))
             .as("positive control: D votes at epoch 1 for slot 2").isTrue();
+    }
+
+    /// A and C lag at epoch 0; B decided the roster change and a batch, D joined epoch 1 from B's LIVE answer, and B
+    /// persisted phase 2 under epoch 1 by pausing and resuming.
+    private void persistedEpochOneOnB() {
+        ALL.forEach(id -> disks.put(id, RabiaPersistence.inMemory()));
+        start(A); start(B); start(C);
+        deliverAllWhile(() -> !(engine(A).isActive() && engine(B).isActive() && engine(C).isActive()));
+        queue.clear();
+
+        // B decides the change to {A,B,D} at slot 0 and a batch at slot 1; A and C miss both decisions.
+        decideSetup(B);
+        assertThat(engine(B).voterConfiguration().unwrap()).isEqualTo(new VoterConfiguration(1, REPLACED));
+        assertThat(engine(A).voterConfiguration().unwrap()).isEqualTo(new VoterConfiguration(0, GENESIS_ROSTER));
+        assertThat(engine(C).voterConfiguration().unwrap()).isEqualTo(new VoterConfiguration(0, GENESIS_ROSTER));
+        queue.clear();
+
+        // D joins the newer epoch from B's LIVE answer.
+        start(D);
+        deliverOnly(d -> d.source().equals(D) && d.target().equals(B) && d.message() instanceof SyncRequest);
+        deliverOnly(d -> d.source().equals(B) && d.target().equals(D) && d.message() instanceof SyncResponse<?>);
+        assertThat(engine(D).voterConfiguration().unwrap()).isEqualTo(new VoterConfiguration(1, REPLACED));
+        assertThat(engine(D).currentPhaseForTesting()).isEqualTo(Phase.phase(2));
+        queue.clear();
+
+        // B loses and regains quorum: the pause persists phase 2 under epoch 1.
+        engine(B).clusterState(ClusterStateNotification.passive());
+        settle();
+        engine(B).clusterState(ClusterStateNotification.active());
+        settle();
+        var persistedB = disks.get(B).load().unwrap();
+        assertThat(persistedB.lastCommittedPhase()).isEqualTo(Phase.phase(2));
+        assertThat(persistedB.configuration().unwrap()).isEqualTo(new VoterConfiguration(1, REPLACED));
+        queue.clear();
+    }
+
+    /// Side effect of the fix: a COLD answer from an engine that persisted now carries its configuration, so a receiver
+    /// already at epoch 1 counts a same-epoch COLD answer (it used to refuse the config-less one). The cold rule (#660: with
+    /// no LIVE responder, `clusterSize / 2` answers plus the receiver's own state, a majority of the electorate) must be
+    /// unchanged: no answer adopts nothing, and an answer that does not carry the receiver's epoch, however many, is not counted.
+    @Test void sameEpochColdAnswer_isCountedOnlyAsTheColdRuleCountsIt() {
+        persistedEpochOneOnB();
+        triggerResync(B, D, 1);
+        triggerResync(D, B, 1);
+        triggerResync(C, A, 0);
+        queue.removeIf(d -> !d.source().equals(D));
+
+        assertThat(engine(D).isActive()).as("D, Syncing at epoch 1, has no answer yet").isFalse();
+
+        // C never persisted: its COLD answer is config-less epoch-0 evidence and an epoch-1 receiver refuses it.
+        deliverOnly(d -> d.source().equals(D) && d.target().equals(C) && d.message() instanceof SyncRequest);
+        deliverOnly(d -> d.source().equals(C) && d.target().equals(D) && d.message() instanceof SyncResponse<?>);
+        assertThat(engine(D).isActive()).as("a config-less epoch-0 COLD answer is not counted at epoch 1").isFalse();
+
+        // B persisted epoch 1 itself: its COLD answer carries the configuration and is the one answer clusterSize/2 = 1
+        // asks for at n=3; with D's own state that is 2 of the 3 voters, the #660 majority.
+        deliverOnly(d -> d.source().equals(D) && d.target().equals(B) && d.message() instanceof SyncRequest);
+        deliverOnly(d -> d.source().equals(B) && d.target().equals(D) && d.message() instanceof SyncResponse<?>);
+        var answerFromB = sent.stream()
+                              .filter(d -> d.source().equals(B) && d.target().equals(D) && d.message() instanceof SyncResponse<?>)
+                              .map(d -> (SyncResponse<?>) d.message())
+                              .reduce((first, second) -> second)
+                              .orElseThrow();
+        assertThat(answerFromB.responder()).as("B answered COLD").isEqualTo(ResponderState.COLD);
+        assertThat(answerFromB.state().configuration().unwrap()).isEqualTo(new VoterConfiguration(1, REPLACED));
+        assertThat(engine(D).isActive()).as("one same-epoch COLD answer plus D itself is the #660 majority").isTrue();
+        assertThat(engine(D).voterConfiguration().unwrap()).isEqualTo(new VoterConfiguration(1, REPLACED));
     }
 
     /// Moves `target` into Syncing the way a far-future ballot does; the Propose itself is discarded by the engine.
