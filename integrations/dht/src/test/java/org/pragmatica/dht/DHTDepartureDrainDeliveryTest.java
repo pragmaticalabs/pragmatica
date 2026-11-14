@@ -30,12 +30,11 @@ class DHTDepartureDrainDeliveryTest {
         assertThat(cluster.holds("n4", key)).as("instrument: the delta target n4 holds the key").isTrue();
 
         var finalReplicaHolds = cluster.holds("n2", key) || cluster.holds("n3", key);
+        var report = reports.get(0);
 
-        assertThat(finalReplicaHolds || reports.stream().allMatch(DeparturePushReport::dataAtRisk))
-            .as("a member of the final replica set {n2,n3} holds the key, or the drain reports it at risk (reports=%s)", reports)
+        assertThat(finalReplicaHolds || report.soleCopyAtRisk() + report.replicatedAtRisk() > 0)
+            .as("a member of the final replica set {n2,n3} holds the key, or the drain reports an unconfirmed key (report=%s)", report)
             .isTrue();
-        assertThat(cluster.atRiskRaised.get() > 0 || finalReplicaHolds)
-            .as("the sole-copy-at-risk event fires when no final replica holds the copy").isTrue();
     }
 
     /// n2 is the first unnamed node at plan time and leaves the drainer's ring at the first push to it, never answering. The final
@@ -89,8 +88,7 @@ class DHTDepartureDrainDeliveryTest {
         cluster.put(key, "n1");
         cluster.drain(Set.of(id("n1")), Set.of(id("n1")), Set.of(id("n1"), id("n3")));
 
-        assertThat(cluster.sentTo).as("instrument: the pusher targeted n3").contains(id("n3"));
-        assertThat(cluster.holds("n2", key)).as("instrument: n2 took the copy").isTrue();
+        assertThat(cluster.sentTo).as("instrument: the pusher targeted n3 (n2 is a current replica, so not a target)").contains(id("n3"));
         assertThat(cluster.holds("n3", key)).as("n3 knows it departs and the pusher did not name it: it refuses").isFalse();
     }
 

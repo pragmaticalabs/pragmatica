@@ -2,6 +2,7 @@ package org.pragmatica.dht;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.consensus.NodeId;
 
 import java.util.List;
 import java.util.Set;

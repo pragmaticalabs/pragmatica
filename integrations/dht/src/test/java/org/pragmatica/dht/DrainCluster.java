@@ -35,6 +35,7 @@ final class DrainCluster {
     final Map<NodeId, Member> members = new LinkedHashMap<>();
     final Set<NodeId> departing = new HashSet<>();
     final Set<NodeId> dropTo = new HashSet<>();
+    private final Set<NodeId> pushers = new HashSet<>();
     final List<NodeId> sentTo = new CopyOnWriteArrayList<>();
     final List<Map.Entry<NodeId, ProtocolMessage>> queue = new CopyOnWriteArrayList<>();
     final AtomicInteger atRiskRaised = new AtomicInteger();
@@ -102,6 +103,7 @@ final class DrainCluster {
     /// As [#drain(Set, Set)], with every receiver knowing only `receiversKnow` of the drain set (#1818: separate leader pings).
     List<DeparturePushReport> drain(Set<NodeId> drainers, Set<NodeId> drainSet, Set<NodeId> receiversKnow) {
         departing.addAll(receiversKnow);
+        pushers.addAll(drainers);
         hold();
         var pushes = new ArrayList<Promise<DeparturePushReport>>();
         var observer = new DeparturePushObserver() {
@@ -141,7 +143,7 @@ final class DrainCluster {
     }
 
     private void deliver(NodeId from, NodeId target, ProtocolMessage message) {
-        if (message instanceof DHTMessage.MigrationDataResponse && departing.contains(from)) {
+        if (message instanceof DHTMessage.MigrationDataResponse && pushers.contains(from)) {
             sentTo.add(target);
             if (target.equals(removeOnFirstSend)) {
                 members.get(from).node().ring().removeNode(target);
