@@ -58,11 +58,11 @@ final class RespCodec {
     static final long MAX_ARRAY = 16L * 1024 * 1024;
     /// Nesting limit: an adversarial `*1\r\n*1\r\n...` must not exhaust the stack.
     static final int MAX_DEPTH = 32;
-
     private static final int INITIAL_CAPACITY_CAP = 1024;
     private static final byte CR = '\r';
     private static final byte LF = '\n';
     private static final Cause BAD_NUMBER = protocolViolation("malformed integer");
+
     private static final Cause BAD_LINE = protocolViolation("line not terminated by CRLF within " + MAX_LINE + " bytes");
 
     private RespCodec() {}
@@ -86,6 +86,7 @@ final class RespCodec {
 
         ByteBufUtil.writeAscii(out, "*" + parts.size() + "\r\n");
         parts.forEach(part -> writeBulk(out, part));
+
         return out;
     }
 
@@ -163,6 +164,7 @@ final class RespCodec {
         var text = in.toString(in.readerIndex(), length, StandardCharsets.UTF_8);
 
         in.skipBytes(length + 2);
+
         return text;
     }
 
@@ -183,14 +185,13 @@ final class RespCodec {
     }
 
     private static Result<Option<RespValue>> bulkOfSize(ByteBuf in, long size) {
-        if (size == - 1) {
+        if (size == -1) {
             return done(NullReply.NULL_REPLY);
         }
 
         if (size < 0 || size > MAX_BULK) {
             return protocolViolation("bulk length " + size + " outside 0.." + MAX_BULK).result();
         }
-
         // size + CRLF must be readable before anything is copied: a huge declared length costs nothing
         // until the bytes are really there.
         return in.readableBytes() < size + 2
@@ -202,6 +203,7 @@ final class RespCodec {
         var bytes = new byte[size];
 
         in.readBytes(bytes);
+
         return in.readByte() == CR && in.readByte() == LF
                ? done(BulkString.bulkString(bytes))
                : protocolViolation("bulk string not terminated by CRLF").result();
@@ -212,7 +214,7 @@ final class RespCodec {
     }
 
     private static Result<Option<RespValue>> arrayOfSize(ByteBuf in, long size, int depth) {
-        if (size == - 1) {
+        if (size == -1) {
             return done(NullReply.NULL_REPLY);
         }
 
@@ -233,7 +235,6 @@ final class RespCodec {
             var element = parse(in, depth + 1);
 
             element.onSuccess(parsed -> parsed.onPresent(items::add));
-
             if (!isValue(element)) {
                 return element;
             }

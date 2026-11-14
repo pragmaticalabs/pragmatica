@@ -50,7 +50,6 @@ public record RedisConfig(String host,
     public static final TimeSpan DEFAULT_COMMAND_TIMEOUT = timeSpan(10).seconds();
     public static final int DEFAULT_POOL_SIZE = 4;
     public static final int DEFAULT_MAX_IN_FLIGHT = 1024;
-
     private static final int MAX_PORT = 65535;
 
     /// Defaults for everything but the host: port 6379, no auth, database 0, no TLS.
@@ -87,15 +86,15 @@ public record RedisConfig(String host,
                           Verify.ensure(poolSize, Verify.Is::positive),
                           Verify.ensure(maxInFlight, Verify.Is::positive))
                      .map((validHost, validPort, validDatabase, validPool, validDepth) -> new RedisConfig(validHost,
-                                                                                                         validPort,
-                                                                                                         username,
-                                                                                                         password,
-                                                                                                         validDatabase,
-                                                                                                         tls,
-                                                                                                         connectTimeout,
-                                                                                                         commandTimeout,
-                                                                                                         validPool,
-                                                                                                         validDepth));
+                                                                                                          validPort,
+                                                                                                          username,
+                                                                                                          password,
+                                                                                                          validDatabase,
+                                                                                                          tls,
+                                                                                                          connectTimeout,
+                                                                                                          commandTimeout,
+                                                                                                          validPool,
+                                                                                                          validDepth));
     }
 
     /// AUTH with a password only (the `default` ACL user).

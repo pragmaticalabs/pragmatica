@@ -52,14 +52,15 @@ public final class RedisClient implements RedisCommands {
     private RedisClient(RedisConfig config, Option<SslContext> tls) {
         this.config = config;
         this.tls = tls;
-        this.group = new MultiThreadIoEventLoopGroup(Math.min(config.poolSize(), 4), NioIoHandler.newFactory());
+        this.group = new MultiThreadIoEventLoopGroup(Math.min(config.poolSize(), 4),
+                                                     NioIoHandler.newFactory());
     }
 
     /// Create a client and prove it can reach the server by opening its first connection. TLS, when
     /// configured, uses the JVM trust store.
     public static Promise<RedisClient> redisClient(RedisConfig config) {
         return tlsContext(config).async()
-                                 .flatMap(tls -> start(config, tls));
+                         .flatMap(tls -> start(config, tls));
     }
 
     /// As [#redisClient(RedisConfig)] with a caller supplied TLS context (private CA, mutual TLS).
@@ -78,8 +79,7 @@ public final class RedisClient implements RedisCommands {
     static Result<Option<SslContext>> tlsContext(RedisConfig config) {
         return config.tls()
                ? Result.lift(thrown -> tlsSetupFailed(String.valueOf(thrown.getMessage())),
-                             () -> some(SslContextBuilder.forClient()
-                                                         .build()))
+                             () -> some(SslContextBuilder.forClient().build()))
                : Result.success(none());
     }
 
@@ -100,8 +100,10 @@ public final class RedisClient implements RedisCommands {
     private Promise<RedisConnection> acquire() {
         synchronized (lock) {
             ready.removeIf(connection -> !connection.isActive());
+
             return ready.stream()
-                        .min((a, b) -> Integer.compare(a.inFlight(), b.inFlight()))
+                        .min((a, b) -> Integer.compare(a.inFlight(),
+                                                       b.inFlight()))
                         .filter(best -> best.inFlight() == 0 || !hasCapacity())
                         .map(Promise::success)
                         .orElseGet(this::openOrWait);
@@ -119,9 +121,10 @@ public final class RedisClient implements RedisCommands {
                    ? lastOpening
                    : poolSaturated(config.maxInFlight()).promise();
         }
+
         opening++;
-        lastOpening = RedisConnection.connect(config, group, tls, none())
-                                     .onResult(this::opened);
+        lastOpening = RedisConnection.connect(config, group, tls, none()).onResult(this::opened);
+
         return lastOpening;
     }
 
@@ -148,6 +151,7 @@ public final class RedisClient implements RedisCommands {
         if (closing.compareAndSet(false, true)) {
             closeAll();
         }
+
         return closed;
     }
 
@@ -156,13 +160,11 @@ public final class RedisClient implements RedisCommands {
         List<Promise<Unit>> closes;
 
         synchronized (lock) {
-            closes = ready.stream()
-                          .map(RedisConnection::close)
-                          .toList();
+            closes = ready.stream().map(RedisConnection::close).toList();
             ready.clear();
         }
-        Promise.allOf(closes)
-               .onResultRun(this::release);
+
+        Promise.allOf(closes).onResultRun(this::release);
     }
 
     @Contract

@@ -69,8 +69,7 @@ public sealed interface RedisError extends Cause {
     /// No reply within the command timeout. The connection is closed (FIFO correlation cannot skip
     /// a reply), and the command may or may not have been executed.
     record Timeout(long millis, String message) implements RedisError, Cause.Transient {
-        static final Fn1<Timeout, Long> FACTORY = Causes.forOneValue("Redis command timed out after %s ms",
-                                                                     Timeout::new);
+        static final Fn1<Timeout, Long> FACTORY = Causes.forOneValue("Redis command timed out after %s ms", Timeout::new);
 
         public static Timeout timeout(long millis) {
             return FACTORY.apply(millis);
@@ -91,7 +90,12 @@ public sealed interface RedisError extends Cause {
     /// The server answered with an error reply (`-PREFIX detail`). Transient only for the prefixes
     /// the server documents as passing conditions; the rest are verdicts on the command.
     record ServerError(String prefix, String detail, String message) implements RedisError {
-        private static final Set<String> TRANSIENT_PREFIXES = Set.of("LOADING", "BUSY", "TRYAGAIN", "CLUSTERDOWN", "MASTERDOWN");
+        private static final Set<String> TRANSIENT_PREFIXES = Set.of("LOADING",
+                                                                     "BUSY",
+                                                                     "TRYAGAIN",
+                                                                     "CLUSTERDOWN",
+                                                                     "MASTERDOWN");
+
         static final Fn2<ServerError, String, String> FACTORY = Causes.forTwoValues("Redis error %s: %s",
                                                                                     ServerError::new);
 
@@ -165,13 +169,10 @@ public sealed interface RedisError extends Cause {
                 return true;
             }
         };
-
         private final String message;
-
         General(String message) {
             this.message = message;
         }
-
         @Override
         public String message() {
             return message;

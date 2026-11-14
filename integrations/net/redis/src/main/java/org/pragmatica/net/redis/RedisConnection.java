@@ -130,15 +130,14 @@ public final class RedisConnection implements RedisCommands {
                                        .channel(NioSocketChannel.class)
                                        .option(ChannelOption.TCP_NODELAY, true)
                                        .option(ChannelOption.CONNECT_TIMEOUT_MILLIS,
-                                               (int) config.connectTimeout()
-                                                           .millis())
+                                               (int) config.connectTimeout().millis())
                                        .handler(new Initializer(tls));
 
         return Promise.<Channel> promise(promise -> bootstrap.connect(config.host(),
                                                                       config.port())
                                                              .addListener((ChannelFuture future) -> settleConnect(future,
-                                                                                                                  promise)))
-                      .flatMap(ch -> tls.fold(() -> Promise.success(ch), _ -> handshaken(ch)));
+                                                                                                                  promise))).flatMap(ch -> tls.fold(() -> Promise.success(ch),
+                                                                                                                                                    _ -> handshaken(ch)));
     }
 
     /// With TLS, the connection is handed out only after the handshake succeeded, so a refused
@@ -169,7 +168,7 @@ public final class RedisConnection implements RedisCommands {
     /// closes the connection and is reported before the connection is handed out.
     private Promise<RedisConnection> handshake() {
         return authenticate().flatMap(_ -> selectDatabase())
-                             .map(_ -> this);
+                           .map(_ -> this);
     }
 
     private static Cause asConnectFailure(Cause cause) {
@@ -182,13 +181,17 @@ public final class RedisConnection implements RedisCommands {
         return config.password()
                      .fold(() -> Promise.success(unit()),
                            secret -> execute(authCommand(secret)).mapError(RedisConnection::asAuthFailure)
-                                                                 .flatMap(reply -> reply.asOk()
-                                                                                        .async()));
+                                            .flatMap(reply -> reply.asOk()
+                                                                   .async()));
     }
 
     private List<byte[]> authCommand(String secret) {
         return config.username()
-                     .fold(() -> command("AUTH", utf8(secret)), user -> command("AUTH", utf8(user), utf8(secret)));
+                     .fold(() -> command("AUTH",
+                                         utf8(secret)),
+                           user -> command("AUTH",
+                                           utf8(user),
+                                           utf8(secret)));
     }
 
     private static Cause asAuthFailure(Cause cause) {
@@ -200,20 +203,22 @@ public final class RedisConnection implements RedisCommands {
     private Promise<Unit> selectDatabase() {
         return config.database() == 0
                ? Promise.success(unit())
-               : execute(command("SELECT", utf8(Integer.toString(config.database())))).flatMap(reply -> reply.asOk()
-                                                                                                             .async());
+               : execute(command("SELECT",
+                                 utf8(Integer.toString(config.database())))).flatMap(reply -> reply.asOk()
+                                                                                                   .async());
     }
 
     @Override
     public Promise<RespValue> execute(List<byte[]> command) {
         return reserveSlot().async()
-                            .flatMap(_ -> enqueue(command));
+                          .flatMap(_ -> enqueue(command));
     }
 
     /// Take one of the `maxInFlight` slots, or fail without sending.
     private Result<Unit> reserveSlot() {
         if (inFlight.incrementAndGet() > config.maxInFlight()) {
             inFlight.decrementAndGet();
+
             return poolSaturated(config.maxInFlight()).result();
         }
 
@@ -225,13 +230,16 @@ public final class RedisConnection implements RedisCommands {
     }
 
     boolean isActive() {
-        return channel != null && channel.isActive() && terminal.get() == null;
+        return channel != null
+               && channel.isActive()
+               && terminal.get() == null;
     }
 
     private Promise<RespValue> enqueue(List<byte[]> command) {
         var reply = Promise.<RespValue> promise();
 
         runOnEventLoop(() -> send(command, reply)).onFailure(cause -> refuse(reply, cause));
+
         return reply.timeout(config.commandTimeout())
                     .onFailure(this::closeOnTimeout)
                     .mapError(this::describeTimeout);
@@ -242,11 +250,13 @@ public final class RedisConnection implements RedisCommands {
     private void send(List<byte[]> command, Promise<RespValue> reply) {
         if (terminal.get() != null || !channel.isActive()) {
             refuse(reply, terminalCause());
+
             return;
         }
 
         pending.add(reply);
-        channel.writeAndFlush(RespCodec.encode(channel.alloc(), command))
+        channel.writeAndFlush(RespCodec.encode(channel.alloc(),
+                                               command))
                .addListener((ChannelFuture write) -> onWritten(write));
     }
 
@@ -266,8 +276,7 @@ public final class RedisConnection implements RedisCommands {
     private Result<Unit> runOnEventLoop(Runnable task) {
         var loop = channel.eventLoop();
 
-        return Result.lift(thrown -> connectionLost(Causes.fromThrowable(thrown)),
-                           () -> executeOn(loop, task));
+        return Result.lift(thrown -> connectionLost(Causes.fromThrowable(thrown)), () -> executeOn(loop, task));
     }
 
     private static void executeOn(EventLoop loop, Runnable task) {
@@ -288,8 +297,7 @@ public final class RedisConnection implements RedisCommands {
 
     private Cause describeTimeout(Cause cause) {
         return cause instanceof CoreError.Timeout
-               ? timeout(config.commandTimeout()
-                               .millis())
+               ? timeout(config.commandTimeout().millis())
                : cause;
     }
 
@@ -301,17 +309,15 @@ public final class RedisConnection implements RedisCommands {
     }
 
     private Cause terminalCause() {
-        return Option.option(terminal.get())
-                     .or(RedisError.General.CLOSED);
+        return Option.option(terminal.get()).or(RedisError.General.CLOSED);
     }
 
     /// Close the connection. Idempotent: every call returns the same promise.
     public Promise<Unit> close() {
         terminal.compareAndSet(null, RedisError.General.CLOSED);
-        Option.option(channel)
-              .onPresent(Channel::close);
-        Option.option(channel)
-              .onEmpty(this::release);
+        Option.option(channel).onPresent(Channel::close);
+        Option.option(channel).onEmpty(this::release);
+
         return closed;
     }
 
@@ -332,6 +338,7 @@ public final class RedisConnection implements RedisCommands {
         while (!pending.isEmpty()) {
             refuse(pending.poll(), cause);
         }
+
         release();
     }
 
@@ -346,14 +353,13 @@ public final class RedisConnection implements RedisCommands {
         @Contract
         protected void initChannel(SocketChannel ch) {
             channel = ch;
-            ch.closeFuture()
-              .addListener(_ -> drain());
+            ch.closeFuture().addListener(_ -> drain());
             tls.onPresent(context -> ch.pipeline()
                                        .addLast("ssl",
-                                                context.newHandler(ch.alloc(), config.host(), config.port())));
-            ch.pipeline()
-              .addLast("decoder", new RespFrameDecoder())
-              .addLast("replies", new ReplyHandler());
+                                                context.newHandler(ch.alloc(),
+                                                                   config.host(),
+                                                                   config.port())));
+            ch.pipeline().addLast("decoder", new RespFrameDecoder()).addLast("replies", new ReplyHandler());
         }
     }
 
@@ -384,7 +390,6 @@ public final class RedisConnection implements RedisCommands {
     @Contract
     private void complete(Promise<RespValue> reply, RespValue value) {
         inFlight.decrementAndGet();
-        reply.resolve(value.asServerError()
-                           .fold(() -> success(value), RedisError.ServerError::result));
+        reply.resolve(value.asServerError().fold(() -> success(value), RedisError.ServerError::result));
     }
 }

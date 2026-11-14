@@ -33,9 +33,7 @@ public record SetOptions(Option<Expiry> expiry, boolean onlyIfAbsent) {
     public enum Precision {
         SECONDS("EX"),
         MILLIS("PX");
-
         private final String keyword;
-
         Precision(String keyword) {
             this.keyword = keyword;
         }
@@ -44,8 +42,7 @@ public record SetOptions(Option<Expiry> expiry, boolean onlyIfAbsent) {
     /// A positive time to live.
     public record Expiry(Precision precision, long amount) {
         public static Result<Expiry> expiry(Precision precision, long amount) {
-            return Verify.ensure(amount, Verify.Is::positive)
-                         .map(positive -> new Expiry(precision, positive));
+            return Verify.ensure(amount, Verify.Is::positive).map(positive -> new Expiry(precision, positive));
         }
 
         public static Result<Expiry> seconds(long amount) {
@@ -72,8 +69,7 @@ public record SetOptions(Option<Expiry> expiry, boolean onlyIfAbsent) {
 
     /// The SET arguments after `key value`.
     List<byte[]> arguments() {
-        return Stream.concat(expiry.stream()
-                                   .flatMap(SetOptions::expiryArguments),
+        return Stream.concat(expiry.stream().flatMap(SetOptions::expiryArguments),
                              onlyIfAbsent
                              ? Stream.of(utf8("NX"))
                              : Stream.<byte[]> empty())
@@ -81,6 +77,7 @@ public record SetOptions(Option<Expiry> expiry, boolean onlyIfAbsent) {
     }
 
     private static Stream<byte[]> expiryArguments(Expiry ttl) {
-        return Stream.of(utf8(ttl.precision().keyword), utf8(Long.toString(ttl.amount())));
+        return Stream.of(utf8(ttl.precision().keyword),
+                         utf8(Long.toString(ttl.amount())));
     }
 }

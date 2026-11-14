@@ -64,9 +64,11 @@ public interface RedisCommands {
     /// `SET key value [EX|PX ttl] [NX]`: true when the value was stored, false when `NX` found the key
     /// present.
     default Promise<Boolean> set(String key, byte[] value, SetOptions options) {
-        return expect(command("SET", Stream.concat(Stream.of(utf8(key), value), options.arguments()
-                                                                                       .stream())
-                                           .toArray(byte[][]::new)),
+        return expect(command("SET",
+                              Stream.concat(Stream.of(utf8(key),
+                                                      value),
+                                            options.arguments().stream())
+                                    .toArray(byte[][]::new)),
                       RespValue::asAppliedFlag);
     }
 
@@ -120,18 +122,21 @@ public interface RedisCommands {
         parts.add(utf8(Integer.toString(keys.size())));
         keys.forEach(key -> parts.add(utf8(key)));
         parts.addAll(args);
+
         return command("EVAL", parts.toArray(byte[][]::new));
     }
 
     private static byte[][] keys(String first, String[] more) {
-        return Stream.concat(Stream.of(first), Stream.of(more))
+        return Stream.concat(Stream.of(first),
+                             Stream.of(more))
                      .map(RedisCommands::utf8)
                      .toArray(byte[][]::new);
     }
 
     /// Verb followed by its arguments, as the parts of one command.
     static List<byte[]> command(String verb, byte[]... arguments) {
-        return Stream.concat(Stream.of(utf8(verb)), Stream.of(arguments))
+        return Stream.concat(Stream.of(utf8(verb)),
+                             Stream.of(arguments))
                      .toList();
     }
 

@@ -38,8 +38,7 @@ final class RespFrameDecoder extends ByteToMessageDecoder {
         while (more && in.isReadable()) {
             var decoded = RespCodec.decode(in);
 
-            decoded.onFailure(cause -> abandon(ctx, in, cause))
-                   .onSuccess(value -> value.onPresent(out::add));
+            decoded.onFailure(cause -> abandon(ctx, in, cause)).onSuccess(value -> value.onPresent(out::add));
             more = decoded.fold(_ -> false, value -> value.isPresent());
         }
     }
