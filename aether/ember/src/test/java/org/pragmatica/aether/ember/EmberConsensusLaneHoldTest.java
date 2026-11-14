@@ -46,13 +46,20 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// frames are held in the lane backlog.
 ///
 /// Pinned:
-///  1. exactly one episode per held lane spans the hold: one `cleared` summary per lane whose duration covers the hold (the
-///     lane flaps while the window fills, so shorter episodes also appear; every `entered` has its `cleared`);
+///  1. the hold is covered by unwritability: at least one `cleared` summary per held lane closes after the markers, and
+///     their durations (each capped at the marker-to-release span) add up to the hold on every lane. A lane that turns
+///     writable for a moment mid-hold splits its episode in two and still passes; the lane flaps while the window fills,
+///     so shorter episodes also appear. The log line does not name the sender, so per-lane attribution is by count and
+///     summed duration, not by identity. Every `entered` has its `cleared`, read from the same snapshot;
 ///  2. a frame held longer than the 5 s frame budget is given up and counted (`RETRY_GAVE_UP`), and once the hold is released
 ///     no backlog and no retry stays behind;
 ///  3. THE #3194 ASSERTION: a write committed during the hold reaches the held peer within [#CATCH_UP_BOUND_MS] of the release,
 ///     so a frame the hold made the transport give up is recovered by a layer above it. Which layer is NOT pinned: on the
 ///     senders, ignoring `SyncRequest`, `RoundRequest` or `KVSyncRequest` (each alone, then all three) left this green.
+///
+/// Not pinned, and part of the cost being measured: recovery may depend on the traffic submitted after the release (the
+/// `kick-` puts), and each sender writes up to [#FILL_PUTS_MAX] puts of [#FILL_VALUE_CHARS] chars (about 120 MB) before
+/// the lane is unwritable, so the held peer's catch-up includes that volume.
 ///
 /// Hold length: the frame budget is 5 s, so the marker writes, submitted 1 s into a [#HOLD_AFTER_MARKERS] hold, are older
 /// than the budget (and given up) several times over by the release; a longer hold adds CI time and no coverage.
@@ -146,23 +153,29 @@ class EmberConsensusLaneHoldTest {
             // span the marker phase. Their summary is written by the first write after the release.
             var holdMs = (releasedAt - markersAt) / 1_000_000L - SLACK_MS;
 
-            awaitTrue("a cleared summary covering the hold per held lane", () -> holdEpisodes(arrivals, heldId, holdMs).size() >= senders.size());
+            var spanMs = (releasedAt - markersAt) / 1_000_000L;
 
-            // (1) one episode per held lane spans the hold (not split, not lost) and every episode that opened also closed.
-            var episodes = holdEpisodes(arrivals, heldId, holdMs);
-            var entered = enteredFor(arrivals, heldId);
-            var cleared = clearedFor(arrivals, heldId);
+            awaitTrue("a cleared summary covering the hold per held lane",
+                      () -> coversHold(holdEpisodes(List.copyOf(arrivals), heldId, markersAt), senders.size(), spanMs, holdMs));
+
+            // (1) every held lane has an episode that closed after the markers, together covering the hold (a split episode
+            // passes), and every episode that opened also closed. One snapshot: a flap between two reads cannot red it.
+            var snapshot = List.copyOf(arrivals);
+            var episodes = holdEpisodes(snapshot, heldId, markersAt);
+            var entered = enteredFor(snapshot, heldId);
+            var cleared = clearedFor(snapshot, heldId);
 
             System.out.printf("LANE-HOLD heldFor=%d ms (from hold to release) holdEpisodes=%d entered=%d cleared=%d gaveUpDuringHold=%d%n",
                               releasedAtMs, episodes.size(), entered.size(), cleared.size(), gaveUp);
-            assertThat(episodes).as("exactly one episode per held lane (%d senders) spans the %d ms hold", senders.size(), holdMs)
-                                .hasSize(senders.size());
+            assertThat(coversHold(episodes, senders.size(), spanMs, holdMs)).as("every held lane (%d senders) has an episode closed after the markers, together covering the %d ms hold: %s",
+                                                                              senders.size(),
+                                                                              holdMs,
+                                                                              episodes).isTrue();
             // (2) frames older than the budget were given up and counted; nothing stays behind after the release.
             assertThat(gaveUp).as("held frames older than the frame budget are counted as RETRY_GAVE_UP").isPositive();
             awaitTrue("no backlog and no retry in flight after the release",
                       () -> senders.stream().allMatch(sender -> backlogCount(sender) == 0 && network(sender).consensusRetriesInFlight() == 0));
-            assertThat(enteredFor(arrivals, heldId)).as("every episode that entered also cleared (none lost)")
-                                                    .hasSameSizeAs(clearedFor(arrivals, heldId));
+            assertThat(entered).as("every episode that entered also cleared (none lost)").hasSameSizeAs(cleared);
             // (3) THE #3194 ASSERTION.
             var releaseNanos = releasedAt;
 
@@ -218,12 +231,22 @@ class EmberConsensusLaneHoldTest {
                        .toList();
     }
 
-    private static List<Arrival> holdEpisodes(List<Arrival> arrivals, NodeId peer, long atLeastMs) {
-        return clearedFor(arrivals, peer).stream().filter(a -> {
-            var matcher = CLEARED.matcher(a.message());
+    /// The cleared summaries written after `markersAt`: the episodes that were open while the hold ran.
+    private static List<Arrival> holdEpisodes(List<Arrival> arrivals, NodeId peer, long markersAt) {
+        return clearedFor(arrivals, peer).stream().filter(a -> a.nanos() >= markersAt).toList();
+    }
 
-            return matcher.find() && Long.parseLong(matcher.group(3)) >= atLeastMs;
-        }).toList();
+    /// At least one episode per sender and, summing each episode capped at the marker-to-release span, the hold on every sender.
+    private static boolean coversHold(List<Arrival> episodes, int senders, long spanMs, long holdMs) {
+        var covered = episodes.stream().mapToLong(a -> Math.min(spanMs, durationMs(a))).sum();
+
+        return episodes.size() >= senders && covered >= senders * holdMs;
+    }
+
+    private static long durationMs(Arrival episode) {
+        var matcher = CLEARED.matcher(episode.message());
+
+        return matcher.find() ? Long.parseLong(matcher.group(3)) : 0L;
     }
 
     private static List<Arrival> clearedFor(List<Arrival> arrivals, NodeId peer) {
