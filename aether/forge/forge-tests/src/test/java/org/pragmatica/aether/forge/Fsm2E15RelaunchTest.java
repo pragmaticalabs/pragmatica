@@ -215,7 +215,8 @@ class Fsm2E15RelaunchTest {
                            .or("{\"error\":\"request failed\"}");
 
         log("publish -> " + response);
-        assertThat(response).as("SETUP: publish accepted").doesNotContain("\"error\"");
+        assertThat(response).as("SETUP: publish accepted (the slice artifact must be installed in the run's maven.repo.local: run `install`, not `verify`)")
+                             .contains("\"status\":\"applied\"");
     }
 
     private URI mgmt(String path) {
