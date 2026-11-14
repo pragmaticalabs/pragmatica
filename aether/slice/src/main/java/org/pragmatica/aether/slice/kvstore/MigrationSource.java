@@ -25,16 +25,19 @@ import static org.pragmatica.aether.slice.kvstore.MigrationSourceError.Absent.AB
 public sealed interface MigrationSource {
     String SET_PREFIX = "set:";
     Pattern SET_ID = Pattern.compile("^[a-z][a-z0-9-]{0,62}$");
+    /// Canonical decimal version: no sign, no leading zero, ASCII digits only, so one version has one spelling.
+    Pattern SET_VERSION = Pattern.compile("^[1-9][0-9]{0,9}$");
 
-    /// The scripts come from the jar of `artifact`.
-    record FromArtifact(Artifact artifact) implements MigrationSource {
-        public static FromArtifact fromArtifact(Artifact artifact) {
-            return new FromArtifact(artifact);
+    /// The scripts come from the jar of `artifact`. `raw` is the string the artifact was read from:
+    /// `Artifact` normalises its version (`1.0.0.RELEASE`, `01.2.3`, `+1.2.3`), so only `raw` prints byte-identical.
+    record FromArtifact(Artifact artifact, String raw) implements MigrationSource {
+        public static FromArtifact fromArtifact(Artifact artifact, String raw) {
+            return new FromArtifact(artifact, raw);
         }
 
         @Override
         public String display() {
-            return artifact.asString();
+            return raw;
         }
     }
 
@@ -87,7 +90,7 @@ public sealed interface MigrationSource {
 
     private static Result<MigrationSource> parseArtifact(String raw) {
         return Artifact.artifact(raw)
-                       .map(FromArtifact::fromArtifact)
+                       .map(artifact -> FromArtifact.fromArtifact(artifact, raw))
                        .map(MigrationSource.class::cast);
     }
 
@@ -96,7 +99,10 @@ public sealed interface MigrationSource {
 
         return at < 0
                ? MigrationSourceError.Malformed.malformed(body).result()
-               : Number.parseInt(body.substring(at + 1))
+               : Verify.ensure(body.substring(at + 1),
+                               Verify.Is::matches,
+                               SET_VERSION)
+                       .flatMap(Number::parseInt)
                        .flatMap(version -> FromSet.fromSet(body.substring(0, at),
                                                            version))
                        .map(MigrationSource.class::cast);

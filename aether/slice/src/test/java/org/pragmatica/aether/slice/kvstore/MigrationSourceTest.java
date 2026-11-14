@@ -9,6 +9,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.MigrationSource.FromArtifact;
 import org.pragmatica.aether.slice.kvstore.MigrationSource.FromSet;
+import org.pragmatica.aether.slice.kvstore.MigrationSourceError.Absent;
+import org.pragmatica.aether.slice.kvstore.MigrationSourceError.Malformed;
 import org.pragmatica.lang.Result;
 
 import org.junit.jupiter.api.Test;
@@ -35,7 +37,7 @@ class MigrationSourceTest {
 
     @Test
     void migrationSource_artifactCoords_readsFromArtifact() {
-        var expected = FromArtifact.fromArtifact(Artifact.artifact(COORDS).unwrap());
+        var expected = FromArtifact.fromArtifact(Artifact.artifact(COORDS).unwrap(), COORDS);
 
         assertThat(outcome(MigrationSource.migrationSource(COORDS))).isEqualTo(expected);
     }
@@ -47,7 +49,7 @@ class MigrationSourceTest {
 
     @Test
     void migrationSource_bothArms_roundTripThroughDisplayInputs() {
-        var artifact = FromArtifact.fromArtifact(Artifact.artifact(COORDS).unwrap());
+        var artifact = FromArtifact.fromArtifact(Artifact.artifact(COORDS).unwrap(), COORDS);
 
         assertThat(artifact.display()).isEqualTo(COORDS);
         assertThat(FromSet.fromSet("a-b", 12).unwrap().display()).isEqualTo("migration set a-b v12");
@@ -68,9 +70,60 @@ class MigrationSourceTest {
                                  "set:X@1", "set:1x@1", "set:x_y@1", "set:x@1@2", "org.example:orders-schema", "SET:x@1");
 
         for (var raw : unreadable) {
-            assertThat(outcome(MigrationSource.migrationSource(raw))).describedAs("raw=%s", raw)
-                                                                      .isEqualTo(MigrationSourceError.Malformed.malformed(raw));
+            assertMalformedKeeping(raw);
         }
+    }
+
+    /// Expected raw and message are built here by hand, not through `Malformed.malformed`, so a broken
+    /// factory cannot hide behind a test that shares it.
+    private static void assertMalformedKeeping(String raw) {
+        var cause = outcome(MigrationSource.migrationSource(raw));
+
+        assertThat(cause).describedAs("raw=%s", raw).isInstanceOf(Malformed.class);
+        assertThat(((Malformed) cause).raw()).describedAs("raw kept for %s", raw).isEqualTo(raw);
+        assertThat(((Malformed) cause).message()).isEqualTo("Malformed migration source '" + raw + "'");
+    }
+
+    @Test
+    void migrationSource_nonCanonicalSetVersion_isMalformedKeepingRaw() {
+        var nonCanonical = List.of("set:x@+1", "set:x@01", "set:x@001", "set:a@ 1", "set:a@1 ", "set: a@1", "set:x@\u0663",
+                                   "set:x@99999999999", "set:x@2147483648", "set:x@1\n");
+
+        for (var raw : nonCanonical) {
+            assertMalformedKeeping(raw);
+        }
+    }
+
+    @Test
+    void migrationSource_canonicalSetVersion_readsAtTheBounds() {
+        assertThat(outcome(MigrationSource.migrationSource("set:x@2147483647"))).isEqualTo(FromSet.fromSet("x", Integer.MAX_VALUE).unwrap());
+        assertThat(outcome(MigrationSource.migrationSource("set:x@10"))).isEqualTo(FromSet.fromSet("x", 10).unwrap());
+    }
+
+    @Test
+    void display_artifactCoordsWithNonCanonicalVersion_isByteIdenticalToRaw() {
+        for (var raw : List.of("org.example:a:1.0.0.RELEASE", "org.example:a:01.2.3", "org.example:a:+1.2.3")) {
+            var source = MigrationSource.migrationSource(raw);
+
+            assertThat(source.isSuccess()).describedAs("raw=%s reads", raw).isTrue();
+            assertThat(outcome(source)).describedAs("raw=%s", raw).isInstanceOf(FromArtifact.class);
+            assertThat(source.unwrap().display()).describedAs("source display of %s", raw).isEqualTo(raw);
+            assertThat(MigrationSource.display(raw)).describedAs("static display of %s", raw).isEqualTo(raw);
+        }
+    }
+
+    @Test
+    void migrationSource_artifactCoordsContainingSetMidString_readsAsArtifact() {
+        var raw = "org.set:app:1.0.0";
+
+        assertThat(outcome(MigrationSource.migrationSource(raw))).isEqualTo(FromArtifact.fromArtifact(Artifact.artifact(raw).unwrap(), raw));
+    }
+
+    @Test
+    void absentAndMalformed_messages_areTheDocumentedText() {
+        assertThat(Absent.ABSENT.message()).isEqualTo("Migration source is absent");
+        assertThat(Malformed.malformed("q").message()).isEqualTo("Malformed migration source 'q'");
+        assertThat(Malformed.malformed("q").raw()).isEqualTo("q");
     }
 
     @Test

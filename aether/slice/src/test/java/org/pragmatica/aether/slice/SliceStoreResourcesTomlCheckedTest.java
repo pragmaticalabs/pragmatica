@@ -14,6 +14,7 @@ import java.util.Random;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -99,5 +100,43 @@ class SliceStoreResourcesTomlCheckedTest {
 
         assertThat(SliceStore.readSliceResourcesTomlChecked(url).isFailure()).describedAs("checked read of a corrupt entry").isTrue();
         assertThat(SliceStore.readSliceResourcesToml(url)).isEqualTo(Option.none());
+    }
+
+    @Test
+    void checked_entryFailure_messageIsOneLineWithoutStackTrace() throws IOException {
+        var good = jarBytes(ENTRY, randomToml());
+        var corrupt = good.clone();
+        var dataStart = 30 + ENTRY.length();
+
+        for (var i = dataStart + 200; i < dataStart + 400; i++) {
+            corrupt[i] ^= (byte) 0x5A;
+        }
+
+        var message = ((Cause) outcome(SliceStore.readSliceResourcesTomlChecked(jar("trace.jar", corrupt)))).message();
+
+        assertThat(message).startsWith("Could not read META-INF/resources.toml from the slice jar: java.util.zip.ZipException");
+        assertThat(message).doesNotContain("\n").doesNotContain("\tat ");
+    }
+
+    @Test
+    void checked_fileThatIsNotAZip_isFailureDistinctFromZipWithoutEntry() throws IOException {
+        var notZip = jar("not-a-zip.jar", "this is plain text, not an archive".getBytes(StandardCharsets.UTF_8));
+        var emptyZip = jar("empty.jar", jarBytes("META-INF/other.txt", ""));
+
+        var notZipOutcome = outcome(SliceStore.readSliceResourcesTomlChecked(notZip));
+
+        assertThat(notZipOutcome).isInstanceOf(Cause.class);
+        assertThat(((Cause) notZipOutcome).message()).startsWith("Slice jar cannot be opened as a zip archive:");
+        assertThat(outcome(SliceStore.readSliceResourcesTomlChecked(emptyZip))).isEqualTo(Option.none());
+        assertThat(SliceStore.readSliceResourcesToml(notZip)).isEqualTo(Option.none());
+    }
+
+    @Test
+    void checked_nonAsciiEntry_isReadAsUtf8() throws IOException {
+        var toml = "[database]\nname = \"caf\u00e9-\u4e2d\u6587\"\n";
+        var url = jar("utf8.jar", jarBytes(ENTRY, toml));
+
+        assertThat(outcome(SliceStore.readSliceResourcesTomlChecked(url))).isEqualTo(Option.some(toml));
+        assertThat(SliceStore.readSliceResourcesToml(url)).isEqualTo(Option.some(toml));
     }
 }

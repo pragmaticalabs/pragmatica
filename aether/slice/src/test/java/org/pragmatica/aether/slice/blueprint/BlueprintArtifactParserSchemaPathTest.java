@@ -22,12 +22,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BlueprintArtifactParserSchemaPathTest {
     private static final String SQL = "CREATE TABLE orders(id BIGINT PRIMARY KEY);";
 
-    private static byte[] jar(String schemaPath) {
+    private static byte[] jar(String... schemaPaths) {
         var bytes = new ByteArrayOutputStream();
 
         try (var zip = new ZipOutputStream(bytes)) {
             put(zip, "META-INF/blueprint.toml", "id = \"org.example:orders-app:1.0.0\"\n\n[[slices]]\nartifact = \"org.example:orders-api:1.0.0\"\ninstances = 3\n");
-            put(zip, schemaPath, SQL);
+            for (var schemaPath : schemaPaths) {
+                put(zip, schemaPath, SQL);
+            }
         } catch (IOException e) {
             throw new IllegalStateException("Failed to build test blueprint jar", e);
         }
@@ -63,6 +65,47 @@ class BlueprintArtifactParserSchemaPathTest {
         var entry = artifact.schemaMigrations().get("database.main").getFirst();
 
         assertThat(entry).isEqualTo(MigrationEntry.migrationEntry("V1__a.sql", SQL));
+        assertThat(entry.checksum()).isEqualTo(crc.getValue());
+    }
+
+    @Test
+    void parse_severalRefusedPaths_reportsTheFirstInArchiveOrder() {
+        var result = BlueprintArtifactParser.parse(jar("schema/first@a/V1__a.sql", "schema/second@b/V1__b.sql"));
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(refusal(result)).contains("schema/first@a/V1__a.sql").doesNotContain("schema/second@b/V1__b.sql");
+    }
+
+    @Test
+    void parse_atInFilename_isStillAccepted() {
+        var artifact = BlueprintArtifactParser.parse(jar("schema/main/V1__a@b.sql")).unwrap();
+
+        assertThat(artifact.schemaMigrations().get("database.main")).extracting(MigrationEntry::filename).containsExactly("V1__a@b.sql");
+    }
+
+    @Test
+    void parse_atInNestedSubdirectory_isStillAccepted() {
+        var artifact = BlueprintArtifactParser.parse(jar("schema/main/sub@dir/V1__a.sql")).unwrap();
+
+        assertThat(artifact.schemaMigrations().get("database.main")).extracting(MigrationEntry::filename).containsExactly("V1__a.sql");
+    }
+
+    @Test
+    void parse_nonAsciiSql_checksumIsCrcOfUtf8Bytes() throws IOException {
+        var sql = "-- \u00e9\u00e8\u4e2d\nCREATE TABLE t(id BIGINT);";
+        var crc = new CRC32();
+        var bytes = new ByteArrayOutputStream();
+
+        crc.update(sql.getBytes(StandardCharsets.UTF_8));
+
+        try (var zip = new ZipOutputStream(bytes)) {
+            put(zip, "META-INF/blueprint.toml", "id = \"org.example:orders-app:1.0.0\"\n\n[[slices]]\nartifact = \"org.example:orders-api:1.0.0\"\ninstances = 3\n");
+            put(zip, "schema/main/V1__a.sql", sql);
+        }
+
+        var entry = BlueprintArtifactParser.parse(bytes.toByteArray()).unwrap().schemaMigrations().get("database.main").getFirst();
+
+        assertThat(entry.sql()).isEqualTo(sql);
         assertThat(entry.checksum()).isEqualTo(crc.getValue());
     }
 }

@@ -4,6 +4,8 @@
 package org.pragmatica.aether.slice;
 
 import java.io.IOException;
+import java.net.JarURLConnection;
+import java.net.URI;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
@@ -212,8 +214,8 @@ public interface SliceStore {
     }
 
     /// The same read as [#readSliceResourcesToml(URL)], but a failure to read the entry is reported, not
-    /// logged and dropped: `success(none)` is a jar that ships no `resources.toml`, `failure` is a jar whose
-    /// entry exists but cannot be read. The deploy-time publish refuses on the failure; the loader keeps the
+    /// logged and dropped: `success(none)` is a zip that ships no `resources.toml`, `failure` is a file
+    /// that is not a readable zip, or a jar whose entry exists but cannot be read. The deploy-time publish refuses on the failure; the loader keeps the
     /// lenient form, so a publish can only refuse more than the loader admits, never less.
     static Result<Option<String>> readSliceResourcesTomlChecked(URL sliceJarUrl) {
         return sliceStore.readSliceResourcesTomlCheckedFromJar(sliceJarUrl);
@@ -282,6 +284,10 @@ public interface SliceStore {
                       ConcurrentHashMap<Artifact, Promise<LoadedSliceEntry>> entries) implements SliceStore {
         private static final Logger log = LoggerFactory.getLogger(sliceStore.class);
         private static final String SLICE_RESOURCES_TOML = "META-INF/resources.toml";
+
+        private static final Fn1<Cause, String> RESOURCES_TOML_UNREADABLE = Causes.forOneValue("Could not read META-INF/resources.toml from the slice jar: %s");
+
+        private static final Fn1<Cause, String> SLICE_JAR_NOT_A_ZIP = Causes.forOneValue("Slice jar cannot be opened as a zip archive: %s");
 
         @Override
         public Promise<LoadedSlice> loadSlice(Artifact artifact) {
@@ -526,7 +532,13 @@ public interface SliceStore {
             return lenientRead(readSliceResourcesTomlCheckedFromJar(sliceJarUrl));
         }
 
+        /// A file that is not a zip fails here, typed apart from "a zip without `resources.toml`": the
+        /// classloader answers `null` for both, so the archive is opened first.
         private static Result<Option<String>> readSliceResourcesTomlCheckedFromJar(URL sliceJarUrl) {
+            return requireZip(sliceJarUrl).flatMap(_ -> readSliceResourcesTomlCheckedThroughJarLoader(sliceJarUrl));
+        }
+
+        private static Result<Option<String>> readSliceResourcesTomlCheckedThroughJarLoader(URL sliceJarUrl) {
             var jarClassLoader = new UncachedResourceClassLoader(new URL[]{sliceJarUrl},
                                                                  ClassLoader.getPlatformClassLoader());
             var resourcesToml = readSliceResourcesTomlCheckedThrough(jarClassLoader);
@@ -534,6 +546,21 @@ public interface SliceStore {
             closeJarClassLoader(sliceJarUrl, jarClassLoader);
 
             return resourcesToml;
+        }
+
+        /// Adapter boundary: opening the archive throws only `IOException` (not a zip, missing, unreadable).
+        @SuppressWarnings("JBCT-EX-01")
+        private static Result<Unit> requireZip(URL sliceJarUrl) {
+            try {
+                var connection = (JarURLConnection) URI.create("jar:" + sliceJarUrl + "!/").toURL().openConnection();
+
+                connection.setUseCaches(false);
+                try (var _ = connection.getJarFile()) {
+                    return Result.unitResult();
+                }
+            } catch (IOException e) {
+                return SLICE_JAR_NOT_A_ZIP.apply(e.toString()).result();
+            }
         }
 
         /// FER: the entry has already been read in full, so a failing close changes nothing the reader
@@ -564,16 +591,17 @@ public interface SliceStore {
                           .or(Option.none());
         }
 
-        private static Result<Option<String>> readSliceResourcesTomlCheckedThrough(ClassLoader classLoader) {
-            return Result.lift(Causes::fromThrowable, () -> readResourcesTomlEntry(classLoader));
-        }
-
+        /// Adapter boundary: the read throws only `IOException`; anything else is a defect and propagates.
+        /// The cause carries the exception's one-line description, never its stack trace, because the
+        /// lenient reader logs `message()` for what is an expected condition.
         @SuppressWarnings("JBCT-EX-01")
-        private static Option<String> readResourcesTomlEntry(ClassLoader classLoader) throws IOException {
+        private static Result<Option<String>> readSliceResourcesTomlCheckedThrough(ClassLoader classLoader) {
             try (var in = classLoader.getResourceAsStream(SLICE_RESOURCES_TOML)) {
-                return in == null
-                       ? Option.none()
-                       : Option.some(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+                return Result.success(in == null
+                                      ? Option.<String> none()
+                                      : Option.some(new String(in.readAllBytes(), StandardCharsets.UTF_8)));
+            } catch (IOException e) {
+                return RESOURCES_TOML_UNREADABLE.apply(e.toString()).result();
             }
         }
 
