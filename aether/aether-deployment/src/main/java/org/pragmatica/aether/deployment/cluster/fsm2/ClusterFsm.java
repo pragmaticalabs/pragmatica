@@ -165,6 +165,15 @@ public final class ClusterFsm {
     }
 
     /// `Deactivate`: cancel the incarnation's timers and discard the model (3.2, NT-02).
+    ///
+    /// ```tla Fsm2Leader:Deactivate
+    /// \* CI-1 Deactivate after the committed leader moved: ClusterFsm.java.
+    /// Deactivate(n) ==
+    ///   /\ fsm[n] = "Active" /\ kvLeader # n
+    ///   /\ Discard(n)
+    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, shown, inc, view, net, settles,
+    ///                  condBudget, faultBudget, redo>>
+    /// ```
     private static ClusterState deactivated(ClusterModel model, Ctx ctx) {
         cancelTimers(model, ctx);
 
