@@ -31,6 +31,21 @@ public interface DatasourceConnectionProvider {
     Promise<Unit> release(String datasourceName);
     Promise<Unit> releaseAll();
 
+    /// A connector cached under `cacheKey` and created from the datasource `configSection` (#2100 E-B, N5b/N7).
+    ///
+    /// The default ignores the key and serves the section, so an implementation that does not override it observes
+    /// exactly the one-argument call (every existing fake keyed by name sees today's argument). A production
+    /// implementation that forgets to override would share by section; the instance override is pinned by a tripwire.
+    default Promise<SqlConnector> connector(String cacheKey, String configSection) {
+        return connector(configSection);
+    }
+
+    /// Releases the connector cached under `cacheKey` (#2100 E-B, N5b/N7); the default serves the section, see
+    /// [#connector(String, String)].
+    default Promise<Unit> release(String cacheKey, String configSection) {
+        return release(configSection);
+    }
+
     static DatasourceConnectionProvider datasourceConnectionProvider() {
         return new DatasourceConnectionProviderInstance(DatasourceConnectionProvider::loadFromConfigService);
     }
@@ -73,12 +88,23 @@ class DatasourceConnectionProviderInstance implements DatasourceConnectionProvid
 
     @Override
     public Promise<SqlConnector> connector(String datasourceName) {
-        return connectors.computeIfAbsent(datasourceName, this::createConnector);
+        return connector(datasourceName, datasourceName);
+    }
+
+    @Override
+    public Promise<SqlConnector> connector(String cacheKey, String configSection) {
+        return evictOnFailure(cacheKey,
+                              connectors.computeIfAbsent(cacheKey, _ -> createConnector(cacheKey, configSection)));
     }
 
     @Override
     public Promise<Unit> release(String datasourceName) {
-        return option(connectors.remove(datasourceName)).map(promise -> promise.flatMap(DatabaseConnector::stop))
+        return release(datasourceName, datasourceName);
+    }
+
+    @Override
+    public Promise<Unit> release(String cacheKey, String configSection) {
+        return option(connectors.remove(cacheKey)).map(promise -> promise.flatMap(DatabaseConnector::stop))
                      .or(Promise.success(unit()));
     }
 
@@ -94,13 +120,21 @@ class DatasourceConnectionProviderInstance implements DatasourceConnectionProvid
         return Promise.allOf(futures).map(_ -> unit());
     }
 
-    private Promise<SqlConnector> createConnector(String datasourceName) {
+    /// N5a, FER (degrade forward): the failure still reaches the caller; only the cache entry is dropped, so the next
+    /// call for the key creates anew instead of replaying the failed promise. Registered AFTER `computeIfAbsent`
+    /// returns: an already-failed promise runs `onFailure` synchronously, and a `remove` inside the mapping function
+    /// would be a recursive `ConcurrentHashMap` update. `remove(key, promise)` never evicts a newer entry.
+    private Promise<SqlConnector> evictOnFailure(String cacheKey, Promise<SqlConnector> promise) {
+        return promise.onFailure(_ -> connectors.remove(cacheKey, promise));
+    }
+
+    private Promise<SqlConnector> createConnector(String cacheKey, String configSection) {
         log.info("Creating SqlConnector for datasource '{}' from config section '{}', {} factories available",
-                 datasourceName,
-                 datasourceName,
+                 cacheKey,
+                 configSection,
                  factories.size());
 
-        return loadConfig(datasourceName).flatMap(this::selectAndProvision);
+        return loadConfig(configSection).flatMap(this::selectAndProvision);
     }
 
     private Promise<DatabaseConnectorConfig> loadConfig(String configSection) {
