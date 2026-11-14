@@ -86,7 +86,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///   tick), and `Drains.resume` starts the loop. There is no synchronous entry, so thread attribution does not apply. The precondition is the
 ///   cluster interpreter's state being `ClusterState.Active` (raised when the rebuild completes, the counterpart of `REBUILT_MARKER`), and
 ///   the drainee keeps reporting at the ping interval (one pong is forgotten by the readiness sweep within three pings, before a 5 s
-///   sample), and the observable is `ClusterEffect.Log` "Drain complete for node <id>" (the bare id, unlike the legacy line) (`Drains.advance`, logged by `EffectTranslator` on
+///   sample; it stops reporting once the sampled seams list it, so the on-change reconcile request is the only producer of the loop), and the observable is `ClusterEffect.Log` "Drain complete for node <id>" (the bare id, unlike the legacy line) (`Drains.advance`, logged by `EffectTranslator` on
 ///   [#FSM2_LOGGER]). It must arrive within one seam interval (`SeamPoller.INTERVAL_MS`) plus [#FSM2_SLACK_MS] of the pong.
 ///
 /// A fabricated worker id is used as the drainee (as in `EmberDrainAcknowledgementWiringTest`) so the
@@ -210,15 +210,26 @@ class EmberDrainEvictionWiringTest {
                        capture::messages);
     }
 
-    /// Re-sends the DRAINING report once per ping interval; false, so the caller's own condition decides.
+    /// Re-sends the DRAINING report once per ping interval until the seam sample lists the drainee; false, so the caller's own condition decides.
     private static boolean repeatReport(AetherNode leader, NodeId drainee, long[] lastPongMs) {
         var now = System.currentTimeMillis();
 
-        if (now - lastPongMs[0] >= PING_MS) {
+        if (now - lastPongMs[0] >= PING_MS && !seamsListDrainee(leader, drainee)) {
             lastPongMs[0] = now;
             leader.metricsCollector().onClusterSyncPong(drainingPong(drainee));
         }
         return false;
+    }
+
+    /// True once the sampled seams list the drainee. From then on no further report is sent: a later report would pass `Drains.start`'s
+    /// seam gate and start the loop itself, so the only producer left is the on-change `Reconcile.request` of `Lifecycle.onSeams`.
+    private static boolean seamsListDrainee(AetherNode leader, NodeId drainee) {
+        return leader.deploymentWiring()
+                     .system()
+                     .map(system -> system.clusterInterpreter().state())
+                     .filter(state -> state instanceof ClusterState.Active)
+                     .map(state -> ((ClusterState.Active) state).model().seams().draining().contains(drainee))
+                     .or(false);
     }
 
     private static boolean clusterFsmActive(AetherNode leader) {
