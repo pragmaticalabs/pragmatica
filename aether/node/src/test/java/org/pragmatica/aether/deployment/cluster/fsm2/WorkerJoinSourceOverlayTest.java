@@ -20,6 +20,7 @@ import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 /// the join can be coalesced past it.
 class WorkerJoinSourceOverlayTest {
     private static final NodeId W1 = node("worker-1");
+    private static final NodeId W2 = node("worker-2");
 
     private static MbWorld world(Map<NodeId, String> snapshot) {
         return MbWorld.world(CORE_1, CORE_2, CORE_3)
@@ -50,10 +51,44 @@ class WorkerJoinSourceOverlayTest {
 
         blank.h.deliver(new ClusterInput.WorkerJoin(W1, blank.admit(W1, 21L), Option.some(" ")));
         assertThat(communityOf(blank, W1)).isEqualTo("eu-w-0");
+        var empty = world(Map.of(W1, "eu"));
+
+        empty.h.deliver(new ClusterInput.WorkerJoin(W1, empty.admit(W1, 21L), Option.some("")));
+        assertThat(communityOf(empty, W1)).isEqualTo("eu-w-0");
         var absent = world(Map.of(W1, "eu"));
 
-        absent.h.deliver(new ClusterInput.WorkerJoin(W1, absent.admit(W1, 21L), Option.none()));
+        absent.h.deliver(new ClusterInput.WorkerJoin(W1, absent.admit(W1, 21L)));
         assertThat(communityOf(absent, W1)).isEqualTo("eu-w-0");
+    }
+
+    /// Red when: a blank join source is overlaid although the snapshot has nothing: the worker would be placed in a blank-named community.
+    @Test
+    void blankJoinSource_isNotOverlaid_whenTheSnapshotHasNone() {
+        var w = world(Map.of());
+
+        w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, 21L), Option.some(" ")));
+        assertThat(communityOf(w, W1)).isEqualTo("default-w-0");
+    }
+
+    /// Red when: a second source for the same node does not replace the first (`putIfAbsent` instead of `put`): the join carries the newer label.
+    @Test
+    void joinSource_replacesAStaleSnapshotValue_forTheSameNode() {
+        var w = world(Map.of(W1, "stale"));
+
+        w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, 21L), Option.some("eu")));
+        assertThat(communityOf(w, W1)).isEqualTo("eu-w-0");
+    }
+
+    /// Red when: the overlay starts from an empty map instead of the snapshot, dropping the other nodes' sources: W2 joins later with no source of
+    /// its own and must still be placed by the snapshot value the overlay of W1 had to preserve.
+    @Test
+    void overlayingOneNodesSource_keepsTheSnapshotSourcesOfOtherNodes() {
+        var w = world(Map.of(W2, "us"));
+
+        w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, 21L), Option.some("eu")));
+        w.h.deliver(new ClusterInput.WorkerJoin(W2, w.admit(W2, 22L)));
+        assertThat(communityOf(w, W1)).isEqualTo("eu-w-0");
+        assertThat(communityOf(w, W2)).isEqualTo("us-w-0");
     }
 
     /// Tripwire (#3172, ENABLED): with no source in the join and none in the snapshot the worker is placed in `default-w-0`, which is sticky. The
