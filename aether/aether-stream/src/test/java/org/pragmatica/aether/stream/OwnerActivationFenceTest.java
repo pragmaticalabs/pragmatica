@@ -105,6 +105,7 @@ class OwnerActivationFenceTest {
 
     private Promise<Long> catchUp(String stream, int partition, NodeId source, long sourceTail) {
         catchUps.add(source.id() + "@" + sourceTail);
+        watermark.set(sourceTail);
 
         return Promise.success(sourceTail);
     }
