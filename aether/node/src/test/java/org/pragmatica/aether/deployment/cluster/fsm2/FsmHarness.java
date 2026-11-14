@@ -78,6 +78,8 @@ final class FsmHarness {
     Seams seams = Seams.UNWIRED;
     /// Submission kinds lost whatever the policy (a write that never reaches the applier).
     java.util.Set<ClusterModel.SubmitKind> loseKinds = java.util.Set.of();
+    /// Submission kinds held whatever the policy (a write in flight that commits late, via `applyHeld`).
+    java.util.Set<ClusterModel.SubmitKind> holdKinds = java.util.Set.of();
     /// Local membership's DEAD set as the next `Rebuild` reads it (C17r).
     ClusterInput.DeadSet dead = ClusterInput.DeadSet.NONE;
     SettlePolicy policy = SettlePolicy.APPLY;
@@ -269,7 +271,9 @@ final class FsmHarness {
     private void submitted(ClusterEffect.Submit submit) {
         var effective = loseKinds.contains(submit.kind())
                         ? SettlePolicy.LOSE
-                        : warningsCommit && submit.kind() == ClusterModel.SubmitKind.WARNINGS
+                        : holdKinds.contains(submit.kind())
+                          ? SettlePolicy.HOLD
+                          : warningsCommit && submit.kind() == ClusterModel.SubmitKind.WARNINGS
                           ? SettlePolicy.APPLY
                           : policy;
 

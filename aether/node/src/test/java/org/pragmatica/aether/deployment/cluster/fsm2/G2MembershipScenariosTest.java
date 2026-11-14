@@ -163,21 +163,29 @@ class G2MembershipScenariosTest {
     }
 
     // G2 P3 departure_sameIdRejoinsBeforeRetire_recordSuperseded_workerRegistered
-    // Red when: the same process rejoining while C17b is still in flight (lost for that window only) stays uncounted, keeps a
-    // DEPARTED record, loses its directive, or has its rows removed by a later R-4.3.3.
+    // Red when: the same process rejoining while C17b is in flight stays uncounted, keeps a DEPARTED record, or loses its directive or rows
+    // to the late C17b (the record's exact-value removal must refuse it), or a later R-4.3.3 removes its rows.
     @Test
     void departure_sameIdRejoinsBeforeRetire_recordSuperseded_workerRegistered() {
         var w = liveWorkerWorld();
 
-        w.c17bLost();
+        w.h.holdKinds = Set.of(SubmitKind.CLEANUP);
         w.h.deliver(new ClusterInput.WorkerLeave(W1));
         assertThat(w.counts(W1)).as("precondition: departed").isFalse();
+        var c17b = w.h.held.values().stream().filter(s -> s.kind() == SubmitKind.CLEANUP).findFirst();
+
+        assertThat(c17b.isPresent()).as("control: C17b is in flight").isTrue();
         w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, TOKEN)));
-        w.h.loseKinds = Set.of();
         w.h.advance(30_000L);
         assertThat(stateOf(w)).as("the record is superseded").isEqualTo(Option.some(DepartureState.ADMITTED));
+        var late = w.h.applyHeld(c17b.get().correlationId());
+
+        assertThat(late).as("the late C17b is refused whole").isInstanceOf(ClusterInput.Settlement.Refused.class);
+        w.h.holdKinds = Set.of();
+        w.h.advance(30_000L);
+        assertThat(stateOf(w)).as("the record stays superseded").isEqualTo(Option.some(DepartureState.ADMITTED));
         assertThat(w.counts(W1)).as("registered again").isTrue();
-        assertThat(w.present(new ActivationDirectiveKey(W1))).as("window closed: the directive survives the rejoin").isTrue();
+        assertThat(w.present(new ActivationDirectiveKey(W1))).as("the late C17b did not take the directive").isTrue();
         assertThat(w.h.submits(SubmitKind.DIRECTIVE_REMOVAL)).isEmpty();
     }
 
