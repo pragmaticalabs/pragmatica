@@ -189,6 +189,10 @@ public class RabiaEngine<C extends Command> {
     private static final int GENESIS_WARN_EVERY_ROUNDS = 10;
 
     private volatile Option<Cause> authorityFailure = Option.none();
+    /// #3213 — whether the persisted state was written by THIS engine instance ([#saveState]). Its configuration was then
+    /// this engine's own installed voter configuration at the persisted phase, not a backup loaded across a restart, so a
+    /// COLD sync answer keeps it ([#coldAnswerState]). False until the first save: a backup stays stripped (#1526).
+    private volatile boolean persistedByThisEngine = false;
     /// Why this node's OWN persisted history could not be restored (#1468). Set only by
     /// [#recordOwnRestoreFailure] and never cleared in-process: the own-restore arm runs only after a genesis has
     /// resolved (adoption needs an installed electorate), and no genesis installs after that, so unlike
@@ -1010,11 +1014,14 @@ public class RabiaEngine<C extends Command> {
             return Result.success(Unit.unit());
         }
 
-        return voters.fold(() -> persistence.save(stateMachine, currentPhase.get(), pendingBatches.values()),
+        return voters.fold(() -> persistence.save(stateMachine,
+                                                  currentPhase.get(),
+                                                  pendingBatches.values()),
                            configuration -> persistence.save(stateMachine,
                                                              currentPhase.get(),
                                                              pendingBatches.values(),
-                                                             configuration));
+                                                             configuration))
+                     .onSuccessRun(() -> persistedByThisEngine = true);
     }
 
     private final NodeId self;
@@ -3010,10 +3017,24 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// A backup's voter configuration is not authority: a cold restart forms a fresh genesis and restores
-    /// only the data under it (owner ruling, #1526). Own restores and COLD sync answers therefore carry
-    /// no configuration.
+    /// only the data under it (owner ruling, #1526). Own restores, and COLD sync answers served from such a backup
+    /// ([#coldAnswerState]), therefore carry no configuration.
     private static <C extends Command> SavedState<C> withoutConfiguration(SavedState<C> state) {
         return new SavedState<>(state.snapshot(), state.lastCommittedPhase(), state.pendingBatches(), Option.none());
+    }
+
+    /// #3213 — the state a COLD sync answer serves. A backup loaded across a restart is data, never authority (#1526), so it
+    /// travels without its configuration, as before. State THIS engine persisted keeps the configuration it was saved under:
+    /// that was this engine's own installed electorate at that phase. Stripping it made a phase past a roster change read as
+    /// genesis-epoch evidence, so a laggard still at the genesis epoch adopted it from one COLD answer and voted the next slot
+    /// under the old roster. With it, a receiver at a lower epoch sees a NEWER epoch, which only a LIVE responder authorizes
+    /// ([#newerEpochCandidates]), and keeps waiting for one. No receiver installs a configuration from a COLD answer: a newer
+    /// epoch is refused there, and an equal one is already installed. No wire or persisted shape changes.
+    /// In production (`RabiaPersistence.inMemory`, a dead node never returns) the strip arm is reached only by restored backups.
+    private SavedState<C> coldAnswerState(SavedState<C> state) {
+        return persistedByThisEngine
+               ? state
+               : withoutConfiguration(state);
     }
 
     private void activateOnLiveState(String reason) {
@@ -3697,9 +3718,7 @@ public class RabiaEngine<C extends Command> {
         } else {
             log.trace("Node {} is inactive, trying to share saved (or empty) state for request: {}", self, request);
             var response = new SyncResponse<>(self,
-                                              persistence.load()
-                                                         .map(RabiaEngine::withoutConfiguration)
-                                                         .or(SavedState.empty()),
+                                              persistence.load().map(this::coldAnswerState).or(SavedState.empty()),
                                               ResponderState.COLD);
 
             sendSyncResponse(request.sender(), response);

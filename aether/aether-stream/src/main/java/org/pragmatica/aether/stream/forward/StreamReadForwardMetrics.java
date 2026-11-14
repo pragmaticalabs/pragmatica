@@ -16,6 +16,11 @@ public interface StreamReadForwardMetrics {
     void recordRetry();
     void recordTimeout();
     void recordTruncated();
+    /// A reply this node sent to a forwarding requester was not accepted by the transport (#2583 P2).
+    void recordReplyNotSent();
+    /// Replies this node sent to a forwarding requester that the transport did not accept, one per refused send (#2583 P2).
+    /// The read side of [#recordReplyNotSent], on the instance the node assembly shares with the forward handler and client.
+    long replyNotSent();
 
     StreamReadForwardMetrics NOOP = new StreamReadForwardMetrics() {
         @Override
@@ -32,6 +37,14 @@ public interface StreamReadForwardMetrics {
 
         @Override
         public void recordTruncated() {}
+
+        @Override
+        public void recordReplyNotSent() {}
+
+        @Override
+        public long replyNotSent() {
+            return 0L;
+        }
     };
 
     static StreamReadForwardMetrics inMemory() {
@@ -46,6 +59,7 @@ final class InMemoryStreamReadForwardMetrics implements StreamReadForwardMetrics
     private final AtomicLong retry = new AtomicLong();
     private final AtomicLong timeout = new AtomicLong();
     private final AtomicLong truncated = new AtomicLong();
+    private final AtomicLong replyNotSent = new AtomicLong();
 
     @Override
     public void recordAttempt() {
@@ -72,6 +86,11 @@ final class InMemoryStreamReadForwardMetrics implements StreamReadForwardMetrics
         truncated.incrementAndGet();
     }
 
+    @Override
+    public void recordReplyNotSent() {
+        replyNotSent.incrementAndGet();
+    }
+
     public long attempts() {
         return attempts.get();
     }
@@ -90,5 +109,9 @@ final class InMemoryStreamReadForwardMetrics implements StreamReadForwardMetrics
 
     public long truncated() {
         return truncated.get();
+    }
+
+    public long replyNotSent() {
+        return replyNotSent.get();
     }
 }
