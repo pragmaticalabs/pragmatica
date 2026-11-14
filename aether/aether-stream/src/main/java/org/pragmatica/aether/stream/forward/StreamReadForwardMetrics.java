@@ -19,6 +19,10 @@ public interface StreamReadForwardMetrics {
     /// A reply this node sent to a forwarding requester was not accepted by the transport (#2583 P2).
     void recordReplyNotSent();
 
+    /// Replies this node sent to a forwarding requester that the transport did not accept, one per refused send (#2583 P2).
+    /// The read side of [#recordReplyNotSent], on the instance the node assembly shares with the forward handler and client.
+    long replyNotSent();
+
     StreamReadForwardMetrics NOOP = new StreamReadForwardMetrics() {
         @Override
         public void recordAttempt() {}
@@ -37,6 +41,12 @@ public interface StreamReadForwardMetrics {
 
         @Override
         public void recordReplyNotSent() {}
+
+        @Override
+        @Override
+    public long replyNotSent() {
+            return 0L;
+        }
     };
 
     static StreamReadForwardMetrics inMemory() {

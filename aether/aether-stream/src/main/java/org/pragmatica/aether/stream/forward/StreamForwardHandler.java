@@ -9,6 +9,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
 
 import org.pragmatica.http.HttpError;
 import org.pragmatica.aether.stream.replication.ReplicationError;
@@ -32,12 +33,16 @@ import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResp
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 
 import org.slf4j.Logger;
@@ -59,6 +64,13 @@ public interface StreamForwardHandler {
     @SuppressWarnings("JBCT-RET-01")
     @Contract
     default void onControlAppendForward(ControlAppendForward request) {}
+
+    /// #2583 P2: a departed requester's open unsent-reply episode is closed with it, so the handler's per-requester state
+    /// is bounded by the live cluster, not by every node id it ever answered.
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    @Contract
+    default void onNodeRemoved(MembershipDecision.NodeRemoved removed) {}
 
     long DEFAULT_MAX_READ_RESPONSE_BYTES = 28L * 1024 * 1024;
 
@@ -170,6 +182,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     private static final Logger log = LoggerFactory.getLogger(StreamForwardHandler.class);
     private static final long PER_EVENT_OVERHEAD_BYTES = 24L;
     private static final long ENVELOPE_OVERHEAD_BYTES = 64L;
+    static final int MAX_REPLY_RESENDS = 4;
 
     private final NodeId selfNodeId;
     private final StreamPartitionManager partitionManager;
@@ -180,6 +193,8 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     private final Option<TieredStreamReader> tieredReader;
     private final Option<ControlLog> controlLog;
     private final Set<NodeId> unsentRequesters = ConcurrentHashMap.newKeySet();
+    private final RefusalBackoff<StreamForwardMessage> replyBackoff;
+    private final Fn2<ScheduledFuture<?>, Runnable, TimeSpan> resendScheduler;
 
     DefaultStreamForwardHandler(NodeId selfNodeId,
                                 StreamPartitionManager partitionManager,
@@ -189,6 +204,30 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                 Option<LinearizableOwnerServe<OffHeapRingBuffer.RawEvent>> ownerServe,
                                 Option<TieredStreamReader> tieredReader,
                                 Option<ControlLog> controlLog) {
+        this(selfNodeId,
+             partitionManager,
+             transport,
+             maxReadResponseBytes,
+             metrics,
+             ownerServe,
+             tieredReader,
+             controlLog,
+             RefusalBackoff.refusalBackoff(),
+             SharedScheduler::schedule);
+    }
+
+    /// Test seam (#2583 P2): `resendScheduler` runs the re-send of a reply the transport provably did not write, and
+    /// `replyBackoff` draws its hold (a seeded source makes the jitter repeatable).
+    DefaultStreamForwardHandler(NodeId selfNodeId,
+                                StreamPartitionManager partitionManager,
+                                StreamForwardTransport transport,
+                                long maxReadResponseBytes,
+                                StreamReadForwardMetrics metrics,
+                                Option<LinearizableOwnerServe<OffHeapRingBuffer.RawEvent>> ownerServe,
+                                Option<TieredStreamReader> tieredReader,
+                                Option<ControlLog> controlLog,
+                                RefusalBackoff<StreamForwardMessage> replyBackoff,
+                                Fn2<ScheduledFuture<?>, Runnable, TimeSpan> resendScheduler) {
         this.selfNodeId = selfNodeId;
         this.partitionManager = partitionManager;
         this.transport = transport;
@@ -197,34 +236,71 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         this.ownerServe = ownerServe;
         this.tieredReader = tieredReader;
         this.controlLog = controlLog;
+        this.replyBackoff = replyBackoff;
+        this.resendScheduler = resendScheduler;
     }
 
     /// #2583 P2: every reply reads its [WriteOutcome]. A reply the transport did not accept is counted
-    /// ([StreamReadForwardMetrics#recordReplyNotSent]) and opens one WARN episode per requester, closed by a summary on the
-    /// next accepted reply, never one WARN per message. Recovery: design-out -- no re-send. The handler holds no deadline
-    /// of the requester's wait, so it cannot bound a re-send; the requester's own timeout and retry (#2574, #2683) already
-    /// own recovery of a reply that never arrives, and the counter is what makes the loss visible here.
+    /// ([StreamReadForwardMetrics#recordReplyNotSent], once per refused send) and opens one WARN episode per requester,
+    /// closed by a summary on the next accepted reply, never one WARN per message. A send whose promise failed is counted
+    /// the same way.
+    ///
+    /// Recovery: FER (degrade forward). An outcome that is [WriteOutcome#provablyNotSent] (backpressure, no peer state,
+    /// encode failure) proves the frame never left, so the SAME reply is sent again after a [RefusalBackoff] hold
+    /// (250 ms doubling, +-20% jitter, #2574 shape, know 89e17399a9), at most [#MAX_REPLY_RESENDS] times: 250 + 500 + 1000 +
+    /// 2000 ms is about 3.75 s, inside the requester's 5 s publish timeout, so a late re-send is not a wasted one. The
+    /// requester cannot see the reply twice. A [WriteOutcome.ConnectionDead] outcome or a failed send promise is ambiguous
+    /// (the frame may be written or buffered), so it is never re-sent; the requester's own timeout and retry (#2574, #2683)
+    /// own that case. A reply still refused after the last re-send is dropped, counted and warned, as before the re-send.
     @Contract
     private void reply(NodeId requester, StreamForwardMessage response) {
-        transport.send(requester, response).onSuccess(outcome -> observeReply(requester, outcome));
+        sendReply(requester, response, 0);
     }
 
     @Contract
-    private void observeReply(NodeId requester, WriteOutcome outcome) {
+    private void sendReply(NodeId requester, StreamForwardMessage response, int resends) {
+        transport.send(requester, response)
+                 .onSuccess(outcome -> observeReply(requester, response, resends, outcome))
+                 .onFailure(cause -> replyPromiseFailed(requester, response, cause));
+    }
+
+    @Contract
+    private void observeReply(NodeId requester, StreamForwardMessage response, int resends, WriteOutcome outcome) {
         if (outcome.isSent()) {
+            replyBackoff.sent(response);
             closeUnsentEpisode(requester);
         } else {
-            countUnsentReply(requester, outcome);
+            countUnsentReply(requester, outcome.toString());
+            resendIfProvablyNotSent(requester, response, resends, outcome);
+        }
+    }
+
+    /// The send promise failed: whether the frame left is unknown, so it is counted and warned but not re-sent.
+    @Contract
+    private void replyPromiseFailed(NodeId requester, StreamForwardMessage response, Cause cause) {
+        replyBackoff.sent(response);
+        countUnsentReply(requester, "send failed: " + cause.message());
+    }
+
+    @Contract
+    private void resendIfProvablyNotSent(NodeId requester,
+                                         StreamForwardMessage response,
+                                         int resends,
+                                         WriteOutcome outcome) {
+        if (outcome.provablyNotSent() && resends < MAX_REPLY_RESENDS) {
+            resendScheduler.apply(() -> sendReply(requester, response, resends + 1), replyBackoff.refused(response));
+        } else {
+            replyBackoff.sent(response);
         }
     }
 
     @Contract
-    private void countUnsentReply(NodeId requester, WriteOutcome outcome) {
+    private void countUnsentReply(NodeId requester, String detail) {
         metrics.recordReplyNotSent();
         if (unsentRequesters.add(requester)) {
             log.warn("Forward reply to {} not sent ({}); further unsent replies to it are counted, not logged",
                      requester,
-                     outcome);
+                     detail);
         }
     }
 
@@ -233,6 +309,12 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         if (unsentRequesters.remove(requester)) {
             log.info("Forward replies to {} are being accepted again", requester);
         }
+    }
+
+    @Contract
+    @Override
+    public void onNodeRemoved(MembershipDecision.NodeRemoved removed) {
+        unsentRequesters.remove(removed.nodeId());
     }
 
     /// #1236: the replica floor (`CF - 1` peers) is checked BEFORE the owner appends, so a forwarded

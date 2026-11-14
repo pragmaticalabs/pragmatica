@@ -157,6 +157,7 @@ import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions;
@@ -1571,6 +1572,9 @@ public sealed interface StreamAssembly {
                                                  streamForwardHandler::onReadForward));
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.ReadForwardResponse.class,
                                                  streamForwardClient::onReadForwardResponse));
+        // #2583 P2: a removed node's open unsent-reply episode goes with it.
+        allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
+                                                 streamForwardHandler::onNodeRemoved));
         // A6: replica-side receive/apply. ReplicateEvents from an owner are landed into the local
         // partition ring offset-preserving via appendRecovered (NON-replicating — a replicated event is
         // never re-emitted, so there is no replicate→apply→replicate loop), then the highest applied
