@@ -336,6 +336,9 @@ class EmberSameIdentityRelaunchTest {
         assertThat(cluster.getNode("btk-3").isEmpty())
             .as("the refused process learns it was refused (explicit HelloRefused/IdentityRefused) and exits")
             .isTrue();
+        // The exit is recorded once the process's stop resolved, which can be after it left the registry (#3173/#3174); the awaited
+        // code is the refusal's own, so a stale drain code never satisfies it.
+        awaitCondition("the refused exit is recorded", () -> cluster.exitCodeOf("btk-3").equals(Option.some(AetherNode.EXIT_IDENTITY_REFUSED)));
         assertThat(cluster.exitCodeOf("btk-3"))
             .as("#1558: a refused identity exits with its own code, distinct from a drain's")
             .isEqualTo(Option.some(AetherNode.EXIT_IDENTITY_REFUSED));

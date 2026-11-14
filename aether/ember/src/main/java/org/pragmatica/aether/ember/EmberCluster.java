@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.controller.ControllerConfig;
@@ -77,6 +78,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.consensus.net.ClusterFormationConfig;
@@ -140,6 +142,13 @@ public final class EmberCluster {
     private final Map<String, Integer> lastSlotByNodeId = new ConcurrentHashMap<>();
     /// Exit code each node exited with (see [#exitCodeOf]); the latest exit wins for a reused NodeId.
     private final Map<String, Integer> exitCodes = new ConcurrentHashMap<>();
+    /// #3173/#3174: every node stop that has been started and has not RESOLVED yet, however long ago it hit its bound. A stop
+    /// that expired its bound is still running (QUIC port bound), so it stays here until it resolves; [#stop] awaits these
+    /// alongside the registry, which a node removed by [#stopRemoved] has already left. The key is a per-stop token.
+    private final Map<Object, InFlightStop> inFlightStops = new ConcurrentHashMap<>();
+
+    private record InFlightStop(String nodeId, Promise<Unit> stop) {}
+
     private final int initialClusterSize;
     private final Set<String> localWorkerAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final Set<String> localCoreAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -1133,16 +1142,54 @@ public final class EmberCluster {
         return unit;
     }
 
+    /// Stops every node and fails, naming it, when a node's stop does not resolve inside [#NODE_TIMEOUT]. The wait covers the
+    /// registry AND every stop already in flight: a node removed by `killNode` or a self-drain is no longer in the registry
+    /// but may still hold its ports (#3173/#3174).
+    ///
+    /// A failed stop clears the registry, so a retry does not re-stop the leaked node. It does await that node's still-pending
+    /// stop, though, and fails naming it again until that stop resolves: a retry is not cleanup, but it never reports success
+    /// while the node holds its ports.
     public Promise<Unit> stop() {
         log.info("Stopping Ember cluster");
         rollingRestartTask.cancel();
         rollingRestartActive.set(false);
         var registered = registeredNow();
-        var stopPromises = nodes.values().stream().map(EmberCluster::submitStop).toList();
+        var unstopped = new ConcurrentLinkedQueue<String>();
+        var pending = inFlightStops.values()
+                                   .stream()
+                                   .map(flight -> bounded(flight.stop(),
+                                                          NODE_TIMEOUT).recover(cause -> noteUnstopped(unstopped,
+                                                                                                       flight.nodeId(),
+                                                                                                       cause)))
+                                   .toList();
+        var stopPromises = nodes.entrySet()
+                                .stream()
+                                .map(entry -> submitStop(entry.getValue()).recover(cause -> noteUnstopped(unstopped,
+                                                                                                          entry.getKey(),
+                                                                                                          cause)))
+                                .toList();
 
-        return clearThenSettle(settledWithLateArrivals(stopPromises, registered),
+        return clearThenSettle(settledWithLateArrivals(Stream.concat(pending.stream(), stopPromises.stream()).toList(),
+                                                       registered),
                                this::clearClusterState,
-                               Promise::unitPromise);
+                               () -> unstoppedOutcome(unstopped));
+    }
+
+    /// #3173/#3174: a node whose stop did not resolve inside [#NODE_TIMEOUT] is still running, with its QUIC port bound. The
+    /// cluster stop used to swallow that and succeed, so the next cluster's bind failed. The node is recorded here (the recover
+    /// runs before the settle, so the outcome sees every entry) and [#unstoppedOutcome] turns the record into a failure.
+    private static Unit noteUnstopped(ConcurrentLinkedQueue<String> unstopped, String nodeId, Cause cause) {
+        log.error("Node {} did not stop: {}", nodeId, cause.message());
+        unstopped.add(nodeId);
+
+        return Unit.unit();
+    }
+
+    private static Promise<Unit> unstoppedOutcome(ConcurrentLinkedQueue<String> unstopped) {
+        return unstopped.isEmpty()
+               ? Promise.success(Unit.unit())
+               : Causes.cause("Ember cluster stop: node(s) not stopped within " + NODE_TIMEOUT
+                             + ", still running: " + unstopped).promise();
     }
 
     /// The nodes in the registry right now, by identity: what a teardown is about to stop.
@@ -1168,7 +1215,7 @@ public final class EmberCluster {
         var late = nodes.values()
                         .stream()
                         .filter(node -> !registered.contains(node))
-                        .map(EmberCluster::submitStop)
+                        .map(this::submitStop)
                         .map(stop -> stop.recover(_ -> Unit.unit()))
                         .toList();
 
@@ -1191,9 +1238,33 @@ public final class EmberCluster {
     /// teardown produces more simultaneous membership churn. That is precisely the input that
     /// triggered #929, which is why this lands only together with the `MembershipFsm` transition
     /// guard; on its own it would make that deadlock more frequent, not less.
-    private static Promise<Unit> submitStop(AetherNode node) {
-        return Promise.<Unit> promise(promise -> node.stop()
-                                                     .onResult(promise::resolve)).timeout(NODE_TIMEOUT);
+    private Promise<Unit> submitStop(AetherNode node) {
+        return Promise.<Unit> promise(promise -> trackedStop(node.self().id(),
+                                                             node).onResult(promise::resolve)).timeout(NODE_TIMEOUT);
+    }
+
+    /// Start `node.stop()` and keep it in [#inFlightStops] until it resolves. The returned promise is the node's own, never
+    /// failed by a bound: bound a COPY with [#bounded], so a stop that resolves after its bound is still seen.
+    private Promise<Unit> trackedStop(String nodeId, AetherNode node) {
+        var token = new Object();
+        var raw = node.stop();
+
+        inFlightStops.put(token, new InFlightStop(nodeId, raw));
+
+        return raw.onResult(_ -> inFlightStops.remove(token));
+    }
+
+    private static Promise<Unit> bounded(Promise<Unit> stop, TimeSpan bound) {
+        return Promise.<Unit> promise(copy -> stop.onResult(copy::resolve)).timeout(bound);
+    }
+
+    private Option<Promise<Unit>> inFlightStopOf(String nodeId) {
+        return Option.from(inFlightStops.values()
+                                        .stream()
+                                        .filter(flight -> flight.nodeId()
+                                                                .equals(nodeId))
+                                        .map(InFlightStop::stop)
+                                        .findFirst());
     }
 
     private Unit clearClusterState(Unit unit) {
@@ -1475,13 +1546,26 @@ public final class EmberCluster {
     }
 
     private Promise<Unit> killNodeInternal(String nodeIdStr, AetherNode node, boolean graceful) {
-        if (!nodes.remove(nodeIdStr, node)) {
-            return Promise.unitPromise();
-        }
+        return stopRemoved(nodeIdStr, node, graceful).recover(_ -> Unit.unit());
+    }
 
-        var timeout = graceful
-                      ? NODE_TIMEOUT
-                      : TimeSpan.timeSpan(1).seconds();
+    /// Remove the node from the registry and stop it, bounded; the result FAILS when the bound expires (the node may still be
+    /// running), so the caller decides whether that matters. [#killNodeInternal] swallows it, the self-exit path does not.
+    /// The bound is on a copy: the stop itself stays tracked in [#inFlightStops] until it resolves.
+    private Promise<Unit> stopRemoved(String nodeIdStr, AetherNode node, boolean graceful) {
+        var bound = graceful
+                    ? NODE_TIMEOUT
+                    : TimeSpan.timeSpan(1).seconds();
+
+        return removeAndStop(nodeIdStr, node, graceful).map(stop -> bounded(stop, bound))
+                            .or(() -> Promise.unitPromise());
+    }
+
+    /// The node's own stop promise (unbounded), or none when another path already removed the node.
+    private Option<Promise<Unit>> removeAndStop(String nodeIdStr, AetherNode node, boolean graceful) {
+        if (!nodes.remove(nodeIdStr, node)) {
+            return Option.none();
+        }
 
         log.info("{} node {}",
                  graceful
@@ -1492,11 +1576,8 @@ public final class EmberCluster {
         instanceTags.remove(nodeIdStr);
         var slotOpt = Option.option(slotsByNodeId.remove(nodeIdStr));
 
-        return node.stop()
-                   .onSuccess(_ -> slotOpt.onPresent(availableSlots::offer))
-                   .timeout(timeout)
-                   .recover(_ -> Unit.unit())
-                   .onSuccess(_ -> log.info("Node {} removed from cluster", nodeIdStr));
+        return Option.some(trackedStop(nodeIdStr, node).onSuccess(_ -> slotOpt.onPresent(availableSlots::offer))
+                                      .onSuccess(_ -> log.info("Node {} removed from cluster", nodeIdStr)));
     }
 
     public int targetClusterSize() {
@@ -1936,9 +2017,9 @@ public final class EmberCluster {
         return Map.of("artifacts", config);
     }
 
-    private void onNodeExit(String nodeIdStr, int exitCode) {
-        exitCodes.put(nodeIdStr, exitCode);
-        handleSelfDrain(nodeIdStr);
+    /// Package-visible so a test can fire a node's exit callback over a fake node.
+    void onNodeExit(String nodeIdStr, int exitCode) {
+        handleSelfDrain(nodeIdStr, exitCode);
     }
 
     /// The process exit code a node exited with in this harness (`AetherNode.EXIT_DRAINED`,
@@ -1948,10 +2029,29 @@ public final class EmberCluster {
         return Option.option(exitCodes.get(nodeIdStr));
     }
 
-    private void handleSelfDrain(String nodeIdStr) {
-        Option.option(nodes.get(nodeIdStr)).onPresent(node -> killNodeInternal(nodeIdStr, node, true).onFailure(cause -> log.warn("Self-drain cleanup failed for {}: {}",
-                                                                                                                                  nodeIdStr,
-                                                                                                                                  cause.message())));
+    /// #3173/#3174: the exit is reported (`exitCodeOf`) only after the node's stop RESOLVED, however late: the exit is recorded
+    /// off the node's own stop promise, not the bounded copy, so a stop that outlives [#NODE_TIMEOUT] and resolves later still
+    /// reports. While it has not resolved the node is unreported, and an expiry is logged. A node already out of the registry
+    /// has its stop in flight on another path (`killNode`, an earlier exit): the exit waits for that stop. Only a node with
+    /// no stop in flight at all is reported at once.
+    private void handleSelfDrain(String nodeIdStr, int exitCode) {
+        Option.option(nodes.get(nodeIdStr))
+              .flatMap(node -> removeAndStop(nodeIdStr, node, true))
+              .onPresent(stop -> reportWhenResolved(nodeIdStr, exitCode, stop))
+              .onPresent(stop -> bounded(stop, NODE_TIMEOUT).onFailure(cause -> log.warn("Self-drain stop of {} did not resolve, exit {} not reported until it does: {}",
+                                                                                         nodeIdStr,
+                                                                                         exitCode,
+                                                                                         cause.message())))
+              .onEmpty(() -> reportAfterInFlightStop(nodeIdStr, exitCode));
+    }
+
+    private void reportAfterInFlightStop(String nodeIdStr, int exitCode) {
+        inFlightStopOf(nodeIdStr).onPresent(stop -> reportWhenResolved(nodeIdStr, exitCode, stop))
+                      .onEmpty(() -> exitCodes.put(nodeIdStr, exitCode));
+    }
+
+    private void reportWhenResolved(String nodeIdStr, int exitCode, Promise<Unit> stop) {
+        stop.onSuccess(_ -> exitCodes.put(nodeIdStr, exitCode));
     }
 
     public List<NodeMetrics> nodeMetrics() {
