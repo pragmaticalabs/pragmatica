@@ -2161,6 +2161,195 @@ class StreamConsumerManagerTest {
 
             assertThat(warnings).isEmpty();
         }
+
+        private static final Artifact OTHER_ARTIFACT = Artifact.artifact("org.example:payments:1.0.0").unwrap();
+
+        private void declareOn(String stream, Artifact artifact, String group) {
+            var key = StreamRegistrationKey.streamRegistrationKey(stream, "streams." + stream, artifact, METHOD);
+            var value = StreamRegistrationValue.streamRegistrationValue(SELF, group, false, "java.lang.String");
+
+            registry.onStreamRegistrationPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
+        }
+
+        private StreamConsumerManager gappedManager() throws InterruptedException {
+            declareStringConsumer();
+            placement.activeOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            var manager = manager();
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            awaitWarnings(1);
+            assertThat(warnings).as("arming: the gap is open").extracting(OperatorWarning::code)
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE);
+            return manager;
+        }
+
+        private void assertClosedOnTheSameSubject(String messagePart) {
+            assertThat(warnings).extracting(OperatorWarning::code)
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE,
+                                       OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED);
+            assertThat(warnings.get(1).subject()).isEqualTo(warnings.get(0).subject());
+            assertThat(warnings.get(1).message()).contains(messagePart);
+        }
+
+        /// R1: only the leader raises. Red when a follower raises its own warning (every node duplicates the event).
+        @Test
+        void reconcile_raisesNothing_onAFollower() throws InterruptedException {
+            declareStringConsumer();
+            placement.activeOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            manager.reconcile();
+            awaitWarnings(1);
+
+            assertThat(warnings).isEmpty();
+        }
+
+        /// R2: leader A has a gap, leadership moves to B. A closes its own warning (the aggregator pairs per node) and says
+        /// why; B raises from its own pass. Red when A keeps the warning open, or when B does not raise.
+        @Test
+        void reconcile_closesTheOldLeadersWarning_andTheNewLeaderRaises_whenLeadershipMoves() throws InterruptedException {
+            declareStringConsumer();
+            placement.activeOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            var aLeads = new AtomicBoolean(true);
+            var bWarnings = new CopyOnWriteArrayList<OperatorWarning>();
+            var a = managerLedBy(aLeads::get);
+            var b = managerLedBy(() -> !aLeads.get());
+
+            a.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            b.setOperatorWarningSink(OperatorWarningSink.handingOffTo(bWarnings::add));
+            a.reconcile();
+            b.reconcile();
+            awaitWarnings(1);
+            assertThat(bWarnings).as("arming: the follower raised nothing").isEmpty();
+            aLeads.set(false);
+            a.reconcile();
+            b.reconcile();
+            awaitWarnings(2);
+            Thread.sleep(150);
+
+            assertClosedOnTheSameSubject("leadership moved");
+            assertThat(bWarnings).extracting(OperatorWarning::code).containsExactly(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE);
+            assertThat(bWarnings.getFirst().subject()).isEqualTo(warnings.getFirst().subject());
+        }
+
+        /// R3: a declaration that left the pass (removed) takes its open gap with it. Red under "gap never closed for an absent declaration".
+        @Test
+        void reconcile_closesTheGap_whenTheDeclarationIsRemoved() throws InterruptedException {
+            var manager = gappedManager();
+
+            undeclare();
+            manager.reconcile();
+            awaitWarnings(2);
+
+            assertClosedOnTheSameSubject("no longer evaluated");
+        }
+
+        /// R3: a declaration that now collides is declined before the gap check, so the pass never evaluates it.
+        @Test
+        void reconcile_closesTheGap_whenTheDeclarationBecomesACollision() throws InterruptedException {
+            var manager = gappedManager();
+
+            declareOn(STREAM, OTHER_ARTIFACT, GROUP);
+            manager.reconcile();
+            awaitWarnings(2);
+
+            assertClosedOnTheSameSubject("no longer evaluated");
+        }
+
+        /// R3: the slice is undeployed everywhere. The close must not claim "ACTIVE on a live member".
+        @Test
+        void reconcile_closesTheGapAccurately_whenTheSliceIsNoLongerDeployed() throws InterruptedException {
+            var manager = gappedManager();
+
+            placement.activeOn();
+            manager.reconcile();
+            awaitWarnings(2);
+
+            assertClosedOnTheSameSubject("no longer deployed");
+            assertThat(warnings.get(1).message()).doesNotContain("live member");
+        }
+
+        /// R3: redeploying (rows exist, none ACTIVE) is also "no longer ACTIVE anywhere", not a restoration.
+        @Test
+        void reconcile_closesTheGapAccurately_whenTheSliceIsRedeploying() throws InterruptedException {
+            var manager = gappedManager();
+
+            placement.activatingOn(WORKER);
+            manager.reconcile();
+            awaitWarnings(2);
+
+            assertClosedOnTheSameSubject("no longer deployed");
+        }
+
+        /// S1 (a6): an ACTIVE slice with an empty assignment list (stream config unresolved) claims no gap.
+        @Test
+        void reconcile_claimsNoGap_whenAssignmentsAreEmpty() throws InterruptedException {
+            declareStringConsumer();
+            placement.activeOn(WORKER);
+            ownership.forgetStream();
+            var manager = manager();
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            awaitWarnings(1);
+
+            assertThat(warnings).isEmpty();
+        }
+
+        /// S1 (a5b): an open gap is neither closed nor claimed restored while assignments are empty, even though the
+        /// candidate set would now be live.
+        @Test
+        void reconcile_keepsTheGapOpen_whenAssignmentsGoEmpty() throws InterruptedException {
+            var manager = gappedManager();
+
+            ownership.forgetStream();
+            ownership.withLiveWorkers(WORKER);
+            manager.reconcile();
+            awaitWarnings(2);
+
+            assertThat(warnings).extracting(OperatorWarning::code).containsExactly(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE);
+        }
+
+        /// S2 (a9): two declarations on one manager each own a gap, with their own subject, and each closes on its own subject.
+        @Test
+        void reconcile_tracksOneGapPerDeclaration() throws InterruptedException {
+            declareStringConsumer();
+            declareOn("invoices", OTHER_ARTIFACT, GROUP);
+            placement.activeOn(WORKER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            var manager = manager();
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            manager.reconcile();
+            awaitWarnings(2);
+
+            assertThat(warnings).extracting(OperatorWarning::code).containsOnly(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE).hasSize(2);
+            assertThat(warnings).extracting(OperatorWarning::subject).doesNotHaveDuplicates();
+            ownership.withLiveWorkers(WORKER);
+            manager.reconcile();
+            awaitWarnings(4);
+            assertThat(warnings.subList(2, 4)).extracting(OperatorWarning::code).containsOnly(OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED);
+            assertThat(warnings.subList(2, 4)).extracting(OperatorWarning::subject).containsExactlyInAnyOrderElementsOf(warnings.subList(0, 2).stream().map(OperatorWarning::subject).toList());
+        }
+
+        /// S3 (a10) and R2: stop is terminal, so the observable of "no stale gap after stop" is that stop closes the
+        /// open gap on this node: a raise is never left without its recovery. Red when stop drops the gap silently.
+        @Test
+        void stop_closesTheOpenGap() throws InterruptedException {
+            var manager = gappedManager();
+
+            manager.stop();
+            awaitWarnings(2);
+
+            assertClosedOnTheSameSubject("stopped");
+        }
     }
 
 

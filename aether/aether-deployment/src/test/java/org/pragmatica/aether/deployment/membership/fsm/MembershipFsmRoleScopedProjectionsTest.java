@@ -82,6 +82,20 @@ class MembershipFsmRoleScopedProjectionsTest {
                                                       .containsExactlyInAnyOrder(WORKER_B, spot);
         }
 
+        /// The role label is matched ignoring case, as `isCore` does. Red under `equals` for `worker` or for `spot`.
+        @Test
+        void workerCountedMembers_matchesMixedCaseRoles() {
+            var manager = activeManager();
+            var spot = new NodeId("node-spot-e");
+
+            promoteToMember(manager, WORKER_B);
+            manager.onMemberDescriptor(labeledInfo(WORKER_B, Map.of(NodeInfo.LABEL_ROLE, "Worker")));
+            promoteToMember(manager, spot);
+            manager.onMemberDescriptor(labeledInfo(spot, Map.of(NodeInfo.LABEL_ROLE, "SPOT")));
+
+            assertThat(manager.workerCountedMembers()).containsExactlyInAnyOrder(WORKER_B, spot);
+        }
+
         @Test
         void workerCountedMembers_includesSuspectWorker_excludesDeadWorker() {
             var manager = activeManager();

@@ -552,6 +552,7 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE.level()).isEqualTo(WarningLevel.WARNING);
         assertThat(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE.code()).isEqualTo("stream-consumer-no-live-candidate");
         assertThat(OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED.code()).isEqualTo("stream-consumer-candidate-restored");
         assertThat(OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED.recoveryOf().unwrap())
             .isEqualTo(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE);
         assertThat(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE.hasRecovery()).isTrue();
