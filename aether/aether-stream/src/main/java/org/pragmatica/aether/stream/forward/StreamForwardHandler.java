@@ -263,8 +263,10 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     private void sendReply(NodeId requester, StreamForwardMessage response, int resends) {
         if (departedRequesters.contains(requester)) {
             replyBackoff.sent(response);
+
             return;
         }
+
         transport.send(requester, response)
                  .onSuccess(outcome -> observeReply(requester, response, resends, outcome))
                  .onFailure(cause -> replyPromiseFailed(requester, response, cause));
