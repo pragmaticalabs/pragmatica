@@ -5,6 +5,8 @@
 package org.pragmatica.aether.deployment.wiring;
 
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
@@ -37,6 +39,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -54,7 +57,7 @@ import org.slf4j.LoggerFactory;
 /// | `REGISTER_BRIDGE` | the invocation bridge | `Done`; a slice absent from the store is `Failed(SliceNotInStore)` |
 /// | `BUILD_LEGS` | the copied builders (`SliceLegBuilders`) | `Done(legs)`; an invalid schedule string fails the step |
 /// | `REGISTER_CONFIG` | `ConfigNotificationManager` | `Done` |
-/// | `PUBLISH_ROUTES` | `HttpRoutePublisher.publishRoutes` | `Done`; a failure fails the chain |
+/// | `PUBLISH_ROUTES` | `HttpRoutePublisher.publishRoutes`, after the artifact's pending `SUSPEND` removal settles (bounded) | `Done`; a failure fails the chain |
 /// | `DESCRIBE_ACTIVE` | the slice's methods; the stream-ref ACQUIRE builder | `Done(methods, ACQUIRE commands)` |
 /// | `PREPARE_TEARDOWN` | the copied teardown builders (`SliceLegBuilders.teardown`) | `Done(removes and releases)`; builds, severs nothing |
 /// | `UNPUBLISH` | routes, bridge, config registration | `Done`, always (best effort) |
@@ -99,8 +102,18 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
                                 LongSupplier clock,
                                 Supplier<OperatorWarningSink> warnings) {}
 
+    /// The longest a `PUBLISH_ROUTES` waits for a `SUSPEND`'s route removal of the same artifact: the publisher's own retry chain (3 attempts
+    /// of 30 s, `HttpRoutePublisherImpl`) plus a margin. The chain settles by itself within 90 s, so the bound only matters for a publisher
+    /// whose promise never settles.
+    static final TimeSpan UNPUBLISH_AWAIT_BOUND = TimeSpan.timeSpan(100).seconds();
+
     private final Collaborators c;
     private final SliceLegBuilders builders;
+
+    /// The cluster half of each `SUSPEND`'s route removal that has not settled yet, per artifact. Written by `suspend` (put or merge) and by the
+    /// settle callback (remove of that same instance), read by `publishRoutes`; a `ConcurrentHashMap`, so the three are safe from any thread
+    /// (the op lane serialises ops of one artifact, but the settle callback runs on whichever thread resolves the removal).
+    private final ConcurrentMap<Artifact, Promise<Unit>> pendingUnpublish = new ConcurrentHashMap<>();
 
     private SliceRuntimeAdapter(Collaborators collaborators) {
         this.c = collaborators;
@@ -236,6 +249,10 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
     }
 
     private Promise<LocalOutcome> publishRoutes(Artifact artifact) {
+        return awaitPendingUnpublish(artifact).flatMap(_ -> publishRoutesNow(artifact));
+    }
+
+    private Promise<LocalOutcome> publishRoutesNow(Artifact artifact) {
         return c.routePublisher()
                 .flatMap(publisher -> c.invokerFacade()
                                        .flatMap(facade -> loaded(artifact).filter(slice -> hasRoutes(publisher,
@@ -366,14 +383,40 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
 
     /// `SUSPEND` runs on a quorum loss, the stop drain included (design 7, 2a), and it does not wait for the cluster half of the unpublish
     /// (#3174): that is a consensus write, and without quorum it can only fail when the engine stops, which is after the drain, so awaiting it
-    /// held every stop for the whole drain bound. Fire and forget rather than a shorter bound: no bound can let a quorum-less write commit, so
-    /// any wait is pure delay. LEGACY's `suspendSlice` does the same. The local half (the route table, the bridge) is removed before the
-    /// publisher returns, so the node stops serving the slice at once; the node's routes key, if it lingers, is replaced by the next
-    /// `PUBLISH_ROUTES` of the artifact or removed by the survivors' departure flow when the node leaves.
+    /// held every stop for the whole drain bound. The op is done at once and the drain's idle check does not wait on the write. The local half
+    /// (the route table, the bridge) is removed before the publisher returns, so the node stops serving the slice at once.
+    ///
+    /// **Ordering (H3b).** The pending removal is kept per artifact and the next `PUBLISH_ROUTES` of that artifact awaits it (bounded, see
+    /// [#awaitPendingUnpublish]), so a reactivation's `Put` cannot be overtaken by the late `Remove` of the old incarnation. A timed-out
+    /// consensus attempt is not cancelled in Rabia: that residual predates this and is not closed here.
     private Promise<LocalOutcome> suspend(Artifact artifact) {
-        severing(artifact, false);
+        var pending = pendingUnpublish.merge(artifact, severing(artifact, false), (earlier, later) -> earlier.flatMap(_ -> later));
+
+        pending.onResultRun(() -> pendingUnpublish.remove(artifact, pending));
 
         return Promise.success(LocalOutcome.done());
+    }
+
+    /// Waits for the artifact's unsettled `SUSPEND` removal, if any, for at most [#UNPUBLISH_AWAIT_BOUND]. On expiry it logs and proceeds
+    /// rather than re-issuing the `Put`: the removal's own retry chain ends within the bound, so past it the removal is settled or abandoned
+    /// by the publisher, and a second `Put` would add nothing the proceeding one does not. A gate promise carries the timeout, so the
+    /// bound never resolves the shared removal promise.
+    private Promise<Unit> awaitPendingUnpublish(Artifact artifact) {
+        var pending = pendingUnpublish.get(artifact);
+
+        if (pending == null) {
+            return Promise.unitPromise();
+        }
+
+        var gate = Promise.<Unit> promise();
+
+        pending.onResultRun(() -> gate.succeed(Unit.unit()));
+
+        return gate.timeout(UNPUBLISH_AWAIT_BOUND)
+                   .onFailure(cause -> log.warn("Publishing routes of {} proceeds, the earlier unpublish did not settle: {}",
+                                                artifact,
+                                                cause.message()))
+                   .recover(_ -> Unit.unit());
     }
 
     private Promise<Unit> severing(Artifact artifact, boolean includingConfig) {

@@ -334,6 +334,29 @@ class SliceRuntimeAdapterTest {
         assertThat(bridge.calls).containsExactly("unregister " + ORDERS);
     }
 
+    /// H3b, route half: SUSPEND frees its lane at once, but a reactivation's PUBLISH_ROUTES must not submit its Put before the SUSPEND's
+    /// Remove has settled, or the late Remove deletes the fresh routes.
+    @Test
+    void publishRoutes_waitsForTheSuspendsUnsettledUnpublish() {
+        store.withLoaded(ORDERS, new RuntimeFixtures.BareSlice());
+        var removal = Promise.<Unit> promise();
+        publisher.unpublishPending = removal;
+        var adapter = adapter(true);
+
+        var suspended = adapter.run(new NodeFsmEffect.LocalOp(1, 7, Option.some(ORDERS), LocalStep.SUSPEND, 0, Option.none()));
+        await().atMost(Duration.ofSeconds(1)).until(suspended::isResolved);
+
+        var published = adapter.run(new NodeFsmEffect.LocalOp(2, 8, Option.some(ORDERS), LocalStep.PUBLISH_ROUTES, 0, Option.none()));
+
+        await().during(Duration.ofMillis(300)).atMost(Duration.ofSeconds(2)).until(() -> !published.isResolved());
+        assertThat(publisher.calls).as("no Put while the Remove is unsettled").containsExactly("unpublish " + ORDERS);
+
+        removal.succeed(Unit.unit());
+        await().atMost(Duration.ofSeconds(5)).until(published::isResolved);
+        assertThat(published.await().unwrap()).isInstanceOf(LocalOutcome.Done.class);
+        assertThat(publisher.calls).containsExactly("unpublish " + ORDERS, "publish " + ORDERS);
+    }
+
     /// The other half of #3174's choice: UNPUBLISH runs under quorum in a teardown chain and still waits for the publisher.
     @Test
     void unpublish_stillWaitsForThePublisher() {
