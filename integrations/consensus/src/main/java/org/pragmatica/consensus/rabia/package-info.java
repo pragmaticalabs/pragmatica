@@ -21,6 +21,8 @@
 ///   installed roster at the exact epoch, and ballots for a newer epoch are deferred.
 /// - D8 A proposal is the lowest pending batch id; a voter with nothing pending proposes an empty batch.
 /// - D9 Decided slots are garbage-collected; a ballot for a past slot is answered by repair and never counted again.
+/// - D10 Quorum-loss pause: modelled as Pause/Resume in RabiaAdopt. The far-future resync and the decision-gap timeout
+///   are excluded (liveness only).
 /// - D11 A node activates only after its participation marker is durably recorded; the receiver counts only installed
 ///   roster members.
 /// - D12 The cluster leader is a value committed through Rabia; the models treat it as at most two competing
@@ -51,7 +53,8 @@
 /// \*   emptyprop   - D8 (liveness): a voter with an empty queue joins (or opens, after activation) a slot with an
 /// \*                 empty proposal instead of staying silent.
 /// \*
-/// \* Environment and assumption constants (each has a cfg that changes it):
+/// \* Environment and assumption constants. RogueVoter has cfgs that set it TRUE; every cfg fixes CommonCoin = TRUE and
+/// \* Byz = {} (the code's assumptions), so the FALSE coin and equivocation arms are written but never checked:
 /// \*   RogueVoter  - the observer runs the voter logic: a non-roster node whose stale local roster says it votes
 /// \*                 (RabiaVoterReconfigurationTest.removedVoter_ballotAtCurrentEpoch_isNotCounted). Adversity, not a fix.
 /// \*   CommonCoin  - D1: TRUE = coinFlip, a function of (slot, epoch, round) only; FALSE = any coin per replica (control).
@@ -196,17 +199,20 @@
 /// \*   "retainmaj"  ReconfigurationCommand.retainsTargetMajority in admission and in appliesTo (liveness guard)
 /// \* Assume (code-relied environment; every cfg assigns it):
 /// \*   "prefix"     a replica enters slot s+1 only by committing slot s (code comment at handleDecision: "the epoch
-/// \*                governing a slot is a function of the applied prefix"). Removed: Jump + LearnEpoch.
+/// \*                governing a slot is a function of the applied prefix"). Removed: Jump (JumpShape "code":
+/// \*                applyRestoredState as written) or FreeJump + FreeLearn (JumpShape "free": slot and roster
+/// \*                arrive separately, a superset of the code).
 /// \*   "crashstop"  a relayed Decision is a decision some replica made (no fabricated evidence). Removed: Forge.
 ///
 /// EXTENDS Naturals, FiniteSets, TLC
 ///
-/// CONSTANTS Fixed, Assume, Paper, Roster0, TargetSet, Batches, MaxSlot, MaxRequests, RequestEpochs, MaxJump, MaxForge, Slow
+/// CONSTANTS Fixed, Assume, Paper, Roster0, TargetSet, Batches, MaxSlot, MaxRequests, RequestEpochs, MaxJump, MaxForge, Slow, JumpShape, ColdShapes
 ///
 /// KnownFixes  == {"exactepoch", "relayepoch", "retainmaj"}
 /// KnownAssume == {"prefix", "crashstop"}
 /// KnownPaper  == {"norelay", "anyepoch", "nopreferred"}
 /// ASSUME Fixed \subseteq KnownFixes /\ Assume \subseteq KnownAssume /\ Paper \subseteq KnownPaper
+/// ASSUME JumpShape \in {"code", "free"} /\ ColdShapes \subseteq BOOLEAN   \* ColdShapes: {FALSE} = LIVE responses only
 ///
 /// \* Paper-faithful switches (report whether our rule closes a gap the paper leaves). Each
 /// \* replaces ONE of our rules by what weak-MVC with fixed membership does; every other fix stays on.
@@ -297,6 +303,30 @@
 ///
 /// Seen(n)       == {b \in ballots : Accepts(n, b)}
 /// Backers(n, v) == {m \in roster[n] : \E b \in Seen(n) : b.n = m /\ b.v = v}
+///
+/// \* --- environment moves (not code), enabled only when an assumption is removed ---
+///
+/// \* JumpShape "free": a replica reaches slot s+1 without committing s and without the roster that governs it.
+/// FreeJump(n) ==
+///     /\ ~Has("prefix")
+///     /\ JumpShape = "free"
+///     /\ Cardinality(jumpers) < MaxJump
+///     /\ Active(n)
+///     /\ slot[n] < MaxSlot
+///     /\ slot'    = [slot EXCEPT ![n] = @ + 1]
+///     /\ jumpers' = jumpers \cup {n}
+///     /\ UNCHANGED <<epoch, roster, requested, decided, decEpoch, ballots, requests, installs, forged, mixed>>
+///
+/// \* JumpShape "free": adoptSyncedConfiguration separated from its slot install (the epoch never regresses).
+/// FreeLearn(n, p) ==
+///     /\ ~Has("prefix")
+///     /\ JumpShape = "free"
+///     /\ slot[n] = slot[p]
+///     /\ epoch[p] > epoch[n]
+///     /\ epoch'     = [epoch EXCEPT ![n] = epoch[p]]
+///     /\ roster'    = [roster EXCEPT ![n] = roster[p]]
+///     /\ requested' = [requested EXCEPT ![n] = Settled(requested[n], epoch[p])]
+///     /\ UNCHANGED <<slot, decided, decEpoch, ballots, requests, installs, jumpers, forged, mixed>>
 /// ```
 ///
 /// ```tla RabiaEpoch:tail
@@ -318,8 +348,8 @@
 ///     \/ \E c \in Cmds : Request(c)
 ///     \/ \E n \in Nodes, c \in Cmds : Adopt(n, c)
 ///     \/ \E n \in Nodes, v \in Cmds \cup BatchVals : Vote(n, v)
-///     \/ \E n \in Nodes : Decide(n) \/ DecideNull(n) \/ Jump(n) \/ Forge(n)
-///     \/ \E p, q \in Nodes : Relay(p, q) \/ LearnEpoch(p, q)
+///     \/ \E n \in Nodes : Decide(n) \/ DecideNull(n) \/ Jump(n) \/ FreeJump(n) \/ Forge(n)
+///     \/ \E p, q \in Nodes : Relay(p, q) \/ FreeLearn(p, q)
 ///
 /// Spec == Init /\ [][Next]_vars
 ///
@@ -376,13 +406,15 @@
 /// \*   "D5q" (comparison, not paper) newer epoch needs a LIVE majority (n/2+1) claiming one configuration;
 /// \*         the response-quorum rule the code rejects because it wedges #1526 (liveness not checked here)
 /// \* Assumptions as constants:
-/// \*   KeepBallots  the process keeps its ballot memory across pause and adoption [unverified: not read in code]
+/// \*   KeepBallots  the process keeps its ballot memory across pause and adoption (phases.clear() runs only in
+/// \*                shutdownAndReset, the stop path; GC drops only expired past slots)
 /// \*   FaultyResp   node "C" may answer sync with an arbitrary well-formed log (a non-crash fault)
 /// \*   Probe        which adoption branch the sticky ghost `reached` records ("none" in property cfgs)
 /// \*   SameEpochAdopt  FALSE disables the same-epoch adoption branches, isolating the D5 newer-epoch path (diagnostic)
+/// \*   SaveFails    TRUE lets saveState on Pause fail (doPauseForQuorumLoss logs the failure and stays paused)
 /// EXTENDS Naturals, FiniteSets
 ///
-/// CONSTANTS Fixed, Paper, KeepBallots, FaultyResp, SameEpochAdopt, Probe, MaxCrash, MaxRestart, MaxPause, Rejoin
+/// CONSTANTS Fixed, Paper, KeepBallots, FaultyResp, SameEpochAdopt, Probe, MaxCrash, MaxRestart, MaxPause, Rejoin, SaveFails
 ///
 /// ASSUME Fixed \subseteq {"amnesiafence", "selfvouch", "oneconfig"}
 /// ASSUME Paper \subseteq {"D3", "D4", "D5", "D5q"}
@@ -441,9 +473,15 @@
 /// Options(r) == IF FaultyResp /\ r = "C" THEN AllLogs ELSE {Prefix(log[r], k) : k \in 0..2}
 /// Live(r) == st[r] = "active"
 ///
+/// \* ownStateFloor: the more advanced of the persisted and the LIVE phase. They differ only after a Pause whose save
+/// \* failed (SaveFails) and a Resume into syncing; Restart sets log to saved (or wipes both).
+/// Floor(n) == IF Len(saved[n]) >= Len(log[n]) THEN Len(saved[n]) ELSE Len(log[n])
+///
 /// \* Install an adopted state: persisted (saveState at restore), active iff self is in the adopted roster.
+/// \* A response set wholly behind Floor(n) disables Adopt; the code's activateWithoutAdoption branch (own state, no
+/// \* adoption) is not modelled (under-approximation).
 /// Install(n, ad) ==
-///   /\ Len(ad) >= Len(saved[n])                            \* ownStateFloor: never behind own durable state
+///   /\ Len(ad) >= Floor(n)                                 \* adoptCollectedState: never behind own state
 ///   /\ log' = [log EXCEPT ![n] = ad]
 ///   /\ saved' = [saved EXCEPT ![n] = ad]
 ///   /\ IF n \in Roster(ad)
@@ -489,7 +527,7 @@
 ///
 /// Next ==
 ///   \/ /\ \/ \E n \in Ids : \E v \in {"r1", "r2", "a", "b"} : Vote(n, v) \/ Decide(n, v)
-///         \/ \E n \in Ids : Pause(n) \/ Resume(n)
+///         \/ \E n \in Ids, b \in BOOLEAN : Pause(n, b) \/ Resume(n, b)
 ///         \/ \E n \in Ids, g \in BOOLEAN : Crash(n, g) \/ (\E A \in SUBSET Ids : Restart(n, g, A))
 ///      /\ UNCHANGED reached
 ///   \/ \E n \in Ids : Adopt(n)
@@ -650,6 +688,8 @@
 ///     MaxJump = 1
 ///     MaxForge = 1
 ///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
 /// INVARIANTS
 ///     TypeOK
 ///     Agreement
@@ -674,6 +714,8 @@
 ///     MaxJump = 1
 ///     MaxForge = 1
 ///     Slow = {"D"}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
 /// INVARIANTS
 ///     TypeOK
 /// PROPERTIES
@@ -696,6 +738,8 @@
 ///     MaxJump = 1
 ///     MaxForge = 1
 ///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
 /// INVARIANTS
 ///     TypeOK
 ///     Agreement
@@ -717,6 +761,8 @@
 ///     MaxJump = 1
 ///     MaxForge = 1
 ///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
 /// INVARIANTS
 ///     TypeOK
 ///     Agreement
@@ -741,6 +787,8 @@
 ///     MaxJump = 1
 ///     MaxForge = 1
 ///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
 /// INVARIANTS
 ///     TypeOK
 ///     Agreement
@@ -763,6 +811,8 @@
 ///     MaxJump = 1
 ///     MaxForge = 1
 ///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
 /// INVARIANTS
 ///     TypeOK
 ///     GovernedVote
@@ -784,11 +834,85 @@
 ///     MaxJump = 1
 ///     MaxForge = 1
 ///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
 /// INVARIANTS
 ///     TypeOK
 ///     Agreement
 ///     OneRosterPerEpoch
 ///     NoOldEpochTally
+/// ```
+///
+/// ```tlacfg RabiaEpoch:codesync_live
+/// \* RabiaEpoch config codesync_live: the expected verdict is its row in tools/tla/models.tsv
+/// \* the code without prefix, LIVE responses only: applyRestoredState carries slot and roster together
+/// SPECIFICATION Spec
+/// CONSTANTS
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Assume = {"crashstop"}
+///     Paper = {}
+///     Roster0 = {"A", "B", "C"}
+///     TargetSet = {{"A", "B", "D"}, {"A", "C", "D"}}
+///     Batches = {"b1", "b2"}
+///     MaxSlot = 2
+///     MaxRequests = 2
+///     RequestEpochs = {0, 1}
+///     MaxJump = 2
+///     MaxForge = 1
+///     Slow = {}
+///     JumpShape = "code"
+///     ColdShapes = {FALSE}
+/// INVARIANTS
+///     TypeOK
+///     GovernedVote
+/// ```
+///
+/// ```tlacfg RabiaEpoch:codesync_gov
+/// \* RabiaEpoch config codesync_gov: the expected verdict is its row in tools/tla/models.tsv
+/// \* the code without prefix, LIVE and COLD responses (a COLD response carries the phase without the roster)
+/// SPECIFICATION Spec
+/// CONSTANTS
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Assume = {"crashstop"}
+///     Paper = {}
+///     Roster0 = {"A", "B", "C"}
+///     TargetSet = {{"A", "B", "D"}, {"A", "C", "D"}}
+///     Batches = {"b1", "b2"}
+///     MaxSlot = 2
+///     MaxRequests = 2
+///     RequestEpochs = {0, 1}
+///     MaxJump = 2
+///     MaxForge = 1
+///     Slow = {}
+///     JumpShape = "code"
+///     ColdShapes = {FALSE, TRUE}
+/// INVARIANTS
+///     TypeOK
+///     GovernedVote
+/// ```
+///
+/// ```tlacfg RabiaEpoch:codesync_agree
+/// \* RabiaEpoch config codesync_agree: the expected verdict is its row in tools/tla/models.tsv
+/// \* as codesync_gov, checking Agreement
+/// SPECIFICATION Spec
+/// CONSTANTS
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Assume = {"crashstop"}
+///     Paper = {}
+///     Roster0 = {"A", "B", "C"}
+///     TargetSet = {{"A", "B", "D"}, {"A", "C", "D"}}
+///     Batches = {"b1", "b2"}
+///     MaxSlot = 2
+///     MaxRequests = 2
+///     RequestEpochs = {0, 1}
+///     MaxJump = 2
+///     MaxForge = 1
+///     Slow = {}
+///     JumpShape = "code"
+///     ColdShapes = {FALSE, TRUE}
+/// INVARIANTS
+///     TypeOK
+///     Agreement
 /// ```
 ///
 /// ```tlacfg RabiaEpoch:norelayepoch
@@ -807,6 +931,8 @@
 ///     MaxJump = 1
 ///     MaxForge = 1
 ///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
 /// INVARIANTS
 ///     TypeOK
 ///     Agreement
@@ -831,6 +957,8 @@
 ///     MaxJump = 1
 ///     MaxForge = 1
 ///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
 /// INVARIANTS
 ///     TypeOK
 ///     Agreement
@@ -854,6 +982,8 @@
 ///     MaxJump = 1
 ///     MaxForge = 1
 ///     Slow = {"D"}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
 /// INVARIANTS
 ///     TypeOK
 /// PROPERTIES
@@ -876,6 +1006,8 @@
 ///     MaxJump = 1
 ///     MaxForge = 1
 ///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
 /// INVARIANTS
 ///     TypeOK
 ///     Agreement
@@ -898,6 +1030,8 @@
 ///     MaxJump = 1
 ///     MaxForge = 1
 ///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
 /// INVARIANTS
 ///     TypeOK
 ///     Agreement
@@ -920,6 +1054,8 @@
 ///     MaxJump = 1
 ///     MaxForge = 1
 ///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
 /// INVARIANTS
 ///     TypeOK
 ///     Agreement
@@ -942,6 +1078,8 @@
 ///     MaxJump = 1
 ///     MaxForge = 1
 ///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
 /// INVARIANTS
 ///     TypeOK
 ///     Agreement
@@ -964,6 +1102,8 @@
 ///     MaxJump = 1
 ///     MaxForge = 1
 ///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
 /// INVARIANTS
 ///     TypeOK
 ///     Agreement
@@ -986,6 +1126,8 @@
 ///     MaxJump = 1
 ///     MaxForge = 1
 ///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
 /// INVARIANTS
 ///     TypeOK
 ///     Agreement
@@ -1006,6 +1148,27 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
+/// INVARIANTS TypeOK Agreement Held
+/// PROPERTIES DurableDecision
+/// ```
+///
+/// ```tlacfg RabiaAdopt:allfixes_savefail
+/// \* RabiaAdopt config allfixes_savefail: the expected verdict is its row in tools/tla/models.tsv
+/// \* the code with a failing saveState on Pause (R3)
+/// SPECIFICATION Spec
+/// CONSTANTS
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Paper = {}
+///   KeepBallots = TRUE
+///   FaultyResp = FALSE
+///   SameEpochAdopt = TRUE
+///   Probe = "none"
+///   MaxCrash = 1
+///   MaxRestart = 1
+///   MaxPause = 1
+///   Rejoin = "none"
+///   SaveFails = TRUE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1024,6 +1187,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1042,6 +1206,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1060,6 +1225,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1078,6 +1244,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1096,6 +1263,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1113,6 +1281,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1130,6 +1299,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1147,6 +1317,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1164,6 +1335,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1181,6 +1353,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1198,6 +1371,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS ReachX2
 /// ```
 ///
@@ -1215,6 +1389,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "wiped"
+///   SaveFails = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1232,6 +1407,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "wiped"
+///   SaveFails = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1249,6 +1425,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "any"
+///   SaveFails = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1266,6 +1443,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "any"
+///   SaveFails = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1283,6 +1461,7 @@
 ///   MaxRestart = 2
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
+///   SaveFails = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1300,6 +1479,7 @@
 ///   MaxRestart = 2
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
+///   SaveFails = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1317,6 +1497,7 @@
 ///   MaxRestart = 2
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
+///   SaveFails = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1334,6 +1515,7 @@
 ///   MaxRestart = 2
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
+///   SaveFails = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1351,6 +1533,7 @@
 ///   MaxRestart = 2
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
+///   SaveFails = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1368,6 +1551,7 @@
 ///   MaxRestart = 2
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
+///   SaveFails = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1385,6 +1569,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement
 /// PROPERTIES DurableDecision
 /// ```
@@ -1403,6 +1588,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement
 /// PROPERTIES DurableDecision
 /// ```
@@ -1421,6 +1607,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement
 /// PROPERTIES DurableDecision
 /// ```
@@ -1439,6 +1626,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1457,6 +1645,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1475,6 +1664,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1493,6 +1683,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1511,6 +1702,27 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
+/// INVARIANTS TypeOK Agreement Held
+/// PROPERTIES DurableDecision
+/// ```
+///
+/// ```tlacfg RabiaAdopt:noselfvouch_savefail
+/// \* RabiaAdopt config noselfvouch_savefail: the expected verdict is its row in tools/tla/models.tsv
+/// \* D4 self-vouch dropped, with a failing saveState on Pause
+/// SPECIFICATION Spec
+/// CONSTANTS
+///   Fixed = {"amnesiafence", "oneconfig"}
+///   Paper = {}
+///   KeepBallots = TRUE
+///   FaultyResp = FALSE
+///   SameEpochAdopt = TRUE
+///   Probe = "none"
+///   MaxCrash = 1
+///   MaxRestart = 1
+///   MaxPause = 1
+///   Rejoin = "none"
+///   SaveFails = TRUE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1529,6 +1741,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1547,6 +1760,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1565,6 +1779,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1583,6 +1798,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "none"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1601,6 +1817,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "any"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1619,6 +1836,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "any"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1637,6 +1855,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "any"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1655,6 +1874,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "any"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1673,6 +1893,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "any"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1691,6 +1912,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "any"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1709,6 +1931,27 @@
 ///   MaxRestart = 2
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
+///   SaveFails = FALSE
+/// INVARIANTS TypeOK Agreement Held
+/// PROPERTIES DurableDecision
+/// ```
+///
+/// ```tlacfg RabiaAdopt:rjT_allfixes_savefail
+/// \* RabiaAdopt config rjT_allfixes_savefail: the expected verdict is its row in tools/tla/models.tsv
+/// \* token-memory rejoin, all fixes, failing saveState on Pause
+/// SPECIFICATION Spec
+/// CONSTANTS
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Paper = {}
+///   KeepBallots = TRUE
+///   FaultyResp = FALSE
+///   SameEpochAdopt = TRUE
+///   Probe = "none"
+///   MaxCrash = 2
+///   MaxRestart = 2
+///   MaxPause = 1
+///   Rejoin = "tokens"
+///   SaveFails = TRUE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1727,6 +1970,7 @@
 ///   MaxRestart = 2
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1745,6 +1989,7 @@
 ///   MaxRestart = 2
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1763,6 +2008,27 @@
 ///   MaxRestart = 2
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
+///   SaveFails = FALSE
+/// INVARIANTS TypeOK Agreement Held
+/// PROPERTIES DurableDecision
+/// ```
+///
+/// ```tlacfg RabiaAdopt:rjT_noselfvouch_savefail
+/// \* RabiaAdopt config rjT_noselfvouch_savefail: the expected verdict is its row in tools/tla/models.tsv
+/// \* token-memory rejoin, D4 self-vouch dropped, failing saveState on Pause
+/// SPECIFICATION Spec
+/// CONSTANTS
+///   Fixed = {"amnesiafence", "oneconfig"}
+///   Paper = {}
+///   KeepBallots = TRUE
+///   FaultyResp = FALSE
+///   SameEpochAdopt = TRUE
+///   Probe = "none"
+///   MaxCrash = 2
+///   MaxRestart = 2
+///   MaxPause = 1
+///   Rejoin = "tokens"
+///   SaveFails = TRUE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1781,6 +2047,7 @@
 ///   MaxRestart = 2
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1799,6 +2066,7 @@
 ///   MaxRestart = 2
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1817,6 +2085,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "wiped"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1835,6 +2104,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "wiped"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1853,6 +2123,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "wiped"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1871,6 +2142,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "wiped"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1889,6 +2161,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "wiped"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1907,6 +2180,7 @@
 ///   MaxRestart = 1
 ///   MaxPause = 1
 ///   Rejoin = "wiped"
+///   SaveFails = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```

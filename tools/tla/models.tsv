@@ -36,7 +36,7 @@ RabiaSlot	integrations/consensus/src/main/java	nopastcur	fail	NoRedecide	-	D9 gu
 RabiaSlot	integrations/consensus/src/main/java	nocurslot	fail	NoRedecide	-	current-slot gates dropped: a decision for a collected slot is applied again through Learn
 RabiaSlot	integrations/consensus/src/main/java	nomarkerfirst	fail	VotedImpliesMarker	-	D11: activation before the participation marker is durable lets a node vote without one
 RabiaSlot	integrations/consensus/src/main/java	noemptyprop	fail	Live	-	D8: a voter with an empty queue stays silent and the slot never reaches a proposal quorum
-RabiaEpoch	integrations/consensus/src/main/java	code	pass	-	-	the code: one reconfiguration, 4 nodes, 2 slots, in-order commit
+RabiaEpoch	integrations/consensus/src/main/java	code	pass	-	-	in-order commit (prefix) abstraction, not the code: one reconfiguration, 4 nodes, 2 slots (the code-shaped Jump is codesync_*)
 RabiaEpoch	integrations/consensus/src/main/java	live	pass	-	-	the code: progress under a reconfiguration
 RabiaEpoch	integrations/consensus/src/main/java	noexactepoch	pass	-	-	D6 exact-epoch counting dropped, in-order commit: stays green (redundant on the in-log path)
 RabiaEpoch	integrations/consensus/src/main/java	norelayepoch	pass	-	-	D2 relay epoch check dropped, in-order commit: stays green (redundant on the in-log path)
@@ -49,10 +49,11 @@ RabiaEpoch	integrations/consensus/src/main/java	paper_d2_np	pass	-	-	D2 paper ru
 RabiaEpoch	integrations/consensus/src/main/java	paper_d12_np	pass	-	-	D12 paper rule under sync adoption: safe
 RabiaEpoch	integrations/consensus/src/main/java	noretainmaj	fail	Progress	-	D6 target-majority check dropped: a reconfiguration can leave a roster that cannot decide
 RabiaEpoch	integrations/consensus/src/main/java	noprefix	fail	GovernedVote	-	in-order commit assumption removed: a ballot carries an epoch that does not govern its slot
+RabiaEpoch	integrations/consensus/src/main/java	codesync_gov	fail	GovernedVote	-	the code without prefix, LIVE and COLD responses: a COLD answer carries the phase without the roster, so a lagging replica casts a ballot at an epoch that does not govern its slot (acceptsBallot does not count it)
 RabiaEpoch	integrations/consensus/src/main/java	nocrashstop	fail	Agreement	-	crash-stop assumption removed (relay without vote evidence): two values committed
 RabiaEpoch	integrations/consensus/src/main/java	noexactepoch_noprefix	fail	Agreement	-	D6 exact-epoch counting dropped under sync adoption: two values committed
 RabiaEpoch	integrations/consensus/src/main/java	paper_d6_np	fail	Agreement	-	D6 paper rule under sync adoption: two values committed (the paper rule is unsafe against sync adoption)
-RabiaAdopt	integrations/consensus/src/main/java	allfixes	pass	-	-	the code: every adoption fix on
+RabiaAdopt	integrations/consensus/src/main/java	allfixes	pass	-	-	every adoption fix on, under a permanent fence (Rejoin = none); the code's per-process token memory is rjT_*
 RabiaAdopt	integrations/consensus/src/main/java	allfixesD5	pass	-	-	the code, same-epoch adoption off: isolates the newer-epoch path
 RabiaAdopt	integrations/consensus/src/main/java	allfixesD5q	pass	-	-	comparison: newer epoch needs a live majority (not the code)
 RabiaAdopt	integrations/consensus/src/main/java	ballotlossD5	pass	-	-	ballots lost on pause, newer-epoch path only: insensitive

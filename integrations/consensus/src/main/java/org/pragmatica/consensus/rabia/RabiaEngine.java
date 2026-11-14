@@ -1603,11 +1603,14 @@ public class RabiaEngine<C extends Command> {
     /// storage so that a crash during the pause leaves a recoverable snapshot.
     ///
     /// ```tla RabiaAdopt:Pause
-    /// \* saveState at pause.
-    /// Pause(n) ==
-    ///   /\ st[n] = "active" /\ pauses < MaxPause
+    /// \* From Active, Observing or Syncing (the guard above; the model's "syncing" also stands for Observing, since
+    /// \* Install leaves a node outside the adopted roster in "syncing"). saveState may fail (ok = FALSE): onFailure
+    /// \* only logs, the pause stands and the durable state stays as it was.
+    /// Pause(n, ok) ==
+    ///   /\ st[n] \in {"active", "syncing"} /\ pauses < MaxPause
+    ///   /\ ok \in IF SaveFails THEN BOOLEAN ELSE {TRUE}
     ///   /\ st' = [st EXCEPT ![n] = "paused"]
-    ///   /\ saved' = [saved EXCEPT ![n] = log[n]]
+    ///   /\ saved' = IF ok THEN [saved EXCEPT ![n] = log[n]] ELSE saved
     ///   /\ voted' = IF KeepBallots THEN voted ELSE [voted EXCEPT ![n] = Empty]
     ///   /\ pauses' = pauses + 1
     ///   /\ UNCHANGED <<log, marker, admit, known, reinc, ballots, chosen, crashes, restarts>>
@@ -1647,9 +1650,11 @@ public class RabiaEngine<C extends Command> {
     /// Decisions delivered during the pause have already been applied.
     ///
     /// ```tla RabiaAdopt:Resume
-    /// Resume(n) ==
+    /// \* enterServing: straight to Idle (a voter of its own roster) or Observing (the model's "syncing"), with no
+    /// \* sync round (direct). A gap left after drainBufferedDecisions starts synchronization (~direct).
+    /// Resume(n, direct) ==
     ///   /\ st[n] = "paused"
-    ///   /\ st' = [st EXCEPT ![n] = "syncing"]
+    ///   /\ st' = [st EXCEPT ![n] = IF direct /\ n \in Roster(log[n]) THEN "active" ELSE "syncing"]
     ///   /\ UNCHANGED <<log, saved, marker, admit, known, reinc, voted, ballots, chosen, crashes, restarts, pauses>>
     /// ```
     private void resumeFromPause() {
@@ -1947,35 +1952,6 @@ public class RabiaEngine<C extends Command> {
     /// Adopts the configuration a sync source carried when it is newer than the installed one. The
     /// epoch never regresses; an equal epoch is already installed ([#eligibleSyncResponse] refuses a
     /// different roster at the same epoch).
-    ///
-    /// ```tla RabiaEpoch:Jump
-    /// \* --- environment moves, enabled only when an assumption is removed ---
-    ///
-    /// \* "prefix" removed: a replica reaches slot s+1 without committing s (a slot install that does not carry the roster).
-    /// \* Not code: an environment move enabled only when the prefix assumption is removed.
-    /// Jump(n) ==
-    ///     /\ ~Has("prefix")
-    ///     /\ Cardinality(jumpers) < MaxJump
-    ///     /\ Active(n)
-    ///     /\ slot[n] < MaxSlot
-    ///     /\ slot'    = [slot EXCEPT ![n] = @ + 1]
-    ///     /\ jumpers' = jumpers \cup {n}
-    ///     /\ UNCHANGED <<epoch, roster, requested, decided, decEpoch, ballots, requests, installs, forged, mixed>>
-    /// ```
-    ///
-    /// ```tla RabiaEpoch:LearnEpoch
-    /// \* "prefix" removed: adoptSyncedConfiguration without its slot (epoch never regresses).
-    /// \* The shape of adoptSyncedConfiguration, separated from its slot install; enabled only when the prefix
-    /// \* assumption is removed.
-    /// LearnEpoch(n, p) ==
-    ///     /\ ~Has("prefix")
-    ///     /\ slot[n] = slot[p]
-    ///     /\ epoch[p] > epoch[n]
-    ///     /\ epoch'     = [epoch EXCEPT ![n] = epoch[p]]
-    ///     /\ roster'    = [roster EXCEPT ![n] = roster[p]]
-    ///     /\ requested' = [requested EXCEPT ![n] = Settled(requested[n], epoch[p])]
-    ///     /\ UNCHANGED <<slot, decided, decEpoch, ballots, requests, installs, jumpers, forged, mixed>>
-    /// ```
     private void adoptSyncedConfiguration(VoterConfiguration configuration) {
         if (configuration.epoch() <= voterEpoch()) {
             return;
@@ -3471,6 +3447,37 @@ public class RabiaEngine<C extends Command> {
         }
     }
 
+    /// ```tla RabiaEpoch:Jump
+    /// \* applyRestoredState: currentPhase advances to the response's lastCommittedPhase (never back), then
+    /// \* adoptSyncedConfiguration installs the response's configuration when its epoch is newer. One step: the
+    /// \* engine runs both on its executor. p's state stands for the adopted SyncResponse (adoptionCandidates):
+    /// \*   LIVE (handleSyncRequest: an active, observing or paused responder): currentPhase and voters are read in
+    /// \*        one handler, so slot and roster are coupled; eligible when the claimed roster contains the sender and
+    /// \*        is newer or equal (eligibleSyncResponse, comparableConfiguration).
+    /// \*   COLD (a Stopped or Syncing responder): its persisted state withoutConfiguration, so the phase arrives
+    /// \*        with no roster; eligible only when voterEpoch() == 0 and the sender is a voter here.
+    /// \* Over-approximations: one response stands for the response quorum; a COLD responder's persisted phase is
+    /// \* taken as its current slot (persisted <= current), and the model does not stop it while it answers.
+    /// \* JumpShape = "free" replaces this with the decoupled FreeJump and FreeLearn of the skeleton.
+    /// Jump(n) ==
+    ///     /\ ~Has("prefix")
+    ///     /\ JumpShape = "code"
+    ///     /\ slot[n] \in Slots
+    ///     /\ \E p \in Nodes \ {n}, cold \in ColdShapes :
+    ///         LET advance == slot[p] > slot[n]
+    ///             learn   == ~cold /\ epoch[p] > epoch[n]
+    ///         IN /\ IF cold THEN epoch[n] = 0 /\ p \in roster[n]
+    ///                       ELSE /\ p \in roster[p]
+    ///                            /\ (epoch[p] > epoch[n] \/ (epoch[p] = epoch[n] /\ roster[p] = roster[n]))
+    ///            /\ advance \/ learn
+    ///            /\ advance => (n \in jumpers \/ Cardinality(jumpers) < MaxJump)
+    ///            /\ slot'      = [slot EXCEPT ![n] = IF advance THEN slot[p] ELSE @]
+    ///            /\ epoch'     = [epoch EXCEPT ![n] = IF learn THEN epoch[p] ELSE @]
+    ///            /\ roster'    = [roster EXCEPT ![n] = IF learn THEN roster[p] ELSE @]
+    ///            /\ requested' = [requested EXCEPT ![n] = IF learn THEN Settled(@, epoch[p]) ELSE @]
+    ///            /\ jumpers'   = IF advance THEN jumpers \cup {n} ELSE jumpers
+    ///     /\ UNCHANGED <<decided, decEpoch, ballots, requests, installs, forged, mixed>>
+    /// ```
     private void applyRestoredState(SavedState<C> state) {
         stateTransferFailure = Option.none();
         reconcileSnapshotPending(state.lastCommittedPhase(), state.pendingBatches());
@@ -3900,7 +3907,7 @@ public class RabiaEngine<C extends Command> {
     ///            L    == {r \in R : Live(r)}
     ///            size == Cardinality(Roster(log[n]))
     ///            claimed == Cardinality({Roster(rl[r]) : r \in L})
-    ///            vouch == Len(saved[n]) > 0 \/ marker[n] = "never"
+    ///            vouch == Floor(n) > 0 \/ marker[n] = "never"       \* selfCanVouchForItsOwnHistory: ownStateFloor > ZERO
     ///            req  == IF "selfvouch" \in Fixed /\ ~vouch THEN size \div 2 + 1 ELSE size \div 2
     ///        IN
     ///        /\ R # {}
