@@ -17,6 +17,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -191,16 +192,22 @@ class StreamConsumerManagerTest {
     /// The committed-assignment authority over [#committedAssignments]; `leader` gates its writer the
     /// way the node's leadership does.
     private AssignmentAuthority authority(boolean leader) {
+        return authority(() -> leader);
+    }
+
+    /// As [#authority(boolean)], with leadership that can move between passes.
+    private AssignmentAuthority authority(BooleanSupplier leader) {
         ConsumerAssignmentWriter.CommittedAssignments committed = (stream, partition, group) -> Option.option(committedAssignments.get(ConsumerAssignmentKey.consumerAssignmentKey(stream,
                                                                                                                                                                            partition,
                                                                                                                                                                            group)));
 
         return AssignmentAuthority.assignmentAuthority(committed,
-                                                       ConsumerAssignmentWriter.consumerAssignmentWriter(() -> leader,
+                                                       ConsumerAssignmentWriter.consumerAssignmentWriter(leader,
                                                                                                          () -> Epoch.epoch(1L, 1L, 0L),
                                                                                                          HlcClock.hlcClock(SELF),
                                                                                                          committed),
-                                                       this::applyAssignments);
+                                                       this::applyAssignments,
+                                                       leader);
     }
 
     private Promise<Unit> applyAssignments(List<KVCommand<AetherKey>> commands) {
@@ -240,7 +247,8 @@ class StreamConsumerManagerTest {
                                                                                                                                                      () -> Epoch.epoch(1L, 1L, 0L),
                                                                                                                                                      HlcClock.hlcClock(SELF),
                                                                                                                                                      committed),
-                                                                                                   this::applyAssignments));
+                                                                                                   this::applyAssignments,
+                                                                                                   () -> false));
     }
 
     /// A seam for a registry whose answer changes BETWEEN reads — a KV notification landing while a
@@ -256,6 +264,19 @@ class StreamConsumerManagerTest {
                                                            placement,
                                                            SELF,
                                                            authority(true));
+    }
+
+    /// A manager whose leadership is read on every pass, so it can move between passes (#2600).
+    private StreamConsumerManager managerLedBy(BooleanSupplier leader) {
+        return StreamConsumerManager.streamConsumerManager(registry,
+                                                           runtime,
+                                                           invoker,
+                                                           invocationHandler,
+                                                           FrameworkCodecs.frameworkCodecs(),
+                                                           ownership,
+                                                           placement,
+                                                           SELF,
+                                                           authority(leader));
     }
 
     private void declare(String eventType, boolean batchMode) {

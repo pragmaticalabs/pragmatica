@@ -579,7 +579,8 @@ class DurableProjectionRebuildTest {
                                                                                                                                () -> Epoch.epoch(1L, 1L, 0L),
                                                                                                                                HlcClock.hlcClock(SELF),
                                                                                                                                this::committedAssignment),
-                                                                             this::applyAll);
+                                                                             this::applyAll,
+                                                                             () -> true);
     }
 
     /// The slice's durable subscriber: the generated-adapter shape (a [ContextualEvent] parameter) delegating

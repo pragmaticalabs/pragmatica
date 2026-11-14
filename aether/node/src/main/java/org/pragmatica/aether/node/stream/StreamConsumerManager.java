@@ -13,6 +13,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -342,14 +343,17 @@ public interface StreamConsumerManager {
 
     /// #1271: the committed consumer assignment — the ONE authority for which node delivers a
     /// `(group, partition)`. `committed` reads this node's committed-state mirror; `writer` is the
-    /// leader-only [ConsumerAssignmentWriter]; `applier` submits its `Put`s through consensus.
+    /// leader-only [ConsumerAssignmentWriter]; `applier` submits its `Put`s through consensus; `leader` is the same
+    /// leadership the writer is gated by, and gates the #2600 candidate-gap warning the same way.
     record AssignmentAuthority(ConsumerAssignmentWriter.CommittedAssignments committed,
                                ConsumerAssignmentWriter writer,
-                               Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> applier) {
+                               Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> applier,
+                               BooleanSupplier leader) {
         public static AssignmentAuthority assignmentAuthority(ConsumerAssignmentWriter.CommittedAssignments committed,
                                                               ConsumerAssignmentWriter writer,
-                                                              Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> applier) {
-            return new AssignmentAuthority(committed, writer, applier);
+                                                              Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> applier,
+                                                              BooleanSupplier leader) {
+            return new AssignmentAuthority(committed, writer, applier, leader);
         }
     }
 

@@ -1414,7 +1414,8 @@ public sealed interface StreamAssembly {
                                                                                                                                                           hlcClock,
                                                                                                                                                           committedConsumerAssignments),
                                                                                                         commands -> switchableCluster.apply(commands)
-                                                                                                                                     .mapToUnit());
+                                                                                                                                     .mapToUnit(),
+                                                                                                        isLeaderSupplier);
         var streamConsumerManager = StreamConsumerManager.streamConsumerManager(streamConsumerRegistry,
                                                                                 streamConsumerRuntime,
                                                                                 sliceInvoker,

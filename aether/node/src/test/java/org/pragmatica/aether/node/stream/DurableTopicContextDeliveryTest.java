@@ -260,7 +260,8 @@ class DurableTopicContextDeliveryTest {
                                                                                                                                () -> Epoch.epoch(1L, 1L, 0L),
                                                                                                                                HlcClock.hlcClock(SELF),
                                                                                                                                committed),
-                                                                             commands -> applyAssignments(committedAssignments, commands));
+                                                                             commands -> applyAssignments(committedAssignments, commands),
+                                                                             () -> true);
     }
 
     private static Promise<Unit> applyAssignments(Map<ConsumerAssignmentKey, ConsumerAssignmentValue> committedAssignments,
