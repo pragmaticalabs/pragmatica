@@ -749,9 +749,17 @@ class DHTRebalancerTest {
             List.of(LOCAL, PEER_A).forEach(ring::addNode);
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
             node.putLocal(key("t11"), value("payload")).await();
-            var network = ScriptedNetwork.scripted((_, _) -> Reply.ACK);
-            var run = push(node, network, T(5_000, 30_000, 50), Set.of(PEER_A));
+            var raisedBeforeAck = new AtomicInteger(-1);
+            var recorderRef = new java.util.concurrent.atomic.AtomicReference<EventRecorder>();
+            var network = ScriptedNetwork.scripted((_, _) -> {
+                raisedBeforeAck.compareAndSet(-1, recorderRef.get().atRisk().size());
+                return Reply.ACK;
+            });
+            var recorder = new EventRecorder(() -> {});
+            recorderRef.set(recorder);
+            var run = push(node, network, T(5_000, 30_000, 50), Set.of(PEER_A), recorder);
 
+            assertThat(raisedBeforeAck).as("raised at plan time, before the first ack can arrive").hasValue(1);
             assertThat(network.sends()).isNotEmpty().allSatisfy(sent -> assertThat(sent.target()).isEqualTo(PEER_A));
             assertThat(run.recorder().atRisk()).containsExactly(1);
             assertThat(run.elapsedMillis()).isLessThan(3_000);
