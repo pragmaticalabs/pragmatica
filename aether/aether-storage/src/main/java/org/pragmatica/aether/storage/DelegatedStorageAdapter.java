@@ -204,6 +204,8 @@ public final class DelegatedStorageAdapter {
     public synchronized Promise<Unit> deactivate() {
         wantActive = false;
         retriesLeft = MAX_RETRIES;
+        degrade.recovered(OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STARTED,
+                          "Leader-pinned storage maintenance is no longer expected to start: this node is not the leader");
 
         return Promise.success(attemptDeactivation().or(unit()));
     }

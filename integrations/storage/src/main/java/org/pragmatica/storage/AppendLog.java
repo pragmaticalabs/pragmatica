@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -138,6 +139,13 @@ import static org.pragmatica.lang.Unit.unit;
 /// `WalStats.failStopped`. Recovery action: reopen (node restart) — the scan trims to the valid
 /// prefix, and nothing acked is lost because refused appends were never acked.
 ///
+/// A channel found closed (`ClosedChannelException` and its interrupt and asynchronous-close subclasses) while [#close] is in
+/// progress is NOT a fail-stop (#2539): it is the stop's own doing, so the log reports [WalError.General#WAL_CLOSED] -- no error
+/// log, no mark -- as after [#close]. "In progress" is the intent flag [#close] sets before it takes any lock. The same
+/// exception with no [#close] begun (a stray interrupt, a close beneath the log) is a fault: it fail-stops with a typed detail
+/// (the message, else the exception class name), so a dead WAL raises the alarm. An append admitted before [#close] is committed
+/// (the close-time force covers it, even on an interrupted closer); one that loses to close or follows it gets `WAL_CLOSED`.
+///
 /// The transition also leaves a mark beside the log, `<name>.failstopped` ([#failStopMarkOf]), written best-effort (a volume that
 /// refused the fsync may refuse the mark too). A later open that finds the mark reports the recovery ([#onFailStopRecovered]) at its
 /// FIRST successful group commit, so the closing event says the reopened log accepted a durable write, not merely that it opened,
@@ -180,8 +188,6 @@ public final class AppendLog implements AutoCloseable {
     /// The floor of a log opened without one ([#withSealedFloor]): nothing sealed, so only `lastOffset + 1` follows a record.
     private static final LongSupplier NO_SEALED_FLOOR = () -> - 1L;
 
-    private static final Fn1<Cause, Throwable> APPEND_FAILED = t -> new WalError.AppendFailed(t.getMessage());
-
     private static final Fn1<Cause, Throwable> TRUNCATE_FAILED = t -> new WalError.TruncateFailed(t.getMessage());
 
     private static final Fn1<Cause, Throwable> CLOSE_FAILED = t -> new WalError.CloseFailed(t.getMessage());
@@ -205,6 +211,7 @@ public final class AppendLog implements AutoCloseable {
     private volatile long fsyncMaxNanos;  // guarded by syncLock
     private volatile Option<Cause> syncFailure = Option.none();  // set once under syncLock on fail-stop; never cleared
     private volatile boolean closed;
+    private volatile boolean closing;  // set first thing in close(), before any lock: a closed channel then means a stop (#2539)
     private volatile LongSupplier sealedFloor = NO_SEALED_FLOOR;  // the live floor of the order rule (I-04); read under writeLock
     private volatile Option<Consumer<Cause>> failStopListener = Option.none();  // replaces sink.failStopped when installed (D-01)
     private volatile Option<Runnable> failStopRecoveryListener = Option.none();  // the closing report of an earlier fail-stop (D-01)
@@ -815,6 +822,7 @@ public final class AppendLog implements AutoCloseable {
     @Contract
     @Override
     public void close() {
+        closing = true;
         synchronized (writeLock) {
             synchronized (syncLock) {
                 synchronized (markerLock) {
@@ -834,12 +842,24 @@ public final class AppendLog implements AutoCloseable {
         }
 
         closed = true;
+        var interrupted = Thread.interrupted();
+
         syncFailure.fold(this::closeTimeSync, _ -> unit());
+        restoreInterrupt(interrupted);
         Result.lift(CLOSE_FAILED,
                     () -> channel.close())
               .onFailure(cause -> log.warn("AppendLog close issue for {}: {}",
                                            file,
                                            cause.message()));
+    }
+
+    /// An interrupted closer would close the channel at the close-time force (`ClosedByInterruptException`) and leave admitted
+    /// appends uncommitted, so [#closeLocked] clears the interrupt around the force and puts it back here (#2539).
+    @Contract
+    private static void restoreInterrupt(boolean interrupted) {
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private Unit closeTimeSync() {
@@ -1041,8 +1061,18 @@ public final class AppendLog implements AutoCloseable {
                                                   position + frame.capacity()));
     }
 
+    /// A closed channel (`ClosedChannelException`: an interrupt, an asynchronous close, or a plain close by another operation's
+    /// interrupt) is classified by the [#close] intent flag, whatever the subclass (#2539). With [#close] begun it is the stop's
+    /// doing: [WalError.General#WAL_CLOSED]. Without it, and for every other fault, the log fail-stops with the detail kept,
+    /// falling back to the exception class name, since these exceptions carry a null message.
+    private Cause appendFailure(Throwable failure) {
+        return closing && failure instanceof ClosedChannelException
+               ? WalError.General.WAL_CLOSED
+               : new WalError.AppendFailed(Option.option(failure.getMessage()).or(failure.getClass().getSimpleName()));
+    }
+
     private Result<Unit> writeFrameAt(ByteBuffer frame, long position) {
-        return Result.lift(APPEND_FAILED,
+        return Result.lift(this::appendFailure,
                            () -> channel.write(frame, position))
                      .flatMap(written -> requireFullWrite(written,
                                                           frame.capacity()));
@@ -1058,6 +1088,16 @@ public final class AppendLog implements AutoCloseable {
     /// writeLock-then-syncLock order `compact` uses.
     private void failStopOnWriteFailure(Cause cause) {
         synchronized (syncLock) {
+            refuseClosedOrFailStop(cause);
+        }
+    }
+
+    /// Runs under `syncLock`. A channel found closed while [#close] is in progress (#2539, [#appendFailure]) is a log that is
+    /// closed: it stays refused with `WAL_CLOSED`, with no fail-stop, no error log and no `<log>.failstopped` mark.
+    private void refuseClosedOrFailStop(Cause cause) {
+        if (cause == WalError.General.WAL_CLOSED) {
+            closed = true;
+        } else {
             failStop(cause);
         }
     }
@@ -1098,13 +1138,13 @@ public final class AppendLog implements AutoCloseable {
         var covered = lastOffset;
         var startedAt = System.nanoTime();
 
-        return Result.lift(APPEND_FAILED,
+        return Result.lift(this::appendFailure,
                            () -> channel.force(false))
                      .onSuccess(_ -> publishSync(target,
                                                  covered,
                                                  System.nanoTime() - startedAt))
                      .onSuccess(_ -> reportRecoveryOnce())
-                     .onFailure(this::failStop);
+                     .onFailure(this::refuseClosedOrFailStop);
     }
 
     /// Runs under `syncLock`, after a successful force: the first one of an open that found the fail-stop mark deletes the mark and

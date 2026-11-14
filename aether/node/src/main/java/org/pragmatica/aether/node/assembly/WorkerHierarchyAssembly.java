@@ -24,6 +24,7 @@ import org.pragmatica.aether.deployment.cluster.CapacityView;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.ClusterReplication;
 import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
+import org.pragmatica.aether.deployment.cluster.community.CommunityLivenessView;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
 import org.pragmatica.aether.deployment.cluster.UpgradeRunIndex;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
@@ -726,8 +727,9 @@ public sealed interface WorkerHierarchyAssembly {
                                        CommunityHealthIndex communityHealth,
                                        CommunityHealthRuntime communityHealthRuntime) {}
 
-    /// The community reachability that feeds liveness into the cluster deployment manager.
-    static Unit communityReachability(CommunityReachabilityInputs in) {
+    /// The community reachability that feeds liveness into the cluster deployment manager. Returns the leader's liveness view so the node
+    /// can serve the community live-member count without the deployment manager (#3159).
+    static CommunityLivenessView communityReachability(CommunityReachabilityInputs in) {
         var config = in.config();
         var clusterDeploymentManager = in.clusterDeploymentManager();
         var metricsCollector = in.metricsCollector();
@@ -738,22 +740,23 @@ public sealed interface WorkerHierarchyAssembly {
         var communityHealthRuntime = in.communityHealthRuntime();
         // Assigned workers use challenge-bound governor evidence. Report expiry blocks new
         // placement; it never synthesizes individual member death or provider termination.
-        var communityReachability = org.pragmatica.aether.deployment.cluster.fsm.CommunityReachability.communityReachability(config.timeouts()
-                                                                                                                                   .cluster()
-                                                                                                                                   .communityAbsence(),
-                                                                                                                             metricsCollector::sinceLastPong,
-                                                                                                                             System::nanoTime);
+        var communityReachability = org.pragmatica.aether.deployment.cluster.community.CommunityReachability.communityReachability(config.timeouts()
+                                                                                                                                         .cluster()
+                                                                                                                                         .communityAbsence(),
+                                                                                                                                   metricsCollector::sinceLastPong,
+                                                                                                                                   System::nanoTime);
+        CommunityLivenessView livenessView = node -> communityDirectory.assignment(node)
+                                                                       .fold(() -> communityReachability.isAbsent(node),
+                                                                             _ -> !communityHealth.isReachable(node));
 
-        clusterDeploymentManager.setCommunityLiveness(node -> communityDirectory.assignment(node)
-                                                                                .fold(() -> communityReachability.isAbsent(node),
-                                                                                      _ -> !communityHealth.isReachable(node)));
+        clusterDeploymentManager.setCommunityLiveness(livenessView);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> beginCommunityObservation(change, communityReachability)));
         // Core/local membership and fresh governor evidence remain distinct inputs. A stale
         // worker FSM entry cannot override expiry of the community report.
         clusterDeploymentManager.setLocalAliveMembersSupplier(() -> communityHealthRuntime.aliveNodes(membershipFsm.dhtRoutableMembers()));
 
-        return Unit.unit();
+        return livenessView;
     }
 
     /// #1777 track 1 (CTO ruling B), core side: the DHT replication a worker's projection carries, derived from this
@@ -831,7 +834,7 @@ public sealed interface WorkerHierarchyAssembly {
     }
 
     private static void beginCommunityObservation(LeaderNotification.LeaderChange change,
-                                                  org.pragmatica.aether.deployment.cluster.fsm.CommunityReachability reachability) {
+                                                  org.pragmatica.aether.deployment.cluster.community.CommunityReachability reachability) {
         if (change.localNodeIsLeader()) {
             reachability.beginLeadership();
         }

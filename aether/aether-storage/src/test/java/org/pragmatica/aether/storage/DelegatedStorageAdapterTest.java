@@ -224,6 +224,28 @@ class DelegatedStorageAdapterTest {
                                            org.pragmatica.utility.warning.OperatorWarningCode.STORAGE_MAINTENANCE_STOPPED);
     }
 
+    /// #3087: a node that loses leadership while its activation is still failing is no longer expected to activate, so the
+    /// open not-started warning closes when the leader-change call (deactivate) arrives, with a message that says why.
+    @Test
+    void deactivate_afterFailedActivation_closesTheNotStartedWarning() throws InterruptedException {
+        var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+        var degrade = org.pragmatica.storage.DegradeReporter.degradeReporter(DelegatedStorageAdapter.REPORT_SUBJECT);
+        var adapter = delegatedStorageAdapter(failingDemotionManager("demotion boom"), succeedingGarbageCollector(), degrade);
+        degrade.bind(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(raised::add));
+
+        adapter.activate().await();
+        awaitRaised(raised, 1);
+        adapter.deactivate().await();
+
+        assertThat(degrade.isDegraded(org.pragmatica.utility.warning.OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STARTED))
+            .as("the not-started warning is closed once this node is no longer the leader").isFalse();
+        awaitRaised(raised, 2);
+        assertThat(raised).extracting(org.pragmatica.utility.warning.OperatorWarning::code)
+                          .containsExactly(org.pragmatica.utility.warning.OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STARTED,
+                                           org.pragmatica.utility.warning.OperatorWarningCode.STORAGE_MAINTENANCE_STARTED);
+        assertThat(raised.getLast().message()).contains("not the leader");
+    }
+
     /// #800: a failed activation is retried from the tick, at most MAX_RETRIES times per leader-change call, and a retry that
     /// succeeds activates the group (the already-open warning is closed by it, as by any activation).
     @Test

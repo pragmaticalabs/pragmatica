@@ -10,7 +10,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -19,13 +21,22 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
 import org.pragmatica.aether.resource.ResourceProvider;
+import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
+import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -165,6 +176,30 @@ class DeploymentWiringBootTest {
         collaborators.translator().events().accept(ClusterStateNotification.passive());
 
         assertThat(routed).as("the translator's events reach the node's router").hasSize(1);
+    }
+
+    /// B21 (spec 1.6.1) from a real FSM2 boot: a committed observed ACTIVE row reaches the traffic reader (endpoint registry), the state reader
+    /// (deployment map) and the node's own row source, each through the wiring `AetherNode` built. Red when `AetherNode` leaves a reader off the feed or
+    /// hands the row source the legacy scan (FSM2 writes no `NodeArtifactKey` rows, so the legacy scan sees nothing).
+    @Test
+    @Timeout(value = 180, unit = SECONDS)
+    void fsm2Node_readersAndRowSourceFollowACommittedObservedRow() {
+        boot(DeploymentEngine.FSM2);
+        var artifact = Artifact.artifact("org.example:orders:1.0.0").unwrap();
+        var key = SliceObservedKey.sliceObservedKey(node.self(), artifact);
+        var row = new SliceObservedValue(SliceObservedState.ACTIVE, 1L, new Generation(1L, 1L), new ProcessIncarnation(1L, 0L), Option.none(), false, 1, List.of("handle"), 0L);
+        var store = node.kvStore();
+
+        store.process(store.createBatch(List.of(new KVCommand.Put<>(key, row))));
+
+        await("traffic reader").atMost(Duration.ofSeconds(30)).until(() -> !node.endpointRegistry().findEndpoints(artifact, MethodName.methodName("handle").unwrap()).isEmpty());
+        assertThat(node.deploymentMap().byArtifact(artifact)).as("state reader").isEqualTo(Map.of(node.self(), SliceState.ACTIVE));
+
+        var seen = new ArrayList<SliceState>();
+
+        node.sliceRows().forEachRow(store, (_, _, state) -> seen.add(state));
+
+        assertThat(seen).as("the node's row source reads the observed rows").containsExactly(SliceState.ACTIVE);
     }
 
     /// The two engines never share a binding target for a branch point: every FSM2 row for a legacy hook is a counted drop, and no LEGACY row
