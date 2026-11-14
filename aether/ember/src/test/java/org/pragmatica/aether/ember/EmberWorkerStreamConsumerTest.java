@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ember;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.IntStream;
@@ -22,7 +26,10 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -98,7 +105,7 @@ class EmberWorkerStreamConsumerTest {
 
         awaitUntil(() -> assignee(assignment).equals(Option.some(worker)),
                    WAIT_BOUND_MS,
-                   "the partition is assigned to the only worker the slice is ACTIVE on, got " + assignee(assignment));
+                   "the partition is assigned to the only worker the slice is ACTIVE on, got " + assignee(assignment) + diagnostics());
     }
 
     private NodeId startedWorker() {
@@ -111,6 +118,27 @@ class EmberWorkerStreamConsumerTest {
         awaitUntil(node::isReady, WAIT_BOUND_MS, workerId.id() + " reports ready");
 
         return workerId;
+    }
+
+    /// Printed with the timeout: the committed rows the manager reads and the leader's own view of its declared consumers.
+    private String diagnostics() {
+        var rows = leader().kvStore()
+                           .snapshot()
+                           .entrySet()
+                           .stream()
+                           .filter(entry -> entry.getKey() instanceof AetherKey.NodeArtifactKey
+                                            || entry.getKey() instanceof AetherKey.StreamRegistrationKey
+                                            || entry.getKey() instanceof AetherKey.ConsumerAssignmentKey)
+                           .map(entry -> entry.getKey() + "=" + entry.getValue())
+                           .toList();
+        var consumers = Result.lift(Causes::fromThrowable, () -> HttpClient.newHttpClient()
+                                                                         .send(HttpRequest.newBuilder(URI.create("http://localhost:" + cluster.getLeaderManagementPort().or(-1) + "/api/v1/streams/declarative-consumers"))
+                                                                                          .build(),
+                                                                               HttpResponse.BodyHandlers.ofString())
+                                                                         .body())
+                              .fold(Cause::message, body -> body);
+
+        return "; rows=" + rows + "; declarative-consumers=" + consumers;
     }
 
     private static AetherKey.StreamRegistrationKey registrationKey() {
