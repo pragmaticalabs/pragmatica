@@ -21,6 +21,8 @@ import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.TopicPartitionInfo;
 
+import static org.pragmatica.lang.Option.option;
+
 
 /// Promise bridge over the Kafka admin client: topic creation, partition metadata and committed offsets of any group.
 ///
@@ -99,8 +101,8 @@ public final class KafkaAdmin {
 
     @Contract
     private static <T> void deliver(Promise<T> promise, T value, Throwable failure) {
-        promise.resolve(Option.option(failure).fold(() -> Result.success(value),
-                                                    f -> KafkaError.fromOperation(unwrap(f)).result()));
+        promise.resolve(option(failure).fold(() -> Result.success(value),
+                                             f -> KafkaError.fromOperation(unwrap(f)).result()));
     }
 
     private static Throwable unwrap(Throwable failure) {
@@ -115,7 +117,7 @@ public final class KafkaAdmin {
     }
 
     private static Option<Long> offsetOf(Map<TopicPartition, OffsetAndMetadata> offsets, TopicPartition tp) {
-        return Option.option(offsets.get(tp)).map(OffsetAndMetadata::offset);
+        return option(offsets.get(tp)).map(OffsetAndMetadata::offset);
     }
 
     private static TopicLayout firstLayout(Map<String, TopicDescription> described) {
@@ -127,7 +129,7 @@ public final class KafkaAdmin {
 
     private static TopicLayout.PartitionLayout layoutOf(TopicPartitionInfo info) {
         return TopicLayout.PartitionLayout.partitionLayout(info.partition(),
-                                                           Option.option(info.leader()).map(Node::id).or(-1),
+                                                           option(info.leader()).map(Node::id).or(-1),
                                                            info.replicas().stream().map(Node::id).toList());
     }
 }

@@ -7,8 +7,8 @@ import java.util.regex.Pattern;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.Causes;
 
+import static org.pragmatica.lang.utils.Causes.cause;
 import static org.pragmatica.lang.Result.all;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -59,13 +59,13 @@ public record KafkaConfig(String bootstrapServers,
     private static Result<String> serversShape(String servers) {
         return Verify.ensure(servers,
                              v -> SERVERS.matcher(v).matches(),
-                             Causes.cause("bootstrap servers must be host:port[,host:port...]"));
+                             cause("bootstrap servers must be host:port[,host:port...]"));
     }
 
     private static Result<TimeSpan> positive(TimeSpan span) {
         return Verify.ensure(span, Verify.Is::notNull).flatMap(s -> Verify.ensure(s,
                                                                                   t -> t.nanos() > 0,
-                                                                                  Causes.cause("timeout must be positive")));
+                                                                                  cause("timeout must be positive")));
     }
 
     private static Result<KafkaConfig> ordered(String servers,
@@ -78,7 +78,7 @@ public record KafkaConfig(String bootstrapServers,
                                                TimeSpan close) {
         return Verify.ensure(new KafkaConfig(servers, security, acks, clientId, request, delivery, maxBlock, close),
                              c -> c.deliveryTimeout.nanos() >= c.requestTimeout.nanos(),
-                             Causes.cause("deliveryTimeout must be at least requestTimeout"));
+                             cause("deliveryTimeout must be at least requestTimeout"));
     }
 
     Map<String, Object> commonProperties() {

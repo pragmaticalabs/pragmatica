@@ -20,6 +20,7 @@ import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
 
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
 
@@ -179,7 +180,11 @@ public final class KafkaConsumerClient {
                 .entrySet()
                 .stream()
                 .collect(Collectors.toMap(e -> partitionOf(e.getKey()),
-                                          e -> Option.option(e.getValue()).map(OffsetAndMetadata::offset)));
+                                          e -> committedOffset(e.getValue())));
+    }
+
+    private static Option<Long> committedOffset(OffsetAndMetadata metadata) {
+        return option(metadata).map(OffsetAndMetadata::offset);
     }
 
     private static Map<Partition, Long> offsets(Map<TopicPartition, Long> raw) {
@@ -193,7 +198,7 @@ public final class KafkaConsumerClient {
         return InboundRecord.inboundRecord(partitionOf(new TopicPartition(record.topic(), record.partition())),
                                            record.offset(),
                                            record.timestamp(),
-                                           Option.option(record.key()),
+                                           option(record.key()),
                                            record.value());
     }
 

@@ -6,8 +6,8 @@ import java.util.Map;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
-import org.pragmatica.lang.utils.Causes;
 
+import static org.pragmatica.lang.utils.Causes.cause;
 import static org.pragmatica.lang.Result.all;
 
 
@@ -88,7 +88,7 @@ public sealed interface KafkaSecurity {
         private static Result<String> jaasSafe(String value) {
             return Verify.ensure(value,
                                  v -> v.indexOf('"') < 0 && v.indexOf('\\') < 0,
-                                 Causes.cause("SASL credential may not contain a quote or backslash"));
+                                 cause("SASL credential may not contain a quote or backslash"));
         }
 
         Map<String, Object> saslProperties() {
