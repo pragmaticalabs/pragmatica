@@ -14,6 +14,7 @@ import org.pragmatica.aether.resource.ResourceProvisioningError;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn2;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -30,6 +31,21 @@ public interface DatasourceConnectionProvider {
     Promise<SqlConnector> connector(String datasourceName);
     Promise<Unit> release(String datasourceName);
     Promise<Unit> releaseAll();
+
+    /// A connector cached under `cacheKey` and created from the datasource `configSection` (#2100 E-B, N5b/N7).
+    ///
+    /// The default ignores the key and serves the section, so an implementation that does not override it observes
+    /// exactly the one-argument call (every existing fake keyed by name sees today's argument). A production
+    /// implementation that forgets to override would share by section; the instance override is pinned by a tripwire.
+    default Promise<SqlConnector> connector(String cacheKey, String configSection) {
+        return connector(configSection);
+    }
+
+    /// Releases the connector cached under `cacheKey` (#2100 E-B, N5b/N7); the default serves the section, see
+    /// [#connector(String, String)].
+    default Promise<Unit> release(String cacheKey, String configSection) {
+        return release(configSection);
+    }
 
     static DatasourceConnectionProvider datasourceConnectionProvider() {
         return new DatasourceConnectionProviderInstance(DatasourceConnectionProvider::loadFromConfigService);
@@ -73,12 +89,24 @@ class DatasourceConnectionProviderInstance implements DatasourceConnectionProvid
 
     @Override
     public Promise<SqlConnector> connector(String datasourceName) {
-        return connectors.computeIfAbsent(datasourceName, this::createConnector);
+        return connector(datasourceName, datasourceName);
+    }
+
+    @Override
+    public Promise<SqlConnector> connector(String cacheKey, String configSection) {
+        var fresh = Promise.<SqlConnector> promise();
+
+        return option(connectors.putIfAbsent(cacheKey, fresh)).or(() -> provisionInto(cacheKey, configSection, fresh));
     }
 
     @Override
     public Promise<Unit> release(String datasourceName) {
-        return option(connectors.remove(datasourceName)).map(promise -> promise.flatMap(DatabaseConnector::stop))
+        return release(datasourceName, datasourceName);
+    }
+
+    @Override
+    public Promise<Unit> release(String cacheKey, String configSection) {
+        return option(connectors.remove(cacheKey)).map(promise -> promise.flatMap(DatabaseConnector::stop))
                      .or(Promise.success(unit()));
     }
 
@@ -94,13 +122,40 @@ class DatasourceConnectionProviderInstance implements DatasourceConnectionProvid
         return Promise.allOf(futures).map(_ -> unit());
     }
 
-    private Promise<SqlConnector> createConnector(String datasourceName) {
+    /// N5a, FER (degrade forward): the failure still reaches every caller of the failed creation; only the cache entry
+    /// is dropped, so the next call for the key creates anew instead of replaying the failed promise.
+    ///
+    /// The cached promise `fresh` is resolved by [#settle], which on failure removes the entry BEFORE the failure is
+    /// published: no caller can observe the failure and then find it cached (an `onFailure` handler on a pending
+    /// promise runs on another thread and lost that race). The entry is inserted before creation starts, so a
+    /// synchronously failing creation never removes from inside a `ConcurrentHashMap` update. `remove(key, fresh)` never
+    /// evicts a newer entry. The `onResult` registration is the whole use of the creation promise: its result is
+    /// consumed by `settle`, and every caller, the creating one included, receives `fresh`.
+    /// A loader or factory that throws breaks the contract that supplied functions are total, and would leave `fresh`
+    /// pending; it is not handled here.
+    private Promise<SqlConnector> provisionInto(String cacheKey, String configSection, Promise<SqlConnector> fresh) {
+        createConnector(cacheKey, configSection).onResult(result -> settle(cacheKey, fresh, result));
+
+        return fresh;
+    }
+
+    private Promise<SqlConnector> settle(String cacheKey, Promise<SqlConnector> fresh, Result<SqlConnector> result) {
+        return result.fold(cause -> failEvicted(cacheKey, fresh, cause), fresh::succeed);
+    }
+
+    private Promise<SqlConnector> failEvicted(String cacheKey, Promise<SqlConnector> fresh, Cause cause) {
+        connectors.remove(cacheKey, fresh);
+
+        return fresh.fail(cause);
+    }
+
+    private Promise<SqlConnector> createConnector(String cacheKey, String configSection) {
         log.info("Creating SqlConnector for datasource '{}' from config section '{}', {} factories available",
-                 datasourceName,
-                 datasourceName,
+                 cacheKey,
+                 configSection,
                  factories.size());
 
-        return loadConfig(datasourceName).flatMap(this::selectAndProvision);
+        return loadConfig(configSection).flatMap(this::selectAndProvision);
     }
 
     private Promise<DatabaseConnectorConfig> loadConfig(String configSection) {
@@ -110,20 +165,19 @@ class DatasourceConnectionProviderInstance implements DatasourceConnectionProvid
         result.onSuccess(config -> log.info("Loaded config for '{}': type={}, jdbcUrl={}, asyncUrl={}, r2dbcUrl={}",
                                             configSection,
                                             config.type(),
-                                            config.jdbcUrl().isPresent()
-                                            ? "present"
-                                            : "absent",
-                                            config.asyncUrl().isPresent()
-                                            ? "present"
-                                            : "absent",
-                                            config.r2dbcUrl().isPresent()
-                                            ? "present"
-                                            : "absent"))
+                                            presence(config.jdbcUrl()),
+                                            presence(config.asyncUrl()),
+                                            presence(config.r2dbcUrl())))
               .onFailure(cause -> log.error("Failed to load config for section '{}': {}",
                                             configSection,
                                             cause.message()));
 
         return result.async();
+    }
+
+    private static String presence(Option<String> url) {
+        return url.map(_ -> "present")
+                  .or("absent");
     }
 
     private Promise<SqlConnector> selectAndProvision(DatabaseConnectorConfig config) {
