@@ -275,8 +275,8 @@ class StreamForwardHandlerTest {
                                                                                                                                                      3L,
                                                                                                                                                      false,
                                                                                                                                                      List.of(),
-                                                                                                                                                     List.of(new org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart(e1, 0L),
-                                                                                                                                                             new org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart(e2, 3L)))));
+                                                                                                                                                     List.of(org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart.epochStart(e1, 0L, Option.none()),
+                                                                                                                                                             org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart.epochStart(e2, 3L, Option.none())))));
         }
 
         @Test

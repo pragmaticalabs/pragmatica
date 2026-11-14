@@ -225,7 +225,7 @@ class EpochValidationTest {
     }
 
     private static EpochStart folded(Epoch epoch, long startOffset, Epoch from) {
-        return new EpochStart(epoch, startOffset, from);
+        return new EpochStart(epoch, startOffset, from, Option.none());
     }
 
     /// v2858a A2: the bound is the lowest start of an epoch AFTER the consumer's -- the consumer's own start is not one.
@@ -244,7 +244,7 @@ class EpochValidationTest {
     }
 
     private static EpochStart start(Epoch epoch, long startOffset) {
-        return new EpochStart(epoch, startOffset);
+        return EpochStart.epochStart(epoch, startOffset, Option.none());
     }
 
     private static Epoch check(Epoch owner, List<EpochStart> starts, Epoch consumer, long cursor) {

@@ -100,7 +100,7 @@ class StreamPartitionStateLifetimeTest {
         void setUp() {
             manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
             manager.ownerEpochSource((_, _) -> EPOCH);
-            manager.epochStarts((_, _) -> List.of(new EpochStart(EPOCH, 0L)));
+            manager.epochStarts((_, _) -> List.of(EpochStart.epochStart(EPOCH, 0L, Option.none())));
             manager.placementRoleSupplier((_, _) -> role.get());
             manager.partitionFlags(recordingFlags(raised));
         }
