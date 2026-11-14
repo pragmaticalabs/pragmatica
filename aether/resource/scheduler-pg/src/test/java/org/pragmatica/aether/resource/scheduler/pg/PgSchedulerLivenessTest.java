@@ -54,6 +54,28 @@ class PgSchedulerLivenessTest extends PgSchedulerTestBase {
     }
 
     @Test
+    void hungHandler_batchOfOne_leaseBoundFreesTheSlotForAnotherJob() {
+        var otherFired = new AtomicBoolean();
+        var hungFired = new AtomicInteger();
+        var scheduler = start(instance("solo", 20, 500, 100, 200, 1, Clock.systemUTC(), job -> {
+            if (job.name().equals("hang")) {
+                hungFired.incrementAndGet();
+
+                return hang();
+            }
+
+            otherFired.set(true);
+
+            return done();
+        }));
+
+        schedule(scheduler, "hang", DUE);
+        awaitTrue("hung job fired", DEADLINE_MS, () -> hungFired.get() == 1);
+        schedule(scheduler, "other", DUE);
+        awaitTrue("the only slot is freed by the lease bound, so the other job fires", 5_000, otherFired::get);
+    }
+
+    @Test
     void slowHandler_doesNotDelayAnUnrelatedDueJob() {
         var slowFired = new AtomicBoolean();
         var otherAt = new AtomicLong();
