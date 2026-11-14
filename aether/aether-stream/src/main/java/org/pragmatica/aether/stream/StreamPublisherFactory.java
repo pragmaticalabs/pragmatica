@@ -150,17 +150,21 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
     ///
     /// While this node holds no committed config a non-system stream is REFUSED retriably
     /// ([StreamError.StreamConfigNotYetVisible]): routing by the declared count there would be a guess that hides exactly
-    /// the defect class above. A `system:` stream is provisioned by the runtime alone, which owns its count, so its
-    /// declaration IS the count and is used as stated.
+    /// the defect class above. A `system:` stream is created by the runtime alone, which owns its count: with no committed
+    /// config the count is the one this node ENFORCES for the stream ([StreamPartitionManager#enforcedConfig], the config
+    /// `createStream` used), never the slice's declaration, which is not the runtime's configuration. A system stream this
+    /// node does not hold at all is refused the same way as a non-system one.
     static Result<Integer> routedPartitions(StreamPartitionManager manager, StreamConfig declared) {
         return manager.committedPartitions(declared.name())
-                      .fold(() -> runtimeOwnedCount(declared),
+                      .fold(() -> runtimeOwnedCount(manager, declared),
                             committed -> Result.success(warnWhenNotApplied(declared, committed)));
     }
 
-    private static Result<Integer> runtimeOwnedCount(StreamConfig declared) {
+    private static Result<Integer> runtimeOwnedCount(StreamPartitionManager manager, StreamConfig declared) {
         return StreamEngineKey.isSystemStream(declared.name())
-               ? Result.success(declared.partitions())
+               ? manager.enforcedConfig(declared.name())
+                        .map(StreamConfig::partitions)
+                        .toResult(new StreamError.StreamConfigNotYetVisible(declared.name()))
                : new StreamError.StreamConfigNotYetVisible(declared.name()).result();
     }
 

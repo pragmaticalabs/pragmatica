@@ -14,11 +14,15 @@ import org.pragmatica.aether.slice.StreamAccess;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
+import org.pragmatica.aether.stream.forward.StreamForwardClient;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.testlogging.LogCapture;
 
+import java.lang.reflect.Proxy;
 import java.util.List;
 import java.util.stream.IntStream;
 
@@ -34,6 +38,7 @@ class StreamPublisherEnforcedPartitionsTest {
     private static final String STREAM = "enforced-partitions";
     private static final int ENFORCED = 4;
     private static final int KEYS = 64;
+    private static final String SYSTEM_STREAM = "system:enforced-partitions";
 
     /// Declared 8 over an enforced 4: before the fix a key hashing to partition 4..7 failed `PartitionOutOfRange`.
     @Test
@@ -134,21 +139,92 @@ class StreamPublisherEnforcedPartitionsTest {
         }
     }
 
-    /// The system arm of item 2: a `system:` stream's count is runtime-owned, so with no committed config its declaration
-    /// is the count, stated explicitly rather than reached through a silent fallback.
+    /// The system arm: a `system:` stream's count is runtime-owned, so with no committed config the publisher routes by
+    /// the count this node ENFORCES (created with 1), never by what a slice declares (4): every key lands on partition 0.
     @Test
-    void systemStreamWithNoCommittedConfig_routesByItsRuntimeOwnedCount() {
+    void systemStreamWithNoCommittedConfig_routesByTheEnforcedCount_notTheSliceDeclaration() {
         var node = new StreamPartitionManagerTest.StubClusterNode(StreamPartitionManagerTest.StubApply.SUCCESS);
         var manager = streamPartitionManager(Long.MAX_VALUE, node);
 
         try {
-            manager.createStream(systemConfig(ENFORCED)).onFailure(cause -> fail(cause.message()));
-            var provisioned = new StreamPublisherFactory().provision(systemConfig(ENFORCED), context(manager)).await();
+            manager.createStream(systemConfig(1)).onFailure(cause -> fail(cause.message()));
+            var publisher = provisionSystem(manager, 4);
+            IntStream.range(0, KEYS)
+                     .forEach(key -> publisher.publish(payload(key)).await().onFailure(cause -> fail(cause.message())));
 
-            assertThat(provisioned.isSuccess()).as("system stream provisions: %s", provisioned).isTrue();
+            var onPartitionZero = manager.readLocal(SYSTEM_STREAM, 0, 0, 1_000).or(List.of());
+
+            assertThat(onPartitionZero).hasSize(KEYS);
         } finally {
             manager.close();
         }
+    }
+
+    /// A `system:` stream this node does not hold is refused retriably, like a non-system one.
+    @Test
+    void systemStreamNotHeldByThisNode_isRefusedRetriably() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+
+        try {
+            var outcome = new StreamPublisherFactory().provision(systemConfig(4), context(manager)).await();
+
+            assertThat((Object) outcome.fold(cause -> cause, _ -> "provisioned")).isInstanceOf(StreamError.StreamConfigNotYetVisible.class);
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// Owner-routed access (self NodeId + forward client + owner resolver supplied, the production wiring) over an
+    /// enforced-4 stream declared 8 and 2: every key is read from the partition the publisher wrote, no `PartitionOutOfRange`.
+    @Test
+    void ownerRoutedAccessDeclaredHigherThanEnforced_readsEveryKeyFromThePartitionThePublisherWrote() {
+        assertOwnerRoutedAccessReadsEveryKey(8);
+    }
+
+    @Test
+    void ownerRoutedAccessDeclaredLowerThanEnforced_readsEveryKeyFromThePartitionThePublisherWrote() {
+        assertOwnerRoutedAccessReadsEveryKey(2);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void assertOwnerRoutedAccessReadsEveryKey(int declared) {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+
+        try {
+            manager.createStream(config(ENFORCED)).onFailure(cause -> fail(cause.message()));
+            var publisher = provision(manager, declared);
+            IntStream.range(0, KEYS).forEach(key -> publisher.publish(payload(key)).await().onFailure(cause -> fail(cause.message())));
+
+            var access = (StreamAccess<byte[]>) new StreamAccessFactory().provision(config(declared), ownerRoutedContext(manager))
+                                                                         .await()
+                                                                         .fold(cause -> fail(cause.message()), a -> a);
+            var events = access.fetch(0L, 1_000).await().fold(cause -> fail(cause.message()), list -> list);
+
+            assertThat(events).hasSize(KEYS);
+            events.forEach(event -> assertThat(event.partition()).isEqualTo(expectedPartition(Integer.parseInt(new String(event.payload(), UTF_8).substring(1)))));
+        } finally {
+            manager.close();
+        }
+    }
+
+    private static ProvisioningContext ownerRoutedContext(StreamPartitionManager manager) {
+        var self = NodeId.randomNodeId();
+        var forwardClient = (StreamForwardClient) Proxy.newProxyInstance(StreamForwardClient.class.getClassLoader(),
+                                                                          new Class<?>[]{StreamForwardClient.class},
+                                                                          (_, method, _) -> {throw new UnsupportedOperationException(method.getName());});
+
+        return accessContext(manager).withExtension(NodeId.class, self)
+                                     .withExtension(StreamForwardClient.class, forwardClient)
+                                     .withExtension(StreamPublisherFactory.GovernorResolver.class,
+                                                    new StreamPublisherFactory.GovernorResolver(() -> Option.some(self)));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static StreamPublisher<byte[]> provisionSystem(StreamPartitionManager manager, int declared) {
+        return (StreamPublisher<byte[]>) new StreamPublisherFactory().provision(systemConfig(declared), context(manager))
+                                                                     .await()
+                                                                     .fold(cause -> fail(cause.message()),
+                                                                           publisher -> publisher);
     }
 
     /// #3263 review item 3: the consumer side reads the SAME committed count as the publisher. Over an enforced-4 stream
