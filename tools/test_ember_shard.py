@@ -140,10 +140,13 @@ class EmberShardTest(unittest.TestCase):
 
     def test_no_workflow_writes_a_step_output_from_an_inline_command_substitution(self):
         # `echo "x=$(cmd)" >> "$GITHUB_OUTPUT"` discards cmd's exit status: a refused plan became an empty -Dtest (#3237)
-        pattern = re.compile(r'echo\s+"[A-Za-z_][A-Za-z0-9_-]*=[^"]*\$\(.*GITHUB_OUTPUT')
+        pattern = re.compile(r'\b(echo|printf)\b.*(\$\(|`).*\$\{?GITHUB_(OUTPUT|ENV)')
         workflows = sorted(CI.parent.glob("*.yml"))
         self.assertGreaterEqual(len(workflows), 2)  # guards the guard: the directory is read
-        self.assertTrue(pattern.search('echo "classes=$(python3 x.py)" >> "$GITHUB_OUTPUT"'))  # positive control
+        for control in ('echo "classes=$(python3 x.py)" >> "$GITHUB_OUTPUT"', 'echo x=$(y) >> $GITHUB_OUTPUT',
+                        "printf 'x=%s\\n' \"$(y)\" >> \"$GITHUB_ENV\"", 'echo "x=`y`" >> "${GITHUB_OUTPUT}"'):
+            self.assertTrue(pattern.search(control), control)  # positive controls, one per form
+        self.assertFalse(pattern.search('echo "classes=$classes" >> "$GITHUB_OUTPUT"'))  # the fixed form passes
         offenders = [f"{w.name}:{n}" for w in workflows for n, line in enumerate(w.read_text().splitlines(), 1)
                      if not line.lstrip().startswith("#") and pattern.search(line)]
         self.assertEqual(offenders, [], "assign first (v=$(...)), then echo the variable")
