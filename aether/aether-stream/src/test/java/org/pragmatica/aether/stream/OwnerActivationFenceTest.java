@@ -350,12 +350,13 @@ class OwnerActivationFenceTest {
     @Test
     void higherWatermarkOfL_isConfirmedAndPulledFromL() {
         record.set(Option.some(movedFrom(Option.some(L))));
-        answerOfL.set(Promise.success(80L));
+        watermark.set(45L);
+        answerOfL.set(Promise.success(49L));
         var gate = activation(LONG_WAIT);
 
         assertThat(gate.activate(STREAM, PARTITION).await(AWAIT).isSuccess()).isTrue();
-        assertThat(confirmedAt).containsExactlyInAnyOrder("node-2=80", "node-1=-1");
-        assertThat(catchUps).containsExactly("node-2@80");
+        assertThat(confirmedAt).containsExactlyInAnyOrder("node-2=49", "node-1=-1");
+        assertThat(catchUps).containsExactly("node-2@49");
     }
 
     /// `L` answering does not excuse another member's silence: the silent `X` still blocks the activation.
