@@ -29,6 +29,103 @@ Stalled	aether/aether-stream/src/main/java	settled	pass	-	-	#3155 narrowed: sett
 Stalled	aether/aether-stream/src/main/java	settledweak	fail	SettledIsBacked	-	a pass that does not re-derive the stream, replica and counter leaves an unbacked report settled
 Stalled	aether/aether-stream/src/main/java	early	pass	-	-	#3156 fixed: the stall counter is dropped on destroy
 Stalled	aether/aether-stream/src/main/java	earlynoreset	fail	NoEarlyRaise	-	#3156 negative control: without the reset the counter survives destroy and recreate
+RabiaSlot	integrations/consensus/src/main/java	code	pass	-	-	the code: one slot, 3 voters, every safety invariant
+RabiaSlot	integrations/consensus/src/main/java	nopastguard	pass	-	-	D9 past-slot guard dropped alone stays green: the current-slot gates make it redundant at this bound
+RabiaSlot	integrations/consensus/src/main/java	paper_d9	pass	-	-	D9 paper rule (no guard, log retained): safe at one slot
+RabiaSlot	integrations/consensus/src/main/java	nopastcur	fail	NoRedecide	-	D9 guards both dropped: a garbage-collected slot is decided and applied twice
+RabiaSlot	integrations/consensus/src/main/java	nocurslot	fail	NoRedecide	-	current-slot gates dropped: a decision for a collected slot is applied again through Learn
+RabiaSlot	integrations/consensus/src/main/java	nomarkerfirst	fail	VotedImpliesMarker	-	D11: activation before the participation marker is durable lets a node vote without one
+RabiaSlot	integrations/consensus/src/main/java	noemptyprop	fail	Live	-	D8: a voter with an empty queue stays silent and the slot never reaches a proposal quorum
+RabiaSlot	integrations/consensus/src/main/java	code_r2	pass	-	-	the code at two rounds and two batch ids (carry-forward and the coin, D1): OWED, run unfinished at the 06:40Z cutoff, no violation in 20.5M distinct states seen; expected verdict not yet observed
+RabiaSlot	integrations/consensus/src/main/java	code_obs	pass	-	-	the code with a rogue observer whose Decisions are learned (trusted peer): OWED, run unfinished at the 06:40Z cutoff, no violation in 25.7M distinct states seen; expected verdict not yet observed
+RabiaSlot	integrations/consensus/src/main/java	nopastguard2	pass	-	-	D9 past-slot guard dropped alone at two slots, no GC: OWED, run unfinished at the 06:40Z cutoff, no violation in 24.9M distinct states seen; expected verdict not yet observed
+RabiaSlot	integrations/consensus/src/main/java	norosterballot	fail	Agreement,NoRedecide,Validity,LogPrefix,VotedImpliesMarker	-	D11 receiver-side roster check dropped with a rogue observer voting: OWED, run unfinished at the 06:40Z cutoff with NO violation in 28.9M distinct states; the fail expectation is the intent, not an observation
+RabiaSlot	integrations/consensus/src/main/java	live	pass	-	-	positive control for noemptyprop, every fix on, Live holds: OWED, run unfinished at the 06:40Z cutoff; expected verdict not yet observed
+RabiaSlot	integrations/consensus/src/main/java	ctl_byz_agree	fail	Agreement	-	negative control: a Byzantine voter (equivocation, forged Decision) breaks Agreement
+RabiaSlot	integrations/consensus/src/main/java	ctl_byz_valid	fail	Validity	-	negative control: a Byzantine voter's forged Decision breaks Validity
+RabiaSlot	integrations/consensus/src/main/java	ctl_logprefix	fail	LogPrefix	-	negative control: current-slot gates dropped at two slots, a later slot is applied before an earlier one
+RabiaEpoch	integrations/consensus/src/main/java	code	pass	-	-	in-order commit (prefix) abstraction, not the code: one reconfiguration, 4 nodes, 2 slots (the code-shaped Jump is codesync_*)
+RabiaEpoch	integrations/consensus/src/main/java	live	pass	-	-	the code: progress under a reconfiguration
+RabiaEpoch	integrations/consensus/src/main/java	codesync_live	pass	-	-	the code without prefix, LIVE and COLD responses: progress under a reconfiguration
+RabiaEpoch	integrations/consensus/src/main/java	noexactepoch	pass	-	-	D6 exact-epoch counting dropped, in-order commit: stays green (redundant on the in-log path)
+RabiaEpoch	integrations/consensus/src/main/java	norelayepoch	pass	-	-	D2 relay epoch check dropped, in-order commit: stays green (redundant on the in-log path)
+RabiaEpoch	integrations/consensus/src/main/java	noprefixsafe	pass	-	-	all fixes, a replica may enter a slot without committing its predecessor (sync adoption): Agreement holds
+RabiaEpoch	integrations/consensus/src/main/java	norelayepoch_noprefix	pass	-	-	D2 relay epoch check dropped under sync adoption: stays green (exact-epoch counting blocks the stale ballot)
+RabiaEpoch	integrations/consensus/src/main/java	paper_d2	pass	-	-	D2 paper rule (no relay), in-order commit: safe
+RabiaEpoch	integrations/consensus/src/main/java	paper_d6	pass	-	-	D6 paper rule (ballots counted without epoch), in-order commit: safe
+RabiaEpoch	integrations/consensus/src/main/java	paper_d12	pass	-	-	D12 paper rule (no preferred-command rule), in-order commit: safe
+RabiaEpoch	integrations/consensus/src/main/java	paper_d2_np	pass	-	-	D2 paper rule under sync adoption: safe (joiner liveness not checked)
+RabiaEpoch	integrations/consensus/src/main/java	paper_d12_np	pass	-	-	D12 paper rule under sync adoption: safe
+RabiaEpoch	integrations/consensus/src/main/java	noretainmaj	fail	Progress	-	D6 target-majority check dropped: a reconfiguration can leave a roster that cannot decide
+RabiaEpoch	integrations/consensus/src/main/java	noprefix	fail	GovernedVote	-	in-order commit assumption removed: a ballot carries an epoch that does not govern its slot
+RabiaEpoch	integrations/consensus/src/main/java	codesync_gov	fail	GovernedVote	-	the code without prefix, LIVE and COLD responses: a COLD answer carries the phase without the roster, so a lagging replica casts a ballot at an epoch that does not govern its slot (acceptsBallot does not count it)
+RabiaEpoch	integrations/consensus/src/main/java	codesync_agree	fail	Agreement	-	#3213: a configuration-less (COLD) sync installs a later phase at epoch 0, and two lagging replicas re-decide a slot at epoch 0 that the new roster decided at epoch 1
+RabiaEpoch	integrations/consensus/src/main/java	nocrashstop	fail	Agreement	-	crash-stop assumption removed (relay without vote evidence): two values committed
+RabiaEpoch	integrations/consensus/src/main/java	noexactepoch_noprefix	fail	Agreement	-	D6 exact-epoch counting dropped under sync adoption: two values committed
+RabiaEpoch	integrations/consensus/src/main/java	paper_d6_np	fail	Agreement	-	D6 paper rule under sync adoption: two values committed (the paper rule is unsafe against sync adoption)
+RabiaEpoch	integrations/consensus/src/main/java	norelayexact_noprefix	fail	Agreement	-	D2 relay epoch check and D6 exact-epoch counting both dropped under sync adoption: two values committed
+RabiaEpoch	integrations/consensus/src/main/java	ctl_oldtally	fail	NoOldEpochTally	-	negative control for NoOldEpochTally: exact-epoch counting dropped under sync adoption
+RabiaEpoch	integrations/consensus/src/main/java	ctl_oneroster	pass	-	-	FINDING: intended negative control for OneRosterPerEpoch (exact-epoch counting dropped under sync adoption) does NOT go red; OneRosterPerEpoch holds where Agreement fails (noexactepoch_noprefix), so this control does not discriminate
+RabiaEpoch	integrations/consensus/src/main/java	ctl_oneroster_cs	fail	OneRosterPerEpoch	-	negative control for OneRosterPerEpoch: crash-stop assumption removed
+RabiaAdopt	integrations/consensus/src/main/java	allfixes	pass	-	-	every adoption fix on, under a permanent fence (Rejoin = none); the code's per-process token memory is rjT_*
+RabiaAdopt	integrations/consensus/src/main/java	allfixes_savefail	pass	-	-	permanent fence, a save on pause may fail: the adoption floor max(persisted, live phase) keeps every decision
+RabiaAdopt	integrations/consensus/src/main/java	allfixesD5	pass	-	-	the code, same-epoch adoption off: isolates the newer-epoch path
+RabiaAdopt	integrations/consensus/src/main/java	allfixesD5q	pass	-	-	comparison: newer epoch needs a live majority (not the code)
+RabiaAdopt	integrations/consensus/src/main/java	ballotlossD5	pass	-	-	ballots lost on pause, newer-epoch path only: insensitive
+RabiaAdopt	integrations/consensus/src/main/java	ctl_reachClaimed2	pass	-	-	control: with the amnesia fence, two live responders claiming different rosters never occur
+RabiaAdopt	integrations/consensus/src/main/java	faultyrespD5q	pass	-	-	comparison: a lying responder under the live-majority rule
+RabiaAdopt	integrations/consensus/src/main/java	nooneconfig	pass	-	-	D5 one-configuration check dropped: stays green (fence prevents the case)
+RabiaAdopt	integrations/consensus/src/main/java	nooneconfigD5	pass	-	-	D5 one-configuration check dropped, newer-epoch path only: stays green
+RabiaAdopt	integrations/consensus/src/main/java	noselfvouch	pass	-	-	D4 self-vouch rule dropped: stays green
+RabiaAdopt	integrations/consensus/src/main/java	noselfvouch_savefail	pass	-	-	as allfixes_savefail with D4 self-vouch dropped: stays green
+RabiaAdopt	integrations/consensus/src/main/java	paperD4	pass	-	-	D4 paper rule (adopt from any single response): stays green
+RabiaAdopt	integrations/consensus/src/main/java	paperD5	pass	-	-	D5 paper rule (newer epoch from any single response): stays green
+RabiaAdopt	integrations/consensus/src/main/java	paperD5iso	pass	-	-	D5 paper rule, newer-epoch path only: stays green
+RabiaAdopt	integrations/consensus/src/main/java	rjT_allfixes	fail	Agreement	-	#3211: a restarted voter pauses from Syncing and resumes straight to active with no sync round, then decides a slot again
+RabiaAdopt	integrations/consensus/src/main/java	rjT_nooneconfig	pass	-	-	token-memory rejoin, D5 one-configuration check dropped (vacuous for rejoin)
+RabiaAdopt	integrations/consensus/src/main/java	rjT_noselfvouch	fail	Agreement	-	#3211 with D4 self-vouch dropped: same pause-from-Syncing resume, two values chosen
+RabiaAdopt	integrations/consensus/src/main/java	rjT_allfixes_savefail	fail	Agreement	-	#3211 with a failing save on pause: the pause-from-Syncing resume still decides a slot again
+RabiaAdopt	integrations/consensus/src/main/java	rjT_noselfvouch_savefail	fail	Agreement	-	#3211 with a failing save on pause, D4 self-vouch dropped
+RabiaAdopt	integrations/consensus/src/main/java	rjT_paperD4	pass	-	-	token-memory rejoin, D4 paper rule (vacuous for rejoin)
+RabiaAdopt	integrations/consensus/src/main/java	rjT_paperD5	pass	-	-	token-memory rejoin, D5 paper rule (vacuous for rejoin)
+RabiaAdopt	integrations/consensus/src/main/java	ctl_rjTAmnesiac	pass	-	-	control: under token memory a rejoined amnesiac never adopts
+RabiaAdopt	integrations/consensus/src/main/java	ctl_rjTAmnesiac1	pass	-	-	control: as ctl_rjTAmnesiac, 1 responder
+RabiaAdopt	integrations/consensus/src/main/java	ctl_rjTAmnesiac1_selfvouch	pass	-	-	control: as ctl_rjTAmnesiac1 with self-vouch
+RabiaAdopt	integrations/consensus/src/main/java	ctl_rjTClaimed2	pass	-	-	control: under token memory two live claimed rosters never occur
+RabiaAdopt	integrations/consensus/src/main/java	ctl_rjTAny	pass	-	-	control: under token memory no rejoined incarnation completes an adoption
+RabiaAdopt	integrations/consensus/src/main/java	ctl_rjTWiped	pass	-	-	control: under token memory a wiped rejoiner never adopts
+RabiaAdopt	integrations/consensus/src/main/java	ballotloss	fail	Agreement	-	assumption probe: ballots lost on pause plus same-epoch adoption from a lagging peer lets a node vote twice
+RabiaAdopt	integrations/consensus/src/main/java	ctl_reachClaimed2_nofence	fail	Reach	-	control: without the amnesia fence two live responders claim different rosters
+RabiaAdopt	integrations/consensus/src/main/java	ctl_reachLive1NoVouch	fail	Reach	-	control: an adoption from one unvouched responder is reachable
+RabiaAdopt	integrations/consensus/src/main/java	ctl_reachLive2NoVouch	fail	Reach	-	control: an adoption from two unvouched responders is reachable
+RabiaAdopt	integrations/consensus/src/main/java	ctl_reachNewerLag	fail	Reach	-	control: newer-epoch adoption from a lagging responder is reachable
+RabiaAdopt	integrations/consensus/src/main/java	ctl_reachNewerNonLive	fail	Reach	-	control: the paper D5 rule adopts from a non-live responder
+RabiaAdopt	integrations/consensus/src/main/java	ctl_reachX2	fail	ReachX2	-	control: a fresh node id becomes active and decides slot 2
+RabiaAdopt	integrations/consensus/src/main/java	faultyresp	fail	DurableDecision	-	assumption probe: a responder answering with an arbitrary log loses a decision
+RabiaAdopt	integrations/consensus/src/main/java	faultyrespD5	fail	Agreement	-	assumption probe: a lying single responder on the newer-epoch path breaks Agreement
+RabiaAdopt	integrations/consensus/src/main/java	noamnesiafence	fail	Agreement	-	D3 amnesia fence dropped: a restarted node votes twice
+RabiaAdopt	integrations/consensus/src/main/java	noamnesiafenceD5	fail	Agreement	-	D3 amnesia fence dropped, newer-epoch path only
+RabiaAdopt	integrations/consensus/src/main/java	paperD3	fail	Agreement	-	D3 paper rule (restarted replica rejoins with its durable state, no fence)
+RabiaAdopt	integrations/consensus/src/main/java	rjT_noamnesiafence	fail	Agreement	-	token-memory rejoin, fence dropped
+RabiaAdopt	integrations/consensus/src/main/java	ctl_rjStale	fail	Reach	-	control: Rejoin=any admits a stale incarnation that adopts
+RabiaAdopt	integrations/consensus/src/main/java	ctl_rjStale1	fail	Reach	-	control: as ctl_rjStale, 1 responder
+RabiaAdopt	integrations/consensus/src/main/java	ctl_rjAmnesiac	fail	Reach	-	control: Rejoin=wiped admits a wiped incarnation that adopts
+RabiaAdopt	integrations/consensus/src/main/java	ctl_rjAmnesiac1	fail	Reach	-	control: as ctl_rjAmnesiac, 1 responder
+RabiaAdopt	integrations/consensus/src/main/java	rjA_allfixes	fail	Agreement	-	Rejoin=any (over-permissive, not the code), all fixes: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	integrations/consensus/src/main/java	rjA_noamnesiafence	fail	Agreement	-	Rejoin=any (over-permissive, not the code), fence dropped: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	integrations/consensus/src/main/java	rjA_nooneconfig	fail	Agreement	-	Rejoin=any (over-permissive, not the code), D5 one-configuration check dropped: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	integrations/consensus/src/main/java	rjA_noselfvouch	fail	Agreement	-	Rejoin=any (over-permissive, not the code), D4 self-vouch dropped: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	integrations/consensus/src/main/java	rjA_paperD4	fail	Agreement	-	Rejoin=any (over-permissive, not the code), D4 paper rule: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	integrations/consensus/src/main/java	rjA_paperD5	fail	Agreement	-	Rejoin=any (over-permissive, not the code), D5 paper rule: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	integrations/consensus/src/main/java	rjW_allfixes	fail	Agreement	-	Rejoin=wiped (over-permissive, not the code), all fixes: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	integrations/consensus/src/main/java	rjW_noamnesiafence	fail	Agreement	-	Rejoin=wiped (over-permissive, not the code), fence dropped: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	integrations/consensus/src/main/java	rjW_nooneconfig	fail	Agreement	-	Rejoin=wiped (over-permissive, not the code), D5 one-configuration check dropped: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	integrations/consensus/src/main/java	rjW_noselfvouch	fail	Agreement	-	Rejoin=wiped (over-permissive, not the code), D4 self-vouch dropped: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	integrations/consensus/src/main/java	rjW_paperD4	fail	Agreement	-	Rejoin=wiped (over-permissive, not the code), D4 paper rule: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	integrations/consensus/src/main/java	rjW_paperD5	fail	Agreement	-	Rejoin=wiped (over-permissive, not the code), D5 paper rule: an amnesiac incarnation is admitted and a second value is chosen
+RabiaAdopt	integrations/consensus/src/main/java	ballotlossD5_nooneconfig	fail	Agreement	-	ballots lost on pause, newer-epoch path only, D5 one-configuration check dropped: two values chosen
+RabiaAdopt	integrations/consensus/src/main/java	ballotlossD5_noselfvouch	fail	Agreement	-	ballots lost on pause, newer-epoch path only, D4 self-vouch dropped: two values chosen
+RabiaAdopt	integrations/consensus/src/main/java	ctl_held	fail	Held	-	negative control for Held: a responder answering with an arbitrary log hands over a value nobody chose
 Fsm2Leader	aether/aether-deployment/src/main/java	code_inv	pass	-	-	the code (#3146): only the committed leader's writes are accepted, no submit while suspended, one live leader, published is committed, a refused WARNINGS write re-drafts
 Fsm2Leader	aether/aether-deployment/src/main/java	code_goals	pass	-	-	the code: desired and observed converge after the last leader change
 Fsm2Leader	aether/aether-deployment/src/main/java	code_goals_inv	pass	-	-	the code, goals on: only the committed leader's writes are accepted, no submit while suspended, one live leader

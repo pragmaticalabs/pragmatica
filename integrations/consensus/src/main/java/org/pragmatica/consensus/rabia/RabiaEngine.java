@@ -961,6 +961,22 @@ public class RabiaEngine<C extends Command> {
 
     /// Ballots count only from installed voters at the current epoch. An old-epoch ballot for a slot at
     /// or past a change's R+1 therefore never counts, and neither does any ballot of a removed voter.
+    ///
+    /// ```tla RabiaSlot:Receive
+    /// \* Receive covers the guards that decide whether a ballot or proposal is registered: the past-slot
+    /// \* route, the roster check and the registration itself (PhaseData.registerProposal, registerRound1Vote,
+    /// \* registerRound2Vote).
+    /// Receive(n, m) ==
+    ///     /\ m.t \in {"P", "R1", "R2"} /\ m.src # n
+    ///     /\ ~PastRoute(n, m.slot)
+    ///     /\ Accepts(n, m.src)
+    ///     /\ m.t = "R1" => m.val # "VQ"
+    ///     /\ m.t # "P" => m.rnd >= rnd[n][m.slot]
+    ///     /\ Unseen(n, m)
+    ///     /\ reg' = [reg EXCEPT ![n] = @ \cup {m}]
+    ///     /\ has' = [has EXCEPT ![n] = @ \cup {m.slot}]
+    ///     /\ UNCHANGED <<msgs, rnd, dflag, capped, cur, pending, active, fresh, marker, logv, napp, pend0>>
+    /// ```
     private boolean acceptsBallot(NodeId node, long epoch) {
         return authorityFailure.isEmpty()
                && isVoter(node)
@@ -1585,6 +1601,20 @@ public class RabiaEngine<C extends Command> {
     ///
     /// In-flight stall/sync timers are cancelled. State is also persisted to durable
     /// storage so that a crash during the pause leaves a recoverable snapshot.
+    ///
+    /// ```tla RabiaAdopt:Pause
+    /// \* From Active, Observing or Syncing (the guard above; the model's "syncing" also stands for Observing, since
+    /// \* Install leaves a node outside the adopted roster in "syncing"). saveState may fail (ok = FALSE): onFailure
+    /// \* only logs, the pause stands and the durable state stays as it was.
+    /// Pause(n, ok) ==
+    ///   /\ st[n] \in {"active", "syncing"} /\ pauses < MaxPause
+    ///   /\ ok \in IF SaveFails THEN BOOLEAN ELSE {TRUE}
+    ///   /\ st' = [st EXCEPT ![n] = "paused"]
+    ///   /\ saved' = IF ok THEN [saved EXCEPT ![n] = log[n]] ELSE saved
+    ///   /\ voted' = IF KeepBallots THEN voted ELSE [voted EXCEPT ![n] = Empty]
+    ///   /\ pauses' = pauses + 1
+    ///   /\ UNCHANGED <<log, marker, admit, known, reinc, ballots, chosen, crashes, restarts>>
+    /// ```
     private void pauseForQuorumLoss() {
         safeExecute(this::doPauseForQuorumLoss);
     }
@@ -1618,6 +1648,15 @@ public class RabiaEngine<C extends Command> {
     /// Transitions `Paused` → `Idle`, preserving `currentPhase`, `phases`, `pendingBatches`,
     /// and binary-round ballots. Re-arms processing if pending batches remain. No sync round —
     /// Decisions delivered during the pause have already been applied.
+    ///
+    /// ```tla RabiaAdopt:Resume
+    /// \* enterServing: straight to Idle (a voter of its own roster) or Observing (the model's "syncing"), with no
+    /// \* sync round (direct). A gap left after drainBufferedDecisions starts synchronization (~direct).
+    /// Resume(n, direct) ==
+    ///   /\ st[n] = "paused"
+    ///   /\ st' = [st EXCEPT ![n] = IF direct /\ n \in Roster(log[n]) THEN "active" ELSE "syncing"]
+    ///   /\ UNCHANGED <<log, saved, marker, admit, known, reinc, voted, ballots, chosen, crashes, restarts, pauses>>
+    /// ```
     private void resumeFromPause() {
         safeExecute(this::doResumeFromPause);
     }
@@ -1666,6 +1705,17 @@ public class RabiaEngine<C extends Command> {
     /// of the target. The promise completes when this replica applies the agreed command, and fails with
     /// [ReconfigurationError#SUPERSEDED] when a different change is applied first. Retirement of removed
     /// resources waits for [#retirementSafeVoters], not for this promise.
+    ///
+    /// ```tla RabiaEpoch:Request
+    /// \* D12: the leader's reconciler (any active voter) requests a change computed from its own roster.
+    /// \* D12: a requester set; admissibleCommand and broadcastVoters.
+    /// Request(c) ==
+    ///     /\ Cardinality(requests) < MaxRequests
+    ///     /\ c \notin requests
+    ///     /\ \E r \in Nodes : Voter(r) /\ slot[r] \in Slots /\ AppliesTo(epoch[r], roster[r], c)
+    ///     /\ requests' = requests \cup {c}
+    ///     /\ UNCHANGED <<slot, epoch, roster, requested, decided, decEpoch, ballots, installs, jumpers, forged, mixed>>
+    /// ```
     public synchronized Promise<Unit> reconfigure(ClusterConfig target) {
         if (stopping.get()) {
             return new ConsensusError.NodeInactive(self).promise();
@@ -1794,6 +1844,19 @@ public class RabiaEngine<C extends Command> {
     /// Carries `command` on this voter's next proposals. Competing commands of one base epoch resolve by
     /// [ReconfigurationCommand#preferredOver], so every voter converges on the same proposal; a command
     /// of another base epoch is never adopted.
+    ///
+    /// ```tla RabiaEpoch:Adopt
+    /// \* adoptRequested: a request (checked with appliesTo) or a proposal-borne command of the voter's own epoch.
+    /// Adopt(n, c) ==
+    ///     /\ Voter(n)
+    ///     /\ \/ c \in requests /\ AppliesTo(epoch[n], roster[n], c)
+    ///        \/ \E b \in ballots : b.v = c /\ b.e = epoch[n] /\ b.n \in roster[n]
+    ///     /\ c.base = epoch[n]
+    ///     /\ requested[n] = None \/ (~Pap("nopreferred") /\ Preferred(c, requested[n]))
+    ///     /\ requested[n] # c
+    ///     /\ requested' = [requested EXCEPT ![n] = c]
+    ///     /\ UNCHANGED <<slot, epoch, roster, decided, decEpoch, ballots, requests, installs, jumpers, forged, mixed>>
+    /// ```
     private void adoptRequested(ReconfigurationCommand command) {
         if (command.baseEpoch() != voterEpoch()) {
             return;
@@ -2299,6 +2362,18 @@ public class RabiaEngine<C extends Command> {
                                                    config.syncRetryInterval().millis()))).millis();
     }
 
+    /// TLA+ model action (see the package documentation of `org.pragmatica.consensus.rabia`).
+    ///
+    /// ```tla RabiaAdopt:Crash
+    /// \* graceful = stop (saveState); otherwise a crash (no save).
+    /// \* Process death; a graceful stop saves state in stop().
+    /// Crash(n, graceful) ==
+    ///   /\ st[n] # "down" /\ crashes < MaxCrash
+    ///   /\ st' = [st EXCEPT ![n] = "down"]
+    ///   /\ saved' = IF graceful THEN [saved EXCEPT ![n] = log[n]] ELSE saved
+    ///   /\ crashes' = crashes + 1
+    ///   /\ UNCHANGED <<log, marker, admit, known, reinc, voted, ballots, chosen, restarts, pauses>>
+    /// ```
     public synchronized Promise<Unit> stop() {
         if (stopping.compareAndSet(false, true)) {
             submitStop();
@@ -2568,6 +2643,18 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// Broadcasts own proposal for pending batch if not already proposed in current phase.
+    ///
+    /// ```tla RabiaEpoch:Vote
+    /// \* One proposal per replica per (slot, epoch): the requested command, else a batch.
+    /// \* A proposal carries a command XOR a batch.
+    /// Vote(n, v) ==
+    ///     /\ Voter(n)
+    ///     /\ Active(n)
+    ///     /\ ~\E b \in ballots : b.n = n /\ b.s = slot[n] /\ b.e = epoch[n]
+    ///     /\ v \in (IF requested[n] # None THEN {requested[n]} ELSE BatchVals)
+    ///     /\ ballots' = ballots \cup {[n |-> n, s |-> slot[n], e |-> epoch[n], v |-> v]}
+    ///     /\ UNCHANGED <<slot, epoch, roster, requested, decided, decEpoch, requests, installs, jumpers, forged, mixed>>
+    /// ```
     private void broadcastOwnProposalIfNeeded() {
         var phase = currentPhase.get();
         var phaseData = getOrCreatePhaseData(phase);
@@ -2959,6 +3046,8 @@ public class RabiaEngine<C extends Command> {
                  .onEmpty(() -> activateOnLiveState(reason));
     }
 
+    /// TLA+ model action (see the package documentation of `org.pragmatica.consensus.rabia`).
+    ///
     private void restoreOwnState(SavedState<C> state, String reason) {
         log.info("Node {} activating on its own persisted state ({}); persisted phase {}, live phase {}",
                  self,
@@ -3344,6 +3433,37 @@ public class RabiaEngine<C extends Command> {
         }
     }
 
+    /// ```tla RabiaEpoch:Jump
+    /// \* applyRestoredState: currentPhase advances to the response's lastCommittedPhase (never back), then
+    /// \* adoptSyncedConfiguration installs the response's configuration when its epoch is newer. One step: the
+    /// \* engine runs both on its executor. p's state stands for the adopted SyncResponse (adoptionCandidates):
+    /// \*   LIVE (handleSyncRequest: an active, observing or paused responder): currentPhase and voters are read in
+    /// \*        one handler, so slot and roster are coupled; eligible when the claimed roster contains the sender and
+    /// \*        is newer or equal (eligibleSyncResponse, comparableConfiguration).
+    /// \*   COLD (a Stopped or Syncing responder): its persisted state withoutConfiguration, so the phase arrives
+    /// \*        with no roster; eligible only when voterEpoch() == 0 and the sender is a voter here.
+    /// \* Over-approximations: one response stands for the response quorum; a COLD responder's persisted phase is
+    /// \* taken as its current slot (persisted <= current), and the model does not stop it while it answers.
+    /// \* JumpShape = "free" replaces this with the decoupled FreeJump and FreeLearn of the skeleton.
+    /// Jump(n) ==
+    ///     /\ ~Has("prefix")
+    ///     /\ JumpShape = "code"
+    ///     /\ slot[n] \in Slots
+    ///     /\ \E p \in Nodes \ {n}, cold \in ColdShapes :
+    ///         LET advance == slot[p] > slot[n]
+    ///             learn   == ~cold /\ epoch[p] > epoch[n]
+    ///         IN /\ IF cold THEN epoch[n] = 0 /\ p \in roster[n]
+    ///                       ELSE /\ p \in roster[p]
+    ///                            /\ (epoch[p] > epoch[n] \/ (epoch[p] = epoch[n] /\ roster[p] = roster[n]))
+    ///            /\ advance \/ learn
+    ///            /\ advance => (n \in jumpers \/ Cardinality(jumpers) < MaxJump)
+    ///            /\ slot'      = [slot EXCEPT ![n] = IF advance THEN slot[p] ELSE @]
+    ///            /\ epoch'     = [epoch EXCEPT ![n] = IF learn THEN epoch[p] ELSE @]
+    ///            /\ roster'    = [roster EXCEPT ![n] = IF learn THEN roster[p] ELSE @]
+    ///            /\ requested' = [requested EXCEPT ![n] = IF learn THEN Settled(@, epoch[p]) ELSE @]
+    ///            /\ jumpers'   = IF advance THEN jumpers \cup {n} ELSE jumpers
+    ///     /\ UNCHANGED <<decided, decEpoch, ballots, requests, installs, forged, mixed>>
+    /// ```
     private void applyRestoredState(SavedState<C> state) {
         stateTransferFailure = Option.none();
         reconcileSnapshotPending(state.lastCommittedPhase(), state.pendingBatches());
@@ -3376,6 +3496,7 @@ public class RabiaEngine<C extends Command> {
     /// would let it vote and then present itself as new on its next boot, which is the exact property
     /// #667 and #1212 exist to prevent. The retry tick re-enters `doSynchronize`, so a transient
     /// write failure resolves itself rather than wedging the node permanently.
+    ///
     private boolean recordParticipation() {
         return participationMarker.recordParticipation()
                                   .onFailure(cause -> log.error("Node {} refusing to activate: could not durably record "
@@ -3409,6 +3530,16 @@ public class RabiaEngine<C extends Command> {
         }
     }
 
+    /// TLA+ model action (see the package documentation of `org.pragmatica.consensus.rabia`).
+    ///
+    /// ```tla RabiaSlot:Activate
+    /// Activate(n) ==
+    ///     /\ Acts(n) /\ ~active[n]
+    ///     /\ marker' = IF Fix("markerfirst") THEN [marker EXCEPT ![n] = TRUE] ELSE marker
+    ///     /\ active' = [active EXCEPT ![n] = TRUE]
+    ///     /\ fresh' = [fresh EXCEPT ![n] = TRUE]
+    ///     /\ UNCHANGED <<msgs, reg, has, rnd, dflag, capped, cur, pending, logv, napp, pend0>>
+    /// ```
     private void activate() {
         if (authorityFailure.isPresent()) {
             return;
@@ -3739,6 +3870,44 @@ public class RabiaEngine<C extends Command> {
     /// The single read matters: the previous split between `adoptionThresholdMet()` and
     /// `candidateResponses()` re-read both the response map and the voter count, so a topology change
     /// between the two could pass the gate on one rule and build the candidate set under the other.
+    ///
+    /// ```tla RabiaAdopt:Adopt
+    /// \* With responsesRequiredWithALiveResponder, newerEpochCandidates and eligibleSyncResponse; install is
+    /// \* adoptCollectedState / adoptSyncedConfiguration.
+    /// Adopt(n) ==
+    ///   /\ st[n] = "syncing"
+    ///   /\ \E S \in (SUBSET {r \in Ids \ {n} : st[r] # "down" /\ Link(n, r)}) \ {{}} :
+    ///      \E rl \in {f \in [S -> AllLogs] : \A r \in S : f[r] \in Options(r)} :
+    ///        LET myE  == Epoch(log[n])
+    ///            E    == {r \in S : ~("oneconfig" \in Fixed /\ Epoch(rl[r]) = myE /\ Roster(rl[r]) # Roster(log[n]))}
+    ///            newest == IF E = {} THEN myE ELSE Max({Epoch(rl[r]) : r \in E})
+    ///            R    == {r \in E : Epoch(rl[r]) = newest}
+    ///            L    == {r \in R : Live(r)}
+    ///            size == Cardinality(Roster(log[n]))
+    ///            claimed == Cardinality({Roster(rl[r]) : r \in L})
+    ///            vouch == Floor(n) > 0 \/ marker[n] = "never"       \* selfCanVouchForItsOwnHistory: ownStateFloor > ZERO
+    ///            req  == IF "selfvouch" \in Fixed /\ ~vouch THEN size \div 2 + 1 ELSE size \div 2
+    ///        IN
+    ///        /\ R # {}
+    ///        /\ IF newest > myE
+    ///             THEN LET tg == [path |-> "newer", n |-> Cardinality(R), vouch |-> vouch, claimed |-> claimed, rj |-> reinc[n], dur |-> Len(saved[n]) > 0, lag |-> FALSE] IN
+    ///                  IF "D5" \in Paper
+    ///                    THEN PickMax(n, rl, R, tg)
+    ///                    ELSE /\ L # {}
+    ///                         /\ ("oneconfig" \in Fixed => claimed = 1)
+    ///                         /\ ("D5q" \in Paper => Cardinality(L) >= size \div 2 + 1)
+    ///                         /\ PickMax(n, rl, L, tg)
+    ///           ELSE /\ SameEpochAdopt
+    ///                /\ LET tg(p) == [path |-> p, n |-> Cardinality(R), vouch |-> vouch, claimed |-> claimed, rj |-> reinc[n], dur |-> Len(saved[n]) > 0, lag |-> FALSE] IN
+    ///                   IF "D4" \in Paper
+    ///                     THEN PickMax(n, rl, R, tg("paper"))
+    ///                   ELSE IF n \notin Roster(log[n])                       \* observer: no self in the count
+    ///                     THEN Cardinality(R) >= size \div 2 + 1 /\ PickMax(n, rl, R, tg("observer"))
+    ///                   ELSE IF L = {}                                        \* cold rule (#660)
+    ///                     THEN Cardinality(R) >= size \div 2 /\ PickMax(n, rl, R, tg("cold"))
+    ///                   ELSE /\ Cardinality(R) >= req
+    ///                        /\ PickMax(n, rl, IF Cardinality(L) >= size \div 2 + 1 THEN L ELSE R, tg("live"))
+    /// ```
     private Option<List<SyncResponse<C>>> adoptionCandidates() {
         var clusterSize = voterCount();
         // Only installed voter authority supplies this denominator. Configuration intent and
@@ -3986,6 +4155,20 @@ public class RabiaEngine<C extends Command> {
         broadcastVoters(new RoundRequest(self, voterEpoch(), currentPhase.get(), 0));
     }
 
+    /// TLA+ model action (see the package documentation of `org.pragmatica.consensus.rabia`).
+    ///
+    /// ```tla RabiaSlot:Gc
+    /// Gc(n) ==
+    ///     /\ Acts(n) /\ active[n]
+    ///     /\ \E s \in has[n] :
+    ///         /\ s < cur[n] /\ cur[n] - s > GcDepth
+    ///         /\ reg' = [reg EXCEPT ![n] = {x \in @ : x.slot # s}]
+    ///         /\ has' = [has EXCEPT ![n] = @ \ {s}]
+    ///         /\ rnd' = [rnd EXCEPT ![n][s] = 0]
+    ///         /\ dflag' = [dflag EXCEPT ![n] = @ \ {s}]
+    ///         /\ capped' = [capped EXCEPT ![n] = @ \ {s}]
+    ///     /\ UNCHANGED <<msgs, cur, pending, active, fresh, marker, logv, napp, pend0>>
+    /// ```
     private void doCleanupOldPhases() {
         var state = engineState.get();
 
@@ -4005,6 +4188,21 @@ public class RabiaEngine<C extends Command> {
     /// Handles a Propose message from another node.
     /// NOTE: All nodes MUST process proposals regardless of active/dormant state.
     /// Rabia is leaderless — every node participates in every round.
+    ///
+    /// ```tla RabiaSlot:Propose
+    /// Propose(n) ==
+    ///     LET s == cur[n]
+    ///         v == IF pending[n] # {} THEN Pick(pending[n]) ELSE Empty
+    ///     IN /\ Acts(n) /\ active[n] /\ s \in Slots
+    ///        /\ \A x \in PropsAt(n, s) : x.src # n
+    ///        /\ \/ pending[n] # {}                          \* startPhase
+    ///           \/ fresh[n]                                 \* openSlotAfterChange
+    ///           \/ \E x \in PropsAt(n, s) : x.src # n       \* joining a slot another voter opened
+    ///        /\ v = Empty => Fix("emptyprop")
+    ///        /\ Bcast(n, [t |-> "P", src |-> n, slot |-> s, rnd |-> 0, val |-> v])
+    ///        /\ fresh' = [fresh EXCEPT ![n] = FALSE]
+    ///        /\ UNCHANGED <<rnd, dflag, capped, cur, pending, active, marker, logv, napp, pend0>>
+    /// ```
     private void handlePropose(Propose<C> propose) {
         if (deferIfNewerEpoch(propose.sender(), propose.epoch(), propose)) {
             return;
@@ -4166,6 +4364,7 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// Handles a round 1 vote from another node.
+    ///
     private void handleVoteRound1(VoteRound1 vote) {
         if (deferIfNewerEpoch(vote.sender(), vote.epoch(), vote)) {
             return;
@@ -4502,6 +4701,32 @@ public class RabiaEngine<C extends Command> {
     /// MUST be applied directly so the engine catches up transparently when quorum returns.
     /// Buffering on Paused would defeat the purpose — state would silently drift and require
     /// a full sync round on resume, which the new design explicitly avoids.
+    ///
+    /// ```tla RabiaSlot:Learn
+    /// \* handleDecision accepts any trusted peer (isTrustedPeer: a voter or an admitted consensus member), so an
+    /// \* observer's Decision is learned too.
+    /// Learn(n, d) ==
+    ///     /\ Acts(n) /\ active[n]
+    ///     /\ d.t = "D" /\ d.src \in Nodes /\ d.src # n
+    ///     /\ IF Fix("curslot") THEN d.slot = cur[n] ELSE TRUE
+    ///     /\ d.slot \notin dflag[n]
+    ///     /\ Commit(n, d.slot, d.val, FALSE)
+    ///     /\ UNCHANGED <<reg, rnd, capped, active, fresh, marker, pend0>>
+    /// ```
+    ///
+    /// ```tla RabiaEpoch:Relay
+    /// \* handleDecision, current-slot branch: any trusted peer (every node is an admitted consensus member here).
+    /// \* Current-slot branch; buffering a newer-slot Decision keeps the relayer state readable.
+    /// Relay(p, q) ==
+    ///     /\ ~Pap("norelay")
+    ///     /\ p # q
+    ///     /\ Active(q)
+    ///     /\ decided[p][slot[q]] # None
+    ///     /\ Fix("relayepoch") => decEpoch[p][slot[q]] = epoch[q]
+    ///     /\ Commit(q, decided[p][slot[q]])
+    ///     /\ UNCHANGED <<ballots, requests, jumpers, forged, mixed>>
+    /// ```
+    ///
     private void handleDecision(Decision<C> decision) {
         if (authorityFailure.isPresent() || !isTrustedPeer(decision.sender())) {
             return;
