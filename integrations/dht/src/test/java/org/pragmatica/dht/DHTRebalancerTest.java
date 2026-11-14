@@ -749,16 +749,31 @@ class DHTRebalancerTest {
             List.of(LOCAL, PEER_A).forEach(ring::addNode);
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
             node.putLocal(key("t11"), value("payload")).await();
-            var started = System.nanoTime();
-            var raisedAfterMillis = new java.util.concurrent.atomic.AtomicLong(-1);
             var network = ScriptedNetwork.scripted((_, _) -> Reply.ACK);
-            var recorder = new EventRecorder(() -> raisedAfterMillis.compareAndSet(-1, (System.nanoTime() - started) / 1_000_000));
-            var run = push(node, network, T(3_000, 4_000, 50), Set.of(PEER_A), recorder);
+            var run = push(node, network, T(5_000, 30_000, 50), Set.of(PEER_A));
 
-            assertThat(raisedAfterMillis.get()).as("raised at plan time, not at the 3000 ms re-evaluation").isBetween(0L, 1_500L);
             assertThat(network.sends()).isNotEmpty().allSatisfy(sent -> assertThat(sent.target()).isEqualTo(PEER_A));
             assertThat(run.recorder().atRisk()).containsExactly(1);
             assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
+        }
+
+        /// #3208: a sole key whose only target is named in the drain set is raised at plan time, not at the base re-evaluation.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_onlyNamedTargetNeverAcks_raisedAtPlanNotAtBase() {
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            List.of(LOCAL, PEER_A).forEach(ring::addNode);
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+            node.putLocal(key("t11b"), value("payload")).await();
+            var started = System.nanoTime();
+            var raisedAfterMillis = new java.util.concurrent.atomic.AtomicLong(-1);
+            var network = ScriptedNetwork.scripted((_, _) -> Reply.DROP);
+            var recorder = new EventRecorder(() -> raisedAfterMillis.compareAndSet(-1, (System.nanoTime() - started) / 1_000_000));
+
+            push(node, network, T(3_000, 4_000, 50), Set.of(PEER_A), recorder);
+
+            assertThat(raisedAfterMillis.get()).as("raised at plan time, not at the 3000 ms base").isBetween(0L, 1_500L);
+            assertThat(recorder.atRisk()).containsExactly(1);
         }
 
         /// T12 (N2): one target owed a sole key and a replicated key. Every sole page is lost; the replicated page travels in its own
