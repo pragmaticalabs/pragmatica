@@ -3048,20 +3048,6 @@ public class RabiaEngine<C extends Command> {
 
     /// TLA+ model action (see the package documentation of `org.pragmatica.consensus.rabia`).
     ///
-    /// ```tla RabiaAdopt:Restart
-    /// \* A new process under the same NodeId. The amnesia fence (boot token at the transport) is not in this
-    /// \* method; the model's Restart is the environment move the fence constrains.
-    /// Restart(n, wipe, A) ==
-    ///   /\ st[n] = "down" /\ restarts < MaxRestart /\ Allowed(n, wipe, A)
-    ///   /\ log' = [log EXCEPT ![n] = IF wipe THEN Empty ELSE saved[n]]
-    ///   /\ saved' = [saved EXCEPT ![n] = IF wipe THEN Empty ELSE saved[n]]
-    ///   /\ marker' = [marker EXCEPT ![n] = IF wipe THEN "unknown" ELSE marker[n]]
-    ///   /\ voted' = [voted EXCEPT ![n] = Empty]
-    ///   /\ admit' = [admit EXCEPT ![n] = A] /\ known' = [q \in Ids |-> IF q = n THEN A ELSE IF q \in A THEN known[q] \cup {n} ELSE known[q]] /\ reinc' = [reinc EXCEPT ![n] = TRUE]
-    ///   /\ st' = [st EXCEPT ![n] = IF "D3" \in Paper THEN "active" ELSE "syncing"]
-    ///   /\ restarts' = restarts + 1
-    ///   /\ UNCHANGED <<ballots, chosen, crashes, pauses>>
-    /// ```
     private void restoreOwnState(SavedState<C> state, String reason) {
         log.info("Node {} activating on its own persisted state ({}); persisted phase {}, live phase {}",
                  self,
@@ -3511,14 +3497,6 @@ public class RabiaEngine<C extends Command> {
     /// #667 and #1212 exist to prevent. The retry tick re-enters `doSynchronize`, so a transient
     /// write failure resolves itself rather than wedging the node permanently.
     ///
-    /// ```tla RabiaSlot:RecordMarker
-    /// \* Known-bad only: the participation marker written after activation. The code records it first (Fix
-    /// \* markerfirst).
-    /// RecordMarker(n) ==
-    ///     /\ ~Fix("markerfirst") /\ active[n] /\ ~marker[n]
-    ///     /\ marker' = [marker EXCEPT ![n] = TRUE]
-    ///     /\ UNCHANGED <<msgs, reg, has, rnd, dflag, capped, cur, pending, active, fresh, logv, napp, pend0>>
-    /// ```
     private boolean recordParticipation() {
         return participationMarker.recordParticipation()
                                   .onFailure(cause -> log.error("Node {} refusing to activate: could not durably record "
@@ -4749,18 +4727,6 @@ public class RabiaEngine<C extends Command> {
     ///     /\ UNCHANGED <<ballots, requests, jumpers, forged, mixed>>
     /// ```
     ///
-    /// ```tla RabiaEpoch:Forge
-    /// \* "crashstop" removed: a trusted peer relays a Decision nobody decided, tagged with the receiver's epoch.
-    /// \* Not code: an environment move enabled only when the crashstop assumption is removed (a fabricated
-    /// \* Decision).
-    /// Forge(q) ==
-    ///     /\ ~Has("crashstop")
-    ///     /\ forged < MaxForge
-    ///     /\ Active(q)
-    ///     /\ \E v \in Values : Commit(q, v)
-    ///     /\ forged' = forged + 1
-    ///     /\ UNCHANGED <<ballots, requests, jumpers, mixed>>
-    /// ```
     private void handleDecision(Decision<C> decision) {
         if (authorityFailure.isPresent() || !isTrustedPeer(decision.sender())) {
             return;

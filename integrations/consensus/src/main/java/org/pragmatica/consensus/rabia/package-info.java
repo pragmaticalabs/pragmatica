@@ -164,6 +164,14 @@
 /// ```
 ///
 /// ```tla RabiaSlot:tail
+/// \* Environment move (not code; moved out of the code region it used to sit on).
+/// \* Known-bad only: the participation marker written after activation. The code records it first (Fix
+/// \* markerfirst).
+/// RecordMarker(n) ==
+///     /\ ~Fix("markerfirst") /\ active[n] /\ ~marker[n]
+///     /\ marker' = [marker EXCEPT ![n] = TRUE]
+///     /\ UNCHANGED <<msgs, reg, has, rnd, dflag, capped, cur, pending, active, fresh, logv, napp, pend0>>
+///
 /// Init ==
 ///     /\ msgs = {}
 ///     /\ reg = [n \in Nodes |-> {}]
@@ -351,6 +359,18 @@
 /// ```
 ///
 /// ```tla RabiaEpoch:tail
+/// \* Environment move (not code; moved out of the code region it used to sit on).
+/// \* "crashstop" removed: a trusted peer relays a Decision nobody decided, tagged with the receiver's epoch.
+/// \* Not code: an environment move enabled only when the crashstop assumption is removed (a fabricated
+/// \* Decision).
+/// Forge(q) ==
+///     /\ ~Has("crashstop")
+///     /\ forged < MaxForge
+///     /\ Active(q)
+///     /\ \E v \in Values : Commit(q, v)
+///     /\ forged' = forged + 1
+///     /\ UNCHANGED <<ballots, requests, jumpers, mixed>>
+///
 /// Init ==
 ///     /\ slot      = [n \in Nodes |-> 1]
 ///     /\ epoch     = [n \in Nodes |-> 0]
@@ -534,6 +554,20 @@
 /// ```
 ///
 /// ```tla RabiaAdopt:tail
+/// \* Environment move (not code; moved out of the code region it used to sit on).
+/// \* A new process under the same NodeId. The amnesia fence (boot token at the transport) is not in this
+/// \* method; the model's Restart is the environment move the fence constrains.
+/// Restart(n, wipe, A) ==
+///   /\ st[n] = "down" /\ restarts < MaxRestart /\ Allowed(n, wipe, A)
+///   /\ log' = [log EXCEPT ![n] = IF wipe THEN Empty ELSE saved[n]]
+///   /\ saved' = [saved EXCEPT ![n] = IF wipe THEN Empty ELSE saved[n]]
+///   /\ marker' = [marker EXCEPT ![n] = IF wipe THEN "unknown" ELSE marker[n]]
+///   /\ voted' = [voted EXCEPT ![n] = Empty]
+///   /\ admit' = [admit EXCEPT ![n] = A] /\ known' = [q \in Ids |-> IF q = n THEN A ELSE IF q \in A THEN known[q] \cup {n} ELSE known[q]] /\ reinc' = [reinc EXCEPT ![n] = TRUE]
+///   /\ st' = [st EXCEPT ![n] = IF "D3" \in Paper THEN "active" ELSE "syncing"]
+///   /\ restarts' = restarts + 1
+///   /\ UNCHANGED <<ballots, chosen, crashes, pauses>>
+///
 /// Init ==
 ///   /\ st = [n \in Ids |-> IF n = "X" THEN "syncing" ELSE "active"]
 ///   /\ log = [n \in Ids |-> Empty]
