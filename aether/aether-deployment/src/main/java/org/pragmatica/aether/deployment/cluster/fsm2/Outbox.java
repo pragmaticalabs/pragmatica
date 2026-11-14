@@ -172,31 +172,34 @@ public sealed interface Outbox {
     ///
     /// ```tla Fsm2Leader:Flush
     /// \* Outbox.java flush. Suspended: nothing submitted, intents dropped, Warnings.suspended clears dirty.
-    /// \* Else Warnings.draft (Warnings.java): one WARNINGS tx with the difference, unless one is in flight; then the
-    /// \* goal draft; Outbox.java submitOne -> Submit effect -> one apply per step (ClusterFsmInterpreter.java).
+    /// \* Else Warnings.draft (Warnings.java:213): one WARNINGS tx with the difference, unless one is in flight:
+    /// \* each mutated row's expected value is the mirror's, its replacement the desired row with the held warnings' markers
+    /// \* (Warnings.difference, desired, marked; #3175); the tx covers every warning held so far (covering); then the goal
+    /// \* draft; Outbox.java submitOne -> Submit effect -> one apply per step (ClusterFsmInterpreter.java).
     /// Flush(n) ==
     ///   /\ fsm[n] = "Active" /\ flushQ[n]
     ///   /\ IF Suspended(n)
     ///      THEN /\ Apply(n, warned[n], rows[n], FALSE, wInfl[n] /\ ~(\E t \in redo[n] : t.kind = "W"),
-    ///                    gInfl[n] /\ ~(\E t \in redo[n] : t.kind = "G"), FALSE, FALSE, FALSE, shown, held[n])
+    ///                    gInfl[n] /\ ~(\E t \in redo[n] : t.kind = "G"), FALSE, FALSE, FALSE, shown, held[n], lnd[n], view[n])
     ///           /\ redo' = [redo EXCEPT ![n] = {}]     \* clearIntents drops the outbox, resubmission drafts included
     ///           /\ UNCHANGED net
     ///      ELSE LET draftW == Persists /\ dirty[n] /\ ~wInfl[n] /\ MUT # "nodraft"
-    ///               doW == draftW /\ warned[n] # rows[n]
+    ///               D == Diff(warned[n], rows[n], held[n])
+    ///               doW == draftW /\ D # {}
     ///               doG == gIntent[n]
     ///               wtx == [kind |-> "W", node |-> n, inc |-> inc[n], lv |-> view[n],
-    ///                       adds |-> warned[n] \ rows[n], rems |-> rows[n] \ warned[n], val |-> 0, exp |-> 0,
-    ///                       cov |-> Len(held[n])]
+    ///                       wexp |-> [s \in D |-> rows[n][s]], wrep |-> [s \in D |-> Des(warned[n], held[n])[s]],
+    ///                       val |-> 0, exp |-> 0, cov |-> Len(held[n])]
     ///               gtx == [kind |-> "G", node |-> n, inc |-> inc[n], lv |-> view[n],
-    ///                       adds |-> {}, rems |-> {}, val |-> target, exp |-> kvDesired]
+    ///                       wexp |-> EmptyF, wrep |-> EmptyF, val |-> target, exp |-> kvDesired, cov |-> 0]
     ///               \* Outbox.direct drafts of a witness-stale refusal go out unchanged, under the witness the node holds now
     ///               resub == {[t EXCEPT !.lv = view[n]] : t \in redo[n]}
     ///           IN /\ net' = net \cup (IF doW THEN {wtx} ELSE {}) \cup (IF doG THEN {gtx} ELSE {}) \cup resub
     ///              /\ redo' = [redo EXCEPT ![n] = {}]
     ///              /\ Apply(n, warned[n], rows[n], IF draftW THEN FALSE ELSE dirty[n], wInfl[n] \/ doW,
-    ///                       gInfl[n] \/ doG, FALSE, FALSE, FALSE, shown, held[n])
-    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, settles,
-    ///                  condBudget, faultBudget>>
+    ///                       gInfl[n] \/ doG, FALSE, FALSE, FALSE, shown, held[n], lnd[n], view[n])
+    ///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, view, fired,
+    ///                  settles, condBudget, faultBudget>>
     /// ```
     static ClusterModel flush(ClusterModel m, Ctx ctx, boolean suspended) {
         m.flushQueued = false;
@@ -538,9 +541,9 @@ public sealed interface Outbox {
     ///          eG == gInfl[n] /\ TxOf(n, "G") = {}
     ///      IN /\ eW \/ eG
     ///         /\ Apply(n, warned[n], rows[n], dirty[n] \/ eW, wInfl[n] /\ ~eW, gInfl[n] /\ ~eG, gIntent[n], FALSE,
-    ///                  flushQ[n], shown, held[n])
-    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, net, settles,
-    ///                  condBudget, faultBudget, redo>>
+    ///                  flushQ[n], shown, held[n], lnd[n], view[n])
+    ///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, net,
+    ///                  settles, condBudget, faultBudget, redo>>
     /// ```
     static ClusterModel expire(ClusterModel m, Ctx ctx) {
         var bound = ctx.settings().submissionExpiry() * 1_000_000L;
@@ -574,8 +577,10 @@ public sealed interface Outbox {
     // Rebuild) is dropped and counted. Guarantee: nothing is applied twice and the loss is visible. Mechanism: the `settled_unknown` metric;
     // the submission's pending entries were already released and its intent is re-derived level-triggered from the mirror.
     /// ```tla Fsm2Leader:Settle
-    /// \* WriteSettled of this incarnation: Outbox.java. W accepted: mirror takes the mutations (Warnings.accepted,
-    /// \* Warnings.java); refused: the refusal's values re-index the mirror, m.leader := refusal leader, unlanded marks
+    /// \* WriteSettled of this incarnation: Outbox.java. W accepted: mirror takes the mutations and the held prefix the
+    /// \* tx carried lands (Warnings.accepted, committed: Warnings.java:253), published at the end of the step
+    /// \* unless the node's leader value names another node (Warnings.java:168, ledByAnother: then it stays
+    /// \* landed and held); refused: the refusal's values re-index the mirror, m.leader := refusal leader, unlanded marks
     /// \* dirty (Outbox.java; Warnings.java); failed: re-drafted by the next reconcile.
     /// Settle(s) ==
     ///   /\ s \in settles /\ fsm[s.node] = "Active" /\ s.inc = inc[s.node]
@@ -584,22 +589,19 @@ public sealed interface Outbox {
     ///          ref == s.out = "ref"
     ///          dep == ref /\ s.lv[1] # n                   \* routeRefusal: the refusal names another node, nothing is resubmitted
     ///          stale == ref /\ ~dep /\ s.lv # s.tx.lv     \* routeRefusal: names this node under a new witness, resubmit unchanged
-    ///          r == IF isW /\ s.out = "acc" THEN (rows[n] \ s.rems) \cup s.adds
-    ///               ELSE IF isW /\ s.out = "ref" THEN (rows[n] \ (s.adds \cup s.rems)) \cup s.seen
+    ///          r == IF isW /\ s.out = "acc" THEN Overlay(rows[n], s.wrep)
+    ///               ELSE IF isW /\ ref THEN Overlay(rows[n], s.seen)
     ///               ELSE rows[n]
     ///          d == IF isW /\ ref /\ ~dep /\ ~stale THEN TRUE ELSE dirty[n]   \* rederive -> Warnings.unlanded marks dirty
-    ///          \* #3085: an accepted WARNINGS write publishes the held warnings it carried (Warnings.accepted -> committed -> publish)
-    ///          pubW == MODE = "code" /\ isW /\ s.out = "acc"
-    ///          k == IF s.cov < Len(held[n]) THEN s.cov ELSE Len(held[n])    \* the prefix the transaction carried (warningsCovered)
-    ///          sh == IF pubW THEN Pubd(shown, SubSeq(held[n], 1, k)) ELSE shown
-    ///          hd == IF pubW THEN SubSeq(held[n], k + 1, Len(held[n])) ELSE held[n]
+    ///          ld == IF isW /\ s.out = "acc" THEN s.cov ELSE lnd[n]          \* Warnings.committed: landed := covered
+    ///          v == IF ref THEN s.lv ELSE view[n]
     ///      IN /\ settles' = settles \ {s}
-    ///         /\ view' = IF s.out = "ref" THEN [view EXCEPT ![n] = s.lv] ELSE view
+    ///         /\ view' = [view EXCEPT ![n] = v]
     ///         /\ redo' = [redo EXCEPT ![n] = IF stale THEN redo[n] \cup {s.tx} ELSE redo[n]]
     ///         /\ Apply(n, warned[n], r, d, IF isW THEN stale ELSE wInfl[n], IF isW THEN gInfl[n] ELSE stale,
-    ///                  gIntent[n], FALSE, flushQ[n] \/ stale, sh, hd)
-    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, fired, net, condBudget,
-    ///                  faultBudget>>
+    ///                  gIntent[n], FALSE, flushQ[n] \/ stale, shown, held[n], ld, v)
+    ///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, fired, net,
+    ///                  condBudget, faultBudget>>
     /// ```
     ///
     /// ```tla Fsm2Leader:DropSettle
@@ -607,8 +609,9 @@ public sealed interface Outbox {
     /// DropSettle(s) ==
     ///   /\ s \in settles /\ (fsm[s.node] = "Dormant" \/ s.inc # inc[s.node])
     ///   /\ settles' = settles \ {s}
-    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, shown, fsm, inc, view, warned, rows,
-    ///                  dirty, flushQ, wInfl, gInfl, gIntent, fired, net, condBudget, faultBudget, held, redo>>
+    ///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, fsm, inc, view,
+    ///                  warned, rows, dirty, flushQ, wInfl, gInfl, gIntent, fired, net, condBudget, faultBudget, held, lnd,
+    ///                  redo>>
     /// ```
     static ClusterModel settle(ClusterModel m, Ctx ctx, ClusterInput.WriteSettled settled) {
         return m.submitted.get(settled.correlationId())

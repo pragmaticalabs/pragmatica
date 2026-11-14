@@ -102,13 +102,22 @@ public sealed interface Warnings {
 
     // -- the mirror ------------------------------------------------------------------------------------------------
     /// ```tla Fsm2Leader:Notify
-    /// \* KV notification of a committed FsmWarningKey put/remove: the mirror follows (Indexer.java ->
-    /// \* Warnings.indexRow/removeRow, Warnings.java); no family set changes. Abstracted to a whole-set sync.
+    /// \* KV notification of committed FsmWarningKey puts/removes: the mirror follows (Indexer.java -> Warnings.indexRow /
+    /// \* removeRow, Warnings.java). Abstracted to a whole-set sync. code (#3175, Warnings.java:468 onPut): a put that
+    /// \* differs from the mirror while the node is suspended with no WARNINGS write of its own in flight is late (the deposed
+    /// \* leader wrote it after this node's snapshot): its markers are replayed into the held list (raised inside the step,
+    /// \* Warnings.replay) and an open row is adopted into the family set (inheritRow -> adopt); a tombstone is not
+    /// \* un-adopted. Mutant "noreplay": adopted, not replayed.
     /// Notify(n) ==
     ///   /\ fsm[n] = "Active" /\ rows[n] # kv
-    ///   /\ Apply(n, warned[n], kv, dirty[n], wInfl[n], gInfl[n], gIntent[n], FALSE, flushQ[n], shown, held[n])
-    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, net, settles,
-    ///                  condBudget, faultBudget, redo>>
+    ///   /\ LET late == MODE = "code" /\ Suspended(n) /\ ~wInfl[n]
+    ///          P == {s \in Subjects : rows[n][s] # kv[s] /\ kv[s] # Nil}
+    ///          rp == IF late /\ MUT # "noreplay" THEN ReplaySeq(P, kv) ELSE <<>>
+    ///          ad == IF late THEN {s \in P : kv[s].open} ELSE {}
+    ///      IN Apply(n, warned[n] \cup ad, kv, dirty[n], wInfl[n], gInfl[n], gIntent[n], rp # <<>>, flushQ[n], shown,
+    ///               held[n] \o rp, lnd[n], view[n])
+    ///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, net,
+    ///                  settles, condBudget, faultBudget, redo>>
     /// ```
     static ClusterModel indexRow(ClusterModel m, FsmWarningKey key, FsmWarningValue value) {
         m.warningRows = m.warningRows.put(key, value);
