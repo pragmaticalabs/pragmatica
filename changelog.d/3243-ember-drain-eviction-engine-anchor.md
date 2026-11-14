@@ -1,0 +1,4 @@
+### Fixed (2026-11-14 — #3243: EmberDrainEvictionWiringTest waited on legacy CDM log anchors and failed on every FSM2 run)
+- **The drain-eviction wiring test could not run under `-Daether.deployment.engine=fsm2`.** It gated the draining pong on two log lines only the legacy cluster deployment manager writes.
+- The test now reads the active engine from the started nodes and sets `deployment.reconciliationInterval` beyond its own deadline on both, so the periodic tick cannot produce the eviction. Legacy keeps its anchors and pong-thread attribution; FSM2 waits for the cluster FSM to be `Active` and for "Drain complete" within one seam interval plus a stated slack. `[verified: aether/ember/src/test/java/org/pragmatica/aether/ember/EmberDrainEvictionWiringTest.java]`
+- Harness only: `EmberCluster.withReconciliationIntervalForNewNodes` is a new test seam; no runtime behaviour changes.
