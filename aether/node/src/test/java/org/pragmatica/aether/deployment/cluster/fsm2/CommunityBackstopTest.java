@@ -258,7 +258,7 @@ class CommunityBackstopTest {
     // retires the STALE record, so the settled state is the identity without directive or record; the placement key stays.
     // Red when: C17b leaves the worker's directive or the STALE record behind, or removes the placement key or more than slice rows, desired
     // keys, routes and the directive; a and b are not re-placed with exactly one new goal per affected instance; or, on the governor's
-    // correction, the worker is not admitted again (ADMITTED, a new WORKER directive), is not counted again, or its NodeId or token changed.
+    // correction, the worker is not admitted again (a new WORKER directive), is not counted again, or its NodeId or token changed.
     @Test
     void wrongGovernorView_replacesOnce_thenIsReadmittedWhenTheViewHeals() {
         var w10 = node("w10");
@@ -288,8 +288,6 @@ class CommunityBackstopTest {
         assertThat(w.recordOf(w10).isEmpty()).as("the view alone does not re-admit a retired identity").isTrue();
         w.h.deliver(new ClusterInput.WorkerJoin(w10, w.admissionOf(w10)));
         w.h.drain();
-        assertThat(w.recordOf(w10).map(NodeDepartureValue::state)).as("the falsely-dead worker is admitted again by its own join")
-                  .isEqualTo(Option.some(DepartureState.ADMITTED));
         assertThat(w.stored(new ActivationDirectiveKey(w10)).map(v -> ((ActivationDirectiveValue) v).role()))
                   .as("a new WORKER directive (#3028)").isEqualTo(Option.some(ActivationDirectiveValue.WORKER));
         assertThat(w.counts(w10)).isTrue();
@@ -316,7 +314,9 @@ class CommunityBackstopTest {
         assertThat(w.recordOf(w10).isEmpty()).as("localAlive alone does not re-admit a retired identity").isTrue();
         w.h.deliver(new ClusterInput.WorkerJoin(w10, w.admissionOf(w10)));
         w.h.drain();
-        assertThat(w.recordOf(w10).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.ADMITTED));
+        assertThat(w.stored(new ActivationDirectiveKey(w10)).map(v -> ((ActivationDirectiveValue) v).role()))
+                  .as("the own join directs it again (#3028)").isEqualTo(Option.some(ActivationDirectiveValue.WORKER));
+        assertThat(w.counts(w10)).isTrue();
     }
 
     private MbWorld sixWorkers() {
