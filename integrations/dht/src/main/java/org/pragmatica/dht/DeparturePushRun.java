@@ -152,7 +152,7 @@ final class DeparturePushRun {
         }
 
         boolean hasDeliverer() {
-            return !deliverers.isEmpty();
+            return ! deliverers.isEmpty();
         }
 
         /// An applied ack from `target` for a page carrying this key: it delivers only if the target is one of the key's deliverers.
@@ -400,14 +400,15 @@ final class DeparturePushRun {
     private List<NodeId> drainTargets(DepartureKey key, Set<NodeId> excluded) {
         var delta = departureTargets(key.stamp.key(), excluded);
         var candidates = finalPrimaryCandidates(key.stamp.key(), excluded);
-
         var deliverers = candidates.isEmpty()
                          ? delta
                          : candidates.stream().filter(candidate -> !excluded.contains(candidate)).toList();
 
         deliverers.forEach(key::allowDelivery);
 
-        return Stream.concat(delta.stream(), candidates.stream()).toList();
+        return Stream.concat(delta.stream(),
+                             candidates.stream())
+                     .toList();
     }
 
     /// The primary of the key's FINAL replica set, whichever drain-set entries turn out stale (#3208, #3209). Truly departing are
@@ -639,8 +640,7 @@ final class DeparturePushRun {
     }
 
     private Stream<TargetedKey> retargets(DepartureKey key, Set<NodeId> excluded) {
-        return drainTargets(key,
-                            excluded).stream()
+        return drainTargets(key, excluded).stream()
                            .filter(key::claimTarget)
                            .map(target -> new TargetedKey(target, key));
     }
