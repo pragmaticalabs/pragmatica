@@ -13,6 +13,5 @@ import org.pragmatica.lang.Result;
 /// `EntityError.StorageFailed`.
 public interface StateCodec<S> {
     Result<byte[]> encode(S state);
-
     Result<S> decode(byte[] bytes);
 }

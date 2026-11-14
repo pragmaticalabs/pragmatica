@@ -6,6 +6,7 @@ package org.pragmatica.aether.resource.entity.pg;
 import org.pragmatica.aether.resource.entity.EntityError;
 import org.pragmatica.lang.Cause;
 
+
 /// Maps any failure of a store operation into the [EntityError] vocabulary.
 ///
 /// An `EntityError` passes through unchanged. A transient cause (lost connection, serialization failure,
@@ -20,7 +21,8 @@ final class PgEntityErrors {
     static Cause toEntityError(String key, Cause cause) {
         return switch (cause) {
             case EntityError entityError -> entityError;
-            case Cause transientCause when transientCause.isTransient() -> new EntityError.StorageUnavailable(key, transientCause);
+            case Cause transientCause when transientCause.isTransient() -> new EntityError.StorageUnavailable(key,
+                                                                                                              transientCause);
             default -> new EntityError.StorageFailed(key, cause);
         };
     }

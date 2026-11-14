@@ -5,6 +5,7 @@ package org.pragmatica.aether.resource.entity.pg;
 
 import org.pragmatica.lang.Cause;
 
+
 /// Failures that exist only in the Postgres store. They reach callers wrapped in an `EntityError`
 /// (see [PgEntityErrors]), never bare.
 public sealed interface PgEntityError extends Cause {
@@ -17,8 +18,9 @@ public sealed interface PgEntityError extends Cause {
 
         @Override
         public String message() {
-            return "Durable entity row for key '" + key + "' is no longer at version " + expectedVersion
-                   + " - another writer committed first";
+            return "Durable entity row for key '" + key
+                 + "' is no longer at version " + expectedVersion
+                 + " - another writer committed first";
         }
     }
 

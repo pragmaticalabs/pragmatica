@@ -14,6 +14,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 
+
 /// State-stored durable entities on PostgreSQL (#2100 E-B): one row `(entity, entity_key, version, state, updated_at)`
 /// per entity instance, in the table of `schema/V1__create_durable_entity_state.sql`.
 ///
@@ -55,17 +56,23 @@ import org.pragmatica.lang.Verify;
 /// cause, retry) or `StorageFailed`. See [PgEntityErrors] for the members that are never produced.
 public final class PgEntityStore<K, S, C extends Mutator<S>> {
     private static final String INSERT = "INSERT INTO durable_entity_state (entity, entity_key, version, state, updated_at)"
-                                         + " VALUES (?, ?, 1, ?, now()) ON CONFLICT (entity, entity_key) DO NOTHING";
+                                       + " VALUES (?, ?, 1, ?, now()) ON CONFLICT (entity, entity_key) DO NOTHING";
+
     private static final String SELECT_STATE = "SELECT state FROM durable_entity_state WHERE entity = ? AND entity_key = ?";
+
     private static final String SELECT_VERSIONED = "SELECT version, state FROM durable_entity_state WHERE entity = ? AND entity_key = ?";
+
     private static final String SELECT_FOR_UPDATE = SELECT_VERSIONED + " FOR UPDATE";
+
     private static final String CAS_UPDATE = "UPDATE durable_entity_state SET version = version + 1, state = ?, updated_at = now()"
-                                             + " WHERE entity = ? AND entity_key = ? AND version = ?";
+                                           + " WHERE entity = ? AND entity_key = ? AND version = ?";
+
     private static final String DELETE = "DELETE FROM durable_entity_state WHERE entity = ? AND entity_key = ?";
     private static final RowMapper<byte[]> STATE_ROW = row -> row.getBytes("state");
+
     private static final RowMapper<Versioned<byte[]>> VERSIONED_ROW = row -> Result.all(row.getLong("version"),
-                                                                                         row.getBytes("state"))
-                                                                                    .map(Versioned::versioned);
+                                                                                        row.getBytes("state"))
+                                                                                   .map(Versioned::versioned);
 
     private final SqlConnector connector;
     private final String entity;
@@ -97,8 +104,11 @@ public final class PgEntityStore<K, S, C extends Mutator<S>> {
                                                                                             Fn1<String, K> keyEncoder,
                                                                                             StateCodec<S> codec,
                                                                                             DeleteHook deleteHook) {
-        return Verify.ensure(entity, Verify.Is::notBlank)
-                     .map(name -> new PgEntityStore<>(connector, name, keyEncoder, codec, deleteHook));
+        return Verify.ensure(entity, Verify.Is::notBlank).map(name -> new PgEntityStore<>(connector,
+                                                                                          name,
+                                                                                          keyEncoder,
+                                                                                          codec,
+                                                                                          deleteHook));
     }
 
     /// A store with no timer layer ([DeleteHook#noTimers()]).
@@ -161,8 +171,10 @@ public final class PgEntityStore<K, S, C extends Mutator<S>> {
     }
 
     private Promise<Option<S>> decodeOptional(Option<byte[]> stored) {
-        return stored.fold(() -> Promise.success(Option.<S>none()),
-                           bytes -> codec.decode(bytes).map(Option::some).async());
+        return stored.fold(() -> Promise.success(Option.<S> none()),
+                           bytes -> codec.decode(bytes)
+                                         .map(Option::some)
+                                         .async());
     }
 
     private Promise<Option<Versioned<S>>> getVersionedAt(String id) {
@@ -172,12 +184,15 @@ public final class PgEntityStore<K, S, C extends Mutator<S>> {
     }
 
     private Promise<Option<Versioned<S>>> decodeVersionedOptional(Option<Versioned<byte[]>> stored) {
-        return stored.fold(() -> Promise.success(Option.<Versioned<S>>none()),
-                           row -> decodeRow(row).map(Option::some).async());
+        return stored.fold(() -> Promise.success(Option.<Versioned<S>> none()),
+                           row -> decodeRow(row).map(Option::some)
+                                           .async());
     }
 
     private Result<Versioned<S>> decodeRow(Versioned<byte[]> row) {
-        return codec.decode(row.state()).map(state -> Versioned.versioned(row.version(), state));
+        return codec.decode(row.state())
+                    .map(state -> Versioned.versioned(row.version(),
+                                                      state));
     }
 
     private Promise<S> mutate(String id, C mutator, String select, Option<Long> expectedVersion) {
@@ -193,12 +208,13 @@ public final class PgEntityStore<K, S, C extends Mutator<S>> {
     }
 
     private static Promise<Versioned<byte[]>> present(Option<Versioned<byte[]>> row, String id) {
-        return row.fold(() -> new EntityError.EntityNotFound(id).<Versioned<byte[]>>promise(), Promise::success);
+        return row.fold(() -> new EntityError.EntityNotFound(id).<Versioned<byte[]>> promise(), Promise::success);
     }
 
-    private static Promise<Versioned<byte[]>> versionMatches(Versioned<byte[]> row, String id, Option<Long> expectedVersion) {
-        return expectedVersion.fold(() -> Promise.success(row),
-                                    expected -> sameVersion(row, id, expected));
+    private static Promise<Versioned<byte[]>> versionMatches(Versioned<byte[]> row,
+                                                             String id,
+                                                             Option<Long> expectedVersion) {
+        return expectedVersion.fold(() -> Promise.success(row), expected -> sameVersion(row, id, expected));
     }
 
     private static Promise<Versioned<byte[]>> sameVersion(Versioned<byte[]> row, String id, long expected) {
@@ -211,7 +227,10 @@ public final class PgEntityStore<K, S, C extends Mutator<S>> {
         return codec.decode(row.state())
                     .flatMap(current -> applyMutator(id, mutator, current))
                     .async()
-                    .flatMap(next -> writeNext(tx, id, row.version(), next));
+                    .flatMap(next -> writeNext(tx,
+                                               id,
+                                               row.version(),
+                                               next));
     }
 
     private static <S, C extends Mutator<S>> Result<S> applyMutator(String id, C mutator, S current) {
