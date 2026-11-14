@@ -15,11 +15,11 @@ public record MigrationTarget(String datasourceSection, PgSchemaName schema) {
         return Verify.ensure(datasourceSection,
                              Verify.Is::present,
                              MigrationSetError.invalidTarget(datasourceSection))
-                     .flatMap(MigrationTarget::checkNoSeparator)
+                     .flatMap(MigrationTarget::rejectSeparator)
                      .map(section -> new MigrationTarget(section, schema));
     }
 
-    private static Result<String> checkNoSeparator(String section) {
+    private static Result<String> rejectSeparator(String section) {
         return Verify.ensure(section, Verify.Is::notContains, "@", MigrationSetError.invalidTarget(section));
     }
 }

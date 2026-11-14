@@ -29,8 +29,8 @@ public record PgSchemaName(String value) {
         return Verify.ensure(raw,
                              Verify.Is::notNull,
                              PgSchemaNameError.malformed(raw))
-                     .flatMap(PgSchemaName::checkGrammar)
-                     .flatMap(PgSchemaName::checkNotReserved)
+                     .flatMap(PgSchemaName::matchGrammar)
+                     .flatMap(PgSchemaName::rejectReserved)
                      .map(PgSchemaName::new);
     }
 
@@ -39,11 +39,11 @@ public record PgSchemaName(String value) {
         return "\"" + value + "\"";
     }
 
-    private static Result<String> checkGrammar(String raw) {
+    private static Result<String> matchGrammar(String raw) {
         return Verify.ensure(raw, Verify.Is::matches, GRAMMAR, PgSchemaNameError.malformed(raw));
     }
 
-    private static Result<String> checkNotReserved(String name) {
+    private static Result<String> rejectReserved(String name) {
         return Verify.ensure(name, PgSchemaName::isUnreserved, PgSchemaNameError.reserved(name));
     }
 

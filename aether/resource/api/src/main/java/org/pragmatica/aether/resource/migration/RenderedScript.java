@@ -18,16 +18,16 @@ public record RenderedScript(String filename, String sql) {
         return Verify.ensure(filename,
                              Verify.Is::present,
                              MigrationSetError.invalidScript(filename))
-                     .flatMap(RenderedScript::checkPlainName)
-                     .flatMap(name -> checkSql(name, sql))
+                     .flatMap(RenderedScript::matchPlainName)
+                     .flatMap(name -> requireSql(name, sql))
                      .map(name -> new RenderedScript(name, sql));
     }
 
-    private static Result<String> checkPlainName(String filename) {
+    private static Result<String> matchPlainName(String filename) {
         return Verify.ensure(filename, Verify.Is::matches, PLAIN_NAME, MigrationSetError.invalidScript(filename));
     }
 
-    private static Result<String> checkSql(String filename, String sql) {
+    private static Result<String> requireSql(String filename, String sql) {
         return Verify.ensure(sql,
                              Verify.Is::present,
                              MigrationSetError.invalidScript(filename))

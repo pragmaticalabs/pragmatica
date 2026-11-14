@@ -27,7 +27,7 @@ class PgSchemaNameTest {
 
     @Test
     void pgSchemaName_refusesOutsideGrammar() {
-        var table = Arrays.asList(null, "", " ", "Upper", "9lives", "a b", "x;", "x\";drop table t;--", "x\"y", "a-b", "x'y", SIXTY_FOUR);
+        var table = Arrays.asList(null, "", " ", "Upper", "9lives", "a b", "x;", "x\";drop table t;--", "x\"y", "a-b", "x'y", "a\n", "x$", "é", SIXTY_FOUR);
 
         for (var raw : table) {
             var result = PgSchemaName.pgSchemaName(raw);
@@ -53,5 +53,30 @@ class PgSchemaNameTest {
 
         assertThat(name.isSuccess()).isTrue();
         name.onSuccess(schema -> assertThat(schema.quoted()).isEqualTo("\"entity_orders\""));
+    }
+
+    @Test
+    void pgSchemaName_acceptsTheReservedPrefixBoundary() {
+        assertThat(PgSchemaName.pgSchemaName("pgx").isSuccess()).isTrue();
+        assertThat(PgSchemaName.pgSchemaName("publicx").isSuccess()).isTrue();
+    }
+
+    @Test
+    void pgSchemaName_malformedRefusalCarriesTheValue() {
+        var refused = PgSchemaName.pgSchemaName("Bad;");
+        var nullRefused = PgSchemaName.pgSchemaName(null);
+
+        assertThat(refused.isFailure()).isTrue();
+        assertThat(nullRefused.isFailure()).isTrue();
+        refused.onFailure(cause -> assertThat(cause).isEqualTo(PgSchemaNameError.malformed("Bad;")));
+        nullRefused.onFailure(cause -> assertThat(cause).isEqualTo(PgSchemaNameError.malformed(null)));
+    }
+
+    @Test
+    void pgSchemaName_reservedRefusalCarriesTheValue() {
+        var refused = PgSchemaName.pgSchemaName("pg_temp");
+
+        assertThat(refused.isFailure()).isTrue();
+        refused.onFailure(cause -> assertThat(cause).isEqualTo(PgSchemaNameError.reserved("pg_temp")));
     }
 }
