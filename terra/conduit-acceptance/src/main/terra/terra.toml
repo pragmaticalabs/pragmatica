@@ -1,7 +1,8 @@
 # Conduit on Terra: HS256 `Token` JWTs (B-01..B-04) through Terra's built-in `jwt` security mode.
 # The token-optional GETs declare `security = "optional"` in routes.toml, so a presented token is verified there too (B-03).
-# The secret is not in this file: Terra reads TERRA_JWT__SECRET. run.sh sets it from CONDUIT_JWT_SECRET, the variable the
-# token issuer signs with, so the operator sets one variable. There is no default.
+# Terra reads TERRA_JWT__SECRET, which overrides the value below; run-acceptance.sh sets it from CONDUIT_JWT_SECRET, the variable
+# the token issuer signs with. The value below is an ACCEPTANCE-ONLY placeholder that exists because `terra:assemble` runs
+# `--check` at build time and the default reactor builds this module with no secret exported (#2898). The upstream app has no default.
 [http]
 port = 8080
 security_mode = "jwt"
@@ -10,3 +11,4 @@ security_mode = "jwt"
 algorithm = "HS256"
 auth_schemes = ["Token"]
 clock_skew_seconds = 0
+secret = "conduit-bench-jwt-secret-do-not-use-in-production"
