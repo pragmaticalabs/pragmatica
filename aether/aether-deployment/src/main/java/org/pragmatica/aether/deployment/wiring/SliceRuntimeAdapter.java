@@ -109,7 +109,6 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
 
     private final Collaborators c;
     private final SliceLegBuilders builders;
-
     /// The cluster half of each `SUSPEND`'s route removal that has not settled yet, per artifact. Written by `suspend` (put or merge) and by the
     /// settle callback (remove of that same instance), read by `publishRoutes`; a `ConcurrentHashMap`, so the three are safe from any thread
     /// (the op lane serialises ops of one artifact, but the settle callback runs on whichever thread resolves the removal).
@@ -390,7 +389,9 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
     /// [#awaitPendingUnpublish]), so a reactivation's `Put` cannot be overtaken by the late `Remove` of the old incarnation. A timed-out
     /// consensus attempt is not cancelled in Rabia: that residual predates this and is not closed here.
     private Promise<LocalOutcome> suspend(Artifact artifact) {
-        var pending = pendingUnpublish.merge(artifact, severing(artifact, false), (earlier, later) -> earlier.flatMap(_ -> later));
+        var pending = pendingUnpublish.merge(artifact,
+                                             severing(artifact, false),
+                                             (earlier, later) -> earlier.flatMap(_ -> later));
 
         pending.onResultRun(() -> pendingUnpublish.remove(artifact, pending));
 
