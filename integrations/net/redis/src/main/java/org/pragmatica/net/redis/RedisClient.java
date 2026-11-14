@@ -47,7 +47,7 @@ public final class RedisClient implements RedisCommands {
     private final AtomicBoolean closing = new AtomicBoolean();
     private final Promise<Unit> closed = Promise.promise();
     private int opening;
-    private Promise<RedisConnection> lastOpening = Promise.failure(RedisError.General.CLOSED);
+    private Promise<RedisConnection> lastOpening = RedisError.General.CLOSED.promise();
 
     private RedisClient(RedisConfig config, Option<SslContext> tls) {
         this.config = config;
