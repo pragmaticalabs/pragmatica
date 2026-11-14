@@ -134,6 +134,7 @@ class RedisConnectionTest {
         assertThat(kind(failed)).isEqualTo("ServerError");
         assertThat(TestKinds.message(failed)).contains("WRONGTYPE");
         assertThat(next.unwrap()).isEqualTo(7L);
+        assertThat(conn.inFlight()).isZero();
     }
 
     @Test
@@ -147,7 +148,7 @@ class RedisConnectionTest {
         connection = RedisConnection.redisConnection(cfg).await(WAIT).unwrap();
 
         assertThat(kind(connection.incr("a").await(WAIT))).isEqualTo("Timeout");
-        assertThat(kind(connection.incr("b").await(WAIT))).isNotEqualTo("success");
+        assertThat(kind(connection.incr("b").await(WAIT))).isEqualTo("ConnectionLost");
     }
 
     @Test
@@ -171,6 +172,7 @@ class RedisConnectionTest {
         assertThat(a.await(WAIT).unwrap()).isEqualTo(1L);
         assertThat(b.await(WAIT).unwrap()).isEqualTo(2L);
         assertThat(server.received()).hasSize(2);
+        assertThat(connection.inFlight()).isZero();
     }
 
     @Test

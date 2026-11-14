@@ -74,9 +74,9 @@ class RedisClientTest {
             calls.add(client.incr("k"));
         }
 
-        assertThat(server.connections()).isLessThanOrEqualTo(2);
-        assertThat(client.openConnections()).isLessThanOrEqualTo(2);
         assertThat(calls.stream().map(call -> kind(call.await(WAIT))).toList()).doesNotContain("PoolSaturated");
+        assertThat(server.connections()).isEqualTo(2);
+        assertThat(client.openConnections()).isEqualTo(2);
     }
 
     @Test
