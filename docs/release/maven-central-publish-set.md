@@ -203,6 +203,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `jbct/slice-processor-tests` | `org.pragmatica-lite:slice-processor-tests` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `script-gate` | `org.pragmatica-lite:script-gate` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `terra` | `org.pragmatica-lite:terra` | pom | skip | Terra runtime/build tooling built from this checkout and bundled in executable distributions; Central publication is not enabled in this increment |
+| `terra/conduit-acceptance` | `org.pragmatica-lite:conduit-terra` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
 | `terra/example-apps` | `org.pragmatica-lite:terra-example-apps` | pom | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
 | `terra/example-apps/banking-account` | `org.pragmatica-lite:terra-banking-account` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
 | `terra/example-apps/banking-app` | `org.pragmatica-lite:terra-banking-app` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
