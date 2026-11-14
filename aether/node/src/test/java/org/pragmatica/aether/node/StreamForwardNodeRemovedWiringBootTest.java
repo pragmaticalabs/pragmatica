@@ -123,11 +123,17 @@ class StreamForwardNodeRemovedWiringBootTest {
             if (next.getClass().getSimpleName().equals(HANDLER_CLASS)) {
                 return next;
             }
-            if (seen.put(next, true) == null) {
+            if (!isJdkType(next) && seen.put(next, true) == null) {
                 pending.addAll(capturedState(next));
             }
         }
         return null;
+    }
+
+    private static boolean isJdkType(Object value) {
+        var name = value.getClass().getName();
+
+        return name.startsWith("java.") || name.startsWith("jdk.") || name.startsWith("sun.");
     }
 
     private static List<Object> capturedState(Object holder) throws ReflectiveOperationException {
