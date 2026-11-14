@@ -15,6 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -26,7 +27,7 @@ import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine
 /// In-process cluster for the departure-drain tests (#3208, #3209): every member is a real [DHTNode], [DHTRebalancer] and
 /// [DHTAntiEntropy] on its own ring, wired through an accepting network. `dropTo` makes a member unreachable while it stays in the
 /// ring, `removeOnFirstSend` removes a member from the pushers' rings when the first push to it leaves, and `sentTo` records every
-/// departure page by target.
+/// departure page by target, `entriesTo` the entries pushed to each.
 final class DrainCluster {
     static final DHTConfig CONFIG = new DHTConfig(2, 1, 1, DHTConfig.DEFAULT_TIMEOUT);
     static final TimeSpan BUDGET = TimeSpan.timeSpan(5).seconds();
@@ -37,6 +38,7 @@ final class DrainCluster {
     final Set<NodeId> dropTo = new HashSet<>();
     private final Set<NodeId> pushers = new HashSet<>();
     final List<NodeId> sentTo = new CopyOnWriteArrayList<>();
+    final Map<NodeId, Integer> entriesTo = new ConcurrentHashMap<>();
     final List<Map.Entry<NodeId, ProtocolMessage>> queue = new CopyOnWriteArrayList<>();
     final AtomicInteger atRiskRaised = new AtomicInteger();
     volatile NodeId removeOnFirstSend;
@@ -143,8 +145,9 @@ final class DrainCluster {
     }
 
     private void deliver(NodeId from, NodeId target, ProtocolMessage message) {
-        if (message instanceof DHTMessage.MigrationDataResponse && pushers.contains(from)) {
+        if (message instanceof DHTMessage.MigrationDataResponse response && pushers.contains(from)) {
             sentTo.add(target);
+            entriesTo.merge(target, response.entries().size(), Integer::sum);
             if (target.equals(removeOnFirstSend)) {
                 members.get(from).node().ring().removeNode(target);
                 removeOnFirstSend = null;

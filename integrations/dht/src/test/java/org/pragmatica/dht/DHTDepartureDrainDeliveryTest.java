@@ -60,7 +60,7 @@ class DHTDepartureDrainDeliveryTest {
 
     /// Two named nodes lie ahead of the first unnamed one. The named prefix is every node up to it, and the first unnamed node n4
     /// delivers: a prefix cut to its first entry names n2 and n3 only, leaves no deliverer, and reports the key at risk.
-    /// Pins `namedPrefixWithFirstUnnamed` taking all of `takeWhile(excluded::contains)`.
+    /// Pins `namedPrefixWithFirstUnnamed` taking all of `takeWhile(excluded::contains)`, and `claimTarget` deduplicating a node named by both target lists.
     @Test
     void twoNamedAheadOfTheFirstUnnamed_theWholePrefixAndTheFirstUnnamedAreTargeted_andNothingIsAtRisk() {
         var cluster = new DrainCluster(List.of("n1", "n2", "n3", "n4", "n5"));
@@ -74,6 +74,8 @@ class DHTDepartureDrainDeliveryTest {
         assertThat(cluster.holds("n3", key) && cluster.holds("n4", key)).as("n3 (named) and n4 (first unnamed) hold the key").isTrue();
         assertThat(reports).as("n4 is outside the drain set and acked: nothing at risk").noneMatch(DeparturePushReport::dataAtRisk);
         assertThat(cluster.atRiskRaised.get()).as("no sole-copy-at-risk event").isZero();
+        assertThat(cluster.entriesTo.get(id("n4"))).as("n4 is a delta target and a candidate: the key is pushed to it once, not once per list")
+                                                   .isEqualTo(1);
     }
 
     /// A receiver the pusher did not name, yet that already knows itself to be departing, refuses the copy: the pusher's `leaving`
