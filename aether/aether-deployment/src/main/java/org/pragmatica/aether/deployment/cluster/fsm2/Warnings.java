@@ -448,8 +448,7 @@ public sealed interface Warnings {
     /// next successor, which replays the same committed row. A tombstone over a key this node adopted open is not un-adopted: its recovery
     /// is published, and the family's own check closes the key in this node's set (a repeated recovery).
     static ClusterModel onPut(ClusterModel m, Ctx ctx, FsmWarningKey key, FsmWarningValue value) {
-        var late = Lifecycle.isSuspended(m, ctx) && !inFlight(m) && !m.warningRows.get(key)
-                                                                                 .equals(Option.some(value));
+        var late = Lifecycle.isSuspended(m, ctx) && !inFlight(m) && !m.warningRows.get(key).equals(Option.some(value));
 
         indexRow(m, key, value);
 
