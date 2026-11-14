@@ -17,17 +17,13 @@ import org.pragmatica.lang.Result;
 public interface ResourceMigrationSet {
     /// The set's name, e.g. `durable-entity-pg`.
     MigrationSetId id();
-
     /// The highest V this library renders.
     int version();
-
     /// The resource type the set serves, e.g. `DurableEntity`.
     String resourceType();
-
     /// Reads the declaration `section` through the node's configuration `view`: `none()` when the section does not ask for
     /// this set (a different backend), a [MigrationTarget] when it does, a failure when the declaration is refused.
     Result<Option<MigrationTarget>> target(ConfigurationProvider view, String section);
-
     /// Renders the scripts V1..[#version()] for `schema`, every statement qualified by the quoted schema name.
     Result<List<RenderedScript>> render(PgSchemaName schema);
 }

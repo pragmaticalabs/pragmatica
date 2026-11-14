@@ -9,6 +9,7 @@ import java.util.regex.Pattern;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 
+
 /// A PostgreSQL schema name that is safe to splice into DDL (#2100 E-B, design §c.3).
 ///
 /// Grammar `[a-z_][a-z0-9_]{0,62}`: lower case only, at most 63 characters (PostgreSQL's identifier limit), no quote,
@@ -25,7 +26,9 @@ public record PgSchemaName(String value) {
     private static final Set<String> RESERVED_EXACT = Set.of("information_schema", "public");
 
     public static Result<PgSchemaName> pgSchemaName(String raw) {
-        return Verify.ensure(raw, Verify.Is::notNull, PgSchemaNameError.malformed(raw))
+        return Verify.ensure(raw,
+                             Verify.Is::notNull,
+                             PgSchemaNameError.malformed(raw))
                      .flatMap(PgSchemaName::checkGrammar)
                      .flatMap(PgSchemaName::checkNotReserved)
                      .map(PgSchemaName::new);
@@ -45,6 +48,6 @@ public record PgSchemaName(String value) {
     }
 
     private static boolean isUnreserved(String name) {
-        return !name.startsWith(RESERVED_PREFIX) && !RESERVED_EXACT.contains(name);
+        return ! name.startsWith(RESERVED_PREFIX) && !RESERVED_EXACT.contains(name);
     }
 }

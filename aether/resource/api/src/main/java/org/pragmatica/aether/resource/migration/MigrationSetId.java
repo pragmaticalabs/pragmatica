@@ -18,7 +18,9 @@ public record MigrationSetId(String value) {
     private static final Pattern GRAMMAR = Pattern.compile("[a-z][a-z0-9-]{0,62}");
 
     public static Result<MigrationSetId> migrationSetId(String raw) {
-        return Verify.ensure(raw, Verify.Is::notNull, MigrationSetError.invalidSetId(raw))
+        return Verify.ensure(raw,
+                             Verify.Is::notNull,
+                             MigrationSetError.invalidSetId(raw))
                      .flatMap(MigrationSetId::checkGrammar)
                      .map(MigrationSetId::new);
     }

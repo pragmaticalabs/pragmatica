@@ -15,7 +15,9 @@ public record RenderedScript(String filename, String sql) {
     private static final Pattern PLAIN_NAME = Pattern.compile("[^/\\\\\\s]+");
 
     public static Result<RenderedScript> renderedScript(String filename, String sql) {
-        return Verify.ensure(filename, Verify.Is::present, MigrationSetError.invalidScript(filename))
+        return Verify.ensure(filename,
+                             Verify.Is::present,
+                             MigrationSetError.invalidScript(filename))
                      .flatMap(RenderedScript::checkPlainName)
                      .flatMap(name -> checkSql(name, sql))
                      .map(name -> new RenderedScript(name, sql));
@@ -26,7 +28,9 @@ public record RenderedScript(String filename, String sql) {
     }
 
     private static Result<String> checkSql(String filename, String sql) {
-        return Verify.ensure(sql, Verify.Is::present, MigrationSetError.invalidScript(filename))
+        return Verify.ensure(sql,
+                             Verify.Is::present,
+                             MigrationSetError.invalidScript(filename))
                      .map(_ -> filename);
     }
 }

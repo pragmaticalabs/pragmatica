@@ -12,7 +12,9 @@ import org.pragmatica.lang.Verify;
 /// (#2100 E-B, design §a.8). The schema key is `<datasourceSection>@<schema>`, so the section holds no `@`.
 public record MigrationTarget(String datasourceSection, PgSchemaName schema) {
     public static Result<MigrationTarget> migrationTarget(String datasourceSection, PgSchemaName schema) {
-        return Verify.ensure(datasourceSection, Verify.Is::present, MigrationSetError.invalidTarget(datasourceSection))
+        return Verify.ensure(datasourceSection,
+                             Verify.Is::present,
+                             MigrationSetError.invalidTarget(datasourceSection))
                      .flatMap(MigrationTarget::checkNoSeparator)
                      .map(section -> new MigrationTarget(section, schema));
     }
