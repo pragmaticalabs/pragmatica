@@ -941,7 +941,8 @@ public interface StreamConsumerManager {
                               .entrySet()
                               .stream()
                               .filter(entry -> entry.getValue() == SliceState.ACTIVE)
-                              .map(entry -> entry.getKey().id())
+                              .map(entry -> entry.getKey()
+                                                 .id())
                               .sorted()
                               .toList()
                    : List.of();
@@ -952,7 +953,7 @@ public interface StreamConsumerManager {
         /// the stream's config not yet resolved: neither claims a gap nor closes one.
         private void reportCandidateGap(ConsumerDeclaration declaration, List<PartitionAssignment> assignments) {
             var hosts = assignments.isEmpty()
-                        ? List.<String>of()
+                        ? List.<String> of()
                         : activeWithoutLiveCandidate(declaration);
             var identity = declarationIdentity(declaration);
 
