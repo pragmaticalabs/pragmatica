@@ -12,7 +12,7 @@ import org.pragmatica.lang.utils.Causes;
 public sealed interface SchedulerError extends Cause {
     /// The delay cannot be expressed in milliseconds (`Duration.toMillis` overflowed); nothing was written.
     record DelayOutOfRange(Cause origin, String message) implements SchedulerError, Cause.Wrapped {
-        static final Fn1<DelayOutOfRange, Cause> FACTORY = Causes.forOneValue("Delay is out of range",
+        static final Fn1<DelayOutOfRange, Cause> FACTORY = Causes.forOneValue("Delay is out of range: %s",
                                                                               DelayOutOfRange::new);
 
         static DelayOutOfRange delayOutOfRange(Cause origin) {
