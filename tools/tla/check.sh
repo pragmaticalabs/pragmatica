@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Extract <Module> from the Java sources under <roots...> (or, when <root>/<Module>.tla exists, take that standalone
-# model and its <variant>.cfg files as they are), then model-check it with TLC under config <Variant>.
+# Extract <Module> from the Java sources under <roots...>, then model-check it with TLC under config <Variant>.
 # Usage: tools/tla/check.sh <Module> <Variant> <root>...   (env: TLA_JAR, TLC_WORKERS, TLC_OPTS, TLC_JAVA_OPTS, TLA_OUT)
 # Terminal states are normal (bounded acquires), so the deadlock check is off.
 # Every "line N ... of module <Module>" position in TLC's output is annotated with its Java source position.
@@ -9,13 +8,7 @@ module=$1; variant=$2; shift 2
 here=$(cd "$(dirname "$0")" && pwd)
 jar=${TLA_JAR:-$HOME/tools/tla/tla2tools.jar}
 out=${TLA_OUT:-target/tla/$module}
-if [ -f "$1/$module.tla" ]; then
-  # Stand-alone model: <root>/<Module>.tla with <root>/<variant>.cfg files (no Java fragments to extract).
-  mkdir -p "$out"; cp "$1/$module.tla" "$out/$module.tla"
-  for c in "$1"/*.cfg; do cp "$c" "$out/${module}_$(basename "$c")"; done
-else
-  python3 "$here/extract.py" --module "$module" --out "$out" --base . "$@"
-fi
+python3 "$here/extract.py" --module "$module" --out "$out" --base . "$@"
 cfg="$out/${module}_${variant}.cfg"
 [ -n "${TLC_CONST:-}" ] && echo "check: constants overridden: $TLC_CONST"
 [ -f "$cfg" ] || { echo "check: ERROR no config fragment $module:$variant" >&2; exit 2; }

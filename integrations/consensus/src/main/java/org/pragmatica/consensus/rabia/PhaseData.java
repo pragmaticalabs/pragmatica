@@ -320,6 +320,27 @@ final class PhaseData<C extends Command> {
     /// Per Rabia spec: vote V1 if a majority of nodes proposed the same batch, else V0.
     ///
     /// This should only be called after hasQuorumProposals() returns true.
+    ///
+    /// ```tla RabiaSlot:Round1
+    /// Round1(n, s) ==
+    ///     /\ Acts(n) /\ active[n] /\ s \in VoteSlots(n)
+    ///     /\ rnd[n][s] = 0 /\ Own(n, "R1", s, 0) = {}
+    ///     /\ Cardinality(PropsAt(n, s)) >= Q
+    ///     /\ Bcast(n, [t |-> "R1", src |-> n, slot |-> s, rnd |-> 0,
+    ///                  val |-> IF Agreed(n, s) # {} THEN "V1" ELSE "V0"])
+    ///     /\ UNCHANGED <<rnd, dflag, capped, cur, pending, active, fresh, marker, logv, napp, pend0>>
+    /// ```
+    ///
+    /// ```tla RabiaAdopt:Vote
+    /// \* Abstracted to one ballot per id per slot (also evaluateRound2Vote).
+    /// Vote(n, v) ==
+    ///   LET s == Open(n) IN
+    ///   /\ st[n] = "active" /\ s # 0
+    ///   /\ n \in Roster(log[n]) /\ voted[n][s] = None /\ v \in Vals(s)
+    ///   /\ voted' = [voted EXCEPT ![n][s] = v]
+    ///   /\ ballots' = ballots \cup {<<n, s, v, reinc[n]>>}
+    ///   /\ UNCHANGED <<st, log, saved, marker, admit, known, reinc, chosen, crashes, restarts, pauses>>
+    /// ```
     VoteRound1 evaluateInitialVote(NodeId self, int quorumSize) {
         boolean hasQuorumAgreement = agreedValue(quorumSize).isPresent();
         var stateValue = hasQuorumAgreement
@@ -331,6 +352,18 @@ final class PhaseData<C extends Command> {
 
     /// Evaluates the round 2 vote based on round 1 voting results.
     /// Per Rabia spec: if majority voted same value, vote that; else vote VQUESTION.
+    ///
+    /// ```tla RabiaSlot:Round2
+    /// Round2(n, s) ==
+    ///     LET r == rnd[n][s] IN
+    ///     /\ Acts(n) /\ active[n] /\ s \in VoteSlots(n)
+    ///     /\ Own(n, "R1", s, r) # {} /\ Own(n, "R2", s, r) = {}
+    ///     /\ Cardinality(Ballots(n, "R1", s, r)) >= Q
+    ///     /\ Bcast(n, [t |-> "R2", src |-> n, slot |-> s, rnd |-> r,
+    ///                  val |-> IF Count(n, "R1", s, r, "V0") >= Q THEN "V0"
+    ///                          ELSE IF Count(n, "R1", s, r, "V1") >= Q THEN "V1" ELSE "VQ"])
+    ///     /\ UNCHANGED <<rnd, dflag, capped, cur, pending, active, fresh, marker, logv, napp, pend0>>
+    /// ```
     StateValue evaluateRound2Vote(int quorumSize) {
         for (var value : List.of(StateValue.V0, StateValue.V1)) {
             if (countRound1VotesForValue(value) >= quorumSize) {
@@ -364,6 +397,73 @@ final class PhaseData<C extends Command> {
     /// 1. If f+1 nodes voted V1 or V0, decide that value
     /// 2. If any non-question vote seen (but < f+1), carry that value forward WITHOUT decision
     /// 3. If all votes are VQUESTION, carry the common coin into the next binary round
+    ///
+    /// ```tla RabiaSlot:Decide
+    /// \* Includes the carry-forward and the coin (coinFlip, D1).
+    /// Decide(n, s) ==
+    ///     LET r == rnd[n][s]
+    ///         c1 == Count(n, "R2", s, r, "V1")
+    ///         c0 == Count(n, "R2", s, r, "V0")
+    ///     IN
+    ///     /\ Acts(n) /\ active[n] /\ s \in VoteSlots(n)
+    ///     /\ s \notin dflag[n] /\ s \notin capped[n]
+    ///     /\ Own(n, "R2", s, r) # {}
+    ///     /\ Cardinality(Ballots(n, "R2", s, r)) >= Q
+    ///     /\ IF c1 >= F1
+    ///        THEN \* Decided V1 on the agreed value; AwaitingProposal (no step) when none is held yet
+    ///             /\ \E v \in Agreed(n, s) : Commit(n, s, v, TRUE)
+    ///             /\ UNCHANGED <<reg, rnd, capped, active, fresh, marker, pend0>>
+    ///        ELSE IF c0 >= F1
+    ///        THEN /\ Commit(n, s, Empty, TRUE)
+    ///             /\ UNCHANGED <<reg, rnd, capped, active, fresh, marker, pend0>>
+    ///        ELSE \E c \in (IF c1 > 0 THEN {"V1"} ELSE IF c0 > 0 THEN {"V0"} ELSE CoinVals(s, r)) :
+    ///             IF r + 1 < MaxRound
+    ///             THEN /\ rnd' = [rnd EXCEPT ![n][s] = r + 1]
+    ///                  /\ Bcast(n, [t |-> "R1", src |-> n, slot |-> s, rnd |-> r + 1, val |-> c])
+    ///                  /\ UNCHANGED <<dflag, capped, cur, pending, active, fresh, marker, logv, napp, pend0>>
+    ///             ELSE /\ capped' = [capped EXCEPT ![n] = @ \cup {s}]
+    ///                  /\ UNCHANGED <<msgs, reg, has, rnd, dflag, cur, pending, active, fresh, marker, logv, napp, pend0>>
+    /// ```
+    ///
+    /// ```tla RabiaEpoch:Decide
+    /// \* The tally guard is acceptsBallot (RabiaEngine); the "b.e > epoch" branch of Accepts is
+    /// \* deferIfNewerEpoch. Value agreement: PhaseData.agreedValue.
+    /// Decide(n) ==
+    ///     /\ Voter(n)
+    ///     /\ Active(n)
+    ///     /\ \E v \in Cmds \cup BatchVals :
+    ///           /\ Cardinality(Backers(n, v)) >= Quorum(roster[n])
+    ///           /\ Commit(n, v)
+    ///           /\ mixed' = (mixed \/ \E b \in Seen(n) : b.v = v /\ b.e # epoch[n])
+    ///     /\ UNCHANGED <<ballots, requests, jumpers, forged>>
+    /// ```
+    ///
+    /// ```tla RabiaEpoch:DecideNull
+    /// \* V0 only when every installed voter's proposal is in and no value has a quorum: every tallier then holds the same
+    /// \* set, so V0 here can never contradict a V1 elsewhere (a sound under-approximation of weak-MVC's V0 outcomes).
+    /// \* The V0 decision.
+    /// DecideNull(n) ==
+    ///     /\ Voter(n)
+    ///     /\ Active(n)
+    ///     /\ \A m \in roster[n] : \E b \in Seen(n) : b.n = m
+    ///     /\ \A v \in Cmds \cup BatchVals : Cardinality(Backers(n, v)) < Quorum(roster[n])
+    ///     /\ Commit(n, Null)
+    ///     /\ UNCHANGED <<ballots, requests, jumpers, forged, mixed>>
+    /// ```
+    ///
+    /// ```tla RabiaAdopt:Decide
+    /// \* A majority of the slot roster at the exact epoch.
+    /// Decide(n, v) ==
+    ///   LET s == Open(n)
+    ///       RS == Roster(log[n])
+    ///       Q == {k \in RS : \E i \in BOOLEAN : <<k, s, v, i>> \in ballots /\ Counted(n, k, i)}
+    ///   IN
+    ///   /\ st[n] = "active" /\ s # 0 /\ v \in Vals(s)
+    ///   /\ 2 * Cardinality(Q) > Cardinality(RS)
+    ///   /\ log' = [log EXCEPT ![n][s] = v]
+    ///   /\ chosen' = [chosen EXCEPT ![s] = @ \cup {v}]
+    ///   /\ UNCHANGED <<st, saved, marker, admit, known, reinc, voted, ballots, crashes, restarts, pauses>>
+    /// ```
     Round2Outcome<C> processRound2Completion(NodeId self, int fPlusOneSize, int quorumSize) {
         // Case 1: f+1 threshold met - DECIDE
         if (countRound2VotesForValue(StateValue.V1) >= fPlusOneSize) {

@@ -36,12 +36,8 @@ fi
 # Coverage: the configs the extractor writes for each module must be exactly the rows listed for it.
 for module in $(cut -f1 <<<"$rows" | sort -u); do
   root=$(awk -F'\t' -v m="$module" '$1 == m { print $2; exit }' <<<"$rows")
-  if [[ -f $root/$module.tla ]]; then
-    found=$(cd "$root" && ls *.cfg | sed -E 's/\.cfg$//' | sort); mkdir -p "$outroot/$module"
-  else
-    python3 "$here/extract.py" --module "$module" --out "$outroot/$module" --base . "$root" >/dev/null || { echo "run: ERROR extract $module" >&2; exit 2; }
-    found=$(cd "$outroot/$module" && ls "${module}"_*.cfg | sed -E "s/^${module}_(.*)\.cfg$/\1/" | sort)
-  fi
+  python3 "$here/extract.py" --module "$module" --out "$outroot/$module" --base . "$root" >/dev/null || { echo "run: ERROR extract $module" >&2; exit 2; }
+  found=$(cd "$outroot/$module" && ls "${module}"_*.cfg | sed -E "s/^${module}_(.*)\.cfg$/\1/" | sort)
   listed=$(awk -F'\t' -v m="$module" '$1 == m { print $3 }' <<<"$rows" | sort)
   if [[ $found != "$listed" ]]; then
     echo "run: RED $module configs and models.tsv rows differ (< extracted, > listed):"
