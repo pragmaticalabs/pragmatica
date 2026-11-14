@@ -64,6 +64,8 @@ class ClusterTopologyManagerDroppedReplacementTest {
     private final AtomicInteger listings = new AtomicInteger();
     /// The listing calls (1-based) that fail, whatever `listing` holds.
     private final Set<Integer> failingListings = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /// The listing calls (1-based) from which `listing` is switched to the given answer, decided by the fake provider itself on that very call.
+    private final Map<Integer, Promise<List<InstanceInfo>>> listingSwitchesAt = new java.util.concurrent.ConcurrentHashMap<>();
     private final AtomicBoolean terminateRemoves = new AtomicBoolean(true);
     private final AtomicReference<Set<NodeId>> swimAlive = new AtomicReference<>(Set.of());
     private LogCapture appender;
@@ -296,9 +298,9 @@ class ClusterTopologyManagerDroppedReplacementTest {
     /// Listings lag creation: an instance that appears after a few empty listings is found and terminated, not confirmed absent.
     @Test
     void droppedFailedCreate_whoseInstanceAppearsLate_isTerminated() {
+        listingSwitchesAt.put(3, Promise.success(List.of(instance("i-late-9", InstanceStatus.RUNNING))));
+
         ctm.reapDroppedReplacement(DROPPED, "its create failed: timeout", DroppedInstance.MAYBE);
-        await().atMost(Duration.ofSeconds(5)).until(() -> listings.get() >= 3);
-        providerLists(instance("i-late-9", InstanceStatus.RUNNING));
 
         await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
         assertThat(warned("i-late-9")).isTrue();
@@ -462,6 +464,8 @@ class ClusterTopologyManagerDroppedReplacementTest {
             if (failingListings.contains(call)) {
                 return EnvironmentError.operationNotSupported("transient listing failure " + call).promise();
             }
+
+            Option.option(listingSwitchesAt.get(call)).onPresent(listing::set);
 
             return listing.get();
         }
