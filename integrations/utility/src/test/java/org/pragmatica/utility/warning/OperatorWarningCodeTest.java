@@ -546,6 +546,17 @@ class OperatorWarningCodeTest {
             .isEqualTo(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED);
     }
 
+    /// #2600: a slice ACTIVE on no live core or worker is a WARNING; its restoration is the INFO recovery that closes it.
+    @Test
+    void candidateRestored_isInfo_andClosesNoLiveCandidate() {
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE.code()).isEqualTo("stream-consumer-no-live-candidate");
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED.recoveryOf().unwrap())
+            .isEqualTo(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE.hasRecovery()).isTrue();
+    }
+
     /// #1941's resolved counterpart is a recovery, so it is INFO and paired with the not-registered condition.
     @Test
     void registeredAgain_isInfo_andClosesNotRegistered() {
