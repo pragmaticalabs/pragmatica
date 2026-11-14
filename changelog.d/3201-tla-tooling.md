@@ -1,0 +1,3 @@
+### Fixed (2026-11-14 — #3201: TLA+ tooling accepted an unclosed fence before another module's fence; selftest orphan probe renamed by prefix)
+- **`tools/tla/extract.py` consumed an unclosed fragment up to the next fence**, so a fence still open when another module's fence opened was assembled instead of refused. It now fails with "is not closed" naming the fence that opened inside it. `[verified: tools/tla/selftest.sh, probe unclosed-other]`
+- **`tools/tla/selftest.sh` orphan and semantic probes edited the whole file**, so a second module defining the same operator name in that file was edited too. Both now edit only the target fragment. `[verified: tools/tla/selftest.sh Alpha tools/tla/fixtures/two-modules]`

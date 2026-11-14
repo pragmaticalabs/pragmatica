@@ -16,8 +16,12 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
+import org.pragmatica.aether.slice.kvstore.ObservedSliceListener;
 import org.pragmatica.aether.invoke.InvocationContext;
 import org.pragmatica.aether.update.VersionRouting;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -30,7 +34,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-public interface EndpointRegistry {
+/// The invocation endpoints of the cluster's ACTIVE slices. Under LEGACY it is fed the `NodeArtifactKey` rows; under FSM2 it is an
+/// [ObservedSliceListener] on the traffic feed (deployment state machine spec 1.6.1, R-1.6.6), which shows only current rows of nodes without
+/// a committed DEPARTED record: a shown ACTIVE row registers its methods, any other shown row and a row gone unregister the pair.
+public interface EndpointRegistry extends ObservedSliceListener {
     @SuppressWarnings("JBCT-RET-01")
     void registerEndpoint(EndpointKey key, EndpointValue value);
 
@@ -94,7 +101,7 @@ public interface EndpointRegistry {
                 var key = valuePut.cause().key();
                 var value = valuePut.cause().value();
 
-                registerEndpointsFromNodeArtifact(key, value);
+                registerEndpoints(key.nodeId(), key.artifact(), value.instanceNumber(), value.methods());
             }
 
             @Override
@@ -102,30 +109,44 @@ public interface EndpointRegistry {
             public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
                 var key = valueRemove.cause().key();
 
-                unregisterEndpointsForNodeArtifact(key);
+                unregisterEndpoints(key.nodeId(), key.artifact());
             }
 
-            private void registerEndpointsFromNodeArtifact(NodeArtifactKey key, NodeArtifactValue value) {
-                if (value.methods().isEmpty()) {
-                    return;
+            /// FSM2 (spec 1.6.1, R-1.6.6): a shown ACTIVE row registers its methods; any other shown row unregisters the pair.
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onObservedSlice(SliceObservedKey key, SliceObservedValue row) {
+                if (row.state() == SliceObservedState.ACTIVE) {
+                    registerEndpoints(key.nodeId(), key.artifact(), row.instanceNumber(), row.methods());
+                } else {
+                    unregisterEndpoints(key.nodeId(), key.artifact());
                 }
+            }
 
-                for (var methodStr : value.methods()) {
-                    MethodName.methodName(methodStr).onSuccess(methodName -> registerEndpoint(new EndpointKey(key.artifact(),
+            /// FSM2: the row was removed, tombstoned, turned stale or its node departed.
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onObservedSliceGone(SliceObservedKey key) {
+                unregisterEndpoints(key.nodeId(), key.artifact());
+            }
+
+            private void registerEndpoints(NodeId nodeId, Artifact artifact, int instanceNumber, List<String> methods) {
+                for (var methodStr : methods) {
+                    MethodName.methodName(methodStr).onSuccess(methodName -> registerEndpoint(new EndpointKey(artifact,
                                                                                                               methodName,
-                                                                                                              value.instanceNumber()),
-                                                                                              new EndpointValue(key.nodeId())));
+                                                                                                              instanceNumber),
+                                                                                              new EndpointValue(nodeId)));
                 }
             }
 
-            private void unregisterEndpointsForNodeArtifact(NodeArtifactKey key) {
+            private void unregisterEndpoints(NodeId nodeId, Artifact artifact) {
                 var keysToRemove = endpoints.keySet()
                                             .stream()
                                             .filter(ek -> ek.artifact()
-                                                            .equals(key.artifact()))
+                                                            .equals(artifact))
                                             .filter(ek -> endpoints.get(ek) != null && endpoints.get(ek)
                                                                                                 .nodeId()
-                                                                                                .equals(key.nodeId()))
+                                                                                                .equals(nodeId))
                                             .toList();
 
                 keysToRemove.forEach(this::unregisterEndpoint);

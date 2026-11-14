@@ -30,6 +30,7 @@ import org.pragmatica.aether.deployment.AuditLog;
 import org.pragmatica.aether.config.cluster.CommunityPolicy;
 import org.pragmatica.aether.deployment.cluster.AllocationPool;
 import org.pragmatica.aether.deployment.cluster.CommunityGrowthPolicy;
+import org.pragmatica.aether.deployment.cluster.community.CommunityLiveMembers;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;

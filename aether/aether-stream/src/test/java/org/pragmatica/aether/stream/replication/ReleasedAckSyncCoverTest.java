@@ -76,7 +76,7 @@ class ReleasedAckSyncCoverTest {
         replica.createStream(StreamConfig.streamConfig(STREAM));
         replica.ownerEpochSource((_, _) -> committed.get());
         replica.placementRoleSupplier((_, _) -> Role.REPLICA);
-        replica.epochStarts((_, _) -> List.of(new EpochStart(E2, E2_START)));
+        replica.epochStarts((_, _) -> List.of(EpochStart.epochStart(E2, E2_START, Option.none())));
         handler = replicationReceiveHandler(self,
                                             replica::appendRecovered,
                                             replica::nextExpectedOffset,

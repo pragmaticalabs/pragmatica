@@ -150,7 +150,7 @@ class DlqStreamSinkReadFailuresTest {
         var epoch = Epoch.epoch(1L, 1L, 2L);
 
         manager.ownerEpochSource((_, _) -> epoch);
-        manager.epochStarts((_, _) -> List.of(new EpochStart(epoch, 2L)));
+        manager.epochStarts((_, _) -> List.of(EpochStart.epochStart(epoch, 2L, Option.none())));
         manager.placementRoleSupplier((_, _) -> Role.REPLICA);
 
         sink.read(TOPIC_STREAM, 10)

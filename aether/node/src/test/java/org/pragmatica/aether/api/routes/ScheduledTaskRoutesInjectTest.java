@@ -22,6 +22,7 @@ import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.SliceRowSource;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
@@ -520,6 +521,25 @@ class ScheduledTaskRoutesInjectTest {
         private static final NodeId REGISTERED_BY = new NodeId("node-registrant");
         private static final NodeId ACTIVE_HOST = new NodeId("node-active-host");
 
+        /// The route hands `selectHostingHint` the NODE's own row source: with an FSM2 node the refused caller is pointed at the node holding the
+        /// CURRENT ACTIVE observed row (a legacy scan sees no `NodeArtifactKey` rows there and would name the registrant).
+        @Test
+        void inject_refusedOffTheHost_pointsAtTheNodeHoldingTheObservedActiveRow() {
+            registry.addTask(SECTION, ARTIFACT, METHOD);
+            var remote = new RecordingInvoker();
+            var kvStore = new TestKVStore();
+
+            remote.local = false;
+            kvStore.putObserved(ACTIVE_HOST, artifact(ARTIFACT), AetherValue.SliceObservedState.ACTIVE);
+            node.store = kvStore;
+            node.rows = SliceRowSource.observed(_ -> 0L);
+            var result = invokeInject(routesWith(remote), new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD)).await();
+
+            assertTrue(result.isFailure());
+            result.onSuccess(_ -> fail("the inject must be refused off the hosting node"))
+                  .onFailure(cause -> assertThat(cause.message()).contains("retry against node " + ACTIVE_HOST.id()));
+        }
+
         @Test
         void selectHostingHint_prefersActivePlacement_overRegisteredBy() {
             var kvStore = new TestKVStore();
@@ -527,7 +547,7 @@ class ScheduledTaskRoutesInjectTest {
             kvStore.putNodeArtifact(ACTIVE_HOST, artifact(ARTIFACT), SliceState.ACTIVE);
             kvStore.putNodeArtifact(REGISTERED_BY, artifact(ARTIFACT), SliceState.UNLOAD);
 
-            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SELF, artifact(ARTIFACT), REGISTERED_BY);
+            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SliceRowSource.legacy(), SELF, artifact(ARTIFACT), REGISTERED_BY);
 
             assertEquals(ACTIVE_HOST.id(), hint,
                           "Hint must point at the node holding the ACTIVE placement, not registration history");
@@ -541,7 +561,7 @@ class ScheduledTaskRoutesInjectTest {
             kvStore.putNodeArtifact(SELF, artifact(ARTIFACT), SliceState.ACTIVE);
             kvStore.putNodeArtifact(ACTIVE_HOST, artifact(ARTIFACT), SliceState.ACTIVE);
 
-            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SELF, artifact(ARTIFACT), REGISTERED_BY);
+            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SliceRowSource.legacy(), SELF, artifact(ARTIFACT), REGISTERED_BY);
 
             assertEquals(ACTIVE_HOST.id(), hint, "Hint must exclude the receiving node");
         }
@@ -552,7 +572,7 @@ class ScheduledTaskRoutesInjectTest {
             var otherArtifact = artifact("org.example:other:1.0.0");
             kvStore.putNodeArtifact(ACTIVE_HOST, otherArtifact, SliceState.ACTIVE);
 
-            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SELF, artifact(ARTIFACT), REGISTERED_BY);
+            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SliceRowSource.legacy(), SELF, artifact(ARTIFACT), REGISTERED_BY);
 
             assertEquals(REGISTERED_BY.id(), hint,
                           "ACTIVE placement for a different artifact must not win the hint");
@@ -565,7 +585,7 @@ class ScheduledTaskRoutesInjectTest {
             kvStore.putNodeArtifact(ACTIVE_HOST, artifact(ARTIFACT), SliceState.ACTIVATING);
             kvStore.putNodeArtifact(REGISTERED_BY, artifact(ARTIFACT), SliceState.LOADED);
 
-            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SELF, artifact(ARTIFACT), REGISTERED_BY);
+            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SliceRowSource.legacy(), SELF, artifact(ARTIFACT), REGISTERED_BY);
 
             assertEquals(REGISTERED_BY.id(), hint,
                           "With no ACTIVE placement the hint must fall back to registeredBy");
@@ -575,7 +595,7 @@ class ScheduledTaskRoutesInjectTest {
         void selectHostingHint_fallsBackToRegisteredBy_whenStoreEmpty() {
             var kvStore = new TestKVStore();
 
-            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SELF, artifact(ARTIFACT), REGISTERED_BY);
+            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SliceRowSource.legacy(), SELF, artifact(ARTIFACT), REGISTERED_BY);
 
             assertEquals(REGISTERED_BY.id(), hint, "Empty placement must never yield an empty hint");
         }
@@ -696,6 +716,7 @@ class ScheduledTaskRoutesInjectTest {
     private static final class RecordingInvoker {
         final List<Invocation> invocations = new CopyOnWriteArrayList<>();
         Cause failure = null;
+        boolean local = true;
 
         SliceInvoker asSliceInvoker() {
             return (SliceInvoker) Proxy.newProxyInstance(
@@ -722,7 +743,7 @@ class ScheduledTaskRoutesInjectTest {
                     // remote-routing branch is exercised in a dedicated integration test
                     // (test-scheduled-tasks.sh routes inject directly to the hosting node).
                     if ("hasLocalSlice".equals(method.getName())) {
-                        return Boolean.TRUE;
+                        return local;
                     }
                     throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
                 }
@@ -732,6 +753,8 @@ class ScheduledTaskRoutesInjectTest {
 
     private static final class RecordingNode {
         final List<List<KVCommand<AetherKey>>> commands = new CopyOnWriteArrayList<>();
+        KVStore<AetherKey, AetherValue> store;
+        SliceRowSource rows = SliceRowSource.legacy();
 
         ManageableNode asManageableNode() {
             return (ManageableNode) Proxy.newProxyInstance(
@@ -747,6 +770,12 @@ class ScheduledTaskRoutesInjectTest {
                     if ("self".equals(method.getName())) {
                         return SELF_NODE;
                     }
+                    if ("kvStore".equals(method.getName())) {
+                        return store;
+                    }
+                    if ("sliceRows".equals(method.getName())) {
+                        return rows;
+                    }
                     throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
                 }
             );
@@ -761,6 +790,11 @@ class ScheduledTaskRoutesInjectTest {
 
         TestKVStore() {
             super(null, null, null);
+        }
+
+        void putObserved(NodeId nodeId, Artifact artifact, AetherValue.SliceObservedState state) {
+            storage.put(AetherKey.SliceObservedKey.sliceObservedKey(nodeId, artifact),
+                        new AetherValue.SliceObservedValue(state, 1L, new AetherValue.Generation(1L, 1L), new AetherValue.ProcessIncarnation(1L, 0L), Option.none(), false, 0, List.of(), 0L));
         }
 
         void putNodeArtifact(NodeId nodeId, Artifact artifact, SliceState state) {

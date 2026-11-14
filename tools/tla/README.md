@@ -15,6 +15,7 @@ and constants, e.g. "SharedPools `code`, 2 keys, 2 scopes, MaxAcquires 3: no vio
 |---|---|---|---|
 | `SharedPools` | node-shared resource pools: acquire, release, `closeAll` (#2978) | `aether/resource/api/.../resource/package-info.java` | `SharedPools.java`, `SpiResourceProvider.java` |
 | `Stalled` | owner catch-up all-stalled warning, level-triggered (#2967) | `aether/aether-stream/.../replication/package-info.java` | `PartitionBackfill.java` |
+| `Fsm2Leader` | FSM2 leader: open-warning set, leader fence, `Rebuild` inherit, publish after commit (#2763, #2834, #3085; finding #3160) | `aether/aether-deployment/.../cluster/fsm2/package-info.java` | `Lifecycle.java`, `Warnings.java`, `Reconcile.java`, `Failures.java`, `Outbox.java`, `ClusterFsm.java` |
 
 Scope (owner ruling 2026-11-13): protocols with a written race or ordering ruling (consensus, FSM2 leader and
 reconcile, stream ownership, catch-up and ISR, SharedPools, quorum re-admission). Not mandated elsewhere.
@@ -84,6 +85,7 @@ tools/tla/run.sh [small|full|sim] [module-regex]      # every config with its ex
 tools/tla/runselftest.sh                              # run.sh's own verdict logic, on a fixture with wrong expectations
 tools/tla/check.sh <Module> <Variant> <source roots...>  # one config
 tools/tla/selftest.sh <Module> <source root>           # the extractor's own checks, on a copy of the root
+tools/tla/selftest.sh Alpha tools/tla/fixtures/two-modules   # same-name operators of two modules in one file: probes must edit only the target
 # e.g.
 tools/tla/run.sh small SharedPools
 tools/tla/check.sh SharedPools leak aether/resource/api/src/main/java

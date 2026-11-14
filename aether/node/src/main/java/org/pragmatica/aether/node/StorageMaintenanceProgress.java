@@ -30,14 +30,17 @@ public record StorageMaintenanceProgress(long lastRunMs,
         return new StorageMaintenanceProgress(0, Outcome.NEVER_RUN, 0, Option.none(), 0, 0, 0);
     }
 
-    /// The progress after a tick that ended at `nowMs` with the demotion and garbage-collection pass results given, and the
-    /// result of the promotion cycle that ended since the previous tick, none when no cycle ended in between.
+    /// The progress after a tick that ended at `nowMs` with the demotion, garbage-collection and pending-retry pass results
+    /// given (the retry counts only as a failure, it moves nothing), and the result of the promotion cycle that ended since the
+    /// previous tick, none when no cycle ended in between.
     StorageMaintenanceProgress after(long nowMs,
                                      Result<Integer> demotion,
                                      Option<Result<Integer>> promotion,
-                                     Result<Integer> collection) {
+                                     Result<Integer> collection,
+                                     Result<Integer> retry) {
         var failure = failureOf(demotion).orElse(() -> promotion.flatMap(StorageMaintenanceProgress::failureOf))
-                               .orElse(() -> failureOf(collection));
+                               .orElse(() -> failureOf(collection))
+                               .orElse(() -> failureOf(retry));
 
         return new StorageMaintenanceProgress(nowMs,
                                               failure.fold(() -> Outcome.OK, _ -> Outcome.FAILED),

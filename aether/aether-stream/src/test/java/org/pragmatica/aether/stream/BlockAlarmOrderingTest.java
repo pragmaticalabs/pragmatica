@@ -253,7 +253,7 @@ class BlockAlarmOrderingTest {
     }
 
     private static StreamPartitionOwnershipValue withStart(NodeId owner) {
-        return new StreamPartitionOwnershipValue(owner, EPOCH, 3L, HlcTimestamp.ZERO, List.of(owner), 1L, false, List.of(), List.of(new EpochStart(EPOCH, 5L)));
+        return new StreamPartitionOwnershipValue(owner, EPOCH, 3L, HlcTimestamp.ZERO, List.of(owner), 1L, false, List.of(), List.of(EpochStart.epochStart(EPOCH, 5L, Option.none())));
     }
 
     /// An ISR that does not name this node: a divergent peer keeps blocking instead of being relaxed.

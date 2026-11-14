@@ -44,6 +44,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.SliceRowSource;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
@@ -1011,6 +1012,8 @@ class BlueprintServiceTest {
         private record LiveManageableNode(BlueprintService blueprintService, DeploymentMap deploymentMap) implements ManageableNode {
             @Override
             public NodeId self() { return unsupported("self"); }
+            @Override
+            public SliceRowSource sliceRows() { return SliceRowSource.legacy(); }
             @Override
             public KVStore<AetherKey, AetherValue> kvStore() { return unsupported("kvStore"); }
             @Override

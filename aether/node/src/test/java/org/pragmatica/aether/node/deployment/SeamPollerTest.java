@@ -42,6 +42,7 @@ class SeamPollerTest {
     private final AtomicReference<Set<NodeId>> counted = new AtomicReference<>(Set.of(SELF, PEER));
     private final AtomicReference<Option<Set<NodeId>>> coreView = new AtomicReference<>(Option.none());
     private final AtomicReference<Option<Set<NodeId>>> localAlive = new AtomicReference<>(Option.none());
+    private final AtomicReference<Map<NodeId, String>> memberSources = new AtomicReference<>(Map.of());
     private final ManualClock clock = new ManualClock();
     private final SeamPoller.Sink sink = new SeamPoller.Sink() {
         @Override
@@ -67,13 +68,32 @@ class SeamPollerTest {
                                                             coreView::get,
                                                             localAlive::get,
                                                             Set::of,
-                                                            Map::of,
+                                                            memberSources::get,
                                                             Map::of,
                                                             Set::of,
                                                             counted::get,
                                                             node -> tokens.getOrDefault(node, 0L)),
                                      sink,
                                      clock);
+    }
+
+    // -- #3172 ------------------------------------------------------------------------------------------------------
+    /// Red when: the per-node read returns another node's label (for example the first one in the map) instead of the label keyed by the node asked about.
+    @Test
+    void memberSource_readsTheLabelKeyedByTheNodeAskedAbout() {
+        memberSources.set(Map.of(SELF, "us", PEER, "eu"));
+        var poller = poller();
+
+        assertThat(poller.memberSource(SELF)).isEqualTo(Option.some("us"));
+        assertThat(poller.memberSource(PEER)).isEqualTo(Option.some("eu"));
+    }
+
+    /// Red when: a node with no label is given another node's label.
+    @Test
+    void memberSource_isAbsent_forANodeWithoutALabel() {
+        memberSources.set(Map.of(SELF, "us"));
+
+        assertThat(poller().memberSource(OTHER)).isEqualTo(Option.none());
     }
 
     // -- W-14, MT-13a ---------------------------------------------------------------------------------------------------
