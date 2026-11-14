@@ -133,7 +133,7 @@ class SummaryStep(unittest.TestCase):
 
 
 class NotifyJob(unittest.TestCase):
-    def notify(self, result, state, open_issue=None):
+    def notify(self, result, state, open_issue=None, conduit=None):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             (work / "bin").mkdir()
@@ -143,6 +143,9 @@ class NotifyJob(unittest.TestCase):
             gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
             env = {**os.environ, "PATH": f"{work / 'bin'}:{os.environ['PATH']}", "STUB_LOG": str(work / "log"), "STUB_OPEN": open_issue or "",
                    "GH_REPO": "r", "RUN_URL": "https://x/run/1", "SHA": "abc", "RESULT": result, "NEW_REDS": "A.x", "KNOWN_REDS": "", "REASON": "r"}
+
+            if conduit is not None:
+                env["CONDUIT_RESULT"] = conduit
 
             if state is not None:
                 env["STATE"] = state
@@ -189,6 +192,18 @@ class NotifyJob(unittest.TestCase):
 
     def test_a_failed_job_with_readable_reports_never_closes(self):
         self.assertNotIn("issue close", self.notify("failure", "ok", "42"))
+
+    def test_a_failed_or_cancelled_conduit_acceptance_job_keeps_an_otherwise_green_night_open(self):
+        # #2898: the acceptance job is part of the night. Green heavy tests + a red suite must comment, never close, and say so in the title.
+        for conduit in ("failure", "cancelled"):
+            log = self.notify("success", "ok", "42", conduit)
+            self.assertNotIn("issue close", log, conduit)
+            self.assertIn("gh issue comment 42", log, conduit)
+            self.assertIn("gh issue edit 42 --title Heavy nightly: new reds", log, conduit)
+
+    def test_a_green_or_skipped_conduit_acceptance_job_still_lets_a_green_night_close(self):
+        for conduit in ("success", "skipped"):
+            self.assertIn("gh issue close 42", self.notify("success", "ok", "42", conduit), conduit)
 
 
 if __name__ == "__main__":
