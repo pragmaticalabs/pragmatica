@@ -147,7 +147,10 @@ class RedisConnectionTest {
 
         connection = RedisConnection.redisConnection(cfg).await(WAIT).unwrap();
 
-        assertThat(kind(connection.incr("a").await(WAIT))).isEqualTo("Timeout");
+        var timedOut = connection.incr("a").await(WAIT);
+
+        assertThat(kind(timedOut)).isEqualTo("Timeout");
+        assertThat(TestKinds.message(timedOut)).isEqualTo("Redis command timed out after 200 ms");
         assertThat(kind(connection.incr("b").await(WAIT))).isEqualTo("ConnectionLost");
     }
 
