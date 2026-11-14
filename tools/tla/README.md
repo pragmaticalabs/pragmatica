@@ -85,6 +85,7 @@ tools/tla/run.sh [small|full|sim] [module-regex]      # every config with its ex
 tools/tla/runselftest.sh                              # run.sh's own verdict logic, on a fixture with wrong expectations
 tools/tla/check.sh <Module> <Variant> <source roots...>  # one config
 tools/tla/selftest.sh <Module> <source root>           # the extractor's own checks, on a copy of the root
+tools/tla/selftest.sh Alpha tools/tla/fixtures/two-modules   # same-name operators of two modules in one file: probes must edit only the target
 # e.g.
 tools/tla/run.sh small SharedPools
 tools/tla/check.sh SharedPools leak aether/resource/api/src/main/java
