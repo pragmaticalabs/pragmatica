@@ -220,13 +220,11 @@ final class MbWorld {
     }
 
     /// Activate with a DEPARTED worker record still carrying its directive: since #3193 C17b retires that directive, so the state
-    /// exists only until C17b commits. Its submission is lost here, which models the join arriving first.
+    /// exists only until C17b commits. Only the CLEANUP submission is lost here, which models the join arriving first.
     MbWorld activateBeforeC17b() {
-        var before = h.policy;
-
-        h.policy = FsmHarness.SettlePolicy.LOSE;
+        h.loseKinds = java.util.Set.of(ClusterModel.SubmitKind.CLEANUP);
         h.activate();
-        h.policy = before;
+        h.loseKinds = java.util.Set.of();
 
         return this;
     }
