@@ -198,8 +198,10 @@ jobs:
         id: plan
         run: |
           python3 -B tools/ci-test-groups.py modules --group "${{ matrix.group }}" | tr ',' '\n' > "test-group-${{ matrix.group }}.txt"
-          echo "modules=$(python3 -B tools/ci-test-groups.py modules --group "${{ matrix.group }}")" >> "$GITHUB_OUTPUT"
-          echo "examples=$(python3 -B tools/ci-test-groups.py has-examples --group "${{ matrix.group }}")" >> "$GITHUB_OUTPUT"
+          modules=$(python3 -B tools/ci-test-groups.py modules --group "${{ matrix.group }}")
+          examples=$(python3 -B tools/ci-test-groups.py has-examples --group "${{ matrix.group }}")
+          echo "modules=$modules" >> "$GITHUB_OUTPUT"
+          echo "examples=$examples" >> "$GITHUB_OUTPUT"
 
       - name: Install this group's upstream modules
         run: mvn install -B -DskipTests -pl "${{ steps.plan.outputs.modules }}" -am
@@ -389,7 +391,8 @@ jobs:
         id: plan
         run: |
           python3 -B -m unittest discover -s tools -p test_ember_shard.py
-          echo "classes=$(python3 -B tools/ember-shard.py --shards "$SHARDS" --index "$SHARD")" >> "$GITHUB_OUTPUT"
+          classes=$(python3 -B tools/ember-shard.py --shards "$SHARDS" --index "$SHARD")
+          echo "classes=$classes" >> "$GITHUB_OUTPUT"
 
       - name: Install Ember's upstream modules
         run: mvn install -B -DskipTests -pl aether/ember -am
@@ -448,7 +451,8 @@ jobs:
         id: plan
         run: |
           python3 -B -m unittest discover -s tools -p test_consensus_shard.py
-          echo "classes=$(python3 -B tools/ember-shard.py --module consensus --shards "$SHARDS" --index "$SHARD")" >> "$GITHUB_OUTPUT"
+          classes=$(python3 -B tools/ember-shard.py --module consensus --shards "$SHARDS" --index "$SHARD")
+          echo "classes=$classes" >> "$GITHUB_OUTPUT"
 
       - name: Install Consensus's upstream modules
         run: mvn install -B -DskipTests -pl integrations/consensus -am

@@ -18,4 +18,20 @@ class MemberDescriptorRoleClassificationTest {
         assertThat(MemberDescriptor.isCoreRole("spot")).isFalse();
         assertThat(MemberDescriptor.isCoreRole("other")).isFalse();
     }
+
+    /// #2600: the worker role match is case-insensitive, like `isCore`. Red under `equals` for `worker` or for `spot`.
+    @Test
+    void isWorker_matchesWorkerAndSpotIgnoringCase() {
+        assertThat(descriptorWithRole("Worker").isWorker()).isTrue();
+        assertThat(descriptorWithRole("SPOT").isWorker()).isTrue();
+        assertThat(descriptorWithRole("worker").isWorker()).isTrue();
+        assertThat(descriptorWithRole("spot").isWorker()).isTrue();
+        assertThat(descriptorWithRole("CORE").isWorker()).isFalse();
+        assertThat(descriptorWithRole("").isWorker()).isFalse();
+        assertThat(descriptorWithRole("CORE").isCore()).as("isCore is case-insensitive too").isTrue();
+    }
+
+    private static MemberDescriptor descriptorWithRole(String role) {
+        return new MemberDescriptor(org.pragmatica.lang.Option.none(), role, "", "");
+    }
 }

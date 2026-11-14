@@ -30,7 +30,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-@Command(name = "apply", description = {"Apply cluster configuration changes", "", "With --cluster <name>, the file's [cluster] name is rewritten to <name> before it is applied,", "as 'aether cluster bootstrap --cluster' does, so a cluster bootstrapped under an override accepts its own TOML."})
+@Command(name = "apply", description = {"Apply cluster configuration changes (scale-only in this release)", "", "Applies scale changes only: a role's worker/core count going up or down. Rollout of other changes", "(adding, modifying or removing sources or roles) is not available in this release.", "", "With --cluster <name>, the file's [cluster] name is rewritten to <name> before it is applied,", "as 'aether cluster bootstrap --cluster' does, so a cluster bootstrapped under an override accepts its own TOML."})
 @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"})
 class ClusterApplyCommand implements Callable<Integer> {
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();

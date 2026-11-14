@@ -177,9 +177,10 @@ Every eligible node terminates TLS for every pool IP, because any of them can be
 
 ## 6. Adding and removing pool IPs
 
-> rc4's `aether cluster apply` rejects source-field changes. Decided for rc5 (spec decision Q3):
-> `apply` accepts pool changes as a leader-committed config write, and on Hetzner new aliases reach
-> existing nodes by rolling replacement. The procedure below is written for that.
+> In rc5, `aether cluster apply` is scale-only and rejects source-field changes, so the pool
+> changes below are not available through `apply` in this release. The procedure is written for the
+> intended design (spec decision Q3): `apply` accepts pool changes as a leader-committed config
+> write, and on Hetzner new aliases reach existing nodes by rolling replacement.
 
 **Add an IP** (DNS goes last):
 
