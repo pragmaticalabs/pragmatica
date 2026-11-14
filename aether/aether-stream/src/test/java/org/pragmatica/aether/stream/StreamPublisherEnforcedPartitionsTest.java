@@ -90,6 +90,33 @@ class StreamPublisherEnforcedPartitionsTest {
         }
     }
 
+    /// The republish that keeps the life's count tells the operator the declared one was not applied (one WARN naming
+    /// the stream and both counts); a declaration equal to the life's count is silent.
+    @Test
+    void declaredOverAnUncommittedLife_republishWarnsOnceNamingBothCounts_andEqualCountIsSilent() {
+        assertThat(republishWarnings(8)).hasSize(1)
+                                        .allSatisfy(message -> assertThat(message).contains(STREAM, "declares 8", "existing life has 4"));
+        assertThat(republishWarnings(ENFORCED)).isEmpty();
+    }
+
+    private static List<String> republishWarnings(int declared) {
+        var holder = new StreamPartitionManager[1];
+        var node = uncommittedLife(holder);
+        var manager = holder[0];
+
+        try (var log = LogCapture.capture(StreamPartitionManager.class, Level.WARN, true)) {
+            node.deliverCommittedTo(manager::onStreamConfigPut);
+            provision(manager, declared);
+            return log.events()
+                      .stream()
+                      .map(event -> event.getMessage().getFormattedMessage())
+                      .filter(message -> message.contains("existing life has"))
+                      .toList();
+        } finally {
+            manager.close();
+        }
+    }
+
     /// #3263 review item 2: a non-system stream whose committed count this node does not hold is REFUSED retriably, not
     /// routed by the declared count.
     @Test
