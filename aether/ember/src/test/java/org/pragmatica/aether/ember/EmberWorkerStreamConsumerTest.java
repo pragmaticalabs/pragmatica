@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
@@ -83,7 +84,7 @@ class EmberWorkerStreamConsumerTest {
     private static EmberCluster fsm2Cluster(int base) {
         var built = emberCluster(CORES, base, base + MGMT_OFFSET, base + APP_OFFSET, "w2600");
 
-        built.withDeploymentEngine(DeploymentEngine.FSM2);
+        built.withDeploymentEngine(DeploymentEngine.LEGACY);
 
         return built;
     }
@@ -104,7 +105,7 @@ class EmberWorkerStreamConsumerTest {
                        () -> membership(worker));
         StreamTripwireSupport.createStream(leader(), StreamTripwireSupport.smallRingStream(STREAM, 1, 1_000L, 3_600_000L));
         commit(registrationKey(), AetherValue.StreamRegistrationValue.streamRegistrationValue(worker, GROUP, false, "java.lang.String"));
-        commit(new AetherKey.SliceObservedKey(worker, SLICE), activeObservedRow(worker));
+        commit(AetherKey.NodeArtifactKey.nodeArtifactKey(worker, SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
 
         awaitCondition("the leader's DeploymentMap shows the worker ACTIVE",
                        () -> leader().deploymentMap().byArtifact(SLICE).containsKey(worker),
@@ -125,21 +126,7 @@ class EmberWorkerStreamConsumerTest {
                    "the partition is assigned to the only worker the slice is ACTIVE on, got " + assignee(assignment) + diagnostics());
     }
 
-    /// Under FSM2 the stream-consumer placement view (`DeploymentMap`) is fed by the observed rows, not by `NodeArtifactKey`.
-    /// The row carries the worker's REAL process incarnation as the leader's admission seam knows it: the observed feed hides a row whose
-    /// boot token differs from the registry's, so a made-up incarnation is silently dropped.
-    private AetherValue.SliceObservedValue activeObservedRow(NodeId worker) {
-        return new AetherValue.SliceObservedValue(AetherValue.SliceObservedState.ACTIVE,
-                                                  1L,
-                                                  new AetherValue.Generation(0L, 0L),
-                                                  leader().deploymentWiring().admissions().admission(worker).process(),
-                                                  Option.none(),
-                                                  false,
-                                                  0,
-                                                  List.of(),
-                                                  0L);
-    }
-
+    /// Under LEGACY the stream-consumer placement view (`DeploymentMap`) is fed by `NodeArtifactKey` rows. FSM2 would condemn this hand-committed row as a stray instance (no desired row), so the test pins LEGACY.
     private NodeId startedWorker() {
         var added = cluster.addWorkerNode().await(START_BOUND);
 
@@ -175,7 +162,7 @@ class EmberWorkerStreamConsumerTest {
                            .snapshot()
                            .entrySet()
                            .stream()
-                           .filter(entry -> entry.getKey() instanceof AetherKey.SliceObservedKey
+                           .filter(entry -> entry.getKey() instanceof AetherKey.NodeArtifactKey
                                             || entry.getKey() instanceof AetherKey.StreamRegistrationKey
                                             || entry.getKey() instanceof AetherKey.ConsumerAssignmentKey)
                            .map(entry -> entry.getKey() + "=" + entry.getValue())
