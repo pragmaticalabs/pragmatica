@@ -4,8 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.wiring;
 
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.AfterEach;
@@ -120,5 +122,27 @@ class PendingUnpublishExpiryTest {
         await().atMost(Duration.ofSeconds(5)).until(published::isResolved);
 
         await().during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(2)).until(warnings::isEmpty);
+    }
+
+    /// Kills "the settle callback never clears `warned`": a cleared entry is behaviourally invisible (the settled removal cannot expire again),
+    /// so the only observable is the set itself, read reflectively like `PendingUnpublishOrderingTest` reads the pending map; a production
+    /// accessor would put a test-only surface into the runtime.
+    @Test
+    void settledAfterExpiry_isDroppedFromTheWarnedSet() throws Exception {
+        var removal = suspendWithRemoval();
+
+        await().atMost(Duration.ofSeconds(5)).until(run(LocalStep.PUBLISH_ROUTES)::isResolved);
+        await().atMost(Duration.ofSeconds(2)).until(() -> count(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_EXPIRED) == 1);
+        assertThat(warnedEntries()).as("expired removal is tracked").hasSize(1);
+        removal.succeed(Unit.unit());
+        await().atMost(Duration.ofSeconds(2)).until(() -> warnedEntries().isEmpty());
+    }
+
+    private Set<?> warnedEntries() throws ReflectiveOperationException {
+        Field field = SliceRuntimeAdapter.class.getDeclaredField("warned");
+
+        field.setAccessible(true);
+
+        return (Set<?>) field.get(adapter);
     }
 }
