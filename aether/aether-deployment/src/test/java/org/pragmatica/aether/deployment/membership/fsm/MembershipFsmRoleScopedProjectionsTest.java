@@ -64,6 +64,40 @@ class MembershipFsmRoleScopedProjectionsTest {
                .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(id, "Dead"));
     }
 
+    /// #2600: the worker-tier counterpart of the core projection, read by the stream consumer candidate set.
+    @Nested
+    class WorkerCountedMembers {
+        @Test
+        void workerCountedMembers_includesWorkerAndSpotOnly() {
+            var manager = activeManager();
+            var spot = new NodeId("node-spot-e");
+
+            promoteCore(manager, CORE_A);
+            promoteWorker(manager, WORKER_B);
+            promoteToMember(manager, spot);
+            manager.onMemberDescriptor(labeledInfo(spot, Map.of(NodeInfo.LABEL_ROLE, "spot")));
+            promoteToMember(manager, UNLABELED_D);
+
+            assertThat(manager.workerCountedMembers()).as("worker and spot roles only: not core, not unknown")
+                                                      .containsExactlyInAnyOrder(WORKER_B, spot);
+        }
+
+        @Test
+        void workerCountedMembers_includesSuspectWorker_excludesDeadWorker() {
+            var manager = activeManager();
+
+            promoteWorker(manager, WORKER_B);
+            promoteWorker(manager, WORKER_C);
+            manager.onSwimSuspect(WORKER_B, 2L);
+            manager.onSwimFaulty(WORKER_C, 3L);
+            manager.onLivenessGone(WORKER_C);
+            awaitDead(manager, WORKER_C);
+
+            assertThat(manager.memberStates()).containsEntry(WORKER_B, "Suspect");
+            assertThat(manager.workerCountedMembers()).containsExactly(WORKER_B);
+        }
+    }
+
     @Nested
     class CoreCountedMembers {
         @Test
