@@ -279,6 +279,25 @@ class AppHttpServerIngestGateTest {
         assertThat(served.get()).isEqualTo(1);
     }
 
+    /// #3206: the probe flushes what its writer wrote. The writer waits until the connection is quiet, then only `write`s:
+    /// nothing else on the connection flushes the stream, so the headers leave only if the probe flushes; without that,
+    /// the request never reaches the server and the exchange times out.
+    @Test
+    void aRequestWrittenWithoutAFlush_isStillSentAndAnswered401_overHttp3() throws Exception {
+        start(Protocol.H3, defaults(), 10 * MIB);
+
+        var answer = H3Probe.exchange(port, stream -> {
+            var headers = H3Probe.requestHeaders(port, "POST");
+
+            headers.headers().path("/api/big/x").add("content-length", "4096");
+            Thread.sleep(1500);
+            stream.write(headers);
+        });
+
+        assertThat(answer.statusCode()).isEqualTo(401);
+        assertThat(served.get()).as("the refused request never reached the slice").isZero();
+    }
+
     /// A protected route on a listener with no validator configured (`security_mode = "none"`) is refused on its headers as
     /// well: the answer is the handler's own, and the body is not read.
     @Test

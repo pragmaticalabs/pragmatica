@@ -135,8 +135,8 @@ class IncarnationTest {
         assertThat(Rows.occupies(w.h.model(), MbWorld.pair(W1, ORDERS))).isTrue();
         assertThat(w.h.submitsBesides(SubmitKind.WARNINGS).stream().filter(s -> s.kind() != SubmitKind.COMMUNITY)).as("nothing is written for the rows")
                   .isEmpty();
-        assertThat(w.h.warningPuts()).as("the unjudgeable worker class is the only open warning persisted")
-                  .containsExactly(new FsmWarningKey("worker-absence-unjudgeable", "worker"));
+        assertThat(w.h.warningPuts()).as("the unjudgeable worker class is the only open warning persisted (marker write, then clear write, #3160)")
+                  .containsExactly(new FsmWarningKey("worker-absence-unjudgeable", "worker"), new FsmWarningKey("worker-absence-unjudgeable", "worker"));
     }
 
     // NT-123 (d)
@@ -217,8 +217,8 @@ class IncarnationTest {
         assertThat(w.h.submitsBesides(SubmitKind.WARNINGS).stream().filter(s -> s.kind() != SubmitKind.COMMUNITY)).as(arm
                                                                                            + ": no goal, no removal, nothing submitted")
                   .isEmpty();
-        assertThat(w.h.warningPuts()).as(arm + ": the unjudgeable worker class is the only open warning persisted")
-                  .containsExactly(new FsmWarningKey("worker-absence-unjudgeable", "worker"));
+        assertThat(w.h.warningPuts()).as(arm + ": the unjudgeable worker class is the only open warning persisted (marker write, then clear write, #3160)")
+                  .containsExactly(new FsmWarningKey("worker-absence-unjudgeable", "worker"), new FsmWarningKey("worker-absence-unjudgeable", "worker"));
         assertThat(w.h.metricTotal("aether_deployment_fsm_stale_rows_total", t -> true)).as(arm + ": stale_rows_total")
                   .isZero();
         assertThat(w.stored(new DeploymentOutcomeKey(blueprintId("org.example:app:1.0.0")))

@@ -15,12 +15,10 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Nested;
@@ -31,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #2583 P1 ratchet: every unicast transport `send` in `src/main` either hands its [WriteOutcome] on, or is counted in
 /// the allow-list (`transport-outcome-allowlist.txt`) against an entry that cites what compensates for a lost frame (a
-/// `path:line@anchor`, the anchor being a symbol the cited line must still contain), or the `#2583-P<n>` phase that
+/// `path.java@anchor[#n]`, the anchor being a symbol the cited file must still contain exactly once, or n times), or the `#2583-P<n>` phase that
 /// gives it a policy.
 ///
 /// The scan is lexical, per file, over comment- and string-stripped source:
@@ -191,25 +189,67 @@ class TransportOutcomeDisciplineTest {
         @Test
         void citationWithoutAnchor_isRejected(@TempDir Path root) throws IOException {
             Files.writeString(root.resolve("C.java"), "line one\nretry(this::tick)\n");
-            var entries = AllowList.parse("a/B.java | 1 | C.java:2 | reason\n");
+            var entries = AllowList.parse("a/B.java | 1 | C.java | reason\n");
 
             assertThat(violations(Map.of("a/B.java", 1), entries, root)).anyMatch(v -> v.contains("no content anchor"));
         }
 
         @Test
-        void citationWhoseLineDriftedOffItsAnchor_isRejected(@TempDir Path root) throws IOException {
-            Files.writeString(root.resolve("C.java"), "line one\nretry(this::tick)\n");
-            var entries = AllowList.parse("a/B.java | 1 | C.java:1@retry(this::tick) | reason\n");
+        void compensatorThatMoved_staysAccepted(@TempDir Path root) throws IOException {
+            var entries = AllowList.parse("a/B.java | 1 | C.java@retry(this::tick) | reason\n");
 
-            assertThat(violations(Map.of("a/B.java", 1), entries, root)).anyMatch(v -> v.contains("has drifted"));
+            Files.writeString(root.resolve("C.java"), "line one\nretry(this::tick)\nline three\n");
+            assertThat(violations(Map.of("a/B.java", 1), entries, root)).isEmpty();
+
+            Files.writeString(root.resolve("C.java"), "new\nlines\nabove\nline one\nretry(this::tick)\nline three\n");
+            assertThat(violations(Map.of("a/B.java", 1), entries, root)).isEmpty();
         }
 
         @Test
-        void citationOnItsAnchor_isAccepted_singleLineOrRange(@TempDir Path root) throws IOException {
-            Files.writeString(root.resolve("C.java"), "line one\nretry(this::tick)\nline three\n");
-            var entries = AllowList.parse("a/B.java | 1 | C.java:2@retry(this::tick), C.java:1-3@line three | reason\n");
+        void deletedOrRenamedAnchor_isRejected(@TempDir Path root) throws IOException {
+            Files.writeString(root.resolve("C.java"), "line one\nretry(this::tock)\n");
+            var entries = AllowList.parse("a/B.java | 1 | C.java@retry(this::tick) | reason\n");
+
+            assertThat(violations(Map.of("a/B.java", 1), entries, root)).anyMatch(v -> v.contains("no longer contains"));
+        }
+
+        @Test
+        void citedFileThatIsGone_isRejected(@TempDir Path root) {
+            var entries = AllowList.parse("a/B.java | 1 | Gone.java@retry(this::tick) | reason\n");
+
+            assertThat(violations(Map.of("a/B.java", 1), entries, root)).anyMatch(v -> v.contains("names no such file"));
+        }
+
+        @Test
+        void ambiguousAnchorWithoutCount_isRejected(@TempDir Path root) throws IOException {
+            Files.writeString(root.resolve("C.java"), "retry(this::tick)\nother\nretry(this::tick)\n");
+            var entries = AllowList.parse("a/B.java | 1 | C.java@retry(this::tick) | reason\n");
+
+            assertThat(violations(Map.of("a/B.java", 1), entries, root)).anyMatch(v -> v.contains("occurs 2 times"));
+        }
+
+        @Test
+        void ambiguousAnchorWithMatchingCount_isAccepted(@TempDir Path root) throws IOException {
+            Files.writeString(root.resolve("C.java"), "retry(this::tick)\nother\nretry(this::tick)\n");
+            var entries = AllowList.parse("a/B.java | 1 | C.java@retry(this::tick)#2 | reason\n");
 
             assertThat(violations(Map.of("a/B.java", 1), entries, root)).isEmpty();
+        }
+
+        @Test
+        void countThatIsWrong_isRejected(@TempDir Path root) throws IOException {
+            Files.writeString(root.resolve("C.java"), "retry(this::tick)\nother\nretry(this::tick)\nretry(this::tick)\n");
+            var entries = AllowList.parse("a/B.java | 1 | C.java@retry(this::tick)#2 | reason\n");
+
+            assertThat(violations(Map.of("a/B.java", 1), entries, root)).anyMatch(v -> v.contains("occurs 3 times"));
+        }
+
+        @Test
+        void lineNumberCitation_isRejectedWithPointerToTheIssue(@TempDir Path root) throws IOException {
+            Files.writeString(root.resolve("C.java"), "line one\nretry(this::tick)\n");
+            var entries = AllowList.parse("a/B.java | 1 | C.java:2@retry(this::tick) | reason\n");
+
+            assertThat(violations(Map.of("a/B.java", 1), entries, root)).anyMatch(v -> v.contains("cite by anchor, see #3223"));
         }
 
         @Test
@@ -254,7 +294,9 @@ class TransportOutcomeDisciplineTest {
     }
 
     static final Pattern PHASE_CITATION = Pattern.compile("#2583-P[0-4][a-e]?");
-    static final Pattern FILE_CITATION = Pattern.compile("([\\w./-]+\\.java):(\\d+)(?:-(\\d+))?(?:@(.+))?");
+    static final Pattern FILE_CITATION = Pattern.compile("([\\w./-]+\\.java)(?:@(.+?)(?:#(\\d+))?)?");
+    /// The pre-#3223 form `path.java:LINE[-LINE][@anchor]`, rejected so a PR written in it fails loudly.
+    static final Pattern LINE_CITATION = Pattern.compile("[\\w./-]+\\.java:\\d+(?:-\\d+)?(?:@.*)?");
 
     static List<String> violations(Map<String, Integer> blind, Map<String, Entry> entries, Path root) {
         var found = new ArrayList<String>();
@@ -289,37 +331,59 @@ class TransportOutcomeDisciplineTest {
             return;
         }
 
+        if (LINE_CITATION.matcher(citation).matches()) {
+            found.add(path + ": citation '" + citation + "' names a line: cite by anchor, see #3223 (want path.java@anchor[#n])");
+
+            return;
+        }
+
         var file = FILE_CITATION.matcher(citation);
 
         if (!file.matches()) {
-            found.add(path + ": malformed citation '" + citation + "' (want path.java:line or #2583-P<n>)");
+            found.add(path + ": malformed citation '" + citation + "' (want path.java@anchor[#n] or #2583-P<n>)");
 
             return;
         }
 
         var cited = root.resolve(file.group(1));
-        var first = Integer.parseInt(file.group(2));
-        var last = Integer.parseInt(Objects.requireNonNullElse(file.group(3), file.group(2)));
 
-        if (!Files.isRegularFile(cited) || lineCount(cited) < last) {
-            found.add(path + ": citation '" + citation + "' names no such file line");
+        if (!Files.isRegularFile(cited)) {
+            found.add(path + ": citation '" + citation + "' names no such file");
 
             return;
         }
 
-        checkAnchor(path, citation, file.group(4), citedText(cited, first, last), found);
+        checkAnchor(path, citation, file.group(2), file.group(3), read(cited), found);
     }
 
-    private static void checkAnchor(String path, String citation, String anchor, String text, List<String> found) {
+    private static void checkAnchor(String path, String citation, String anchor, String count, String text, List<String> found) {
         if (anchor == null) {
-            found.add(path + ": citation '" + citation + "' has no content anchor (want path.java:line@symbol)");
-        } else if (!text.contains(anchor)) {
-            found.add(path + ": citation '" + citation + "' has drifted: the cited line(s) no longer contain '" + anchor + "'");
+            found.add(path + ": citation '" + citation + "' has no content anchor (want path.java@symbol)");
+
+            return;
+        }
+
+        var expected = count == null
+                       ? 1
+                       : Integer.parseInt(count);
+        var actual = occurrences(text, anchor);
+
+        if (actual == 0) {
+            found.add(path + ": citation '" + citation + "' has drifted: the cited file no longer contains '" + anchor + "'");
+        } else if (actual != expected) {
+            found.add(path + ": citation '" + citation + "' is ambiguous or stale: '" + anchor + "' occurs " + actual
+                      + " times, the citation expects " + expected + " (add or fix #n)");
         }
     }
 
-    private static String citedText(Path file, int first, int last) {
-        return read(file).lines().skip(first - 1L).limit(last - first + 1L).collect(Collectors.joining("\n"));
+    private static int occurrences(String text, String anchor) {
+        var count = 0;
+
+        for (var at = text.indexOf(anchor); at >= 0; at = text.indexOf(anchor, at + anchor.length())) {
+            count++;
+        }
+
+        return count;
     }
 
     sealed interface SendScanner {
@@ -540,10 +604,6 @@ class TransportOutcomeDisciplineTest {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
-    }
-
-    private static long lineCount(Path file) {
-        return read(file).lines().count();
     }
 
     private static String readResource(String name) {

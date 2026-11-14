@@ -78,6 +78,31 @@ class EpochStartOwnerTest {
                                   .isEqualTo(Option.some(EARLIER));
     }
 
+    /// v3186 p8, decided (#2981 step 3b): the owner joins the idempotence check of [StreamPartitionOwnershipValue#withEpochStart]
+    /// (record equality). A newest start of the same epoch and offset that names no owner, or another one, is replaced by the start
+    /// naming this record's owner: the fence target a later owner reads must be the node that really wrote, never an unknown
+    /// owner kept only because epoch and offset matched.
+    @Test
+    void withEpochStart_sameEpochAndOffsetButAnotherOrNoOwner_recordsTheOwner() {
+        for (var recorded : List.of(Option.<NodeId>none(), Option.some(EARLIER))) {
+            var before = record(List.of(EpochStart.epochStart(EPOCH, 40L, recorded)));
+            var written = before.withEpochStart(40L);
+
+            assertThat(written).as("a start owned by %s is not the same start", recorded).isNotSameAs(before);
+            assertThat(written.epochStarts()).as("replaced, not appended beside it")
+                                             .containsExactly(EpochStart.epochStart(EPOCH, 40L, Option.some(OWNER)));
+        }
+    }
+
+    /// The other half of the decision: the same start, owner included, changes nothing (the re-activation of an epoch that already
+    /// has its start).
+    @Test
+    void withEpochStart_theSameStartIncludingItsOwner_changesNothing() {
+        var before = record(List.of(EpochStart.epochStart(EPOCH, 40L, Option.some(OWNER))));
+
+        assertThat(before.withEpochStart(40L)).isSameAs(before);
+    }
+
     @Test
     void epochStart_hasNoConstructionWithoutAnOwner() {
         var constructors = EpochStart.class.getDeclaredConstructors();

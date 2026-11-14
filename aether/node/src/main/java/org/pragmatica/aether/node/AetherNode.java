@@ -3553,6 +3553,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                    clusterCommandApplier,
                                                                                                    operatorWarningSink,
                                                                                                    sliceInvoker,
+                                                                                                   membershipFsm::workerCountedMembers,
                                                                                                    taskGroupOwnerResolver,
                                                                                                    delegatedStorageAdapter,
                                                                                                    allEntries,

@@ -334,9 +334,10 @@ class RabiaEnginePauseResumeTest {
 
     // Only `!isVoter(self)` is true: the roster was installed without this node and observerMode was never set.
     // Such a node cannot activate, so it is paused while still Syncing; it must not resume as a voter (Idle).
-    // (That it resumes to Observing without a participation record is a separate, pre-existing question.)
+    // Since #3211 it does not resume to Observing either: a pause taken before activation resumes into a fresh sync
+    // round, so the node can serve only through activate (and its participation record, #2287).
     @Test
-    void nonVoterWithoutObserverMode_staysObservingAfterResume() {
+    void nonVoterWithoutObserverMode_resumesIntoSynchronisation() {
         var routed = new CopyOnWriteArrayList<ClusterStateNotification>();
 
         newEngine(routed, List.of(NODE_2, NODE_3, nodeId("node-4").unwrap()));
@@ -344,7 +345,23 @@ class RabiaEnginePauseResumeTest {
         settle();
         assertThat(engine.isActive()).as("control: a node outside the roster never activates as a voter").isFalse();
 
-        assertResumesAsObserver(routed);
+        engine.clusterState(ClusterStateNotification.passive());
+        settle();
+        assertThat(engine.isPaused()).as("control: quorum loss pauses the engine").isTrue();
+
+        var publishedBeforeResume = routed.size();
+
+        network.clearMessages();
+        engine.clusterState(ClusterStateNotification.active());
+        settle();
+
+        assertThat(engine.isPaused()).as("quorum return must leave Paused").isFalse();
+        assertThat(engine.isObserving()).as("#3211: a node paused before activation must not resume to Observing").isFalse();
+        assertThat(engine.isActive()).as("a non-voter must not report itself active").isFalse();
+        assertThat(network.getMessages()).as("#3211: the resume must start a fresh sync round")
+            .anyMatch(RabiaProtocolMessage.Asynchronous.SyncRequest.class::isInstance);
+        assertThat(routed.subList(publishedBeforeResume, routed.size())).as("no ACTIVE may be published by the resume")
+            .noneMatch(RabiaEnginePauseResumeTest::isActive);
     }
 
     private void startActiveVoter(List<ClusterStateNotification> routed) {

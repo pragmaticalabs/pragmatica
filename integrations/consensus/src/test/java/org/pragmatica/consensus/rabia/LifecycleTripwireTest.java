@@ -8,7 +8,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest;
 import org.pragmatica.utility.warning.OperatorWarningCode;
@@ -76,21 +75,6 @@ class LifecycleTripwireTest {
     // ---- L-3: Paused remembers where it was paused from (#2287) ----
 
     @Test
-    void pausedDuringSyncing_thenQuorumActive_goesIdleWithoutParticipationRecord_pinsCurrentBehaviour() {
-        rig = LifecycleRig.rig(false).started();
-        rig.active();
-        rig.passive();
-        assertThat(rig.mode()).as("control: paused while Syncing").isEqualTo("Paused");
-
-        rig.active();
-
-        assertThat(rig.mode()).as("today the resume is blind to its origin").isEqualTo("Idle");
-        assertThat(rig.marker.recordCalls.get()).as("no participation was recorded before serving (#2287)").isZero();
-        assertThat(rig.startPromise.isResolved()).as("start() never resolves on this path").isFalse();
-    }
-
-    @Test
-    @Disabled("L-3 enables this and deletes the _pinsCurrentBehaviour tripwire above")
     void pausedWhileSyncing_quorumActive_resyncsAndRecordsParticipationBeforeIdle() {
         rig = LifecycleRig.rig(false).started();
         rig.active();

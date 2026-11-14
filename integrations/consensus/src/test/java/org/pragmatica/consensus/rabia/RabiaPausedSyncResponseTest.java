@@ -219,6 +219,53 @@ class RabiaPausedSyncResponseTest {
             .isEqualTo(ResponderState.LIVE);
     }
 
+    /// An engine in the `Observing` state whose role is a plain voter (the roster governs it, observation no longer
+    /// declared) holds adopted state and answers LIVE: the responder condition names `Observing` on its own, not only
+    /// through the `Paused(activated)` arm. Pins the `isObserving()` term of the LIVE condition.
+    @Test
+    void observingEngineWithVoterRole_answersLive() throws Exception {
+        observeThenDeclareVoter();
+        assertThat(engine.isObserving()).as("control: Observing").isTrue();
+
+        network.clearMessages();
+        engine.handleSyncRequest(new SyncRequest(JOINER));
+        settle();
+
+        assertThat(lastSyncResponseTo().responder()).as("an Observing engine serves its adopted state LIVE").isEqualTo(ResponderState.LIVE);
+    }
+
+    /// The same engine paused after it served as an observer: it had activated, so it keeps answering LIVE.
+    @Test
+    void pausedFromObserving_answersLive() throws Exception {
+        observeThenDeclareVoter();
+        engine.clusterState(ClusterStateNotification.passive());
+        settle();
+        assertThat(engine.isPaused()).as("control: paused from Observing").isTrue();
+
+        network.clearMessages();
+        engine.handleSyncRequest(new SyncRequest(JOINER));
+        settle();
+
+        assertThat(lastSyncResponseTo().responder()).as("paused from Observing: activated, answers LIVE").isEqualTo(ResponderState.LIVE);
+    }
+
+    /// Reaches `Observing` through the observer path, then clears the declaration (reflection: the production
+    /// route, a roster change adding this node, needs a whole reconfiguration round) so `role()` is VOTER and the
+    /// sync request is not refused as an observer's.
+    private void observeThenDeclareVoter() throws Exception {
+        engine.authorizeObservation();
+        engine.clusterState(ClusterStateNotification.active());
+        settle();
+        engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+        engine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+        settle();
+
+        var field = RabiaEngine.class.getDeclaredField("observerMode");
+
+        field.setAccessible(true);
+        field.set(engine, false);
+    }
+
     // ==================== Stub Implementations ====================
     // (Mirrors RabiaEnginePauseResumeTest's stubs to keep this test independent.)
 

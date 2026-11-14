@@ -1,0 +1,16 @@
+prefix = "/api"
+
+[security]
+default = "authenticated"
+
+[routes]
+execute = { route = "GET /articles/feed?limit&offset", status = 200 }
+
+[errors]
+packages = ["conduit.domain"]
+default = 500
+HTTP_401 = ["Unauthorized"]
+HTTP_403 = ["Forbidden"]
+HTTP_404 = ["NotFound"]
+HTTP_409 = ["Conflict"]
+HTTP_422 = ["RequestInvalid"]

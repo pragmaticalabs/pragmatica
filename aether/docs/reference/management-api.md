@@ -542,6 +542,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `slice-start-deferral-ended` (INFO — the recovery: the target arrived, or the parked entry was superseded, removed or dropped as stale; raised only for a subject whose `slice-start-awaiting-target` was raised)
 - `apply-deadline-exceeded` (WARNING — an FSM2 blueprint apply (LEGACY ignores the deadline) did not resolve (every declared slice ACTIVE) within `[timeouts.deployment] apply_deadline` and was closed by the deadline: ROLLED_BACK under ALL_OR_NOTHING, FAILED under BEST_EFFORT, cause `apply-deadline-exceeded`, issue #970; `subject` is the blueprint; recovery: republish or delete the blueprint; leader churn shorter than the deadline can postpone it, see #3120)
 - `apply-deadline-cleared` (INFO — the recovery: the blueprint's outcome was replaced by a republish or removed; raised only for a subject whose `apply-deadline-exceeded` was raised)
+- `route-unpublish-await-expired` (WARNING — a `PUBLISH_ROUTES` went ahead after waiting its whole 100 s bound for the same artifact's earlier `SUSPEND` route removal, which had not settled, so that removal may still delete the fresh routes; raised once per unsettled removal; subject: node and artifact)
+- `route-unpublish-await-settled` (INFO — the recovery, same subject: the removal that outlived the bound has settled)
 - `consensus-restore-refused` (CRITICAL — a node failed to restore responder consensus snapshots in three consecutive rounds, whatever the responder, phase or digest; raised once per run of failures; a snapshot is refused as a whole and never partially decoded; a snapshot that failed three times is no longer selected, and no snapshot below its phase is adopted; with no other candidate the node stays out of service in sync with no automatic exit; `subject` is the refusing node, the message names the latest responder, phase, digest and cause; repair or replace the responder's state, or replace the node, issue #2316)
 - `consensus-restore-recovered` (INFO — the recovery: the node restored a readable snapshot; published only after a published `consensus-restore-refused` for the same `subject`)
 - `observer-consensus-lagging` (WARNING — an observer, a node outside the voter roster such as an auto-heal replacement still joining, stopped applying consensus decisions while it catches up or after it lost sight of the quorum; it is not a voter, so this is not a quorum loss and no `QUORUM_LOST` is raised; routing on that node is quiesced until it observes again; `subject` is the node, issue #2306)
@@ -3565,7 +3567,7 @@ Recovery: `aether cluster bootstrap <aether-cluster.toml>`.
 
 Apply a cluster configuration change. Computes a diff against the stored config and executes actionable changes.
 
-**Scale-only in rc4 (#686).** The only actionable changes are a role's core/worker count going up or
+**Scale-only in rc5 (#686); rollout of the other changes is not available in this release.** The only actionable changes are a role's core/worker count going up or
 down (`ScaleUp`/`ScaleDown`), applied as a fenced desired-count write that the leader's reconciler
 actuates. Non-scale changes — sources, roles, runtime, source fields, cluster-level fields — are not
 applicable through this route; a plan containing any of them is rejected in full (typed
@@ -3691,8 +3693,8 @@ is 3. Worker and spot counts carry no quorum constraint and are required only to
 
 **Refusals** (both HTTP 400):
 
-- Undeclared `(source, role)` — the topology is changed with `aether cluster apply`, not with a
-  scale. Adding the pair here would turn a mistyped source name into a real provisioning target.
+- Undeclared `(source, role)` — the topology is not changed with a scale (and `aether cluster apply`
+  is scale-only in rc5). Adding the pair here would turn a mistyped source name into a real provisioning target.
 - Blank `source` when several sources declare the role. The response names the candidates.
 
 **Conflicts** (HTTP 409):

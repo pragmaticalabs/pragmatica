@@ -277,8 +277,8 @@ class SlGateTest {
             h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.UNKNOWN));
             h.drain();
             assertThat(h.submitsBesides(ClusterModel.SubmitKind.WARNINGS)).hasSize(before);
-            assertThat(h.submits(ClusterModel.SubmitKind.WARNINGS)).as("exactly one WARNINGS transaction: the opened warning")
-                      .hasSize(warningsBefore + 1);
+            assertThat(h.submits(ClusterModel.SubmitKind.WARNINGS)).as("two WARNINGS transactions: the opened warning with its marker, then the marker clear (#3160)")
+                      .hasSize(warningsBefore + 2);
             assertThat(h.warningPuts()).as("the open schema-status-unknown warning is persisted")
                       .last()
                       .isEqualTo(new FsmWarningKey("schema-status-unknown", "orders-db"));

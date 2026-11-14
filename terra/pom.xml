@@ -15,5 +15,6 @@
         <module>maven-plugin</module>
         <module>examples</module>
         <module>example-apps</module>
+        <module>conduit-acceptance</module>
     </modules>
 </project>
