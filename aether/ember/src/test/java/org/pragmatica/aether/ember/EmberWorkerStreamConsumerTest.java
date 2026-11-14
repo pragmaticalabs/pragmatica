@@ -20,7 +20,6 @@ import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.MethodName;
-import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
@@ -42,7 +41,7 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.engineKey;
 /// #2600: a declarative stream consumer whose slice is ACTIVE only on a worker is assigned to that worker.
 ///
 /// 3 cores and 3 workers. A stream is created, a consumer declaration (`StreamRegistrationKey`) for a slice is committed, and the
-/// slice's `NodeArtifactKey` is committed ACTIVE on one worker only. The leader's `StreamConsumerManager` must read that worker as a live
+/// slice's observed row is committed ACTIVE on one worker only. The leader's `StreamConsumerManager` must read that worker as a live
 /// candidate (its `PartitionOwnership.liveWorkers`, wired in `AetherNode` from `MembershipFsm.workerCountedMembers`, the B1 liveness source:
 /// every core observes every member's descriptor) and commit the partition's `ConsumerAssignmentKey` naming it. Before the fix the
 /// candidate set was the core-only view, so the slice read as "not consumed yet" and no assignment was ever written.
@@ -104,13 +103,26 @@ class EmberWorkerStreamConsumerTest {
                        () -> membership(worker));
         StreamTripwireSupport.createStream(leader(), StreamTripwireSupport.smallRingStream(STREAM, 1, 1_000L, 3_600_000L));
         commit(registrationKey(), AetherValue.StreamRegistrationValue.streamRegistrationValue(worker, GROUP, false, "java.lang.String"));
-        commit(new AetherKey.NodeArtifactKey(worker, SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
+        commit(new AetherKey.SliceObservedKey(worker, SLICE), activeObservedRow());
 
         var assignment = AetherKey.ConsumerAssignmentKey.consumerAssignmentKey(engineKey(STREAM), 0, GROUP);
 
         awaitUntil(() -> assignee(assignment).equals(Option.some(worker)),
                    WAIT_BOUND_MS,
                    "the partition is assigned to the only worker the slice is ACTIVE on, got " + assignee(assignment) + diagnostics());
+    }
+
+    /// Under FSM2 the stream-consumer placement view (`DeploymentMap`) is fed by the observed rows, not by `NodeArtifactKey`.
+    private static AetherValue.SliceObservedValue activeObservedRow() {
+        return new AetherValue.SliceObservedValue(AetherValue.SliceObservedState.ACTIVE,
+                                                  1L,
+                                                  new AetherValue.Generation(0L, 0L),
+                                                  new AetherValue.ProcessIncarnation(1L, 1L),
+                                                  Option.none(),
+                                                  false,
+                                                  0,
+                                                  List.of(),
+                                                  0L);
     }
 
     private NodeId startedWorker() {
@@ -148,7 +160,7 @@ class EmberWorkerStreamConsumerTest {
                            .snapshot()
                            .entrySet()
                            .stream()
-                           .filter(entry -> entry.getKey() instanceof AetherKey.NodeArtifactKey
+                           .filter(entry -> entry.getKey() instanceof AetherKey.SliceObservedKey
                                             || entry.getKey() instanceof AetherKey.StreamRegistrationKey
                                             || entry.getKey() instanceof AetherKey.ConsumerAssignmentKey)
                            .map(entry -> entry.getKey() + "=" + entry.getValue())
