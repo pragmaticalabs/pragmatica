@@ -1229,7 +1229,10 @@ public enum OperatorWarningCode {
     ROUTE_UNPUBLISH_AWAIT_EXPIRED("route-unpublish-await-expired", "deployment", WarningLevel.WARNING),
     /// The recovery of [#ROUTE_UNPUBLISH_AWAIT_EXPIRED], same subject: the removal that outlived the bound has settled (success or failure).
     /// Published by the node that raised the warning, only after its published warning.
-    ROUTE_UNPUBLISH_AWAIT_SETTLED("route-unpublish-await-settled", "deployment", WarningLevel.INFO, ROUTE_UNPUBLISH_AWAIT_EXPIRED);
+    ROUTE_UNPUBLISH_AWAIT_SETTLED("route-unpublish-await-settled",
+                                  "deployment",
+                                  WarningLevel.INFO,
+                                  ROUTE_UNPUBLISH_AWAIT_EXPIRED);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

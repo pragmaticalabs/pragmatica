@@ -118,7 +118,6 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
     private final ConcurrentMap<Artifact, Promise<Unit>> pendingUnpublish = new ConcurrentHashMap<>();
     /// The removals whose bound expiry has been reported and that have not settled yet, so the expiry is raised once per removal.
     private final Set<Promise<Unit>> warned = ConcurrentHashMap.newKeySet();
-
     private final TimeSpan unpublishAwaitBound;
 
     private SliceRuntimeAdapter(Collaborators collaborators, TimeSpan unpublishAwaitBound) {
