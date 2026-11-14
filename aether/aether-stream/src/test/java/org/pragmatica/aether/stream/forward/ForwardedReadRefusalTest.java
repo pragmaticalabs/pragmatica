@@ -252,7 +252,7 @@ class ForwardedReadRefusalTest {
         }
         owner.syncReplicated(STREAM, PARTITION).await();
         owner.placementRoleSupplier((_, _) -> Role.REPLICA);
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E2, 5L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E2, 5L, Option.none())));
         callerHoldsOnlyTheConfig(config(STREAM, 1));
         connect();
         var expected = new StreamError.ReplicaNotVerified(STREAM, PARTITION, 5L);
@@ -594,7 +594,7 @@ class ForwardedReadRefusalTest {
                                                                                        3L,
                                                                                        false,
                                                                                        List.of(),
-                                                                                       List.of(new EpochStart(E1, 0L), new EpochStart(E2, 3L)))));
+                                                                                       List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 3L, Option.none())))));
     }
 
     private void callerHoldsOnlyTheConfig(StreamConfig config) {

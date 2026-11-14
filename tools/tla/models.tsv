@@ -14,6 +14,7 @@ SharedPools	aether/resource/api/src/main/java	wedgeslice	fail	NoWedge	MaxAcquire
 SharedPools	aether/resource/api/src/main/java	stale	fail	NoStaleRelease	MaxAcquires=3	v2978a F3: a stop releases another holding
 SharedPools	aether/resource/api/src/main/java	leak	fail	NoLeakAfterStop	MaxAcquires=3	v2978a F2: no post-admission drain
 SharedPools	aether/resource/api/src/main/java	afterclosed	fail	NoHandleAfterClosed	MaxAcquires=3	v2978c F3: a view after closed was seen
+SharedPools	aether/resource/api/src/main/java	noguard	fail	NoHandleAfterClosed	MaxAcquires=3	#3176: no stop re-read before the view is handed out
 SharedPools	aether/resource/api/src/main/java	isemptydrain	fail	NoLeakAfterStop	MaxAcquires=3	N1: closeAll drains on isEmpty()
 SharedPools	aether/resource/api/src/main/java	strict	fail	NoOpenAfterStop	MaxAcquires=3	closeAll returns before in-flight closes
 SharedPools	aether/resource/api/src/main/java	liveadb7	fail	CloseAllCompletes,AllSharedSettle	MaxAcquires=2	adb7a765da: a shared pool never settles
@@ -24,8 +25,10 @@ Stalled	aether/aether-stream/src/main/java	liveowner	pass	-	-	the code, owner an
 Stalled	aether/aether-stream/src/main/java	edgeremove	fail	UnbackedClears	-	v2967b F1: edge-triggered warning outlives removal
 Stalled	aether/aether-stream/src/main/java	edgedestroy	fail	UnbackedClears	-	v2967b F2: edge-triggered warning outlives destroy
 Stalled	aether/aether-stream/src/main/java	edgeowner	pass	-	-	edge-triggered, owner flips only: no defect there
-Stalled	aether/aether-stream/src/main/java	settled	fail	SettledIsBacked	-	#3155 known finding, open: a report raised after the reconcile snapshot stays open until the next pass
-Stalled	aether/aether-stream/src/main/java	early	fail	NoEarlyRaise	-	#3156 known finding, open: the stall counter survives destroy and recreate
+Stalled	aether/aether-stream/src/main/java	settled	pass	-	-	#3155 narrowed: settled as of the next reconcile pass (a pass with no change after its snapshot)
+Stalled	aether/aether-stream/src/main/java	settledweak	fail	SettledIsBacked	-	a pass that does not re-derive the stream, replica and counter leaves an unbacked report settled
+Stalled	aether/aether-stream/src/main/java	early	pass	-	-	#3156 fixed: the stall counter is dropped on destroy
+Stalled	aether/aether-stream/src/main/java	earlynoreset	fail	NoEarlyRaise	-	#3156 negative control: without the reset the counter survives destroy and recreate
 Fsm2Leader	aether/aether-deployment/src/main/java	code_inv	pass	-	-	the code (#3146): only the committed leader's writes are accepted, no submit while suspended, one live leader, published is committed, a refused WARNINGS write re-drafts
 Fsm2Leader	aether/aether-deployment/src/main/java	code_goals	pass	-	-	the code: desired and observed converge after the last leader change
 Fsm2Leader	aether/aether-deployment/src/main/java	code_goals_inv	pass	-	-	the code, goals on: only the committed leader's writes are accepted, no submit while suspended, one live leader

@@ -84,7 +84,7 @@ class OwnerActivationLandedStarvedTest {
                 var gate = activation();
                 commits.clear();
                 record.set(Option.some(new StreamPartitionOwnershipValue(SELF, EPOCH, 3L, HlcTimestamp.ZERO, List.of(SELF), 1L, false, List.of(),
-                                                                         List.of(new EpochStart(Epoch.epoch(1L, 2L, 2L), 0L)))));
+                                                                         List.of(EpochStart.epochStart(Epoch.epoch(1L, 2L, 2L), 0L, Option.none())))));
                 gate.activate(STREAM, PARTITION).await();
                 var second = gate.activate(STREAM, PARTITION).await();
                 if (second.isFailure() || commits.size() != 1) extra++;

@@ -43,7 +43,7 @@ class StreamPartitionManagerEpochReadTest {
         manager.ownershipRecords((_, _) -> record.get());
         // #2981 step 2: a CF >= 2 owner exposes its appends only while the applied record names it (design §2.2 check 3), so the
         // records are published under one; each test then sets the record its read is validated against.
-        record.set(Option.some(owned(E1, List.of(new EpochStart(E1, 0L)))));
+        record.set(Option.some(owned(E1, List.of(EpochStart.epochStart(E1, 0L, Option.none())))));
         for (var i = 0; i < 5; i++) {
             manager.publishLocal(STREAM, 0, ("r" + i).getBytes(UTF_8), i).unwrap();
         }
@@ -58,7 +58,7 @@ class StreamPartitionManagerEpochReadTest {
     /// The #1873 case on the serving side: the consumer read 0..4 under E1 (cursor 5); the owner's E2 began at 3.
     @Test
     void cursorPastTheNewEpochsStart_isRefusedWithTheStartOfTheNewLineage() {
-        record.set(Option.some(owned(E2, List.of(new EpochStart(E1, 0L), new EpochStart(E2, 3L)))));
+        record.set(Option.some(owned(E2, List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 3L, Option.none())))));
 
         var read = manager.readServing(STREAM, 0, 5L, 10, E1);
 
@@ -71,7 +71,7 @@ class StreamPartitionManagerEpochReadTest {
 
     @Test
     void cursorBelowTheNewEpochsStart_isServed_andTheConsumerAdoptsTheOwnersEpoch() {
-        record.set(Option.some(owned(E2, List.of(new EpochStart(E1, 0L), new EpochStart(E2, 3L)))));
+        record.set(Option.some(owned(E2, List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 3L, Option.none())))));
 
         var read = manager.readServing(STREAM, 0, 2L, 10, E1).unwrap();
 
@@ -81,7 +81,7 @@ class StreamPartitionManagerEpochReadTest {
 
     @Test
     void aConsumerWithNoClaim_isServed_andToldTheEpoch() {
-        record.set(Option.some(owned(E2, List.of(new EpochStart(E2, 0L)))));
+        record.set(Option.some(owned(E2, List.of(EpochStart.epochStart(E2, 0L, Option.none())))));
 
         var read = manager.readServing(STREAM, 0, 0L, 10, Epoch.ZERO).unwrap();
 
@@ -93,7 +93,7 @@ class StreamPartitionManagerEpochReadTest {
     /// not activated for the epoch and serves nothing.
     @Test
     void anOwnerWhoseEpochHasNoCommittedStart_serveNothing() {
-        record.set(Option.some(owned(E2, List.of(new EpochStart(E1, 0L)))));
+        record.set(Option.some(owned(E2, List.of(EpochStart.epochStart(E1, 0L, Option.none())))));
 
         var read = manager.readServing(STREAM, 0, 0L, 10, E1);
 

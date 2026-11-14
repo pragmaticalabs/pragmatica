@@ -3278,7 +3278,8 @@ public sealed interface AetherValue {
             kept.set(0,
                      new EpochStart(oldest.epoch(),
                                     Math.min(oldest.startOffset(), lowest.startOffset()),
-                                    lowest.coversFrom()));
+                                    lowest.coversFrom(),
+                                    oldest.owner()));
 
             return List.copyOf(kept);
         }
@@ -3416,9 +3417,11 @@ public sealed interface AetherValue {
         }
 
         /// The same record with the owner of `ownerEpoch` recorded as beginning to write at `startOffset` (#1730 phase 2).
-        /// Recording the epoch that is already the newest start changes nothing.
+        /// Recording the epoch that is already the newest start changes nothing. The start names this record's `owner`
+        /// (#2981 step 3, design §2.3 B1): the lineage write is guarded on the exact current record, so the record being
+        /// written names the activating owner, which a later owner's move fence probes.
         public StreamPartitionOwnershipValue withEpochStart(long startOffset) {
-            var next = new EpochStart(ownerEpoch, startOffset);
+            var next = EpochStart.epochStart(ownerEpoch, startOffset, Option.some(owner));
 
             return lastEpochStart().filter(next::equals)
                                  .isPresent()
@@ -3442,7 +3445,8 @@ public sealed interface AetherValue {
                                                      failoverRefused,
                                                      fenced,
                                                      failoverRefusalSeq,
-                                                     append(epochStarts, new EpochStart(epoch, startOffset)));
+                                                     append(epochStarts,
+                                                            EpochStart.epochStart(epoch, startOffset, Option.some(owner))));
         }
 
         private StreamPartitionOwnershipValue withStarts(List<EpochStart> starts) {
@@ -3480,20 +3484,27 @@ public sealed interface AetherValue {
     /// in which case the oldest dropped epoch, the one that really began at `startOffset` (a re-fold keeps the older). So an
     /// entry proves "every epoch from `coversFrom` to `epoch` began at or above `startOffset`, and `coversFrom` began AT it",
     /// and a loss from `startOffset` is proven for a consumer only when `coversFrom` is later than the consumer's epoch.
-    /// A null or [Epoch#ZERO] `coversFrom` means "unfolded" and is read as the entry's own epoch (the two-argument constructor, and a
+    /// A null or [Epoch#ZERO] `coversFrom` means "unfolded" and is read as the entry's own epoch ([#epochStart], and a
     /// value that carries no fold). The substitution is deliberate and is pinned by a round trip through the node codec in
     /// which a FOLDED entry's `coversFrom` must come back unchanged (`EpochStartCodecTest`), so a codec that dropped the field
     /// would not hide behind it.
+    ///
+    /// `owner` (#2981 step 3, design §2.3 B1) is the node whose lineage write recorded this start: the owner of `epoch` (of the
+    /// kept epoch for a folded entry). A later owner's move fence probes the owner of the newest start older than its own
+    /// epoch. Empty means unknown (an entry recorded before the field existed), and the fence then waits the full deadline.
+    /// There is no constructor or factory without it, so no construction site can default it silently; it joins equality,
+    /// which the exact-record lineage guard compares.
     @Codec
-    record EpochStart(Epoch epoch, long startOffset, Epoch coversFrom) {
+    record EpochStart(Epoch epoch, long startOffset, Epoch coversFrom, Option<NodeId> owner) {
         public EpochStart {
             coversFrom = coversFrom == null || coversFrom.equals(Epoch.ZERO)
                          ? epoch
                          : coversFrom;
         }
 
-        public EpochStart(Epoch epoch, long startOffset) {
-            this(epoch, startOffset, epoch);
+        /// An unfolded start of `epoch` at `startOffset`, recorded by `owner`.
+        public static EpochStart epochStart(Epoch epoch, long startOffset, Option<NodeId> owner) {
+            return new EpochStart(epoch, startOffset, epoch, owner);
         }
 
         /// Whether this entry proves that an epoch AFTER `consumerEpoch` began at [#startOffset()]: it stands for no epoch the

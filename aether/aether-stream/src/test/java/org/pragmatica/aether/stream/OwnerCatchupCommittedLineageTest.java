@@ -10,8 +10,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
@@ -104,7 +106,7 @@ class OwnerCatchupCommittedLineageTest {
     /// the activation completes at 10 -- it is not left short of a tail no committed lineage owns.
     @Test
     void catchUpOwnerFrom_aReplicaHoldingE1PastACommittedE3Start_servesThem_andTheOwnerDoesNotInstallThem() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none())));
 
         var outcome = catchUpFrom(List.of(ProvenanceEntry.provenanceEntry(E1, 0)));
 
@@ -213,7 +215,7 @@ class OwnerCatchupCommittedLineageTest {
     /// not short at 15. Red under "rank on the stale cap".
     @Test
     void probePath_ofAReplicaRefilledToExactlyTheObservedTail_isRankedByItsTail_notTheStaleCap() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none())));
 
         var lineage = List.of(ProvenanceEntry.provenanceEntry(E1, 0), ProvenanceEntry.provenanceEntry(E3, 11));
         var replicas = new java.util.ArrayList<>(List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
@@ -313,7 +315,7 @@ class OwnerCatchupCommittedLineageTest {
         var fixture = disownedTailFixture();
 
         settled(fixture.backfill().learnLineageEnd("s", 0, SOURCE, 20L, 11L)).onFailure(cause -> fail(cause.message()));
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 13L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 13L, Option.none())));
         settled(fixture.backfill().confirmLineageEnd("s", 0, SOURCE, 20L)).onFailure(cause -> fail(cause.message()));
 
         assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).as("stale cap 10 not kept").isEqualTo(20L);
@@ -373,7 +375,7 @@ class OwnerCatchupCommittedLineageTest {
     /// 11..15 were never read.
     @Test
     void probePath_ofAnOwnerBehindADisownedTail_doesNotActivateBelowAnotherReplicasLineage_andRedrivesFromIt() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none())));
 
         var fixture = fixture(true,
                               List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
@@ -397,7 +399,7 @@ class OwnerCatchupCommittedLineageTest {
     /// are learned the best is R1's 12, which the owner already holds, so it activates at 12 instead of waiting forever on R1's raw 30.
     @Test
     void probePath_whenEveryReplicasLineageIsLearned_activatesAtTheMaximumLineageEnd_notAnotherReplicasRawTail() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 9L), new EpochStart(E4, 13L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 9L, Option.none()), EpochStart.epochStart(E4, 13L, Option.none())));
 
         var fixture = fixture(true,
                               List.of(new Replica(SOURCE, 30L, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
@@ -419,7 +421,7 @@ class OwnerCatchupCommittedLineageTest {
     /// run instead of waiting on its disowned raw tail (20).
     @Test
     void probePath_ofTheOnlyReplica_holdingADisownedTail_activatesAtItsLineageEnd() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none())));
 
         var fixture = fixture(true, List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))));
         var first = settled(fixture.backfill().backfill("s", 0));
@@ -434,7 +436,7 @@ class OwnerCatchupCommittedLineageTest {
     /// R1 is not a survivor ahead of the owner: its cap still holds against the tail it was learned on.
     @Test
     void probePath_aSourceReadAgainByItsLearnedEnd_keepsItsCapAgainstItsRawTail() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none())));
 
         var fixture = fixture(true,
                               List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))),
@@ -479,7 +481,7 @@ class OwnerCatchupCommittedLineageTest {
     /// activates at 18; no survivor is then ahead.
     @Test
     void registryPath_threeReplicas_twoLearnedCaps_convergesToTheMaximumLineageEnd() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L), new EpochStart(E4, 14L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none()), EpochStart.epochStart(E4, 14L, Option.none())));
 
         var fixture = fixture(false,
                               List.of(new Replica(SOURCE, 30L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
@@ -506,7 +508,7 @@ class OwnerCatchupCommittedLineageTest {
     /// the owner stays short at 12 and the next redrive reads R2.
     @Test
     void probePath_threeReplicas_holdsTheOwnerToTheBestOtherProbedEnd_notTheLowest() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E4, 13L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E4, 13L, Option.none())));
 
         var fixture = fixture(true,
                               List.of(new Replica(SOURCE, 30L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
@@ -530,7 +532,7 @@ class OwnerCatchupCommittedLineageTest {
     /// other end, so the owner activates at 12 instead of waiting on R2's raw 30.
     @Test
     void registryPath_aSourceClipped_whileAnotherReplicaHoldsALearnedCap_activatesAtTheLearnedEnd_notTheOthersRawTail() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E4, 13L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E4, 13L, Option.none())));
 
         var fixture = fixture(false,
                               List.of(new Replica(SOURCE, 25L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
@@ -1159,9 +1161,235 @@ class OwnerCatchupCommittedLineageTest {
 
         probeGate = null;
 
-        assertThat(outcomeOf(late)).as("control: the late round did reach the all-stalled state").isEqualTo(BackfillError.General.SOURCE_STALLED);
+        assertThat(outcomeOf(late)).as("control (#3156): the late round of a destroyed stream counts nothing, so it ends short, not all-stalled")
+                                   .isEqualTo(BackfillError.General.INCOMPLETE_BACKFILL);
         assertThat(openWarnings(alarm)).as("no zombie for a destroyed stream").isEmpty();
         assertThat(alarm.raised()).as("the raise was refused, not raised and resolved").isEmpty();
+    }
+
+    /// #3156 (RED at 541eb0fd3f): the stall round counter belongs to one incarnation of the stream. After destroy and recreate under the same
+    /// name, the raise needs the full MAX_STALLED_ROUNDS stalled rounds again, not the rounds the destroyed stream already counted.
+    @Test
+    void stalledRounds_doNotSurviveDestroyAndRecreate_theNewIncarnationNeedsTheFullCount() {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS - 1).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+        streamAlive.set(false);
+        fixture.backfill().clearStalledOf("s");
+        streamAlive.set(true);
+
+        settled(fixture.backfill().backfill("s", 0));
+        assertThat(alarm.raised()).as("one stalled round in the new incarnation is not MAX").isEmpty();
+
+        IntStream.rangeClosed(2, PartitionBackfill.MAX_STALLED_ROUNDS).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+        assertThat(alarm.raised()).as("control: the full count in the new incarnation raises").hasSize(1);
+    }
+
+    /// #3156 (RED at 541eb0fd3f): a round of the destroyed incarnation still in flight when the stream-removed listener ran must not count into
+    /// the counter after the clear, or the recreated stream inherits it.
+    @Test
+    void stalledRounds_aRoundInFlightAcrossDestroy_isNotCountedIntoTheNextIncarnation() {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS - 2).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+
+        probeGate = Promise.promise();
+        var inFlight = fixture.backfill().backfill("s", 0);
+
+        assertThat(inFlight.isResolved()).as("control: the round is held in its source read").isFalse();
+        streamAlive.set(false);
+        fixture.backfill().clearStalledOf("s");
+        probeGate.resolve(Result.unitResult());
+        var straggler = settled(inFlight);
+        probeGate = null;
+        streamAlive.set(true);
+
+        assertThat(outcomeOf(straggler)).as("control: the straggler of the destroyed stream counted nothing, so it ends short")
+                                        .isEqualTo(BackfillError.General.INCOMPLETE_BACKFILL);
+
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS - 1).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+
+        assertThat(alarm.raised()).as("the new incarnation has stalled MAX-1 rounds; a counted straggler would make it MAX").isEmpty();
+    }
+
+    /// #3156: the raise's own existence check. The stream is gone when the last stalled round raises, though its listener has not run, so the
+    /// counter still stands at MAX. The seam refuses only the call made by raiseCountedStall (found by its caller frame, so the test does not
+    /// depend on how many calls precede it), so only that check can refuse.
+    @Test
+    void raise_ofADestroyedStreamWhoseListenerHasNotRun_isRefusedByTheRaiseCheck() {
+        assertRaiseRefusedOnlyWhenCalledFrom("raiseCountedStall");
+    }
+
+    /// #2960 F2: the same for mayRaiseStalled, the check inside raiseStalled, which also guards the reconcile-pass raise.
+    @Test
+    void raise_ofADestroyedStreamWhoseListenerHasNotRun_isRefusedByMayRaiseStalled() {
+        assertRaiseRefusedOnlyWhenCalledFrom("mayRaiseStalled");
+    }
+
+    private void assertRaiseRefusedOnlyWhenCalledFrom(String method) {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS - 1).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+
+        var refused = new AtomicBoolean();
+
+        fixture.backfill().streamExists(_ -> !refusedFrom(method, refused));
+        var last = settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(outcomeOf(last)).as("control: the last round did reach the all-stalled state").isEqualTo(BackfillError.General.SOURCE_STALLED);
+        assertThat(refused.get()).as("control: the seam was asked by " + method).isTrue();
+        assertThat(alarm.raised()).as("a destroyed stream is never raised for").isEmpty();
+    }
+
+    private static boolean refusedFrom(String method, AtomicBoolean refused) {
+        var caller = StackWalker.getInstance()
+                                .walk(frames -> frames.filter(frame -> frame.getClassName().equals(PartitionBackfill.class.getName()))
+                                                      .findFirst()
+                                                      .map(StackWalker.StackFrame::getMethodName)
+                                                      .orElse(""));
+        var refuse = caller.equals(method);
+
+        refused.compareAndSet(false, refuse);
+
+        return refuse;
+    }
+
+    /// #3156 monitor on countStalledRound: the stream-removed listener (a second thread) fires while a round is inside its count, after the
+    /// existence check passed. The monitor makes the listener wait, so the count lands first and the clear drops it; without the monitor the
+    /// clear runs between the check and the put and the count is put back into the next incarnation. The racing interleaving is a witness, not
+    /// a hope: the listener thread must be observed BLOCKED on the monitor, and the test fails if it is not.
+    @Test
+    void countStalledRound_aListenerFiringInsideTheCount_waitsForTheMonitor() {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+        var race = new ListenerRace(fixture, 1);
+
+        pageCaps.put(SOURCE, 0L);
+        fixture.backfill().streamExists(race::exists);
+        settled(fixture.backfill().backfill("s", 0));
+        race.finish();
+        race.alive.set(true);
+
+        assertThat(race.observed.get()).as("witness: the listener reached the monitor while the count held it").isEqualTo(Thread.State.BLOCKED);
+
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS - 1).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+
+        assertThat(alarm.raised()).as("the destroyed incarnation's count was dropped by the clear, not put back after it").isEmpty();
+    }
+
+    /// #3156 monitor on raiseCountedStall: the listener fires between the raise's existence check and its counter check. The monitor makes it
+    /// wait, so the raise of the (then still current) incarnation lands and the listener resolves it; without the monitor the clear drops the
+    /// counter first and the raise is silently lost. Same witness: the listener thread must be observed BLOCKED.
+    @Test
+    void raiseCountedStall_aListenerFiringInsideTheRaise_waitsForTheMonitor() {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS - 1).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+
+        var race = new ListenerRace(fixture, 2);
+
+        fixture.backfill().streamExists(race::exists);
+        var last = settled(fixture.backfill().backfill("s", 0));
+        race.finish();
+
+        assertThat(outcomeOf(last)).as("control: the last round did reach the all-stalled state").isEqualTo(BackfillError.General.SOURCE_STALLED);
+        assertThat(race.observed.get()).as("witness: the listener reached the monitor while the raise held it").isEqualTo(Thread.State.BLOCKED);
+        assertThat(alarm.raised()).as("the raise landed before the listener's clear").hasSize(1);
+        assertThat(openWarnings(alarm)).as("and the clear resolved it").isEmpty();
+    }
+
+    /// Stream-existence seam that starts the stream-removed listener on a second thread at its `fireAt`-th call (made while the caller holds the
+    /// monitor) and waits until that thread is BLOCKED or finished, recording which. Every other call answers with `alive`.
+    private final class ListenerRace {
+        final AtomicBoolean alive = new AtomicBoolean(true);
+        final AtomicReference<Thread.State> observed = new AtomicReference<>(Thread.State.NEW);
+        private final Replicas fixture;
+        private final int fireAt;
+        private final AtomicInteger calls = new AtomicInteger();
+        private final Thread listener;
+
+        ListenerRace(Replicas fixture, int fireAt) {
+            this.fixture = fixture;
+            this.fireAt = fireAt;
+            this.listener = new Thread(this::destroy);
+        }
+
+        boolean exists(String streamName) {
+            var answer = alive.get();
+
+            if (calls.incrementAndGet() == fireAt) {
+                listener.start();
+                awaitBlockedOrDone();
+            }
+
+            return answer;
+        }
+
+        private void destroy() {
+            fixture.backfill().clearStalledOf("s");
+            alive.set(false);
+        }
+
+        private void awaitBlockedOrDone() {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+            while (System.nanoTime() < deadline && !blockedOrDone()) {
+                Thread.onSpinWait();
+            }
+
+            observed.set(listener.getState());
+        }
+
+        private boolean blockedOrDone() {
+            var state = listener.getState();
+
+            return state == Thread.State.BLOCKED || state == Thread.State.TERMINATED;
+        }
+
+        void finish() {
+            try {
+                listener.join(10_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    /// #3156 (found by the embedded model, `early`): the stream is destroyed, its listener runs and it is recreated between the moment the last
+    /// stalled round was counted and the moment its raise takes the monitor. The raise belongs to the destroyed incarnation, whose counter the
+    /// listener dropped, so it is refused. The stream-existence predicate is the seam: its second call of the final round is the raise's own check.
+    @Test
+    void raise_afterDestroyAndRecreateBetweenTheLastCountAndTheRaise_isRefused() {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS - 1).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+
+        var calls = new AtomicInteger();
+
+        fixture.backfill().streamExists(_ -> destroyedAndRecreatedOnTheSecondCall(fixture, calls));
+        var last = settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(outcomeOf(last)).as("control: the last round did reach the all-stalled state").isEqualTo(BackfillError.General.SOURCE_STALLED);
+        assertThat(calls.get()).as("control: the seam ran (count, then raise check)").isGreaterThanOrEqualTo(2);
+        assertThat(alarm.raised()).as("no warning for the new incarnation from the old incarnation's rounds").isEmpty();
+    }
+
+    private boolean destroyedAndRecreatedOnTheSecondCall(Replicas fixture, AtomicInteger calls) {
+        if (calls.incrementAndGet() == 2) {
+            fixture.backfill().clearStalledOf("s");
+        }
+
+        return true;
     }
 
     /// #2960: a gate catch-up that FAILS leaves the partition all-stalled, so its warning stays open.
@@ -1405,7 +1633,7 @@ class OwnerCatchupCommittedLineageTest {
     }
 
     private DisownedTail disownedTailFixture(boolean withOther) {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none())));
 
         var registry = ReplicaRegistry.replicaRegistry();
         var served = new CopyOnWriteArrayList<NodeId>();
@@ -1464,7 +1692,7 @@ class OwnerCatchupCommittedLineageTest {
     /// Control: a source whose history follows the committed lineage (its 11-12 are E3's) is installed whole.
     @Test
     void catchUpOwnerFrom_aSourceFollowingTheCommittedLineage_isInstalledWhole() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none())));
 
         var outcome = catchUpFrom(List.of(ProvenanceEntry.provenanceEntry(E1, 0), ProvenanceEntry.provenanceEntry(E3, 11)));
 
@@ -1476,7 +1704,7 @@ class OwnerCatchupCommittedLineageTest {
     /// started: the records of the epoch it succeeds are what it catches up on, whole.
     @Test
     void catchUpOwnerFrom_withTheOwnersEpochPending_installsThePriorEpochsRecordsWhole() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none())));
 
         var outcome = catchUpFrom(List.of(ProvenanceEntry.provenanceEntry(E1, 0)));
 
@@ -1486,7 +1714,7 @@ class OwnerCatchupCommittedLineageTest {
 
     @Test
     void reassignedFrom_isJudgedOnEveryRecordedEpoch_byTheLowestLaterCommittedStart() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L), new EpochStart(E4, 9L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none()), EpochStart.epochStart(E4, 9L, Option.none())));
 
         assertThat(owner.reassignedFrom("s", 0, 0, 12, List.of(ProvenanceEntry.provenanceEntry(E1, 0))))
             .as("the lowest later start, not the first after E1").isEqualTo(Option.some(9L));
@@ -1499,7 +1727,7 @@ class OwnerCatchupCommittedLineageTest {
 
     @Test
     void reassignedFrom_ofARangeEndingBeforeThePage_orAnEmptySlice_isNone() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E2, 3L), new EpochStart(E3, 11L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 3L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none())));
 
         assertThat(owner.reassignedFrom("s", 0, 6, 12, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
                                                                ProvenanceEntry.provenanceEntry(E2, 5),
@@ -1510,7 +1738,7 @@ class OwnerCatchupCommittedLineageTest {
 
     @Test
     void reassignedFrom_ofSeveralClippedRanges_isTheLowestBound() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E2, 2L), new EpochStart(E3, 9L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 2L, Option.none()), EpochStart.epochStart(E3, 9L, Option.none())));
 
         assertThat(owner.reassignedFrom("s", 0, 0, 12, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
                                                                ProvenanceEntry.provenanceEntry(E2, 5))))
@@ -1519,7 +1747,7 @@ class OwnerCatchupCommittedLineageTest {
 
     @Test
     void reassignedFrom_ofARangeEndingExactlyWhereThePageStarts_doesNotJudgeThatRange() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 3L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 3L, Option.none())));
 
         assertThat(owner.reassignedFrom("s", 0, 5, 12, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
                                                                ProvenanceEntry.provenanceEntry(E4, 5))))
@@ -1534,7 +1762,7 @@ class OwnerCatchupCommittedLineageTest {
         var logged = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), LastSealedOffsetSource.none());
 
         logged.createStream(config()).onFailure(cause -> fail(cause.message()));
-        logged.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 5L)));
+        logged.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 5L, Option.none())));
 
         var outcome = catchUpFrom(logged, List.of(ProvenanceEntry.provenanceEntry(E1, 0), ProvenanceEntry.provenanceEntry(E2, 5)));
 
@@ -1553,7 +1781,7 @@ class OwnerCatchupCommittedLineageTest {
         var logged = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), LastSealedOffsetSource.none());
 
         logged.createStream(config()).onFailure(cause -> fail(cause.message()));
-        logged.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 5L)));
+        logged.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 5L, Option.none())));
 
         var outcome = catchUpFrom(logged, List.of(ProvenanceEntry.provenanceEntry(E1, 0), ProvenanceEntry.provenanceEntry(E2, 3)));
 
@@ -1566,7 +1794,7 @@ class OwnerCatchupCommittedLineageTest {
     /// the run short, and the activation stays un-activated.
     @Test
     void catchUpOwnerFrom_aShortUnclippedRun_staysUnactivated() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none())));
 
         var registry = ReplicaRegistry.replicaRegistry();
 

@@ -1835,25 +1835,38 @@ public final class PartitionBackfill {
 
     private Result<Long> reportIfAllStalled(String streamName, int partition, Result<Long> result) {
         if (result.fold(SOURCE_STALLED::equals, _ -> false)) {
-            raiseStalled(streamName, partition);
+            raiseCountedStall(streamName, partition);
         }
 
         return result;
     }
 
+    /// The raise of a round that ended all-stalled (#3156): under [#oversizedOrder], the same monitor [#clearStalledOf] drops the counters
+    /// under, the raise needs the stream to exist and a source's counter to be at [#MAX_STALLED_ROUNDS] NOW. A round of a destroyed
+    /// incarnation that counted its last stalled round before the listener ran finds the counter gone, so it raises nothing in the recreated stream.
+    private Unit raiseCountedStall(String streamName, int partition) {
+        synchronized (oversizedOrder) {
+            return streamExists.test(streamName) && hasStalledSource(partitionKey(streamName, partition))
+                   ? raiseStalled(streamName, partition)
+                   : Unit.unit();
+        }
+    }
+
     /// Raises the all-stalled warning once per episode, under [#oversizedOrder].
     ///
     /// ```tla Stalled:R_Report
-    /// \* reportIfAllStalled -> raiseStalled under the monitor: mayRaiseStalled = the flight is current (one flight:
-    /// \* always) and the stream still exists.
+    /// \* reportIfAllStalled -> raiseCountedStall -> raiseStalled under the monitor: mayRaiseStalled = the flight is current (one
+    /// \* flight: always) and the stream still exists; with the fix "reset" the counter must still be at MAX (a round of a
+    /// \* destroyed incarnation finds it dropped). A raise during a reconcile pass lands after its snapshot (rec "dirty").
     /// R_Report == /\ rpc = "report"
     ///             /\ rpc' = "idle"
-    ///             /\ IF allStalled /\ (exists \/ ~Fix("level"))
+    ///             /\ IF allStalled /\ (exists \/ ~Fix("level")) /\ (cnt >= MAX \/ ~Fix("reset"))
     ///                THEN /\ reported' = TRUE
     ///                     /\ early' = (early \/ (~reported /\ ep < MAX))
     ///                     /\ settled' = FALSE
-    ///                ELSE UNCHANGED <<reported, early, settled>>
-    ///             /\ UNCHANGED <<live, cnt, ep, allStalled, forget, env, rec, recNotHeld>>
+    ///                     /\ rec' = IF rec = "apply" THEN "dirty" ELSE rec
+    ///                ELSE UNCHANGED <<reported, early, settled, rec>>
+    ///             /\ UNCHANGED <<live, cnt, ep, allStalled, forget, env, recNotHeld>>
     /// ```
     Unit raiseStalled(String streamName, int partition) {
         var block = new OwnerActivation.ActivationBlock.CatchupStalled(streamName, partition, MAX_STALLED_ROUNDS);
@@ -1885,8 +1898,10 @@ public final class PartitionBackfill {
         return Unit.unit();
     }
 
-    /// Level trigger of the all-stalled warning (#2960). The guarantee: after a call returns, no open report is for a partition that is not
-    /// all-stalled NOW and held by this node, whatever route took it out of that state. A report stays open only while the stream exists, this
+    /// Level trigger of the all-stalled warning (#2960). The guarantee, settled as of the next reconcile pass (#3155): a pass during which
+    /// nothing changed after its ownership and quarantine snapshot leaves no open report for a partition that is not all-stalled NOW and held by
+    /// this node, whatever route took it out of that state. A flip or a raise landing after the snapshot can leave a report open when the call
+    /// returns; the next pass (the next round, reconcile pass or redrive tick) closes it. A report stays open only while the stream exists, this
     /// node is still a registered replica of the partition and its owner, the partition is not quarantined, and some source's stall counter is
     /// at [#MAX_STALLED_ROUNDS]. Mechanism: every open report is re-derived from live state, so no exit has to be enumerated. Run on every
     /// backfill round, every reconcile pass of the replica set (ownership and membership changes) and every redrive tick; raising stays
@@ -1905,12 +1920,13 @@ public final class PartitionBackfill {
     /// ```
     ///
     /// ```tla Stalled:Rec_Apply
-    /// \* Under the monitor: an open report that is notHeld, or not stalled now (stream, replica, counter), resolves.
-    /// Rec_Apply == /\ rec = "apply"
+    /// \* Under the monitor: an open report that is notHeld, or not stalled now (stream, replica, counter), resolves. The pass
+    /// \* settles only if nothing changed after its snapshot (rec = "apply", not "dirty").
+    /// Rec_Apply == /\ rec \in {"apply", "dirty"}
     ///              /\ rec' = "idle"
     ///              /\ recNotHeld' = FALSE
-    ///              /\ reported' = (reported /\ ~recNotHeld /\ exists /\ replica /\ cnt >= MAX)
-    ///              /\ settled' = TRUE
+    ///              /\ reported' = (reported /\ ~recNotHeld /\ (Fix("recheck") => (exists /\ replica /\ cnt >= MAX)))
+    ///              /\ settled' = (rec = "apply")
     ///              /\ UNCHANGED <<live, cnt, ep, rpc, allStalled, forget, env, early>>
     /// ```
     public Unit reconcileStalled() {
@@ -1955,14 +1971,17 @@ public final class PartitionBackfill {
     }
 
     /// The stream was destroyed (#2960): no partition of it can end its all-stalled state by a later round, so each open report is resolved.
-    /// Called from the stream-removed listener; a stream recreated under the same name starts with no report.
+    /// Called from the stream-removed listener; a stream recreated under the same name starts with no report and no stall round count (#3156),
+    /// so a raise in the new incarnation needs the full [#MAX_STALLED_ROUNDS] stalled rounds again.
     ///
     /// ```tla Stalled:ClearStalledOf
-    /// \* The stream-removed listener (StreamAssembly.forgetRemovedStream -> clearStalledOf) resolves the stream's reports.
+    /// \* The stream-removed listener (StreamAssembly.forgetRemovedStream -> clearStalledOf) resolves the stream's reports and, with
+    /// \* the fix "reset", drops its stall counters (#3156).
     /// ClearStalledOf == /\ forget
     ///                   /\ forget' = FALSE
     ///                   /\ reported' = FALSE
-    ///                   /\ UNCHANGED <<live, cnt, ep, rpc, allStalled, env, settled, early, rec, recNotHeld>>
+    ///                   /\ cnt' = IF Fix("reset") THEN 0 ELSE cnt
+    ///                   /\ UNCHANGED <<live, ep, rpc, allStalled, env, settled, early, rec, recNotHeld>>
     /// ```
     public Unit clearStalledOf(String streamName) {
         synchronized (oversizedOrder) {
@@ -1973,6 +1992,8 @@ public final class PartitionBackfill {
                            .toList()
                            .forEach(key -> clearStalled(key.streamName(),
                                                         key.partition()));
+            stalledRounds.keySet().removeIf(key -> key.streamName()
+                                                      .equals(streamName));
         }
 
         return Unit.unit();
@@ -1990,7 +2011,8 @@ public final class PartitionBackfill {
     ///                 /\ reported' = FALSE
     ///                 /\ rpc' = "idle"
     ///                 /\ UNCHANGED allStalled
-    ///              \/ /\ cnt' = IF cnt < MAX THEN cnt + 1 ELSE MAX
+    ///              \/ /\ exists \/ ~Fix("reset")   \* a stream that no longer exists counts nothing (countStalledRound)
+    ///                 /\ cnt' = IF cnt < MAX THEN cnt + 1 ELSE MAX
     ///                 /\ ep' = IF ep < MAX THEN ep + 1 ELSE MAX
     ///                 /\ allStalled' = (cnt' >= MAX)
     ///                 /\ rpc' = "report"
@@ -2018,18 +2040,29 @@ public final class PartitionBackfill {
             return result;
         }
 
-        var rounds = stalledRounds.computeIfAbsent(key, _ -> new ConcurrentHashMap<>());
-
         if (selfWatermark.localWatermark(streamName, partition) > localWatermark) {
-            rounds.remove(source);
+            Option.option(stalledRounds.get(key)).onPresent(rounds -> rounds.remove(source));
             clearStalled(streamName, partition);
 
             return result;
         }
 
-        return rounds.merge(source, 1, Integer::sum) >= MAX_STALLED_ROUNDS
+        return countStalledRound(streamName, key, source) >= MAX_STALLED_ROUNDS
                ? stalled(streamName, partition, source)
                : result;
+    }
+
+    /// Counts one stalled round of a source and returns the source's count (#3156). The count belongs to one incarnation of the stream: under
+    /// [#oversizedOrder], the same monitor [#clearStalledOf] drops the counters under, a stream that no longer exists counts nothing, so a round
+    /// of a destroyed incarnation still in flight cannot put a counter back after the clear. Returns 0 for a stream that does not exist.
+    private int countStalledRound(String streamName, PartitionKey key, NodeId source) {
+        synchronized (oversizedOrder) {
+            return streamExists.test(streamName)
+                   ? stalledRounds.computeIfAbsent(key,
+                                                   _ -> new ConcurrentHashMap<>())
+                                  .merge(source, 1, Integer::sum)
+                   : 0;
+        }
     }
 
     private static Result<Long> stalled(String streamName, int partition, NodeId source) {
