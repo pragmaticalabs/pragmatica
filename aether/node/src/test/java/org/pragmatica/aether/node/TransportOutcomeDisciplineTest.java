@@ -191,25 +191,67 @@ class TransportOutcomeDisciplineTest {
         @Test
         void citationWithoutAnchor_isRejected(@TempDir Path root) throws IOException {
             Files.writeString(root.resolve("C.java"), "line one\nretry(this::tick)\n");
-            var entries = AllowList.parse("a/B.java | 1 | C.java:2 | reason\n");
+            var entries = AllowList.parse("a/B.java | 1 | C.java | reason\n");
 
             assertThat(violations(Map.of("a/B.java", 1), entries, root)).anyMatch(v -> v.contains("no content anchor"));
         }
 
         @Test
-        void citationWhoseLineDriftedOffItsAnchor_isRejected(@TempDir Path root) throws IOException {
-            Files.writeString(root.resolve("C.java"), "line one\nretry(this::tick)\n");
-            var entries = AllowList.parse("a/B.java | 1 | C.java:1@retry(this::tick) | reason\n");
+        void compensatorThatMoved_staysAccepted(@TempDir Path root) throws IOException {
+            var entries = AllowList.parse("a/B.java | 1 | C.java@retry(this::tick) | reason\n");
 
-            assertThat(violations(Map.of("a/B.java", 1), entries, root)).anyMatch(v -> v.contains("has drifted"));
+            Files.writeString(root.resolve("C.java"), "line one\nretry(this::tick)\nline three\n");
+            assertThat(violations(Map.of("a/B.java", 1), entries, root)).isEmpty();
+
+            Files.writeString(root.resolve("C.java"), "new\nlines\nabove\nline one\nretry(this::tick)\nline three\n");
+            assertThat(violations(Map.of("a/B.java", 1), entries, root)).isEmpty();
         }
 
         @Test
-        void citationOnItsAnchor_isAccepted_singleLineOrRange(@TempDir Path root) throws IOException {
-            Files.writeString(root.resolve("C.java"), "line one\nretry(this::tick)\nline three\n");
-            var entries = AllowList.parse("a/B.java | 1 | C.java:2@retry(this::tick), C.java:1-3@line three | reason\n");
+        void deletedOrRenamedAnchor_isRejected(@TempDir Path root) throws IOException {
+            Files.writeString(root.resolve("C.java"), "line one\nretry(this::tock)\n");
+            var entries = AllowList.parse("a/B.java | 1 | C.java@retry(this::tick) | reason\n");
+
+            assertThat(violations(Map.of("a/B.java", 1), entries, root)).anyMatch(v -> v.contains("no longer contains"));
+        }
+
+        @Test
+        void citedFileThatIsGone_isRejected(@TempDir Path root) {
+            var entries = AllowList.parse("a/B.java | 1 | Gone.java@retry(this::tick) | reason\n");
+
+            assertThat(violations(Map.of("a/B.java", 1), entries, root)).anyMatch(v -> v.contains("names no such file"));
+        }
+
+        @Test
+        void ambiguousAnchorWithoutCount_isRejected(@TempDir Path root) throws IOException {
+            Files.writeString(root.resolve("C.java"), "retry(this::tick)\nother\nretry(this::tick)\n");
+            var entries = AllowList.parse("a/B.java | 1 | C.java@retry(this::tick) | reason\n");
+
+            assertThat(violations(Map.of("a/B.java", 1), entries, root)).anyMatch(v -> v.contains("occurs 2 times"));
+        }
+
+        @Test
+        void ambiguousAnchorWithMatchingCount_isAccepted(@TempDir Path root) throws IOException {
+            Files.writeString(root.resolve("C.java"), "retry(this::tick)\nother\nretry(this::tick)\n");
+            var entries = AllowList.parse("a/B.java | 1 | C.java@retry(this::tick)#2 | reason\n");
 
             assertThat(violations(Map.of("a/B.java", 1), entries, root)).isEmpty();
+        }
+
+        @Test
+        void countThatIsWrong_isRejected(@TempDir Path root) throws IOException {
+            Files.writeString(root.resolve("C.java"), "retry(this::tick)\nother\nretry(this::tick)\nretry(this::tick)\n");
+            var entries = AllowList.parse("a/B.java | 1 | C.java@retry(this::tick)#2 | reason\n");
+
+            assertThat(violations(Map.of("a/B.java", 1), entries, root)).anyMatch(v -> v.contains("occurs 3 times"));
+        }
+
+        @Test
+        void lineNumberCitation_isRejectedWithPointerToTheIssue(@TempDir Path root) throws IOException {
+            Files.writeString(root.resolve("C.java"), "line one\nretry(this::tick)\n");
+            var entries = AllowList.parse("a/B.java | 1 | C.java:2@retry(this::tick) | reason\n");
+
+            assertThat(violations(Map.of("a/B.java", 1), entries, root)).anyMatch(v -> v.contains("cite by anchor, see #3223"));
         }
 
         @Test
