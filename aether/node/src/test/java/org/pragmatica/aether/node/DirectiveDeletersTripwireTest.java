@@ -46,6 +46,7 @@ class DirectiveDeletersTripwireTest {
                                                                      Map.entry("ClusterConfigRoutes.java", "management: a read witness, a reader"),
                                                                      Map.entry("NodeLifecycleRoutes.java", "management: reads the directive, a reader"),
                                                                      Map.entry("AetherNode.java", "the LEGACY route registration (B1), a reader"),
+                                                                     Map.entry("OwnDirectiveRetirement.java", "the worker's halt on the removal of its own directive (#3193), a reader"),
                                                                      Map.entry("WorkerHierarchyAssembly.java", "the worker's own onRemove reaction, a reader"),
                                                                      Map.entry("Fsm2Routes.java", "the FSM2 KV routes, a reader"),
                                                                      Map.entry("GovernorAuthority.java", "a read witness, a reader"));

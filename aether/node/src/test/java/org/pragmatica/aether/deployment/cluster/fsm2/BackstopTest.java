@@ -158,8 +158,8 @@ class BackstopTest {
         var cleanup = w.h.submits(SubmitKind.CLEANUP);
 
         assertThat(cleanup).hasSize(1);
-        assertThat(cleanup.getFirst().transaction().guards()).anyMatch(g -> g.key()
-                                                                             .equals(new NodeDepartureKey(W1)));
+        assertThat(cleanup.getFirst().transaction().mutations()).as("a worker with a directive: the record is removed in the same transaction (exact-value), not guarded")
+                  .anyMatch(m -> m.key().equals(new NodeDepartureKey(W1)) && m.replacement().isEmpty());
         assertThat(w.present(new SliceObservedKey(W1, ORDERS))).isFalse();
         assertThat(w.present(new SliceDesiredKey(W1, ORDERS))).isFalse();
         assertThat(w.present(new NodeRoutesKey(W1, ORDERS))).isFalse();
