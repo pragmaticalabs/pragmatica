@@ -1852,7 +1852,7 @@ public sealed interface StreamAssembly {
                                                                                     Supplier<Set<NodeId>> liveWorkers) {
         record ownership(StreamPartitionManager manager,
                          ReplicaSetController controller,
-                         Supplier<Set<NodeId>> liveWorkers) implements StreamConsumerManager.PartitionOwnership {
+                         Supplier<Set<NodeId>> workerSource) implements StreamConsumerManager.PartitionOwnership {
             @Override
             public Option<Integer> partitionCount(String streamName) {
                 return manager.replicaCatalog()
@@ -1877,7 +1877,7 @@ public sealed interface StreamAssembly {
 
             @Override
             public List<NodeId> liveWorkers() {
-                return List.copyOf(liveWorkers.get());
+                return List.copyOf(workerSource.get());
             }
         }
 
