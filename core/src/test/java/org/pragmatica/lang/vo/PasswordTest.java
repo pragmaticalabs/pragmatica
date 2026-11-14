@@ -339,6 +339,12 @@ class PasswordTest {
         }
 
         @Test
+        void equals_surroundingWhitespaceIsSignificant() {
+            assertNotEquals(new Password("s3cret-value"), new Password(" s3cret-value "));
+            assertNotEquals(new Password(" s3cret-value "), new Password("s3cret-value"));
+        }
+
+        @Test
         void equals_loneSurrogateIsNotQuestionMark() {
             assertNotEquals(new Password("\uD800"), new Password("?"));
         }
