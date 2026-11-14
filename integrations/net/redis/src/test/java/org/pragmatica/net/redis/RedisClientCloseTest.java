@@ -132,9 +132,13 @@ class RedisClientCloseTest {
     void commandsIssuedWhileEveryConnectionIsBeingReopenedWaitInsteadOfSaturating() throws Exception {
         var connectionNumber = new AtomicInteger();
         var firstDropped = new CountDownLatch(1);
+        var clientOpened = new CountDownLatch(1);
 
         server = FakeRedisServer.start(c -> {
             if (connectionNumber.incrementAndGet() == 1) {
+                // Dropping at accept races the client's connect (RST before finishConnect fails open itself):
+                // hold the connection until the client has finished opening it.
+                clientOpened.await();
                 c.drop();
                 firstDropped.countDown();
                 return;
@@ -146,7 +150,8 @@ class RedisClientCloseTest {
         });
         newClient(config(2));
         client.open().await(WAIT).unwrap();
-        firstDropped.await();
+        clientOpened.countDown();
+        assertThat(firstDropped.await(10, TimeUnit.SECONDS)).isTrue();
         Thread.sleep(300);
 
         var calls = new ArrayList<Promise<Long>>();

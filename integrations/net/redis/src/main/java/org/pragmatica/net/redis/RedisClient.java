@@ -6,6 +6,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.ThrowingFn0;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -77,10 +78,12 @@ public final class RedisClient implements RedisCommands {
     }
 
     private static Promise<RedisClient> start(RedisConfig config, Option<SslContext> tls) {
-        return Result.lift(thrown -> connectionFailed(Causes.fromThrowable(thrown)),
-                           () -> new MultiThreadIoEventLoopGroup(Math.min(config.poolSize(),
-                                                                          4),
-                                                                 NioIoHandler.newFactory()))
+        return start(config, tls, () -> new MultiThreadIoEventLoopGroup(Math.min(config.poolSize(), 4), NioIoHandler.newFactory()));
+    }
+
+    /// As above with the event loop group construction supplied, so a construction failure can be forced.
+    static Promise<RedisClient> start(RedisConfig config, Option<SslContext> tls, ThrowingFn0<EventLoopGroup> groups) {
+        return Result.lift(thrown -> connectionFailed(Causes.fromThrowable(thrown)), groups)
                      .async()
                      .flatMap(group -> new RedisClient(config, tls, group).open());
     }

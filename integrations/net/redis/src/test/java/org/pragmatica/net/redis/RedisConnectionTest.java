@@ -5,9 +5,13 @@ import java.util.List;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
+
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -113,7 +117,12 @@ class RedisConnectionTest {
 
     @Test
     void commandAfterTheConnectionWasLostFailsWithoutBeingSent() throws IOException {
-        var conn = open(c -> c.drop());
+        // Dropping at accept races the client's connect: the RST can land before finishConnect completes and
+        // fail open itself. Dropping once the first command arrived means the connection was established.
+        var conn = open(c -> {
+            c.readCommand();
+            c.drop();
+        });
 
         assertThat(kind(conn.incr("a").await(WAIT))).isEqualTo("ConnectionLost");
         assertThat(kind(conn.incr("b").await(WAIT))).isNotEqualTo("success");
@@ -231,5 +240,23 @@ class RedisConnectionTest {
 
         server.close();
         assertThat(kind(RedisConnection.redisConnection(config(port)).await(WAIT))).isEqualTo("ConnectionFailed");
+    }
+
+    @Test
+    void connectionThatNeverGotAChannelClosesAndStopsItsOwnedLoop() {
+        var group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+        var unopened = new RedisConnection(config(1), Option.some(group), RespCodec.MAX_COMMAND);
+
+        assertThat(unopened.channel()).isNull();
+        assertThat(unopened.close().await(WAIT).isSuccess()).isTrue();
+        assertThat(group.isTerminated()).isTrue();
+        assertThat(unopened.isActive()).isFalse();
+    }
+
+    @Test
+    void connectionThatNeverGotAChannelAndOwnsNoLoopStillResolvesClose() {
+        var unopened = new RedisConnection(config(1), Option.none(), RespCodec.MAX_COMMAND);
+
+        assertThat(unopened.close().await(WAIT).isSuccess()).isTrue();
     }
 }

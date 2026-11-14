@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.ThrowingFn0;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -98,7 +99,7 @@ public final class RedisConnection implements RedisCommands {
     /// Assigned by the channel initializer, which runs on the event loop before the first read.
     private volatile Channel channel;
 
-    private RedisConnection(RedisConfig config, Option<EventLoopGroup> ownedGroup, long frameLimit) {
+    RedisConnection(RedisConfig config, Option<EventLoopGroup> ownedGroup, long frameLimit) {
         this.config = config;
         this.ownedGroup = ownedGroup;
         this.frameLimit = frameLimit;
@@ -118,9 +119,14 @@ public final class RedisConnection implements RedisCommands {
     }
 
     private static Promise<RedisConnection> connectOwning(RedisConfig config, Option<SslContext> tls) {
-        return Result.lift(thrown -> connectionFailed(Causes.fromThrowable(thrown)),
-                           () -> new MultiThreadIoEventLoopGroup(1,
-                                                                 NioIoHandler.newFactory()))
+        return connectOwning(config, tls, () -> new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory()));
+    }
+
+    /// As above with the event loop group construction supplied, so a construction failure can be forced.
+    static Promise<RedisConnection> connectOwning(RedisConfig config,
+                                                  Option<SslContext> tls,
+                                                  ThrowingFn0<EventLoopGroup> groups) {
+        return Result.lift(thrown -> connectionFailed(Causes.fromThrowable(thrown)), groups)
                      .async()
                      .flatMap(group -> connect(config,
                                                group,
