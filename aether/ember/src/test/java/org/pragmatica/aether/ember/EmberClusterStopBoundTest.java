@@ -85,6 +85,17 @@ class EmberClusterStopBoundTest {
         assertThat(cluster.exitCodeOf("sb-1")).as("the stop bound expired; the node may still hold its ports").isEqualTo(Option.none());
     }
 
+    /// A node already out of the registry is being stopped by another path (`killNode`); its exit is recorded at once.
+    @Test
+    @Timeout(40)
+    void selfExit_ofANodeAlreadyOutOfTheRegistry_isReportedAtOnce() {
+        var cluster = emberCluster(1, PORT, PORT + 100, "sb");
+
+        cluster.onNodeExit("sb-1", AetherNode.EXIT_DRAINED);
+
+        assertThat(cluster.exitCodeOf("sb-1")).isEqualTo(Option.some(AetherNode.EXIT_DRAINED));
+    }
+
     private static void awaitExitCode(EmberCluster cluster, String id) {
         var deadline = System.nanoTime() + 5_000_000_000L;
 
