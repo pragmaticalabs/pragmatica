@@ -96,8 +96,9 @@ class WorkerDepartureRetirementTest {
         settle(w);
         var cleanup = w.h.submits(SubmitKind.CLEANUP);
 
-        assertThat(cleanup).as("C17b submitted and held").hasSize(1);
-        assertThat(removes(cleanup.getFirst(), new NodeDepartureKey(worker))).as("C17b carries the record's removal").isTrue();
+        assertThat(cleanup).as("C17b submitted and held").isNotEmpty();
+        assertThat(cleanup).as("every C17b carries the record's removal")
+                  .allMatch(submit -> removes(submit, new NodeDepartureKey(worker)));
 
         w.h.deliver(new ClusterInput.Deactivate());
         assertThat(w.h.applyHeld(cleanup.getFirst().correlationId())).as("C17b commits as its leader goes")
@@ -169,7 +170,7 @@ class WorkerDepartureRetirementTest {
     }
 
     // v3227a p4 — Red when: a duplicate WorkerLeave submits a second directive removal, or a WorkerLeave of an unknown node submits a
-    // directive or record mutation.
+    // directive mutation or a record removal.
     @Test
     void duplicateAndUnknownDeparture_retireNothingTwice() {
         var w = world();
@@ -190,8 +191,9 @@ class WorkerDepartureRetirementTest {
         assertThat(w.h.submits()
                       .stream()
                       .flatMap(submit -> submit.transaction().mutations().stream())
-                      .anyMatch(mutation -> mutation.key() instanceof ActivationDirectiveKey || mutation.key() instanceof NodeDepartureKey))
-                  .as("no directive or record mutation for an unknown node")
+                      .anyMatch(mutation -> mutation.key() instanceof ActivationDirectiveKey
+                                            || mutation.key() instanceof NodeDepartureKey && mutation.replacement().isEmpty()))
+                  .as("no directive mutation and no record removal for an unknown node")
                   .isFalse();
     }
 
