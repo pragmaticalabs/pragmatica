@@ -105,6 +105,10 @@ class EmberWorkerStreamConsumerTest {
         commit(registrationKey(), AetherValue.StreamRegistrationValue.streamRegistrationValue(worker, GROUP, false, "java.lang.String"));
         commit(new AetherKey.SliceObservedKey(worker, SLICE), activeObservedRow(worker));
 
+        awaitCondition("the leader's DeploymentMap shows the worker ACTIVE",
+                       () -> leader().deploymentMap().byArtifact(SLICE).containsKey(worker),
+                       this::diagnostics);
+
         var assignment = AetherKey.ConsumerAssignmentKey.consumerAssignmentKey(engineKey(STREAM), 0, GROUP);
 
         awaitUntil(() -> assignee(assignment).equals(Option.some(worker)),
