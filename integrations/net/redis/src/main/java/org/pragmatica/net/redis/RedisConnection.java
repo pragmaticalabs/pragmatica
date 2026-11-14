@@ -44,6 +44,8 @@ import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslHandler;
+import io.netty.util.concurrent.Future;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -132,9 +134,28 @@ public final class RedisConnection implements RedisCommands {
                                                            .millis())
                                        .handler(new Initializer(tls));
 
-        return Promise.promise(promise -> bootstrap.connect(config.host(),
-                                                            config.port())
-                                                   .addListener((ChannelFuture future) -> settleConnect(future, promise)));
+        return Promise.<Channel> promise(promise -> bootstrap.connect(config.host(),
+                                                                      config.port())
+                                                             .addListener((ChannelFuture future) -> settleConnect(future,
+                                                                                                                  promise)))
+                      .flatMap(ch -> tls.fold(() -> Promise.success(ch), _ -> handshaken(ch)));
+    }
+
+    /// With TLS, the connection is handed out only after the handshake succeeded, so a refused
+    /// certificate or a plaintext server is a typed [RedisError.ConnectionFailed] here, not a failure of
+    /// the first command.
+    private static Promise<Channel> handshaken(Channel ch) {
+        return Promise.promise(promise -> ch.pipeline()
+                                            .get(SslHandler.class)
+                                            .handshakeFuture()
+                                            .addListener(future -> settleHandshake(future, ch, promise)));
+    }
+
+    @Contract
+    private static void settleHandshake(Future<?> future, Channel ch, Promise<Channel> promise) {
+        promise.resolve(future.isSuccess()
+                        ? success(ch)
+                        : connectionFailed(Causes.fromThrowable(future.cause())).result());
     }
 
     @Contract

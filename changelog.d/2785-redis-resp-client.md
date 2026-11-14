@@ -1,0 +1,3 @@
+### Added (2026-11-14 — #2785: native RESP2 Redis/Valkey client module `integrations/net/redis`)
+- **New module `redis`**: Netty RESP2 codec, pipelined `RedisConnection` with FIFO reply correlation, bounded lazy `RedisClient` pool, AUTH/SELECT/TLS, PING/GET/SET (EX, PX, NX)/DEL/EXPIRE/PEXPIRE/INCR/MGET/EVAL, sealed `RedisError`, idempotent async `close()`.
+- Per operation: a reply resolves the command it answers (FIFO per connection); a command that fails with `ConnectionLost` or `Timeout` has an unknown outcome and is never retried; no ordering between commands through the pool. Cluster mode, Sentinel, pub-sub and the resource factory are out of scope.

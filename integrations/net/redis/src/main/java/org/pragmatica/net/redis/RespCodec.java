@@ -99,6 +99,11 @@ final class RespCodec {
         return parsed.fold(_ -> true, Option::isPresent);
     }
 
+    /// A reply that is a value: neither "incomplete" nor a violation. An array stops at the first element that is not.
+    private static boolean isValue(Result<Option<RespValue>> parsed) {
+        return parsed.fold(_ -> false, Option::isPresent);
+    }
+
     private static Result<Option<RespValue>> incomplete() {
         return success(none());
     }
@@ -229,7 +234,7 @@ final class RespCodec {
 
             element.onSuccess(parsed -> parsed.onPresent(items::add));
 
-            if (!isComplete(element)) {
+            if (!isValue(element)) {
                 return element;
             }
         }
