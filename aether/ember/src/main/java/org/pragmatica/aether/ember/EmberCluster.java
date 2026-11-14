@@ -140,8 +140,7 @@ public final class EmberCluster {
     private final Map<String, Integer> lastSlotByNodeId = new ConcurrentHashMap<>();
     /// Exit code each node exited with (see [#exitCodeOf]); the latest exit wins for a reused NodeId.
     private final Map<String, Integer> exitCodes = new ConcurrentHashMap<>();
-    /// The latest stop of each killed node (bounded by the kill's timeout, never failing), so a same-address
-    /// [#relaunchNode] starts only after the old process has released its ports (#3251).
+    /// The latest stop of each killed node, bounded by the kill's timeout and never failing; see [#stopOf].
     private final Map<String, Promise<Unit>> stopsByNodeId = new ConcurrentHashMap<>();
     private final int initialClusterSize;
     private final Set<String> localWorkerAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -1332,19 +1331,8 @@ public final class EmberCluster {
     /// (same ports); otherwise the next free slot is taken. Harness-scoped; production never calls this.
     public Promise<NodeId> relaunchNode(String nodeIdStr, boolean sameAddress) {
         var nodeId = nodeId(nodeIdStr).unwrap();
-
-        // A restarted container binds its ports only after the old process has exited. A self-drain exit code is
-        // visible before the drained node's stop completes, so without this wait the new process can fail its QUIC
-        // bind ("Address already in use") and stop with the drain's exit code, indistinguishable from "never
-        // admitted" (#3251).
-        return Option.option(stopsByNodeId.get(nodeIdStr))
-                     .or(Promise::unitPromise)
-                     .flatMap(_ -> relaunchStopped(nodeIdStr, nodeId, sameAddress));
-    }
-
-    private Promise<NodeId> relaunchStopped(String nodeIdStr, NodeId nodeId, boolean sameAddress) {
-        // A stop that timed out never offered its slot back to the pool; the same-address relaunch takes the slot
-        // back directly, and removing it here, after the stop completed, cannot be undone by a late offer.
+        // A force-kill's slot returns to the pool only when the killed node's stop completes, which a
+        // hard kill does not wait for; the same-address relaunch takes the slot back directly.
         var slot = Option.option(lastSlotByNodeId.get(nodeIdStr))
                          .filter(_ -> sameAddress)
                          .onPresent(availableSlots::remove);
@@ -1967,6 +1955,14 @@ public final class EmberCluster {
     /// removed, so a test can read why a node left.
     public Option<Integer> exitCodeOf(String nodeIdStr) {
         return Option.option(exitCodes.get(nodeIdStr));
+    }
+
+    /// The completion of the node's latest stop, already complete for a node that has not been stopped. A node's exit code
+    /// (see [#exitCodeOf]) is visible BEFORE its stop completes, while the process still holds its ports: a same-address
+    /// [#relaunchNode] before this completes can fail its bind and stop with the old process's exit code (#3251).
+    public Promise<Unit> stopOf(String nodeIdStr) {
+        return Option.option(stopsByNodeId.get(nodeIdStr))
+                     .or(Promise::unitPromise);
     }
 
     private void handleSelfDrain(String nodeIdStr) {

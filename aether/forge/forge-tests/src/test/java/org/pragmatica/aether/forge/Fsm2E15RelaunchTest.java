@@ -88,6 +88,9 @@ class Fsm2E15RelaunchTest {
         // The start promise of a refused process never resolves (the node stops during its start; EmberSameIdentityRelaunchTest), so awaiting it
         // only times out (dev11: the test's 10 min bound). The arm observes from the launch; the refusal's evidence is the relaunched process's
         // own exit (a code other than the drain's) and a start that never completed.
+        // The drain's exit code is visible before the drained process has released its ports; a relaunch that races the stop fails
+        // its bind and stops with the drain's own exit code, which the wait below cannot tell from "never admitted" (#3251).
+        assertThat(cluster.stopOf(victim.id()).await(TimeSpan.timeSpan(60).seconds()).isSuccess()).as("the drained process finished stopping").isTrue();
         var launch = cluster.relaunchNode(victim.id(), true);
 
         observe(victim, departed, violations);
