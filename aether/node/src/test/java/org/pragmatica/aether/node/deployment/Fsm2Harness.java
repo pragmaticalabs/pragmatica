@@ -11,6 +11,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -93,6 +94,11 @@ final class Fsm2Harness implements AutoCloseable {
     volatile Runnable selfReadyHook = () -> {};
     /// Run wherever the seams are sampled, which includes the cluster consumer at `Rebuild`: a test that needs that consumer held blocks in it.
     volatile Runnable countedCoresHook = () -> {};
+    /// The membership `source` label per node the seams read (#3172); empty unless a test labels a node.
+    final Map<NodeId, String> memberSources = new ConcurrentHashMap<>();
+    /// Run wherever the member sources are sampled, after the labels were copied: a test that needs the cluster consumer held at `Rebuild`
+    /// with the labels it had then blocks in it.
+    volatile Runnable memberSourceHook = () -> {};
     /// The bound a stop gives each interpreter (design 7, 2b); the design's 10 s unless a test shortens it, before `assembled()`.
     private long stopWaitMs = NodeFsmInterpreter.STOP_WAIT_MS;
     private boolean defaultStopWait;
@@ -228,6 +234,14 @@ final class Fsm2Harness implements AutoCloseable {
         return Set.of(SELF, PEER);
     }
 
+    private Map<NodeId, String> memberSources() {
+        var labels = Map.copyOf(memberSources);
+
+        memberSourceHook.run();
+
+        return labels;
+    }
+
     /// The system of the other role (a worker's for a core, a core's for a worker), for a test that hands it to this wiring.
     Fsm2System foreignRoleSystem() {
         var c = collaborators();
@@ -311,7 +325,7 @@ final class Fsm2Harness implements AutoCloseable {
                                                                    () -> Option.some(Set.of(SELF, PEER)),
                                                                    () -> Option.some(Set.of(SELF, PEER)),
                                                                    Set::of,
-                                                                   Map::of,
+                                                                   this::memberSources,
                                                                    Map::of,
                                                                    Set::of,
                                                                    () -> Set.of(SELF, PEER),
