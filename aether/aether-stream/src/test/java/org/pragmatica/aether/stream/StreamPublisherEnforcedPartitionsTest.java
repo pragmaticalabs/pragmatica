@@ -10,6 +10,7 @@ import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.StreamPublisher;
+import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.serialization.Serializer;
 
@@ -74,7 +75,7 @@ class StreamPublisherEnforcedPartitionsTest {
 
     @SuppressWarnings("unchecked")
     private static StreamPublisher<byte[]> provision(StreamPartitionManager manager, int declared) {
-        Fn1<Object, String> keyOf = bytes -> new String((byte[]) bytes, UTF_8);
+        Fn1<String, Object> keyOf = bytes -> new String((byte[]) bytes, UTF_8);
         var context = ProvisioningContext.provisioningContext()
                                          .withExtension(StreamPartitionManager.class, manager)
                                          .withExtension(Serializer.class, identitySerializer())
