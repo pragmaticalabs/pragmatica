@@ -18,6 +18,7 @@ class KafkaConfigTest {
     void kafkaConfig_invalidInputs_fail() {
         assertThat(KafkaConfig.kafkaConfig("", "c").isFailure()).isTrue();
         assertThat(KafkaConfig.kafkaConfig("nohostport", "c").isFailure()).isTrue();
+        assertThat(KafkaConfig.kafkaConfig("h:123456", "c").isFailure()).isTrue();
         assertThat(KafkaConfig.kafkaConfig("a:9092", " ").isFailure()).isTrue();
     }
 
@@ -33,6 +34,20 @@ class KafkaConfigTest {
                                              timeSpan(1).seconds());
 
         assertThat(result.isFailure()).isTrue();
+    }
+
+    @Test
+    void kafkaConfig_deliveryEqualToRequest_isAccepted() {
+        var result = KafkaConfig.kafkaConfig("a:9092",
+                                             KafkaSecurity.Plaintext.plaintext(),
+                                             Acks.ALL,
+                                             "c",
+                                             timeSpan(10).seconds(),
+                                             timeSpan(10).seconds(),
+                                             timeSpan(1).seconds(),
+                                             timeSpan(1).seconds());
+
+        assertThat(result.isSuccess()).isTrue();
     }
 
     @Test
@@ -80,6 +95,34 @@ class KafkaConfigTest {
                   .containsEntry("delivery.timeout.ms", 30_000);
     }
 
+    /// Four distinct timeouts, so a property wired to the wrong setting cannot pass.
+    private static KafkaConfig distinctTimeouts() {
+        return KafkaConfig.kafkaConfig("a:9092",
+                                       KafkaSecurity.Plaintext.plaintext(),
+                                       Acks.ALL,
+                                       "c",
+                                       timeSpan(7).seconds(),
+                                       timeSpan(21).seconds(),
+                                       timeSpan(3).seconds(),
+                                       timeSpan(5).seconds())
+                          .unwrap();
+    }
+
+    @Test
+    void producerProperties_carryEachTimeoutUnderItsOwnKey() {
+        assertThat(distinctTimeouts().producerProperties()).containsEntry("request.timeout.ms", 7_000)
+                  .containsEntry("delivery.timeout.ms", 21_000)
+                  .containsEntry("max.block.ms", 3_000L);
+    }
+
+    @Test
+    void consumerAndAdminProperties_boundBlockingCallsByRequestTimeout() {
+        assertThat(distinctTimeouts().consumerProperties("g")).containsEntry("default.api.timeout.ms", 7_000)
+                  .containsEntry("request.timeout.ms", 7_000);
+        assertThat(distinctTimeouts().adminProperties()).containsEntry("default.api.timeout.ms", 7_000)
+                  .containsEntry("request.timeout.ms", 7_000);
+    }
+
     @Test
     void consumerProperties_disableAutoCommit() {
         var props = KafkaConfig.kafkaConfig("a:9092", "c").unwrap().consumerProperties("g");
@@ -108,5 +151,35 @@ class KafkaConfigTest {
     @Test
     void sasl_credentialWithQuote_fails() {
         assertThat(KafkaSecurity.Sasl.sasl(KafkaSecurity.Mechanism.PLAIN, "us\"er", "p").isFailure()).isTrue();
+    }
+
+    @Test
+    void sasl_credentialWithBackslash_fails() {
+        assertThat(KafkaSecurity.Sasl.sasl(KafkaSecurity.Mechanism.PLAIN, "us\\er", "p").isFailure()).isTrue();
+        assertThat(KafkaSecurity.Sasl.sasl(KafkaSecurity.Mechanism.PLAIN, "user", "p\\w").isFailure()).isTrue();
+    }
+
+    @Test
+    void security_saslPlaintext_usesTheSaslPlaintextProtocol() {
+        var sasl = KafkaSecurity.Sasl.sasl(KafkaSecurity.Mechanism.PLAIN, "user", "pw").unwrap();
+        var props = KafkaSecurity.SaslPlaintext.saslPlaintext(sasl).properties();
+
+        assertThat(props).containsEntry("security.protocol", "SASL_PLAINTEXT").containsEntry("sasl.mechanism", "PLAIN");
+    }
+
+    @Test
+    void security_ssl_mapsAllFourSettingsAndRedactsBothPasswords() {
+        var ssl = KafkaSecurity.Ssl.ssl(Option.some("/ts.jks"),
+                                        Option.some("ts-secret"),
+                                        Option.some("/ks.jks"),
+                                        Option.some("ks-secret"))
+                                   .unwrap();
+
+        assertThat(ssl.properties()).containsEntry("security.protocol", "SSL")
+                  .containsEntry("ssl.truststore.location", "/ts.jks")
+                  .containsEntry("ssl.truststore.password", "ts-secret")
+                  .containsEntry("ssl.keystore.location", "/ks.jks")
+                  .containsEntry("ssl.keystore.password", "ks-secret");
+        assertThat(ssl.toString()).doesNotContain("ts-secret").doesNotContain("ks-secret");
     }
 }

@@ -3,16 +3,21 @@ package org.pragmatica.kafka;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.MockConsumer;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.header.internals.RecordHeaders;
+import org.apache.kafka.common.record.TimestampType;
 import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -76,6 +81,50 @@ class KafkaConsumerClientTest {
 
             return ConsumerRecords.empty();
         }
+    }
+
+    /// Consumer that remembers the timeout of its last `poll`.
+    private static final class TimedPoll extends MockConsumer<byte[], byte[]> {
+        final AtomicReference<Duration> timeout = new AtomicReference<>();
+
+        TimedPoll() {
+            super("earliest");
+        }
+
+        @Override
+        public synchronized ConsumerRecords<byte[], byte[]> poll(Duration timeout) {
+            this.timeout.set(timeout);
+
+            return super.poll(timeout);
+        }
+    }
+
+    @Test
+    void poll_fetchedRecord_carriesTimestampKeyAndTheRequestedTimeout() {
+        var consumer = new TimedPoll();
+        var client = KafkaConsumerClient.kafkaConsumerClient(consumer, CONFIG);
+
+        consumer.updateBeginningOffsets(Map.of(new TopicPartition("t", 0), 0L));
+        assertThat(client.assign(List.of(P0)).await().isSuccess()).isTrue();
+        consumer.addRecord(new ConsumerRecord<>("t",
+                                                0,
+                                                0L,
+                                                1234L,
+                                                TimestampType.CREATE_TIME,
+                                                1,
+                                                1,
+                                                new byte[]{7},
+                                                new byte[]{8},
+                                                new RecordHeaders(),
+                                                Optional.empty()));
+        var fetched = client.poll(timeSpan(250).millis()).await().unwrap();
+
+        assertThat(consumer.timeout.get()).isEqualTo(Duration.ofMillis(250));
+        assertThat(fetched).hasSize(1);
+        assertThat(fetched.getFirst().timestamp()).isEqualTo(1234L);
+        assertThat(fetched.getFirst().key().or(new byte[0])).containsExactly(7);
+        assertThat(fetched.getFirst().value()).containsExactly(8);
+        assertThat(fetched.getFirst().partition()).isEqualTo(P0);
     }
 
     private static void awaitQuietly(CountDownLatch latch) {

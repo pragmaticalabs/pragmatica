@@ -1,6 +1,8 @@
 package org.pragmatica.kafka;
 
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -21,6 +23,7 @@ import org.apache.kafka.common.errors.NotEnoughReplicasException;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.junit.jupiter.api.Test;
 
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
@@ -111,6 +114,56 @@ class KafkaProducerClientTest {
     }
 
     @Test
+    void send_synchronousRetriableFailureAfterDispatch_failsOutcomeUnknown() {
+        var client = KafkaProducerClient.kafkaProducerClient(new ThrowingSend(), CONFIG);
+
+        assertThat(failureOf(client)).isInstanceOf(KafkaError.OutcomeUnknown.class);
+    }
+
+    @Test
+    void send_withoutPartitionOrKey_handsKafkaNeither() {
+        var mock = new Capturing();
+        var client = KafkaProducerClient.kafkaProducerClient(mock, CONFIG);
+        var bare = OutboundRecord.outboundRecord("t", Option.none(), Option.none(), new byte[]{1}).unwrap();
+
+        assertThat(client.send(bare).await().isSuccess()).isTrue();
+        assertThat(mock.seen.getFirst().partition()).isNull();
+        assertThat(mock.seen.getFirst().key()).isNull();
+    }
+
+    @Test
+    void send_withPartitionAndKey_handsKafkaBoth() {
+        var mock = new Capturing();
+        var client = KafkaProducerClient.kafkaProducerClient(mock, CONFIG);
+        var keyed = OutboundRecord.outboundRecord("t", Option.some(1), Option.some(new byte[]{7}), new byte[]{1}).unwrap();
+
+        assertThat(client.send(keyed).await().isSuccess()).isTrue();
+        assertThat(mock.seen.getFirst().partition()).isEqualTo(1);
+        assertThat(mock.seen.getFirst().key()).containsExactly(7);
+        assertThat(mock.seen.getFirst().value()).containsExactly(1);
+    }
+
+    @Test
+    void send_twice_receiptOffsetsAdvance() {
+        var client = KafkaProducerClient.kafkaProducerClient(producer(true), CONFIG);
+
+        assertThat(client.send(record()).await().unwrap().offset()).isZero();
+        assertThat(client.send(record()).await().unwrap().offset()).isEqualTo(1L);
+    }
+
+    @Test
+    void flush_completesRecordsStillInFlight() {
+        var mock = producer(false);
+        var client = KafkaProducerClient.kafkaProducerClient(mock, CONFIG);
+        var pending = client.send(record());
+
+        awaitSent(mock);
+        assertThat(client.flush().await().isSuccess()).isTrue();
+        assertThat(mock.flushed()).isTrue();
+        assertThat(pending.await(timeSpan(5).seconds()).isSuccess()).isTrue();
+    }
+
+    @Test
     void send_afterClose_isRefusedWithoutSending() {
         var mock = producer(true);
         var client = KafkaProducerClient.kafkaProducerClient(mock, CONFIG);
@@ -160,6 +213,33 @@ class KafkaProducerClientTest {
             inSend.countDown();
             awaitQuietly(release);
             throw new KafkaException("Producer closed while send in progress");
+        }
+    }
+
+    /// Producer that keeps the records exactly as the client handed them over.
+    private static final class Capturing extends MockProducer<byte[], byte[]> {
+        final List<ProducerRecord<byte[], byte[]>> seen = new CopyOnWriteArrayList<>();
+
+        Capturing() {
+            super(true, new FirstPartition(), new ByteArraySerializer(), new ByteArraySerializer());
+        }
+
+        @Override
+        public synchronized Future<RecordMetadata> send(ProducerRecord<byte[], byte[]> record, Callback callback) {
+            seen.add(record);
+            return super.send(record, callback);
+        }
+    }
+
+    /// Producer whose `send` fails synchronously with a retriable broker-side error.
+    private static final class ThrowingSend extends MockProducer<byte[], byte[]> {
+        ThrowingSend() {
+            super(true, new FirstPartition(), new ByteArraySerializer(), new ByteArraySerializer());
+        }
+
+        @Override
+        public synchronized Future<RecordMetadata> send(ProducerRecord<byte[], byte[]> record, Callback callback) {
+            throw new DisconnectException("sync");
         }
     }
 

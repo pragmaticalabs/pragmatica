@@ -23,6 +23,11 @@ class KafkaErrorTest {
     }
 
     @Test
+    void fromSend_topicTimeoutWithoutTheMetadataPhrase_isOutcomeUnknown() {
+        assertThat(KafkaError.fromSend(new TimeoutException("Topic t expired after 3000 ms"))).isInstanceOf(KafkaError.OutcomeUnknown.class);
+    }
+
+    @Test
     void fromSend_deliveryTimeout_isOutcomeUnknown() {
         assertThat(KafkaError.fromSend(new TimeoutException("Expiring 1 record(s) for t-0: 3000 ms has passed since batch creation"))).isInstanceOf(KafkaError.OutcomeUnknown.class);
     }
