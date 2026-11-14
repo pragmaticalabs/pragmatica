@@ -1621,8 +1621,10 @@ public class RabiaEngine<C extends Command> {
             log.info("Node {} paused (quorum lost) while synchronising. Nothing persisted. currentPhase={}",
                      self,
                      currentPhase.get());
+
             return;
         }
+
         saveState().onSuccessRun(() -> log.info("Node {} paused (quorum lost). State retained, snapshot persisted. currentPhase={}, pendingBatches={}",
                                                 self,
                                                 currentPhase.get(),
