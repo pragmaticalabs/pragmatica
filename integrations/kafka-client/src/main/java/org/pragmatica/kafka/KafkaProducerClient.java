@@ -84,7 +84,16 @@ public final class KafkaProducerClient {
                         .continueOn();
     }
 
+    /// A queued send that reaches the front after the close began is refused here, before the producer is touched: the
+    /// producer may not be closed yet (the closer thread races the submitter), and sending then would hand the record
+    /// over after `close()` was called.
     private Result<Unit> dispatch(OutboundRecord record, Promise<SendReceipt> receipt) {
+        return lifecycle.isClosing()
+               ? KafkaError.General.CLOSED.result()
+               : handOver(record, receipt);
+    }
+
+    private Result<Unit> handOver(OutboundRecord record, Promise<SendReceipt> receipt) {
         return Result.lift(this::classifySend,
                            () -> producer.send(toKafka(record),
                                                (metadata, failure) -> complete(receipt, metadata, failure)))
