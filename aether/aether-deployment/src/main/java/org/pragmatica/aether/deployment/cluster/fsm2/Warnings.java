@@ -612,9 +612,7 @@ public sealed interface Warnings {
     private static ClusterModel replayedLate(ClusterModel m, Ctx ctx, FsmWarningKey key, FsmWarningValue value) {
         var from = ctx.effectCount();
 
-        return heldBefore(replay(m, ctx, key, value),
-                          key,
-                          ctx.withdraw(from, Warnings::isFamilyWarn));
+        return heldBefore(replay(m, ctx, key, value), key, ctx.withdraw(from, Warnings::isFamilyWarn));
     }
 
     /// #3274 (item 3): a late row is older, in commit order, than every held warning of its key that no accepted write carries. Each such
@@ -629,7 +627,8 @@ public sealed interface Warnings {
 
         m.warningsHeld = Stream.of(m.warningsHeld.subList(0, at),
                                    replayed,
-                                   m.warningsHeld.subList(at, m.warningsHeld.size()))
+                                   m.warningsHeld.subList(at,
+                                                          m.warningsHeld.size()))
                                .flatMap(List::stream)
                                .toList();
         m.warningsDirty = m.warningsDirty || !replayed.isEmpty();
