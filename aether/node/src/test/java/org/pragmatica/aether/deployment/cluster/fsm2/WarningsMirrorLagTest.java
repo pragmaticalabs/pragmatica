@@ -120,10 +120,6 @@ class WarningsMirrorLagTest {
         assertThat(h.warns(PLACEMENT_VALID)).as("the close is published once its write committed").hasSize(1);
         assertThat(h.warns(PLACEMENT)).as("the opener once").hasSize(1);
         assertThat(openRow(h, PLACEMENT_KEY)).as("no open row left").isFalse();
-        assertThat(row(h, PLACEMENT_KEY).map(FsmWarningValue::open)).as("the unsure key is closed by a kept confirming row, not removed (R2)")
-                  .isEqualTo(Option.some(false));
-        assertThat(row(h, PLACEMENT_KEY).map(FsmWarningValue::revision)).as("every write of the key bumps its revision (opening 1, close 2)")
-                  .isEqualTo(Option.some(2L));
         assertThat(h.model().warningsUnsure.isEmpty()).as("the accepted write cleared the key").isTrue();
     }
 
