@@ -118,7 +118,9 @@ public final class EngineMarkerGuard {
     private final OperatorWarningSink warnings;
     private final Consumer<String> exit;
     private final Map<String, List<Runnable>> parked = new LinkedHashMap<>();
-    /// Serializes the actions; held while one runs, never by a thread that is only deciding.
+    /// Serializes the actions; held while one runs. A thread that only decides takes it in one case: an evaluation that finds drained work
+    /// pending (its own opening, or an earlier opening whose thread has not yet got the lock, #3270) queues on it to run that work, and may then
+    /// run nothing, because another thread ran the work first or a refusal dropped it (#3271).
     private final ReentrantLock running = new ReentrantLock();
     private List<Runnable> drained = List.of();
     private State state = State.WAITING;
@@ -171,7 +173,9 @@ public final class EngineMarkerGuard {
 
     /// Runs `action` now if the guard is open; otherwise parks it under `name`, replacing everything parked under that name (an activation
     /// is level-triggered: a later `Deactivate` supersedes a parked `Activate`, and a parked `Deactivate`-then-`Activate` pair). Parked actions
-    /// run, in the order they were first parked, when the guard opens; a refused node drops them.
+    /// run, in the order they were first parked, when the guard opens. A refused node drops them (#3271): the parked ones, and the drained ones
+    /// an opening has not yet run, whether still pending or already handed to a thread; each drained action checks for a refusal just before it
+    /// runs. What the refusal cannot stop is an action already started, or past that check, when it lands: that one runs to completion.
     @Contract
     public void whenOpen(String name, Runnable action) {
         running.lock();
@@ -256,12 +260,26 @@ public final class EngineMarkerGuard {
         parked.put(name, sequence);
     }
 
+    /// Hands the drained work out, each action behind a refusal check (#3271): a refusal that lands while an earlier action of the same batch
+    /// runs drops the rest.
     private synchronized List<Runnable> takeDrained() {
         var actions = drained;
 
         drained = List.of();
 
-        return actions;
+        return actions.stream()
+                      .map(this::unlessRefused)
+                      .toList();
+    }
+
+    private Runnable unlessRefused(Runnable action) {
+        return () -> runUnlessRefused(action);
+    }
+
+    private void runUnlessRefused(Runnable action) {
+        if (state() != State.REFUSED) {
+            action.run();
+        }
     }
 
     /// With `running` held: the actions that were parked when the guard opened run first, in the order they were first parked, so an action
@@ -362,6 +380,7 @@ public final class EngineMarkerGuard {
     private void refuse() {
         state = State.REFUSED;
         parked.clear();
+        drained = List.of();
         var reason = describe();
 
         log.error("[{}] {} The node refuses itself and exits.",
