@@ -35,6 +35,7 @@ class Http1ConnectionCloseHeaderTest {
     private static final String DUPLICATE_HOST = "GET /first HTTP/1.1\r\nHost: localhost\r\nHost: evil.example\r\n\r\n";
     private static final String CLOSE_REQUEST = "GET /first HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
     private static final String KEEP_ALIVE_REQUEST = "GET /first HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    private static final String HTTP10_REQUEST = "GET /first HTTP/1.0\r\nHost: localhost\r\n\r\n";
 
     @Test
     void duplicateHost400_carriesConnectionClose() throws IOException {
@@ -60,9 +61,31 @@ class Http1ConnectionCloseHeaderTest {
         assertThat(head.toLowerCase()).doesNotContain("connection: close");
     }
 
+    @Test
+    void ok200_carriesConnectionHeaderOnce_whenHandlerSetsKeepAliveOnClosingResponse() throws IOException {
+        var head = exchange(CLOSE_REQUEST, false, (request, writer) -> writer.header("Connection", "keep-alive").ok("{}"));
+
+        assertThat(head).startsWith("HTTP/1.1 200");
+        assertThat(head.toLowerCase().split("connection:", -1)).hasSize(2);
+        assertThat(head.toLowerCase()).contains("connection: close").doesNotContain("keep-alive");
+    }
+
+    @Test
+    void ok200_carriesConnectionClose_whenRequestIsHttp10WithoutKeepAlive() throws IOException {
+        var head = exchange(HTTP10_REQUEST, false);
+
+        assertThat(head).startsWith("HTTP/1.1 200");
+        assertThat(head.toLowerCase()).contains("connection: close");
+    }
+
     /// Returns the response head; a keep-alive exchange is read up to the blank line, as the server leaves the socket open.
     private static String exchange(String raw, boolean keepOpen) throws IOException {
-        BiConsumer<HttpRequest, ResponseWriter> handler = (request, writer) -> writer.ok("{}");
+        return exchange(raw, keepOpen, (request, writer) -> writer.ok("{}"));
+    }
+
+    private static String exchange(String raw,
+                                   boolean keepOpen,
+                                   BiConsumer<HttpRequest, ResponseWriter> handler) throws IOException {
         var config = HttpServerConfig.httpServerConfig("close-header", 0);
         var server = HttpServer.httpServer(config, handler).await(timeSpan(10).seconds()).unwrap();
 
