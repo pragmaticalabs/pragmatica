@@ -14,6 +14,7 @@
 package org.pragmatica.postgres;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -55,11 +56,17 @@ public class PgConnection implements Connection {
     public class PgPreparedStatement implements PreparedStatement {
         private final String sname;
         private final String sql;
+        private final Oid[] parametersTypes;
         private Columns columns;
 
-        PgPreparedStatement(String sname, String sql) {
+        PgPreparedStatement(String sname, String sql, Oid[] parametersTypes) {
             this.sname = sname;
             this.sql = sql;
+            this.parametersTypes = parametersTypes.clone();
+        }
+
+        boolean hasParametersTypes(Oid[] types) {
+            return Arrays.equals(parametersTypes, types);
         }
 
         String sname() {
@@ -282,12 +289,24 @@ public class PgConnection implements Connection {
         if (statementCache != null) {
             var cached = statementCache.get(sql);
 
-            if (cached != null) {
+            if (cached != null && cached.hasParametersTypes(parametersTypes)) {
                 return Promise.success(cached);
+            }
+
+            if (cached != null) {
+                return reprepare(cached, sql, parametersTypes);
             }
         }
 
         return preparedStatementOf(sql, parametersTypes);
+    }
+
+    // The cache is keyed by SQL text, but a statement is bound to the parameter types it was parsed with:
+    // on a type mismatch the cached statement is evicted and closed, then the SQL is parsed again.
+    private Promise<? extends PreparedStatement> reprepare(PgPreparedStatement stale, String sql, Oid[] parametersTypes) {
+        statementCache.remove(sql);
+        return stale.closeOnServer()
+                    .flatMap(_ -> preparedStatementOf(sql, parametersTypes));
     }
 
     Promise<PgPreparedStatement> preparedStatementOf(String sql, Oid... parametersTypes) {
@@ -302,7 +321,7 @@ public class PgConnection implements Connection {
         var statementName = preparedStatementNames.next();
 
         return stream.send(new Parse(sql, statementName, parametersTypes))
-                     .map(_ -> new PgPreparedStatement(statementName, sql));
+                     .map(_ -> new PgPreparedStatement(statementName, sql, parametersTypes));
     }
 
     @Override
