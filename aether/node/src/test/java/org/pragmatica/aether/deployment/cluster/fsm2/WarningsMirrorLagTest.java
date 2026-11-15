@@ -4,17 +4,21 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Disabled;
@@ -537,6 +541,74 @@ class WarningsMirrorLagTest {
                                         .or(false)).as("with the CLEAR row, not a removal (#3274)").isTrue();
         assertThat(h.warns(PLACEMENT)).as("this node never opened it").isEmpty();
         assertThat(h.warns(PLACEMENT_VALID)).as("nor closed it").isEmpty();
+    }
+
+    private static final FsmWarningValue STALE_OPEN = FsmWarningValue.fsmWarningValue(Map.of(), true, Option.some("stale"), Option.none(), 1L);
+
+    private static ClusterModel.TxDraft failedWrite(FsmWarningValue replacement) {
+        return ClusterModel.TxDraft.draft(WARNINGS,
+                                          KEY,
+                                          List.of(new KVCommand.Mutation<AetherKey, AetherValue>(KEY,
+                                                                                                 Option.none(),
+                                                                                                 Option.some(replacement))));
+    }
+
+    /// An unsure key is cleared only by the value the stale write would have left. Red when: any mirror row clears it (`observed` compares
+    /// the write's replacement with itself), so a stale write can still commit over a key believed current.
+    @Test
+    void unsureKey_staysUnsureWhileTheMirrorShowsAValueOtherThanTheStaleWritesReplacement() {
+        var m = new ClusterModel();
+
+        Warnings.unconfirmed(m, failedWrite(STALE_OPEN));
+        Warnings.indexRow(m, KEY, Warnings.CLEAR);
+        assertThat(m.warningsUnsure.containsKey(KEY)).as("a different value does not show the stale write committed").isTrue();
+        Warnings.indexRow(m, KEY, STALE_OPEN);
+        assertThat(m.warningsUnsure.containsKey(KEY)).as("its own replacement does").isFalse();
+    }
+
+    /// Two unsettled writes of one key with different replacements: either may commit, so one observed value settles neither. Red when:
+    /// the later write's row replaces the doubt (`unsure` merge keeps the row), so its replacement showing in the mirror clears the key
+    /// while the earlier write may still commit.
+    @Test
+    void keyOfTwoDisagreeingUnsettledWrites_isNotClearedByOneObservedReplacement() {
+        var m = new ClusterModel();
+
+        Warnings.unconfirmed(m, failedWrite(STALE_OPEN));
+        Warnings.unconfirmed(m, failedWrite(Warnings.CLEAR));
+        Warnings.indexRow(m, KEY, Warnings.CLEAR);
+        assertThat(m.warningsUnsure.containsKey(KEY)).as("the other write may still commit").isTrue();
+    }
+
+    /// The confirming write of an unsure key whose family set still wants its row open (the new incarnation adopted an open row and the
+    /// condition holds) rewrites that row, not [Warnings#CLEAR]. Red when: the confirming write always closes: a live warning is closed
+    /// in the KV store while the family set holds it open.
+    @Test
+    void confirmingWriteOfAnUnsureKeyWhoseWarningIsOpen_keepsTheRowOpen() {
+        var h = openRowCommitted();
+
+        h.deliver(new ClusterInput.Deactivate());
+        h.activate();
+        assertThat(h.model().warningsUnsure.containsKey(PLACEMENT_KEY)).as("precondition: Rebuild marked the mirrored key unsure").isTrue();
+        settleAll(h);
+        assertThat(h.model().warningsUnsure.isEmpty()).as("the confirming write was accepted").isTrue();
+        assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("the warning is still open").isTrue();
+        assertThat(openRow(h, PLACEMENT_KEY)).as("and so is its row").isTrue();
+        assertThat(row(h, PLACEMENT_KEY).map(FsmWarningValue::revision).or(0L)).as("rewritten under the next revision").isGreaterThan(1L);
+    }
+
+    /// An unsure key that neither family set names and the mirror lacks (its opening failed and never committed, then the condition went
+    /// away) has nothing to write; it still needs its confirming write, or `settled` is false for ever. Red when: `current` lacks the
+    /// absent-from-both case: the key stays unsure.
+    @Test
+    void unsureKeyAbsentFromBothTheFamilySetsAndTheMirror_isConfirmedByAClose() {
+        var h = openingInFlight();
+        var opening = warningsWrite(h);
+
+        h.settleHeld(opening, new Settlement.Failed("ApplyTimeout"));
+        placement(h, "CORE_ONLY");
+        settleAll(h);
+        assertThat(h.model().warningsUnsure.isEmpty()).as("the key was confirmed, not left unsure for ever").isTrue();
+        assertThat(row(h, PLACEMENT_KEY).map(kept -> sameContent(kept, Warnings.CLEAR)).or(false)).as("by the CLEAR row").isTrue();
     }
 
     /// Item 3 of #3274 (the `onPut` path): the successor raises `e` while suspended, then the deposed leader's row carrying both markers
