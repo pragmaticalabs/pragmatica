@@ -711,4 +711,54 @@ class WarningsMirrorLagTest {
         assertThat(events.getFirst()).as("the raise the accepted write committed comes first").isEqualTo(OPENER);
         assertThat(events).as("the replayed recovery follows it").containsSubsequence(OPENER, RECOVERY);
     }
+
+    /// Item 3b (the tla3274d trace): while the successor is suspended, the deposed leader's two rows of `e` commit and are replayed late,
+    /// in commit order: first a tombstone (`[e up, e down]`), then an open row (`[e up]`); the condition holds `e` and the successor
+    /// resumes. Red when: the second replay is inserted before the first one's entries (a per-key search that cannot tell a late replay
+    /// from an own warning), so `up, up, down` is published while the row is open.
+    @Test
+    void twoLateReplaysOfOneKey_arePublishedInCommitOrder() {
+        var h = suspendedSuccessor(Option.none());
+
+        h.seed(KEY,
+               FsmWarningValue.fsmWarningValue(Map.of(), false, Option.some("up"), Option.some("down"), 1L));
+        h.drain();
+        h.seed(KEY,
+               FsmWarningValue.fsmWarningValue(Map.of(), true, Option.some("up again"), Option.none(), 2L));
+        h.drain();
+        assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("precondition: the open row is adopted").isTrue();
+        LcSupport.node(h, CORE_1, 11L).fails(ORDERS, false);
+        h.drain();
+        assertThat(h.model().warningsHeld).as("precondition: the condition raises nothing new over the adopted key").hasSize(3);
+        resume(h);
+        h.deliver(new ClusterInput.Reconcile());
+
+        assertThat(publishedRetryEvents(h)).as("both late episodes, in commit order").containsExactly(OPENER, RECOVERY, OPENER);
+        assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("e stays in the family set").isTrue();
+        assertThat(openRow(h, KEY)).as("the committed row is open").isTrue();
+    }
+
+    /// Item 3b, across keys: the successor raises `e` (its own warning, unlanded) while suspended, then the deposed leader's open row of
+    /// another key (`invalid-placement`) commits and is replayed late. The late row is older in commit order than every own unlanded
+    /// warning, whatever its key. Red when: the replay is held after the own raise (appended, or searched for per key).
+    @Test
+    void lateReplayOfAnotherKey_isPublishedBeforeTheSuccessorsOwnUnlandedWarning() {
+        var h = suspendedSuccessor(Option.none());
+
+        LcSupport.node(h, CORE_1, 11L).fails(ORDERS, false);
+        h.drain();
+        assertThat(h.model().warningsHeld).as("precondition: the own raise of e is held").hasSize(1);
+        h.seed(PLACEMENT_KEY,
+               FsmWarningValue.fsmWarningValue(Map.of(), true, Option.some("late placement"), Option.none(), 1L));
+        h.drain();
+        assertThat(h.model().warningsHeld).as("precondition: the late placement opener is held").hasSize(2);
+        resume(h);
+        var codes = h.effects(ClusterEffect.Warn.class)
+                     .stream()
+                     .map(ClusterEffect.Warn::code)
+                     .filter(code -> code.equals(PLACEMENT) || code.equals(OPENER))
+                     .toList();
+
+        assertThat(codes).as("the late replay is published before the own raise").startsWith(PLACEMENT, OPENER);
+    }
 }

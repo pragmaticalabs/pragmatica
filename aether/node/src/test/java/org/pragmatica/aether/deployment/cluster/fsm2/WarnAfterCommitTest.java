@@ -820,10 +820,12 @@ class WarnAfterCommitTest {
         m.warningsHeld = List.of(new ClusterEffect.Warn(OPENER, ORDERS.asString(), "held"));
         m.warningsCovered = 1;
         m.warningsLanded = 1;
+        m.warningsLateEnd = 1;
         var c = m.copy();
 
         assertThat(c.warningsHeld).isEqualTo(m.warningsHeld);
         assertThat(c.warningsCovered).isEqualTo(1);
         assertThat(c.warningsLanded).isEqualTo(1);
+        assertThat(c.warningsLateEnd).isEqualTo(1);
     }
 }

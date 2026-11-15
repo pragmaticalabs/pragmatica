@@ -209,6 +209,10 @@ public final class ClusterModel {
     int warningsCovered;
     /// #3085: how many of `warningsHeld` an accepted WARNINGS transaction committed: published at the end of the step (`Warnings.noteRaised`).
     int warningsLanded;
+    /// #3274 (item 3): the end of the late replays in `warningsHeld`. The held list is in commit order: `[0, warningsLanded)` committed by
+    /// an accepted write of this node, `[warningsLanded, warningsLateEnd)` rows another writer committed, replayed late in arrival order
+    /// (`Warnings.onPut`), `[warningsLateEnd, size)` this node's own warnings no accepted write carries (`Warnings.heldBefore`).
+    int warningsLateEnd;
     /// #3274: the WARNINGS keys whose committed value this leader cannot vouch for: a WARNINGS write of this node that failed or expired
     /// may still commit, and a `Rebuild` cannot see a batch of the previous incarnation still in consensus. While any key is here,
     /// `Warnings.settled` is false (`Warnings.publish`).
@@ -331,6 +335,7 @@ public final class ClusterModel {
         c.warningsHeld = warningsHeld;
         c.warningsCovered = warningsCovered;
         c.warningsLanded = warningsLanded;
+        c.warningsLateEnd = warningsLateEnd;
         c.warningsUnsure = warningsUnsure.rebound(meter);
         c.submitted = submitted.rebound(meter);
         c.outbox = outbox;

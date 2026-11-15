@@ -10,7 +10,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -245,6 +244,7 @@ public sealed interface Warnings {
         m.warningsHeld.subList(0, count).forEach(ctx::emit);
         m.warningsHeld = List.copyOf(m.warningsHeld.subList(count, m.warningsHeld.size()));
         m.warningsLanded = 0;
+        m.warningsLateEnd = Math.max(m.warningsLateEnd - count, 0);
         m.warningsDirty = m.warningsDirty || count > 0;
 
         return m;
@@ -346,6 +346,7 @@ public sealed interface Warnings {
     private static ClusterModel committed(ClusterModel m) {
         m.warningsLanded = m.warningsCovered;
         m.warningsCovered = 0;
+        m.warningsLateEnd = Math.max(m.warningsLateEnd, m.warningsLanded);
 
         return m;
     }
@@ -598,7 +599,8 @@ public sealed interface Warnings {
     /// next successor, which replays the same committed row. A tombstone over a key this node adopted open is not un-adopted: its recovery
     /// is published, and the family's own check closes the key in this node's set (a repeated recovery).
     ///
-    /// #3274 (item 3): the replayed warnings are held before this node's own held warnings of the key (`heldBefore`), not after them.
+    /// #3274 (item 3): the replayed warnings are held after the earlier late replays and before this node's own unlanded warnings
+    /// (`heldBefore`), not after them.
     static ClusterModel onPut(ClusterModel m, Ctx ctx, FsmWarningKey key, FsmWarningValue value) {
         var late = Lifecycle.isSuspended(m, ctx) && !inFlight(m) && !m.warningRows.get(key).equals(Option.some(value));
 
@@ -612,18 +614,29 @@ public sealed interface Warnings {
     private static ClusterModel replayedLate(ClusterModel m, Ctx ctx, FsmWarningKey key, FsmWarningValue value) {
         var from = ctx.effectCount();
 
-        return heldBefore(replay(m, ctx, key, value), key, ctx.withdraw(from, Warnings::isFamilyWarn));
+        return heldBefore(replay(m, ctx, key, value), ctx.withdraw(from, Warnings::isFamilyWarn));
     }
 
-    /// #3274 (item 3): a late row is older, in commit order, than every held warning of its key that no accepted write carries. Each such
-    /// warning reaches the KV store only through a later write of this node, whose CAS expects the value this node mirrors: had that write
-    /// committed first, the late row's CAS would have been refused (a key never returns to an earlier value), so the late row committed
-    /// first and that write is refused, re-read and re-drafted over it. The replayed warnings therefore go before the first such warning
-    /// of the key, and never before the prefix an accepted write committed (`warningsLanded`, kept while another node leads), which is
-    /// older than the late row. Appended after an own raise, a replayed `[up, down]` would publish the warning closed while the condition,
-    /// the family set and the re-drafted row hold it open.
-    private static ClusterModel heldBefore(ClusterModel m, FsmWarningKey key, List<ClusterEffect.Warn> replayed) {
-        var at = firstUnlanded(m, key);
+    /// #3274 (item 3): the held list is in commit order, one boundary per segment:
+    ///
+    /// | segment | what it holds | ordered by |
+    /// |---|---|---|
+    /// | `[0, warningsLanded)` | the prefix an accepted write of this node committed (kept while another node leads) | raise order |
+    /// | `[warningsLanded, warningsLateEnd)` | rows another writer committed, replayed late | arrival order |
+    /// | `[warningsLateEnd, size)` | this node's own warnings no accepted write carries | raise order |
+    ///
+    /// A late row is newer than the accepted prefix and than every earlier late row (each committed before this node saw it), and older
+    /// than every own unlanded warning: such a warning reaches the KV store only through a later write of this node, whose CAS expects the
+    /// value this node mirrors, so had it committed first the late row's CAS would have been refused (a key never returns to an earlier
+    /// value). The replayed warnings therefore go at `warningsLateEnd`, which moves past them. Appended after an own raise, a replayed
+    /// `[up, down]` would publish the warning closed while the condition, the family set and the re-drafted row hold it open; inserted
+    /// before an earlier replay of the key, a later open row would publish `[up, up, down]`.
+    ///
+    /// Every site keeps `warningsLanded <= warningsLateEnd <= size`: own raises append (`noteRaised`); `publish` drops a prefix and moves
+    /// the boundary back by it; an accepted write lands its coverage, which spans every replay held when it was drafted (`committed`); a
+    /// late replay never runs with a write in flight (`onPut`), so the coverage never shifts; `Rebuild` starts from an empty model.
+    private static ClusterModel heldBefore(ClusterModel m, List<ClusterEffect.Warn> replayed) {
+        var at = m.warningsLateEnd;
 
         m.warningsHeld = Stream.of(m.warningsHeld.subList(0, at),
                                    replayed,
@@ -631,17 +644,10 @@ public sealed interface Warnings {
                                                           m.warningsHeld.size()))
                                .flatMap(List::stream)
                                .toList();
+        m.warningsLateEnd = at + replayed.size();
         m.warningsDirty = m.warningsDirty || !replayed.isEmpty();
 
         return m;
-    }
-
-    private static int firstUnlanded(ClusterModel m, FsmWarningKey key) {
-        return IntStream.range(m.warningsLanded,
-                               m.warningsHeld.size())
-                        .filter(index -> keyOf(m.warningsHeld.get(index)).equals(key))
-                        .findFirst()
-                        .orElse(m.warningsHeld.size());
     }
 
     private static ClusterModel inheritRow(ClusterModel m, Ctx ctx, FsmWarningKey key, FsmWarningValue value) {
