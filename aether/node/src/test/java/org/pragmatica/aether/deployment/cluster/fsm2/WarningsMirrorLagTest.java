@@ -332,6 +332,100 @@ class WarningsMirrorLagTest {
                   .isTrue();
     }
 
+    /// (c, absent key) The old incarnation's opening of `invalid-placement` is in flight (never settled) when the node reincarnates; the
+    /// placement was fixed meanwhile, so the new incarnation rebuilds from a snapshot without the row and has nothing to write. Returns the
+    /// old incarnation's write, still held: it may commit at any time.
+    private static ClusterEffect.Submit rebuiltWithoutTheRow(FsmHarness h) {
+        h.seedQuietly(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "NOWHERE"));
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        h.activate();
+        var orphan = warningsWrite(h);
+
+        h.seedQuietly(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "CORE_ONLY"));
+        h.deliver(new ClusterInput.Deactivate());
+        h.activate();
+        assertThat(row(h, PLACEMENT_KEY).isEmpty()).as("precondition: the snapshot lacks the row").isTrue();
+        assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("precondition: nothing adopted").isFalse();
+        assertThat(h.model().warningsUnsure.isEmpty()).as("precondition: no mirrored key to doubt").isTrue();
+        assertThat(h.submits(WARNINGS)).as("precondition: the new incarnation wrote nothing").hasSize(1);
+
+        return orphan;
+    }
+
+    /// The new incarnation raises and closes the warning before its flush: both steps run before the queued `Flush`.
+    private static void raisedAndClosedBeforeTheFlush(FsmHarness h) {
+        h.seed(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "NOWHERE"));
+        h.mailbox.addLast(new ClusterInput.Reconcile());
+        h.seed(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "CORE_ONLY"));
+        h.mailbox.addLast(new ClusterInput.Reconcile());
+        h.drain();
+        assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("precondition: the leader closed it").isFalse();
+    }
+
+    /// (c, absent key; red3274c) No settlement of any WARNINGS write. Red when: the raise and the close are published in the close step
+    /// (`settled` compared two empty open sets against a mirror that cannot see the old incarnation's batch) and nothing is written, so a
+    /// late commit of that batch leaves the row open while the operator saw "recovered".
+    @Test
+    void raiseAndCloseOfAKeyAbsentFromTheRebuiltMirror_publishNothingBeforeAWriteTouchingTheKeyIsAccepted() {
+        var h = threeCores();
+
+        rebuiltWithoutTheRow(h);
+        raisedAndClosedBeforeTheFlush(h);
+        assertThat(h.warns(PLACEMENT)).as("no opener published before a write touching the key is accepted").isEmpty();
+        assertThat(h.warns(PLACEMENT_VALID)).as("no close published before a write touching the key is accepted").isEmpty();
+        var write = warningsWrite(h);
+
+        assertThat(h.submits(WARNINGS)).as("the new incarnation writes the key").hasSize(2);
+        assertThat(write.transaction()
+                        .mutations()
+                        .stream()
+                        .anyMatch(mutation -> mutation.key()
+                                                      .equals(PLACEMENT_KEY) && mutation.expected()
+                                                                                        .isEmpty())).as("with the expected value \"no row\"")
+                  .isTrue();
+    }
+
+    /// The old incarnation's batch committed before the new incarnation's write (the mirror never saw it): that write's CAS ("no row") is
+    /// refused, the refusal re-indexes the committed row, and the re-draft writes [Warnings#CLEAR] over it. Red when: the warnings are
+    /// published before that write is accepted, or the committed row stays open.
+    @Test
+    void orphanBatchCommittedFirst_isOverwrittenByTheClose_beforeTheWarningsArePublished() {
+        var h = threeCores();
+        var orphan = rebuiltWithoutTheRow(h);
+
+        raisedAndClosedBeforeTheFlush(h);
+        lateCommit(h, orphan);
+        assertThat(openRow(h, PLACEMENT_KEY)).as("precondition: the orphan batch committed the open row").isTrue();
+        assertThat(h.warns(PLACEMENT_VALID)).as("nothing published while the row the mirror lacks is open").isEmpty();
+        settleAll(h);
+        assertThat(h.warns(PLACEMENT)).as("the opener once").hasSize(1);
+        assertThat(h.warns(PLACEMENT_VALID)).as("the close once, after its write committed").hasSize(1);
+        assertThat(openRow(h, PLACEMENT_KEY)).as("no open row left").isFalse();
+        assertThat(row(h, PLACEMENT_KEY).map(FsmWarningValue::revision)
+                                        .or(0L)).as("written over the orphan's row (revision 1)").isGreaterThan(1L);
+    }
+
+    /// The orphan batch committed, then the `LeaderKey` moved to core-2 before the new incarnation's write applied (this node has not seen
+    /// it): the leader fence refuses that write. Red when: this node publishes the opener or the close; the committed row stays open with
+    /// its opener marker, which core-2 inherits and replays.
+    @Test
+    void orphanBatchCommitted_thenLeaderMoved_publishesNothing() {
+        var h = threeCores();
+        var orphan = rebuiltWithoutTheRow(h);
+
+        raisedAndClosedBeforeTheFlush(h);
+        lateCommit(h, orphan);
+        h.notifying = false;
+        h.commitLeader(CORE_2, 100L);
+        h.notifying = true;
+        settleAll(h);
+        assertThat(h.warns(PLACEMENT)).as("no opener published by the deposed node").isEmpty();
+        assertThat(h.warns(PLACEMENT_VALID)).as("no close published by the deposed node").isEmpty();
+        assertThat(openRow(h, PLACEMENT_KEY)).as("the committed row stays open for core-2 to inherit").isTrue();
+        assertThat(row(h, PLACEMENT_KEY).flatMap(FsmWarningValue::opener)
+                                        .isPresent()).as("with the opener marker core-2 replays").isTrue();
+    }
+
     /// `ORDERS` one failure short on core-1, with the committed leader naming the old leader (core-2): this node rebuilds suspended. `value`,
     /// when present, is committed at [#KEY] before the rebuild.
     private static FsmHarness suspendedSuccessor(Option<FsmWarningValue> value) {

@@ -62,7 +62,7 @@ import org.pragmatica.lang.Option;
 /// - Unsure keys (#3274): the mirror can lag a WARNINGS write of this node that commits late: an `ApplyTimeout` (or another failure, or an
 ///   expiry) leaves the batch in consensus with no bound on when it commits, and a `Rebuild` snapshot predates a batch of the previous
 ///   incarnation. The keys of such a write, and every mirrored key at `Rebuild`, are unsure (`warningsUnsure`), and `settled` is false while
-///   any is. A key clears when the mirror shows the stale write's replacement (it committed), or when a later write of this node touching the
+///   any is, or while a held warning's key is absent from the mirror (a key the stale batch may create). A key clears when the mirror shows the stale write's replacement (it committed), or when a later write of this node touching the
 ///   key is accepted. Every row written carries the key's next `revision`, so that write leaves a value the stale CAS never expects; an unsure
 ///   key with nothing to write gets a confirming write of the same row, and every close writes [#CLEAR]: the FSM never removes a
 ///   WARNINGS row, so a key's stored value never returns to an earlier one ("no row" included).
@@ -260,8 +260,23 @@ public sealed interface Warnings {
     ///
     /// #3274: never while a key is unsure: the mirror may lag a write of this node that has committed or will commit, so equal sets prove
     /// nothing. The held warnings then wait for the write that carries them (`warningsLanded`), whose CAS orders it against the stale one.
+    /// Nor while a held warning's key is absent from the mirror (`seen`).
     private static boolean settled(ClusterModel m) {
-        return m.warningsUnsure.isEmpty() && opened(m).equals(committedOpen(m));
+        return m.warningsUnsure.isEmpty()
+               && seen(m)
+               && opened(m).equals(committedOpen(m));
+    }
+
+    /// #3274 (absent keys): every held warning's key is in the mirror. A key absent from it has not been seen by this incarnation: the
+    /// `Rebuild` snapshot lacked it, and neither a notification for it (`indexRow`) nor an accepted write of this node touching it has
+    /// arrived since. A batch of the previous incarnation may still create it, so equal sets prove nothing; the held warnings then wait
+    /// for the write that carries them, which `difference` drafts for the key (it is desired and unmirrored) with an expected "no row".
+    /// If the stale batch committed, that CAS is refused, the refusal re-indexes the row, and the re-draft writes over it. The FSM never
+    /// removes a WARNINGS row, so once a key is mirrored it stays mirrored: no separate "confirmed since `Rebuild`" state is needed.
+    private static boolean seen(ClusterModel m) {
+        return m.warningsHeld.stream()
+                             .map(Warnings::keyOf)
+                             .allMatch(m.warningRows::containsKey);
     }
 
     private static Map<FsmWarningKey, FsmWarningValue> committedOpen(ClusterModel m) {
@@ -554,7 +569,8 @@ public sealed interface Warnings {
     ///
     /// #3274: every mirrored key is unsure afterwards: a batch of the previous incarnation (or the deposed leader) may still be in consensus,
     /// and the snapshot predates it. The first flush writes each key (a confirming row where nothing else changes, [#CLEAR] for a close), and
-    /// nothing held is published through `settled` until that write is accepted. A [#CLEAR] row joins no set and replays nothing.
+    /// nothing held is published through `settled` until that write is accepted. A [#CLEAR] row joins no set and replays nothing. A key
+    /// that batch creates is not in the snapshot, so it cannot be marked here: a held warning of such a key gates `settled` (`seen`).
     static ClusterModel inherit(ClusterModel m, Ctx ctx) {
         m.warningRows.entries()
                      .stream()
