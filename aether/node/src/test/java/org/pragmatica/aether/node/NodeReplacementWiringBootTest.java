@@ -13,7 +13,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
-import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
@@ -78,6 +77,7 @@ class NodeReplacementWiringBootTest {
     @Timeout(value = 120, unit = SECONDS)
     void theReplacementService_readsTheNodesRealReadyView() {
         node = bootedNode();
+        LoneNodeGenesis.mintAsTheLeader(node);
 
         await().atMost(30, SECONDS).alias("the node's own ready view contains the node")
                .untilAsserted(() -> assertThat(((NodeReplacementWiring.Wired) node.nodeReplacementService()).readyAll()).contains(self));
@@ -211,7 +211,6 @@ class NodeReplacementWiringBootTest {
                                .managementHttpProtocol(HttpProtocol.H1)
                                .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                .build()
-                               .withDeploymentEngine(DeploymentEngine.LEGACY)
                                .withAutoHeal(AutoHealConfig.DEFAULT.withMaxNodes(maxNodes));
     }
 }

@@ -15,7 +15,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
-import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
@@ -23,10 +22,12 @@ import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery.DrainRefusal;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler;
 import org.pragmatica.aether.resource.ResourceProvider;
-import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
@@ -94,8 +95,17 @@ class SliceDrainGuardWiringBootTest {
             .as("control: with no placement in the node's KV-Store the guard has nothing to refuse")
             .isEqualTo(Option.none());
 
-        apply(new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(SOLE_OWNER, SLICE),
-                                  NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE)));
+        // The row in the running engine's form (spec 1.6.1, NT-110): under FSM2, the default, the guard reads observed rows.
+        apply(new KVCommand.Put<>(SliceObservedKey.sliceObservedKey(SOLE_OWNER, SLICE),
+                                  new SliceObservedValue(SliceObservedState.ACTIVE,
+                                                         1L,
+                                                         new Generation(1L, 1L),
+                                                         new ProcessIncarnation(1L, 0L),
+                                                         Option.none(),
+                                                         false,
+                                                         1,
+                                                         List.of(),
+                                                         0L)));
 
         assertThat(guard.apply(SOLE_OWNER, Set.of()).map(DrainRefusal::owner))
             .as("the booted node's reconciler must hold the KV-backed guard over this node's store: draining the sole ACTIVE holder is refused")
@@ -141,7 +151,6 @@ class SliceDrainGuardWiringBootTest {
                                .environment(Option.none())
                                .managementHttpProtocol(HttpProtocol.H1)
                                .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
-                               .build()
-                               .withDeploymentEngine(DeploymentEngine.LEGACY);
+                               .build();
     }
 }

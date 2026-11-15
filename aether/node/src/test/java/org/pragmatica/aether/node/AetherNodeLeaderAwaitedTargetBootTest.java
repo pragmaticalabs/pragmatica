@@ -176,6 +176,7 @@ class AetherNodeLeaderAwaitedTargetBootTest {
                                .managementHttpProtocol(HttpProtocol.H1)
                                .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                .build()
+                               // LEGACY on purpose (#2767): the subject is the legacy ClusterDeploymentManager's warning sink, active only under LEGACY.
                                .withDeploymentEngine(DeploymentEngine.LEGACY);
     }
 }

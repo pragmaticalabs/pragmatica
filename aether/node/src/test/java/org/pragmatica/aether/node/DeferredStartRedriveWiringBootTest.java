@@ -192,6 +192,7 @@ class DeferredStartRedriveWiringBootTest {
                                 .managementHttpProtocol(HttpProtocol.H1)
                                 .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                 .build()
+                                // LEGACY on purpose (#2767): the subject is the legacy NDM routes (B1.ndm, bound only under LEGACY).
                                 .withDeploymentEngine(DeploymentEngine.LEGACY);
     }
 }

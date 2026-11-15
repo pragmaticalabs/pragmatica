@@ -9,7 +9,6 @@ import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 
-import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
@@ -59,7 +58,7 @@ class AetherNodePrefetchBootTest {
         node = AetherNode.aetherNode(AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(),
                                                                                         Option.none(),
                                                                                         ConfigurationProvider.builder().build(),
-                                                                                        tempDir).withDeploymentEngine(DeploymentEngine.LEGACY),
+                                                                                        tempDir),
                                      () -> {})
                          .onFailure(cause -> fail("boot must succeed: " + cause.message()))
                          .unwrap();
@@ -93,7 +92,7 @@ class AetherNodePrefetchBootTest {
                                                      .certificateProvider(Option.none()).configProvider(Option.none()).environment(Option.none())
                                                      .managementHttpProtocol(HttpProtocol.H1)
                                                      .storageConfig(HermeticStorage.nodeStorageIn(tempDir, false))
-                                                     .build().withDeploymentEngine(DeploymentEngine.LEGACY),
+                                                     .build(),
                                      () -> {})
                          .onFailure(cause -> fail("boot must succeed: " + cause.message()))
                          .unwrap();
@@ -106,6 +105,7 @@ class AetherNodePrefetchBootTest {
         assertThat(node.prefetchGossipStats().isEmpty()).as("control: SWIM is not running before start, so there is nothing to report").isTrue();
 
         node.start().await(timeSpan(30).seconds()).onFailure(cause -> fail("start must succeed: " + cause.message()));
+        LoneNodeGenesis.mintAsTheLeader(node);
 
         await().atMost(Duration.ofSeconds(90))
                .untilAsserted(() -> assertThat(managers.values()).allSatisfy(manager -> assertThat(manager.isActive()).isTrue()));
