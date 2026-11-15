@@ -303,8 +303,11 @@ public class PgConnection implements Connection {
 
     // The cache is keyed by SQL text, but a statement is bound to the parameter types it was parsed with:
     // on a type mismatch the cached statement is evicted and closed, then the SQL is parsed again.
-    private Promise<? extends PreparedStatement> reprepare(PgPreparedStatement stale, String sql, Oid[] parametersTypes) {
+    private Promise<? extends PreparedStatement> reprepare(PgPreparedStatement stale,
+                                                           String sql,
+                                                           Oid[] parametersTypes) {
         statementCache.remove(sql);
+
         return stale.closeOnServer()
                     .flatMap(_ -> preparedStatementOf(sql, parametersTypes));
     }

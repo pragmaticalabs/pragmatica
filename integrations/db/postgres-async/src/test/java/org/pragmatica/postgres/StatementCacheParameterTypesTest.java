@@ -5,7 +5,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.postgres.conversion.DataConverter;
@@ -22,7 +21,10 @@ import org.pragmatica.postgres.message.frontend.Query;
 import org.pragmatica.postgres.message.frontend.StartupMessage;
 import org.pragmatica.postgres.net.NotificationHandler;
 
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// The statement cache is keyed by SQL text, but a server-side statement is bound to the parameter types it was
 /// parsed with. A cache hit with different types must not return the statement parsed for other types, otherwise
@@ -31,6 +33,7 @@ class StatementCacheParameterTypesTest {
     private static final String SQL = "select $1";
 
     private final RecordingStream stream = new RecordingStream();
+
     private final PgConnection connection = new PgConnection(stream,
                                                              new DataConverter(List.of(), StandardCharsets.UTF_8),
                                                              4);
@@ -38,34 +41,26 @@ class StatementCacheParameterTypesTest {
     @Test
     void prepareStatement_reparses_whenCachedStatementHasOtherParameterTypes() {
         cache(Oid.INT4);
-
         connection.prepareStatement(SQL, Oid.TEXT).await();
-
         assertThat(stream.parsedTypes()).containsExactly(List.of(Oid.INT4), List.of(Oid.TEXT));
     }
 
     @Test
     void prepareStatement_closesStaleStatementOnServer_whenParameterTypesChange() {
         cache(Oid.INT4);
-
         connection.prepareStatement(SQL, Oid.TEXT).await();
-
         assertThat(stream.closedStatements()).hasSize(1);
     }
 
     @Test
     void prepareStatement_reusesCachedStatement_whenParameterTypesMatch() {
         cache(Oid.INT4);
-
         connection.prepareStatement(SQL, Oid.INT4).await();
-
         assertThat(stream.parsedTypes()).containsExactly(List.of(Oid.INT4));
     }
 
     private void cache(Oid type) {
-        connection.prepareStatement(SQL, type)
-                  .flatMap(statement -> statement.close())
-                  .await();
+        connection.prepareStatement(SQL, type).flatMap(statement -> statement.close()).await();
     }
 
     private static final class RecordingStream implements ProtocolStream {
@@ -87,6 +82,7 @@ class StatementCacheParameterTypesTest {
         @Override
         public Promise<Message> send(Message message) {
             sent.add(message);
+
             return Promise.success(message);
         }
 
