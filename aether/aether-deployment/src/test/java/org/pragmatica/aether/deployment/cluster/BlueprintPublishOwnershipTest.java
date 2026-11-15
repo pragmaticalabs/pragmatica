@@ -15,12 +15,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
+import java.util.stream.Stream;
 import java.util.jar.Attributes;
 import java.util.jar.JarOutputStream;
 import java.util.jar.Manifest;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
@@ -1227,6 +1231,54 @@ class BlueprintPublishOwnershipTest {
             return BlueprintService.blueprintService(cluster, store, repository)
                                    .publish(STREAM_APP_DSL)
                                    .await();
+        }
+
+        /// #3273: every `resources.toml` gate the publish enforces on the body path, one row per gate. Both slices ship the
+        /// same text, as a packaged blueprint's slices do.
+        static Stream<Arguments> gatedResources() {
+            return Stream.of(Arguments.of("strong-consistency", StreamResourceValidator.RULE_UNSUPPORTED_CONSISTENCY, STRONG_MODULE_STREAMS),
+                             Arguments.of("reserved-kind-source", StreamResourceValidator.RULE_SOURCE_RESERVED_KIND, RESERVED_KIND_SOURCE),
+                             Arguments.of("system-source-not-consumer",
+                                          StreamResourceValidator.RULE_SOURCE_SYSTEM_NOT_CONSUMER,
+                                          "[streams.order-events]\npartitions = 1\n\n[streams.inbox]\nsource = \"system:cluster-events:1.0.0\"\nrole = \"producer\"\n"),
+                             Arguments.of("inert-stream-config-key",
+                                          StreamResourceValidator.RULE_INERT_STREAM_CONFIG,
+                                          "[streams.order-events]\npartitions = 1\ncompression = \"lz4\"\n"),
+                             Arguments.of("inert-consumer-config-key",
+                                          StreamResourceValidator.RULE_INERT_CONSUMER_CONFIG,
+                                          "[streams.order-events]\nversion = \"1.0.0\"\n\n[streams.order-events.consumers.billing]\nbatch_size = 50\n"));
+        }
+
+        /// #3273: the dry run (`validateDeployable`) refuses what the publish refuses, with the same cause, because both derive
+        /// the bindings through one function. Nothing is stored by the dry run.
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("gatedResources")
+        void validateDeployable_refusesWhatPublishRefuses_forEveryResourcesGate(String gate, String rule, String resourcesToml) {
+            var repository = sliceRepository(Map.of(PUBLISHER_SLICE, sliceJar(PUBLISHER_SLICE, resourcesToml),
+                                                    CONSUMER_SLICE, sliceJar(CONSUMER_SLICE, resourcesToml)));
+            var service = BlueprintService.blueprintService(cluster, store, repository);
+            var dryRun = service.validateDeployable(STREAM_APP_DSL).await();
+
+            dryRun.onSuccess(_ -> Assertions.fail("the dry run must refuse the " + gate + " gate"))
+                  .onFailure(cause -> assertThat(cause.message()).contains(rule));
+            assertThat(cluster.batches).as("the dry run stores nothing").isEmpty();
+
+            var published = service.publish(STREAM_APP_DSL).await();
+
+            published.onSuccess(_ -> Assertions.fail("control: publish must refuse the " + gate + " gate"));
+            assertThat(dryRun.fold(Cause::message, _ -> "")).as("dry run and publish agree on the refusal")
+                                                            .isEqualTo(published.fold(Cause::message, _ -> ""));
+        }
+
+        /// #3273 control: a well-formed `resources.toml` is admitted by the dry run, and the dry run stores nothing.
+        @Test
+        void validateDeployable_admitsWellFormedResources_andStoresNothing() {
+            var service = BlueprintService.blueprintService(cluster, store, streamAppRepository());
+
+            service.validateDeployable(STREAM_APP_DSL)
+                   .await()
+                   .onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+            assertThat(cluster.batches).as("the dry run stores nothing").isEmpty();
         }
 
         private void seedOwnedSliceTarget(Artifact slice) {
