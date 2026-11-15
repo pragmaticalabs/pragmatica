@@ -280,6 +280,13 @@ class DeploymentFsmKvRecordsCodecTest {
                       FsmWarningValue.fsmWarningValue(Map.of(NODE.id(), "v1:orders"), true, Option.some("held"), Option.none()));
         }
 
+        /// #3274: the `revision` component survives the codec. Red when a decoder drops it: every other round trip here carries revision 0.
+        @Test
+        void fsmWarning_roundTripsANonZeroRevision() {
+            roundTrip(FsmWarningKey.fsmWarningKey("invalid-placement", ARTIFACT.asString()),
+                      FsmWarningValue.fsmWarningValue(Map.of(NODE.id(), "v1:orders"), false, Option.none(), Option.some("closed"), 7L));
+        }
+
         /// Writes the command, reads it back, then writes the decoded command again: the value must come back equal
         /// AND the second encoding must be the same bytes as the first, so a decoder that loses or reorders a
         /// component cannot hide behind a lenient `equals`.

@@ -15,6 +15,7 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.UnsureRow;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
@@ -58,6 +59,12 @@ import org.pragmatica.lang.Option;
 /// - Inherit (`Rebuild`): the family sets are seeded from the committed open rows, so a successor never raises an inherited open again
 ///   (each family's raise site checks its set), and an inherited warning whose subject left the model between the leaders is closed with
 ///   [Recoveries#SUBJECT_GONE]. The families' level-triggered checks close what ended otherwise.
+/// - Unsure keys (#3274): the mirror can lag a WARNINGS write of this node that commits late: an `ApplyTimeout` (or another failure, or an
+///   expiry) leaves the batch in consensus with no bound on when it commits, and a `Rebuild` snapshot predates a batch of the previous
+///   incarnation. The keys of such a write, and every mirrored key at `Rebuild`, are unsure (`warningsUnsure`), and `settled` is false while
+///   any is. A key clears when the mirror shows the stale write's replacement (it committed), or when a later write of this node touching the
+///   key is accepted. Every row written carries the key's next `revision`, so that write leaves a value the stale CAS never expects; an unsure
+///   key with nothing to write gets a confirming write of the same row, and an unsure key is closed with [#CLEAR] instead of removed.
 public sealed interface Warnings {
     String INVALID_PLACEMENT = "invalid-placement";
     String RETRY_EXHAUSTED = "retry-exhausted-unsettled";
@@ -100,6 +107,14 @@ public sealed interface Warnings {
 
     FsmWarningValue NO_MEMBERS = FsmWarningValue.fsmWarningValue(Map.of());
 
+    /// #3274: the confirming row, closed with no markers: "no warning". A key is written with it instead of being removed while the key
+    /// is unsure, and the row is kept until a later write of a real row touches the key: removing it would restore "no row", the value a
+    /// stale write's CAS may expect.
+    FsmWarningValue CLEAR = FsmWarningValue.fsmWarningValue(Map.of(), false, Option.none(), Option.none());
+
+    /// #3274: a key unsure for a reason no observed value can settle (a `Rebuild`, or two unsettled writes that disagree).
+    UnsureRow UNVOUCHED = UnsureRow.unsureRow(false, Option.none());
+
     // -- the mirror ------------------------------------------------------------------------------------------------
     /// ```tla Fsm2Leader:Notify
     /// \* KV notification of a committed FsmWarningKey put/remove: the mirror follows (Indexer.java ->
@@ -113,11 +128,75 @@ public sealed interface Warnings {
     static ClusterModel indexRow(ClusterModel m, FsmWarningKey key, FsmWarningValue value) {
         m.warningRows = m.warningRows.put(key, value);
 
-        return m;
+        return observed(m, key);
     }
 
     static ClusterModel removeRow(ClusterModel m, FsmWarningKey key) {
         m.warningRows = m.warningRows.remove(key);
+
+        return observed(m, key);
+    }
+
+    // -- the unsure keys (#3274) -----------------------------------------------------------------------------------
+    /// #3274: the mirror now holds what the unsettled write that made the key unsure would have written: that write committed, it cannot
+    /// commit again, and the key is current.
+    private static ClusterModel observed(ClusterModel m, FsmWarningKey key) {
+        if (m.warningsUnsure.get(key)
+                            .map(row -> row.known() && row.replacement()
+                                                         .equals(m.warningRows.get(key)))
+                            .or(false)) {
+            m.warningsUnsure = m.warningsUnsure.remove(key);
+        }
+
+        return m;
+    }
+
+    /// #3274: a WARNINGS write that failed (an unknown outcome among the causes: `ApplyTimeout`) or expired may still commit, and the mirror
+    /// learns it only from a later notification. Each key it touches is unsure until that commit is seen (`observed`) or a later write of
+    /// this node touching the key is accepted (`confirmed`): that write's CAS moved the key, so the stale write's CAS cannot pass after it.
+    static ClusterModel unconfirmed(ClusterModel m, TxDraft draft) {
+        return draft.kind() == SubmitKind.WARNINGS
+               ? draft.mutations()
+                      .stream()
+                      .reduce(m,
+                              Warnings::doubted,
+                              (left, right) -> right)
+               : m;
+    }
+
+    private static ClusterModel doubted(ClusterModel m, KVCommand.Mutation<AetherKey, AetherValue> mutation) {
+        return switch (mutation.key()) {
+            case FsmWarningKey key -> unsure(m,
+                                             key,
+                                             UnsureRow.unsureRow(true,
+                                                                 mutation.replacement()
+                                                                         .filter(FsmWarningValue.class::isInstance)
+                                                                         .map(FsmWarningValue.class::cast)));
+            default -> m;
+        };
+    }
+
+    /// A key already unsure for another reason is no longer settled by one observed value: either unsettled write may commit.
+    private static ClusterModel unsure(ClusterModel m, FsmWarningKey key, UnsureRow row) {
+        var merged = m.warningsUnsure.get(key)
+                                     .map(existing -> existing.equals(row)
+                                                      ? row
+                                                      : UNVOUCHED)
+                                     .or(row);
+
+        m.warningsUnsure = m.warningsUnsure.put(key, merged);
+
+        return m;
+    }
+
+    /// #3274: an accepted write of this node touched these keys; the mirror took its mutations (`accepted`), so they are current.
+    private static ClusterModel confirmed(ClusterModel m, TxDraft draft) {
+        draft.mutations()
+             .stream()
+             .map(KVCommand.Mutation::key)
+             .filter(FsmWarningKey.class::isInstance)
+             .map(FsmWarningKey.class::cast)
+             .forEach(key -> m.warningsUnsure = m.warningsUnsure.remove(key));
 
         return m;
     }
@@ -181,8 +260,11 @@ public sealed interface Warnings {
 
     /// Whether the committed open rows, markers aside, are what the family sets describe: a held warning then has no row change to wait
     /// for, and publishing it at once leaves no window.
+    ///
+    /// #3274: never while a key is unsure: the mirror may lag a write of this node that has committed or will commit, so equal sets prove
+    /// nothing. The held warnings then wait for the write that carries them (`warningsLanded`), whose CAS orders it against the stale one.
     private static boolean settled(ClusterModel m) {
-        return opened(m).equals(committedOpen(m));
+        return m.warningsUnsure.isEmpty() && opened(m).equals(committedOpen(m));
     }
 
     private static Map<FsmWarningKey, FsmWarningValue> committedOpen(ClusterModel m) {
@@ -243,11 +325,12 @@ public sealed interface Warnings {
     /// carried are published at the end of the step (#3085).
     static ClusterModel accepted(ClusterModel m, TxDraft draft) {
         return draft.kind() == SubmitKind.WARNINGS
-               ? draft.mutations()
-                      .stream()
-                      .reduce(committed(m),
-                              Warnings::landed,
-                              (left, right) -> right)
+               ? confirmed(draft.mutations()
+                                .stream()
+                                .reduce(committed(m),
+                                        Warnings::landed,
+                                        (left, right) -> right),
+                           draft)
                : m;
     }
 
@@ -288,35 +371,85 @@ public sealed interface Warnings {
         };
     }
 
-    /// The mutations that make the committed open set equal the family sets, in key order.
+    /// The mutations that make the committed open set equal the family sets, in key order. Rows compare without their revision.
+    ///
+    /// #3274: an unsure key is never removed (it is closed with [#CLEAR]), and an unsure key the family sets already agree with gets a
+    /// confirming write of the same row under the next revision: without it a key with nothing to write would stay unsure for ever. A
+    /// [#CLEAR] row is "no warning": it is not removed, only overwritten by a later real row.
     static List<KVCommand.Mutation<AetherKey, AetherValue>> difference(ClusterModel m) {
         var desired = desired(m);
         var opened = desired.entrySet()
                             .stream()
-                            .filter(entry -> !m.warningRows.get(entry.getKey())
-                                                           .equals(Option.some(entry.getValue())))
-                            .map(entry -> mutation(m,
-                                                   entry.getKey(),
-                                                   Option.some(entry.getValue())));
-        var closed = m.warningRows.keys()
+                            .filter(entry -> !same(m.warningRows.get(entry.getKey()),
+                                                   entry.getValue()))
+                            .map(entry -> put(m,
+                                              entry.getKey(),
+                                              entry.getValue()));
+        var closed = m.warningRows.entries()
                                   .stream()
-                                  .filter(key -> !desired.containsKey(key))
-                                  .map(key -> mutation(m,
-                                                       key,
-                                                       Option.none()));
+                                  .filter(entry -> !desired.containsKey(entry.getKey()) && !isClear(entry.getValue()))
+                                  .map(entry -> close(m,
+                                                      entry.getKey()));
+        var confirming = m.warningsUnsure.keys()
+                                         .stream()
+                                         .filter(key -> current(m, desired, key))
+                                         .map(key -> put(m,
+                                                         key,
+                                                         Option.option(desired.get(key))
+                                                               .or(CLEAR)));
 
-        return Stream.concat(opened, closed)
+        return Stream.of(opened, closed, confirming)
+                     .flatMap(mutations -> mutations)
                      .sorted(Comparator.comparing(mutation -> mutation.key()
                                                                       .asString()))
                      .toList();
     }
 
-    private static KVCommand.Mutation<AetherKey, AetherValue> mutation(ClusterModel m,
-                                                                       FsmWarningKey key,
-                                                                       Option<AetherValue> replacement) {
+    /// #3274: no write would touch the key: the mirror already holds what the family sets want, or neither names it.
+    private static boolean current(ClusterModel m, Map<FsmWarningKey, FsmWarningValue> desired, FsmWarningKey key) {
+        return same(m.warningRows.get(key),
+                    Option.option(desired.get(key))
+                          .or(CLEAR)) || (!desired.containsKey(key) && m.warningRows.get(key)
+                                                                         .isEmpty());
+    }
+
+    private static boolean same(Option<FsmWarningValue> mirrored, FsmWarningValue wanted) {
+        return mirrored.map(row -> unstamped(row).equals(unstamped(wanted)))
+                       .or(false);
+    }
+
+    private static boolean isClear(FsmWarningValue row) {
+        return unstamped(row).equals(CLEAR);
+    }
+
+    private static FsmWarningValue unstamped(FsmWarningValue row) {
+        return FsmWarningValue.fsmWarningValue(row.members(), row.open(), row.opener(), row.recovery());
+    }
+
+    private static KVCommand.Mutation<AetherKey, AetherValue> close(ClusterModel m, FsmWarningKey key) {
+        return m.warningsUnsure.containsKey(key)
+               ? put(m, key, CLEAR)
+               : removal(m, key);
+    }
+
+    /// #3274: every row written carries the next revision of the key, so it never equals a value the key held before.
+    private static KVCommand.Mutation<AetherKey, AetherValue> put(ClusterModel m, FsmWarningKey key, FsmWarningValue row) {
+        var mirrored = m.warningRows.get(key);
+
+        return new KVCommand.Mutation<>(key,
+                                        mirrored.map(value -> (AetherValue) value),
+                                        Option.some(FsmWarningValue.fsmWarningValue(row.members(),
+                                                                                    row.open(),
+                                                                                    row.opener(),
+                                                                                    row.recovery(),
+                                                                                    mirrored.map(FsmWarningValue::revision)
+                                                                                            .or(0L) + 1)));
+    }
+
+    private static KVCommand.Mutation<AetherKey, AetherValue> removal(ClusterModel m, FsmWarningKey key) {
         return new KVCommand.Mutation<>(key,
                                         m.warningRows.get(key).map(value -> (AetherValue) value),
-                                        replacement);
+                                        Option.none());
     }
 
     /// The committed set the model describes: the open set of the family sets, each row marked with its unpublished held warnings, and a
@@ -432,6 +565,11 @@ public sealed interface Warnings {
     /// committed open warning is adopted into its family set, or closed with the reason subject-gone when its subject left the model between
     /// the leaders. A tombstone and a row this leader cannot read (an unknown code, a subject that does not parse) join no set, so the next
     /// flush removes them. The set is dirty afterwards: the closes, and the cleared markers, are written by the first flush.
+    ///
+    /// #3274: every mirrored key is unsure afterwards: a batch of the previous incarnation (or the deposed leader) may still be in consensus,
+    /// and the snapshot predates it. The first flush writes each key (a confirming row where nothing else changes, [#CLEAR] in place of a
+    /// removal), and nothing held is published through `settled` until that write is accepted. A [#CLEAR] row joins no set and replays
+    /// nothing.
     static ClusterModel inherit(ClusterModel m, Ctx ctx) {
         m.warningRows.entries()
                      .stream()
@@ -444,6 +582,8 @@ public sealed interface Warnings {
                                                   ctx,
                                                   entry.getKey(),
                                                   entry.getValue()));
+        m.warningRows.keys()
+                     .forEach(key -> unsure(m, key, UNVOUCHED));
         m.warningsDirty = true;
 
         return m;

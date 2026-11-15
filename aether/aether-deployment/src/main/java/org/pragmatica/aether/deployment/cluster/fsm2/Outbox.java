@@ -563,6 +563,7 @@ public sealed interface Outbox {
         submission.drafts().forEach(draft -> Blueprints.releaseUnsent(m, draft));
         submission.drafts().forEach(draft -> awaitEvents(m, draft));
         submission.drafts().forEach(draft -> Warnings.unlanded(m, draft));
+        submission.drafts().forEach(draft -> Warnings.unconfirmed(m, draft));
         metric(ctx, submission, "lost");
 
         return m;
@@ -1068,6 +1069,7 @@ public sealed interface Outbox {
             Blueprints.releaseUnsent(m, draft);
             DepartureFlow.failed(m, ctx, draft);
             awaitEvents(m, draft);
+            Warnings.unconfirmed(m, draft);
         }
 
         return retryLater(m, ctx);

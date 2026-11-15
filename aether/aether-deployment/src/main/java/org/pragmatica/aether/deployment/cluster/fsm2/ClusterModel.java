@@ -209,6 +209,10 @@ public final class ClusterModel {
     int warningsCovered;
     /// #3085: how many of `warningsHeld` an accepted WARNINGS transaction committed: published at the end of the step (`Warnings.noteRaised`).
     int warningsLanded;
+    /// #3274: the WARNINGS keys whose committed value this leader cannot vouch for: a WARNINGS write of this node that failed or expired
+    /// may still commit, and a `Rebuild` cannot see a batch of the previous incarnation still in consensus. While any key is here,
+    /// `Warnings.settled` is false (`Warnings.publish`).
+    PMap<AetherKey.FsmWarningKey, UnsureRow> warningsUnsure = PMap.empty(scans);
     // -- the write side (5.7) --------------------------------------------------------------------------------------
     PMap<String, Submitted> submitted = PMap.empty(scans);
     List<TxDraft> outbox = List.of();
@@ -327,6 +331,7 @@ public final class ClusterModel {
         c.warningsHeld = warningsHeld;
         c.warningsCovered = warningsCovered;
         c.warningsLanded = warningsLanded;
+        c.warningsUnsure = warningsUnsure.rebound(meter);
         c.submitted = submitted.rebound(meter);
         c.outbox = outbox;
         c.parked = parked;
@@ -543,6 +548,15 @@ public final class ClusterModel {
 
     /// The state of the awaited-target watch of one slice (#1109, B-036).
     public record AwaitedTarget(long sinceMs, boolean warned, long lastResubmitMs) {}
+
+    /// #3274: why a WARNINGS key is unsure. `known`: a failed or expired write of this node, whose replacement for the key is
+    /// `replacement` (empty for a removal); seeing that value in the mirror means the write committed. Not known: a `Rebuild`, or two
+    /// unsettled writes with different replacements; only an accepted write of this node touching the key clears it.
+    public record UnsureRow(boolean known, Option<AetherValue.FsmWarningValue> replacement) {
+        public static UnsureRow unsureRow(boolean known, Option<AetherValue.FsmWarningValue> replacement) {
+            return new UnsureRow(known, replacement);
+        }
+    }
 
     /// What a transaction in flight was, so that its settlement can be handled by kind (5.7, 6.2).
     public enum SubmitKind {
