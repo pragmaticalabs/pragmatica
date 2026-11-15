@@ -579,36 +579,37 @@ class WarningsMirrorLagTest {
         assertThat(m.warningsUnsure.containsKey(KEY)).as("the other write may still commit").isTrue();
     }
 
-    /// The confirming write of an unsure key whose family set still wants its row open (the new incarnation adopted an open row and the
-    /// condition holds) rewrites that row, not [Warnings#CLEAR]. Red when: the confirming write always closes: a live warning is closed
+    /// The confirming write of an unsure key whose family set still wants its row open (the new incarnation adopted a marker-free open row and
+    /// the condition holds) rewrites that row, not [Warnings#CLEAR]. Red when: the confirming write always closes: a live warning is closed
     /// in the KV store while the family set holds it open.
     @Test
     void confirmingWriteOfAnUnsureKeyWhoseWarningIsOpen_keepsTheRowOpen() {
-        var h = openRowCommitted();
+        var m = new ClusterModel();
+        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
 
-        h.deliver(new ClusterInput.Deactivate());
-        h.activate();
-        assertThat(h.model().warningsUnsure.containsKey(PLACEMENT_KEY)).as("precondition: Rebuild marked the mirrored key unsure").isTrue();
-        settleAll(h);
-        assertThat(h.model().warningsUnsure.isEmpty()).as("the confirming write was accepted").isTrue();
-        assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("the warning is still open").isTrue();
-        assertThat(openRow(h, PLACEMENT_KEY)).as("and so is its row").isTrue();
-        assertThat(row(h, PLACEMENT_KEY).map(FsmWarningValue::revision).or(0L)).as("rewritten under the next revision").isGreaterThan(1L);
+        Warnings.indexRow(m, PLACEMENT_KEY, FsmWarningValue.fsmWarningValue(Map.of(), true, Option.none(), Option.none(), 1L));
+        Warnings.inherit(m, ctx);
+
+        assertThat(m.warningsUnsure.containsKey(PLACEMENT_KEY)).as("precondition: Rebuild marked the mirrored key unsure").isTrue();
+        assertThat(Warnings.difference(m)).as("the confirming write keeps the row open, under the next revision")
+                                          .singleElement()
+                                          .satisfies(mutation -> assertThat(mutation.replacement())
+                                              .isEqualTo(Option.some(FsmWarningValue.fsmWarningValue(Map.of(), true, Option.none(), Option.none(), 2L))));
     }
 
     /// An unsure key that neither family set names and the mirror lacks (its opening failed and never committed, then the condition went
     /// away) has nothing to write; it still needs its confirming write, or `settled` is false for ever. Red when: `current` lacks the
-    /// absent-from-both case: the key stays unsure.
+    /// absent-from-both case: no write is drafted and the key stays unsure.
     @Test
     void unsureKeyAbsentFromBothTheFamilySetsAndTheMirror_isConfirmedByAClose() {
-        var h = openingInFlight();
-        var opening = warningsWrite(h);
+        var m = new ClusterModel();
 
-        h.settleHeld(opening, new Settlement.Failed("ApplyTimeout"));
-        placement(h, "CORE_ONLY");
-        settleAll(h);
-        assertThat(h.model().warningsUnsure.isEmpty()).as("the key was confirmed, not left unsure for ever").isTrue();
-        assertThat(row(h, PLACEMENT_KEY).map(kept -> sameContent(kept, Warnings.CLEAR)).or(false)).as("by the CLEAR row").isTrue();
+        Warnings.unconfirmed(m, failedWrite(STALE_OPEN));
+
+        assertThat(Warnings.difference(m)).as("a CLEAR row over \"no row\"")
+                                          .containsExactly(new KVCommand.Mutation<AetherKey, AetherValue>(KEY,
+                                                                                                          Option.none(),
+                                                                                                          Option.some(FsmWarningValue.fsmWarningValue(Map.of(), false, Option.none(), Option.none(), 1L))));
     }
 
     /// Item 3 of #3274 (the `onPut` path): the successor raises `e` while suspended, then the deposed leader's row carrying both markers
