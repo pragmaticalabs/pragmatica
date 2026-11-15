@@ -91,4 +91,57 @@ class CommittedBatchLedgerTest {
         assertThat(ledger.unseen(b).isEmpty()).isTrue();
         assertThat(ledger.unseen(c).isEmpty()).isTrue();
     }
+
+    /// #3284: an identical batch committed again and again (a periodic barrier) keeps the ledger bounded: only the
+    /// correlation ids of the last `capacity` records are held, not every id the batch id was ever committed with.
+    @Test
+    void record_repeatedIdenticalBatch_keepsTotalSizeBounded() {
+        var ledger = new CommittedBatchLedger(4);
+
+        for (var i = 0; i < 1_000; i++) {
+            var repeated = batch("barrier", new CorrelationId("r" + i));
+
+            ledger.record(repeated.id(), repeated.correlationIds());
+        }
+
+        assertThat(ledger.sizeForTesting()).isEqualTo(1);
+        assertThat(ledger.correlationCountForTesting()).as("ids of the last 4 records only").isEqualTo(4);
+        assertThat(ledger.unseen(batch("barrier", new CorrelationId("r995"))).isPresent())
+            .as("outside the window: no longer recognised")
+            .isTrue();
+    }
+
+    /// #3284: a late copy of a repeated batch whose id is inside the window is still refused, and a copy carrying one id
+    /// inside and one outside is trimmed to the one outside.
+    @Test
+    void unseen_lateRepeatedBatchWithinTheBound_isStillRefused() {
+        var ledger = new CommittedBatchLedger(4);
+        var first = new CorrelationId("r0");
+        var second = new CorrelationId("r1");
+
+        for (var i = 0; i < 5; i++) {
+            var repeated = batch("barrier", new CorrelationId("r" + i));
+
+            ledger.record(repeated.id(), repeated.correlationIds());
+        }
+
+        assertThat(ledger.unseen(batch("barrier", second)).isEmpty()).as("r1 is the oldest record in the window").isTrue();
+        assertThat(ledger.committedOf(batch("barrier", second)).unwrap()).containsExactly(second);
+        assertThat(ledger.unseen(batch("barrier", first, second)).unwrap().correlationIds()).containsExactly(first);
+    }
+
+    /// #3284 / #2045: the bound counts records, never time, so two ledgers fed the same records hold the same entries.
+    @Test
+    void record_sameRecordSequence_givesEqualLedgers() {
+        var left = new CommittedBatchLedger(3);
+        var right = new CommittedBatchLedger(3);
+        var records = List.of(batch("barrier", C1), batch("x", C2), batch("barrier", new CorrelationId("c3")),
+                              batch("barrier", C1, new CorrelationId("c4")), batch("y", new CorrelationId("c5")));
+
+        records.forEach(b -> left.record(b.id(), b.correlationIds()));
+        records.forEach(b -> right.record(b.id(), b.correlationIds()));
+
+        assertThat(left.stateForTesting()).isEqualTo(right.stateForTesting());
+        assertThat(left.correlationCountForTesting()).isEqualTo(4);
+    }
 }
