@@ -787,7 +787,8 @@ final class NettyHttpServer implements HttpServer {
             response.headers().set(X_REQUEST_ID, requestId);
             if (keepAlive) {
                 response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
-            } else if (lingerClose) {
+            } else {
+                // #2407: a response that ends the connection says so, whether it answers a Connection: close request or a refusal.
                 response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
             }
 
