@@ -120,7 +120,108 @@ class WarningsMirrorLagTest {
         assertThat(h.warns(PLACEMENT_VALID)).as("the close is published once its write committed").hasSize(1);
         assertThat(h.warns(PLACEMENT)).as("the opener once").hasSize(1);
         assertThat(openRow(h, PLACEMENT_KEY)).as("no open row left").isFalse();
+        assertThat(row(h, PLACEMENT_KEY)).as("the confirming CLEAR was refused (the late commit held the row), the refusal's re-read showed"
+                                             + " the stale write committed, so the close is a plain removal: no confirming row is kept")
+                  .isEmpty();
         assertThat(h.model().warningsUnsure.isEmpty()).as("the accepted write cleared the key").isTrue();
+    }
+
+    /// The failed write is still held (it may commit at any time); the retry flush commits its row.
+    private static void retried(FsmHarness h) {
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        h.advance(h.settings.timing().retryBase());
+        h.deliver(new ClusterInput.Reconcile());
+    }
+
+    private static boolean sameContent(FsmWarningValue left, FsmWarningValue right) {
+        return left.members().equals(right.members()) && left.open() == right.open() && left.opener().equals(right.opener())
+               && left.recovery().equals(right.recovery());
+    }
+
+    /// Fencing by revision: the close of a committed open row fails (`ApplyTimeout`) and stays in consensus; the condition returns and this
+    /// node writes the row open again, ending on the same content. Red when: the rows written do not bump the revision, so the value
+    /// committed equals the one the stale close's CAS expects, and the stale close removes the open row of an open warning.
+    @Test
+    void staleCloseOfAnOpenRow_cannotCommitAfterTheRowIsWrittenAgainWithTheSameContent() {
+        var h = threeCores();
+
+        h.seedQuietly(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "NOWHERE"));
+        h.activate();
+        h.deliver(new ClusterInput.Reconcile());
+        var before = row(h, PLACEMENT_KEY).unwrap();
+
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        placement(h, "CORE_ONLY");
+        var closing = warningsWrite(h);
+
+        h.settleHeld(closing, new Settlement.Failed("ApplyTimeout"));
+        retried(h);
+        placement(h, "NOWHERE");
+        h.advance(h.settings.timing().retryBase());
+        h.deliver(new ClusterInput.Reconcile());
+        assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("precondition: the warning is open again").isTrue();
+        assertThat(sameContent(row(h, PLACEMENT_KEY).unwrap(), before)).as("precondition: the row holds the content the stale close expects")
+                  .isTrue();
+        assertThat(h.applyHeld(closing.correlationId())).as("the stale close's CAS expects the old revision").isInstanceOf(Settlement.Refused.class);
+        assertThat(openRow(h, PLACEMENT_KEY)).as("the open warning keeps its open row").isTrue();
+    }
+
+    /// Fencing by [Warnings#CLEAR]: the opening write of an absent key (CAS expects no row) fails and stays in consensus, its retry commits
+    /// the row, the node reincarnates with the placement fixed, so its first flush closes the inherited (unsure) key. Red when: the close of
+    /// the unsure key removes the row, which restores "no row" and lets the stale opening commit an open row for a closed warning.
+    @Test
+    void staleOpeningOfAnAbsentKey_cannotCommitAfterTheUnsureKeyIsClosed() {
+        var h = openingInFlight();
+        var opening = warningsWrite(h);
+
+        h.settleHeld(opening, new Settlement.Failed("ApplyTimeout"));
+        retried(h);
+        assertThat(openRow(h, PLACEMENT_KEY)).as("precondition: the retry committed the open row").isTrue();
+        h.deliver(new ClusterInput.Deactivate());
+        h.seedQuietly(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "CORE_ONLY"));
+        h.activate();
+        h.deliver(new ClusterInput.Reconcile());
+        assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("precondition: the new incarnation closed it").isFalse();
+        assertThat(h.applyHeld(opening.correlationId())).as("the stale opening's CAS expects no row").isInstanceOf(Settlement.Refused.class);
+        assertThat(openRow(h, PLACEMENT_KEY)).as("no open row for the closed warning").isFalse();
+    }
+
+    /// FENCING GAP (none -> row -> none, no reincarnation): the opening write of an absent key fails and stays in consensus, its retry is
+    /// accepted (which clears the key: `confirmed`), then the placement is fixed and the close REMOVES the row, restoring "no row", the
+    /// value the stale opening's CAS expects. Red today: the stale opening commits an open row for a closed warning.
+    @Disabled("#3274 fencing gap: a removal after an accepted write of a key re-opens the stale opening's CAS; awaiting a ruling")
+    @Test
+    void staleOpeningOfAnAbsentKey_cannotCommitAfterItsRetryAndAClose() {
+        var h = staleOpeningAfterRetryAndClose();
+
+        assertThat(h.applyHeld(warningsWrite(h).correlationId())).as("the stale opening's CAS expects no row").isInstanceOf(Settlement.Refused.class);
+    }
+
+    /// Tripwire for the fencing gap: asserts the CURRENT (defective) behaviour; when it goes red, the gap was closed: enable the test above
+    /// and delete this one.
+    @Test
+    void staleOpeningOfAnAbsentKey_currentBehaviour_commitsAfterItsRetryAndAClose() {
+        var h = staleOpeningAfterRetryAndClose();
+        var opening = h.held.values().iterator().next();
+
+        assertThat(h.applyHeld(opening.correlationId())).as("known gap: the stale opening commits").isInstanceOf(Settlement.Accepted.class);
+        assertThat(openRow(h, PLACEMENT_KEY)).as("known gap: an open row for a closed warning").isTrue();
+        assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("known gap: the warning is closed").isFalse();
+    }
+
+    private static FsmHarness staleOpeningAfterRetryAndClose() {
+        var h = openingInFlight();
+        var opening = warningsWrite(h);
+
+        h.settleHeld(opening, new Settlement.Failed("ApplyTimeout"));
+        retried(h);
+        assertThat(openRow(h, PLACEMENT_KEY)).as("precondition: the retry committed the open row").isTrue();
+        placement(h, "CORE_ONLY");
+        assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("precondition: the leader closed it").isFalse();
+        assertThat(row(h, PLACEMENT_KEY)).as("precondition: the close removed the row").isEmpty();
+        assertThat(h.held.keySet()).as("precondition: only the stale opening is held").containsExactly(opening.correlationId());
+
+        return h;
     }
 
     /// The opening write settles as `Failed` and commits late, and this time its notification reaches the FSM: the mirror shows the
