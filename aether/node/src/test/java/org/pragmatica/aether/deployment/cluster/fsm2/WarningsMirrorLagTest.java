@@ -323,6 +323,29 @@ class WarningsMirrorLagTest {
         assertThat(openRow(h, PLACEMENT_KEY)).as("no open row left").isFalse();
     }
 
+    /// (b, mirrored key) The close of a committed open row is in flight when the condition returns (both held), then it expires unsettled:
+    /// the family set again equals the mirror (open), whose key is present. Red when: the expiry's step publishes the close and the re-raise
+    /// although the expired close may still commit (the expiry does not leave the key unsure).
+    @Test
+    void reRaiseBehindAnExpiredCloseOfAMirroredKey_isPublishedOnlyOnceAWriteOfThisNodeLands() {
+        var h = openRowCommitted();
+
+        placement(h, "CORE_ONLY");
+        var closing = warningsWrite(h);
+
+        placement(h, "NOWHERE");
+        assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("precondition: the condition returned").isTrue();
+        h.advance(h.settings.submissionExpiry() + h.settings.timing().tick());
+        assertThat(h.model().submitted.containsKey(closing.correlationId())).as("precondition: the closing write expired")
+                  .isFalse();
+        assertThat(h.warns(PLACEMENT_VALID)).as("no close published while the expired close may commit").isEmpty();
+        assertThat(h.warns(PLACEMENT)).as("only the first opener").hasSize(1);
+        settleAll(h);
+        assertThat(h.warns(PLACEMENT_VALID)).as("the close once a write of this node landed").hasSize(1);
+        assertThat(h.warns(PLACEMENT)).as("and the re-raise").hasSize(2);
+        assertThat(openRow(h, PLACEMENT_KEY)).as("the committed row is open, as the warning is").isTrue();
+    }
+
     /// (c) Restart: the leader's close of a committed open row is in flight when the condition returns, the node reincarnates (`Deactivate`,
     /// `Activate`) and adopts the open row from the snapshot, then the old incarnation's close commits (its settlement is dropped as another
     /// incarnation's) and the mirror lags it. Red when: the new incarnation, whose family set agrees with the stale mirror, writes nothing, so
