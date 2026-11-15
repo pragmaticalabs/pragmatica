@@ -223,6 +223,17 @@ class HetznerClientTest {
             assertThat(testHttp.requestedUris()).isEmpty();
         }
 
+        /// #2499: a null selector is refused (typed, no request), never read as "no selector, match all".
+        @Test
+        void listServers_nullSelector_refusedWithoutRequest() {
+            client.listServers(null)
+                  .await()
+                  .onSuccess(servers -> assertThat(servers).isNull())
+                  .onFailure(cause -> assertThat(cause.message()).startsWith("Refusing Hetzner label selector"));
+
+            assertThat(testHttp.requestedUris()).as("#2499: no request for a null selector").isEmpty();
+        }
+
         @Test
         void listFirewalls_blankSelector_refusedWithoutRequest() {
             client.listFirewalls("  ")
