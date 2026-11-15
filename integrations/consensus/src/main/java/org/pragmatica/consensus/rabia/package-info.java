@@ -22,8 +22,13 @@
 ///   installed roster at the exact epoch, and ballots for a newer epoch are deferred.
 /// - D8 A proposal is the lowest pending batch id; a voter with nothing pending proposes an empty batch.
 /// - D9 Decided slots are garbage-collected; a ballot for a past slot is answered by repair and never counted again.
-/// - D10 Quorum-loss pause: modelled as Pause/Resume in RabiaAdopt. The far-future resync and the decision-gap timeout
-///   are excluded (liveness only).
+/// - D10 Quorum-loss pause, resync and the decision-gap timeout. Safety-relevant (#3211, #3213; know 0632a2d1bc).
+///   Modelled in RabiaAdopt: Pause/Resume (quorum loss and return) and Resync (`triggerResync`, reached from a far-future
+///   Propose or Decision and from an expired decision-gap timer). A Paused or Active engine re-enters Syncing keeping every
+///   ballot it cast, its applied log and its durable state, and leaves it only through Adopt. Abstracted: the far-future
+///   distance (`MAX_PHASE_AHEAD`) and the timer delay; Resync is enabled when some live peer holds a longer log (one slot
+///   ahead, or two when the gap timer is the cause, since the timer needs a buffered Decision past a missing slot). The
+///   timer path does not fire while Paused; the far-future path does (ruling a20d1dbca5).
 /// - D11 A node activates only after its participation marker is durably recorded; the receiver counts only installed
 ///   roster members.
 /// - D12 The cluster leader is a value committed through Rabia; the models treat it as at most two competing
@@ -453,9 +458,10 @@
 /// \*   Probe        which adoption branch the sticky ghost `reached` records ("none" in property cfgs)
 /// \*   SameEpochAdopt  FALSE disables the same-epoch adoption branches, isolating the D5 newer-epoch path (diagnostic)
 /// \*   SaveFails    TRUE lets saveState on Pause fail (doPauseForQuorumLoss logs the failure and stays paused)
+/// \*   ResyncOn     TRUE enables Resync (D10: triggerResync from a far-future ballot or an expired decision-gap timer)
 /// EXTENDS Naturals, FiniteSets
 ///
-/// CONSTANTS Fixed, Paper, KeepBallots, FaultyResp, SameEpochAdopt, Probe, MaxCrash, MaxRestart, MaxPause, Rejoin, SaveFails
+/// CONSTANTS Fixed, Paper, KeepBallots, FaultyResp, SameEpochAdopt, Probe, MaxCrash, MaxRestart, MaxPause, Rejoin, SaveFails, ResyncOn
 ///
 /// ASSUME Fixed \subseteq {"amnesiafence", "selfvouch", "oneconfig"}
 /// ASSUME Paper \subseteq {"D3", "D4", "D5", "D5q"}
@@ -584,6 +590,7 @@
 ///   \/ /\ \/ \E n \in Ids : \E v \in {"r1", "r2", "a", "b"} : Vote(n, v) \/ Decide(n, v)
 ///         \/ \E n \in Ids, b \in BOOLEAN : Pause(n, b) \/ Resume(n, b)
 ///         \/ \E n \in Ids, g \in BOOLEAN : Crash(n, g) \/ (\E A \in SUBSET Ids : Restart(n, g, A))
+///         \/ \E n \in Ids, t \in BOOLEAN : Resync(n, t)
 ///      /\ UNCHANGED reached
 ///   \/ \E n \in Ids : Adopt(n)
 ///
@@ -600,6 +607,8 @@
 /// \* (the branch is reached), except Probe "claimed2" which is the unreachability claim.
 /// Reach   == ~reached
 /// ReachX2 == ~(st["X"] = "active" /\ log["X"][2] # None)
+/// \* Instrument for Resync: with no restart, no crash and no pause the only way a founding node leaves "active" is Resync.
+/// NoSyncingVoter == \A n \in Ids \ {"X"} : st[n] # "syncing"
 /// ```
 ///
 /// ```tlacfg RabiaSlot:code
@@ -1192,6 +1201,33 @@
 ///     OneRosterPerEpoch
 /// ```
 ///
+/// ```tlacfg RabiaEpoch:ctl_oneroster_mj2
+/// \* RabiaEpoch config ctl_oneroster_mj2: the expected verdict is its row in tools/tla/models.tsv
+/// \* negative control for OneRosterPerEpoch: two replicas leave slot 1 without its reconfiguration (MaxJump = 2), reach
+/// \* slot 2 at epoch 0 and apply a second command there, while the replica that committed slot 1 installs another roster
+/// \* for epoch 1. Every code fix stays on: ctl_oneroster (one jumper) cannot reach this, because a lone jumper never
+/// \* collects a majority of epoch-0 ballots in slot 2.
+/// SPECIFICATION Spec
+/// CONSTANTS
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Assume = {"crashstop"}
+///     Paper = {}
+///     Roster0 = {"A", "B", "C"}
+///     TargetSet = {{"A", "B", "D"}, {"A", "C", "D"}}
+///     Batches = {"b1", "b2"}
+///     MaxSlot = 2
+///     MaxRequests = 2
+///     RequestEpochs = {0, 1}
+///     MaxJump = 2
+///     MaxForge = 1
+///     Slow = {}
+///     JumpShape = "free"
+///     ColdShapes = {FALSE}
+/// INVARIANTS
+///     TypeOK
+///     OneRosterPerEpoch
+/// ```
+///
 /// ```tlacfg RabiaEpoch:ctl_oneroster_cs
 /// \* RabiaEpoch config ctl_oneroster_cs: the expected verdict is its row in tools/tla/models.tsv
 /// \* negative control for OneRosterPerEpoch: crash-stop assumption removed
@@ -1450,8 +1486,112 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
+/// ```
+///
+/// ```tlacfg RabiaAdopt:resync
+/// \* RabiaAdopt config resync: the expected verdict is its row in tools/tla/models.tsv
+/// \* D10: allfixes with Resync enabled (far-future ballot or expired gap timer re-enters Syncing)
+/// SPECIFICATION Spec
+/// CONSTANTS
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Paper = {}
+///   KeepBallots = TRUE
+///   FaultyResp = FALSE
+///   SameEpochAdopt = TRUE
+///   Probe = "none"
+///   MaxCrash = 1
+///   MaxRestart = 1
+///   MaxPause = 1
+///   Rejoin = "none"
+///   SaveFails = FALSE
+///   ResyncOn = TRUE
+/// INVARIANTS TypeOK Agreement Held
+/// PROPERTIES DurableDecision
+/// ```
+///
+/// ```tlacfg RabiaAdopt:resync_noselfvouch
+/// \* RabiaAdopt config resync_noselfvouch: the expected verdict is its row in tools/tla/models.tsv
+/// \* D10 with D4 self-vouch dropped: a resynced voter adopts on n/2 responders
+/// SPECIFICATION Spec
+/// CONSTANTS
+///   Fixed = {"amnesiafence", "oneconfig"}
+///   Paper = {}
+///   KeepBallots = TRUE
+///   FaultyResp = FALSE
+///   SameEpochAdopt = TRUE
+///   Probe = "none"
+///   MaxCrash = 1
+///   MaxRestart = 1
+///   MaxPause = 1
+///   Rejoin = "none"
+///   SaveFails = FALSE
+///   ResyncOn = TRUE
+/// INVARIANTS TypeOK Agreement Held
+/// PROPERTIES DurableDecision
+/// ```
+///
+/// ```tlacfg RabiaAdopt:resync_ballotloss
+/// \* RabiaAdopt config resync_ballotloss: the expected verdict is its row in tools/tla/models.tsv
+/// \* D10 with ballot memory lost on adoption (KeepBallots FALSE): a resynced voter may vote a slot twice
+/// SPECIFICATION Spec
+/// CONSTANTS
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Paper = {}
+///   KeepBallots = FALSE
+///   FaultyResp = FALSE
+///   SameEpochAdopt = TRUE
+///   Probe = "none"
+///   MaxCrash = 1
+///   MaxRestart = 1
+///   MaxPause = 1
+///   Rejoin = "none"
+///   SaveFails = FALSE
+///   ResyncOn = TRUE
+/// INVARIANTS TypeOK Agreement Held
+/// PROPERTIES DurableDecision
+/// ```
+///
+/// ```tlacfg RabiaAdopt:ctl_resync
+/// \* RabiaAdopt config ctl_resync: the expected verdict is its row in tools/tla/models.tsv
+/// \* instrument for Resync: no crash, restart or pause, so a founding node reaches Syncing only through Resync
+/// SPECIFICATION Spec
+/// CONSTANTS
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Paper = {}
+///   KeepBallots = TRUE
+///   FaultyResp = FALSE
+///   SameEpochAdopt = TRUE
+///   Probe = "none"
+///   MaxCrash = 0
+///   MaxRestart = 0
+///   MaxPause = 0
+///   Rejoin = "none"
+///   SaveFails = FALSE
+///   ResyncOn = TRUE
+/// INVARIANTS TypeOK NoSyncingVoter
+/// ```
+///
+/// ```tlacfg RabiaAdopt:ctl_resync_off
+/// \* RabiaAdopt config ctl_resync_off: the expected verdict is its row in tools/tla/models.tsv
+/// \* positive control for ctl_resync: the same bounds with Resync disabled hold NoSyncingVoter
+/// SPECIFICATION Spec
+/// CONSTANTS
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Paper = {}
+///   KeepBallots = TRUE
+///   FaultyResp = FALSE
+///   SameEpochAdopt = TRUE
+///   Probe = "none"
+///   MaxCrash = 0
+///   MaxRestart = 0
+///   MaxPause = 0
+///   Rejoin = "none"
+///   SaveFails = FALSE
+///   ResyncOn = FALSE
+/// INVARIANTS TypeOK NoSyncingVoter
 /// ```
 ///
 /// ```tlacfg RabiaAdopt:allfixes_savefail
@@ -1470,6 +1610,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = TRUE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1489,6 +1630,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1508,6 +1650,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1527,6 +1670,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1546,6 +1690,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1566,6 +1711,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1586,6 +1732,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -1605,6 +1752,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1623,6 +1771,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1641,6 +1790,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1659,6 +1809,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1677,6 +1828,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1695,6 +1847,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1713,6 +1866,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS ReachX2
 /// ```
 ///
@@ -1731,6 +1885,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "wiped"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1749,6 +1904,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "wiped"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1767,6 +1923,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "any"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1785,6 +1942,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "any"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1803,6 +1961,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1821,6 +1980,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1839,6 +1999,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1857,6 +2018,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1875,6 +2037,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1893,6 +2056,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS Reach
 /// ```
 ///
@@ -1911,6 +2075,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement
 /// PROPERTIES DurableDecision
 /// ```
@@ -1931,6 +2096,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Held
 /// ```
 ///
@@ -1949,6 +2115,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement
 /// PROPERTIES DurableDecision
 /// ```
@@ -1968,6 +2135,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement
 /// PROPERTIES DurableDecision
 /// ```
@@ -1987,6 +2155,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2006,6 +2175,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2025,6 +2195,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2044,6 +2215,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2063,6 +2235,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2083,6 +2256,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = TRUE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2102,6 +2276,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2121,6 +2296,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2140,6 +2316,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2159,6 +2336,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "none"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2178,6 +2356,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "any"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2197,6 +2376,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "any"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2216,6 +2396,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "any"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2235,6 +2416,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "any"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2254,6 +2436,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "any"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2273,6 +2456,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "any"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2292,6 +2476,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2312,6 +2497,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
 ///   SaveFails = TRUE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2331,6 +2517,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2350,6 +2537,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2369,6 +2557,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2389,6 +2578,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
 ///   SaveFails = TRUE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2408,6 +2598,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2427,6 +2618,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "tokens"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2446,6 +2638,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "wiped"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2465,6 +2658,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "wiped"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2484,6 +2678,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "wiped"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2503,6 +2698,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "wiped"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2522,6 +2718,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "wiped"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
@@ -2541,6 +2738,7 @@
 ///   MaxPause = 1
 ///   Rejoin = "wiped"
 ///   SaveFails = FALSE
+///   ResyncOn = FALSE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```

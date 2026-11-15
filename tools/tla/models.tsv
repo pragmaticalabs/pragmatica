@@ -66,6 +66,7 @@ RabiaEpoch	integrations/consensus/src/main/java	paper_d6_np	fail	Agreement	-	D6 
 RabiaEpoch	integrations/consensus/src/main/java	norelayexact_noprefix	fail	Agreement	-	D2 relay epoch check and D6 exact-epoch counting both dropped under sync adoption: two values committed
 RabiaEpoch	integrations/consensus/src/main/java	ctl_oldtally	fail	NoOldEpochTally	-	negative control for NoOldEpochTally: exact-epoch counting dropped under sync adoption
 RabiaEpoch	integrations/consensus/src/main/java	ctl_oneroster	pass	-	-	FINDING: intended negative control for OneRosterPerEpoch (exact-epoch counting dropped under sync adoption) does NOT go red; OneRosterPerEpoch holds where Agreement fails (noexactepoch_noprefix), so this control does not discriminate
+RabiaEpoch	integrations/consensus/src/main/java	ctl_oneroster_mj2	fail	OneRosterPerEpoch	-	negative control for OneRosterPerEpoch: two replicas jump slot 1 (MaxJump=2) and apply a second command at epoch 0 in slot 2 while another installs a different roster for epoch 1 (TLC pending)
 RabiaEpoch	integrations/consensus/src/main/java	ctl_oneroster_cs	fail	OneRosterPerEpoch	-	negative control for OneRosterPerEpoch: crash-stop assumption removed
 RabiaAdopt	integrations/consensus/src/main/java	allfixes	pass	-	-	every adoption fix on, under a permanent fence (Rejoin = none); the code's per-process token memory is rjT_*
 RabiaAdopt	integrations/consensus/src/main/java	allfixes_savefail	pass	-	-	permanent fence, a save on pause may fail: the adoption floor max(persisted, live phase) keeps every decision
@@ -126,6 +127,11 @@ RabiaAdopt	integrations/consensus/src/main/java	rjW_paperD5	fail	Agreement	-	Rej
 RabiaAdopt	integrations/consensus/src/main/java	ballotlossD5_nooneconfig	fail	Agreement	-	ballots lost on pause, newer-epoch path only, D5 one-configuration check dropped: two values chosen
 RabiaAdopt	integrations/consensus/src/main/java	ballotlossD5_noselfvouch	fail	Agreement	-	ballots lost on pause, newer-epoch path only, D4 self-vouch dropped: two values chosen
 RabiaAdopt	integrations/consensus/src/main/java	ctl_held	fail	Held	-	negative control for Held: a responder answering with an arbitrary log hands over a value nobody chose
+RabiaAdopt	integrations/consensus/src/main/java	resync	pass	-	-	D10: allfixes with Resync enabled (far-future ballot or expired gap timer re-enters Syncing): Agreement, Held, DurableDecision hold (TLC pending)
+RabiaAdopt	integrations/consensus/src/main/java	resync_noselfvouch	fail	Agreement	-	D10 with D4 self-vouch dropped: a resynced voter adopts on n/2 responders (TLC pending)
+RabiaAdopt	integrations/consensus/src/main/java	resync_ballotloss	fail	Agreement	-	D10 with ballot memory lost on adoption (KeepBallots FALSE): a resynced voter may vote a slot twice (TLC pending)
+RabiaAdopt	integrations/consensus/src/main/java	ctl_resync	fail	NoSyncingVoter	-	instrument for Resync: no crash, restart or pause, a founding node reaches Syncing only through Resync (TLC pending)
+RabiaAdopt	integrations/consensus/src/main/java	ctl_resync_off	pass	-	-	positive control for ctl_resync: same bounds with Resync disabled hold NoSyncingVoter (TLC pending)
 Fsm2Leader	aether/aether-deployment/src/main/java	code_inv	pass	-	-	the code (#3146): only the committed leader's writes are accepted, no submit while suspended, one live leader, published is committed, a refused WARNINGS write re-drafts
 Fsm2Leader	aether/aether-deployment/src/main/java	code_goals	pass	-	-	the code: desired and observed converge after the last leader change
 Fsm2Leader	aether/aether-deployment/src/main/java	code_goals_inv	pass	-	-	the code, goals on: only the committed leader's writes are accepted, no submit while suspended, one live leader

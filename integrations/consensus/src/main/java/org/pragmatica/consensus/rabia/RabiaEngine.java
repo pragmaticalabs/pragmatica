@@ -4266,6 +4266,19 @@ public class RabiaEngine<C extends Command> {
     /// No-op when already syncing — doSynchronize() handles retries internally — and while activation is gated and not yet
     /// authorized (A-04): a ballot must not start a sync round, and so a path to serving, on an engine that was never
     /// allowed to activate. A Paused engine still resyncs (ruling a20d1dbca5).
+    /// ```tla RabiaAdopt:Resync
+    /// \* D10. triggerResync re-enters Syncing through doClusterConnected: from Active/Observing, or from Paused (ruling
+    /// \* a20d1dbca5); a Syncing engine is a no-op. Nothing is reset: phases, applied log and durable state stay (phases.clear()
+    /// \* runs only in shutdownAndReset). Callers: a far-future Propose or Decision (timer = FALSE: any live peer ahead, from
+    /// \* Active or Paused) and decisionGapExpired (timer = TRUE: not Paused, a Decision buffered past the missing slot, so the
+    /// \* peer is two or more slots ahead). The distance bound MAX_PHASE_AHEAD and the delay are abstracted away.
+    /// Resync(n, timer) ==
+    ///   /\ ResyncOn
+    ///   /\ st[n] \in IF timer THEN {"active"} ELSE {"active", "paused"}
+    ///   /\ \E p \in Ids \ {n} : st[p] # "down" /\ Len(log[p]) >= Len(log[n]) + (IF timer THEN 2 ELSE 1)
+    ///   /\ st' = [st EXCEPT ![n] = "syncing"]
+    ///   /\ UNCHANGED <<log, saved, marker, admit, known, reinc, voted, ballots, chosen, crashes, restarts, pauses>>
+    /// ```
     private void triggerResync() {
         if (engineState.get() instanceof EngineState.Syncing || awaitsAuthorization()) {
             return;
