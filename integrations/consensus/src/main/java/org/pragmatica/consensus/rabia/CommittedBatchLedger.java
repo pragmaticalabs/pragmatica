@@ -122,6 +122,7 @@ final class CommittedBatchLedger {
         var copy = new HashMap<Id, Map<CorrelationId, Long>>();
 
         committed.forEach((id, entry) -> copy.put(id, Map.copyOf(entry)));
+
         return copy;
     }
 
@@ -133,13 +134,11 @@ final class CommittedBatchLedger {
 
     /// Forgets the ids of the oldest record, except where the same id was recorded again later under that batch id.
     private void expire(Recorded oldest) {
-        Option.option(committed.get(oldest.batchId()))
-              .onPresent(entry -> forget(oldest, entry));
+        Option.option(committed.get(oldest.batchId())).onPresent(entry -> forget(oldest, entry));
     }
 
     private void forget(Recorded oldest, Map<CorrelationId, Long> entry) {
-        oldest.correlationIds()
-              .forEach(id -> entry.remove(id, oldest.sequence()));
+        oldest.correlationIds().forEach(id -> entry.remove(id, oldest.sequence()));
         if (entry.isEmpty()) {
             committed.remove(oldest.batchId());
         }
