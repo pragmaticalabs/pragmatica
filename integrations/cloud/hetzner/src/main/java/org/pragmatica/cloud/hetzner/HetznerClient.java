@@ -60,6 +60,7 @@ import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 
@@ -172,7 +173,9 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
 
     @Override
     public Promise<List<Server>> listServers(String labelSelector) {
-        return listAll("/servers?label_selector=" + encodeQueryParam(labelSelector), ServerListResponse.class);
+        return validSelector(labelSelector).async()
+                            .flatMap(selector -> listAll("/servers?label_selector=" + encodeQueryParam(selector),
+                                                         ServerListResponse.class));
     }
 
     @Override
@@ -217,7 +220,9 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
 
     @Override
     public Promise<List<Firewall>> listFirewalls(String labelSelector) {
-        return listAll("/firewalls?label_selector=" + encodeQueryParam(labelSelector), FirewallListResponse.class);
+        return validSelector(labelSelector).async()
+                            .flatMap(selector -> listAll("/firewalls?label_selector=" + encodeQueryParam(selector),
+                                                         FirewallListResponse.class));
     }
 
     @Override
@@ -471,6 +476,17 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
                           .uri(URI.create(config.baseUrl() + path))
                           .header("Authorization",
                                   "Bearer " + config.apiToken());
+    }
+
+    /// A selector is refused (typed, before any request) when it is null, blank, or has an empty clause between commas.
+    private static Result<String> validSelector(String selector) {
+        return Option.option(selector)
+                     .filter(HetznerClient::allClausesNonBlank)
+                     .toResult(HetznerError.InvalidLabelSelector.REFUSED);
+    }
+
+    private static boolean allClausesNonBlank(String selector) {
+        return Stream.of(selector.split(",", -1)).noneMatch(String::isBlank);
     }
 
     private static String encodeQueryParam(String value) {
