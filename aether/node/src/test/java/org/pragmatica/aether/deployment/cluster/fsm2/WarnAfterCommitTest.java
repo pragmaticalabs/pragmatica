@@ -668,10 +668,14 @@ class WarnAfterCommitTest {
         Warnings.inherit(m, ctx);
 
         assertThat(Warnings.pending(m)).as("dirty after inherit, before any reconcile").isTrue();
-        assertThat(Warnings.difference(m)).as("the next write clears the marker")
+        assertThat(Warnings.difference(m)).as("the next write clears the marker, under the key's next revision (#3274)")
                                           .singleElement()
                                           .satisfies(mutation -> assertThat(mutation.replacement())
-                                              .isEqualTo(Option.some(FsmWarningValue.fsmWarningValue(Map.of()))));
+                                              .isEqualTo(Option.some(FsmWarningValue.fsmWarningValue(Map.of(),
+                                                                                                     true,
+                                                                                                     Option.none(),
+                                                                                                     Option.none(),
+                                                                                                     1L))));
     }
 
     /// Red when: replay emits an open row's markers opener first (it must end open: recovery, then opener), or emits a blank subject.
