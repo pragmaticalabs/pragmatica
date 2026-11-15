@@ -21,7 +21,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Option;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind.WARNINGS;
@@ -613,24 +612,17 @@ class WarningsMirrorLagTest {
                                                                                                           Option.some(FsmWarningValue.fsmWarningValue(Map.of(), false, Option.none(), Option.none(), 1L))));
     }
 
-    /// Item 3 of #3274 (the `onPut` path): the successor raises `e` while suspended, then the deposed leader's row carrying both markers
-    /// (`[e up, e down]`, a tombstone) commits after its `Rebuild`, and the slice is ACTIVE again. Red when: `e` stays in the successor's
-    /// family set (a tombstone does not un-adopt), so its row stays open and a recurrence is never raised.
-    @Disabled("#3274 item 3 reproduces at rc5 (onPut keeps e in the family set on a tombstone); enable when the later lane fixes onPut")
+    /// Item 3 of #3274 (the `onPut` path), the condition gone: the successor raises `e` while suspended, then the deposed leader's row
+    /// carrying both markers (`[e up, e down]`, a tombstone) commits after its `Rebuild`, and the slice reports ACTIVE again. Red when: `e`
+    /// stays in the successor's family set, so its row stays open. (The earlier tripwire that showed `e` staying adopted was a test-setup
+    /// error: the ACTIVE row was seeded without a notification, so the FSM never saw it and the failure sweep could not close `e`.)
     @Test
     void replayedUpAndDownMarkers_overASuccessorsOwnRaise_leaveNoOpenWarning() {
         var h = replayedTombstone();
 
         assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("e is closed").isFalse();
         assertThat(openRow(h, KEY)).as("no open row left").isFalse();
-    }
-
-    /// Tripwire for item 3: asserts the CURRENT (defective) behaviour; when it goes red, onPut was fixed: enable the test above and delete this one.
-    @Test
-    void replayedUpAndDownMarkers_currentBehaviour_eStaysInTheFamilySet() {
-        var h = replayedTombstone();
-
-        assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("known defect: e stays adopted").isTrue();
+        assertThat(publishedRetryEvents(h).getLast()).as("the last event published for e is its close").isEqualTo(RECOVERY);
     }
 
     private static FsmHarness replayedTombstone() {
@@ -642,11 +634,81 @@ class WarningsMirrorLagTest {
                   .isTrue();
         h.seed(KEY,
                FsmWarningValue.fsmWarningValue(Map.of(), false, Option.some("up"), Option.some("down")));
-        SlFixtures.seedRow(h, CORE_1, ORDERS, SliceObservedState.ACTIVE, SlFixtures.G1, 12L);
+        LcSupport.node(h, CORE_1, 11L).writes(ORDERS, SliceObservedState.ACTIVE);
         h.drain();
         resume(h);
         h.deliver(new ClusterInput.Reconcile());
 
         return h;
+    }
+
+    /// The codes of the published warnings of the retry family for ORDERS, in publication order.
+    private static List<String> publishedRetryEvents(FsmHarness h) {
+        return h.effects(ClusterEffect.Warn.class)
+                .stream()
+                .filter(warn -> warn.subject()
+                                    .equals(ORDERS.asString()) && (warn.code()
+                                                                       .equals(OPENER) || warn.code()
+                                                                                              .equals(RECOVERY)))
+                .map(ClusterEffect.Warn::code)
+                .toList();
+    }
+
+    /// Item 3 (the tla3274c trace): the successor raises `e` while suspended (held), then the deposed leader's late batch commits the row
+    /// with both markers (`[e up, e down]`), the condition still holding `e`; the successor resumes and its write lands. The late row is
+    /// older in commit order than the successor's own raise, so its markers are published first. Red when: the replayed markers are held
+    /// after the own raise, so the last event published for `e` is its recovery while the condition, the family set and the row hold it open.
+    @Test
+    void lateReplayOfAnOlderEpisode_isPublishedBeforeTheSuccessorsOwnRaise() {
+        var h = suspendedSuccessor(Option.none());
+
+        LcSupport.node(h, CORE_1, 11L).fails(ORDERS, false);
+        h.drain();
+        assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("precondition: the successor raised e while suspended")
+                  .isTrue();
+        h.seed(KEY,
+               FsmWarningValue.fsmWarningValue(Map.of(), false, Option.some("up"), Option.some("down")));
+        h.drain();
+        resume(h);
+        h.deliver(new ClusterInput.Reconcile());
+        var events = publishedRetryEvents(h);
+
+        assertThat(events).as("the late episode and the own raise are all published").hasSize(3);
+        assertThat(events.getLast()).as("the last event published for e is the successor's own raise").isEqualTo(OPENER);
+        assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("e stays in the family set").isTrue();
+        assertThat(openRow(h, KEY)).as("the committed row is open").isTrue();
+    }
+
+    /// Item 3, deposed without a `Rebuild`: the leader's write carrying its raise of `e` is accepted after the committed `LeaderKey` moved
+    /// (the accepted prefix is kept, `warningsLanded`), then the new leader's row closing `e` commits and is replayed late. That row is
+    /// newer than the accepted write, so it is held after the accepted prefix. Red when: the late replay is inserted before the first held
+    /// warning of the key whatever an accepted write carried, so the recovery is published before the raise it closes.
+    @Test
+    void lateReplayAfterAnAcceptedPrefix_isHeldAfterThatPrefix() {
+        var h = suspendedSuccessor(Option.none());
+
+        resume(h);
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        LcSupport.node(h, CORE_1, 11L).fails(ORDERS, false);
+        h.drain();
+        var raise = warningsWrite(h);
+
+        assertThat(h.applyHeld(raise.correlationId())).as("precondition: the raise's write commits").isInstanceOf(Settlement.Accepted.class);
+        h.commitLeader(CORE_2, 4L);
+        h.drain();
+        h.settleHeld(raise, new Settlement.Accepted());
+        assertThat(h.model().warningsLanded).as("precondition: the accepted prefix is kept while another node leads").isPositive();
+        assertThat(publishedRetryEvents(h)).as("precondition: nothing published while another node leads").isEmpty();
+        h.seed(KEY,
+               FsmWarningValue.fsmWarningValue(Map.of(), false, Option.none(), Option.some("down"), 50L));
+        h.drain();
+        h.commitLeader(FsmHarness.SELF, 5L);
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        h.deliver(new ClusterInput.Reconcile());
+        var events = publishedRetryEvents(h);
+
+        assertThat(events).as("the raise and the new leader's recovery are published").isNotEmpty();
+        assertThat(events.getFirst()).as("the raise the accepted write committed comes first").isEqualTo(OPENER);
+        assertThat(events).as("the replayed recovery follows it").containsSubsequence(OPENER, RECOVERY);
     }
 }
