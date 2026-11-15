@@ -159,17 +159,35 @@ class WarnAfterCommitTest {
     }
 
     /// Red when: a family warning whose change is already what the committed mirror holds (no write will carry it) is held for ever instead of
-    /// published at once.
+    /// published at once. The key is mirrored ([Warnings#CLEAR]): a key absent from the mirror is never settled (#3274, the next test).
     @Test
     void warningWithNothingToWrite_isPublishedAtOnce() {
+        var m = new ClusterModel();
+        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
+
+        Warnings.indexRow(m, KEY, Warnings.CLEAR);
+        ctx.warn(OPENER, ORDERS.asString(), "raised");
+        Warnings.noteRaised(m, ctx, 0);
+
+        assertThat(ctx.effects()).containsExactly(new ClusterEffect.Warn(OPENER, ORDERS.asString(), "raised"));
+        assertThat(m.warningsHeld).isEmpty();
+    }
+
+    /// #3274 (absent keys): a key absent from the mirror may be created by a batch of the previous incarnation still in consensus. Red when:
+    /// the warning is published at once against equal open sets, or no write is drafted for its key (it would be held for ever).
+    @Test
+    void warningOfAKeyAbsentFromTheMirror_isHeldUntilAWriteCarriesIt() {
         var m = new ClusterModel();
         var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
 
         ctx.warn(OPENER, ORDERS.asString(), "raised");
         Warnings.noteRaised(m, ctx, 0);
 
-        assertThat(ctx.effects()).containsExactly(new ClusterEffect.Warn(OPENER, ORDERS.asString(), "raised"));
-        assertThat(m.warningsHeld).isEmpty();
+        assertThat(ctx.effects()).as("not published at once").isEmpty();
+        assertThat(m.warningsHeld).hasSize(1);
+        assertThat(Warnings.pending(m)).as("a write is due").isTrue();
+        assertThat(Warnings.difference(m)).as("it writes the key over \"no row\"")
+                                          .anyMatch(mutation -> mutation.key().equals(KEY) && mutation.expected().isEmpty());
     }
 
     /// Red when: a warning raised before the step's window (`from`) is taken into the held set: an earlier input's effect would be held twice.
@@ -651,6 +669,7 @@ class WarnAfterCommitTest {
         var m = new ClusterModel();
         var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
 
+        Warnings.indexRow(m, KEY, Warnings.CLEAR);
         ctx.warn(OPENER, ORDERS.asString(), "raised");
         Warnings.noteRaised(m, ctx, 0);
 
@@ -754,6 +773,7 @@ class WarnAfterCommitTest {
         var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
 
         Warnings.indexRow(m, UNJUDGEABLE_KEY, FsmWarningValue.fsmWarningValue(Map.of(), false, Option.none(), Option.some("r")));
+        Warnings.indexRow(m, KEY, Warnings.CLEAR);
         ctx.warn(OPENER, ORDERS.asString(), "raised");
         Warnings.noteRaised(m, ctx, 0);
 
@@ -772,6 +792,7 @@ class WarnAfterCommitTest {
         m.strayWarned = m.strayWarned.put(BILLING, PSet.<NodeId>empty(m.scans).add(CORE_1));
         Warnings.indexRow(m, strayKey, Warnings.desired(m).get(strayKey));
         assertThat(Warnings.desired(m).get(strayKey).members()).as("precondition: the row has members").containsOnlyKeys(CORE_1.id());
+        Warnings.indexRow(m, KEY, Warnings.CLEAR);
         ctx.warn(OPENER, ORDERS.asString(), "raised");
         Warnings.noteRaised(m, ctx, 0);
 
