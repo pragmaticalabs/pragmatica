@@ -18,7 +18,6 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.blueprintId;
-import static org.pragmatica.aether.deployment.cluster.fsm2.FsmHarness.harness;
 
 /// FSM replacement plan 3.2 delta (b): a restore carries no apply record (R-4.1.3, NT-84), so an rc4 backup taken mid-deployment restores an
 /// IN_PROGRESS outcome that no terminal path of FSM2 would ever close. `Rebuild` closes it FAILED for its own attempt, cause
@@ -32,7 +31,7 @@ class UnappliedOutcomeRebuildTest {
     /// Red when `Rebuild` does not close the outcome (it stays IN_PROGRESS for ever) or closes it for another attempt or version.
     @Test
     void anInProgressOutcomeWithNoApplyRecord_isClosedFailed_atRebuild_andAnnounced() {
-        var h = harness();
+        var h = LcSupport.leader();
 
         h.seed(new DeploymentOutcomeKey(APP), DeploymentOutcomeValue.inProgress(h.wallMs, 3L, ATTEMPT));
         h.activate();
@@ -50,7 +49,7 @@ class UnappliedOutcomeRebuildTest {
     /// Red when the rule ignores the apply record: an open apply's outcome is the apply's to close.
     @Test
     void anInProgressOutcomeWithAnApplyRecord_isLeftOpen() {
-        var h = harness();
+        var h = LcSupport.leader();
 
         h.seed(new DeploymentOutcomeKey(APP), DeploymentOutcomeValue.inProgress(h.wallMs, 1L, ATTEMPT));
         h.seed(new DeploymentApplyKey(APP), new DeploymentApplyValue(ATTEMPT, Option.none(), h.wallMs));
@@ -63,7 +62,7 @@ class UnappliedOutcomeRebuildTest {
     /// Red when the rule ignores the status: a terminal outcome without an apply record is the normal end of a deployment.
     @Test
     void aTerminalOutcomeWithNoApplyRecord_isLeftAlone() {
-        var h = harness();
+        var h = LcSupport.leader();
 
         h.seed(new DeploymentOutcomeKey(APP), DeploymentOutcomeValue.succeeded(h.wallMs, 2L, ATTEMPT));
         h.activate();
@@ -75,7 +74,7 @@ class UnappliedOutcomeRebuildTest {
     /// Every unapplied outcome is closed, in blueprint-id order (a deterministic `Rebuild`).
     @Test
     void severalUnappliedOutcomes_areAllClosed_inIdOrder() {
-        var h = harness();
+        var h = LcSupport.leader();
 
         h.seed(new DeploymentOutcomeKey(OTHER), DeploymentOutcomeValue.inProgress(h.wallMs, 1L, ATTEMPT));
         h.seed(new DeploymentOutcomeKey(APP), DeploymentOutcomeValue.inProgress(h.wallMs, 1L, ATTEMPT));

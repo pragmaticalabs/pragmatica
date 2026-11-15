@@ -16,6 +16,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.api.ManagementApiResponses.ComponentHealth;
 import org.pragmatica.aether.api.routes.StatusRoutes;
 import org.pragmatica.aether.config.AppHttpConfig;
@@ -473,6 +474,6 @@ class AetherNodeDhtMarkerPostFormationBootTest {
                                 .certificateProvider(Option.none()).configProvider(Option.none()).environment(environment)
                                 .managementHttpProtocol(HttpProtocol.H1)
                                 .storageConfig(Map.of("artifacts", artifactsConfig))
-                                .build().withStorageEncryption(storageEncryption);
+                                .build().withDeploymentEngine(DeploymentEngine.LEGACY).withStorageEncryption(storageEncryption);
     }
 }

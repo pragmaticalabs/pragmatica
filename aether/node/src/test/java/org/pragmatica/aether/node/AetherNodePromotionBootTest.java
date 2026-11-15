@@ -13,6 +13,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
@@ -221,6 +222,7 @@ class AetherNodePromotionBootTest {
                                .managementHttpProtocol(HttpProtocol.H1)
                                .storageConfig(Map.of(ARTIFACTS, small))
                                .build()
+                               .withDeploymentEngine(DeploymentEngine.LEGACY)
                                .withTimeouts(everySecond);
     }
 }

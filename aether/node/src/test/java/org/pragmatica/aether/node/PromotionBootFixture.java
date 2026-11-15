@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
 
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
@@ -80,6 +81,7 @@ final class PromotionBootFixture {
                                .managementHttpProtocol(HttpProtocol.H1)
                                .storageConfig(Map.of(ARTIFACTS, artifacts))
                                .build()
+                               .withDeploymentEngine(DeploymentEngine.LEGACY)
                                .withTimeouts(everySecond);
     }
 

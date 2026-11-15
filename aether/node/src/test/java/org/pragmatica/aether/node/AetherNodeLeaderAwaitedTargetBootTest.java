@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import java.time.Duration;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
@@ -174,6 +175,7 @@ class AetherNodeLeaderAwaitedTargetBootTest {
                                .environment(Option.none())
                                .managementHttpProtocol(HttpProtocol.H1)
                                .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
-                               .build();
+                               .build()
+                               .withDeploymentEngine(DeploymentEngine.LEGACY);
     }
 }

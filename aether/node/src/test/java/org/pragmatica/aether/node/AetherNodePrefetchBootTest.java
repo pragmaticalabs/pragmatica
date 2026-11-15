@@ -9,6 +9,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
@@ -58,7 +59,7 @@ class AetherNodePrefetchBootTest {
         node = AetherNode.aetherNode(AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(),
                                                                                         Option.none(),
                                                                                         ConfigurationProvider.builder().build(),
-                                                                                        tempDir),
+                                                                                        tempDir).withDeploymentEngine(DeploymentEngine.LEGACY),
                                      () -> {})
                          .onFailure(cause -> fail("boot must succeed: " + cause.message()))
                          .unwrap();
@@ -92,7 +93,7 @@ class AetherNodePrefetchBootTest {
                                                      .certificateProvider(Option.none()).configProvider(Option.none()).environment(Option.none())
                                                      .managementHttpProtocol(HttpProtocol.H1)
                                                      .storageConfig(HermeticStorage.nodeStorageIn(tempDir, false))
-                                                     .build(),
+                                                     .build().withDeploymentEngine(DeploymentEngine.LEGACY),
                                      () -> {})
                          .onFailure(cause -> fail("boot must succeed: " + cause.message()))
                          .unwrap();
