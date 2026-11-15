@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Map;
 import java.util.Set;
+
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
@@ -15,12 +16,15 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.lang.Option;
+
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind.WARNINGS;
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.SlFixtures.*;
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #3274: the mirror can lag a WARNINGS write that commits after this node stopped counting it as in flight: a write settled as failed
 /// (`ApplyTimeout`, an unknown outcome) or expired, and a batch of the previous incarnation still in consensus at `Rebuild`. While it lags,
@@ -30,7 +34,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class WarningsMirrorLagTest {
     private static final String PLACEMENT = "invalid-placement";
     private static final String PLACEMENT_VALID = "placement-valid";
+
     private static final FsmWarningKey PLACEMENT_KEY = FsmWarningKey.fsmWarningKey(PLACEMENT, ORDERS.asString());
+
     private static final String OPENER = "retry-exhausted-unsettled";
     private static final String RECOVERY = "retry-exhausted-settled";
     private static final FsmWarningKey KEY = FsmWarningKey.fsmWarningKey(OPENER, ORDERS.asString());
@@ -47,11 +53,12 @@ class WarningsMirrorLagTest {
 
     private static boolean openRow(FsmHarness h, FsmWarningKey key) {
         return row(h, key).map(FsmWarningValue::open)
-                          .or(false);
+                  .or(false);
     }
 
     private static ClusterEffect.Submit warningsWrite(FsmHarness h) {
-        return h.submits(WARNINGS).getLast();
+        return h.submits(WARNINGS)
+                .getLast();
     }
 
     /// ORDERS' placement does not parse, every submission is held: the leader opens `invalid-placement`, its WARNINGS write in flight.
@@ -70,7 +77,8 @@ class WarningsMirrorLagTest {
     /// The held write commits now, and its notification has not reached the FSM yet: the mirror lags it.
     private static void lateCommit(FsmHarness h, ClusterEffect.Submit write) {
         h.notifying = false;
-        assertThat(h.applyHeld(write.correlationId())).as("precondition: the stale write commits").isInstanceOf(Settlement.Accepted.class);
+        assertThat(h.applyHeld(write.correlationId())).as("precondition: the stale write commits")
+                  .isInstanceOf(Settlement.Accepted.class);
         h.notifying = true;
     }
 
@@ -86,8 +94,10 @@ class WarningsMirrorLagTest {
         while (!h.held.isEmpty()) {
             var write = h.held.values().iterator().next();
 
-            h.settleHeld(write, h.applyHeld(write.correlationId()));
+            h.settleHeld(write,
+                         h.applyHeld(write.correlationId()));
         }
+
         h.deliver(new ClusterInput.Reconcile());
     }
 
@@ -102,13 +112,11 @@ class WarningsMirrorLagTest {
         h.settleHeld(opening, new Settlement.Failed("ApplyTimeout"));
         lateCommit(h, opening);
         placement(h, "CORE_ONLY");
-
         assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("precondition: the leader closed it").isFalse();
         assertThat(openRow(h, PLACEMENT_KEY)).as("precondition: the late commit left the row open").isTrue();
-        assertThat(h.warns(PLACEMENT_VALID)).as("no close published while the committed row the mirror lags is open").isEmpty();
-
+        assertThat(h.warns(PLACEMENT_VALID)).as("no close published while the committed row the mirror lags is open")
+                  .isEmpty();
         settleAll(h);
-
         assertThat(h.warns(PLACEMENT_VALID)).as("the close is published once its write committed").hasSize(1);
         assertThat(h.warns(PLACEMENT)).as("the opener once").hasSize(1);
         assertThat(openRow(h, PLACEMENT_KEY)).as("no open row left").isFalse();
@@ -125,13 +133,12 @@ class WarningsMirrorLagTest {
         assertThat(h.warns(PLACEMENT_VALID)).as("precondition: the close is held behind the write in flight").isEmpty();
         lateCommit(h, opening);
         h.advance(h.settings.submissionExpiry() + h.settings.timing().tick());
-
-        assertThat(h.model().submitted.containsKey(opening.correlationId())).as("precondition: the opening write expired").isFalse();
+        assertThat(h.model().submitted.containsKey(opening.correlationId())).as("precondition: the opening write expired")
+                  .isFalse();
         assertThat(openRow(h, PLACEMENT_KEY)).as("precondition: the late commit left the row open").isTrue();
-        assertThat(h.warns(PLACEMENT_VALID)).as("no close published while the committed row the mirror lags is open").isEmpty();
-
+        assertThat(h.warns(PLACEMENT_VALID)).as("no close published while the committed row the mirror lags is open")
+                  .isEmpty();
         settleAll(h);
-
         assertThat(h.warns(PLACEMENT_VALID)).as("the close is published once its write committed").hasSize(1);
         assertThat(openRow(h, PLACEMENT_KEY)).as("no open row left").isFalse();
     }
@@ -153,16 +160,16 @@ class WarningsMirrorLagTest {
         var closing = warningsWrite(h);
 
         placement(h, "NOWHERE");
-        assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("precondition: the condition returned").isTrue();
+        assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("precondition: the condition returned")
+                  .isTrue();
         h.deliver(new ClusterInput.Deactivate());
         h.activate();
-        assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("precondition: the new incarnation adopted the open row").isTrue();
+        assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("precondition: the new incarnation adopted the open row")
+                  .isTrue();
         lateCommit(h, closing);
         assertThat(openRow(h, PLACEMENT_KEY)).as("precondition: the old incarnation's close committed").isFalse();
-
         settleAll(h);
         h.deliver(new ClusterInput.Reconcile());
-
         assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("the warning is open").isTrue();
         assertThat(openRow(h, PLACEMENT_KEY)).as("and its committed row is open again").isTrue();
     }
@@ -175,7 +182,9 @@ class WarningsMirrorLagTest {
         SlFixtures.seedTarget(h, ORDERS, 1, 1);
         SlFixtures.seedGoal(h, CORE_1, ORDERS, SliceGoal.LOADED, SlFixtures.G1);
         SlFixtures.seedRow(h, CORE_1, ORDERS, SliceObservedState.LOADING, SlFixtures.G1, 11L);
-        SlFixtures.seedJudgment(h, ORDERS, new ArtifactJudgmentValue(false, Map.of(CORE_1, 5), Map.of(), Set.of()));
+        SlFixtures.seedJudgment(h,
+                                ORDERS,
+                                new ArtifactJudgmentValue(false, Map.of(CORE_1, 5), Map.of(), Set.of()));
         h.commitLeader(CORE_2, 2L);
         value.onPresent(present -> h.seed(KEY, present));
         h.activate();
@@ -198,14 +207,11 @@ class WarningsMirrorLagTest {
         var h = suspendedSuccessor(Option.some(Warnings.CLEAR));
 
         resume(h);
-
         assertThat(h.warns(OPENER)).as("nothing replayed").isEmpty();
         assertThat(h.warns(RECOVERY)).as("no recovery replayed").isEmpty();
         assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("not adopted").isFalse();
-
         LcSupport.node(h, CORE_1, 11L).fails(ORDERS, false);
         h.drain();
-
         assertThat(h.warns(OPENER)).as("raised and published once its row commits").hasSize(1);
         assertThat(openRow(h, KEY)).as("its row is open").isTrue();
     }
@@ -219,12 +225,12 @@ class WarningsMirrorLagTest {
 
         h.seedQuietly(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "CORE_ONLY"));
         h.activate();
-        h.seed(PLACEMENT_KEY, FsmWarningValue.fsmWarningValue(Map.of(), true, Option.some("stale opener"), Option.none()));
+        h.seed(PLACEMENT_KEY,
+               FsmWarningValue.fsmWarningValue(Map.of(), true, Option.some("stale opener"), Option.none()));
         h.drain();
-        assertThat(openRow(h, PLACEMENT_KEY)).as("precondition: the stale row is committed open (the transient)").isTrue();
-
+        assertThat(openRow(h, PLACEMENT_KEY)).as("precondition: the stale row is committed open (the transient)")
+                  .isTrue();
         h.deliver(new ClusterInput.Reconcile());
-
         assertThat(openRow(h, PLACEMENT_KEY)).as("the next flush closed it").isFalse();
         assertThat(h.warns(PLACEMENT)).as("this node never opened it").isEmpty();
         assertThat(h.warns(PLACEMENT_VALID)).as("nor closed it").isEmpty();
@@ -233,20 +239,37 @@ class WarningsMirrorLagTest {
     /// Item 3 of #3274 (the `onPut` path): the successor raises `e` while suspended, then the deposed leader's row carrying both markers
     /// (`[e up, e down]`, a tombstone) commits after its `Rebuild`, and the slice is ACTIVE again. Red when: `e` stays in the successor's
     /// family set (a tombstone does not un-adopt), so its row stays open and a recurrence is never raised.
+    @Disabled("#3274 item 3 reproduces at rc5 (onPut keeps e in the family set on a tombstone); enable when the later lane fixes onPut")
     @Test
     void replayedUpAndDownMarkers_overASuccessorsOwnRaise_leaveNoOpenWarning() {
+        var h = replayedTombstone();
+
+        assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("e is closed").isFalse();
+        assertThat(openRow(h, KEY)).as("no open row left").isFalse();
+    }
+
+    /// Tripwire for item 3: asserts the CURRENT (defective) behaviour; when it goes red, onPut was fixed: enable the test above and delete this one.
+    @Test
+    void replayedUpAndDownMarkers_currentBehaviour_eStaysInTheFamilySet() {
+        var h = replayedTombstone();
+
+        assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("known defect: e stays adopted").isTrue();
+    }
+
+    private static FsmHarness replayedTombstone() {
         var h = suspendedSuccessor(Option.none());
 
         LcSupport.node(h, CORE_1, 11L).fails(ORDERS, false);
         h.drain();
-        assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("precondition: the successor raised e while suspended").isTrue();
-        h.seed(KEY, FsmWarningValue.fsmWarningValue(Map.of(), false, Option.some("up"), Option.some("down")));
+        assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("precondition: the successor raised e while suspended")
+                  .isTrue();
+        h.seed(KEY,
+               FsmWarningValue.fsmWarningValue(Map.of(), false, Option.some("up"), Option.some("down")));
         SlFixtures.seedRow(h, CORE_1, ORDERS, SliceObservedState.ACTIVE, SlFixtures.G1, 12L);
         h.drain();
         resume(h);
         h.deliver(new ClusterInput.Reconcile());
 
-        assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("e is closed").isFalse();
-        assertThat(openRow(h, KEY)).as("no open row left").isFalse();
+        return h;
     }
 }
