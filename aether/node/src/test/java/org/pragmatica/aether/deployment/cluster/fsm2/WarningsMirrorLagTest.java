@@ -126,6 +126,30 @@ class WarningsMirrorLagTest {
         assertThat(h.model().warningsUnsure.isEmpty()).as("the accepted write cleared the key").isTrue();
     }
 
+    /// (a, mirrored key) The close of a committed open row settles as `Failed` (`ApplyTimeout`) and stays in consensus; the condition returns
+    /// in the same drain, before the retry flush, so the family set again equals the mirror (open), whose key is present. Red when: the close
+    /// and the re-raise are published at once although the stale close may still commit (the unsure key does not gate `settled`).
+    @Test
+    void reRaiseBehindAFailedCloseOfAMirroredKey_isPublishedOnlyOnceAWriteOfThisNodeLands() {
+        var h = openRowCommitted();
+
+        placement(h, "CORE_ONLY");
+        var closing = warningsWrite(h);
+
+        h.settle(closing, new Settlement.Failed("ApplyTimeout"));
+        h.seed(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "NOWHERE"));
+        h.mailbox.addLast(new ClusterInput.Reconcile());
+        h.drain();
+        assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("precondition: the condition returned").isTrue();
+        assertThat(h.model().warningsUnsure.isEmpty()).as("precondition: the failed close left its key unsure").isFalse();
+        assertThat(h.warns(PLACEMENT_VALID)).as("no close published while the stale close may commit").isEmpty();
+        assertThat(h.warns(PLACEMENT)).as("only the first opener").hasSize(1);
+        settleAll(h);
+        assertThat(h.warns(PLACEMENT_VALID)).as("the close once a write of this node landed").hasSize(1);
+        assertThat(h.warns(PLACEMENT)).as("and the re-raise").hasSize(2);
+        assertThat(openRow(h, PLACEMENT_KEY)).as("the committed row is open, as the warning is").isTrue();
+    }
+
     /// The failed write is still held (it may commit at any time); the retry flush commits its row.
     private static void retried(FsmHarness h) {
         h.policy = FsmHarness.SettlePolicy.APPLY;
