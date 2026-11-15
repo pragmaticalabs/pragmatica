@@ -80,7 +80,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                Option<AlertConfig> alerts,
                                Option<String> clusterSecret,
                                DeploymentEngine deploymentEngine) {
-    /// The configuration without a deployment engine: the engine is LEGACY, the default of every node (phase-3 design 8.2).
+    /// The configuration without a deployment engine: the engine is FSM2, the default of every node since the flip (FSM replacement plan F6,
+    /// #2767). LEGACY stays reachable through [#withDeploymentEngine] until it is deleted (F7).
     public AetherNodeConfig(TopologyConfig topology,
                             ProtocolConfig protocol,
                             SliceActionConfig sliceAction,
@@ -143,7 +144,7 @@ public record AetherNodeConfig(TopologyConfig topology,
              storageEncryption,
              alerts,
              clusterSecret,
-             DeploymentEngine.LEGACY);
+             DeploymentEngine.FSM2);
     }
 
     /// Cluster-wide deployment defaults. `canaryEvaluationInterval` / `defaultCanaryStages` drive

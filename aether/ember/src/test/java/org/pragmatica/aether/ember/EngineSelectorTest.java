@@ -11,13 +11,13 @@ import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// The global engine selector (FSM plan F1 item 7). The FSM2 CI job is only evidence if a typo cannot run LEGACY: an unknown value fails,
-/// and a cluster built under it refuses to start.
+/// The global engine selector (FSM plan F1 item 7; default FSM2 since F6, #2767). A LEGACY run is only evidence if a typo cannot run the
+/// default: an unknown value fails, and a cluster built under it refuses to start.
 class EngineSelectorTest {
     @Test
-    void engine_isLegacy_whenThePropertyIsAbsentOrBlank() {
-        assertThat(EngineSelector.engine(Option.none())).isEqualTo(Result.success(DeploymentEngine.LEGACY));
-        assertThat(EngineSelector.engine(Option.some("  "))).isEqualTo(Result.success(DeploymentEngine.LEGACY));
+    void engine_isFsm2_whenThePropertyIsAbsentOrBlank() {
+        assertThat(EngineSelector.engine(Option.none())).isEqualTo(Result.success(DeploymentEngine.FSM2));
+        assertThat(EngineSelector.engine(Option.some("  "))).isEqualTo(Result.success(DeploymentEngine.FSM2));
     }
 
     @Test
@@ -31,7 +31,7 @@ class EngineSelectorTest {
     void engine_fails_onAValueThatNamesNoEngine() {
         var selected = EngineSelector.engine(Option.some("fms2"));
 
-        assertThat(selected.isFailure()).as("a misspelt engine never runs LEGACY").isTrue();
+        assertThat(selected.isFailure()).as("a misspelt engine never runs the default").isTrue();
         selected.onFailure(cause -> assertThat(cause.message()).contains("fms2")
                                                                .contains(EngineSelector.PROPERTY));
     }
