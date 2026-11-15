@@ -481,7 +481,7 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
     /// A selector is refused (typed, before any request) when it is null, blank, or has an empty clause between commas.
     private static Result<String> validSelector(String selector) {
         return Option.option(selector)
-                     .filter(HetznerClient::allClausesNonBlank)
+                     .filter(HetznerClientRecord::allClausesNonBlank)
                      .toResult(HetznerError.InvalidLabelSelector.REFUSED);
     }
 
