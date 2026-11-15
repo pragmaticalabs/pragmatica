@@ -143,7 +143,7 @@ public sealed interface Warnings {
     private static ClusterModel observed(ClusterModel m, FsmWarningKey key) {
         if (m.warningsUnsure.get(key)
                             .map(row -> row.known() && row.replacement()
-                                                         .equals(m.warningRows.get(key)))
+                                                          .equals(m.warningRows.get(key)))
                             .or(false)) {
             m.warningsUnsure = m.warningsUnsure.remove(key);
         }
@@ -169,20 +169,16 @@ public sealed interface Warnings {
             case FsmWarningKey key -> unsure(m,
                                              key,
                                              UnsureRow.unsureRow(true,
-                                                                 mutation.replacement()
-                                                                         .filter(FsmWarningValue.class::isInstance)
-                                                                         .map(FsmWarningValue.class::cast)));
+                                                                 mutation.replacement().filter(FsmWarningValue.class::isInstance).map(FsmWarningValue.class::cast)));
             default -> m;
         };
     }
 
     /// A key already unsure for another reason is no longer settled by one observed value: either unsettled write may commit.
     private static ClusterModel unsure(ClusterModel m, FsmWarningKey key, UnsureRow row) {
-        var merged = m.warningsUnsure.get(key)
-                                     .map(existing -> existing.equals(row)
-                                                      ? row
-                                                      : UNVOUCHED)
-                                     .or(row);
+        var merged = m.warningsUnsure.get(key).map(existing -> existing.equals(row)
+                                                               ? row
+                                                               : UNVOUCHED).or(row);
 
         m.warningsUnsure = m.warningsUnsure.put(key, merged);
 
@@ -325,11 +321,7 @@ public sealed interface Warnings {
     /// carried are published at the end of the step (#3085).
     static ClusterModel accepted(ClusterModel m, TxDraft draft) {
         return draft.kind() == SubmitKind.WARNINGS
-               ? confirmed(draft.mutations()
-                                .stream()
-                                .reduce(committed(m),
-                                        Warnings::landed,
-                                        (left, right) -> right),
+               ? confirmed(draft.mutations().stream().reduce(committed(m), Warnings::landed, (left, right) -> right),
                            draft)
                : m;
     }
@@ -395,8 +387,7 @@ public sealed interface Warnings {
                                          .filter(key -> current(m, desired, key))
                                          .map(key -> put(m,
                                                          key,
-                                                         Option.option(desired.get(key))
-                                                               .or(CLEAR)));
+                                                         Option.option(desired.get(key)).or(CLEAR)));
 
         return Stream.of(opened, closed, confirming)
                      .flatMap(mutations -> mutations)
@@ -408,9 +399,8 @@ public sealed interface Warnings {
     /// #3274: no write would touch the key: the mirror already holds what the family sets want, or neither names it.
     private static boolean current(ClusterModel m, Map<FsmWarningKey, FsmWarningValue> desired, FsmWarningKey key) {
         return same(m.warningRows.get(key),
-                    Option.option(desired.get(key))
-                          .or(CLEAR)) || (!desired.containsKey(key) && m.warningRows.get(key)
-                                                                         .isEmpty());
+                    Option.option(desired.get(key)).or(CLEAR)) || (!desired.containsKey(key) && m.warningRows.get(key)
+                                                                                                             .isEmpty());
     }
 
     private static boolean same(Option<FsmWarningValue> mirrored, FsmWarningValue wanted) {
@@ -433,7 +423,9 @@ public sealed interface Warnings {
     }
 
     /// #3274: every row written carries the next revision of the key, so it never equals a value the key held before.
-    private static KVCommand.Mutation<AetherKey, AetherValue> put(ClusterModel m, FsmWarningKey key, FsmWarningValue row) {
+    private static KVCommand.Mutation<AetherKey, AetherValue> put(ClusterModel m,
+                                                                  FsmWarningKey key,
+                                                                  FsmWarningValue row) {
         var mirrored = m.warningRows.get(key);
 
         return new KVCommand.Mutation<>(key,
@@ -582,8 +574,7 @@ public sealed interface Warnings {
                                                   ctx,
                                                   entry.getKey(),
                                                   entry.getValue()));
-        m.warningRows.keys()
-                     .forEach(key -> unsure(m, key, UNVOUCHED));
+        m.warningRows.keys().forEach(key -> unsure(m, key, UNVOUCHED));
         m.warningsDirty = true;
 
         return m;
