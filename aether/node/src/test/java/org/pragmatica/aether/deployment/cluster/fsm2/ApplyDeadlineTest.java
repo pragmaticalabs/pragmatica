@@ -78,6 +78,13 @@ class ApplyDeadlineTest {
         return outcome(h).map(DeploymentOutcomeValue::status);
     }
 
+    /// #3274: a closed warning keeps a closed row (the FSM never removes one), so the open set is the open rows.
+    private static boolean openRow(FsmHarness h, FsmWarningKey key) {
+        return h.store.get(key)
+                 .map(value -> ((FsmWarningValue) value).open())
+                 .or(false);
+    }
+
     private static SchemaVersionValue schema(SchemaStatus status) {
         return schemaOwnedBy(status, ID);
     }
@@ -133,14 +140,14 @@ class ApplyDeadlineTest {
         var row = FsmWarningKey.fsmWarningKey("apply-deadline-exceeded", APP);
 
         h.advanceBySeconds(16 * 60);
-        assertThat(h.store.get(row).isPresent()).as("committed open").isTrue();
+        assertThat(openRow(h, row)).as("committed open").isTrue();
         assertThat(h.warns("apply-deadline-cleared")).isEmpty();
 
         h.seedRemove(new DeploymentOutcomeKey(ID));
         publish(h, blueprint(APP, false, "attempt-2", slice(ORDERS, 1, 1, Set.of())), Option.none());
         h.advanceBySeconds(60);
         assertThat(h.warns("apply-deadline-cleared")).as("the republish ends the episode").hasSize(1);
-        assertThat(h.store.get(row).isPresent()).as("removed from the open set").isFalse();
+        assertThat(openRow(h, row)).as("closed in the open set (#3274: a closed row, never a removal)").isFalse();
     }
 
     // -- NT-159 ----------------------------------------------------------------------------------------------------
@@ -508,7 +515,7 @@ class ApplyDeadlineTest {
         h.advanceBySeconds(5 * 60);
         assertThat(h.warns("apply-deadline-cleared")).as("not closed").isEmpty();
         assertThat(h.warns("apply-deadline-exceeded")).as("not raised again").isEmpty();
-        assertThat(h.store.get(FsmWarningKey.fsmWarningKey("apply-deadline-exceeded", APP)).isPresent()).as("still in the open set").isTrue();
+        assertThat(openRow(h, FsmWarningKey.fsmWarningKey("apply-deadline-exceeded", APP))).as("still in the open set").isTrue();
     }
 
     /// An open warning whose terminal was replaced between the leaders (a republish: another attempt, IN_PROGRESS) is closed by the successor. Red when:
@@ -519,6 +526,7 @@ class ApplyDeadlineTest {
 
         h.advanceBySeconds(60);
         assertThat(h.warns("apply-deadline-cleared")).as("closed by the successor").hasSize(1);
-        assertThat(h.store.get(FsmWarningKey.fsmWarningKey("apply-deadline-exceeded", APP)).isPresent()).as("removed from the open set").isFalse();
+        assertThat(openRow(h, FsmWarningKey.fsmWarningKey("apply-deadline-exceeded", APP))).as("closed in the open set (#3274: a closed row, never a removal)")
+                  .isFalse();
     }
 }

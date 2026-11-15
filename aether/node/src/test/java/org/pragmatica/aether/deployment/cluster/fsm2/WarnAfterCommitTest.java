@@ -235,6 +235,17 @@ class WarnAfterCommitTest {
                                         .equals(key));
     }
 
+    /// #3274: the FSM never removes a WARNINGS row: a closed key keeps [Warnings#CLEAR] (closed, no markers) under a later revision.
+    private static boolean cleared(FsmHarness h, FsmWarningKey key) {
+        return h.snapshot()
+                .entries()
+                .stream()
+                .anyMatch(entry -> entry.key()
+                                        .equals(key) && entry.value() instanceof FsmWarningValue row && !row.open() && row.members()
+                                                                                                                          .isEmpty()
+                                   && row.opener().isEmpty() && row.recovery().isEmpty());
+    }
+
     private static SchemaVersionValue pendingSchema() {
         return new SchemaVersionValue("orders-db", 1, "V1", SchemaStatus.PENDING, "org.example:migrations:1.0.0", blueprintId(APP), 0,
                                       FsmHarness.START_WALL);
@@ -424,11 +435,11 @@ class WarnAfterCommitTest {
 
         assertThat(h.warns(PLACEMENT_VALID)).as("the successor published the committed recovery once").hasSize(1);
         assertThat(h.warns(PLACEMENT)).as("the opener is not raised again").hasSize(1);
-        assertThat(present(h, PLACEMENT_KEY)).as("nothing left committed").isFalse();
+        assertThat(cleared(h, PLACEMENT_KEY)).as("only the CLEAR row is left: the marker cleared, the row kept (#3274)").isTrue();
     }
 
-    /// Control for the close side: with the settlement processed before `Deactivate`, the recovery is published exactly once and no row is
-    /// left.
+    /// Control for the close side: with the settlement processed before `Deactivate`, the recovery is published exactly once and only the
+    /// [Warnings#CLEAR] row is left (#3274: never removed).
     @Test
     void closeSettledBeforeDeactivate_isPublishedOnce() {
         var h = closeInFlight();
@@ -441,7 +452,7 @@ class WarnAfterCommitTest {
         }
 
         assertThat(h.warns(PLACEMENT_VALID)).as("published once, after commit").hasSize(1);
-        assertThat(present(h, PLACEMENT_KEY)).as("nothing left committed").isFalse();
+        assertThat(cleared(h, PLACEMENT_KEY)).as("only the CLEAR row is left: the marker cleared, the row kept (#3274)").isTrue();
     }
 
     /// Control for the two above and for the late settle: with the settlement processed while this node leads, the opener is published

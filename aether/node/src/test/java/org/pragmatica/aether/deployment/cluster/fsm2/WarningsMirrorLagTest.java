@@ -120,8 +120,8 @@ class WarningsMirrorLagTest {
         assertThat(h.warns(PLACEMENT_VALID)).as("the close is published once its write committed").hasSize(1);
         assertThat(h.warns(PLACEMENT)).as("the opener once").hasSize(1);
         assertThat(openRow(h, PLACEMENT_KEY)).as("no open row left").isFalse();
-        assertThat(row(h, PLACEMENT_KEY).isEmpty()).as("the confirming CLEAR was refused (the late commit held the row), the refusal's re-read showed"
-                                             + " the stale write committed, so the close is a plain removal: no confirming row is kept")
+        assertThat(row(h, PLACEMENT_KEY).map(kept -> sameContent(kept, Warnings.CLEAR))
+                                        .or(false)).as("the close writes the CLEAR row; the FSM never removes a WARNINGS row (#3274)")
                   .isTrue();
         assertThat(h.model().warningsUnsure.isEmpty()).as("the accepted write cleared the key").isTrue();
     }
@@ -204,36 +204,12 @@ class WarningsMirrorLagTest {
                                         .or(false)).as("the confirming row is kept").isTrue();
     }
 
-    /// FENCING GAP 2 (row -> none -> row, revision restart): the close of a committed open row fails and stays in consensus, its retry
-    /// commits the tombstone and then removes the row (the retry's acceptance cleared the key), and the condition returns: the row is
-    /// written again from no row, so its revision restarts and the row ends equal, revision included, to the value the stale close's CAS
-    /// expects. Red today: the stale close removes the open row of an open warning.
-    @Disabled("#3274 fencing gap 2: a removal restarts the revision, so a later row can equal a stale CAS's expected value; awaiting a ruling")
+    /// Fencing by never removing (row -> CLEAR -> row): the close of a committed open row fails and stays in consensus, its retry commits
+    /// the tombstone and then [Warnings#CLEAR] (the row is never removed), and the condition returns: the row is written again with the
+    /// content the stale close's CAS expects, under a later revision. Red when: a close removes the row, so the revision restarts and the
+    /// row ends equal, revision included, to the stale close's `expected`, and the stale close removes the open row of an open warning.
     @Test
-    void staleCloseOfAnOpenRow_cannotCommitAfterTheRowIsRemovedAndWrittenAgain() {
-        var stale = staleCloseAfterRemovalAndReopen();
-
-        assertThat(stale.h().applyHeld(stale.write().correlationId())).as("the stale close's CAS expects the old revision")
-                  .isInstanceOf(Settlement.Refused.class);
-    }
-
-    /// Tripwire for fencing gap 2: asserts the CURRENT (defective) behaviour; when it goes red, the gap was closed: enable the test above
-    /// and delete this one.
-    @Test
-    void staleCloseOfAnOpenRow_currentBehaviour_commitsAfterTheRowIsRemovedAndWrittenAgain() {
-        var stale = staleCloseAfterRemovalAndReopen();
-        var h = stale.h();
-
-        assertThat(h.applyHeld(stale.write().correlationId())).as("known gap: the stale close commits")
-                  .isInstanceOf(Settlement.Accepted.class);
-        assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("known gap: the warning is open").isTrue();
-        assertThat(openRow(h, PLACEMENT_KEY)).as("known gap: its open row is gone").isFalse();
-    }
-
-    /// A harness and the stale write it holds.
-    private record Stale(FsmHarness h, ClusterEffect.Submit write) {}
-
-    private static Stale staleCloseAfterRemovalAndReopen() {
+    void staleCloseOfAnOpenRow_cannotCommitAfterTheRowIsClosedAndWrittenAgain() {
         var h = openRowCommitted();
         var before = row(h, PLACEMENT_KEY).unwrap();
 
@@ -244,37 +220,28 @@ class WarningsMirrorLagTest {
         h.settleHeld(closing, new Settlement.Failed("ApplyTimeout"));
         h.advance(h.settings.timing().retryBase());
         h.deliver(new ClusterInput.Reconcile());
-        assertThat(row(h, PLACEMENT_KEY).isEmpty()).as("precondition: the retry closed and removed the row").isTrue();
+        assertThat(row(h, PLACEMENT_KEY).map(kept -> sameContent(kept, Warnings.CLEAR))
+                                        .or(false)).as("precondition: the retry closed the row with CLEAR, never removed it").isTrue();
         placement(h, "NOWHERE");
         h.deliver(new ClusterInput.Reconcile());
         assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("precondition: the warning is open again").isTrue();
-        assertThat(row(h, PLACEMENT_KEY)).as("precondition: the row equals, revision included, what the stale close expects")
-                  .isEqualTo(Option.some(before));
-
-        return new Stale(h, closing);
+        assertThat(sameContent(row(h, PLACEMENT_KEY).unwrap(), before)).as("precondition: the row holds the content the stale close expects")
+                  .isTrue();
+        assertThat(h.applyHeld(closing.correlationId())).as("the stale close's CAS expects the old revision").isInstanceOf(Settlement.Refused.class);
+        assertThat(openRow(h, PLACEMENT_KEY)).as("the open warning keeps its open row").isTrue();
     }
 
-    /// FENCING GAP 1 (none -> row -> none, no reincarnation): the opening write of an absent key fails and stays in consensus, its retry is
-    /// accepted (which clears the key: `confirmed`), then the placement is fixed and the close REMOVES the row, restoring "no row", the
-    /// value the stale opening's CAS expects. Red today: the stale opening commits an open row for a closed warning.
-    @Disabled("#3274 fencing gap: a removal after an accepted write of a key re-opens the stale opening's CAS; awaiting a ruling")
+    /// Fencing by never removing (none -> row -> CLEAR, no reincarnation): the opening write of an absent key fails and stays in consensus,
+    /// its retry is accepted (which clears the key: `confirmed`), then the placement is fixed and the close writes [Warnings#CLEAR]. Red
+    /// when: the close removes the row, restoring "no row", the value the stale opening's CAS expects, so the stale opening commits an open
+    /// row for a closed warning.
     @Test
     void staleOpeningOfAnAbsentKey_cannotCommitAfterItsRetryAndAClose() {
         var h = staleOpeningAfterRetryAndClose();
-
-        assertThat(h.applyHeld(h.held.keySet().iterator().next())).as("the stale opening's CAS expects no row").isInstanceOf(Settlement.Refused.class);
-    }
-
-    /// Tripwire for the fencing gap: asserts the CURRENT (defective) behaviour; when it goes red, the gap was closed: enable the test above
-    /// and delete this one.
-    @Test
-    void staleOpeningOfAnAbsentKey_currentBehaviour_commitsAfterItsRetryAndAClose() {
-        var h = staleOpeningAfterRetryAndClose();
         var opening = h.held.values().iterator().next();
 
-        assertThat(h.applyHeld(opening.correlationId())).as("known gap: the stale opening commits").isInstanceOf(Settlement.Accepted.class);
-        assertThat(openRow(h, PLACEMENT_KEY)).as("known gap: an open row for a closed warning").isTrue();
-        assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("known gap: the warning is closed").isFalse();
+        assertThat(h.applyHeld(opening.correlationId())).as("the stale opening's CAS expects no row").isInstanceOf(Settlement.Refused.class);
+        assertThat(openRow(h, PLACEMENT_KEY)).as("no open row for the closed warning").isFalse();
     }
 
     private static FsmHarness staleOpeningAfterRetryAndClose() {
@@ -286,7 +253,8 @@ class WarningsMirrorLagTest {
         assertThat(openRow(h, PLACEMENT_KEY)).as("precondition: the retry committed the open row").isTrue();
         placement(h, "CORE_ONLY");
         assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("precondition: the leader closed it").isFalse();
-        assertThat(row(h, PLACEMENT_KEY).isEmpty()).as("precondition: the close removed the row").isTrue();
+        assertThat(row(h, PLACEMENT_KEY).map(kept -> sameContent(kept, Warnings.CLEAR))
+                                        .or(false)).as("precondition: the close wrote CLEAR, never removed the row").isTrue();
         assertThat(h.held.keySet()).as("precondition: only the stale opening is held").containsExactly(opening.correlationId());
 
         return h;
@@ -410,9 +378,9 @@ class WarningsMirrorLagTest {
 
     /// R3 (known transient): a stale write of a key the mirror never held (the previous leader's open row with an opener marker, committed
     /// after this node's `Rebuild`, the condition absent) is not covered by the unsure keys. The row is shown open until the next flush
-    /// removes it. Red when: the row is kept, or this node publishes a warning or a recovery for it.
+    /// closes it with [Warnings#CLEAR]. Red when: the row stays open, or this node publishes a warning or a recovery for it.
     @Test
-    void staleOpenRowOfAKeyAbsentFromTheMirror_isRemovedByTheNextFlush() {
+    void staleOpenRowOfAKeyAbsentFromTheMirror_isClosedByTheNextFlush() {
         var h = threeCores();
 
         h.seedQuietly(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "CORE_ONLY"));
@@ -424,6 +392,8 @@ class WarningsMirrorLagTest {
                   .isTrue();
         h.deliver(new ClusterInput.Reconcile());
         assertThat(openRow(h, PLACEMENT_KEY)).as("the next flush closed it").isFalse();
+        assertThat(row(h, PLACEMENT_KEY).map(kept -> sameContent(kept, Warnings.CLEAR))
+                                        .or(false)).as("with the CLEAR row, not a removal (#3274)").isTrue();
         assertThat(h.warns(PLACEMENT)).as("this node never opened it").isEmpty();
         assertThat(h.warns(PLACEMENT_VALID)).as("nor closed it").isEmpty();
     }

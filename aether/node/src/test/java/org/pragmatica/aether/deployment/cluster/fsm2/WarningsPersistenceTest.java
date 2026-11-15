@@ -40,17 +40,19 @@ class WarningsPersistenceTest {
         return h;
     }
 
+    /// #3274: a closed warning keeps a closed row (the FSM never removes one), so "committed" means an open row.
     private static boolean persisted(FsmHarness h) {
         return h.snapshot()
                 .entries()
                 .stream()
                 .anyMatch(entry -> entry.key()
-                                        .equals(KEY));
+                                        .equals(KEY) && ((FsmWarningValue) entry.value()).open());
     }
 
-    /// Red when: the open warning is not written (no put), or its close is not removed from the committed set.
+    /// Red when: the open warning is not written (no put), or its close does not leave the committed open set, or the close removes the
+    /// row (#3274: the FSM never removes a WARNINGS row; a close writes [Warnings#CLEAR]).
     @Test
-    void openIsPut_andCloseIsRemoved() {
+    void openIsPut_andCloseIsClosedRow() {
         var h = opened();
 
         assertThat(h.warningPuts()).as("the marker write, then its clear write (#3160)").containsExactly(KEY, KEY);
@@ -61,8 +63,9 @@ class WarningsPersistenceTest {
         h.deliver(new ClusterInput.Reconcile());
 
         assertThat(h.warns("placement-valid")).hasSize(1);
-        assertThat(h.mutations(FsmWarningKey.class)).as("marker put, clear put, then the close's tombstone put and its removal (#3160)").hasSize(4);
-        assertThat(h.mutations(FsmWarningKey.class).getLast().replacement().isPresent()).as("the last mutation removes").isFalse();
+        assertThat(h.mutations(FsmWarningKey.class)).as("marker put, clear put, then the close's tombstone put and its CLEAR put (#3160, #3274)").hasSize(4);
+        assertThat(h.mutations(FsmWarningKey.class).getLast().replacement().map(value -> ((FsmWarningValue) value).open()))
+                  .as("the last mutation writes a closed row, never a removal").isEqualTo(Option.some(false));
         assertThat(persisted(h)).as("the closed warning left the committed set").isFalse();
     }
 

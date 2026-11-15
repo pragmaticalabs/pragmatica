@@ -43,19 +43,19 @@ import org.pragmatica.lang.Option;
 ///   warning raised in that window is lost (the successor raises it only if the event recurs).
 /// - Published marker (#3160): the write that carries a held warning also commits it as unpublished in the warning's row
 ///   (`FsmWarningValue.opener` / `recovery`, the latest message of each; a key the family closed stays as a tombstone row, `open` false).
-///   Once the accepted write's warnings are published, the set is dirty again and the next WARNINGS write clears the markers and removes
-///   the tombstones. So when the write commits but the leader processes `Deactivate` (or a reincarnation drops the settlement as stale)
-///   before the settlement, the successor's `inherit` publishes what the row names as unpublished, opener or recovery, instead of
-///   inheriting an opener nobody published or losing the recovery of a removed row (an opener open for ever). Only marked rows are
-///   re-published, never every inherited row (the event aggregator dedups a warning only per node and within 60 s). The cost: a leader
-///   lost after publishing and before its clearing write commits has its warnings published again by the successor (a duplicate opener or
-///   recovery, once per activation that inherits the marked row, since `inherit` replays at every `Rebuild` and only a leader writes the
-///   clear); and when one key changed several times while one write was in flight (stray openers of several nodes included), only the
-///   latest opener and recovery messages are replayed. Two further orderings are handled: a settlement that arrives once this node mirrors
-///   another leader publishes nothing (`publish`), and a marked row the deposed leader commits after this node's snapshot is replayed
-///   like an inherited one (`onPut`). The recoveries `inherit` raises at `Rebuild` are not held: they close committed rows, and
-///   a successor deposed before their removal commits leaves the row to the next one, which closes it again (a repeated recovery, never an
-///   open warning).
+///   Once the accepted write's warnings are published, the set is dirty again and the next WARNINGS write clears the markers and closes the
+///   tombstones with [#CLEAR] (#3274: no row is ever removed). So when the write commits but the leader processes `Deactivate` (or a
+///   reincarnation drops the settlement as stale) before the settlement, the successor's `inherit` publishes what the row names as
+///   unpublished, opener or recovery, instead of inheriting an opener nobody published or losing the recovery of a removed row (an opener
+///   open for ever). Only marked rows are re-published, never every inherited row (the event aggregator dedups a warning only per node and
+///   within 60 s). The cost: a leader lost after publishing and before its clearing write commits has its warnings published again by the
+///   successor (a duplicate opener or recovery, once per activation that inherits the marked row, since `inherit` replays at every
+///   `Rebuild` and only a leader writes the clear); and when one key changed several times while one write was in flight (stray openers of
+///   several nodes included), only the latest opener and recovery messages are replayed. Two further orderings are handled: a settlement
+///   that arrives once this node mirrors another leader publishes nothing (`publish`), and a marked row the deposed leader commits after
+///   this node's snapshot is replayed like an inherited one (`onPut`). The recoveries `inherit` raises at `Rebuild` are not held: they
+///   close committed rows, and a successor deposed before their close commits leaves the row to the next one, which closes it again (a
+///   repeated recovery, never an open warning).
 /// - Inherit (`Rebuild`): the family sets are seeded from the committed open rows, so a successor never raises an inherited open again
 ///   (each family's raise site checks its set), and an inherited warning whose subject left the model between the leaders is closed with
 ///   [Recoveries#SUBJECT_GONE]. The families' level-triggered checks close what ended otherwise.
@@ -64,7 +64,8 @@ import org.pragmatica.lang.Option;
 ///   incarnation. The keys of such a write, and every mirrored key at `Rebuild`, are unsure (`warningsUnsure`), and `settled` is false while
 ///   any is. A key clears when the mirror shows the stale write's replacement (it committed), or when a later write of this node touching the
 ///   key is accepted. Every row written carries the key's next `revision`, so that write leaves a value the stale CAS never expects; an unsure
-///   key with nothing to write gets a confirming write of the same row, and an unsure key is closed with [#CLEAR] instead of removed.
+///   key with nothing to write gets a confirming write of the same row, and every close writes [#CLEAR]: the FSM never removes a
+///   WARNINGS row, so a key's stored value never returns to an earlier one ("no row" included).
 public sealed interface Warnings {
     String INVALID_PLACEMENT = "invalid-placement";
     String RETRY_EXHAUSTED = "retry-exhausted-unsettled";
@@ -107,9 +108,9 @@ public sealed interface Warnings {
 
     FsmWarningValue NO_MEMBERS = FsmWarningValue.fsmWarningValue(Map.of());
 
-    /// #3274: the confirming row, closed with no markers: "no warning". A key is written with it instead of being removed while the key
-    /// is unsure, and the row is kept until a later write of a real row touches the key: removing it would restore "no row", the value a
-    /// stale write's CAS may expect.
+    /// #3274: the confirming row, closed with no markers: "no warning". Every close writes it, and the row is kept until a later write of a
+    /// real row touches the key: the FSM never removes a WARNINGS row, because removing it would restore "no row", the value a stale
+    /// write's CAS may expect.
     FsmWarningValue CLEAR = FsmWarningValue.fsmWarningValue(Map.of(), false, Option.none(), Option.none());
 
     /// #3274: a key unsure for a reason no observed value can settle (a `Rebuild`, or two unsettled writes that disagree).
@@ -365,7 +366,7 @@ public sealed interface Warnings {
 
     /// The mutations that make the committed open set equal the family sets, in key order. Rows compare without their revision.
     ///
-    /// #3274: an unsure key is never removed (it is closed with [#CLEAR]), and an unsure key the family sets already agree with gets a
+    /// #3274: no key is ever removed (a close writes [#CLEAR]), and an unsure key the family sets already agree with gets a
     /// confirming write of the same row under the next revision: without it a key with nothing to write would stay unsure for ever. A
     /// [#CLEAR] row is "no warning": it is not removed, only overwritten by a later real row.
     static List<KVCommand.Mutation<AetherKey, AetherValue>> difference(ClusterModel m) {
@@ -416,10 +417,9 @@ public sealed interface Warnings {
         return FsmWarningValue.fsmWarningValue(row.members(), row.open(), row.opener(), row.recovery());
     }
 
+    /// #3274 (round 3): a close never removes the row; it writes [#CLEAR] under the next revision, so the key never returns to "no row".
     private static KVCommand.Mutation<AetherKey, AetherValue> close(ClusterModel m, FsmWarningKey key) {
-        return m.warningsUnsure.containsKey(key)
-               ? put(m, key, CLEAR)
-               : removal(m, key);
+        return put(m, key, CLEAR);
     }
 
     /// #3274: every row written carries the next revision of the key, so it never equals a value the key held before.
@@ -436,12 +436,6 @@ public sealed interface Warnings {
                                                                                     row.recovery(),
                                                                                     mirrored.map(FsmWarningValue::revision)
                                                                                             .or(0L) + 1)));
-    }
-
-    private static KVCommand.Mutation<AetherKey, AetherValue> removal(ClusterModel m, FsmWarningKey key) {
-        return new KVCommand.Mutation<>(key,
-                                        m.warningRows.get(key).map(value -> (AetherValue) value),
-                                        Option.none());
     }
 
     /// The committed set the model describes: the open set of the family sets, each row marked with its unpublished held warnings, and a
@@ -556,12 +550,11 @@ public sealed interface Warnings {
     /// After the snapshot is indexed: every committed row first publishes what its writer committed but did not publish (#3160), then a
     /// committed open warning is adopted into its family set, or closed with the reason subject-gone when its subject left the model between
     /// the leaders. A tombstone and a row this leader cannot read (an unknown code, a subject that does not parse) join no set, so the next
-    /// flush removes them. The set is dirty afterwards: the closes, and the cleared markers, are written by the first flush.
+    /// flush closes them with [#CLEAR]. The set is dirty afterwards: the closes, and the cleared markers, are written by the first flush.
     ///
     /// #3274: every mirrored key is unsure afterwards: a batch of the previous incarnation (or the deposed leader) may still be in consensus,
-    /// and the snapshot predates it. The first flush writes each key (a confirming row where nothing else changes, [#CLEAR] in place of a
-    /// removal), and nothing held is published through `settled` until that write is accepted. A [#CLEAR] row joins no set and replays
-    /// nothing.
+    /// and the snapshot predates it. The first flush writes each key (a confirming row where nothing else changes, [#CLEAR] for a close), and
+    /// nothing held is published through `settled` until that write is accepted. A [#CLEAR] row joins no set and replays nothing.
     static ClusterModel inherit(ClusterModel m, Ctx ctx) {
         m.warningRows.entries()
                      .stream()

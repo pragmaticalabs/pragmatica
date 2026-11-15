@@ -3670,7 +3670,8 @@ public sealed interface AetherValue {
     ///
     /// #3160: `opener` and `recovery` are the messages of the family's opener (the key's code) and recovery that the writing leader has
     /// committed but not yet published, so a successor publishes them when it inherits the row. `open` false marks a row the family closed
-    /// whose recovery is not yet published (a tombstone): the successor publishes the recovery and removes the row.
+    /// whose recovery is not yet published (a tombstone): the successor publishes the recovery and closes the row with the
+    /// confirming row (#3274: the FSM never removes a WARNINGS row).
     ///
     /// #3274: `revision` grows with every write of the key, so a written row never equals an earlier one: a stale transaction whose CAS
     /// expects the earlier value cannot commit after it. A closed row with no markers (the confirming row) means "no warning".
