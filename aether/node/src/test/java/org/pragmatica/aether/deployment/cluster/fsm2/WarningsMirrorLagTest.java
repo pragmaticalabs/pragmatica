@@ -761,4 +761,30 @@ class WarningsMirrorLagTest {
 
         assertThat(codes).as("the late replay is published before the own raise").startsWith(PLACEMENT, OPENER);
     }
+
+    /// Item 3b, the boundary after a publish: a late replay is published at the resume, then the node is deposed again (no `Rebuild`) and
+    /// another late row commits. Red when: `publish` drops the published prefix but leaves the late-replay boundary where it was, past the
+    /// end of the emptied held list, so the next late replay is inserted out of range.
+    @Test
+    void lateReplayAfterAPublishedReplay_isHeldAtThePublishedBoundary() {
+        var h = suspendedSuccessor(Option.none());
+
+        h.seed(KEY,
+               FsmWarningValue.fsmWarningValue(Map.of(), false, Option.some("up"), Option.some("down"), 1L));
+        h.drain();
+        resume(h);
+        assertThat(publishedRetryEvents(h)).as("precondition: the first late replay is published").containsExactly(OPENER, RECOVERY);
+        assertThat(h.model().warningsHeld).as("precondition: nothing is held after the resume").isEmpty();
+        h.commitLeader(CORE_2, 4L);
+        h.drain();
+        h.seed(PLACEMENT_KEY,
+               FsmWarningValue.fsmWarningValue(Map.of(), true, Option.some("late placement"), Option.none(), 1L));
+        h.drain();
+        assertThat(h.model().warningsHeld).as("the second late replay is held").hasSize(1);
+        h.commitLeader(FsmHarness.SELF, 5L);
+        h.deliver(new ClusterInput.Reconcile());
+        h.drain();
+
+        assertThat(h.warns(PLACEMENT)).as("the second late replay is published at the next resume").isNotEmpty();
+    }
 }
