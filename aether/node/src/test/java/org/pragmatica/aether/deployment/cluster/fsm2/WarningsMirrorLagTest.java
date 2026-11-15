@@ -43,6 +43,7 @@ class WarningsMirrorLagTest {
 
     private static final String OPENER = "retry-exhausted-unsettled";
     private static final String RECOVERY = "retry-exhausted-settled";
+    private static final FsmWarningKey UNJUDGEABLE_KEY = FsmWarningKey.fsmWarningKey(Warnings.UNJUDGEABLE, "c1");
     private static final FsmWarningKey KEY = FsmWarningKey.fsmWarningKey(OPENER, ORDERS.asString());
 
     private static Option<FsmWarningValue> row(FsmHarness h, FsmWarningKey key) {
@@ -587,10 +588,10 @@ class WarningsMirrorLagTest {
         var m = new ClusterModel();
         var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
 
-        Warnings.indexRow(m, PLACEMENT_KEY, FsmWarningValue.fsmWarningValue(Map.of(), true, Option.none(), Option.none(), 1L));
+        Warnings.indexRow(m, UNJUDGEABLE_KEY, FsmWarningValue.fsmWarningValue(Map.of(), true, Option.none(), Option.none(), 1L));
         Warnings.inherit(m, ctx);
 
-        assertThat(m.warningsUnsure.containsKey(PLACEMENT_KEY)).as("precondition: Rebuild marked the mirrored key unsure").isTrue();
+        assertThat(m.warningsUnsure.containsKey(UNJUDGEABLE_KEY)).as("precondition: Rebuild marked the mirrored key unsure").isTrue();
         assertThat(Warnings.difference(m)).as("the confirming write keeps the row open, under the next revision")
                                           .singleElement()
                                           .satisfies(mutation -> assertThat(mutation.replacement())
