@@ -120,6 +120,29 @@ class WarningsMirrorLagTest {
         assertThat(h.warns(PLACEMENT_VALID)).as("the close is published once its write committed").hasSize(1);
         assertThat(h.warns(PLACEMENT)).as("the opener once").hasSize(1);
         assertThat(openRow(h, PLACEMENT_KEY)).as("no open row left").isFalse();
+        assertThat(row(h, PLACEMENT_KEY).map(FsmWarningValue::open)).as("the unsure key is closed by a kept confirming row, not removed (R2)")
+                  .isEqualTo(Option.some(false));
+        assertThat(row(h, PLACEMENT_KEY).map(FsmWarningValue::revision)).as("every write of the key bumps its revision (opening 1, close 2)")
+                  .isEqualTo(Option.some(2L));
+        assertThat(h.model().warningsUnsure.isEmpty()).as("the accepted write cleared the key").isTrue();
+    }
+
+    /// The opening write settles as `Failed` and commits late, and this time its notification reaches the FSM: the mirror shows the
+    /// write's replacement, so the key is current without any further write. Red when: `observed` never clears the key, which then holds
+    /// the opener back (its write is only confirmed later) although the mirror already holds the committed row.
+    @Test
+    void failedWriteThatCommitsLate_clearsItsKeyOnceTheMirrorShowsTheCommit() {
+        var h = openingInFlight();
+        var opening = warningsWrite(h);
+
+        h.settleHeld(opening, new Settlement.Failed("ApplyTimeout"));
+        assertThat(h.model().warningsUnsure.isEmpty()).as("precondition: the failed write left its key unsure")
+                  .isFalse();
+        h.applyHeld(opening.correlationId());
+        h.drain();
+        assertThat(h.model().warningsUnsure.isEmpty()).as("the mirror's row is the stale write's replacement: the key is current")
+                  .isTrue();
+        assertThat(h.warns(PLACEMENT)).as("the opener is published through the settled shortcut").hasSize(1);
     }
 
     /// (b) The placement is fixed while the opening write is in flight (the close is held), the write commits late, then it expires
@@ -172,6 +195,8 @@ class WarningsMirrorLagTest {
         h.deliver(new ClusterInput.Reconcile());
         assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).as("the warning is open").isTrue();
         assertThat(openRow(h, PLACEMENT_KEY)).as("and its committed row is open again").isTrue();
+        assertThat(h.model().warningsUnsure.isEmpty()).as("the rebuilt keys are current once the write is accepted")
+                  .isTrue();
     }
 
     /// `ORDERS` one failure short on core-1, with the committed leader naming the old leader (core-2): this node rebuilds suspended. `value`,
@@ -214,6 +239,8 @@ class WarningsMirrorLagTest {
         h.drain();
         assertThat(h.warns(OPENER)).as("raised and published once its row commits").hasSize(1);
         assertThat(openRow(h, KEY)).as("its row is open").isTrue();
+        assertThat(h.model().warningsUnsure.isEmpty()).as("the inherited key is current once a write of this node touched it")
+                  .isTrue();
     }
 
     /// R3 (known transient): a stale write of a key the mirror never held (the previous leader's open row with an opener marker, committed
