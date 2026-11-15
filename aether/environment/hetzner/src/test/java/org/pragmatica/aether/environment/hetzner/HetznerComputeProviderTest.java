@@ -1591,6 +1591,24 @@ class HetznerComputeProviderTest {
             return new Firewall(id, "partition-prod-eu", List.of(), Map.of("aether-cluster", "prod-eu"));
         }
 
+        /// An Aether-created firewall (name from `FirewallName.forSource`) whose `aether-source` label was removed.
+        private static Firewall strippedAetherFirewall(long id) {
+            return new Firewall(id, "aether-prod-eu-hetzner-eu", List.of(), Map.of("aether-cluster", "prod-eu"));
+        }
+
+        /// An ingress firewall recognised by its `aether-source` label alone: the name was edited away from the
+        /// `aether-<cluster>-` prefix.
+        private static Firewall renamedLabelledFirewall(long id) {
+            return new Firewall(id,
+                                "renamed-by-operator",
+                                List.of(),
+                                Map.of("aether-cluster", "prod-eu", "aether-source", "hetzner-eu"));
+        }
+
+        private static Firewall namedClusterLabelledFirewall(long id, String name) {
+            return new Firewall(id, name, List.of(), Map.of("aether-cluster", "prod-eu"));
+        }
+
         @Test
         void createFrom_whenConfigCarriesFirewallIds_usesThemWithoutLookup() {
             // The bootstrap path is unchanged: ProviderResolver already threaded the just-created
@@ -1687,6 +1705,71 @@ class HetznerComputeProviderTest {
                                  .onFailure(cause -> assertThat(cause.message()).contains("has 1 Aether-managed firewall(s)"));
 
             assertThat(testClient.lastCreateServerRequest).isNull();
+        }
+
+        /// #1714: an Aether-created firewall (named by [FirewallName#forSource]) that lost its `aether-source`
+        /// label to external tampering is still Aether-managed, so the selector miss must fail closed rather
+        /// than create a server with no firewall while its peers are firewalled.
+        @Test
+        void createFrom_whenAetherFirewallLostSourceLabel_refusesToCreate() {
+            testClient.firewallsBySelector.put(SOURCE_SELECTOR, Promise.success(List.of()));
+            testClient.firewallsBySelector.put(CLUSTER_SELECTOR, Promise.success(List.of(strippedAetherFirewall(93))));
+
+            replacementProvider().createFrom(replacementRequest(SOURCE))
+                                 .await()
+                                 .onSuccess(info -> assertThat(info).isNull())
+                                 .onFailure(cause -> assertThat(cause.message()).contains("Refusing to provision")
+                                                                                .contains("has 1 Aether-managed firewall(s)"));
+
+            assertThat(testClient.lastCreateServerRequest).as("#1714: no server without a firewall when an Aether firewall exists")
+                                                          .isNull();
+        }
+
+        /// #1714 (label arm): the `aether-source` label alone is evidence, whatever the name says.
+        @Test
+        void createFrom_whenAetherFirewallRenamedButSourceLabelled_refusesToCreate() {
+            testClient.firewallsBySelector.put(SOURCE_SELECTOR, Promise.success(List.of()));
+            testClient.firewallsBySelector.put(CLUSTER_SELECTOR, Promise.success(List.of(renamedLabelledFirewall(94))));
+
+            replacementProvider().createFrom(replacementRequest(SOURCE))
+                                 .await()
+                                 .onSuccess(info -> assertThat(info).isNull())
+                                 .onFailure(cause -> assertThat(cause.message()).contains("has 1 Aether-managed firewall(s)"));
+
+            assertThat(testClient.lastCreateServerRequest).isNull();
+        }
+
+        /// #1714: the name arm matches only this cluster's `aether-<cluster>-` prefix; firewalls named for another
+        /// cluster (`aether-other-...`) or one sharing the cluster as a bare prefix (`aether-prod-eux`) are no evidence.
+        @Test
+        void createFrom_whenOnlyOtherClusterNamedFirewallsExist_createsUnfirewalled() {
+            testClient.firewallsBySelector.put(SOURCE_SELECTOR, Promise.success(List.of()));
+            testClient.firewallsBySelector.put(CLUSTER_SELECTOR,
+                                               Promise.success(List.of(namedClusterLabelledFirewall(95, "aether-other-hetzner-eu"),
+                                                                       namedClusterLabelledFirewall(96, "aether-prod-eux"))));
+
+            replacementProvider().createFrom(replacementRequest(SOURCE))
+                                 .await()
+                                 .onFailure(cause -> assertThat(cause).as("other-cluster names must not block auto-heal")
+                                                                      .isNull());
+
+            assertThat(testClient.lastCreateServerRequest).isNotNull();
+            assertThat(testClient.lastCreateServerRequest.firewalls()).isEmpty();
+        }
+
+        /// #1714: a firewall with no name and no source label is not evidence (null name must not match).
+        @Test
+        void createFrom_whenFirewallHasNoNameAndNoSourceLabel_createsUnfirewalled() {
+            testClient.firewallsBySelector.put(SOURCE_SELECTOR, Promise.success(List.of()));
+            testClient.firewallsBySelector.put(CLUSTER_SELECTOR,
+                                               Promise.success(List.of(namedClusterLabelledFirewall(97, null))));
+
+            replacementProvider().createFrom(replacementRequest(SOURCE))
+                                 .await()
+                                 .onFailure(cause -> assertThat(cause).as("a nameless non-ingress firewall must not block auto-heal")
+                                                                      .isNull());
+
+            assertThat(testClient.lastCreateServerRequest).isNotNull();
         }
 
         @Test
