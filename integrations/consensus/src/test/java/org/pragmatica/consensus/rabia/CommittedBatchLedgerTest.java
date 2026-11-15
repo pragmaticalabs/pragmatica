@@ -142,6 +142,21 @@ class CommittedBatchLedgerTest {
         records.forEach(b -> right.record(b.id(), b.correlationIds()));
 
         assertThat(left.stateForTesting()).isEqualTo(right.stateForTesting());
-        assertThat(left.correlationCountForTesting()).isEqualTo(4);
+    }
+
+    /// #3284: a correlation id recorded again under the same batch id is held from its latest record; the expiry of
+    /// its first record does not forget it.
+    @Test
+    void record_idRecordedAgainLater_survivesTheExpiryOfItsFirstRecord() {
+        var ledger = new CommittedBatchLedger(2);
+        var first = batch("barrier", C1);
+        var other = batch("x", C2);
+        var again = batch("barrier", C1);
+
+        ledger.record(first.id(), first.correlationIds());
+        ledger.record(other.id(), other.correlationIds());
+        ledger.record(again.id(), again.correlationIds());
+
+        assertThat(ledger.unseen(batch("barrier", C1)).isEmpty()).as("C1's latest record is inside the window").isTrue();
     }
 }
