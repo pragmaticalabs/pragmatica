@@ -127,8 +127,8 @@ RabiaAdopt	integrations/consensus/src/main/java	rjW_paperD5	fail	Agreement	-	Rej
 RabiaAdopt	integrations/consensus/src/main/java	ballotlossD5_nooneconfig	fail	Agreement	-	ballots lost on pause, newer-epoch path only, D5 one-configuration check dropped: two values chosen
 RabiaAdopt	integrations/consensus/src/main/java	ballotlossD5_noselfvouch	fail	Agreement	-	ballots lost on pause, newer-epoch path only, D4 self-vouch dropped: two values chosen
 RabiaAdopt	integrations/consensus/src/main/java	ctl_held	fail	Held	-	negative control for Held: a responder answering with an arbitrary log hands over a value nobody chose
-RabiaAdopt	integrations/consensus/src/main/java	resync	pass	-	-	D10: allfixes with Resync enabled (far-future ballot or expired gap timer re-enters Syncing): Agreement, Held, DurableDecision hold (TLC pending)
-RabiaAdopt	integrations/consensus/src/main/java	resync_noselfvouch	fail	Agreement	-	D10 with D4 self-vouch dropped: a resynced voter adopts on n/2 responders (TLC pending)
+RabiaAdopt	integrations/consensus/src/main/java	resync	pass	-	-	D10: allfixes with Resync enabled (far-future ballot or expired gap timer re-enters Syncing): Agreement, Held, DurableDecision hold (TLC: exhaustive PASS, 9,843,922 distinct, 148,011,336 generated, 0 left on queue)
+RabiaAdopt	integrations/consensus/src/main/java	resync_noselfvouch	fail	Agreement	-	D10 with D4 self-vouch dropped: a resynced voter adopts on n/2 responders (RED: control passes exhaustively (9,843,922 distinct), does not discriminate)
 RabiaAdopt	integrations/consensus/src/main/java	resync_ballotloss	fail	Agreement	-	D10 with ballot memory lost on adoption (KeepBallots FALSE): a resynced voter may vote a slot twice (TLC: Agreement violated at 49,589 distinct)
 RabiaAdopt	integrations/consensus/src/main/java	ctl_resync	fail	NoSyncingVoter	-	instrument for Resync: no crash, restart or pause, a founding node reaches Syncing only through Resync (TLC: red in 42 distinct states)
 RabiaAdopt	integrations/consensus/src/main/java	ctl_resync_off	pass	-	-	positive control for ctl_resync: same bounds with Resync disabled hold NoSyncingVoter (TLC: exhaustive, 7,195 distinct)
