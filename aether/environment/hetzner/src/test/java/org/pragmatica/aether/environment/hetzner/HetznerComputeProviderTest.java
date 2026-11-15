@@ -1591,6 +1591,11 @@ class HetznerComputeProviderTest {
             return new Firewall(id, "partition-prod-eu", List.of(), Map.of("aether-cluster", "prod-eu"));
         }
 
+        /// An Aether-created firewall (name from `FirewallName.forSource`) whose `aether-source` label was removed.
+        private static Firewall strippedAetherFirewall(long id) {
+            return new Firewall(id, "aether-prod-eu-hetzner-eu", List.of(), Map.of("aether-cluster", "prod-eu"));
+        }
+
         @Test
         void createFrom_whenConfigCarriesFirewallIds_usesThemWithoutLookup() {
             // The bootstrap path is unchanged: ProviderResolver already threaded the just-created
@@ -1687,6 +1692,24 @@ class HetznerComputeProviderTest {
                                  .onFailure(cause -> assertThat(cause.message()).contains("has 1 Aether-managed firewall(s)"));
 
             assertThat(testClient.lastCreateServerRequest).isNull();
+        }
+
+        /// #1714: an Aether-created firewall (named by [FirewallName#forSource]) that lost its `aether-source`
+        /// label to external tampering is still Aether-managed, so the selector miss must fail closed rather
+        /// than create a server with no firewall while its peers are firewalled.
+        @Test
+        void createFrom_whenAetherFirewallLostSourceLabel_refusesToCreate() {
+            testClient.firewallsBySelector.put(SOURCE_SELECTOR, Promise.success(List.of()));
+            testClient.firewallsBySelector.put(CLUSTER_SELECTOR, Promise.success(List.of(strippedAetherFirewall(93))));
+
+            replacementProvider().createFrom(replacementRequest(SOURCE))
+                                 .await()
+                                 .onSuccess(info -> assertThat(info).isNull())
+                                 .onFailure(cause -> assertThat(cause.message()).contains("Refusing to provision")
+                                                                                .contains("has 1 Aether-managed firewall(s)"));
+
+            assertThat(testClient.lastCreateServerRequest).as("#1714: no server without a firewall when an Aether firewall exists")
+                                                          .isNull();
         }
 
         @Test
