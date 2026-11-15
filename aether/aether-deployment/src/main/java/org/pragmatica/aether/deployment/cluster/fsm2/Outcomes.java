@@ -27,6 +27,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Option;
@@ -40,6 +41,10 @@ import org.pragmatica.lang.Option;
 /// update (B-055); under BEST_EFFORT it merges the failure into the outcome record (B-056).
 public sealed interface Outcomes {
     String MARKED_CAUSE = "A declared slice is marked permanently failed";
+    /// The cause of an outcome closed at `Rebuild` because no apply record backs it ([#closeUnapplied]).
+    String UNAPPLIED_CAUSE = "restored-without-apply";
+    /// The one-shot INFO announcement of [#closeUnapplied]; subject is the blueprint.
+    String OUTCOME_CLOSED_UNAPPLIED = "outcome-closed-unapplied";
 
     // -- the apply ------------------------------------------------------------------------------------------------
     /// An apply is outstanding for `artifact` when a non-registerOnly blueprint that declares it has an open apply of its
@@ -485,6 +490,58 @@ public sealed interface Outcomes {
                                                                         Option.some((AetherValue) value),
                                                                         Option.none())));
         Outbox.direct(m, TxDraft.draft(SubmitKind.OUTCOME, outcomeKey, mutations));
+
+        return m;
+    }
+
+    // -- an outcome no apply backs (FSM replacement plan 3.2 delta (b)) -------------------------------------------------
+    /// `Rebuild`: an IN_PROGRESS outcome with no apply record is closed FAILED for its own attempt, cause [#UNAPPLIED_CAUSE], and announced
+    /// once ([#OUTCOME_CLOSED_UNAPPLIED], INFO). Nothing else would ever close it: every terminal path of this FSM starts from an open apply
+    /// (R-2.7), and a restore carries no apply record (R-4.1.3, NT-84), so an rc4 backup restored mid-deployment leaves one IN_PROGRESS for
+    /// ever. On FSM2 a publish writes the apply record in its own batch (`BlueprintService` B17), so the only other source is a publish
+    /// whose record never landed, which that publish already reports as one that would never complete. Ids in order, so a `Rebuild` is
+    /// deterministic. The announcement is raised with the draft, not after its commit: a leader deposed before the close commits leaves the
+    /// outcome IN_PROGRESS, and the successor's `Rebuild` closes and announces it again (a repeated INFO, never an outcome left open).
+    static ClusterModel closeUnapplied(ClusterModel m, Ctx ctx) {
+        m.outcomes.entries()
+                  .stream()
+                  .filter(entry -> entry.getValue()
+                                        .status() == DeploymentOutcomeStatus.IN_PROGRESS)
+                  .filter(entry -> m.applies.get(entry.getKey())
+                                            .isEmpty())
+                  .sorted(Comparator.comparing(entry -> entry.getKey()
+                                                             .asString()))
+                  .forEach(entry -> closeUnapplied(m,
+                                                   ctx,
+                                                   entry.getKey(),
+                                                   entry.getValue()));
+
+        return m;
+    }
+
+    private static ClusterModel closeUnapplied(ClusterModel m,
+                                               Ctx ctx,
+                                               BlueprintId id,
+                                               DeploymentOutcomeValue committed) {
+        var outcomeKey = new DeploymentOutcomeKey(id);
+        var closed = DeploymentOutcomeValue.failed(List.of(),
+                                                   UNAPPLIED_CAUSE,
+                                                   ctx.nowMs(),
+                                                   successorVersion(Option.some(committed)),
+                                                   committed.attemptId());
+
+        Outbox.direct(m,
+                      TxDraft.draft(SubmitKind.OUTCOME,
+                                    outcomeKey,
+                                    List.of(new KVCommand.Mutation<>(outcomeKey,
+                                                                     Option.some((AetherValue) committed),
+                                                                     Option.some((AetherValue) closed)))));
+        ctx.warn(OUTCOME_CLOSED_UNAPPLIED,
+                 id.asString(),
+                 id.asString()
+                + ": the deployment outcome was IN_PROGRESS with no apply record (restored from a backup taken mid-deployment, or a"
+                + " publish whose apply record never landed), so nothing would ever complete it; closed FAILED, cause " + UNAPPLIED_CAUSE
+                + "; republish the blueprint to deploy it");
 
         return m;
     }

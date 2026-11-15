@@ -112,6 +112,8 @@ class BackupRestoreCoordinatorTest {
     /// the finish); nothing by default.
     private Runnable whileRestoring = () -> {};
     private int markerMints;
+    /// The engine the coordinator's node runs: what a markerless backup restores into (FSM replacement plan 3.2 delta (a)).
+    private DeploymentEngine runningEngine = DeploymentEngine.FSM2;
     private long slot;
     /// Tears the next two-transaction finish once (`aTornFinish_isRetried_andConverges`).
     private boolean tearFinishOnce;
@@ -566,10 +568,10 @@ class BackupRestoreCoordinatorTest {
 
         /// W-34 restore arm / MT-28 restore clause (phase-3 design 8.2; CTO ruling 9f854db8b): a leader WITHOUT `[backup]` has no restore
         /// gate, so while a restore is `IN_PROGRESS` (incarnation still absent) its registrar mints the incarnation AND the engine marker. A
-        /// backup-enabled leader then resumes and finishes. A pre-phase-3 backup carries no marker, so the finish removes the minted one: the
-        /// restored cluster reads "incarnation present, marker absent" (LEGACY).
+        /// backup-enabled leader then resumes and finishes. A pre-phase-3 backup carries no marker, so the finish keeps the minted one
+        /// (FSM replacement plan 3.2 delta (a)): the restored cluster runs the engine it was minted with, never "marker absent" (LEGACY).
         @Test
-        void aMarkerMintedMidRestoreByALeaderWithoutBackup_isRemoved_byAPrePhase3Restore() {
+        void aMarkerMintedMidRestoreByALeaderWithoutBackup_isKept_byAPrePhase3Restore() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
             seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
@@ -579,7 +581,9 @@ class BackupRestoreCoordinatorTest {
 
             assertThat(outcome()).isEqualTo(BackupRestoreOutcome.RESTORED);
             assertThat(ClusterIncarnation.committed(kvStore).map(ClusterIncarnationValue::lineageId)).isEqualTo(Option.some(LINEAGE));
-            assertThat(kvStore.get(DeploymentEngineKey.deploymentEngineKey())).as("a pre-phase-3 backup leaves no marker").isEqualTo(Option.none());
+            assertThat(kvStore.get(DeploymentEngineKey.deploymentEngineKey())
+                              .map(value -> ((DeploymentEngineValue) value).mintedBy())).as("a pre-phase-3 backup keeps the minted marker")
+                                                                                        .isEqualTo(Option.some(NodeId.nodeId("ungated-leader").unwrap()));
             assertThat(ReplaceWriteCheck.unimpliedPreconditions(finishBatch())).as("T1 witnesses the marker T2 replaces").isEmpty();
             assertThat(finishBatch()).as("the finish replaced the ungated incarnation: T1 and T2").hasSize(2);
         }
@@ -604,10 +608,10 @@ class BackupRestoreCoordinatorTest {
 
         /// The finish's marker arm without an ungated mint: a marker is committed
         /// after every write of the resumed restore, so after its chunks and before its finish, WITHOUT an incarnation `[instrument: a
-        /// constructed state; the registrar mints both]`, so nothing fences the finish. A pre-phase-3 backup removes it. Red when the finish
-        /// leaves a local marker the backup does not carry.
+        /// constructed state; the registrar mints both]`, so nothing fences the finish. A pre-phase-3 backup keeps it (plan 3.2 delta (a)).
+        /// Red when the finish removes, or re-mints over, a local marker the backup does not carry.
         @Test
-        void theFinish_removesALocalMarker_thatAPrePhase3BackupDoesNotCarry() {
+        void theFinish_keepsALocalMarker_thatAPrePhase3BackupDoesNotCarry() {
             var remote = bareRemote(temp.resolve("remote.git"));
 
             seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
@@ -617,7 +621,43 @@ class BackupRestoreCoordinatorTest {
 
             assertThat(markerMints).as("precondition: a marker was committed while the restore was in progress").isPositive();
             assertThat(outcome()).isEqualTo(BackupRestoreOutcome.RESTORED);
-            assertThat(kvStore.get(DeploymentEngineKey.deploymentEngineKey())).as("a pre-phase-3 backup leaves no marker").isEqualTo(Option.none());
+            assertThat(kvStore.get(DeploymentEngineKey.deploymentEngineKey())).as("a pre-phase-3 backup keeps the local marker")
+                                                                           .isEqualTo(Option.some(new DeploymentEngineValue(DeploymentEngine.FSM2,
+                                                                                                                            NodeId.nodeId("ungated-leader")
+                                                                                                                                  .unwrap(),
+                                                                                                                            20L)));
+        }
+
+        /// FSM replacement plan 3.2 delta (a): a pre-phase-3 backup restored where no marker exists ends with the marker of the engine the
+        /// restoring node runs, minted by that node in the finish. Red when the finish leaves the marker absent (which reads LEGACY), and red
+        /// for one of the two engines when the minted engine is fixed rather than the running one.
+        @Test
+        void aPrePhase3Backup_restoredWithNoLocalMarker_mintsTheFsm2Marker_onAnFsm2Node() {
+            restoresMarkerlessBackupInto(DeploymentEngine.FSM2);
+        }
+
+        /// The same rule on a node still running LEGACY (selectable until F7): the minted marker names LEGACY, never a fixed engine.
+        @Test
+        void aPrePhase3Backup_restoredWithNoLocalMarker_mintsTheLegacyMarker_onALegacyNode() {
+            restoresMarkerlessBackupInto(DeploymentEngine.LEGACY);
+        }
+
+        private void restoresMarkerlessBackupInto(DeploymentEngine engine) {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var self = NodeId.nodeId("node-1").unwrap();
+
+            runningEngine = engine;
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+
+            runToCompletion(coordinator(self, Option.some(source(Option.some(remote), RestoreMode.AUTO))));
+
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.RESTORED);
+            assertThat(kvStore.get(ConfigKey.forKey("alpha"))).isEqualTo(Option.some(ALPHA));
+            assertThat(kvStore.get(DeploymentEngineKey.deploymentEngineKey())
+                              .map(DeploymentEngineValue.class::cast)
+                              .map(marker -> marker.engine() + "/" + marker.mintedBy())).as("the running engine's marker, minted by the restoring node")
+                                                                                       .isEqualTo(Option.some(engine + "/" + self));
+            assertThat(ReplaceWriteCheck.unimpliedPreconditions(finishBatch())).as("T1 witnesses the marker T2 puts").isEmpty();
         }
 
         /// The same constructed state over a phase-3 backup. Red when the finish leaves the local marker instead of the backup's.
@@ -887,6 +927,7 @@ class BackupRestoreCoordinatorTest {
 
     private BackupRestoreCoordinator coordinator(NodeId self, Option<BackupRestoreCoordinator.Source> source) {
         return BackupRestoreCoordinator.backupRestoreCoordinator(self,
+                                                                 runningEngine,
                                                                  kvStore,
                                                                  this::gatedApply,
                                                                  source,

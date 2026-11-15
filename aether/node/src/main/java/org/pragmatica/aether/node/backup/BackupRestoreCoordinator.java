@@ -29,6 +29,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreOutcome;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngineValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
@@ -101,6 +103,7 @@ public final class BackupRestoreCoordinator {
     static final long CHUNK_BYTES = 8L * 1024 * 1024;
 
     private final NodeId self;
+    private final DeploymentEngine runningEngine;
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier;
     private final Option<Source> source;
@@ -152,12 +155,14 @@ public final class BackupRestoreCoordinator {
     }
 
     private BackupRestoreCoordinator(NodeId self,
+                                     DeploymentEngine runningEngine,
                                      KVStore<AetherKey, AetherValue> kvStore,
                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                      Option<Source> source,
                                      BackupWarning.Sink warnings,
                                      RetryScheduler scheduler) {
         this.self = self;
+        this.runningEngine = runningEngine;
         this.kvStore = kvStore;
         this.applier = applier;
         this.source = source;
@@ -169,11 +174,13 @@ public final class BackupRestoreCoordinator {
     /// is announced here, once, because its restore source is only the local repository of whichever node
     /// leads the cold start.
     public static BackupRestoreCoordinator backupRestoreCoordinator(NodeId self,
+                                                                    DeploymentEngine runningEngine,
                                                                     KVStore<AetherKey, AetherValue> kvStore,
                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                                     Option<Source> source,
                                                                     BackupWarning.Sink warnings) {
         var coordinator = new BackupRestoreCoordinator(self,
+                                                       runningEngine,
                                                        kvStore,
                                                        applier,
                                                        source,
@@ -190,12 +197,13 @@ public final class BackupRestoreCoordinator {
 
     /// Test factory with explicit warning sink and scheduler seams.
     static BackupRestoreCoordinator backupRestoreCoordinator(NodeId self,
+                                                             DeploymentEngine runningEngine,
                                                              KVStore<AetherKey, AetherValue> kvStore,
                                                              Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                              Option<Source> source,
                                                              BackupWarning.Sink warnings,
                                                              RetryScheduler scheduler) {
-        return new BackupRestoreCoordinator(self, kvStore, applier, source, warnings, scheduler);
+        return new BackupRestoreCoordinator(self, runningEngine, kvStore, applier, source, warnings, scheduler);
     }
 
     @Contract
@@ -626,16 +634,24 @@ public final class BackupRestoreCoordinator {
                                         Option.<AetherValue> some(marker.restored()));
     }
 
-    /// Phase-3 design 8.2 (W-34): the deployment engine marker ends as the backup has it. A leader without `[backup]` has no restore gate,
-    /// so it can mint the incarnation and the marker while this restore is `IN_PROGRESS` (the incarnation is excluded from the chunks).
-    /// A pre-phase-3 backup carries no marker: the locally minted one is removed here, in the same batch, so the restored cluster reads
-    /// "incarnation present, marker absent", i.e. LEGACY. A phase-3 backup's marker replaces any other. No mutation when they already agree,
-    /// so a finish whose marker already matches is the finish without the marker arm.
+    /// Phase-3 design 8.2 (W-34), FSM replacement plan 3.2 delta (a): a backup's marker replaces any other. A backup that carries no
+    /// marker (rc4 and earlier) restores into the running engine, never into "marker absent": the local marker stays when a leader without
+    /// `[backup]` minted one while this restore was `IN_PROGRESS` (the incarnation is excluded from the chunks), and otherwise this node mints
+    /// the marker of the engine it runs, in the same batch. Removing it instead would leave an FSM2 cluster reading "incarnation present,
+    /// marker absent", i.e. LEGACY, and every node refusing the mismatch. No mutation when they already agree, so a finish whose marker
+    /// already matches is the finish without the marker arm.
     private Option<KVCommand.Mutation<AetherKey, AetherValue>> engineMarker(Option<AetherValue> backedUp) {
-        return kvStore.get(DeploymentEngineKey.deploymentEngineKey())
-                      .equals(backedUp)
+        var local = kvStore.get(DeploymentEngineKey.deploymentEngineKey());
+        var target = backedUp.orElse(() -> local.orElse(this::runningMarker));
+
+        return local.equals(target)
                ? Option.none()
-               : Option.some(mutation(DeploymentEngineKey.deploymentEngineKey(), backedUp));
+               : Option.some(mutation(DeploymentEngineKey.deploymentEngineKey(), target));
+    }
+
+    /// The marker of the engine this node runs, minted by this node now: what a genesis mint would have written.
+    private Option<AetherValue> runningMarker() {
+        return Option.some(new DeploymentEngineValue(runningEngine, self, System.currentTimeMillis()));
     }
 
     /// The marker mutation rides on [ClusterIncarnation#replaceCommands]' put transaction, which carries no guard of its own
