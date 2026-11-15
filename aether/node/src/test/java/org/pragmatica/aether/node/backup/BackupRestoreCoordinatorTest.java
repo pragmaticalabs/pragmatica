@@ -642,6 +642,30 @@ class BackupRestoreCoordinatorTest {
             restoresMarkerlessBackupInto(DeploymentEngine.LEGACY);
         }
 
+        /// An rc4-shaped backup (no engine marker, an IN_PROGRESS deployment outcome) restored into an FSM2 node `[instrument: a synthetic
+        /// rc4-shaped fixture built from the two traits the rules handle, not bytes produced by rc4 code]`. The marker is the node's FSM2 one,
+        /// and the IN_PROGRESS outcome is withheld by the restore normalisation (it names an apply that died with the old cluster), so no
+        /// outcome reaches the FSM2 leader's Rebuild from the restore. Red when the finish leaves the marker absent or restores the outcome.
+        @Test
+        void anRc4ShapedBackup_withAnInProgressOutcome_restoresIntoFsm2_withTheMarker_andWithoutTheOutcome() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var self = NodeId.nodeId("node-1").unwrap();
+            var outcomeKey = DeploymentOutcomeKey.deploymentOutcomeKey(BLUEPRINT);
+
+            runningEngine = DeploymentEngine.FSM2;
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA,
+                                                                                  outcomeKey, DeploymentOutcomeValue.inProgress(77L)));
+
+            runToCompletion(coordinator(self, Option.some(source(Option.some(remote), RestoreMode.AUTO))));
+
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.RESTORED);
+            assertThat(kvStore.get(ConfigKey.forKey("alpha"))).isEqualTo(Option.some(ALPHA));
+            assertThat(kvStore.get(outcomeKey)).as("an IN_PROGRESS outcome is withheld by the restore").isEqualTo(Option.none());
+            assertThat(kvStore.get(DeploymentEngineKey.deploymentEngineKey())
+                              .map(DeploymentEngineValue.class::cast)
+                              .map(DeploymentEngineValue::engine)).isEqualTo(Option.some(DeploymentEngine.FSM2));
+        }
+
         private void restoresMarkerlessBackupInto(DeploymentEngine engine) {
             var remote = bareRemote(temp.resolve("remote.git"));
             var self = NodeId.nodeId("node-1").unwrap();
