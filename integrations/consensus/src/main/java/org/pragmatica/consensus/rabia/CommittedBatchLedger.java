@@ -30,20 +30,21 @@ import static org.pragmatica.lang.Option.some;
 /// id; a batch carrying some new correlation id is admitted with the committed ones stripped.
 ///
 /// Bounded by the applied log, not by the ids it holds (#3284): the ledger remembers the correlation ids of its last
-/// `capacity` records, and each correlation id is recognised for exactly the `capacity` records that follow its own,
-/// whether or not its batch id is recorded again. A batch id that repeats (identical commands, e.g. a periodic barrier)
+/// `capacity` records, and each correlation id is recognised for exactly the `capacity - 1` records that follow its own (a window of
+/// `capacity` records including its own), whether or not its batch id is recorded again. A batch id that repeats (identical commands, e.g. a periodic barrier)
 /// therefore holds at most the ids recorded under it in the window, never every id it was ever committed with, and
 /// the total held is at most the correlation ids carried by `capacity` records. The window counts records, never wall
 /// clock time, so two ledgers fed the same records hold the same entries.
 ///
-/// A delivery delayed by more than `capacity` records is not recognised. NewBatch is not offline-buffered by the
+/// A delivery delayed by `capacity` or more records is not recognised. NewBatch is not offline-buffered by the
 /// transport, so its delay is bounded by the in-flight retry budget (about 5 s, `QuicTransportTuning` consensus retry,
 /// 200 x 25 ms), which this window covers up to about 13k commits per second [unverified: under load; sized from the
 /// retry budget, not measured].
 ///
-/// Memory: about 457 bytes per correlation id (measured for the earlier per-batch-id layout; the record window and the
-/// per-id sequence tag add a little), so about 30 MB per node at the default 65,536 single-id records once that many
-/// have been committed. The ledger is NOT cleared by stop or reset (those clear the pending queue); that is harmless for
+/// Memory: about 457 bytes per correlation id was measured for the earlier per-batch-id layout only; the per-id
+/// overhead of the current layout (record window slot, per-id sequence tag) is unmeasured [unverified: not measured].
+/// The held total is at most the correlation ids carried by the last `capacity` records, once that many have been
+/// committed. The ledger is NOT cleared by stop or reset (those clear the pending queue); that is harmless for
 /// correctness because correlation ids are unique, but the memory stays held for the life of the engine.
 ///
 /// #2045: the ledger is a function of the applied log. A voter records only the correlation ids a Decision carries,

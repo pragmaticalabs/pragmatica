@@ -141,6 +141,7 @@ class CommittedBatchLedgerTest {
         records.forEach(b -> left.record(b.id(), b.correlationIds()));
         records.forEach(b -> right.record(b.id(), b.correlationIds()));
 
+        assertThat(left.stateForTesting()).isNotEmpty();
         assertThat(left.stateForTesting()).isEqualTo(right.stateForTesting());
     }
 
