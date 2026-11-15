@@ -59,6 +59,32 @@ class StatementCacheParameterTypesTest {
         assertThat(stream.parsedTypes()).containsExactly(List.of(Oid.INT4));
     }
 
+    @Test
+    void prepareStatement_closesEvictedStatementOnce_whenReplacementIsClosed() {
+        cache(Oid.INT4);
+        connection.prepareStatement(SQL, Oid.TEXT).flatMap(statement -> statement.close()).await();
+        assertThat(stream.closedStatements()).hasSize(1);
+    }
+
+    @Test
+    void prepareStatement_doesNotReturnEvictedStatement_beforeReplacementIsClosed() {
+        cache(Oid.INT4);
+        connection.prepareStatement(SQL, Oid.TEXT).await();
+        connection.prepareStatement(SQL, Oid.INT4).await();
+        assertThat(stream.parsedTypes()).containsExactly(List.of(Oid.INT4), List.of(Oid.TEXT), List.of(Oid.INT4));
+    }
+
+    @Test
+    void prepareStatement_keepsCachedTypes_whenCallerMutatesItsTypesArray() {
+        var types = new Oid[] {Oid.INT4};
+
+        connection.prepareStatement(SQL, types).flatMap(statement -> statement.close()).await();
+        types[0] = Oid.TEXT;
+        connection.prepareStatement(SQL, Oid.INT4).await();
+        // size, not content: the recorded Parse shares the caller's array, which the test has just overwritten
+        assertThat(stream.parsedTypes()).hasSize(1);
+    }
+
     private void cache(Oid type) {
         connection.prepareStatement(SQL, type).flatMap(statement -> statement.close()).await();
     }
