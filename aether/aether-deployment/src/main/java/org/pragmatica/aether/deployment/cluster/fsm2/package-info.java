@@ -235,7 +235,7 @@
 ///   /\ redo' = [redo EXCEPT ![n] = {}]
 ///
 /// Init ==
-///   /\ term = 1 /\ kvLeader = CHOOSE n \in Nodes : TRUE /\ elected = kvLeader /\ lkPend = FALSE
+///   /\ term = 1 /\ kvLeader = (CHOOSE n \in Nodes : TRUE) /\ elected = kvLeader /\ lkPend = FALSE
 ///   /\ kv = NoRows /\ kvDesired = 0 /\ target = 0 /\ observed = 0
 ///   /\ cond = {} /\ shown = {}
 ///   /\ fsm = [n \in Nodes |-> "Dormant"] /\ inc = [n \in Nodes |-> 0]
