@@ -86,8 +86,10 @@ class HierarchicalWorkerRuntimeReplayTest {
 
         // Removal then creation in another community is still allowed (#1840 item 3), so the runtime
         // replacement path stays reachable and keeps its one-owner pin.
-        commit(List.of(new KVCommand.Mutation<>(key, Option.some(prior), Option.none())));
-        commit(List.of(new KVCommand.Mutation<>(communityKey, Option.none(), Option.some(originalCommunity)),
+        // One transaction: under FSM2 a remove handled alone retires the worker (#3193); a remove with its replacement in the
+        // same transaction leaves a directive in the store, so the runtime-replacement path is what is exercised.
+        commit(List.of(new KVCommand.Mutation<>(key, Option.some(prior), Option.none()),
+            new KVCommand.Mutation<>(communityKey, Option.none(), Option.some(originalCommunity)),
             new KVCommand.Mutation<>(key, Option.none(), Option.some(reassigned))));
         await().atMost(BUDGET.duration()).until(() -> announcerHolder(worker).get() != original
             && announcerHolder(worker).get().communityId().equals(communityKey.communityId()));
