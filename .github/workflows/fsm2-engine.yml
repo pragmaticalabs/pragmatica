@@ -46,7 +46,16 @@ jobs:
         with:
           java-version: '25'
           distribution: 'zulu'
-          cache: 'maven'
+
+      # #3297: restore-only. setup-java's own maven cache is saved by whichever job finishes first under one key shared by
+      # jobs that resolve different artifacts, so a hit could still lack what this job needs and send it to Central (429).
+      # Only forge-tests saves this cache (full reactor), so the key holds the full set.
+      - name: Restore Maven repository (full-set cache, saved by forge-tests)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-full-${{ hashFiles('**/pom.xml') }}
+          restore-keys: m2-full-
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am

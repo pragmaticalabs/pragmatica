@@ -131,7 +131,16 @@ jobs:
         with:
           java-version: '25'
           distribution: 'zulu'
-          cache: 'maven'
+
+      # #3297: restore-only. setup-java's own maven cache is saved by whichever job finishes first under one key shared by
+      # jobs that resolve different artifacts, so a hit could still lack what this job needs and send it to Central (429).
+      # Only forge-tests saves this cache (full reactor), so the key holds the full set.
+      - name: Restore Maven repository (full-set cache, saved by forge-tests)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-full-${{ hashFiles('**/pom.xml') }}
+          restore-keys: m2-full-
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
@@ -189,7 +198,13 @@ jobs:
         with:
           java-version: '25'
           distribution: 'zulu'
-          cache: 'maven'
+
+      - name: Restore Maven repository (full-set cache, saved by forge-tests)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-full-${{ hashFiles('**/pom.xml') }}
+          restore-keys: m2-full-
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
@@ -310,7 +325,13 @@ jobs:
         with:
           java-version: '25'
           distribution: 'zulu'
-          cache: 'maven'
+
+      - name: Restore Maven repository (full-set cache, saved by forge-tests)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-full-${{ hashFiles('**/pom.xml') }}
+          restore-keys: m2-full-
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
@@ -343,6 +364,14 @@ jobs:
           -Dfailsafe.excludedGroups=Heavy,quarantine
           -Dfailsafe.forkedProcessTimeoutInSeconds=1800
         timeout-minutes: 30
+
+      # Saved only on success: the key is exact and immutable, so a save from a partial run would pin an incomplete set.
+      - name: Save Maven repository (full-set cache)
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-full-${{ hashFiles('**/pom.xml') }}
 
       - name: Upload Forge test results
         uses: actions/upload-artifact@v6
@@ -381,7 +410,13 @@ jobs:
         with:
           java-version: '25'
           distribution: 'zulu'
-          cache: 'maven'
+
+      - name: Restore Maven repository (full-set cache, saved by forge-tests)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-full-${{ hashFiles('**/pom.xml') }}
+          restore-keys: m2-full-
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
@@ -441,7 +476,13 @@ jobs:
         with:
           java-version: '25'
           distribution: 'zulu'
-          cache: 'maven'
+
+      - name: Restore Maven repository (full-set cache, saved by forge-tests)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-full-${{ hashFiles('**/pom.xml') }}
+          restore-keys: m2-full-
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
@@ -504,7 +545,14 @@ jobs:
         with:
           java-version: '25'
           distribution: 'zulu'
-          cache: 'maven'
+
+      - name: Restore Maven repository (full-set cache, saved by forge-tests)
+        if: steps.plan.outputs.modules != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-full-${{ hashFiles('**/pom.xml') }}
+          restore-keys: m2-full-
 
       - name: Bootstrap annotation processors and Maven plugins
         if: steps.plan.outputs.modules != ''
