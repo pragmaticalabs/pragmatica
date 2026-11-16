@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.util.List;
 import java.util.Map;
 
@@ -658,8 +659,12 @@ public sealed interface ManagementApiResponses {
     record AwaitQuiescedResponse(String epoch, String quiescence, long waitedMs) {}
 
     /// #3274: the open FSM warnings of ONE committed state of the answering core, labelled by its committed revision.
+    /// The management codec writes with `NON_EMPTY` inclusion, which would drop an empty `warnings` list; `ALWAYS` keeps the documented shape.
+    @JsonInclude(JsonInclude.Include.ALWAYS)
     record WarningsResponse(long revision, List<WarningEntry> warnings) {}
 
+    /// `members` (empty object when none) and `message` are always written: the same `NON_EMPTY` default would otherwise drop them (#3274).
+    @JsonInclude(JsonInclude.Include.ALWAYS)
     record WarningEntry(String code, String subject, Map<String, String> members, String message) {}
 
     record GovernorsResponse(List<GovernorInfo> governors) {}

@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -17,6 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
 import org.pragmatica.cluster.state.kvstore.KVStore.RevisionedSnapshot;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
@@ -122,6 +125,33 @@ class WarningsRoutesTest {
         var response = served(WarningsRoutes.read(false, () -> true, () -> snapshot(3, true, rows)));
 
         assertThat(response.warnings()).isEmpty();
+    }
+
+    /// The wire form, not the record: the management codec writes with `NON_EMPTY`, which dropped `members` (and an empty `warnings`).
+    @Test
+    void wireJson_entryWithMembers_carriesCodeSubjectMembersAndMessage() {
+        var json = wire(new WarningsResponse(12, List.of(new WarningEntry("HOLD", "art", Map.of("n1", "sig"), "held"))));
+
+        assertThat(json).isEqualTo("{\"revision\":12,\"warnings\":[{\"code\":\"HOLD\",\"subject\":\"art\",\"members\":{\"n1\":\"sig\"},\"message\":\"held\"}]}");
+    }
+
+    @Test
+    void wireJson_entryWithoutMembers_carriesAnEmptyMembersObject() {
+        var json = wire(new WarningsResponse(12, List.of(new WarningEntry("STRAY", "a", Map.of(), ""))));
+
+        assertThat(json).isEqualTo("{\"revision\":12,\"warnings\":[{\"code\":\"STRAY\",\"subject\":\"a\",\"members\":{},\"message\":\"\"}]}");
+    }
+
+    @Test
+    void wireJson_noWarnings_carriesAnEmptyWarningsArray() {
+        assertThat(wire(new WarningsResponse(7, List.of()))).isEqualTo("{\"revision\":7,\"warnings\":[]}");
+    }
+
+    private static String wire(WarningsResponse response) {
+        return JsonCodecAdapter.defaultCodec()
+                               .serialize(response)
+                               .map(bytes -> new String(bytes, StandardCharsets.UTF_8))
+                               .unwrap();
     }
 
     private static FsmWarningValue row(Map<String, String> members, boolean open, String message) {
