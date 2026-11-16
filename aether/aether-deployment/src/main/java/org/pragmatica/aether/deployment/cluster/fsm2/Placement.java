@@ -68,7 +68,8 @@ public sealed interface Placement {
         // episode; the other targets are placed as usual. Guarantee: the failure is visible, never silent and never mistaken for a
         // default placement. Mechanism: the warning below (D.6 row 10: once, until the first pass that parses it raises
         // `placement-valid`, or the target is removed).
-        Result.lift(Placement::unparsable, () -> PlacementPolicy.valueOf(target.effectivePlacement()))
+        Result.lift(Placement::unparsable,
+                    () -> PlacementPolicy.valueOf(target.effectivePlacement()))
               .onFailure(cause -> invalid(m, ctx, artifact, target, cause))
               .onSuccess(policy -> reconcileWithPolicy(placementValid(m, ctx, base),
                                                        ctx,

@@ -501,7 +501,8 @@ public sealed interface Warnings {
     private static boolean ownText(ClusterModel m, Family family, FsmWarningKey key) {
         return m.openText.get(key)
                          .isPresent() && family.state()
-                                               .held(m, key.subject())
+                                               .held(m,
+                                                     key.subject())
                                                .keySet()
                                                .stream()
                                                .anyMatch(member -> m.fresh.get(Member.member(key, member))
