@@ -17,12 +17,9 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.MethodName;
-import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.config.ConfigurationProvider;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpOperations;
@@ -292,10 +289,7 @@ class ScheduledSingleFireHostingTest {
         return cluster.allNodes()
                       .stream()
                       .map(AetherNode::self)
-                      .filter(node -> leader().kvStore()
-                                            .getTyped(new NodeArtifactKey(node, scheduledArtifact), NodeArtifactValue.class)
-                                            .filter(value -> value.state() == SliceState.ACTIVE)
-                                            .isPresent())
+                      .filter(node -> SliceStates.isActive(leader(), node, scheduledArtifact))
                       .collect(Collectors.toSet());
     }
 

@@ -92,17 +92,14 @@ class HierarchicalLoadedMovementTest {
     }
 
     private boolean noActiveCore(org.pragmatica.aether.artifact.Artifact artifact) {
-        return leader().membershipFsm().coreCountedMembers().stream().noneMatch(node -> leader().kvStore()
-            .getTyped(new AetherKey.NodeArtifactKey(node, artifact), AetherValue.NodeArtifactValue.class)
-            .filter(value -> value.state() == org.pragmatica.aether.slice.SliceState.ACTIVE).isPresent());
+        return leader().membershipFsm().coreCountedMembers().stream().noneMatch(node -> SliceStates.isActive(leader(), node, artifact));
     }
 
     private List<NodeId> activeWorkers(org.pragmatica.aether.artifact.Artifact artifact) {
         return cluster.allNodes().stream().map(AetherNode::self)
             .filter(node -> leader().kvStore().getTyped(new AetherKey.ActivationDirectiveKey(node), AetherValue.ActivationDirectiveValue.class)
                 .filter(value -> value.role().equals(AetherValue.ActivationDirectiveValue.WORKER)).isPresent())
-            .filter(node -> leader().kvStore().getTyped(new AetherKey.NodeArtifactKey(node, artifact), AetherValue.NodeArtifactValue.class)
-                .filter(value -> value.state() == org.pragmatica.aether.slice.SliceState.ACTIVE).isPresent()).toList();
+            .filter(node -> SliceStates.isActive(leader(), node, artifact)).toList();
     }
 
     private void deployWorkersOnlyEcho(org.pragmatica.aether.artifact.Artifact artifact) {
