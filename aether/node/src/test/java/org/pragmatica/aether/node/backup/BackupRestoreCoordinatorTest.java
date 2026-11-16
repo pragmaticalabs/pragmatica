@@ -893,26 +893,41 @@ class BackupRestoreCoordinatorTest {
             assertThat(warnings).extracting(BackupWarning::code).doesNotContain(Code.BACKUP_RESTORE_BLOCKED);
         }
 
-        /// TRIPWIRE #3300, asserts CURRENT behaviour: once an `IN_PROGRESS` marker is committed, the pass resumes it (`continueFrom`) and
-        /// never reads `[backup] restore`, so `restore = "fresh"` on a restart does not leave a blocked restore, yet the warning advises it.
-        /// When the owner rules (fresh abandons, or the advice is dropped), delete this test and enable the matching test below.
+        /// #3300 (rc5, text only): once an `IN_PROGRESS` marker is committed, the pass resumes it (`continueFrom`) and never reads
+        /// `[backup] restore`, so `restore = "fresh"` on a restart leaves the blocked restore standing (tripwire on the behaviour: the
+        /// abandon mechanism is #3305). The warning names the exits that work: the source fix, and the whole-cluster cold start.
         @Test
-        void tripwire3300_aBlockedResume_ignoresRestoreFresh_andStillAdvisesIt() {
+        void aBlockedResume_ignoresRestoreFresh_andNamesTheSourceFixAndTheColdStart() {
             var coordinator = blockedResumeUnderRestoreFresh();
 
             assertThat(outcome()).as("#3300 tripwire: restore = fresh did not abandon the IN_PROGRESS restore. If this is red because it now"
-                                     + " does, delete this test and enable restoreFresh_abandonsABlockedInProgressRestore")
+                                     + " does (#3305), enable restoreFresh_abandonsABlockedInProgressRestore and revisit the warning text")
                                  .isEqualTo(BackupRestoreOutcome.IN_PROGRESS);
             assertThat(RestoreGate.isOpen(kvStore)).as("the gate stays closed: writes to backed-up keys stay refused").isFalse();
             assertThat(coordinator.isComplete()).isFalse();
             assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED);
-            assertThat(warnings.getFirst().detail()).as("#3300 tripwire: the warning still advises restore = fresh. If this is red because the"
-                                                        + " advice was dropped, delete this test and enable theBlockedWarning_overAnInProgressRestore_doesNotAdviseFresh")
-                                                    .contains("restore = \"fresh\"");
+            assertThat(warnings.getFirst().detail()).contains("does not abandon it", "the next retry resumes the restore", "stop ALL nodes",
+                                                              "cold-start", "discards the partly restored state", "whole-cluster stop");
         }
 
-        /// WANTED if the owner rules "fresh abandons": the data-loss choice is the operator's, and it ends with its own committed outcome.
-        @Disabled("#3300: enable when the owner rules that restore = fresh abandons a blocked IN_PROGRESS restore; then delete the tripwire")
+        /// Without a committed marker (the first decision is blocked) `restore = "fresh"` IS read and decides `FRESH`, so that advice stays.
+        @Test
+        void aBlockedFirstDecision_withNoMarker_stillAdvisesRestoreFresh() {
+            var remotePath = temp.resolve("late.git");
+            var coordinator = coordinator(Option.some(source(Option.some(remotePath.toString()), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            worker.advance(0);
+            fireRetries(2);
+
+            assertThat(RestoreGate.decision(kvStore)).as("CONTROL: no marker").isEqualTo(Option.none());
+            assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED);
+            assertThat(warnings.getFirst().detail()).contains("restart with [backup] restore = \"fresh\" to abandon it")
+                                                    .doesNotContain("does not abandon it", "stop ALL nodes");
+        }
+
+        /// WANTED once the abandon mechanism exists: the data-loss choice is the operator's, and it ends with its own committed outcome.
+        @Disabled("#3305: enable when restore = fresh abandons a blocked IN_PROGRESS restore (rc6); then delete the tripwire test above")
         @Test
         void restoreFresh_abandonsABlockedInProgressRestore() {
             blockedResumeUnderRestoreFresh();
@@ -921,14 +936,13 @@ class BackupRestoreCoordinatorTest {
             assertThat(RestoreGate.isOpen(kvStore)).isTrue();
         }
 
-        /// WANTED if the owner rules "stop advising it": a blocked resume names only what works.
-        @Disabled("#3300: enable when the owner rules the blocked warning must not advise restore = fresh over an IN_PROGRESS restore; then delete the tripwire")
+        /// A blocked resume does not advise a restart with `restore = "fresh"` as the way out: it says that restart does not abandon the restore.
         @Test
         void theBlockedWarning_overAnInProgressRestore_doesNotAdviseFresh() {
             blockedResumeUnderRestoreFresh();
 
             assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED);
-            assertThat(warnings.getFirst().detail()).doesNotContain("restore = \"fresh\"");
+            assertThat(warnings.getFirst().detail()).doesNotContain("or restart with [backup] restore = \"fresh\" to abandon it");
         }
 
         /// No fault injection: a backup taken before genesis carries no incarnation entry. The restore commits its marker, then `finish`

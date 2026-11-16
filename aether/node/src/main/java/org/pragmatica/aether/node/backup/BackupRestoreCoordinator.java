@@ -81,7 +81,8 @@ import static org.pragmatica.lang.Result.success;
 /// 6. **Read the backup head**: none → `FRESH` (genesis follows); decodable → restore it; unreadable or
 ///    unreachable → BLOCKED: one `BACKUP_RESTORE_BLOCKED` warning, retry with backoff capped at
 ///    [#MAX_BACKOFF], never a silent fresh boot and never a crash loop. The exits are fixing the backup
-///    source, or restarting with `[backup] restore = fresh`.
+///    source, or restarting with `[backup] restore = fresh`; once an `IN_PROGRESS` marker is committed the latter does not
+///    apply (step 2 never reads it), and the exits are fixing the source or a whole-cluster cold start with `fresh` (#3300).
 ///
 /// **The restore.** Every git step runs on the backup worker ([KvBackupService#onWorker]), so a restore
 /// never races a flush on the same working tree. Entries are applied in `LeaderTransaction`s of at most
@@ -756,13 +757,30 @@ public final class BackupRestoreCoordinator {
                                                       cause.message()
                                                      + "; this cluster will not start fresh over a backup it"
                                                      + " cannot read, and writes to cluster state stay refused until it"
-                                                     + " can. Fix the backup source (" + sourceDescription()
-                                                     + "), or restart with [backup] restore = \"fresh\" to abandon it"));
+                                                     + " can. " + blockedAdvice()));
         } else {
             LOG.debug("Backup restore: transient failure: {} — will retry", cause.message());
         }
 
         scheduleRetry();
+    }
+
+    /// The exits that work depend on the fact [#pass] folds on: no committed marker means the first decision is blocked, where
+    /// `restore = "fresh"` is read and decides `FRESH`; a committed `IN_PROGRESS` marker is resumed and `[backup] restore` is never
+    /// read again (#3300), so a restart with it, on any subset of nodes, leaves the blocked restore standing.
+    private String blockedAdvice() {
+        return RestoreGate.decision(kvStore)
+                          .fold(this::firstDecisionAdvice, _ -> resumeAdvice());
+    }
+
+    private String firstDecisionAdvice() {
+        return "Fix the backup source (" + sourceDescription() + "), or restart with [backup] restore = \"fresh\" to abandon it";
+    }
+
+    private String resumeAdvice() {
+        return "A restore is already in progress, so restarting with [backup] restore = \"fresh\" does not abandon it. Fix the backup source ("
+               + sourceDescription() + "): the next retry resumes the restore. Or stop ALL nodes and cold-start them with [backup] restore = \"fresh\":"
+               + " that discards the partly restored state and is a whole-cluster stop";
     }
 
     private String sourceDescription() {

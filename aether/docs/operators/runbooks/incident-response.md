@@ -139,7 +139,7 @@ Follows [backup-recovery](backup-recovery.md#restarting-a-whole-cluster--a-regul
 - In-flight deployments: IN_PROGRESS outcomes are dropped; a rolling update resumes as after a leader failover.
 - Schema migrations in MIGRATING restart as PENDING.
 
-If the restore cannot read the backup the cluster stays up and gated (`BACKUP_RESTORE_BLOCKED`); fix the remote, or restart with `restore = "fresh"` to abandon the backup.
+If the restore cannot read the backup the cluster stays up and gated (`BACKUP_RESTORE_BLOCKED`); fix the remote, or, if the warning came before the restore began, restart with `restore = "fresh"` to abandon the backup. Once the restore has started (the warning says "a restore is already in progress") a restart with `restore = "fresh"` does not abandon it: fix the remote, or stop ALL nodes and cold-start with `restore = "fresh"`, which discards the partly restored state `[unverified: cold-start exit read from code, not exercised by a test]`. See [backup-recovery.md](backup-recovery.md).
 
 #### Recovery without `[backup]`
 
