@@ -469,10 +469,11 @@ class WarnAfterCommitTest {
 
     // -- the late settle (#3160, M1) and the row committed after Rebuild (#3160, F1) ------------------------------------------------------
     /// #3160, late settle: the WARNINGS write commits (this node no longer leads at its settlement), this node
-    /// mirrors the successor's `LeaderKey`, then its settlement arrives. Red when the deposed leader publishes the opener at that late settle (design 7: the writer deposed between commit and settlement emits
-    /// nothing), and when the successor then raises the opener again from the committed row.
+    /// mirrors the successor's `LeaderKey`, then its settlement arrives. Under rule E (erratum 2026-11-16, know e2db9ca83b7c) the deposed
+    /// writer that handles its Accepted settlement emits the opener for its committed pair exactly once. Red when it publishes none or
+    /// more than one, and when the successor then raises the opener again from the committed row.
     @Test
-    void lateSettle_afterAnotherLeaderCommitted_publishesNothing() {
+    void lateSettle_afterAnotherLeaderCommitted_publishesOnceAndSuccessorNone() {
         var h = exhausted();
         var write = warningsWrite(h);
         var settlement = h.applyHeld(write.correlationId());
@@ -482,7 +483,7 @@ class WarnAfterCommitTest {
         h.drain();
         h.settleHeld(write, settlement);
 
-        assertThat(h.warns(OPENER)).as("the deposed leader publishes nothing at its late settle (design 7: the writer deposed between commit and settlement emits nothing)").isEmpty();
+        assertThat(h.warns(OPENER)).as("the deposed writer publishes the opener of its committed pair once, at its late settle (rule E)").hasSize(1);
 
         h.deliver(new ClusterInput.Deactivate());
         h.commitLeader(FsmHarness.SELF, 3L);
@@ -492,7 +493,7 @@ class WarnAfterCommitTest {
         h.deliver(new ClusterInput.Reconcile());
         h.drain();
 
-        assertThat(h.warns(OPENER)).as("the successor does not raise it again from the committed row").isEmpty();
+        assertThat(h.warns(OPENER)).as("the successor does not raise it again from the committed row: still the one opener").hasSize(1);
     }
 
     /// `ORDERS` one failure short on core-1, with the committed leader naming the old leader (core-2): this node rebuilds suspended.
