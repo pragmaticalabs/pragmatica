@@ -66,7 +66,7 @@ class EmberWarningsRouteFsm2Test {
     private static final Pattern REVISION = Pattern.compile("\"revision\"\\s*:\\s*(\\d+)");
     private static final Pattern ENTRY = Pattern.compile("\\{\\s*\"code\"\\s*:\\s*\"" + CODE + "\"\\s*,\\s*\"subject\"\\s*:\\s*\""
                                                          + Pattern.quote(SLICE.asString())
-                                                         + "\"[^{}]*?\"message\"\\s*:\\s*\"([^\"\\\\]*+(?:\\\\.[^\"\\\\]*+)*+)\"");
+                                                         + "\"\\s*,\\s*\"members\"\\s*:\\s*\\{[^{}]*\\}\\s*,\\s*\"message\"\\s*:\\s*\"([^\"\\\\]*+(?:\\\\.[^\"\\\\]*+)*+)\"");
 
     private EmberCluster cluster;
 
