@@ -22,6 +22,9 @@ class KVStoreExactLabelTest {
     private static final Key WARNING = new Key("warning");
     private static final Key OTHER = new Key("other");
 
+    /// A key type outside the store's `K`: a real store holds such keys next to `K`'s (the leader key beside the Aether keys).
+    private record ForeignKey(String id) implements StructuredKey {}
+
     /// Decodes every snapshot as the map the test put in `next`.
     private static final class InstallingDeserializer implements Deserializer {
         volatile Map<StructuredKey, Object> next = Map.of();
@@ -49,6 +52,15 @@ class KVStoreExactLabelTest {
 
     private void apply(Key key, String value, long nextSlot) {
         store.processCommitted(store.createBatch(List.of(new KVCommand.Put<>(key, value))), nextSlot);
+    }
+
+    @Test
+    void snapshotWithRevision_storeHoldingAForeignKeyType_returnsOnlyMatchingKeys_andDoesNotThrow() {
+        install(Map.of(WARNING, "w", new ForeignKey("leader"), "l"), 5);
+
+        var snapshot = read();
+
+        assertThat(snapshot.entries()).containsExactly(Map.entry(WARNING, "w"));
     }
 
     @Test

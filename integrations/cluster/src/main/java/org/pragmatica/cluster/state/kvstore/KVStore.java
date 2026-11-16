@@ -250,8 +250,9 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     /// The entries whose keys match `filter`, with the committed revision and whether the content is exactly the state at that revision,
-    /// all read under ONE store monitor hold, so the three are mutually consistent (#3274).
-    public synchronized RevisionedSnapshot<K, V> snapshotWithRevision(Predicate<K> filter) {
+    /// all read under ONE store monitor hold, so the three are mutually consistent (#3274). The filter takes the key as `Object`: the storage
+    /// holds keys of types outside `K` (the store is shared), and a `Predicate<K>` is invoked through a cast of every key to the erasure of `K`.
+    public synchronized RevisionedSnapshot<K, V> snapshotWithRevision(Predicate<Object> filter) {
         var matching = storage.entrySet()
                               .stream()
                               .filter(entry -> filter.test(entry.getKey()))
