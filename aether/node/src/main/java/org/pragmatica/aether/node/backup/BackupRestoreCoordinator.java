@@ -606,7 +606,7 @@ public final class BackupRestoreCoordinator {
                      .filter(ClusterIncarnationValue.class::isInstance)
                      .map(ClusterIncarnationValue.class::cast)
                      .toResult(RestoreError.PinnedUnrestorable.FACTORY.apply(Causes.cause("the backup at " + loaded.commit()
-                                                                              + " holds no cluster incarnation")));
+                                                                                         + " holds no cluster incarnation")));
     }
 
     private List<KVCommand<AetherKey>> finalCommands(LeaderValue leaderValue,
@@ -785,8 +785,8 @@ public final class BackupRestoreCoordinator {
     private String blockedAdvice(RestoreError.Blocked cause) {
         return switch (cause) {
             case RestoreError.PinnedUnrestorable _ -> unrestorableAdvice();
-            case RestoreError.SourceUnreadable _ -> RestoreGate.decision(kvStore)
-                                                               .fold(this::firstDecisionAdvice, _ -> resumeAdvice());
+            case RestoreError.SourceUnreadable _ -> RestoreGate.decision(kvStore).fold(this::firstDecisionAdvice,
+                                                                                       _ -> resumeAdvice());
         };
     }
 
@@ -803,7 +803,8 @@ public final class BackupRestoreCoordinator {
 
     private String unrestorableAdvice() {
         return "A restore is already in progress and the backup it pinned cannot be restored whatever the source does, so fixing the"
-             + " backup source (" + sourceDescription() + ") does not help and restarting with [backup] restore = \"fresh\" does not"
+             + " backup source (" + sourceDescription()
+             + ") does not help and restarting with [backup] restore = \"fresh\" does not"
              + " abandon it. The only exit is to stop ALL nodes and cold-start them with [backup] restore = \"fresh\":"
              + " that discards the partly restored state and is a whole-cluster stop";
     }
