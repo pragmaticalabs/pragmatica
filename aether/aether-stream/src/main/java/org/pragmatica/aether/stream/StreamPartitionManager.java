@@ -2970,6 +2970,19 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                partition,
                                                                                                ring));
         partitionLogEvents.committed(streamName, partition, committedMarkThrough(streamName, partition));
+        logAnnouncedMark(streamName, partition, through, ownerEpoch);
+    }
+
+    /// #3307: what [#behindCommittedOwner] decides from -- the announced mark, its epoch and this copy's visible position.
+    /// DEBUG only: it runs once per announcement. Positions and epochs only, no payload.
+    @Contract
+    private void logAnnouncedMark(String streamName, int partition, long through, Epoch ownerEpoch) {
+        log.debug("Stream {} partition {}: owner announced committed mark {} (epoch {}), local visible {}",
+                  streamName,
+                  partition,
+                  through,
+                  ownerEpoch,
+                  localVisible(streamName, partition));
     }
 
     /// #2590 P1: how far this node knows `(streamName, partition)` to be committed. On the owner it is the ring's visible
