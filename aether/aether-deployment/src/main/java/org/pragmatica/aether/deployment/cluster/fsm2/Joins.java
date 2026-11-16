@@ -430,7 +430,8 @@ public sealed interface Joins {
     }
 
     /// Every reconcile pass evaluates the deferred joins again until a row matches or the node departs. The pass the 30 s tick queued
-    /// first re-arms the `join-unmatched` WARN of the joins that are still unmatched.
+    /// first re-arms the joins that are still unmatched, so their next evaluation raises `join-unmatched` again; that raise is evidence
+    /// only, since the key is still held: the WARN is announced once per episode (#3274) and stays readable at GET /api/v1/warnings.
     static ClusterModel retryPending(ClusterModel m, Ctx ctx) {
         if (m.joinWarningsDue) {
             rearmWarnings(m);
