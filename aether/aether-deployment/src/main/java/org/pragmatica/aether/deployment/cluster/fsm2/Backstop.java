@@ -94,12 +94,12 @@ public sealed interface Backstop {
 
     /// D.6 row 8: the breaker of a reported community cleared: `departure-breaker-cleared`, same subject, once per episode.
     private static ClusterModel clearWarned(ClusterModel m, Ctx ctx, String community, String why) {
-        if (m.suppressedWarned.contains(community)) {
-            m.suppressedWarned = m.suppressedWarned.remove(community);
-            ctx.warn(Recoveries.DEPARTURE_BREAKER_CLEARED, community, "Community " + community + ": " + why);
-        }
-
-        return m;
+        return Warnings.raise(m,
+                              Recoveries.DEPARTURE_BREAKER_CLEARED,
+                              community,
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              "Community " + community + ": " + why);
     }
 
     /// A community record was removed (C14): its breaker episode, if reported, is closed with the reason subject-gone (D.6 row 8).
@@ -121,21 +121,17 @@ public sealed interface Backstop {
         return m;
     }
 
-    /// Once per community until the breaker clears (R-2.17).
+    /// Once per community until the breaker clears (R-2.17): #3274, `Warnings.raise` opens only an unheld key.
     private static ClusterModel warnOnce(ClusterModel m, Ctx ctx, String community) {
-        if (m.suppressedWarned.contains(community)) {
-            return m;
-        }
-
-        m.suppressedWarned = m.suppressedWarned.add(community);
-        ctx.warn("departure-inferred-suppressed",
-                 community,
-                 "Community " + community
-                + ": " + members(m, community).stream().filter(m.absentSince::containsKey).count()
-                + " of " + members(m, community).size()
-                + " members are absent at once; no departure is recorded for it");
-
-        return m;
+        return Warnings.raise(m,
+                              Warnings.SUPPRESSED,
+                              community,
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              "Community " + community
+                              + ": " + members(m, community).stream().filter(m.absentSince::containsKey).count()
+                              + " of " + members(m, community).size()
+                              + " members are absent at once; no departure is recorded for it");
     }
 
     private static boolean warrantsIgnoringBreaker(ClusterModel m, Ctx ctx, NodeId node) {

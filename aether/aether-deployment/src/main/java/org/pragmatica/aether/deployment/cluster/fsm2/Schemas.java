@@ -119,26 +119,22 @@ public sealed interface Schemas {
 
     /// D.6 row 17: a datasource reported `schema-status-unknown` closes its episode: `schema-status-readable`, same subject.
     private static ClusterModel readable(ClusterModel m, Ctx ctx, String datasource, String why) {
-        if (m.schemaUnknownWarned.contains(datasource)) {
-            m.schemaUnknownWarned = m.schemaUnknownWarned.remove(datasource);
-            ctx.warn(Recoveries.SCHEMA_STATUS_READABLE,
-                     datasource,
-                     "Schema record for datasource " + datasource + ": " + why);
-        }
-
-        return m;
+        return Warnings.raise(m,
+                              Recoveries.SCHEMA_STATUS_READABLE,
+                              datasource,
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              "Schema record for datasource " + datasource + ": " + why);
     }
 
     private static ClusterModel unreadable(ClusterModel m, Ctx ctx, String datasource) {
-        // #2834: once per episode: an open warning, this leader's or inherited from the committed open set (`Warnings.inherit`), is not raised again.
-        if (!m.schemaUnknownWarned.contains(datasource)) {
-            m.schemaUnknownWarned = m.schemaUnknownWarned.add(datasource);
-            ctx.warn("schema-status-unknown",
-                     datasource,
-                     "Schema record for datasource " + datasource + " carries a status this node cannot decode");
-        }
-
-        return m;
+        // #3274: evidence at every read; `Warnings.raise` opens once per episode (a held key is not raised again).
+        return Warnings.raise(m,
+                              Warnings.SCHEMA_UNKNOWN,
+                              datasource,
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              "Schema record for datasource " + datasource + " carries a status this node cannot decode");
     }
 
     private static List<String> slicesOwnedBy(ClusterModel m, BlueprintId owner) {
@@ -224,21 +220,16 @@ public sealed interface Schemas {
     }
 
     private static ClusterModel stallOpened(ClusterModel m, Ctx ctx, SchemaVersionValue value) {
-        if (!m.schemaStalledWarned.contains(value.datasourceName())) {
-            m.schemaStalledWarned = m.schemaStalledWarned.add(value.datasourceName());
-            ctx.warn(Warnings.SCHEMA_STALLED, value.datasourceName(), stalledMessage(m, ctx, value));
-        }
-
-        return m;
+        return Warnings.raise(m,
+                              Warnings.SCHEMA_STALLED,
+                              value.datasourceName(),
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              stalledMessage(m, ctx, value));
     }
 
     private static ClusterModel stallEnded(ClusterModel m, Ctx ctx, String datasource, String why) {
-        if (m.schemaStalledWarned.contains(datasource)) {
-            m.schemaStalledWarned = m.schemaStalledWarned.remove(datasource);
-            ctx.warn(Recoveries.SCHEMA_MIGRATION_PROGRESSED, datasource, why);
-        }
-
-        return m;
+        return Warnings.raise(m, Recoveries.SCHEMA_MIGRATION_PROGRESSED, datasource, Warnings.SINGLE, Warnings.SINGLE, why);
     }
 
     private static String endedMessage(String datasource) {

@@ -82,14 +82,12 @@ public sealed interface Placement {
                                         Artifact artifact,
                                         SliceTargetValue target,
                                         Cause cause) {
-        if (!m.invalidPlacementWarned.contains(artifact)) {
-            m.invalidPlacementWarned = m.invalidPlacementWarned.add(artifact);
-            ctx.warn("invalid-placement",
-                     artifact.asString(),
-                     "Invalid placement " + target.placement() + " for " + artifact + ": " + cause.message());
-        }
-
-        return m;
+        return Warnings.raise(m,
+                              Warnings.INVALID_PLACEMENT,
+                              artifact.asString(),
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              "Invalid placement " + target.placement() + " for " + artifact + ": " + cause.message());
     }
 
     /// D.6 row 10: the first pass that parses the placement of `base` closes every reported version of it: `placement-valid`.
@@ -110,10 +108,12 @@ public sealed interface Placement {
     }
 
     private static ClusterModel closeOne(ClusterModel m, Ctx ctx, Artifact artifact, String why) {
-        m.invalidPlacementWarned = m.invalidPlacementWarned.remove(artifact);
-        ctx.warn(Recoveries.PLACEMENT_VALID, artifact.asString(), "Placement of " + artifact.asString() + ": " + why);
-
-        return m;
+        return Warnings.raise(m,
+                              Recoveries.PLACEMENT_VALID,
+                              artifact.asString(),
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              "Placement of " + artifact.asString() + ": " + why);
     }
 
     private static ClusterModel reconcileWithPolicy(ClusterModel m,

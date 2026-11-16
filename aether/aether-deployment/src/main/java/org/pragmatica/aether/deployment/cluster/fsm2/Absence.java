@@ -244,14 +244,12 @@ public sealed interface Absence {
     private static ClusterModel judgeable(ClusterModel m, Ctx ctx, NodeId node) {
         var label = labelOf(classOf(m, ctx, node));
 
-        if (m.unjudgeableWarned.contains(label)) {
-            m.unjudgeableWarned = m.unjudgeableWarned.remove(label);
-            ctx.warn(Recoveries.WORKER_ABSENCE_JUDGEABLE,
-                     label,
-                     "The " + label + " class can be judged for absence again (" + node.id() + ")");
-        }
-
-        return m;
+        return Warnings.raise(m,
+                              Recoveries.WORKER_ABSENCE_JUDGEABLE,
+                              label,
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              "The " + label + " class can be judged for absence again (" + node.id() + ")");
     }
 
     /// `worker-absence-unjudgeable`: once per episode per class (C10), until a node of the class is judged again.
@@ -259,16 +257,15 @@ public sealed interface Absence {
         var label = labelOf(classOf(m, ctx, node));
 
         clear(m, node);
-        if (!m.unjudgeableWarned.contains(label)) {
-            m.unjudgeableWarned = m.unjudgeableWarned.add(label);
-            ctx.warn("worker-absence-unjudgeable",
-                     label,
-                     "The " + label
-                    + " class cannot be judged for absence on " + node.id()
-                    + ": its signals are missing, stale or unwired");
-        }
 
-        return m;
+        return Warnings.raise(m,
+                              Warnings.UNJUDGEABLE,
+                              label,
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              "The " + label
+                              + " class cannot be judged for absence on " + node.id()
+                              + ": its signals are missing, stale or unwired");
     }
 
     /// Every node of interest, on a seam refresh or a tick (O(nodes with a directive or rows)).

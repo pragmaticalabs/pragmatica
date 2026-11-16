@@ -190,27 +190,23 @@ public sealed interface Deadlines {
     }
 
     // -- the warning (a family of the committed open set, #2834) -----------------------------------------------------
-    /// Once per episode: an open warning, this leader's or inherited (`Warnings.inherit`), is not raised again.
+    /// Once per episode (#3274: `Warnings.raise` opens only an unheld key; a held key keeps its attempt).
     private static ClusterModel raise(ClusterModel m,
                                       Ctx ctx,
                                       BlueprintId id,
                                       String attempt,
                                       List<String> failing,
                                       long elapsedMs) {
-        if (m.applyDeadlineWarned.containsKey(id)) {
-            return m;
-        }
-
-        m.applyDeadlineWarned = m.applyDeadlineWarned.put(id, attempt);
-        ctx.warn(Warnings.APPLY_DEADLINE,
-                 id.asString(),
-                 id.asString()
-                + ": " + EXCEEDED
-                + " after " + elapsedMs
-                + " ms of unpaused time, slices not ACTIVE: " + failing
-                + "; republish or delete the blueprint");
-
-        return m;
+        return Warnings.raise(m,
+                              Warnings.APPLY_DEADLINE,
+                              id.asString(),
+                              Warnings.SINGLE,
+                              attempt,
+                              id.asString()
+                              + ": " + EXCEEDED
+                              + " after " + elapsedMs
+                              + " ms of unpaused time, slices not ACTIVE: " + failing
+                              + "; republish or delete the blueprint");
     }
 
     /// Level-triggered close: an open warning stands while the blueprint's outcome is the warned attempt's, still IN_PROGRESS (the terminal is
@@ -238,12 +234,12 @@ public sealed interface Deadlines {
     }
 
     private static ClusterModel clear(ClusterModel m, Ctx ctx, BlueprintId id) {
-        m.applyDeadlineWarned = m.applyDeadlineWarned.remove(id);
-        ctx.warn(Recoveries.APPLY_DEADLINE_CLEARED,
-                 id.asString(),
-                 id.asString() + ": the apply deadline terminal was replaced or removed");
-
-        return m;
+        return Warnings.raise(m,
+                              Recoveries.APPLY_DEADLINE_CLEARED,
+                              id.asString(),
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              id.asString() + ": the apply deadline terminal was replaced or removed");
     }
 
     record unused() implements Deadlines {}
