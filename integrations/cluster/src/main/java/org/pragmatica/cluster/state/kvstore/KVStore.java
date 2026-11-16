@@ -1230,9 +1230,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     /// The reset's remove burst, once delivered, empties the delivered view; this applying thread never writes the
     /// view (R3 N5). `deliverySeq` is not reset (design §3.1). The committed revision returns to 0, and the burst carries
-    /// revision 0 ([#notificationRevision()]): FSM2 drops it and re-snapshots on the restore.
+    /// revision 0 ([#notificationRevision()]): FSM2 drops it and re-snapshots on the restore. The emptied store is the exact state at
+    /// revision 0, so `exact` returns to true (#3274, design erratum 3).
     private Unit resetStorage() {
         committedRevision = 0;
+        exact = true;
         notifyRemoveAll();
         storage.keySet().forEach(key -> dispatcher.recordRemoval(key, currentSeq));
         storage.clear();

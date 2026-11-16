@@ -15,7 +15,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #3274: the store's `exact` flag says whether the content is the state at `committedRevision`. Only a snapshot install sets it (content
-/// and label in one mutation); an adoption that moves the label past the content clears it; reset and the apply path leave it.
+/// and label in one mutation); an adoption that moves the label past the content clears it; the apply path leaves it, and reset restores it (the empty store is the exact state at revision 0).
 class KVStoreExactLabelTest {
     private record Key(String id) implements StructuredKey {}
 
@@ -146,7 +146,7 @@ class KVStoreExactLabelTest {
     }
 
     @Test
-    void reset_returnsToRevisionZero_andLeavesExact() {
+    void reset_returnsToRevisionZero_andRestoresExact() {
         install(Map.of(WARNING, "installed"), 12);
         store.reset();
 
@@ -158,6 +158,6 @@ class KVStoreExactLabelTest {
         store.reset();
 
         assertThat(read().revision()).isZero();
-        assertThat(read().exact()).as("reset leaves `exact`; revision 0 is what a reader refuses").isFalse();
+        assertThat(read().exact()).as("the emptied store is the exact state at revision 0").isTrue();
     }
 }
