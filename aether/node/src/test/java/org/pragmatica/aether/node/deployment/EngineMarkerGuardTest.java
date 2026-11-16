@@ -741,6 +741,134 @@ class EngineMarkerGuardTest {
             assertThat(ran).as("the drained action ran exactly once").containsExactly("X");
         }
 
+        /// #3271: an opening drains parked work, and its evaluating thread queues on `running` behind a running action. Before that thread gets the
+        /// lock, the node refuses itself. The drained action must not run after the exit, neither through the queued opener nor through an admitting
+        /// thread that picks the drained work up. Red when: the refusal leaves the drained work in place and nothing re-checks it before it runs.
+        @Test
+        @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+        void refuse_whileDrainedWorkIsPending_runsNoneOfIt() throws Exception {
+            var clock = new ManualClock();
+            var marker = new AtomicReference<>(Option.some(FSM2_MARKER));
+            var guard = sharedGuard(marker, new AtomicBoolean(true), clock);
+            var ran = Collections.synchronizedList(new ArrayList<String>());
+            var release = new CountDownLatch(1);
+            var holder = holdWithParked(guard, marker, ran, release);
+
+            marker.set(Option.some(FSM2_MARKER));
+            var opener = Thread.ofPlatform().start(guard::evaluate);
+            awaitOpen(guard);
+            var admitter = Thread.ofPlatform().start(() -> guard.whenOpen("late", () -> ran.add("late")));
+            pause(200);
+            var closer = closeFrom(guard, marker);
+            var refuser = Thread.ofPlatform().start(() -> clock.advance(WINDOW_MS));
+            awaitState(guard, State.REFUSED);
+            assertThat(exits).as("the node refused itself").hasSize(1);
+
+            release.countDown();
+            holder.join(10_000);
+            opener.join(10_000);
+            admitter.join(10_000);
+            closer.join(10_000);
+            refuser.join(10_000);
+
+            assertThat(ran).as("nothing drained or admitted runs after the refusal").isEmpty();
+        }
+
+        /// #3271: the refusal drops the pending drained work, so neither the refusing evaluation nor a later one queues on `running` behind an action
+        /// that is still running. Red when: the refusal leaves the drained work pending, so every evaluation still reports drained work to run.
+        @Test
+        @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+        void refuse_whileDrainedWorkIsPending_neverWaitsForTheRunningAction() throws Exception {
+            var clock = new ManualClock();
+            var marker = new AtomicReference<>(Option.some(FSM2_MARKER));
+            var guard = sharedGuard(marker, new AtomicBoolean(true), clock);
+            var ran = Collections.synchronizedList(new ArrayList<String>());
+            var release = new CountDownLatch(1);
+            var holder = holdWithParked(guard, marker, ran, release);
+
+            marker.set(Option.some(FSM2_MARKER));
+            var opener = Thread.ofPlatform().start(guard::evaluate);
+            awaitOpen(guard);
+            var closer = closeFrom(guard, marker);
+            try {
+                CompletableFuture.runAsync(() -> clock.advance(WINDOW_MS)).get(2, TimeUnit.SECONDS);
+                assertThat(guard.state()).isEqualTo(State.REFUSED);
+                CompletableFuture.runAsync(guard::evaluate).get(2, TimeUnit.SECONDS);
+            } finally {
+                release.countDown();
+                holder.join(10_000);
+                opener.join(10_000);
+                closer.join(10_000);
+            }
+
+            assertThat(ran).isEmpty();
+        }
+
+        /// #3271: a refusal that lands while an earlier action of a drained batch runs drops the rest of the batch, which a thread already holds.
+        /// Red when: the drained actions are handed out without a refusal check just before each one runs.
+        @Test
+        void refuse_duringADrainedAction_dropsTheRestOfTheBatch() {
+            var clock = new ManualClock();
+            var marker = new AtomicReference<>(Option.some(LEGACY_MARKER));
+            var guard = sharedGuard(marker, new AtomicBoolean(true), clock);
+            var ran = Collections.synchronizedList(new ArrayList<String>());
+
+            guard.evaluate();
+            assertThat(guard.state()).isEqualTo(State.MISMATCH_WINDOW);
+            guard.whenOpen("first", () -> refuseInside(guard, marker, clock, ran));
+            guard.whenOpen("second", () -> ran.add("second"));
+            marker.set(Option.some(FSM2_MARKER));
+            guard.evaluate();
+
+            assertThat(guard.state()).isEqualTo(State.REFUSED);
+            assertThat(exits).as("the node refused itself").hasSize(1);
+            assertThat(ran).as("the action behind the refusal never ran").containsExactly("first");
+        }
+
+        /// With the gate open: takes `running` on a new thread, closes the gate, parks an action under "leader" (recorded in `ran` as "X"), and
+        /// holds the lock until `release`.
+        private Thread holdWithParked(EngineMarkerGuard guard,
+                                      AtomicReference<Option<DeploymentEngineValue>> marker,
+                                      List<String> ran,
+                                      CountDownLatch release) throws InterruptedException {
+            var parked = new CountDownLatch(1);
+
+            guard.evaluate();
+            assertThat(guard.isOpen()).isTrue();
+            var holder = Thread.ofPlatform().start(() -> guard.whenOpen("hold", () -> {
+                marker.set(Option.some(LEGACY_MARKER));
+                guard.evaluate();
+                guard.whenOpen("leader", () -> ran.add("X"));
+                parked.countDown();
+                hold(new CountDownLatch(1), release);
+            }));
+            assertThat(parked.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(guard.isOpen()).isFalse();
+
+            return holder;
+        }
+
+        /// Closes the gate on a mismatch from a new thread, returning once its window is open: with drained work pending, that evaluation queues on
+        /// `running` (#3270), which is correct before a refusal.
+        private Thread closeFrom(EngineMarkerGuard guard, AtomicReference<Option<DeploymentEngineValue>> marker) {
+            marker.set(Option.some(LEGACY_MARKER));
+            var closer = Thread.ofPlatform().start(guard::evaluate);
+
+            awaitState(guard, State.MISMATCH_WINDOW);
+
+            return closer;
+        }
+
+        private void refuseInside(EngineMarkerGuard guard,
+                                  AtomicReference<Option<DeploymentEngineValue>> marker,
+                                  ManualClock clock,
+                                  List<String> ran) {
+            ran.add("first");
+            marker.set(Option.some(LEGACY_MARKER));
+            guard.evaluate();
+            clock.advance(WINDOW_MS);
+        }
+
         private void awaitState(EngineMarkerGuard guard, State expected) {
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
 
@@ -800,6 +928,12 @@ class EngineMarkerGuardTest {
         }
 
         private EngineMarkerGuard sharedGuard(AtomicReference<Option<DeploymentEngineValue>> marker, AtomicBoolean incarnation) {
+            return sharedGuard(marker, incarnation, new ManualClock());
+        }
+
+        private EngineMarkerGuard sharedGuard(AtomicReference<Option<DeploymentEngineValue>> marker,
+                                              AtomicBoolean incarnation,
+                                              ManualClock clock) {
             return EngineMarkerGuard.engineMarkerGuard(DeploymentEngine.FSM2, SELF, WINDOW_MS, new EngineMarkerGuard.Reader() {
                 @Override
                 public Option<DeploymentEngineValue> marker() {
@@ -815,7 +949,7 @@ class EngineMarkerGuardTest {
                 public Option<LeaderValue> leader() {
                     return Option.some(new LeaderValue(MINTER, 1L));
                 }
-            }, new ManualClock(), () -> NOW, sink, exits::add);
+            }, clock, () -> NOW, sink, exits::add);
         }
 
         private void hold(CountDownLatch entered, CountDownLatch release) {

@@ -1,0 +1,2 @@
+### Fixed (2026-11-15 — #2499: the Hetzner client refuses an empty or malformed label selector)
+- **`HetznerClient.listServers(String)` and `listFirewalls(String)` refuse a null, blank or empty-clause selector** (`a=b,`) with the typed `HetznerError.InvalidLabelSelector`, before any request; the unfiltered list is the no-argument overload. `[mechanism: unit tests assert zero requests; what Hetzner returns for label_selector= was never checked, unverified]`

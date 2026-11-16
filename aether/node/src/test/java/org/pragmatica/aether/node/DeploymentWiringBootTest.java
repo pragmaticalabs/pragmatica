@@ -213,7 +213,7 @@ class DeploymentWiringBootTest {
         var fsm2 = boot(DeploymentEngine.FSM2);
 
         assertThat(legacy).noneMatch(row -> row.contains("fsm2:") || row.endsWith("-> dropped"));
-        assertThat(fsm2).noneMatch(row -> row.endsWith("-> legacy") || row.endsWith("-> legacy+gate"));
+        assertThat(fsm2).noneMatch(row -> row.endsWith("-> legacy") || row.endsWith("-> legacy+gate") || row.endsWith("-> legacy+gate+toggle"));
         assertThat(fsm2).anyMatch(row -> row.startsWith("B15.construction"));
     }
 

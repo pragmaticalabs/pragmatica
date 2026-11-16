@@ -1373,6 +1373,71 @@ class Fsm2SystemTest {
             }
         }
 
+        /// #3262 (the #3253 shape on the legacy path): the B7 leader toggle parked behind a closed guard as a leave then an election reaches the
+        /// legacy CDM as `deactivate` then `activate` (the re-incarnation), not as the `activate` alone, which an Active legacy cluster FSM ignores.
+        /// Red when: `legacyGatedLeaderToggle` parks the election through `whenOpen` (it replaces the parked leave, and only `activate` runs).
+        @Test
+        void aLegacyLeaderToggle_parkedAsLeaveThenElection_reachesTheTargetAsDeactivateThenActivate() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false)) {
+                var toggles = new CopyOnWriteArrayList<String>();
+                var hook = harness.wiring.legacyGatedLeaderToggle("B7.test", change -> toggles.add(toggleOf(change)));
+
+                harness.markerEngine = DeploymentEngine.FSM2;
+                harness.guard.evaluate();
+                hook.accept(LeaderNotification.leaderChange(Option.some(Fsm2Harness.PEER), false));
+                hook.accept(LeaderNotification.leaderChange(Option.some(Fsm2Harness.SELF), true));
+
+                assertThat(toggles).as("closed: nothing ran").isEmpty();
+
+                harness.markerEngine = DeploymentEngine.LEGACY;
+                harness.guard.evaluate();
+
+                assertThat(toggles).as("the parked leave is kept ahead of the parked election").containsExactly("deactivate", "activate");
+            }
+        }
+
+        /// #3262: a leave parked behind a parked election supersedes it: the legacy CDM sees the `deactivate` alone, never the `activate`. Red
+        /// when: `legacyGatedLeaderToggle` parks the leave through `whenOpenAfterParked` (both run, the `activate` first).
+        @Test
+        void aLegacyLeaderToggle_parkedAsElectionThenLeave_reachesTheTargetAsTheLeaveAlone() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false)) {
+                var toggles = new CopyOnWriteArrayList<String>();
+                var hook = harness.wiring.legacyGatedLeaderToggle("B7.test", change -> toggles.add(toggleOf(change)));
+
+                harness.markerEngine = DeploymentEngine.FSM2;
+                harness.guard.evaluate();
+                hook.accept(LeaderNotification.leaderChange(Option.some(Fsm2Harness.SELF), true));
+                hook.accept(LeaderNotification.leaderChange(Option.some(Fsm2Harness.PEER), false));
+                harness.markerEngine = DeploymentEngine.LEGACY;
+                harness.guard.evaluate();
+
+                assertThat(toggles).as("the later leave supersedes the parked election").containsExactly("deactivate");
+            }
+        }
+
+        /// #3262: the B7 leader toggle runs each change at once while the guard is open, and is a counted drop under FSM2 (where
+        /// `Fsm2System.onLeaderChange` owns B7).
+        @Test
+        void aLegacyLeaderToggle_runsEachChangeWhileOpen_andIsACountedDropUnderFsm2() {
+            var fsm2Toggles = new CopyOnWriteArrayList<String>();
+
+            try (var legacy = new Fsm2Harness(DeploymentEngine.LEGACY, false); var fsm2 = new Fsm2Harness(DeploymentEngine.FSM2, false)) {
+                var toggles = new CopyOnWriteArrayList<String>();
+                var hook = legacy.wiring.legacyGatedLeaderToggle("B7.test", change -> toggles.add(toggleOf(change)));
+                var dropped = fsm2.wiring.legacyGatedLeaderToggle("B7.test", change -> fsm2Toggles.add(toggleOf(change)));
+
+                hook.accept(LeaderNotification.leaderChange(Option.some(Fsm2Harness.SELF), true));
+                hook.accept(LeaderNotification.leaderChange(Option.some(Fsm2Harness.PEER), false));
+                dropped.accept(LeaderNotification.leaderChange(Option.some(Fsm2Harness.SELF), true));
+
+                assertThat(toggles).as("open: each change ran, in order").containsExactly("activate", "deactivate");
+                assertThat(legacy.wiring.recorded()).contains("B7.test -> legacy+gate+toggle");
+                assertThat(fsm2.registry.counter("aether_deployment_fsm2_dropped_total", "point", "B7.test").count()).isEqualTo(1.0);
+            }
+
+            assertThat(fsm2Toggles).as("never runs under FSM2").isEmpty();
+        }
+
         /// B20: the guard re-reads the marker when the marker key commits.
         @Test
         void theCommittedMarkerKey_triggersTheGuard() {
@@ -1547,5 +1612,11 @@ class Fsm2SystemTest {
                                                                                       0,
                                                                                       List.of(),
                                                                                       1L);
+    }
+
+    private static String toggleOf(LeaderNotification.LeaderChange change) {
+        return change.localNodeIsLeader()
+               ? "activate"
+               : "deactivate";
     }
 }
