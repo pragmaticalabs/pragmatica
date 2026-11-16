@@ -45,6 +45,8 @@ public final class WarningsRoutes implements RouteSource {
 
     static final Cause NOT_EXACT = new ServiceUnavailable("This core's revision label is not exact; warnings resume after its next snapshot install");
 
+    private static final Comparator<WarningEntry> ORDER = Comparator.comparing(WarningEntry::code).thenComparing(WarningEntry::subject);
+
     private final Supplier<ManageableNode> nodeSupplier;
 
     private WarningsRoutes(Supplier<ManageableNode> nodeSupplier) {
@@ -57,10 +59,12 @@ public final class WarningsRoutes implements RouteSource {
 
     @Override
     public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<WarningsResponse> route(ManagementRoute.WARNINGS).to(_ -> handle()).asJson());
+        return Stream.of(ManagementRoutes.<WarningsResponse> route(ManagementRoute.WARNINGS)
+                                         .to(_ -> currentWarnings())
+                                         .asJson());
     }
 
-    private Promise<WarningsResponse> handle() {
+    private Promise<WarningsResponse> currentWarnings() {
         var node = nodeSupplier.get();
 
         return read(node.isConfiguredWorker(),
@@ -96,14 +100,22 @@ public final class WarningsRoutes implements RouteSource {
     }
 
     private static List<WarningEntry> openWarnings(RevisionedSnapshot<AetherKey, AetherValue> snapshot) {
-        return snapshot.entries()
-                       .entrySet()
-                       .stream()
-                       .filter(WarningsRoutes::isOpenRow)
-                       .map(entry -> warningEntry((FsmWarningKey) entry.getKey(),
-                                                  (FsmWarningValue) entry.getValue()))
-                       .sorted(Comparator.comparing(WarningEntry::code).thenComparing(WarningEntry::subject))
-                       .toList();
+        return ordered(snapshot.entries()
+                               .entrySet()
+                               .stream()
+                               .filter(WarningsRoutes::isOpenRow)
+                               .map(WarningsRoutes::entryOf)
+                               .toList());
+    }
+
+    private static List<WarningEntry> ordered(List<WarningEntry> entries) {
+        return entries.stream()
+                      .sorted(ORDER)
+                      .toList();
+    }
+
+    private static WarningEntry entryOf(Map.Entry<AetherKey, AetherValue> row) {
+        return warningEntry((FsmWarningKey) row.getKey(), (FsmWarningValue) row.getValue());
     }
 
     /// A tombstone (`open` false) is a closed warning whose recovery is not yet published: not an open warning.
