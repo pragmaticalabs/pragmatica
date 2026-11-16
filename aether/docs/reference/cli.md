@@ -1214,7 +1214,7 @@ Standalone cluster simulator with a REST API for load and chaos testing.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `FORGE_PORT` | Forge REST API port | 8888 |
-| `CLUSTER_SIZE` | Number of simulated nodes | 5 |
+| `CLUSTER_SIZE` | Number of simulated nodes (minimum 3) | 5 |
 | `LOAD_RATE` | Initial requests per second | 1000 |
 
 ### Examples
