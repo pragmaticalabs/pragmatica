@@ -58,102 +58,39 @@ public record Seams(Set<NodeId> countedCores,
                               Option<Set<NodeId>> localAlive,
                               Set<NodeId> superseded,
                               Map<NodeId, String> memberSource,
-                                        Set<NodeId> coreRoleMembers) {
-        return new Seams(countedCores,
-                         ready,
-                         draining,
-                         coreView,
-                         localAlive,
-                         superseded,
-                         memberSource,
-                         coreRoleMembers);
+                              Set<NodeId> coreRoleMembers) {
+        return new Seams(countedCores, ready, draining, coreView, localAlive, superseded, memberSource, coreRoleMembers);
     }
 
     public Seams withCountedCores(Set<NodeId> value) {
-        return new Seams(value,
-                         ready,
-                         draining,
-                         coreView,
-                         localAlive,
-                         superseded,
-                         memberSource,
-                         coreRoleMembers);
+        return new Seams(value, ready, draining, coreView, localAlive, superseded, memberSource, coreRoleMembers);
     }
 
     public Seams withReady(Set<NodeId> value) {
-        return new Seams(countedCores,
-                         value,
-                         draining,
-                         coreView,
-                         localAlive,
-                         superseded,
-                         memberSource,
-                         coreRoleMembers);
+        return new Seams(countedCores, value, draining, coreView, localAlive, superseded, memberSource, coreRoleMembers);
     }
 
     public Seams withDraining(Set<NodeId> value) {
-        return new Seams(countedCores,
-                         ready,
-                         value,
-                         coreView,
-                         localAlive,
-                         superseded,
-                         memberSource,
-                         coreRoleMembers);
+        return new Seams(countedCores, ready, value, coreView, localAlive, superseded, memberSource, coreRoleMembers);
     }
 
     public Seams withCoreView(Option<Set<NodeId>> value) {
-        return new Seams(countedCores,
-                         ready,
-                         draining,
-                         value,
-                         localAlive,
-                         superseded,
-                         memberSource,
-                         coreRoleMembers);
+        return new Seams(countedCores, ready, draining, value, localAlive, superseded, memberSource, coreRoleMembers);
     }
 
     public Seams withLocalAlive(Option<Set<NodeId>> value) {
-        return new Seams(countedCores,
-                         ready,
-                         draining,
-                         coreView,
-                         value,
-                         superseded,
-                         memberSource,
-                         coreRoleMembers);
+        return new Seams(countedCores, ready, draining, coreView, value, superseded, memberSource, coreRoleMembers);
     }
 
     public Seams withSuperseded(Set<NodeId> value) {
-        return new Seams(countedCores,
-                         ready,
-                         draining,
-                         coreView,
-                         localAlive,
-                         value,
-                         memberSource,
-                         coreRoleMembers);
+        return new Seams(countedCores, ready, draining, coreView, localAlive, value, memberSource, coreRoleMembers);
     }
 
     public Seams withMemberSource(Map<NodeId, String> value) {
-        return new Seams(countedCores,
-                         ready,
-                         draining,
-                         coreView,
-                         localAlive,
-                         superseded,
-                         value,
-                         coreRoleMembers);
+        return new Seams(countedCores, ready, draining, coreView, localAlive, superseded, value, coreRoleMembers);
     }
 
     public Seams withCoreRoleMembers(Set<NodeId> value) {
-        return new Seams(countedCores,
-                         ready,
-                         draining,
-                         coreView,
-                         localAlive,
-                         superseded,
-                         memberSource,
-                         value);
+        return new Seams(countedCores, ready, draining, coreView, localAlive, superseded, memberSource, value);
     }
 }

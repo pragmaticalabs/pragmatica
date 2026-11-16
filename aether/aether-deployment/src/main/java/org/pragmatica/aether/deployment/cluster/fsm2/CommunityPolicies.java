@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Map;
+
 import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
@@ -56,8 +57,7 @@ public sealed interface CommunityPolicies {
     }
 
     private static Option<ClusterBootstrapConfig> parsedConfig(String toml) {
-        return ClusterBootstrapConfigParser.parse(toml)
-                                           .option();
+        return ClusterBootstrapConfigParser.parse(toml).option();
     }
 
     record unused() implements CommunityPolicies {}
