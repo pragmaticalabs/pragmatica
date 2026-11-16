@@ -363,7 +363,8 @@ public sealed interface Warnings {
     }
 
     /// Rule O, one comparison per member: the row's members and the members the state holds. Then the texts: an open row that leaves the
-    /// key held (applied or joined) gives `openText`; a key left with no held member drops it, and gets the last refusal's text.
+    /// key held (applied or joined) gives `openText`, unless the key carries this node's own open text; a key left with no held member
+    /// drops it, and gets the last refusal's text.
     private static ClusterModel ruleO(ClusterModel m, Ctx ctx, FsmWarningKey key, FsmWarningValue row) {
         return Option.option(TABLE.get(key.code()))
                      .map(family -> applied(m, ctx, family, key, row))
@@ -482,7 +483,7 @@ public sealed interface Warnings {
                                       boolean used,
                                       List<String> refusals) {
         if (keyHeld(m, family, key)) {
-            return row.open() && used
+            return row.open() && used && !ownText(m, family, key)
                    ? opened(m, key, row.message())
                    : m;
         }
@@ -493,6 +494,18 @@ public sealed interface Warnings {
         }
 
         return m;
+    }
+
+    /// Whether the key carries this node's own open text: a text is present and a held member has open own evidence. A row's message
+    /// never replaces it (#3274 design erratum 3), so the signature this node judged is announced with its own text.
+    private static boolean ownText(ClusterModel m, Family family, FsmWarningKey key) {
+        return m.openText.get(key)
+                         .isPresent() && family.state()
+                                               .held(m, key.subject())
+                                               .keySet()
+                                               .stream()
+                                               .anyMatch(member -> m.fresh.get(Member.member(key, member))
+                                                                          .equals(Option.some(true)));
     }
 
     // -- the write -------------------------------------------------------------------------------------------------
