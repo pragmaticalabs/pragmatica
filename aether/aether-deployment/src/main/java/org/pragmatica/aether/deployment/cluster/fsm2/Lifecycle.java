@@ -80,7 +80,6 @@ public sealed interface Lifecycle {
                  TimerId.timerId(Kind.TICK),
                  ctx.settings().timing().tick());
         Schemas.resumeMigrations(m, ctx);
-        Outcomes.closeUnapplied(m, ctx);
         Slices.activateLoadedAtRebuild(m, ctx);
         Reconcile.request(m, ctx);
 

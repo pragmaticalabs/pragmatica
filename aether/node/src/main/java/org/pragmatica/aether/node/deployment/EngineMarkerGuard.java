@@ -445,8 +445,9 @@ public final class EngineMarkerGuard {
     private String describe() {
         return "Deployment engine mismatch: this node is configured for " + configured
              + "; the cluster's committed state says " + committed()
-             + ". Recovery: fix this node's engine and restart it under a fresh NodeId; if the committed marker is the wrong one for this cluster"
-             + " (a misconfigured genesis), the cluster needs re-genesis (wipe and re-form); fixing configuration does not clear a committed marker.";
+             + ". Recovery: a node's engine is not an operator setting, so restarting it changes nothing. A cluster formed by an earlier build (marker absent,"
+             + " incarnation present) cannot be upgraded in place: form a new cluster on this build and restore a backup into it. If the committed"
+             + " marker is the wrong one for this cluster (a misconfigured genesis), the cluster needs re-genesis (wipe and re-form).";
     }
 
     private String committed() {

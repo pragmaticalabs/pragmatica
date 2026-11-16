@@ -1228,10 +1228,6 @@ public enum OperatorWarningCode {
     /// The recovery of [#APPLY_DEADLINE_EXCEEDED], same subject: the blueprint's outcome was replaced (a republish) or removed.
     /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`).
     APPLY_DEADLINE_CLEARED("apply-deadline-cleared", "deployment", WarningLevel.INFO, APPLY_DEADLINE_EXCEEDED, true),
-    /// The cluster FSM's `Rebuild` closed an IN_PROGRESS deployment outcome that no apply record backs (FSM replacement plan 3.2 delta (b)):
-    /// FAILED, cause `restored-without-apply`. A past event, so INFO and closed by nothing. Subject is the blueprint. Operator action:
-    /// republish the blueprint to deploy it.
-    OUTCOME_CLOSED_UNAPPLIED("outcome-closed-unapplied", "deployment", WarningLevel.INFO),
     /// A live worker saw its own activation directive removed with no replacement, and halts (#3193): the core retired it as
     /// departed while the process still runs. Subject: the worker's node id. There is no recovery code: the halt ends the
     /// process, and the node returns only through a fresh `WorkerJoin`.

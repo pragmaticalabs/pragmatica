@@ -82,12 +82,13 @@ class AetherNodeLeaderAwaitedTargetBootTest {
         ResourceProvider.clear();
     }
 
+    // LEGACY on purpose (#2767): the subject is the legacy ClusterDeploymentManager's warning sink, active only under LEGACY.
     @Test
     @Timeout(value = 120, unit = SECONDS)
     void bootedNodeLeader_raisesAwaitingTargetOnItsOwnEventSurface_whenTheTargetPutNeverCommits() throws Exception {
         var self = NodeId.nodeId("awaited-target-boot-" + UUID.randomUUID()).unwrap();
 
-        node = AetherNode.aetherNode(minimalConfig(self, tempDir), () -> {})
+        node = AetherNode.aetherNode(minimalConfig(self, tempDir, DeploymentEngine.LEGACY), () -> {})
                          .onFailure(cause -> fail("boot must succeed: " + cause.message()))
                          .unwrap();
         node.start()
@@ -141,7 +142,7 @@ class AetherNodeLeaderAwaitedTargetBootTest {
     @Timeout(value = 120, unit = SECONDS)
     void bootedNode_whoseStorageDegradedWhileBuilding_showsTheStorageWarningOnItsAggregator() {
         var self = NodeId.nodeId("storage-bind-" + UUID.randomUUID()).unwrap();
-        node = AetherNode.aetherNode(minimalConfig(self, tempDir), () -> {})
+        node = AetherNode.aetherNode(minimalConfig(self, tempDir, DeploymentEngine.FSM2), () -> {})
                          .onFailure(cause -> fail("boot must succeed: " + cause.message()))
                          .unwrap();
         node.start().await(START_BOUND).onFailure(cause -> fail("start() must succeed: " + cause.message()));
@@ -157,7 +158,7 @@ class AetherNodeLeaderAwaitedTargetBootTest {
                      .or("none");
     }
 
-    private static AetherNodeConfig minimalConfig(NodeId self, Path storageRoot) {
+    private static AetherNodeConfig minimalConfig(NodeId self, Path storageRoot, DeploymentEngine engine) {
         var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap());
 
         return AetherNodeConfig.builder()
@@ -176,7 +177,6 @@ class AetherNodeLeaderAwaitedTargetBootTest {
                                .managementHttpProtocol(HttpProtocol.H1)
                                .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                .build()
-                               // LEGACY on purpose (#2767): the subject is the legacy ClusterDeploymentManager's warning sink, active only under LEGACY.
-                               .withDeploymentEngine(DeploymentEngine.LEGACY);
+                               .withDeploymentEngine(engine);
     }
 }

@@ -2,7 +2,7 @@ name: FSM2 engine (Ember shards)
 
 # The Ember corpus on the FSM2 deployment engine (FSM replacement plan F1 item 7, review FIX F1). Every EmberCluster reads the
 # global selector -Daether.deployment.engine (EngineSelector), so this is ci.yml's ember-shard job with the selector set to fsm2.
-# LEGACY stays the default everywhere else; FSM2 is test-only until the flip (plan D.3).
+# FSM2 is now the default engine (plan F6, #2767), so this run duplicates the default ember shards until the selector is removed (F7).
 #
 # Not a required check: until the FSM2 parity phases (F2-F5) land, reds here are the FSM2 gap list, not regressions. It runs on
 # workflow_dispatch (pick the ref) and on a pull request carrying the `run-fsm2` label (re-run on each push while the label stays).
