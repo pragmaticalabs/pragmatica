@@ -956,22 +956,38 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// The owner promotion gate (#1555) at every owner-admission site ([#mayServeAsOwner], owner-role reads, owner writes),
-    /// and the one place the acked marker may RAISE visible (PR-2f, know `6665558916` S1): only after the gate admits,
-    /// which in production means [OwnerActivation#admit] found this node activated -- consensus active, a committed record
-    /// naming self read after a barrier round, the lineage commit landed. A ring rebuild never raises from the marker.
+    /// and one trigger of the acked-marker restore (PR-2f, know `6665558916` S1): only after the gate admits, which in
+    /// production means [OwnerActivation#admit] found this node activated -- consensus active, a committed record naming self
+    /// read after a barrier round, the lineage commit landed. Since #3307 the activation itself restores the marker
+    /// ([#onOwnerActivated]); this trigger remains for an unwired gate. A ring rebuild never raises from the marker.
     private Result<Unit> admitAsOwner(String streamName, int partition) {
         return ownerServeGate.admit(streamName, partition)
                              .onSuccess(_ -> restoreAckedMarker(streamName, partition));
     }
 
-    /// PR-2f (I-05): restore the owner's acked marker once per ring incarnation, at its first owner admission that finds the
-    /// committed record naming this node. While the role is not OWNER, or no record is committed, or the record names
-    /// another node, the marker stays pending and is not read; once those hold it is taken -- whatever the verdict -- and
-    /// raises visible only if [#trustedMarker]. After that the check is one volatile read per admission.
+    /// #3307: the owner's activation of `(streamName, partition)` completed ([OwnerActivation#recordActivation]). The acked
+    /// marker is restored here, so `visible` reaches it without waiting for a read, write or snapshot to reach the owner: a
+    /// replica that reads its own ring never sends one. `AetherNode` binds it to [OwnerActivation#activationListener].
+    @Contract
+    public void onOwnerActivated(String streamName, int partition) {
+        restoreAckedMarker(streamName, partition);
+    }
+
+    /// PR-2f (I-05): restore the owner's acked marker once per ring incarnation, when the owner path holds for the committed
+    /// record naming this node: at activation ([#onOwnerActivated], #3307), at a lease-regained edge ([#onLeaseRegained]),
+    /// and at an owner admission ([#admitAsOwner]). The admission call is the only trigger of a manager with an unwired gate
+    /// ([#ADMIT_OWNER], no activation event); with the gate wired the activation takes the marker first and an admission
+    /// finds nothing. While the role is not OWNER, or no record is committed, or the record names another node, or the owner
+    /// path does not hold ([#ownerRoleHolds]: a lapsed lease, no activation), the marker stays pending and is not read; once
+    /// those hold it is taken -- whatever the verdict -- and raises visible only if [#trustedMarker]. After that the check is
+    /// one volatile read per trigger.
     @Contract
     private void restoreAckedMarker(String streamName, int partition) {
         walFor(streamName, partition).filter(AppendLog::hasAckedRestore)
               .filter(_ -> ownsTheCommittedRecord(streamName, partition))
+              .filter(_ -> ownerRoleHolds(streamName,
+                                          partition,
+                                          confirmationFactorFor(streamName)))
               .onPresent(wal -> restoreTrustedMarker(streamName, partition, wal));
     }
 
@@ -1000,8 +1016,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                  marker.offset(),
                  marker.epoch().map(AppendLog.EpochKey::token).or("none"),
                  trusted
-                 ? "trusted at owner admission: visible raised to it"
-                 : "not trusted at owner admission: visible waits for replica re-acks");
+                 ? "trusted on the owner path: visible raised to it"
+                 : "not trusted on the owner path: visible waits for replica re-acks");
         if (trusted) {
             raiseToMarker(streamName, partition, marker);
         }
@@ -2812,14 +2828,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// A rebuilt ring's replayed WAL tail is durable and not visible ([StreamEntry#placeRecord], #1387); this
     /// restores `visible` to what the ack state supports, before the ring can be read. The production [ReplicaRegistry]
     /// persists no acks (`WatermarkStore.NOOP`), so on an OWNER every peer is blind after a restart and the tail stays at
-    /// the seed here; it rises at the owner's first admission to the acked marker the owner recorded before the restart, when
-    /// that marker is trusted ([#admitAsOwner], PR-2f), and otherwise when a live ack covers it. A stream with no peer
+    /// the seed here; it rises when the owner's ownership activates (#3307, [#onOwnerActivated]; an unwired gate: at the first
+    /// admission, [#admitAsOwner]) to the acked marker the owner recorded before the restart, when that marker is trusted
+    /// (PR-2f), and otherwise when a live ack covers it. A stream with no peer
     /// barrier (`confirmationFactor <= 1`) sees the whole tail at once, as before. The seed is the sealed floor, or the acked marker below it (#1463, [StreamEntry#visibleSeed]).
     /// A REPLICA holds its recovered tail until it is verified against its owner ([#holdRecoveredTailUntilVerified]).
     ///
     /// PR-2f: OWNER and NONE are separate arms with the same rule. NONE -- the role unresolved -- must not expose more
-    /// than the owner would, and it never reads the acked marker: the marker can raise visible only at the
-    /// owner-admission edge, which re-checks the OWNER role when it runs (know `6665558916`, S1/S5), never here at the
+    /// than the owner would, and it never reads the acked marker: the marker can raise visible only on the
+    /// owner path ([#restoreAckedMarker]: activation, lease regained, admission), which re-checks the OWNER role when it runs (know `6665558916`, S1/S5), never here at the
     /// rebuild. The confirmation count is read from `config`, not [#confirmationFactorFor]: on a fresh create the entry is
     /// not in `streams` yet, and the lookup would report `0` -- no barrier -- and expose the tail.
     /// `state` is where the hold is recorded: the hydrating life's state while a hydrate builds the entry, the entry's own
@@ -2898,7 +2915,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// PR-2f S2 (know `e10cf838c9`): an owner whose log holds nothing reports `-1` to its replicas, so they stop forwarding
     /// reads of a never-written partition after one tick ([#behindCommittedOwner]). Only an EMPTY log: an owner holding records
-    /// below its visible position may be waiting for its first admission to raise it from the marker, and a `-1` from it would
+    /// below its visible position may be waiting for its activation to raise it from the marker, and a `-1` from it would
     /// tell its replicas that nothing is acknowledged. Nothing is committed, so the partition log is told nothing.
     @Contract
     private void announceEmptyLog(String streamName, int partition) {
@@ -2968,7 +2985,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// PR-2f S2 (owner ruling `ab33af11c6`, mechanism `e10cf838c9`): whether a GOVERNOR read of `(streamName, partition)` on
     /// this node must go to the owner instead of this node's ring. Never on the owner. Elsewhere, true while the owner of the
     /// recorded epoch has announced nothing in this node's life (after a restart the owner raises visible from its acked
-    /// marker only at its first admission, which a forwarded read triggers), or while this ring's visible position is below
+    /// marker when its ownership activates, #3307), or while this ring's visible position is below
     /// the announced one (a lagging copy, or a recovered tail still held until verified).
     public boolean behindCommittedOwner(String streamName, int partition) {
         if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
@@ -4994,15 +5011,21 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// #2981 step 2 (design §2.2, §2.4): this node's lease went from invalid to valid. The owner re-derives `visible` of every
     /// partition placement names it owner of (one [#refreshVisible] each, through [#ownerAdvance]), then every parked ack waiter
-    /// is re-checked. `AetherNode` binds it to the lease's validity-regained edge.
+    /// is re-checked. `AetherNode` binds it to the lease's validity-regained edge. #3307: an activation that completed while the
+    /// lease was lapsed left the acked marker pending ([#restoreAckedMarker]); it is restored here first.
     @Contract
     public void onLeaseRegained() {
         materializedHeads().stream()
                          .filter(head -> placementRoleSupplier.roleFor(head.streamName(),
                                                                        head.partition()) == Role.OWNER)
-                         .forEach(head -> refreshVisible(head.streamName(),
-                                                         head.partition()));
+                         .forEach(this::rederiveOwnerVisible);
         parkedAcks.forEach(this::recheckParked);
+    }
+
+    @Contract
+    private void rederiveOwnerVisible(PartitionHead head) {
+        restoreAckedMarker(head.streamName(), head.partition());
+        refreshVisible(head.streamName(), head.partition());
     }
 
     /// #1262 fail-closed guard, applied ONCE by `StreamWriteRouter.publish` — the single write operation behind
