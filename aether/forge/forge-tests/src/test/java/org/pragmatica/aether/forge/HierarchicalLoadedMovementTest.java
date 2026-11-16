@@ -52,9 +52,10 @@ class HierarchicalLoadedMovementTest {
 
     @Test void loadedCommunityMovesAllThreeWorkersWithoutObservedLossOfActiveReplica() {
         changeDestination("east");
-        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).until(() -> membersInSource("east").size() == 3
+        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).untilAsserted(() -> assertThat(membersInSource("east").size() == 3
             && leader().kvStore().getTyped(new AetherKey.CommunityKey("stable"), AetherValue.CommunityValue.class)
-                .filter(value -> value.state() == org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE).isPresent());
+                .filter(value -> value.state() == org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE).isPresent())
+            .as("initial provisioning: east=%s, %s", membersInSource("east"), PlacementGateDiagnostics.describe(leader(), "stable")).isTrue());
         var originals = membersInSource("east");
         var artifact = org.pragmatica.aether.artifact.Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap();
         deployWorkersOnlyEcho(artifact);
