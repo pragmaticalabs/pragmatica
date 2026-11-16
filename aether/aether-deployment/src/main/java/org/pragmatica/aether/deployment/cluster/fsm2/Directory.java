@@ -124,8 +124,8 @@ public sealed interface Directory {
                               Warnings.SINGLE,
                               Warnings.SINGLE,
                               "Worker " + node.id()
-                              + " has no community: its assignment changed before commit " + MAX_ASSIGNMENT_ATTEMPTS
-                              + " times in a row. It takes one when it is admitted again");
+                             + " has no community: its assignment changed before commit " + MAX_ASSIGNMENT_ATTEMPTS
+                             + " times in a row. It takes one when it is admitted again");
     }
 
     /// R-CF.17 parity: a departing worker's run of refusals is dropped; one reported unplaced is closed with the reason subject-gone (the
@@ -368,8 +368,8 @@ public sealed interface Directory {
                               Warnings.SINGLE,
                               Warnings.SINGLE,
                               "No community policy accepts worker " + node.id()
-                              + " of source " + source
-                              + "; it gets no directive");
+                             + " of source " + source
+                             + "; it gets no directive");
     }
 
     // -- J5: a derived community (R-CF.16, R-CF.17, #241) ------------------------------------------------------------
@@ -414,7 +414,10 @@ public sealed interface Directory {
                               source,
                               Warnings.SINGLE,
                               Warnings.SINGLE,
-                              "Worker " + node.id() + " of source " + source + " was admitted to community " + communityId + " again");
+                              "Worker " + node.id()
+                             + " of source " + source
+                             + " was admitted to community " + communityId
+                             + " again");
     }
 
     // FER (degrade forward), as the legacy refusal: the refused worker gets no community now and the refusal is reported. Guarantee: the
@@ -433,12 +436,12 @@ public sealed interface Directory {
                               Warnings.SINGLE,
                               Warnings.SINGLE,
                               "No community can take worker " + node.id()
-                              + " of source " + source
-                              + ": its communities are at the " + CommunityPolicy.CEILING
-                              + " ceiling and the source is at the bound of " + policy.maxCommunities()
-                              + " (max_size " + policy.maxSize()
-                              + "). Raise community_policy.max_communities or max_size, or add worker capacity under another source; "
-                              + "the worker takes a community when it rejoins");
+                             + " of source " + source
+                             + ": its communities are at the " + CommunityPolicy.CEILING
+                             + " ceiling and the source is at the bound of " + policy.maxCommunities()
+                             + " (max_size " + policy.maxSize()
+                             + "). Raise community_policy.max_communities or max_size, or add worker capacity under another source; "
+                             + "the worker takes a community when it rejoins");
     }
 
     /// The source's derived communities, committed and being minted, with the live-aware load the growth policy chooses by (legacy

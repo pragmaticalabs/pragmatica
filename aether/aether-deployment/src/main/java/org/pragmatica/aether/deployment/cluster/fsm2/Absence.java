@@ -264,8 +264,8 @@ public sealed interface Absence {
                               Warnings.SINGLE,
                               Warnings.SINGLE,
                               "The " + label
-                              + " class cannot be judged for absence on " + node.id()
-                              + ": its signals are missing, stale or unwired");
+                             + " class cannot be judged for absence on " + node.id()
+                             + ": its signals are missing, stale or unwired");
     }
 
     /// Every node of interest, on a seam refresh or a tick (O(nodes with a directive or rows)).

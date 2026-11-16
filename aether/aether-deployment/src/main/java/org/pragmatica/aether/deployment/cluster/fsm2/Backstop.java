@@ -129,9 +129,11 @@ public sealed interface Backstop {
                               Warnings.SINGLE,
                               Warnings.SINGLE,
                               "Community " + community
-                              + ": " + members(m, community).stream().filter(m.absentSince::containsKey).count()
-                              + " of " + members(m, community).size()
-                              + " members are absent at once; no departure is recorded for it");
+                             + ": " + members(m, community).stream()
+                                             .filter(m.absentSince::containsKey)
+                                             .count()
+                             + " of " + members(m, community).size()
+                             + " members are absent at once; no departure is recorded for it");
     }
 
     private static boolean warrantsIgnoringBreaker(ClusterModel m, Ctx ctx, NodeId node) {

@@ -3699,7 +3699,9 @@ public sealed interface AetherValue {
 
         /// The row's content without its revision and writer: two rows saying the same thing compare equal (`Warnings.same`).
         public boolean sameContent(FsmWarningValue other) {
-            return open == other.open && members.equals(other.members) && message.equals(other.message);
+            return open == other.open
+                   && members.equals(other.members)
+                   && message.equals(other.message);
         }
     }
 

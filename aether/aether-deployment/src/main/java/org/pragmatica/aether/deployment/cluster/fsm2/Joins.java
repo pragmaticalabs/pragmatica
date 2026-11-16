@@ -357,9 +357,9 @@ public sealed interface Joins {
                               Warnings.SINGLE,
                               Warnings.SINGLE,
                               "No join row matched " + node.id()
-                              + ": record=" + record
-                              + " admission=" + join.admission()
-                              + " worker=" + join.worker());
+                             + ": record=" + record
+                             + " admission=" + join.admission()
+                             + " worker=" + join.worker());
     }
 
     private static ClusterModel refuse(ClusterModel m, Ctx ctx, NodeId node, String code, String message) {

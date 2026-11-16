@@ -229,7 +229,12 @@ public sealed interface Schemas {
     }
 
     private static ClusterModel stallEnded(ClusterModel m, Ctx ctx, String datasource, String why) {
-        return Warnings.raise(m, Recoveries.SCHEMA_MIGRATION_PROGRESSED, datasource, Warnings.SINGLE, Warnings.SINGLE, why);
+        return Warnings.raise(m,
+                              Recoveries.SCHEMA_MIGRATION_PROGRESSED,
+                              datasource,
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              why);
     }
 
     private static String endedMessage(String datasource) {

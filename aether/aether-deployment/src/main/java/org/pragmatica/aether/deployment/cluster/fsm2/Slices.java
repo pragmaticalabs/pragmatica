@@ -143,7 +143,7 @@ public sealed interface Slices {
                               pair.node().id(),
                               signature,
                               "Slice " + pair.artifact()
-                              + " held in LOADED, waiting for schema migrations to complete: " + signature);
+                             + " held in LOADED, waiting for schema migrations to complete: " + signature);
     }
 
     /// The observed row of an excluded pair went: its exclusion is cleared now. D.6 rows 18/19: the reason is subject-gone; the recovery is
@@ -175,7 +175,12 @@ public sealed interface Slices {
     /// when the LAST held node of the artifact leaves the hold; a pair leaving while another is still held closes nothing (#3274: rule E
     /// over the row's members, `Warnings.accepted`). Closed evidence for the pair whether or not it was held.
     private static ClusterModel unhold(ClusterModel m, SlicePair pair, String message) {
-        return Warnings.raise(m, Recoveries.SCHEMA_HOLD_CLEARED, pair.artifact().asString(), pair.node().id(), Warnings.SINGLE, message);
+        return Warnings.raise(m,
+                              Recoveries.SCHEMA_HOLD_CLEARED,
+                              pair.artifact().asString(),
+                              pair.node().id(),
+                              Warnings.SINGLE,
+                              message);
     }
 
     /// Every dependency has at least one ACTIVE instance (the active count, R-2.6).

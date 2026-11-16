@@ -193,7 +193,8 @@ public sealed interface Warnings {
                                                             (m, subject, _, _) -> workerTest(m,
                                                                                              subject,
                                                                                              "the node departed between leaders",
-                                                                                             "A join row matched " + subject + " between leaders"))),
+                                                                                             "A join row matched " + subject
+                                                                                            + " between leaders"))),
                                               Map.entry(NO_POLICY,
                                                         set(m -> m.noPolicyWarned,
                                                             (m, set) -> m.noPolicyWarned = set,
@@ -201,7 +202,8 @@ public sealed interface Warnings {
                                                             (m, subject, _, _) -> workerTest(m,
                                                                                              subject,
                                                                                              "the worker departed between leaders",
-                                                                                             "A community policy accepted worker " + subject + " between leaders"))),
+                                                                                             "A community policy accepted worker " + subject
+                                                                                            + " between leaders"))),
                                               Map.entry(UNPLACED,
                                                         set(m -> m.unplacedWarned,
                                                             (m, set) -> m.unplacedWarned = set,
@@ -209,7 +211,8 @@ public sealed interface Warnings {
                                                             (m, subject, _, _) -> workerTest(m,
                                                                                              subject,
                                                                                              "the worker departed between leaders",
-                                                                                             "Worker " + subject + " was assigned a community between leaders"))),
+                                                                                             "Worker " + subject
+                                                                                            + " was assigned a community between leaders"))),
                                               Map.entry(UNJUDGEABLE,
                                                         set(m -> m.unjudgeableWarned,
                                                             (m, set) -> m.unjudgeableWarned = set,
@@ -257,23 +260,18 @@ public sealed interface Warnings {
                                        String value,
                                        String text,
                                        boolean opening) {
-        var current = Option.option(family.state()
-                                          .held(m, key.subject())
-                                          .get(member));
+        var current = Option.option(family.state().held(m, key.subject()).get(member));
 
         m.fresh = m.fresh.put(Member.member(key, member), opening);
         m.warningsDirty = true;
-
         if (opening && !holdsValue(family, current, value)) {
-            return opened(family.hold()
-                                .hold(m, key.subject(), member, value),
+            return opened(family.hold().hold(m, key.subject(), member, value),
                           key,
                           text);
         }
 
-        return !opening && current.isPresent()
-               ? closed(family.release()
-                              .release(m, key.subject(), member),
+        return ! opening && current.isPresent()
+               ? closed(family.release().release(m, key.subject(), member),
                         family,
                         key,
                         text)
@@ -305,9 +303,10 @@ public sealed interface Warnings {
     }
 
     private static boolean keyHeld(ClusterModel m, Family family, FsmWarningKey key) {
-        return !family.state()
-                      .held(m, key.subject())
-                      .isEmpty();
+        return ! family.state()
+                       .held(m,
+                             key.subject())
+                       .isEmpty();
     }
 
     // -- the mirror and rule O -------------------------------------------------------------------------------------
@@ -357,9 +356,10 @@ public sealed interface Warnings {
     /// A row with this incarnation's stamp: the node's own row.
     private static boolean own(ClusterModel m, Ctx ctx, FsmWarningValue row) {
         return row.writerNode()
-                  .equals(ctx.self()) && row.writerProcess()
-                                            .equals(ctx.settings()
-                                                       .process()) && row.writerIncarnation() == m.incarnation;
+                  .equals(ctx.self())
+               && row.writerProcess()
+                     .equals(ctx.settings().process())
+               && row.writerIncarnation() == m.incarnation;
     }
 
     /// Rule O, one comparison per member: the row's members and the members the state holds. Then the texts: an open row that leaves the
@@ -370,17 +370,24 @@ public sealed interface Warnings {
                      .or(m);
     }
 
-    private static ClusterModel applied(ClusterModel m, Ctx ctx, Family family, FsmWarningKey key, FsmWarningValue row) {
+    private static ClusterModel applied(ClusterModel m,
+                                        Ctx ctx,
+                                        Family family,
+                                        FsmWarningKey key,
+                                        FsmWarningValue row) {
         var rowHeld = rowHeld(family, row);
         var members = new TreeSet<>(rowHeld.keySet());
-        var earlierSelf = row.writerNode()
-                             .equals(ctx.self());
+        var earlierSelf = row.writerNode().equals(ctx.self());
         var refusals = new ArrayList<String>();
 
-        members.addAll(family.state()
-                             .held(m, key.subject())
-                             .keySet());
-        members.forEach(member -> member(m, family, key, member, Option.option(rowHeld.get(member)), earlierSelf, refusals));
+        members.addAll(family.state().held(m, key.subject()).keySet());
+        members.forEach(member -> member(m,
+                                         family,
+                                         key,
+                                         member,
+                                         Option.option(rowHeld.get(member)),
+                                         earlierSelf,
+                                         refusals));
 
         return texts(m, family, key, row, used(m, key, members, earlierSelf), refusals);
     }
@@ -430,7 +437,9 @@ public sealed interface Warnings {
                                          List<String> refusals) {
         return rowValue.map(value -> admit(m, family, key, member, value, refusals))
                        .or(() -> family.release()
-                                       .release(m, key.subject(), member));
+                                       .release(m,
+                                                key.subject(),
+                                                member));
     }
 
     /// The hold test: an admitted hold takes the row's value (APPLY_DEADLINE: the outcome's attempt); a refused one leaves the member not
@@ -442,11 +451,12 @@ public sealed interface Warnings {
                                       String rowValue,
                                       List<String> refusals) {
         return switch (family.test()
-                             .test(m, key.subject(), member, rowValue)) {
-            case Verdict.Admitted admitted -> family.hold()
-                                                    .hold(m, key.subject(), member, admitted.value());
-            case Verdict.Refused refused -> refused(family.release()
-                                                          .release(m, key.subject(), member),
+                             .test(m,
+                                   key.subject(),
+                                   member,
+                                   rowValue)) {
+            case Verdict.Admitted admitted -> family.hold().hold(m, key.subject(), member, admitted.value());
+            case Verdict.Refused refused -> refused(family.release().release(m, key.subject(), member),
                                                     refused.text(),
                                                     refusals);
         };
@@ -460,9 +470,9 @@ public sealed interface Warnings {
 
     /// Whether the row was applied or joined on some member (not ignored on every member as an earlier self's).
     private static boolean used(ClusterModel m, FsmWarningKey key, Set<String> members, boolean earlierSelf) {
-        return !earlierSelf || members.stream()
-                                      .anyMatch(member -> m.fresh.get(Member.member(key, member))
-                                                                 .isEmpty());
+        return ! earlierSelf || members.stream()
+                                       .anyMatch(member -> m.fresh.get(Member.member(key, member))
+                                                                  .isEmpty());
     }
 
     private static ClusterModel texts(ClusterModel m,
@@ -540,8 +550,7 @@ public sealed interface Warnings {
             return m;
         }
 
-        draft.mutations()
-             .forEach(mutation -> landed(notified(m, ctx, mutation), mutation));
+        draft.mutations().forEach(mutation -> landed(notified(m, ctx, mutation), mutation));
 
         return m;
     }
@@ -576,25 +585,24 @@ public sealed interface Warnings {
     /// Rule E: the opener with the replacement's message when the replacement holds a (member, value) the expected does not; the recovery
     /// when the expected is open and the replacement closed; nothing otherwise. A code with no family notifies nothing.
     private static ClusterModel notified(ClusterModel m, Ctx ctx, KVCommand.Mutation<AetherKey, AetherValue> mutation) {
-        if (!(mutation.key() instanceof FsmWarningKey key) || !TABLE.containsKey(key.code())) {
+        if (! (mutation.key() instanceof FsmWarningKey key) || !TABLE.containsKey(key.code())) {
             return m;
         }
 
         var family = TABLE.get(key.code());
         var expected = rowOf(mutation.expected());
         var replacement = rowOf(mutation.replacement());
-        var before = expected.map(row -> rowHeld(family, row))
-                             .or(Map.of());
-        var after = replacement.map(row -> rowHeld(family, row))
-                               .or(Map.of());
+        var before = expected.map(row -> rowHeld(family, row)).or(Map.of());
+        var after = replacement.map(row -> rowHeld(family, row)).or(Map.of());
 
         if (after.entrySet()
                  .stream()
-                 .anyMatch(entry -> !Option.option(before.get(entry.getKey()))
-                                           .equals(Option.some(entry.getValue())))) {
+                 .anyMatch(entry -> !Option.option(before.get(entry.getKey())).equals(Option.some(entry.getValue())))) {
             replacement.onPresent(row -> ctx.warn(key.code(), key.subject(), row.message()));
         } else if (!before.isEmpty() && after.isEmpty()) {
-            replacement.onPresent(row -> ctx.warn(FAMILIES.get(key.code()), key.subject(), row.message()));
+            replacement.onPresent(row -> ctx.warn(FAMILIES.get(key.code()),
+                                                  key.subject(),
+                                                  row.message()));
         }
 
         return m;
@@ -622,7 +630,9 @@ public sealed interface Warnings {
                                                                                                 .open())
                                   .map(entry -> put(m,
                                                     entry.getKey(),
-                                                    closeRow(m, ctx, entry.getKey())));
+                                                    closeRow(m,
+                                                             ctx,
+                                                             entry.getKey())));
 
         return Stream.concat(opened, closed)
                      .sorted(Comparator.comparing(mutation -> mutation.key()
@@ -643,11 +653,22 @@ public sealed interface Warnings {
                        Map.of(),
                        false,
                        m.closeText.get(key)
-                                  .or(() -> FAMILIES.getOrDefault(key.code(), key.code()) + ": " + key.subject()));
+                                  .or(() -> FAMILIES.getOrDefault(key.code(),
+                                                                  key.code()) + ": " + key.subject()));
     }
 
-    private static FsmWarningValue stamped(ClusterModel m, Ctx ctx, Map<String, String> members, boolean open, String message) {
-        return FsmWarningValue.fsmWarningValue(members, open, message, 0L, ctx.self(), ctx.settings().process(), m.incarnation);
+    private static FsmWarningValue stamped(ClusterModel m,
+                                           Ctx ctx,
+                                           Map<String, String> members,
+                                           boolean open,
+                                           String message) {
+        return FsmWarningValue.fsmWarningValue(members,
+                                               open,
+                                               message,
+                                               0L,
+                                               ctx.self(),
+                                               ctx.settings().process(),
+                                               m.incarnation);
     }
 
     /// Every row written carries the next revision of the key, so it never equals a value the key held before.
@@ -673,24 +694,31 @@ public sealed interface Warnings {
     static Map<FsmWarningKey, FsmWarningValue> desired(ClusterModel m, Ctx ctx) {
         return TABLE.entrySet()
                     .stream()
-                    .flatMap(entry -> openKeys(m, entry.getKey(), entry.getValue()))
+                    .flatMap(entry -> openKeys(m,
+                                               entry.getKey(),
+                                               entry.getValue()))
                     .collect(Collectors.toMap(Map.Entry::getKey,
                                               entry -> stamped(m,
                                                                ctx,
                                                                entry.getValue(),
                                                                true,
                                                                m.openText.get(entry.getKey())
-                                                                         .or(() -> entry.getKey().code() + ": " + entry.getKey().subject()))));
+                                                                         .or(() -> entry.getKey()
+                                                                                        .code()
+                                                                                  + ": " + entry.getKey()
+                                                                                                .subject()))));
     }
 
     /// The held keys of one family with their row members (a single-subject key: none).
-    private static Stream<Map.Entry<FsmWarningKey, Map<String, String>>> openKeys(ClusterModel m, String code, Family family) {
+    private static Stream<Map.Entry<FsmWarningKey, Map<String, String>>> openKeys(ClusterModel m,
+                                                                                  String code,
+                                                                                  Family family) {
         return subjects(m, code).stream()
-                                .map(subject -> Map.entry(FsmWarningKey.fsmWarningKey(code, subject),
-                                                          family.membered()
-                                                          ? family.state()
-                                                                  .held(m, subject)
-                                                          : Map.<String, String>of()));
+                       .map(subject -> Map.entry(FsmWarningKey.fsmWarningKey(code, subject),
+                                                 family.membered()
+                                                 ? family.state()
+                                                         .held(m, subject)
+                                                 : Map.<String, String> of()));
     }
 
     private static List<String> subjects(ClusterModel m, String code) {
@@ -731,10 +759,12 @@ public sealed interface Warnings {
                                                   .or(Map.of()),
                              (m, subject, _, _) -> changed(m,
                                                            parse.apply(subject),
-                                                           parsed -> write.accept(m, read.apply(m).add(parsed))),
+                                                           parsed -> write.accept(m,
+                                                                                  read.apply(m).add(parsed))),
                              (m, subject, _) -> changed(m,
                                                         parse.apply(subject),
-                                                        parsed -> write.accept(m, read.apply(m).remove(parsed))),
+                                                        parsed -> write.accept(m,
+                                                                               read.apply(m).remove(parsed))),
                              (m, subject, member, value) -> parse.apply(subject)
                                                                  .map(_ -> test.test(m, subject, member, value))
                                                                  .or(() -> unparsed(subject)));
@@ -752,18 +782,16 @@ public sealed interface Warnings {
     }
 
     private static Option<Artifact> artifactOf(String subject) {
-        return Artifact.artifact(subject)
-                       .option();
+        return Artifact.artifact(subject).option();
     }
 
     private static Option<NodeId> nodeOf(String subject) {
-        return NodeId.nodeId(subject)
-                     .option();
+        return NodeId.nodeId(subject).option();
     }
 
     private static Option<SlicePair> pairOf(String subject, String member) {
-        return Option.all(artifactOf(subject), nodeOf(member))
-                     .map((artifact, node) -> SlicePair.slicePair(node, artifact));
+        return Option.all(artifactOf(subject), nodeOf(member)).map((artifact, node) -> SlicePair.slicePair(node,
+                                                                                                           artifact));
     }
 
     private static Map<String, String> strays(ClusterModel m, String subject) {
@@ -774,21 +802,25 @@ public sealed interface Warnings {
                                                                                 _ -> SINGLE,
                                                                                 (left, _) -> left,
                                                                                 TreeMap::new)))
-                                  .map(members -> (Map<String, String>) members)
-                                  .or(Map.of());
+                         .map(members -> (Map<String, String>) members)
+                         .or(Map.of());
     }
 
     private static ClusterModel holdStray(ClusterModel m, String subject, String member, String value) {
-        return changed(m, pairOf(subject, member), pair -> m.strayWarned = Idx.add(m.strayWarned, pair.artifact(), pair.node()));
+        return changed(m,
+                       pairOf(subject, member),
+                       pair -> m.strayWarned = Idx.add(m.strayWarned, pair.artifact(), pair.node()));
     }
 
     private static ClusterModel releaseStray(ClusterModel m, String subject, String member) {
-        return changed(m, pairOf(subject, member), pair -> m.strayWarned = Idx.remove(m.strayWarned, pair.artifact(), pair.node()));
+        return changed(m,
+                       pairOf(subject, member),
+                       pair -> m.strayWarned = Idx.remove(m.strayWarned, pair.artifact(), pair.node()));
     }
 
     private static Map<String, String> holds(ClusterModel m, String subject) {
         return artifactOf(subject).map(artifact -> signatures(m, artifact))
-                                  .or(Map.of());
+                         .or(Map.of());
     }
 
     private static Map<String, String> signatures(ClusterModel m, Artifact artifact) {
@@ -826,8 +858,8 @@ public sealed interface Warnings {
 
     private static Map<String, String> deadlines(ClusterModel m, String subject) {
         return blueprintOf(subject).flatMap(m.applyDeadlineWarned::get)
-                                   .map(attempt -> Map.of(SINGLE, attempt))
-                                   .or(Map.of());
+                          .map(attempt -> Map.of(SINGLE, attempt))
+                          .or(Map.of());
     }
 
     private static ClusterModel holdDeadline(ClusterModel m, String subject, String member, String attempt) {
@@ -839,22 +871,20 @@ public sealed interface Warnings {
     }
 
     private static Option<BlueprintId> blueprintOf(String subject) {
-        return BlueprintId.blueprintId(subject)
-                          .option();
+        return BlueprintId.blueprintId(subject).option();
     }
 
     // -- the hold tests (today's adoption checks) ------------------------------------------------------------------
     /// Rows 10 and 14: the artifact's target was removed between the leaders.
     private static Verdict targetTest(ClusterModel m, String subject) {
         return artifactOf(subject).filter(artifact -> m.targets.containsKey(artifact.base()))
-                                  .map(_ -> admitted())
-                                  .or(() -> gone(subject, "its target was removed between leaders"));
+                         .map(_ -> admitted())
+                         .or(() -> gone(subject, "its target was removed between leaders"));
     }
 
     /// Row 17: the datasource's record was removed, or its status decodes now.
     private static Verdict schemaTest(ClusterModel m, String datasource) {
-        var status = m.schemas.get(datasource)
-                              .map(AetherValue.SchemaVersionValue::status);
+        var status = m.schemas.get(datasource).map(AetherValue.SchemaVersionValue::status);
 
         if (status.isEmpty()) {
             return gone(datasource, "its schema record was removed between leaders");
@@ -877,13 +907,13 @@ public sealed interface Warnings {
         return pairOf(subject, member).map(pair -> m.observed.containsKey(pair)
                                                    ? Verdict.Admitted.admitted(value)
                                                    : gone(subject, why))
-                                      .or(() -> unparsed(subject));
+                     .or(() -> unparsed(subject));
     }
 
     /// Rows 13, 22 and R-CF.17: the node departed (gone) or holds a committed community-worker directive (closed, marked guess).
     private static Verdict workerTest(ClusterModel m, String subject, String departed, String placed) {
         return nodeOf(subject).map(node -> workerVerdict(m, node, subject, departed, placed))
-                              .or(() -> unparsed(subject));
+                     .or(() -> unparsed(subject));
     }
 
     private static Verdict workerVerdict(ClusterModel m, NodeId node, String subject, String departed, String placed) {
@@ -912,9 +942,9 @@ public sealed interface Warnings {
     /// R-4.1.7: the blueprint's outcome is still a deadline terminal; the hold takes its attempt.
     private static Verdict deadlineTest(ClusterModel m, String subject) {
         return blueprintOf(subject).flatMap(m.outcomes::get)
-                                   .filter(outcome -> Deadlines.EXCEEDED.equals(outcome.cause()))
-                                   .map(outcome -> (Verdict) Verdict.Admitted.admitted(outcome.attemptId()))
-                                   .or(() -> gone(subject, "its deadline terminal was replaced or removed between leaders"));
+                          .filter(outcome -> Deadlines.EXCEEDED.equals(outcome.cause()))
+                          .map(outcome -> (Verdict) Verdict.Admitted.admitted(outcome.attemptId()))
+                          .or(() -> gone(subject, "its deadline terminal was replaced or removed between leaders"));
     }
 
     private static Verdict admitted() {

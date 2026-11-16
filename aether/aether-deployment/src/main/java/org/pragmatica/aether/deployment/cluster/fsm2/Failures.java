@@ -200,9 +200,10 @@ public sealed interface Failures {
                               Warnings.SINGLE,
                               Warnings.SINGLE,
                               "Max retries exceeded for " + artifact
-                              + " on " + pair.node().id()
-                              + ": " + reason
-                              + " - not marking permanently failed, no blueprint apply is outstanding");
+                             + " on " + pair.node()
+                                            .id()
+                             + ": " + reason
+                             + " - not marking permanently failed, no blueprint apply is outstanding");
     }
 
     /// The announcement rides the failure transaction and goes out when that transaction is accepted. A write that is lost is decided

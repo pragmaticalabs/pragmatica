@@ -203,10 +203,10 @@ public sealed interface Deadlines {
                               Warnings.SINGLE,
                               attempt,
                               id.asString()
-                              + ": " + EXCEEDED
-                              + " after " + elapsedMs
-                              + " ms of unpaused time, slices not ACTIVE: " + failing
-                              + "; republish or delete the blueprint");
+                             + ": " + EXCEEDED
+                             + " after " + elapsedMs
+                             + " ms of unpaused time, slices not ACTIVE: " + failing
+                             + "; republish or delete the blueprint");
     }
 
     /// Level-triggered close: an open warning stands while the blueprint's outcome is the warned attempt's, still IN_PROGRESS (the terminal is
