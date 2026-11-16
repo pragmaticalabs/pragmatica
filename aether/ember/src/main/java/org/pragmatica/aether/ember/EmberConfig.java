@@ -346,8 +346,9 @@ public record EmberConfig(int nodes,
     }
 
     private static String tooFewNodesReason() {
-        return "must be at least " + MINIMUM_NODES + ": a cluster is at least " + MINIMUM_NODES
-               + " nodes, a smaller one never elects a leader (#3299)";
+        return "must be at least " + MINIMUM_NODES
+             + ": a cluster is at least " + MINIMUM_NODES
+             + " nodes, a smaller one never elects a leader (#3299)";
     }
 
     public sealed interface EmberConfigError extends Cause {
