@@ -121,7 +121,7 @@ class BootstrapRestoreEngineTest {
                       .unwrap();
     }
 
-    /// A bare git remote whose `backup` branch holds a backup with an incarnation and one entry, and no engine marker.
+    /// A bare git remote whose `kv-backup` branch holds a backup with an incarnation and one entry, and no engine marker.
     private String seededRemote() {
         var remote = temp.resolve("remote.git");
         var seeder = temp.resolve("seeder");
@@ -133,7 +133,7 @@ class BootstrapRestoreEngineTest {
         git(remote, "config", "gc.autoDetach", "false");
         git(remote, "config", "maintenance.autoDetach", "false");
         git(temp, "clone", "--quiet", remote.toString(), seeder.toString());
-        git(seeder, "checkout", "--quiet", "-B", "backup");
+        git(seeder, "checkout", "--quiet", "-B", "kv-backup");
         try {
             Files.writeString(seeder.resolve(GitBackupRepository.FILE),
                               BackupEntryCodec.backupEntryCodec(NODE_CODEC)
@@ -144,7 +144,7 @@ class BootstrapRestoreEngineTest {
         }
         git(seeder, "add", GitBackupRepository.FILE);
         git(seeder, "-c", "user.email=s@x", "-c", "user.name=seed", "commit", "--quiet", "-m", "kv backup (markerless)");
-        git(seeder, "push", "--quiet", "origin", "backup");
+        git(seeder, "push", "--quiet", "origin", "kv-backup");
 
         return remote.toString();
     }
