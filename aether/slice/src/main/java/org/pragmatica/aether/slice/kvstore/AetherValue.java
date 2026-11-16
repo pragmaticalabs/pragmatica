@@ -3668,40 +3668,38 @@ public sealed interface AetherValue {
     /// subject that covers several instances (a stray's condemned nodes, a schema hold's held nodes with their hold signature), keyed by
     /// node id; empty for a single-instance subject. Held sorted by node id: every node encodes the same bytes.
     ///
-    /// #3160: `opener` and `recovery` are the messages of the family's opener (the key's code) and recovery that the writing leader has
-    /// committed but not yet published, so a successor publishes them when it inherits the row. `open` false marks a row the family closed
-    /// whose recovery is not yet published (a tombstone): the successor publishes the recovery and closes the row with the
-    /// confirming row (#3274: the FSM never removes a WARNINGS row).
+    /// #3274: `open` is the fold of the members: some member held (a single-instance subject: the warning held). `message` is the text
+    /// of the transition the row records: the opener's message on an open row, the recovery's on a closed one. A close writes `open`
+    /// false, no members and the recovery text; no row is ever removed. The writer's stamp (`writerNode`, `writerProcess`,
+    /// `writerIncarnation`) names the leader incarnation that wrote the row: a reader tells its own rows from an earlier self's and from
+    /// another node's by it (`Warnings`, rule O). Flat components, so no new wire tag: `ProcessIncarnation` is pinned already.
     ///
     /// #3274: `revision` grows with every write of the key, so a written row never equals an earlier one: a stale transaction whose CAS
-    /// expects the earlier value cannot commit after it. A closed row with no markers (the confirming row) means "no warning".
+    /// expects the earlier value cannot commit after it.
     record FsmWarningValue(Map<String, String> members,
                            boolean open,
-                           Option<String> opener,
-                           Option<String> recovery,
-                           long revision) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
+                           String message,
+                           long revision,
+                           NodeId writerNode,
+                           ProcessIncarnation writerProcess,
+                           long writerIncarnation) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
         public FsmWarningValue {
             members = Collections.unmodifiableSortedMap(new TreeMap<>(members));
         }
 
-        /// An open warning with nothing left to publish.
-        public static FsmWarningValue fsmWarningValue(Map<String, String> members) {
-            return new FsmWarningValue(members, true, none(), none(), 0L);
-        }
-
         public static FsmWarningValue fsmWarningValue(Map<String, String> members,
                                                       boolean open,
-                                                      Option<String> opener,
-                                                      Option<String> recovery) {
-            return new FsmWarningValue(members, open, opener, recovery, 0L);
+                                                      String message,
+                                                      long revision,
+                                                      NodeId writerNode,
+                                                      ProcessIncarnation writerProcess,
+                                                      long writerIncarnation) {
+            return new FsmWarningValue(members, open, message, revision, writerNode, writerProcess, writerIncarnation);
         }
 
-        public static FsmWarningValue fsmWarningValue(Map<String, String> members,
-                                                      boolean open,
-                                                      Option<String> opener,
-                                                      Option<String> recovery,
-                                                      long revision) {
-            return new FsmWarningValue(members, open, opener, recovery, revision);
+        /// The row's content without its revision and writer: two rows saying the same thing compare equal (`Warnings.same`).
+        public boolean sameContent(FsmWarningValue other) {
+            return open == other.open && members.equals(other.members) && message.equals(other.message);
         }
     }
 

@@ -197,26 +197,20 @@ public final class ClusterModel {
     /// Datasources whose FAILED record was committed while suspended: announced once on the resume (`Schemas.announceWithheld`).
     PSet<String> withheldBlocked = PSet.empty(scans);
     /// #2834: the mirror of the committed open set of the leader-local families (`FsmWarningKey`), as this leader last saw it committed.
-    /// #3160: rows may carry unpublished markers, and a closed row with an unpublished recovery stays as a tombstone (`Warnings`).
+    /// #3274: no row is ever removed; a closed row (`open` false) is "no warning".
     PMap<AetherKey.FsmWarningKey, AetherValue.FsmWarningValue> warningRows = PMap.empty(scans);
-    /// #2834: a step raised or closed a warning of a leader-local family, or a write of the open set did not land: the next flush compares
-    /// the open sets with `warningRows` (`Warnings.draft`).
+    /// #2834: a step raised or closed a warning of a leader-local family, a row was indexed, or a write of the open set did not land: the
+    /// next flush compares the open sets with `warningRows` (`Warnings.draft`).
     boolean warningsDirty;
-    /// #3085: the family warnings raised (and recoveries closed) that wait for the WARNINGS row carrying them to commit, in raise order. A
-    /// deposition or a `Rebuild` discards the model, so a held warning whose row never committed is never published.
-    List<ClusterEffect.Warn> warningsHeld = List.of();
-    /// #3085: how many of `warningsHeld` the WARNINGS transaction in flight carries (the held count when it was drafted).
-    int warningsCovered;
-    /// #3085: how many of `warningsHeld` an accepted WARNINGS transaction committed: published at the end of the step (`Warnings.noteRaised`).
-    int warningsLanded;
-    /// #3274 (item 3): the end of the late replays in `warningsHeld`. The held list is in commit order: `[0, warningsLanded)` committed by
-    /// an accepted write of this node, `[warningsLanded, warningsLateEnd)` rows another writer committed, replayed late in arrival order
-    /// (`Warnings.onPut`), `[warningsLateEnd, size)` this node's own warnings no accepted write carries (`Warnings.heldBefore`).
-    int warningsLateEnd;
-    /// #3274: the WARNINGS keys whose committed value this leader cannot vouch for: a WARNINGS write of this node that failed or expired
-    /// may still commit, and a `Rebuild` cannot see a batch of the previous incarnation still in consensus. While any key is here,
-    /// `Warnings.settled` is false (`Warnings.publish`).
-    PMap<AetherKey.FsmWarningKey, UnsureRow> warningsUnsure = PMap.empty(scans);
+    /// #3274: the opener text of each held key: set by a passing opener (`Warnings.raise`) and by a row that leaves the key held; dropped
+    /// when the key closes by any path. Read when an open row is drafted.
+    PMap<AetherKey.FsmWarningKey, String> openText = PMap.empty(scans);
+    /// #3274: the recovery text of a key: set by a passing recovery (`Warnings.raise`) and by a refused hold; read when the close is
+    /// drafted; dropped when a closed row of the key is indexed or the key re-opens.
+    PMap<AetherKey.FsmWarningKey, String> closeText = PMap.empty(scans);
+    /// #3274: this incarnation's evidence: the polarity of the latest raise for each (key, member) since `Rebuild` (true = open). Rows never
+    /// change it (`Warnings`, rule O); `Rebuild` starts from an empty model, so it starts empty.
+    PMap<Warnings.Member, Boolean> fresh = PMap.empty(scans);
     // -- the write side (5.7) --------------------------------------------------------------------------------------
     PMap<String, Submitted> submitted = PMap.empty(scans);
     List<TxDraft> outbox = List.of();
@@ -332,11 +326,9 @@ public final class ClusterModel {
         c.withheldBlocked = withheldBlocked.rebound(meter);
         c.warningRows = warningRows.rebound(meter);
         c.warningsDirty = warningsDirty;
-        c.warningsHeld = warningsHeld;
-        c.warningsCovered = warningsCovered;
-        c.warningsLanded = warningsLanded;
-        c.warningsLateEnd = warningsLateEnd;
-        c.warningsUnsure = warningsUnsure.rebound(meter);
+        c.openText = openText.rebound(meter);
+        c.closeText = closeText.rebound(meter);
+        c.fresh = fresh.rebound(meter);
         c.submitted = submitted.rebound(meter);
         c.outbox = outbox;
         c.parked = parked;
@@ -553,15 +545,6 @@ public final class ClusterModel {
 
     /// The state of the awaited-target watch of one slice (#1109, B-036).
     public record AwaitedTarget(long sinceMs, boolean warned, long lastResubmitMs) {}
-
-    /// #3274: why a WARNINGS key is unsure. `known`: a failed or expired write of this node, whose replacement for the key is
-    /// `replacement` (empty for a removal); seeing that value in the mirror means the write committed. Not known: a `Rebuild`, or two
-    /// unsettled writes with different replacements; only an accepted write of this node touching the key clears it.
-    public record UnsureRow(boolean known, Option<AetherValue.FsmWarningValue> replacement) {
-        public static UnsureRow unsureRow(boolean known, Option<AetherValue.FsmWarningValue> replacement) {
-            return new UnsureRow(known, replacement);
-        }
-    }
 
     /// What a transaction in flight was, so that its settlement can be handled by kind (5.7, 6.2).
     public enum SubmitKind {

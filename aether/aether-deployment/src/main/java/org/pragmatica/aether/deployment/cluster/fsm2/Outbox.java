@@ -210,7 +210,7 @@ public sealed interface Outbox {
             return Warnings.suspended(m);
         }
 
-        Warnings.draft(m);
+        Warnings.draft(m, ctx);
         var drafts = materialize(m, ctx);
 
         clearIntents(m);
@@ -563,7 +563,6 @@ public sealed interface Outbox {
         submission.drafts().forEach(draft -> Blueprints.releaseUnsent(m, draft));
         submission.drafts().forEach(draft -> awaitEvents(m, draft));
         submission.drafts().forEach(draft -> Warnings.unlanded(m, draft));
-        submission.drafts().forEach(draft -> Warnings.unconfirmed(m, draft));
         metric(ctx, submission, "lost");
 
         return m;
@@ -639,7 +638,7 @@ public sealed interface Outbox {
 
     private static ClusterModel accepted(ClusterModel m, Ctx ctx, Submitted submission) {
         for (var draft : submission.drafts()) {
-            Warnings.accepted(m, draft);
+            Warnings.accepted(m, ctx, draft);
             draft.onAccepted().forEach(ctx::route);
             ctx.metric("aether_deployment_fsm_submissions_total",
                        Map.of("fsm",
@@ -1069,7 +1068,6 @@ public sealed interface Outbox {
             Blueprints.releaseUnsent(m, draft);
             DepartureFlow.failed(m, ctx, draft);
             awaitEvents(m, draft);
-            Warnings.unconfirmed(m, draft);
         }
 
         return retryLater(m, ctx);
