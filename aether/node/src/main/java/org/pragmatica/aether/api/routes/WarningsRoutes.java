@@ -38,8 +38,11 @@ import org.pragmatica.lang.Unit;
 /// core's apply lag.
 public final class WarningsRoutes implements RouteSource {
     static final Cause WORKER = new ServiceUnavailable("Warnings are served by core nodes only; this node is a worker");
+
     static final Cause NO_QUORUM = new ServiceUnavailable("This core does not hold quorum; its warning rows may be stale");
+
     static final Cause NO_REVISION = new ServiceUnavailable("This core has committed no state yet (revision 0)");
+
     static final Cause NOT_EXACT = new ServiceUnavailable("This core's revision label is not exact; warnings resume after its next snapshot install");
 
     private final Supplier<ManageableNode> nodeSupplier;
@@ -54,9 +57,7 @@ public final class WarningsRoutes implements RouteSource {
 
     @Override
     public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<WarningsResponse> route(ManagementRoute.WARNINGS)
-                                         .to(_ -> handle())
-                                         .asJson());
+        return Stream.of(ManagementRoutes.<WarningsResponse> route(ManagementRoute.WARNINGS).to(_ -> handle()).asJson());
     }
 
     private Promise<WarningsResponse> handle() {
@@ -64,19 +65,23 @@ public final class WarningsRoutes implements RouteSource {
 
         return read(node.isConfiguredWorker(),
                     () -> StatusRoutes.quorumStatus(node).held(),
-                    () -> node.kvStore().snapshotWithRevision(FsmWarningKey.class::isInstance)).async();
+                    () -> node.kvStore()
+                              .snapshotWithRevision(FsmWarningKey.class::isInstance)).async();
     }
 
     /// The whole decision, with the node reduced to its three observations: role, quorum (read only for a core) and the labelled snapshot.
     static Result<WarningsResponse> read(boolean worker,
                                          BooleanSupplier quorumHeld,
                                          Supplier<RevisionedSnapshot<AetherKey, AetherValue>> snapshot) {
-        return require(!worker, WORKER).flatMap(_ -> require(quorumHeld.getAsBoolean(), NO_QUORUM))
+        return require(!worker, WORKER).flatMap(_ -> require(quorumHeld.getAsBoolean(),
+                                                             NO_QUORUM))
                       .flatMap(_ -> labelled(snapshot.get()));
     }
 
     private static Result<WarningsResponse> labelled(RevisionedSnapshot<AetherKey, AetherValue> snapshot) {
-        return require(snapshot.revision() > 0, NO_REVISION).flatMap(_ -> require(snapshot.exact(), NOT_EXACT))
+        return require(snapshot.revision() > 0,
+                       NO_REVISION).flatMap(_ -> require(snapshot.exact(),
+                                                         NOT_EXACT))
                       .map(_ -> response(snapshot));
     }
 
@@ -103,7 +108,9 @@ public final class WarningsRoutes implements RouteSource {
 
     /// A tombstone (`open` false) is a closed warning whose recovery is not yet published: not an open warning.
     private static boolean isOpenRow(Map.Entry<AetherKey, AetherValue> entry) {
-        return entry.getKey() instanceof FsmWarningKey && entry.getValue() instanceof FsmWarningValue value && value.open();
+        return entry.getKey() instanceof FsmWarningKey
+               && entry.getValue() instanceof FsmWarningValue value
+               && value.open();
     }
 
     /// The ONE place a stored warning row becomes a response entry. `message` is the row's opener message (the latest the writing leader

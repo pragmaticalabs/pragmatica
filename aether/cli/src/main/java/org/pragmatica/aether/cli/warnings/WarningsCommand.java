@@ -3,7 +3,6 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.warnings;
 
-
 import java.util.concurrent.Callable;
 
 import org.pragmatica.aether.cli.AetherCli;

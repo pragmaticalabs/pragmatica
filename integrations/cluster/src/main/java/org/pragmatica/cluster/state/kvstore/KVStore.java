@@ -267,7 +267,9 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
             entries = Map.copyOf(entries);
         }
 
-        public static <K, V> RevisionedSnapshot<K, V> revisionedSnapshot(long revision, boolean exact, Map<K, V> entries) {
+        public static <K, V> RevisionedSnapshot<K, V> revisionedSnapshot(long revision,
+                                                                         boolean exact,
+                                                                         Map<K, V> entries) {
             return new RevisionedSnapshot<>(revision, exact, entries);
         }
     }

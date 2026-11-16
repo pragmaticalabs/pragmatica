@@ -107,7 +107,7 @@ public interface ManageableNode {
     /// of `WorkerHierarchyAssembly.metadataServingReady`. Its replica holds only the worker-scoped keys, so a core-only read refuses here
     /// (#3274). The default answers from [#hasCompleteClusterView], which also counts a node absent from its own seed as a worker.
     default boolean isConfiguredWorker() {
-        return !hasCompleteClusterView();
+        return ! hasCompleteClusterView();
     }
 
     /// Current core routing candidates, excluding worker entries in bootstrap seeds.
