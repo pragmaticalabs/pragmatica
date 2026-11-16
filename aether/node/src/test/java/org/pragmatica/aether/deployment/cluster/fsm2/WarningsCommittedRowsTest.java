@@ -320,6 +320,56 @@ class WarningsCommittedRowsTest {
         assertThat(held(mine)).as("joined as another node's open row").isTrue();
     }
 
+    // -- the open-biased join, per class of the design's §0 table ---------------------------------------------------------------------------
+    /// The join of the item 1 table is one rule for every family: own closed evidence, then another node's open row, holds the member with
+    /// the row's text. Pinned once per class of the §0 per-class table, because a bias changed for one family only is otherwise invisible.
+    private static void assertOpenRowWinsOverOwnClose(ClusterModel m, String code, String subject, String member, Map<String, String> rowMembers) {
+        var key = FsmWarningKey.fsmWarningKey(code, subject);
+
+        Warnings.raise(m, Warnings.FAMILIES.get(code), subject, member, Warnings.SINGLE, "own close");
+        assertThat(members(m, code, subject)).as(code + ": own close of a member never held").isEmpty();
+        Warnings.onPut(m, ctx(), key, row(CORE_2, INCARNATION, rowMembers, true, "their open"));
+
+        assertThat(members(m, code, subject)).as(code + ": the open row wins over own closed evidence").isNotEmpty();
+        assertThat(m.openText.get(key)).as(code + ": the row's text").isEqualTo(Option.some("their open"));
+    }
+
+    private static ClusterModel withTarget() {
+        var m = model();
+
+        m.targets = m.targets.put(ORDERS.base(), target(ORDERS, 1, 1, "CORE_ONLY"));
+
+        return m;
+    }
+
+    /// Class E-open, L-close (RETRY_EXHAUSTED). Red when this family's join lets own closed evidence win over another node's open row.
+    @Test
+    void join_eOpenLClose_retryExhausted_openRowWinsOverOwnClose() {
+        assertOpenRowWinsOverOwnClose(withTarget(), Warnings.RETRY_EXHAUSTED, ORDERS.asString(), Warnings.SINGLE, Map.of());
+    }
+
+    /// Class L-open, L-close (INVALID_PLACEMENT). Red when this family's join lets own closed evidence win over another node's open row.
+    @Test
+    void join_lOpenLClose_invalidPlacement_openRowWinsOverOwnClose() {
+        assertOpenRowWinsOverOwnClose(withTarget(), Warnings.INVALID_PLACEMENT, ORDERS.asString(), Warnings.SINGLE, Map.of());
+    }
+
+    /// Class L-open, E-close (STRAY, per member). Red when this family's join lets own closed evidence win over another node's open row.
+    @Test
+    void join_lOpenEClose_stray_openRowWinsOverOwnClose() {
+        var m = observe(model(), CORE_1, ORDERS);
+
+        assertOpenRowWinsOverOwnClose(m, Warnings.STRAY, ORDERS.asString(), CORE_1.id(), Map.of(CORE_1.id(), Warnings.SINGLE));
+    }
+
+    /// Class E-open, E-close (NO_POLICY and GROWTH_BLOCKED). Red when either family's join lets own closed evidence win over another
+    /// node's open row.
+    @Test
+    void join_eOpenEClose_noPolicyAndGrowthBlocked_openRowWinsOverOwnClose() {
+        assertOpenRowWinsOverOwnClose(model(), Warnings.NO_POLICY, CORE_3.id(), Warnings.SINGLE, Map.of());
+        assertOpenRowWinsOverOwnClose(model(), Warnings.GROWTH_BLOCKED, SUBJECT, Warnings.SINGLE, Map.of());
+    }
+
     // -- the hold test (table: Code / Adoption test / Refused when) -------------------------------------------------------------------------
     private static ClusterModel adopt(ClusterModel m, FsmWarningKey key, Map<String, String> members) {
         return Warnings.onPut(m, ctx(), key, row(CORE_2, 1L, members, true, "their open"));
@@ -552,6 +602,48 @@ class WarningsCommittedRowsTest {
         assertThat(m.openText.get(HOLD_KEY)).isEqualTo(Option.some("second"));
     }
 
+    /// A recovery for a member that is not held is evidence only: no state change, no text, nothing drafted; a second recovery of a closed
+    /// key keeps the first text. Red when the raise passes a recovery whose member is not held (the set check, rule C).
+    @Test
+    void raise_recoveryForAMemberNotHeld_changesNothingAndRecordsNoText() {
+        var m = model();
+        var ctx = ctx();
+
+        recovery(m, "never held");
+
+        assertThat(held(m)).isFalse();
+        assertThat(m.closeText.get(KEY).isEmpty()).as("no recovery text for a key never opened").isTrue();
+        assertThat(m.openText.get(KEY).isEmpty()).as("no open text").isTrue();
+        assertThat(drafted(m, ctx, KEY).isEmpty()).as("nothing drafted").isTrue();
+
+        opener(m, "o");
+        recovery(m, "first close");
+        recovery(m, "second close");
+        assertThat(m.closeText.get(KEY)).as("a recovery of a closed key keeps the text of the close that closed it").isEqualTo(Option.some("first close"));
+
+        var stray = observe(model(), CORE_1, ORDERS);
+
+        Warnings.raise(stray, Warnings.STRAY, ORDERS.asString(), CORE_1.id(), Warnings.SINGLE, "o");
+        Warnings.raise(stray, Warnings.FAMILIES.get(Warnings.STRAY), ORDERS.asString(), CORE_3.id(), Warnings.SINGLE, "other member closes");
+        assertThat(members(stray, Warnings.STRAY, ORDERS.asString())).as("the held member stays").containsOnlyKeys(CORE_1.id());
+        assertThat(stray.closeText.get(STRAY_KEY).isEmpty()).as("a recovery of a member not held records no text").isTrue();
+    }
+
+    /// A re-open drops the recovery text of the earlier close: a later close must not reuse it. Red when the opener keeps the old
+    /// `closeText`.
+    @Test
+    void raise_reopen_dropsTheEarlierRecoveryText() {
+        var m = model();
+
+        opener(m, "o1");
+        recovery(m, "close 1");
+        assertThat(m.closeText.get(KEY)).as("the close recorded its text").isEqualTo(Option.some("close 1"));
+        opener(m, "o2");
+
+        assertThat(m.closeText.get(KEY).isEmpty()).as("the re-open drops the earlier recovery text").isTrue();
+        assertThat(m.openText.get(KEY)).isEqualTo(Option.some("o2"));
+    }
+
     // -- rule E: a function of one accepted committed pair --------------------------------------------------------------------------------
     private static List<ClusterEffect> notified(Option<FsmWarningValue> expected, FsmWarningValue replacement, FsmWarningKey key) {
         var ctx = ctx();
@@ -600,5 +692,13 @@ class WarningsCommittedRowsTest {
     void accepted_memberLeavesWhileAnotherStays_emitsNothing() {
         assertThat(notified(Option.some(strays(true, "two", CORE_1, CORE_3)), strays(true, "one", CORE_1), STRAY_KEY)).isEmpty();
         assertThat(notified(Option.some(strays(true, "same", CORE_1)), strays(true, "same", CORE_1), STRAY_KEY)).isEmpty();
+    }
+
+    /// Rule E, nothing: a write of a closed row over a closed row, or over no row, is a no-op close and is silent. Red when a recovery is
+    /// announced although the expected was not open.
+    @Test
+    void accepted_closedToClosedOrAbsentToClosed_emitsNothing() {
+        assertThat(notified(Option.some(strays(false, "closed")), strays(false, "closed again"), STRAY_KEY)).isEmpty();
+        assertThat(notified(Option.none(), strays(false, "closed"), STRAY_KEY)).isEmpty();
     }
 }
