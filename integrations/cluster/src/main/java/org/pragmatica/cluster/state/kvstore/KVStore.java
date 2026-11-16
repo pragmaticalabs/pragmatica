@@ -11,6 +11,8 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 import java.util.function.LongConsumer;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.StateMachine.Batch;
@@ -69,6 +71,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// Monitor: the `deliverySeq` of the batch being applied ([NotificationDispatcher#NO_SEQ] outside one, or once closed).
     private long currentSeq = NotificationDispatcher.NO_SEQ;
     private long committedRevision;
+    /// Monitor: whether the content equals the state at `committedRevision` (#3274). Set by [#restoreCommittedSnapshot] (content and
+    /// label in one mutation) and cleared by [#onPhaseAdopted] when it moves the label without content. [#reset()] and the apply path
+    /// leave it: a reset image is revision 0, which a reader already refuses, and an applied slot moves content and label together. True
+    /// at construction: the empty genesis store is exact at revision 0.
+    private boolean exact = true;
     private final Map<K, V> storage = new ConcurrentHashMap<>();
     private final Serializer serializer;
     private final Deserializer deserializer;
@@ -233,6 +240,40 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return Unit.unit();
     }
 
+    /// The engine's restore path adopted `nextSlot` as its frontier (#3274): raises the label like [#onPhaseCompleted], and clears `exact`
+    /// when that moves it, because the slots it passes were not applied to this content. An adoption at or below the label changes nothing.
+    @Override
+    public synchronized Unit onPhaseAdopted(long nextSlot) {
+        exact = exact && nextSlot <= committedRevision;
+
+        return onPhaseCompleted(nextSlot);
+    }
+
+    /// The entries whose keys match `filter`, with the committed revision and whether the content is exactly the state at that revision,
+    /// all read under ONE store monitor hold, so the three are mutually consistent (#3274).
+    public synchronized RevisionedSnapshot<K, V> snapshotWithRevision(Predicate<K> filter) {
+        var matching = storage.entrySet()
+                              .stream()
+                              .filter(entry -> filter.test(entry.getKey()))
+                              .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
+
+        return RevisionedSnapshot.revisionedSnapshot(committedRevision, exact, matching);
+    }
+
+    /// A filtered copy of the store with its label: `revision` is the committed revision and `exact` says whether the content is the state
+    /// at that revision (false after a restore adopted a frontier past the installed content).
+    public record RevisionedSnapshot<K, V>(long revision, boolean exact, Map<K, V> entries) {
+        public RevisionedSnapshot {
+            entries = Map.copyOf(entries);
+        }
+
+        public static <K, V> RevisionedSnapshot<K, V> revisionedSnapshot(long revision,
+                                                                         boolean exact,
+                                                                         Map<K, V> entries) {
+            return new RevisionedSnapshot<>(revision, exact, entries);
+        }
+    }
+
     /// The sixth storage writer, and the only write a replica makes besides a snapshot install: applies the plain `Put`/`Remove` effects of one
     /// ring entry raw, with no fence, no witness and no merge (the core already decided them), publishes the notifications with the old values,
     /// appends the entry to this store's own ring and sets the revision to `slot + 1`. An empty effect list (a range marker) only advances.
@@ -372,9 +413,17 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     @Override
     public Result<Unit> restoreCommittedSnapshot(byte[] snapshot, long nextSlot) {
-        return mutate(() -> restoreSilently(snapshot).onSuccess(_ -> committedRevision = nextSlot)
+        return mutate(() -> restoreSilently(snapshot).onSuccess(_ -> labelInstalledContent(nextSlot))
                                            .onSuccess(_ -> ring.invalidate(readTag(),
                                                                            nextSlot)));
+    }
+
+    /// Under the install's monitor hold: the content just installed is the state at `nextSlot`, so the label is exact (#3274).
+    private Unit labelInstalledContent(long nextSlot) {
+        committedRevision = nextSlot;
+        exact = true;
+
+        return Unit.unit();
     }
 
     private <T> T mutate(java.util.function.Supplier<T> mutation) {

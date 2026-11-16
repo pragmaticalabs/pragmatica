@@ -657,6 +657,11 @@ public sealed interface ManagementApiResponses {
 
     record AwaitQuiescedResponse(String epoch, String quiescence, long waitedMs) {}
 
+    /// #3274: the open FSM warnings of ONE committed state of the answering core, labelled by its committed revision.
+    record WarningsResponse(long revision, List<WarningEntry> warnings) {}
+
+    record WarningEntry(String code, String subject, Map<String, String> members, String message) {}
+
     record GovernorsResponse(List<GovernorInfo> governors) {}
 
     record GovernorInfo(String governorId, String community, int memberCount, List<String> members) {}
