@@ -500,13 +500,18 @@ public sealed interface Warnings {
     /// never replaces it (#3274 design erratum 3), so the signature this node judged is announced with its own text.
     private static boolean ownText(ClusterModel m, Family family, FsmWarningKey key) {
         return m.openText.get(key)
-                         .isPresent() && family.state()
-                                               .held(m,
-                                                     key.subject())
-                                               .keySet()
-                                               .stream()
-                                               .anyMatch(member -> m.fresh.get(Member.member(key, member))
-                                                                          .equals(Option.some(true)));
+                         .isPresent() && heldWithOwnOpen(m, family, key);
+    }
+
+    /// Whether a member the key holds has open own evidence (`fresh` true).
+    private static boolean heldWithOwnOpen(ClusterModel m, Family family, FsmWarningKey key) {
+        return family.state()
+                     .held(m,
+                           key.subject())
+                     .keySet()
+                     .stream()
+                     .anyMatch(member -> m.fresh.get(Member.member(key, member))
+                                                .equals(Option.some(true)));
     }
 
     // -- the write -------------------------------------------------------------------------------------------------
