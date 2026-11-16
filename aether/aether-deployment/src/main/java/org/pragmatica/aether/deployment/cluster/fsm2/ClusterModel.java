@@ -11,6 +11,7 @@ import java.util.Set;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.config.cluster.CommunityPlacement;
 import org.pragmatica.aether.config.cluster.CommunityPolicy;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -135,6 +136,9 @@ public final class ClusterModel {
     /// R-CF.16..18 (#241): the `[community_policy]` of the committed cluster config, parsed once per indexed config; none when the config
     /// carries none (or does not parse). `CommunityPolicies.current` falls back to the node-level sizing.
     Option<CommunityPolicy> communityPolicy = Option.none();
+    /// B-070: the `[community.<id>]` placement policies of the committed cluster config, parsed once per indexed config; empty when the
+    /// config carries none (or does not parse). The worker community choice reads them (`Directory.place`).
+    Map<String, CommunityPlacement> communityPlacements = Map.of();
     PMap<NodeId, Long> admittedAt = PMap.empty(scans);
     PMap<String, PSet<NodeId>> assignedByCommunity = PMap.empty(scans);
     PMap<String, CommunityValue> communities = PMap.empty(scans);
@@ -288,6 +292,7 @@ public final class ClusterModel {
         c.placementOps = placementOps.rebound(meter);
         c.clusterConfig = clusterConfig;
         c.communityPolicy = communityPolicy;
+        c.communityPlacements = communityPlacements;
         c.admittedAt = admittedAt.rebound(meter);
         c.assignedByCommunity = assignedByCommunity.rebound(meter);
         c.communities = communities.rebound(meter);

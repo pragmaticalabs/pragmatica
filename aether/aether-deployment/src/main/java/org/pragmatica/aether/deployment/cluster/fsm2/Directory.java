@@ -339,7 +339,7 @@ public sealed interface Directory {
         var source = Option.option(m.seams.memberSource().get(node))
                            .filter(Verify.Is::notBlank)
                            .or(Joins.DEFAULT_SOURCE);
-        var policies = m.seams.communityPolicies();
+        var policies = m.communityPlacements;
 
         if (policies.isEmpty()) {
             return derived(m, ctx, node, source);
@@ -362,8 +362,8 @@ public sealed interface Directory {
 
     // FER (degrade forward): a worker whose source matches no reserved and no configured community policy gets no directive now and is
     // reported. Guarantee: the failure is visible, never silent. Mechanism: the warning below, closed by worker-community-policy-matched
-    // (D.6 row 22). No join stays pending for the worker (no directive is queued), so only its next join runs J5 again: a seams refresh
-    // that adds a policy places it at that rejoin, not by itself.
+    // (D.6 row 22). No join stays pending for the worker (no directive is queued), so only its next join runs J5 again: a committed
+    // cluster config that adds a policy places it at that rejoin, not by itself.
     private static ClusterModel unplaceable(ClusterModel m, Ctx ctx, NodeId node, String source) {
         // #2834: once per episode: an open warning, this leader's or inherited from the committed open set (`Warnings.inherit`), is not raised again.
         if (!m.noPolicyWarned.contains(node)) {
