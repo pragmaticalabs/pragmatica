@@ -207,7 +207,9 @@ public final class ForgeServer {
         System.out.println("  FORGE_LOAD_CONFIG   Path to load config file");
         System.out.println("  FORGE_AUTO_START    Set to \"true\" to auto-start load");
         System.out.println("  FORGE_PORT          Forge API port (default: 8888)");
-        System.out.println("  CLUSTER_SIZE        Number of nodes (default: " + StartupConfig.DEFAULT_CLUSTER_SIZE + ", minimum: " + EmberConfig.MINIMUM_NODES + ")");
+        System.out.println("  CLUSTER_SIZE        Number of nodes (default: " + StartupConfig.DEFAULT_CLUSTER_SIZE
+                          + ", minimum: " + EmberConfig.MINIMUM_NODES
+                          + ")");
     }
 
     /// #2385 - a `--config` file that does not load is refused (ERROR, then `exit` with 1), never replaced by
@@ -235,7 +237,8 @@ public final class ForgeServer {
         return EmberConfig.emberConfig(startupConfig.clusterSize(),
                                        EmberConfig.DEFAULT_MANAGEMENT_PORT,
                                        startupConfig.port())
-                          .onFailure(cause -> ForgeAppConfig.refuse("refusing to start: " + cause.message(), exit))
+                          .onFailure(cause -> ForgeAppConfig.refuse("refusing to start: " + cause.message(),
+                                                                    exit))
                           .or(EmberConfig.DEFAULT);
     }
 
