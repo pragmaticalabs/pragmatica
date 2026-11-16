@@ -495,7 +495,7 @@ class ApplyDeadlineTest {
         h.commitLeader(FsmHarness.SELF, 1L);
         h.seams = Seams.UNWIRED.withCountedCores(cores).withReady(cores);
         h.seed(new DeploymentOutcomeKey(ID), outcome);
-        h.seed(FsmWarningKey.fsmWarningKey("apply-deadline-exceeded", APP), FsmWarningValue.fsmWarningValue(Map.of()));
+        h.seed(FsmWarningKey.fsmWarningKey("apply-deadline-exceeded", APP), Fixtures.otherNodesRow(Map.of(), true, "apply deadline exceeded"));
         h.activate();
 
         return h;

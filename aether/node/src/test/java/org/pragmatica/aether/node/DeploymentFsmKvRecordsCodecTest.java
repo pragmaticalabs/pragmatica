@@ -254,37 +254,46 @@ class DeploymentFsmKvRecordsCodecTest {
                                              1L));
         }
 
+        private static FsmWarningValue row(Map<String, String> members, boolean open, String message, long revision) {
+            return FsmWarningValue.fsmWarningValue(members, open, message, revision, OTHER_NODE, PROCESS, 3L);
+        }
+
         /// #2834: an open warning with no members (a single-instance subject) and one whose members are the held nodes with their hold
         /// signature. The members are held sorted, so two nodes holding the same open set encode the same bytes.
         @Test
         void fsmWarning_roundTripsWithAndWithoutMembers() {
-            roundTrip(FsmWarningKey.fsmWarningKey("invalid-placement", ARTIFACT.asString()), FsmWarningValue.fsmWarningValue(Map.of()));
+            roundTrip(FsmWarningKey.fsmWarningKey("invalid-placement", ARTIFACT.asString()), row(Map.of(), true, "opened", 0L));
 
             var members = new LinkedHashMap<String, String>();
 
             members.put(OTHER_NODE.id(), "v2:orders");
             members.put(NODE.id(), "v1:orders");
-            var held = FsmWarningValue.fsmWarningValue(members);
+            var held = row(members, true, "held", 0L);
 
             assertThat(held.members().keySet()).as("held sorted by node id").containsExactly(NODE.id(), OTHER_NODE.id());
             roundTrip(FsmWarningKey.fsmWarningKey("schema-hold", ARTIFACT.asString()), held);
         }
 
-        /// #3160: the marker components (`open`, `opener`, `recovery`) survive the codec. Red when a decoder drops or swaps any of them:
-        /// every other round trip here carries only their defaults (open, no markers).
+        /// #3274: the `open` and `message` components survive the codec, an open and a closed row. Red when a decoder drops or swaps either.
         @Test
-        void fsmWarning_roundTripsATombstoneAndAMarkedOpenRow() {
-            roundTrip(FsmWarningKey.fsmWarningKey("retry-exhausted-unsettled", ARTIFACT.asString()),
-                      FsmWarningValue.fsmWarningValue(Map.of(), false, Option.some("opened"), Option.some("closed")));
-            roundTrip(FsmWarningKey.fsmWarningKey("schema-hold", ARTIFACT.asString()),
-                      FsmWarningValue.fsmWarningValue(Map.of(NODE.id(), "v1:orders"), true, Option.some("held"), Option.none()));
+        void fsmWarning_roundTripsAnOpenAndAClosedRow() {
+            roundTrip(FsmWarningKey.fsmWarningKey("retry-exhausted-unsettled", ARTIFACT.asString()), row(Map.of(), false, "closed", 0L));
+            roundTrip(FsmWarningKey.fsmWarningKey("schema-hold", ARTIFACT.asString()), row(Map.of(NODE.id(), "v1:orders"), true, "held", 0L));
         }
 
         /// #3274: the `revision` component survives the codec. Red when a decoder drops it: every other round trip here carries revision 0.
         @Test
         void fsmWarning_roundTripsANonZeroRevision() {
-            roundTrip(FsmWarningKey.fsmWarningKey("invalid-placement", ARTIFACT.asString()),
-                      FsmWarningValue.fsmWarningValue(Map.of(NODE.id(), "v1:orders"), false, Option.none(), Option.some("closed"), 7L));
+            roundTrip(FsmWarningKey.fsmWarningKey("invalid-placement", ARTIFACT.asString()), row(Map.of(NODE.id(), "v1:orders"), false, "closed", 7L));
+        }
+
+        /// #3274: the writer stamp (`writerNode`, `writerProcess`, `writerIncarnation`) survives the codec. Red when a decoder drops or swaps a
+        /// component: rule O tells a node's own rows from an earlier self's and from another node's by it.
+        @Test
+        void fsmWarning_roundTripsTheWriterStamp() {
+            var decoded = FsmWarningValue.fsmWarningValue(Map.of(), true, "opened", 2L, NODE, new ProcessIncarnation(5L, 6L), 9L);
+
+            roundTrip(FsmWarningKey.fsmWarningKey("invalid-placement", ARTIFACT.asString()), decoded);
         }
 
         /// Writes the command, reads it back, then writes the decoded command again: the value must come back equal

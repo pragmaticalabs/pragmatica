@@ -29,6 +29,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.aether.worker.governor.GovernorAnnouncer;
+import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.io.TimeSpan;
@@ -104,6 +105,11 @@ final class Fixtures {
 
     static ProcessIncarnation process(long token) {
         return new ProcessIncarnation(1_760_000_000_000L + token, token);
+    }
+
+    /// #3274: a committed warning row written by another node (not this leader's stamp), as a snapshot or a late put delivers it.
+    static FsmWarningValue otherNodesRow(java.util.Map<String, String> members, boolean open, String message) {
+        return FsmWarningValue.fsmWarningValue(members, open, message, 1L, CORE_2, process(1L), 1L);
     }
 
     static Admission admission(long token) {

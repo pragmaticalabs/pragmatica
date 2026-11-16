@@ -16,7 +16,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
@@ -155,7 +154,7 @@ class SlObservedTest {
             seedRow(h, CORE_1, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
             seedRow(h, CORE_2, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
             h.seed(FsmWarningKey.fsmWarningKey("stray-instance", ORDERS.asString()),
-                   FsmWarningValue.fsmWarningValue(java.util.Map.of(CORE_1.id(), "", CORE_2.id(), "")));
+                   Fixtures.otherNodesRow(java.util.Map.of(CORE_1.id(), "", CORE_2.id(), ""), true, "stray"));
             h.activate();
             assertThat(h.submitsBesides(ClusterModel.SubmitKind.WARNINGS)).as("precondition: the successor condemned a stray").isNotEmpty();
             assertThat(h.warns("stray-instance")).as("inherited open warning raised again").isEmpty();
@@ -214,7 +213,7 @@ class SlObservedTest {
             seedRow(h, CORE_2, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
             seedRow(h, CORE_3, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
             h.activate();
-            assertThat(h.warns("stray-instance")).as("precondition: two surplus strays condemned").hasSize(2);
+            assertThat(h.warns("stray-instance")).as("precondition: two surplus strays condemned: one write holds both members, so one CAS pair and one opener (rule E)").hasSize(1);
             h.seedRemove(new SliceObservedKey(CORE_2, ORDERS));
             h.drain();
             assertThat(h.warns("stray-instance-removed")).as("CORE_3's condemned row still stands").isEmpty();

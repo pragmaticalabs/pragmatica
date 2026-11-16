@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// drain. Scenario: an unparsable placement opens `invalid-placement`; fixing it closes it.
 class WarningsPersistenceTest {
     private static final LeaderValue LEADER = new LeaderValue(FsmHarness.SELF, 1L);
-    private static final FsmWarningKey KEY = new FsmWarningKey("invalid-placement", ORDERS.asString());
+    private static final FsmWarningKey KEY = FsmWarningKey.fsmWarningKey("invalid-placement", ORDERS.asString());
 
     private static FsmHarness opened() {
         var h = threeCores();
@@ -55,7 +55,7 @@ class WarningsPersistenceTest {
     void openIsPut_andCloseIsClosedRow() {
         var h = opened();
 
-        assertThat(h.warningPuts()).as("the marker write, then its clear write (#3160)").containsExactly(KEY, KEY);
+        assertThat(h.warningPuts()).as("one write carries the open row (#3274: no marker clear follows)").containsExactly(KEY);
         assertThat(persisted(h)).as("the open warning is committed").isTrue();
 
         h.seed(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "CORE_ONLY"));
@@ -63,7 +63,7 @@ class WarningsPersistenceTest {
         h.deliver(new ClusterInput.Reconcile());
 
         assertThat(h.warns("placement-valid")).hasSize(1);
-        assertThat(h.mutations(FsmWarningKey.class)).as("marker put, clear put, then the close's tombstone put and its CLEAR put (#3160, #3274)").hasSize(4);
+        assertThat(h.mutations(FsmWarningKey.class)).as("the open put, then the close's put (#3274: a close is one write of a closed row)").hasSize(2);
         assertThat(h.mutations(FsmWarningKey.class).getLast().replacement().map(value -> ((FsmWarningValue) value).open()))
                   .as("the last mutation writes a closed row, never a removal").isEqualTo(Option.some(false));
         assertThat(persisted(h)).as("the closed warning left the committed set").isFalse();
@@ -78,7 +78,7 @@ class WarningsPersistenceTest {
         h.deliver(new ClusterInput.Reconcile());
         h.drain();
 
-        assertThat(h.submits(WARNINGS)).as("the marker write, then its clear write; no churn after (#3160)").hasSize(2);
+        assertThat(h.submits(WARNINGS)).as("the open write; no churn after (#3274)").hasSize(1);
     }
 
     /// Red when: a refused WARNINGS transaction is not drafted again, so the open warning is never committed (a successor would not
@@ -102,7 +102,7 @@ class WarningsPersistenceTest {
         h.settleHeld(second, h.applyTransaction(second));
 
         assertThat(persisted(h)).isTrue();
-        assertThat(h.submits(WARNINGS)).as("once accepted: only the marker clear follows, no fourth write (#3160)").hasSize(3);
+        assertThat(h.submits(WARNINGS)).as("once accepted: nothing follows (#3274: no marker clear)").hasSize(2);
     }
 
     /// Red when: an accepted WARNINGS transaction does not update the mirror at once (before the applier's notification): the next reconcile
@@ -119,13 +119,7 @@ class WarningsPersistenceTest {
         h.settleHeld(first, new Settlement.Accepted());
         h.deliver(new ClusterInput.Reconcile());
 
-        assertThat(h.submits(WARNINGS)).as("the accepted write is not drafted again: only the marker clear follows (#3160)").hasSize(2);
-        assertThat(h.submits(WARNINGS).getLast().transaction().mutations())
-                  .as("the second write is the clear, not the same marker write again")
-                  .allSatisfy(mutation -> assertThat(mutation.replacement()
-                                                             .map(value -> ((FsmWarningValue) value).opener()
-                                                                                                    .isEmpty())
-                                                             .or(true)).isTrue());
+        assertThat(h.submits(WARNINGS)).as("the accepted write is not drafted again (#3274: nothing follows it)").hasSize(1);
     }
 
     /// Red when: a second WARNINGS transaction is drafted while one is still in flight (the in-flight guard of `pending` / `draft`): the
@@ -156,7 +150,7 @@ class WarningsPersistenceTest {
     void cleanOpenSet_isNotDrafted() {
         var m = withOpenFamily();
 
-        Warnings.draft(m);
+        Warnings.draft(m, SurvivorPinSupport.ctx(1_000L, 0L));
 
         assertThat(m.outbox).as("the difference is not empty, but nothing marked it dirty").isEmpty();
     }
@@ -167,20 +161,20 @@ class WarningsPersistenceTest {
         var m = withOpenFamily();
 
         m.warningsDirty = true;
-        Warnings.draft(m);
+        Warnings.draft(m, SurvivorPinSupport.ctx(1_000L, 0L));
         m.warningsDirty = true;
-        Warnings.draft(m);
+        Warnings.draft(m, SurvivorPinSupport.ctx(1_000L, 0L));
 
         assertThat(m.outbox).hasSize(1);
     }
 
-    /// Red when: a step that changed nothing leaves the open set dirty (the clean-again clause of `noteRaised`): a no-op flush would be queued.
+    /// Red when: a step that changed nothing leaves the open set dirty (the clean-again clause of `clean`): a no-op flush would be queued.
     @Test
     void stepThatChangesNothing_leavesTheOpenSetClean() {
         var m = new ClusterModel();
 
         m.warningsDirty = true;
-        Warnings.noteRaised(m, SurvivorPinSupport.ctx(1_000L, 0L), 0);
+        Warnings.clean(m, SurvivorPinSupport.ctx(1_000L, 0L));
 
         assertThat(Warnings.pending(m)).isFalse();
     }
@@ -225,7 +219,7 @@ class WarningsPersistenceTest {
     @Test
     void mirroredView_readsTheCommittedOpenSet() {
         var m = new ClusterModel();
-        var row = FsmWarningValue.fsmWarningValue(Map.of());
+        var row = Fixtures.otherNodesRow(Map.of(), true, "open");
 
         assertThat(Outbox.mirrored(m, KEY)).as("absent row").isEqualTo(Option.none());
 
