@@ -769,18 +769,18 @@ public final class BackupRestoreCoordinator {
     /// `restore = "fresh"` is read and decides `FRESH`; a committed `IN_PROGRESS` marker is resumed and `[backup] restore` is never
     /// read again (#3300), so a restart with it, on any subset of nodes, leaves the blocked restore standing.
     private String blockedAdvice() {
-        return RestoreGate.decision(kvStore)
-                          .fold(this::firstDecisionAdvice, _ -> resumeAdvice());
+        return RestoreGate.decision(kvStore).fold(this::firstDecisionAdvice, _ -> resumeAdvice());
     }
 
     private String firstDecisionAdvice() {
-        return "Fix the backup source (" + sourceDescription() + "), or restart with [backup] restore = \"fresh\" to abandon it";
+        return "Fix the backup source (" + sourceDescription()
+             + "), or restart with [backup] restore = \"fresh\" to abandon it";
     }
 
     private String resumeAdvice() {
-        return "A restore is already in progress, so restarting with [backup] restore = \"fresh\" does not abandon it. Fix the backup source ("
-               + sourceDescription() + "): the next retry resumes the restore. Or stop ALL nodes and cold-start them with [backup] restore = \"fresh\":"
-               + " that discards the partly restored state and is a whole-cluster stop";
+        return "A restore is already in progress, so restarting with [backup] restore = \"fresh\" does not abandon it. Fix the backup source (" + sourceDescription()
+             + "): the next retry resumes the restore. Or stop ALL nodes and cold-start them with [backup] restore = \"fresh\":"
+             + " that discards the partly restored state and is a whole-cluster stop";
     }
 
     private String sourceDescription() {
