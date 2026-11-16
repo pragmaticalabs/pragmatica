@@ -403,7 +403,7 @@ curl http://localhost:8080/api/v1/warnings
 }
 ```
 
-- `warnings` are sorted by `code`, then `subject`. `members` are the parts of a subject that covers several instances (empty for a single-instance subject). `message` is the row's latest opener message, empty when the row carries none. A closed warning whose recovery is not yet published is not listed.
+- `warnings` are sorted by `code`, then `subject`. `members` are the parts of a subject that covers several instances (empty for a single-instance subject). `message` is the row's latest message, as the writing leader committed it. A closed row (a recovered warning: `open` false, no members) is not listed.
 - **Refusals (503, each with its own detail):** the node is a worker (its replica holds no warning rows); the core does not hold quorum (the same signal `/api/status`, `/api/health` and `/health/ready` report); the core has committed no state yet (revision 0, genesis or a reset store); the core's revision label is not exact (a snapshot restore moved the label without the content). Recovery: query another core, or retry; the not-exact refusal clears at the core's next snapshot install.
 - **Staleness of a served answer:** the answering core's apply lag, which is not bounded. The quorum check is an observation read just before the store read, not a safety guard. `[mechanism: one KVStore monitor hold reads revision, exact flag and rows together]`
 

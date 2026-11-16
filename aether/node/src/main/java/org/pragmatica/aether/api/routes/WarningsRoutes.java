@@ -118,19 +118,16 @@ public final class WarningsRoutes implements RouteSource {
         return warningEntry((FsmWarningKey) row.getKey(), (FsmWarningValue) row.getValue());
     }
 
-    /// A tombstone (`open` false) is a closed warning whose recovery is not yet published: not an open warning.
+    /// A closed row (`open` false: no members, `message` is the recovery text) is a recovered warning: not an open warning.
     private static boolean isOpenRow(Map.Entry<AetherKey, AetherValue> entry) {
         return entry.getKey() instanceof FsmWarningKey
                && entry.getValue() instanceof FsmWarningValue value
                && value.open();
     }
 
-    /// The ONE place a stored warning row becomes a response entry. `message` is the row's opener message (the latest the writing leader
-    /// committed), empty once the row carries none.
+    /// The ONE place a stored warning row becomes a response entry. `message` is the row's own message (the latest the writing leader
+    /// committed).
     static WarningEntry warningEntry(FsmWarningKey key, FsmWarningValue value) {
-        return new WarningEntry(key.code(),
-                                key.subject(),
-                                value.members(),
-                                value.opener().or(""));
+        return new WarningEntry(key.code(), key.subject(), value.members(), value.message());
     }
 }

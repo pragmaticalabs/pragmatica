@@ -14,9 +14,10 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
 import org.pragmatica.cluster.state.kvstore.KVStore.RevisionedSnapshot;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -100,13 +101,13 @@ class WarningsRoutesTest {
     }
 
     @Test
-    void read_openRows_areServedSortedByCodeThenSubject_withMembersAndOpenerMessage() {
+    void read_openRows_areServedSortedByCodeThenSubject_withMembersAndMessage() {
         var rows = Map.<AetherKey, AetherValue> of(STRAY_B,
-                                                   FsmWarningValue.fsmWarningValue(Map.of("n2", "x"), true, Option.some("stray b"), Option.none()),
+                                                   row(Map.of("n2", "x"), true, "stray b"),
                                                    STRAY_A,
-                                                   FsmWarningValue.fsmWarningValue(Map.of(), true, Option.none(), Option.none()),
+                                                   row(Map.of(), true, ""),
                                                    HOLD,
-                                                   FsmWarningValue.fsmWarningValue(Map.of("n1", "sig"), true, Option.some("held"), Option.none()));
+                                                   row(Map.of("n1", "sig"), true, "held"));
         var response = served(WarningsRoutes.read(false, () -> true, () -> snapshot(12, true, rows)));
 
         assertThat(response.warnings()).containsExactly(new WarningEntry("HOLD", "art", Map.of("n1", "sig"), "held"),
@@ -115,11 +116,15 @@ class WarningsRoutesTest {
     }
 
     @Test
-    void read_tombstoneRow_isNotAnOpenWarning() {
+    void read_closedRow_isNotAnOpenWarning() {
         var rows = Map.<AetherKey, AetherValue> of(STRAY_A,
-                                                   FsmWarningValue.fsmWarningValue(Map.of(), false, Option.none(), Option.some("recovered")));
+                                                   row(Map.of(), false, "recovered"));
         var response = served(WarningsRoutes.read(false, () -> true, () -> snapshot(3, true, rows)));
 
         assertThat(response.warnings()).isEmpty();
+    }
+
+    private static FsmWarningValue row(Map<String, String> members, boolean open, String message) {
+        return FsmWarningValue.fsmWarningValue(members, open, message, 1L, NodeId.nodeId("core-1").unwrap(), new ProcessIncarnation(1L, 1L), 1L);
     }
 }
