@@ -11,6 +11,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -27,6 +28,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 
 /// Placement per committed target (spec reconcile step 3, R-3.3.9, B-030 to B-033, B-060).
@@ -66,7 +68,8 @@ public sealed interface Placement {
         // episode; the other targets are placed as usual. Guarantee: the failure is visible, never silent and never mistaken for a
         // default placement. Mechanism: the warning below (D.6 row 10: once, until the first pass that parses it raises
         // `placement-valid`, or the target is removed).
-        Result.lift(() -> PlacementPolicy.valueOf(target.effectivePlacement()))
+        Result.lift(Placement::unparsable,
+                    () -> PlacementPolicy.valueOf(target.effectivePlacement()))
               .onFailure(cause -> invalid(m, ctx, artifact, target, cause))
               .onSuccess(policy -> reconcileWithPolicy(placementValid(m, ctx, base),
                                                        ctx,
@@ -88,6 +91,17 @@ public sealed interface Placement {
                               Warnings.SINGLE,
                               Warnings.SINGLE,
                               "Invalid placement " + target.placement() + " for " + artifact + ": " + cause.message());
+    }
+
+    /// The cause of an unparsable placement: the exception's message on one line, never its stack trace (the default lift mapper,
+    /// `Causes.fromThrowable`, carries the trace, which reached the operator through GET /api/v1/warnings). A message-less exception
+    /// gives its class name.
+    private static Cause unparsable(Throwable throwable) {
+        return Causes.cause(Option.option(throwable.getMessage())
+                                  .or(() -> throwable.getClass()
+                                                     .getSimpleName())
+                                  .lines()
+                                  .collect(Collectors.joining(" ")));
     }
 
     /// D.6 row 10: the first pass that parses the placement of `base` closes every reported version of it: `placement-valid`.

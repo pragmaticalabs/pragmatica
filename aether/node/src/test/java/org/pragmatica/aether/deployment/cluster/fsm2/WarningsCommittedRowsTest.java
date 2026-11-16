@@ -562,10 +562,10 @@ class WarningsCommittedRowsTest {
 
     // -- the value (SCHEMA_HOLD's signature) -----------------------------------------------------------------------------------------------
     /// Both sides hold the member: the own value stays, and the resume write replaces the row's value with it, which rule E announces as
-    /// a new signature's opener. The joined open row sets the open text ("`openText[k]` is set by any row that leaves k held, applied or
-    /// joined"), so the opener carries the row's message. Red when the row's value replaces the own one, or the change is not announced.
+    /// a new signature's opener. The joined open row does not replace the own opener text (#3274 design erratum 3), so the opener carries
+    /// the own message. Red when the row's value or message replaces the own one, or the change is not announced.
     @Test
-    void onPut_bothHoldDifferentSignatures_keepsTheOwnAndAnnouncesIt() {
+    void onPut_bothHoldDifferentSignatures_keepsTheOwnAndAnnouncesItWithTheOwnText() {
         var m = model();
         var ctx = ctx();
 
@@ -584,7 +584,7 @@ class WarningsCommittedRowsTest {
                         .replacement()
                         .map(FsmWarningValue.class::cast)
                         .map(FsmWarningValue::members)).isEqualTo(Option.some(Map.of(CORE_1.id(), "sig-own")));
-        assertThat(ctx.effects()).containsExactly(new ClusterEffect.Warn(Warnings.SCHEMA_HOLD, ORDERS.asString(), "their hold"));
+        assertThat(ctx.effects()).containsExactly(new ClusterEffect.Warn(Warnings.SCHEMA_HOLD, ORDERS.asString(), "own hold"));
     }
 
     /// A new SCHEMA_HOLD signature on a held member is a new opener: the raise passes and takes the text. Red when the opener check
