@@ -969,6 +969,79 @@ class BackupRestoreCoordinatorTest {
 
             assertThat(outcome()).as("#3300 tripwire: restore = fresh did not leave the blocked restore").isEqualTo(BackupRestoreOutcome.IN_PROGRESS);
             assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED);
+            assertThat(warnings.getFirst().detail()).as("no source fix helps: the pinned commit is content-addressed and holds no incarnation")
+                                                    .contains("cannot be restored whatever the source does", "stop ALL nodes", "cold-start",
+                                                              "whole-cluster stop")
+                                                    .doesNotContain("the next retry resumes the restore", "or restart with [backup] restore = \"fresh\" to abandon it");
+        }
+
+        /// The claim behind the source-fix exit: a marked restore blocked by an unreadable source finishes once the source is readable
+        /// again (the retry resumes the marker's own commit), and the block is closed with its recovery event.
+        @Test
+        void aBlockedMarkedRestore_finishes_onceTheSourceIsReadableAgain() throws IOException {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            var commit = git(Path.of(remote), "rev-parse", "backup").strip();
+            var aside = temp.resolve("remote-aside.git");
+
+            Files.move(Path.of(remote), aside);
+            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
+                                            BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS, LINEAGE, 3, 40, commit)));
+            var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            worker.advance(0);
+            fireRetries(3);
+
+            assertThat(outcome()).as("CONTROL: blocked over the marker while the source is gone").isEqualTo(BackupRestoreOutcome.IN_PROGRESS);
+            assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED);
+            assertThat(warnings.getFirst().detail()).contains("the next retry resumes the restore");
+
+            Files.move(aside, Path.of(remote));
+            fireRetries(1);
+            for (int i = 0; i < 200 && !coordinator.isComplete(); i++) {
+                fireRetries(1);
+            }
+
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.RESTORED);
+            assertThat(kvStore.get(ConfigKey.forKey("alpha"))).isEqualTo(Option.some(ALPHA));
+            assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED, Code.BACKUP_RESTORE_UNBLOCKED);
+        }
+
+        /// The cold-start exit at the level a test can model it: a full stop leaves an EMPTY store (consensus persistence is in-memory), so
+        /// a NEW coordinator over it with `restore = "fresh"` finds no marker, decides `FRESH` and opens the gate, without reading the source.
+        /// `[unverified: a real three-node stop and restart is not exercised]`
+        @Test
+        void aColdStart_fromAMarkedBlockedState_withRestoreFresh_decidesFresh_andOpensTheGate() {
+            var first = blockedResumeUnderRestoreFresh();
+
+            first.deactivate();
+            retries.clear();
+            kvStore = coldStore();
+            warnings.clear();
+            var cold = coordinator(Option.some(source(Option.some(temp.resolve("gone.git").toString()), RestoreMode.FRESH)));
+
+            assertThat(RestoreGate.decision(kvStore)).as("CONTROL: the cold store holds no marker").isEqualTo(Option.none());
+            runToCompletion(cold);
+
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.FRESH);
+            assertThat(RestoreGate.isOpen(kvStore)).isTrue();
+            assertThat(warnings).extracting(BackupWarning::code).doesNotContain(Code.BACKUP_RESTORE_BLOCKED);
+            assertThat(kvStore.get(ConfigKey.forKey("alpha"))).isEqualTo(Option.none());
+        }
+
+        /// A store as a whole-cluster stop leaves it: empty but for the leader record.
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        private KVStore<AetherKey, AetherValue> coldStore() {
+            var cold = new KVStore<AetherKey, AetherValue>(router, NODE_CODEC, NODE_CODEC);
+
+            cold.processCommitted(cold.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE,
+                                                                                       LeaderValue.leaderValue(NodeId.nodeId("node-1")
+                                                                                                                     .unwrap(),
+                                                                                                               1L)))),
+                                  ++slot);
+            return cold;
         }
 
         /// An `IN_PROGRESS` marker is committed, then the source becomes unreadable (the restart points at a path holding no repository),

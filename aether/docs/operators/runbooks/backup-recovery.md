@@ -100,13 +100,23 @@ already committed its `IN_PROGRESS` marker:
 - **Blocked before any marker** (the first read of the backup failed): fix the remote, or restart with
   `[backup] restore = "fresh"` to abandon the backup `[verified: BackupRestoreCoordinatorTest.Blocked,
   EmberKvBackupRestoreTest]`.
-- **Blocked after the marker committed** (the restore started, then the source became unreadable or the backup holds no
-  cluster incarnation): `restore = "fresh"` on a restart does NOT abandon it, on any subset of nodes, because the marker is
-  cluster state and a resumed restore never reads `restore` again `[verified: BackupRestoreCoordinatorTest.Blocked
+- **Blocked after the marker committed, the source unreadable** (the restore started, then the source became unreadable):
+  `restore = "fresh"` on a restart does NOT abandon it, on any subset of nodes, because the marker is cluster state and a
+  resumed restore never reads `restore` again `[verified: BackupRestoreCoordinatorTest.Blocked
   aBlockedResume_ignoresRestoreFresh_andNamesTheSourceFixAndTheColdStart]`. Fix the backup source and the next retry
-  resumes the restore. The other exit is to stop ALL nodes and cold-start them with `restore = "fresh"`: this discards the
-  partly restored state and is a whole-cluster outage `[unverified: read from code (consensus persistence is in-memory, so the
-  marker does not survive a full stop), not exercised by a test]`. An abandon mechanism is planned (#3305).
+  resumes the restore `[verified: BackupRestoreCoordinatorTest.Blocked
+  aBlockedMarkedRestore_finishes_onceTheSourceIsReadableAgain]`. The other exit is the cold start below.
+- **Blocked after the marker committed, the pinned backup holds no cluster incarnation** (a backup taken before genesis): no
+  source fix helps, because the marker pins one content-addressed commit and every retry loads that same commit and fails
+  identically. `restore = "fresh"` on a restart does not abandon it either. The only exit is the cold start below
+  `[verified: BackupRestoreCoordinatorTest.Blocked aBackupWithoutAnIncarnation_blocksAfterItsMarker_andFreshDoesNotLeaveIt]`.
+- **The cold start** (an exit in both marked cases): stop ALL nodes, then start them with `restore = "fresh"`. This discards the
+  partly restored state and is a whole-cluster outage. A full stop leaves an empty store, and a new coordinator over it with
+  `fresh` decides FRESH and opens the gate `[verified: BackupRestoreCoordinatorTest.Blocked
+  aColdStart_fromAMarkedBlockedState_withRestoreFresh_decidesFresh_andOpensTheGate]` `[unverified: a real three-node stop and
+  restart is not exercised by a test; that the marker does not survive a full stop is read from code (consensus persistence is
+  in-memory)]`. The backup branch still holds its old head, so the new cluster's first backup meets it and is GATED until
+  `aether backup declare-genesis` (see the `restore = "fresh"` paragraph below). An abandon mechanism is planned (#3305).
 
 **Hazard — restoring the same backup into two live clusters.** Each restore mints a new incarnation id
 (#1529 part 2), so two clusters restored from the same head at the same time reach the same lineage and
@@ -273,7 +283,7 @@ mode; a remote that needs credentials the process does not hold fails, and the b
 |------|---------|-----------------|
 | `BACKUP_GATED` | The head belongs to another lineage | Restore it, or `aether backup declare-genesis` to make this cluster the head |
 | `BACKUP_FORKED` | Another cluster (a different incarnation id) holds the head at this cluster's own lineage and incarnation (two clusters restored from the same backup) | Retire one cluster; run `aether backup declare-genesis` on the one whose state continues |
-| `backup-restore-blocked` (cluster event, CRITICAL) | A cold start cannot read the backup; cluster-state writes stay refused until it can (#1533) | Before the restore marker commits: fix the backup source, or restart with `[backup] restore = "fresh"` to abandon it. After it commits (the warning says "a restore is already in progress"): fix the backup source, or stop ALL nodes and cold-start with `restore = "fresh"` (discards the partly restored state); a restart with `fresh` alone does not abandon it |
+| `backup-restore-blocked` (cluster event, CRITICAL) | A cold start cannot read the backup; cluster-state writes stay refused until it can (#1533) | Before the restore marker commits: fix the backup source, or restart with `[backup] restore = "fresh"` to abandon it. After it commits (the warning says "a restore is already in progress"): if the source is unreadable, fix it (the next retry resumes) or stop ALL nodes and cold-start with `restore = "fresh"` (discards the partly restored state); if the pinned backup holds no cluster incarnation (the warning says "cannot be restored whatever the source does"), only the cold start exits; a restart with `fresh` alone does not abandon it |
 | `backup-restore-unblocked` (INFO) | The block ended: the backup was read and the restore decided, or the blocked node stopped leading or is stopping (a restart is a stop first) | None. A crash of the blocked node cannot raise it (see `backup-config-restored`); a leader that still cannot read the backup raises `backup-restore-blocked` again |
 | `backup-config-missing` (cluster event, `OPERATOR_WARNING`) | This leader has no `[backup]` while the committed state says the backup is in use; nothing is backed up while it leads (#1968) | Restart it with the cluster's `[backup]` (or `AETHER_BACKUP_*`), or move leadership |
 | `backup-config-restored` (INFO) | The leader that lacked `[backup]` no longer leads, or its node is stopping (graceful stop, drain, self-fence) | None; a new leader without `[backup]` raises the warning again. A crash (`kill -9`, power loss, OOM kill) cannot raise it: that node's `backup-config-missing` then stays the last event for the code, and only another node's event layer could close it, which the event design does not allow. Treat a `backup-config-missing` whose node is gone as closed |
@@ -282,7 +292,7 @@ mode; a remote that needs credentials the process does not hold fails, and the b
 | `BACKUP_REMOTE_UNREADABLE` | The head cannot be decoded | Repair or move the head |
 | `BACKUP_PUSH_FAILING` | Commits have not reached the remote for 60 s | Check remote, credentials, network |
 | `BACKUP_COMMIT_FAILED` | The local repository cannot take a commit | Check disk, permissions, git |
-| `BACKUP_RESTORE_BLOCKED` | A cold start cannot read the backup; cluster-state writes are refused | Fix the remote; restart with `restore = "fresh"` abandons it only before the restore marker commits (see above) |
+| `BACKUP_RESTORE_BLOCKED` | A cold start cannot read the backup; cluster-state writes are refused | Fix the remote; restart with `restore = "fresh"` abandons it only before the restore marker commits. After it, a pinned backup with no cluster incarnation exits only by the whole-cluster cold start (see above) |
 | `BACKUP_RESTORE_SOURCE_LOCAL` | No remote: the restore reads one node's local repository | Configure `remote` |
 | `BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED` | A restore withheld entity checkpoints; entity state restarts empty | None — this is the documented limit |
 | `BACKUP_RECOVERED` | A failing backup is current again | — |

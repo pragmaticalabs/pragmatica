@@ -124,10 +124,22 @@ public final class BackupRestoreCoordinator {
 
     /// Why a pass did not finish.
     public sealed interface RestoreError extends Cause {
-        /// The backup source cannot be read: unreachable, undecodable, or its history unreadable. The
-        /// restore waits; see [BackupRestoreCoordinator].
-        record Blocked(Cause origin, String message) implements RestoreError, Cause.Wrapped {
-            static final Fn1<Blocked, Cause> FACTORY = Causes.forOneValue("the backup cannot be read: %s", Blocked::new);
+        /// The restore waits and the cluster stays gated; see [BackupRestoreCoordinator]. The two variants differ in which exit
+        /// works: [SourceUnreadable] ends when the source is readable again, [PinnedUnrestorable] never does.
+        sealed interface Blocked extends RestoreError {}
+
+        /// The backup source cannot be read: unreachable, undecodable, or its history unreadable. The next retry resumes once
+        /// the source is readable again.
+        record SourceUnreadable(Cause origin, String message) implements Blocked, Cause.Wrapped {
+            static final Fn1<SourceUnreadable, Cause> FACTORY = Causes.forOneValue("the backup cannot be read: %s",
+                                                                                   SourceUnreadable::new);
+        }
+
+        /// The pinned backup commit holds no cluster incarnation. The commit is content-addressed, so no change to the source
+        /// alters it and every retry fails identically; only a whole-cluster cold start with `restore = "fresh"` exits.
+        record PinnedUnrestorable(Cause origin, String message) implements Blocked, Cause.Wrapped {
+            static final Fn1<PinnedUnrestorable, Cause> FACTORY = Causes.forOneValue("the backup cannot be restored: %s",
+                                                                                     PinnedUnrestorable::new);
         }
 
         /// A decision or restore transaction was refused (a leader change, or another writer won).
@@ -396,7 +408,7 @@ public final class BackupRestoreCoordinator {
                          .flatMap(_ -> repository.fetchRestoreRef())
                          .flatMap(ref -> ref.map(present -> loadRef(service, present).map(Option::some))
                                             .or(() -> success(Option.none())))
-                         .mapError(RestoreError.Blocked.FACTORY);
+                         .mapError(RestoreError.SourceUnreadable.FACTORY);
     }
 
     private Result<Loaded> loadRef(KvBackupService service, String ref) {
@@ -413,7 +425,7 @@ public final class BackupRestoreCoordinator {
                          .flatMap(_ -> repository.fetchRestoreRef())
                          .flatMap(ref -> ref.toResult(RestoreError.General.BACKUP_VANISHED))
                          .flatMap(ref -> load(service, commit, ref))
-                         .mapError(RestoreError.Blocked.FACTORY);
+                         .mapError(RestoreError.SourceUnreadable.FACTORY);
     }
 
     private Result<Loaded> load(KvBackupService service, String commit, String ref) {
@@ -593,7 +605,7 @@ public final class BackupRestoreCoordinator {
         return Option.option(loaded.document().entries().get(ClusterIncarnationKey.clusterIncarnationKey()))
                      .filter(ClusterIncarnationValue.class::isInstance)
                      .map(ClusterIncarnationValue.class::cast)
-                     .toResult(RestoreError.Blocked.FACTORY.apply(Causes.cause("the backup at " + loaded.commit()
+                     .toResult(RestoreError.PinnedUnrestorable.FACTORY.apply(Causes.cause("the backup at " + loaded.commit()
                                                                               + " holds no cluster incarnation")));
     }
 
@@ -751,13 +763,13 @@ public final class BackupRestoreCoordinator {
 
     @Contract
     private void onFailure(Cause cause) {
-        if (cause instanceof RestoreError.Blocked && blocked.compareAndSet(false, true)) {
+        if (cause instanceof RestoreError.Blocked blockedCause && blocked.compareAndSet(false, true)) {
             // Also an OperatorWarning cluster event through the node's sink ([BackupWarning.Sink#operatorWarnings]).
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_BLOCKED,
                                                       cause.message()
                                                      + "; this cluster will not start fresh over a backup it"
                                                      + " cannot read, and writes to cluster state stay refused until it"
-                                                     + " can. " + blockedAdvice()));
+                                                     + " can. " + blockedAdvice(blockedCause)));
         } else {
             LOG.debug("Backup restore: transient failure: {} — will retry", cause.message());
         }
@@ -765,11 +777,17 @@ public final class BackupRestoreCoordinator {
         scheduleRetry();
     }
 
-    /// The exits that work depend on the fact [#pass] folds on: no committed marker means the first decision is blocked, where
-    /// `restore = "fresh"` is read and decides `FRESH`; a committed `IN_PROGRESS` marker is resumed and `[backup] restore` is never
-    /// read again (#3300), so a restart with it, on any subset of nodes, leaves the blocked restore standing.
-    private String blockedAdvice() {
-        return RestoreGate.decision(kvStore).fold(this::firstDecisionAdvice, _ -> resumeAdvice());
+    /// The exits that work depend on the cause of the block. A pinned commit with no cluster incarnation fails identically on
+    /// every retry, so only the cold start exits. Otherwise the source is at fault and the exits depend on the fact [#pass]
+    /// folds on: no committed marker means the first decision is blocked, where `restore = "fresh"` is read and decides `FRESH`;
+    /// a committed `IN_PROGRESS` marker is resumed and `[backup] restore` is never read again (#3300), so a restart with it, on
+    /// any subset of nodes, leaves the blocked restore standing.
+    private String blockedAdvice(RestoreError.Blocked cause) {
+        return switch (cause) {
+            case RestoreError.PinnedUnrestorable _ -> unrestorableAdvice();
+            case RestoreError.SourceUnreadable _ -> RestoreGate.decision(kvStore)
+                                                               .fold(this::firstDecisionAdvice, _ -> resumeAdvice());
+        };
     }
 
     private String firstDecisionAdvice() {
@@ -780,6 +798,13 @@ public final class BackupRestoreCoordinator {
     private String resumeAdvice() {
         return "A restore is already in progress, so restarting with [backup] restore = \"fresh\" does not abandon it. Fix the backup source (" + sourceDescription()
              + "): the next retry resumes the restore. Or stop ALL nodes and cold-start them with [backup] restore = \"fresh\":"
+             + " that discards the partly restored state and is a whole-cluster stop";
+    }
+
+    private String unrestorableAdvice() {
+        return "A restore is already in progress and the backup it pinned cannot be restored whatever the source does, so fixing the"
+             + " backup source (" + sourceDescription() + ") does not help and restarting with [backup] restore = \"fresh\" does not"
+             + " abandon it. The only exit is to stop ALL nodes and cold-start them with [backup] restore = \"fresh\":"
              + " that discards the partly restored state and is a whole-cluster stop";
     }
 
