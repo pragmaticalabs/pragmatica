@@ -86,11 +86,12 @@ class HierarchicalWorkerRuntimeReplayTest {
 
         // Removal then creation in another community is still allowed (#1840 item 3), so the runtime
         // replacement path stays reachable and keeps its one-owner pin.
-        // One transaction: under FSM2 a remove handled alone retires the worker (#3193); a remove with its replacement in the
-        // same transaction leaves a directive in the store, so the runtime-replacement path is what is exercised.
-        commit(List.of(new KVCommand.Mutation<>(key, Option.some(prior), Option.none()),
-            new KVCommand.Mutation<>(communityKey, Option.none(), Option.some(originalCommunity)),
-            new KVCommand.Mutation<>(key, Option.none(), Option.some(reassigned))));
+        // One submission: a removal handled alone retires the worker under FSM2 (#3193). A key appears once per transaction, so
+        // removal and creation are two transactions, but they travel in one consensus batch and are applied back to back; the
+        // worker then finds the replacement committed when it handles the removal and does not retire.
+        commitTogether(List.of(new KVCommand.Mutation<>(key, Option.some(prior), Option.none())),
+                       List.of(new KVCommand.Mutation<>(communityKey, Option.none(), Option.some(originalCommunity)),
+                               new KVCommand.Mutation<>(key, Option.none(), Option.some(reassigned))));
         await().atMost(BUDGET.duration()).until(() -> announcerHolder(worker).get() != original
             && announcerHolder(worker).get().communityId().equals(communityKey.communityId()));
         var replacement = announcerHolder(worker).get();
@@ -121,6 +122,25 @@ class HierarchicalWorkerRuntimeReplayTest {
 
     private void commit(List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
         assertThat(tryCommit(mutations)).as("transaction accepted").isTrue();
+    }
+
+    private void commitTogether(List<KVCommand.Mutation<AetherKey, AetherValue>> first,
+                                List<KVCommand.Mutation<AetherKey, AetherValue>> second) {
+        var node = leader();
+        var firstId = UUID.randomUUID().toString();
+        var secondId = UUID.randomUUID().toString();
+        var leaderValue = node.kvStore().getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap();
+        var results = node.<Object>apply(List.of(
+            new KVCommand.LeaderTransaction<AetherKey, AetherValue>(first.getFirst().key(), firstId, leaderValue, List.of(), first),
+            new KVCommand.LeaderTransaction<AetherKey, AetherValue>(second.getFirst().key(), secondId, leaderValue, List.of(), second)))
+            .await(BUDGET).unwrap();
+        assertThat(accepted(results, firstId)).as("removal accepted").isTrue();
+        assertThat(accepted(results, secondId)).as("replacement accepted").isTrue();
+    }
+
+    private static boolean accepted(List<Object> results, String transactionId) {
+        return results.stream().anyMatch(value -> value instanceof KVCommand.TransactionResult result
+            && result.transactionId().equals(transactionId) && result.accepted());
     }
 
     private boolean tryCommit(List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
