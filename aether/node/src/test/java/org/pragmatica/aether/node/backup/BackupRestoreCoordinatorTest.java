@@ -66,6 +66,7 @@ import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -877,6 +878,104 @@ class BackupRestoreCoordinatorTest {
             assertThat(RestoreGate.decision(kvStore)).isEqualTo(Option.none());
             assertThat(warnings).extracting(BackupWarning::code)
                                 .containsExactly(Code.BACKUP_RESTORE_BLOCKED);
+        }
+        // --- #3300: a restore that is blocked AFTER its IN_PROGRESS marker committed ---
+
+        /// CONTROL for the tripwire below: with no marker, `restore = "fresh"` never reads the source, so an unreadable remote does not
+        /// block it. Without this the tripwire could be blamed on the unreadable remote instead of on the marker.
+        @Test
+        void restoreFresh_overAnUnreadableSource_withNoMarker_decidesFresh() {
+            var coordinator = coordinator(Option.some(source(Option.some(temp.resolve("gone.git").toString()), RestoreMode.FRESH)));
+
+            runToCompletion(coordinator);
+
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.FRESH);
+            assertThat(warnings).extracting(BackupWarning::code).doesNotContain(Code.BACKUP_RESTORE_BLOCKED);
+        }
+
+        /// TRIPWIRE #3300, asserts CURRENT behaviour: once an `IN_PROGRESS` marker is committed, the pass resumes it (`continueFrom`) and
+        /// never reads `[backup] restore`, so `restore = "fresh"` on a restart does not leave a blocked restore, yet the warning advises it.
+        /// When the owner rules (fresh abandons, or the advice is dropped), delete this test and enable the matching test below.
+        @Test
+        void tripwire3300_aBlockedResume_ignoresRestoreFresh_andStillAdvisesIt() {
+            var coordinator = blockedResumeUnderRestoreFresh();
+
+            assertThat(outcome()).as("#3300 tripwire: restore = fresh did not abandon the IN_PROGRESS restore. If this is red because it now"
+                                     + " does, delete this test and enable restoreFresh_abandonsABlockedInProgressRestore")
+                                 .isEqualTo(BackupRestoreOutcome.IN_PROGRESS);
+            assertThat(RestoreGate.isOpen(kvStore)).as("the gate stays closed: writes to backed-up keys stay refused").isFalse();
+            assertThat(coordinator.isComplete()).isFalse();
+            assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED);
+            assertThat(warnings.getFirst().detail()).as("#3300 tripwire: the warning still advises restore = fresh. If this is red because the"
+                                                        + " advice was dropped, delete this test and enable theBlockedWarning_overAnInProgressRestore_doesNotAdviseFresh")
+                                                    .contains("restore = \"fresh\"");
+        }
+
+        /// WANTED if the owner rules "fresh abandons": the data-loss choice is the operator's, and it ends with its own committed outcome.
+        @Disabled("#3300: enable when the owner rules that restore = fresh abandons a blocked IN_PROGRESS restore; then delete the tripwire")
+        @Test
+        void restoreFresh_abandonsABlockedInProgressRestore() {
+            blockedResumeUnderRestoreFresh();
+
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.FRESH);
+            assertThat(RestoreGate.isOpen(kvStore)).isTrue();
+        }
+
+        /// WANTED if the owner rules "stop advising it": a blocked resume names only what works.
+        @Disabled("#3300: enable when the owner rules the blocked warning must not advise restore = fresh over an IN_PROGRESS restore; then delete the tripwire")
+        @Test
+        void theBlockedWarning_overAnInProgressRestore_doesNotAdviseFresh() {
+            blockedResumeUnderRestoreFresh();
+
+            assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED);
+            assertThat(warnings.getFirst().detail()).doesNotContain("restore = \"fresh\"");
+        }
+
+        /// No fault injection: a backup taken before genesis carries no incarnation entry. The restore commits its marker, then `finish`
+        /// raises Blocked ("holds no cluster incarnation"); every retry resumes the marker and fails the same way, `restore = "fresh"` included.
+        @Test
+        void aBackupWithoutAnIncarnation_blocksAfterItsMarker_andFreshDoesNotLeaveIt() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            commitOnRemote(remote, CODEC.encode(40, Map.<AetherKey, AetherValue> of(ConfigKey.forKey("alpha"), ALPHA)).unwrap(), "pre-genesis");
+            var first = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
+
+            first.activate();
+            worker.advance(0);
+            fireRetries(2);
+            assertThat(outcome()).as("CONTROL: the marker committed before the block").isEqualTo(BackupRestoreOutcome.IN_PROGRESS);
+            first.deactivate();
+            warnings.clear();
+
+            var restarted = coordinator(Option.some(source(Option.some(remote), RestoreMode.FRESH)));
+
+            restarted.activate();
+            worker.advance(0);
+            fireRetries(2);
+
+            assertThat(outcome()).as("#3300 tripwire: restore = fresh did not leave the blocked restore").isEqualTo(BackupRestoreOutcome.IN_PROGRESS);
+            assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED);
+        }
+
+        /// An `IN_PROGRESS` marker is committed, then the source becomes unreadable (the restart points at a path holding no repository),
+        /// and the node restarts with `restore = "fresh"`.
+        private BackupRestoreCoordinator blockedResumeUnderRestoreFresh() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
+                                            BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
+                                                                                  LINEAGE,
+                                                                                  3,
+                                                                                  40,
+                                                                                  git(Path.of(remote), "rev-parse", "backup").strip())));
+            var coordinator = coordinator(Option.some(source(Option.some(temp.resolve("gone.git").toString()), RestoreMode.FRESH)));
+
+            coordinator.activate();
+            worker.advance(0);
+            fireRetries(3);
+
+            return coordinator;
         }
     }
 
