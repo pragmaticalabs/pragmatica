@@ -85,6 +85,11 @@ class QuicLaneBacklogTest {
         /// The stream also reads writable while this holds, with no writability event (a stream that drained behind a
         /// read, at a point the test names).
         final AtomicReference<BooleanSupplier> writableOnceThis = new AtomicReference<>(() -> false);
+        /// The stream turns unwritable right after it takes the frame whose first byte is this (-1: never), so a drain
+        /// writes exactly up to that frame.
+        final AtomicInteger unwritableAfterWriteOf = new AtomicInteger(-1);
+        /// Runs on the writing thread after every frame the stream takes, as an inline writability event would.
+        final AtomicReference<Runnable> afterWrite = new AtomicReference<>(() -> {});
         final List<Integer> written = new CopyOnWriteArrayList<>();
         /// Every thread that read the stream's liveness: a drain pass reads it before it takes the backlog lock.
         final Set<Thread> livenessReaders = ConcurrentHashMap.newKeySet();
@@ -130,6 +135,12 @@ class QuicLaneBacklogTest {
             }
 
             written.add(first);
+
+            if (first == unwritableAfterWriteOf.get()) {
+                writable.set(false);
+            }
+
+            afterWrite.get().run();
 
             return future;
         }
@@ -591,6 +602,39 @@ class QuicLaneBacklogTest {
         }
     }
 
+    /// T-a gate, two lanes (#3313 memo3314 §7): a DHT frame held on the CONSENSUS stream behind a CONSENSUS frame. The
+    /// drain writes the CONSENSUS frame and the stream turns unwritable right after it takes it, so the DHT frame stays
+    /// held: the CONSENSUS episode ends (its lane's slot emptied), the DHT episode stays open (its lane's slot is not
+    /// empty). Once the stream takes the DHT frame, the DHT episode ends. No writability event, no later write and no
+    /// close: each episode ends by its own lane's frame leaving the backlog, and by nothing else.
+    @Test
+    void episode_framesOfTwoLanesHeldOnOneStream_eachLanesLastFrameLeavingEndsOnlyItsOwnEpisode() {
+        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var lane = new Lane(succeeded(), -1);
+
+        try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+            holdFrames(network, lane, StreamType.CONSENSUS, 1);
+            holdFrames(network, lane, StreamType.DHT, 2);
+            assertThat(network.openBackpressureEpisodesForTests()).as("control: each lane opened its episode").isEqualTo(2);
+
+            lane.unwritableAfterWriteOf.set(1);
+            lane.writable.set(true);
+            awaitWithin("the CONSENSUS frame is written", AWAIT, () -> lane.written.size() == 1);
+
+            assertThat(network.laneBacklogCountForTests()).as("control: the DHT frame is still held").isEqualTo(1);
+            assertThat(network.openBackpressureEpisodesForTests()).as("the DHT episode stays open while its frame is held")
+                                                                  .isEqualTo(1);
+            assertThat(cleared(capture)).singleElement()
+                                        .satisfies(message -> assertThat(message).contains("lane CONSENSUS cleared"));
+
+            lane.writable.set(true);
+            awaitWithin("the DHT frame is written", AWAIT, () -> lane.written.size() == 2);
+
+            assertThat(network.openBackpressureEpisodesForTests()).as("the DHT frame leaving ended its episode").isZero();
+            assertThat(cleared(capture)).as("one cleared line per episode").hasSize(2);
+        }
+    }
+
     /// F1 (#3313): a drain writes the held frame between its hold and its episode's opening. A CONSENSUS frame starts the
     /// backlog; a DHT frame joins it on the unwritable stream and opens its own lane's episode. At that opening the hook
     /// turns the stream writable and waits until the drain either wrote both frames (the opening runs outside the backlog
@@ -794,6 +838,39 @@ class QuicLaneBacklogTest {
         }
     }
 
+    /// Lock order (#3313 memo3314 §7): the closer reads a backlog's lane slot without its lock. A drain writes held
+    /// frames under the backlog lock and each write fires an inline writability event (the closer waits for the peer's
+    /// episode monitor), while refused writes on another lane of the peer run the closer under that monitor (it reads the
+    /// slot). A slot read that takes the backlog lock deadlocks the two: the drain never writes the next frame.
+    @Test
+    void episode_inlineWritabilityEventsInADrain_raceRefusedWritesOfThePeer_withoutDeadlock() {
+        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(2).millis());
+        var lane = new Lane(succeeded(), -1);
+        var refusing = new Lane(succeeded(), -1);
+        var stop = new AtomicBoolean(false);
+
+        lane.afterWrite.set(() -> network.onLaneStreamEvent(PEER, lane.ch));
+        Thread.ofPlatform().daemon().start(() -> refuseUntil(network, refusing, stop));
+
+        for (var round = 0; round < 50; round++) {
+            var frames = round + 1;
+
+            lane.writable.set(false);
+            holdFrames(network, lane, StreamType.CONSENSUS, round);
+            lane.writable.set(true);
+            awaitWithin("the drain writes the held frame (a deadlock stops it)", AWAIT, () -> lane.written.size() == frames);
+        }
+
+        stop.set(true);
+        assertThat(lane.written).as("every held frame was written, in order").hasSize(50);
+    }
+
+    private static void refuseUntil(QuicClusterNetwork network, Lane refusing, AtomicBoolean stop) {
+        while (!stop.get()) {
+            holdFrames(network, refusing, StreamType.KV, 0);
+        }
+    }
+
     // --- #3313 memo3314 §4/§7: a throwing metric or logger cannot leave a fact of the episode model wrong ---
 
     /// F1, metric (#3313): the drop metric throws when the held frame is given up. The frame left its backlog before the
@@ -847,6 +924,28 @@ class QuicLaneBacklogTest {
 
         assertFirstHeldFrameSurvivesACountFault(network, new LogFault(""));
         verify(metrics).onBackpressureRetry();
+    }
+
+    /// INFO throws (#3313 memo3314 §7, decision: the episode is still removed): the cleared INFO of the episode a held
+    /// write ends throws. The episode is removed all the same, so the open count is 0. Nothing else ends it: no
+    /// writability event, no later write, no close.
+    @Test
+    void episode_clearedInfoThrows_theEpisodeIsStillRemoved() {
+        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var lane = new Lane(succeeded(), -1);
+        var faulting = new LogFault("lane CONSENSUS cleared");
+
+        try (var _ = faulting.capture()) {
+            holdFrames(network, lane, StreamType.CONSENSUS, 1);
+            assertThat(network.openBackpressureEpisodesForTests()).as("control: the frame opened an episode").isEqualTo(1);
+
+            lane.writable.set(true);
+            awaitWithin("the held frame is written", AWAIT, () -> lane.written.size() == 1);
+            awaitWithin("the cleared INFO threw", AWAIT, () -> faulting.faults() == 1);
+
+            assertThat(network.openBackpressureEpisodesForTests()).as("the throwing INFO did not keep the episode")
+                                                                  .isZero();
+        }
     }
 
     private static void assertEpisodeSurvivesAGiveUpFault(QuicClusterNetwork network,
