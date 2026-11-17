@@ -110,6 +110,7 @@ public record LintContext(List<Pattern> excludedPackagePatterns,
     public static LintContext fromConfig(JbctConfig jbctConfig) {
         return lintContext(jbctConfig.excludePackages()).withConfig(jbctConfig.lint())
                           .withLayers(jbctConfig.layers())
-                          .withProject(jbctConfig.mode(), jbctConfig.basePackage());
+                          .withProject(jbctConfig.mode(),
+                                       jbctConfig.basePackage());
     }
 }

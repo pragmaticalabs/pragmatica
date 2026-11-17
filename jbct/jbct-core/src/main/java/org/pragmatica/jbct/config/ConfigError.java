@@ -41,7 +41,7 @@ public sealed interface ConfigError extends Cause {
         public static ModeNotYetSupported modeNotYetSupported(JbctMode mode) {
             return new ModeNotYetSupported(mode,
                                            "JBCT mode \"" + mode.token()
-                                           + "\" is not yet supported: use \"business\" or \"infrastructure\"");
+                                          + "\" is not yet supported: use \"business\" or \"infrastructure\"");
         }
     }
 
@@ -57,8 +57,9 @@ public sealed interface ConfigError extends Cause {
                                            suggestion,
                                            toml,
                                            "structure rules need [project] basePackage for " + sourceRoot
-                                           + ": add basePackage = \"" + suggestion + "\" to the [project] table of " + toml
-                                           + ", or set [lint] mode = \"infrastructure\"");
+                                          + ": add basePackage = \"" + suggestion
+                                          + "\" to the [project] table of " + toml
+                                          + ", or set [lint] mode = \"infrastructure\"");
         }
     }
 }

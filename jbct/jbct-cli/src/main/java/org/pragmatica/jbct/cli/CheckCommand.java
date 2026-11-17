@@ -130,8 +130,7 @@ public class CheckCommand implements Callable<Integer> {
         return LintContext.defaultContext()
                           .withConfig(lintConfig)
                           .withExcludePackages(jbctConfig.excludePackages())
-                          .withLayers(jbctConfig.layers())
-                          .withProject(jbctConfig.mode(), jbctConfig.basePackage());
+                          .withLayers(jbctConfig.layers());
     }
 
     private void checkFormat(Path file, JbctFormatter formatter, List<Path> needsFormatting, AtomicInteger errors) {

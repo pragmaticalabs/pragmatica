@@ -40,9 +40,7 @@ public enum JbctMode {
     public static Option<JbctMode> fromToken(String raw) {
         var normalized = raw.toLowerCase(Locale.ROOT);
 
-        return Option.from(Stream.of(values())
-                                 .filter(mode -> mode.token.equals(normalized))
-                                 .findFirst());
+        return Option.from(Stream.of(values()).filter(mode -> mode.token.equals(normalized)).findFirst());
     }
     /// Parse an explicit override (`--mode`, `-Djbct.mode`): an unknown token is [ConfigError.ModeUnknown], a known
     /// one that is not yet honoured is [ConfigError.ModeNotYetSupported].
@@ -54,8 +52,7 @@ public enum JbctMode {
     public Result<JbctMode> requireSupported() {
         return isSupported()
                ? Result.success(this)
-               : ConfigError.ModeNotYetSupported.modeNotYetSupported(this)
-                            .result();
+               : ConfigError.ModeNotYetSupported.modeNotYetSupported(this).result();
     }
     private boolean isSupported() {
         return this == BUSINESS || this == INFRASTRUCTURE;

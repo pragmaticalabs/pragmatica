@@ -46,6 +46,7 @@ record PartialConfig(PartialFormatter formatter,
                      Option<JbctMode> mode,
                      Option<String> basePackage) {
     private static final Pattern PACKAGE_NAME = Pattern.compile("\\p{javaJavaIdentifierStart}\\p{javaJavaIdentifierPart}*(\\.\\p{javaJavaIdentifierStart}\\p{javaJavaIdentifierPart}*)*");
+
     private static final String BASE_PACKAGE_EXPECTED = "a Java package name, e.g. \"com.example.orders\"";
 
     /// A layer that sets nothing — the identity of [#mergeWith].
@@ -76,7 +77,10 @@ record PartialConfig(PartialFormatter formatter,
                                       toml.getStringList("lint", "excludePackages"),
                                       PartialLayers.partialLayers(toml),
                                       toml.getParsed("lint", "mode", JbctMode.ALLOWED, JbctMode::fromToken),
-                                      toml.getParsed("project", "basePackage", BASE_PACKAGE_EXPECTED, PartialConfig::basePackage));
+                                      toml.getParsed("project",
+                                                     "basePackage",
+                                                     BASE_PACKAGE_EXPECTED,
+                                                     PartialConfig::basePackage));
 
         return toml.requireNoTypeMismatches()
                    .flatMap(_ -> layer.requireSupportedMode());
@@ -97,8 +101,7 @@ record PartialConfig(PartialFormatter formatter,
 
     /// `[project] basePackage` text: a dotted Java package name, else [Option#none()] (recorded as a mismatch).
     private static Option<String> basePackage(String raw) {
-        return PACKAGE_NAME.matcher(raw)
-                           .matches()
+        return PACKAGE_NAME.matcher(raw).matches()
                ? some(raw)
                : none();
     }

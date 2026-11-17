@@ -114,8 +114,7 @@ public class LintCommand implements Callable<Integer> {
         return LintContext.defaultContext()
                           .withConfig(lintConfig)
                           .withExcludePackages(jbctConfig.excludePackages())
-                          .withLayers(jbctConfig.layers())
-                          .withProject(jbctConfig.mode(), jbctConfig.basePackage());
+                          .withLayers(jbctConfig.layers());
     }
 
     /// A collected file the linter could not read or parse, with the reason.

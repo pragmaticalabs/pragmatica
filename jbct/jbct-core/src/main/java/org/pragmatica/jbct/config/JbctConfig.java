@@ -117,7 +117,9 @@ public record JbctConfig(FormatterConfig formatter,
         sb.append("\n");
         // Project section
         sb.append("[project]\n");
-        basePackage.onPresent(name -> sb.append("basePackage = \"").append(name).append("\"\n"));
+        basePackage.onPresent(name -> sb.append("basePackage = \"")
+                                        .append(name)
+                                        .append("\"\n"));
         sb.append("sourceDirectories = [");
         sb.append(sourceDirectories.stream().map(s -> "\"" + s + "\"").collect(Collectors.joining(", ")));
         sb.append("]\n");
