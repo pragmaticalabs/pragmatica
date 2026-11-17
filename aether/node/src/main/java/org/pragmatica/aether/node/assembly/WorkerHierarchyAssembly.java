@@ -190,12 +190,11 @@ public sealed interface WorkerHierarchyAssembly {
         var gossipKeyRotationHandler = in.gossipKeyRotationHandler();
         var react = in.react();
         var drainProcedure = in.drainProcedure();
-        // #3193 ruling item 2: a live worker whose own directive is retired with no replacement halts through the
+        // #3193 ruling item 2, #3330: a live worker whose own directive is retired halts through the
         // core-absence path's local drain (drained exit). The halt is submitted as an undo: an undo is never gated by an
         // engine stop, so the halt cannot be dropped, and it runs off the dispatcher thread like every reaction.
         var ownDirectiveRetirement = ownDirectiveRetirementFor(config,
                                                                selfId,
-                                                               kvStore,
                                                                drainProcedure,
                                                                react,
                                                                in.nodeReportedStateHolder(),
@@ -923,18 +922,15 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                false));
     }
 
-    /// #3193 ruling item 2: this node's own-directive observer, over the committed store, the drain state and the local halt.
+    /// #3193 ruling item 2: this node's own-directive observer, over the drain state and the local halt (#3330: no store read).
     static OwnDirectiveRetirement ownDirectiveRetirementFor(AetherNodeConfig config,
                                                             NodeId selfId,
-                                                            KVStore<AetherKey, AetherValue> kvStore,
                                                             DrainProcedure drainProcedure,
                                                             ReactExecutor react,
                                                             NodeReportedStateHolder nodeReportedStateHolder,
                                                             OperatorWarningSink operatorWarningSink) {
         return OwnDirectiveRetirement.ownDirectiveRetirement(selfId,
                                                              configuredWorker(config),
-                                                             () -> kvStore.getTyped(AetherKey.ActivationDirectiveKey.activationDirectiveKey(selfId),
-                                                                                    AetherValue.ActivationDirectiveValue.class),
                                                              () -> drainProcedure.state() != DrainProcedure.DrainState.INACTIVE,
                                                              haltThrough(react,
                                                                          DrainAssembly.directiveRetiredHalt(drainProcedure,

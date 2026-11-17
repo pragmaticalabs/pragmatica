@@ -9,7 +9,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
@@ -28,22 +27,22 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.pragmatica.aether.worker.isolation.OwnDirectiveRetirement.ownDirectiveRetirement;
 
-/// #3193 ruling item 2, the mechanism in isolation: every condition of the class header, both arms. The store read,
-/// the draining probe and the halt are fakes, so each arm names the one input that decides it.
+/// #3193 ruling item 2, the mechanism in isolation: every condition of the class header, both arms. The draining
+/// probe and the halt are fakes, so each arm names the one input that decides it. The store is not an input (#3330):
+/// `OwnDirectiveWiringTest.ownDirectiveRemove_storeAlreadyHoldsALaterDirective_stillHalts` pins that over a real store.
 class OwnDirectiveRetirementTest {
     private static final NodeId SELF = NodeId.nodeId("worker-self").expect("valid id");
     private static final NodeId OTHER = NodeId.nodeId("worker-other").expect("valid id");
     private static final ActivationDirectiveValue WORKER_DIRECTIVE = new ActivationDirectiveValue(ActivationDirectiveValue.WORKER, "", "");
     private static final ActivationDirectiveValue CORE_DIRECTIVE = new ActivationDirectiveValue(ActivationDirectiveValue.CORE, "", "");
 
-    private final AtomicReference<Option<ActivationDirectiveValue>> store = new AtomicReference<>(Option.none());
     private final AtomicBoolean draining = new AtomicBoolean();
     private final AtomicInteger halts = new AtomicInteger();
     private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
     private final OperatorWarningSink sink = OperatorWarningSink.handingOffTo(warnings::add);
 
     private OwnDirectiveRetirement observer(boolean configuredWorker) {
-        return ownDirectiveRetirement(SELF, configuredWorker, store::get, draining::get, halts::incrementAndGet, sink);
+        return ownDirectiveRetirement(SELF, configuredWorker, draining::get, halts::incrementAndGet, sink);
     }
 
     @Test
@@ -57,19 +56,6 @@ class OwnDirectiveRetirementTest {
         assertTrue(observer.halted());
         assertEquals(List.of(OperatorWarningCode.OWN_DIRECTIVE_RETIRED), ownWarningCodes());
         assertEquals(SELF.id(), ownWarnings().getFirst().subject());
-    }
-
-    @Test
-    void onRemove_replacementPresentInStore_doesNotHalt() {
-        var observer = observer(true);
-
-        observer.onPut(put(SELF, WORKER_DIRECTIVE));
-        store.set(Option.some(WORKER_DIRECTIVE));
-        observer.onRemove(remove(SELF));
-
-        assertEquals(0, halts.get());
-        assertFalse(observer.halted());
-        assertEquals(List.of(), ownWarningCodes());
     }
 
     @Test
