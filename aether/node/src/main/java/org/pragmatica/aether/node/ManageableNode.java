@@ -103,6 +103,13 @@ public interface ManageableNode {
         return coreNodeIds().contains(self());
     }
 
+    /// Whether this node is configured as a worker or spot node (a worker section, or its own seed entry labelled `worker`/`spot`): the role test
+    /// of `WorkerHierarchyAssembly.metadataServingReady`. Its replica holds only the worker-scoped keys, so a core-only read refuses here
+    /// (#3274). The default answers from [#hasCompleteClusterView], which also counts a node absent from its own seed as a worker.
+    default boolean isConfiguredWorker() {
+        return ! hasCompleteClusterView();
+    }
+
     /// Current core routing candidates, excluding worker entries in bootstrap seeds.
     default Set<NodeId> coreNodeIds() {
         return topologyConfig().coreNodes()

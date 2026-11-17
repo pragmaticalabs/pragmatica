@@ -44,6 +44,7 @@ import org.pragmatica.http.ContentType;
 import org.pragmatica.aether.api.routes.AlertRoutes;
 import org.pragmatica.aether.api.routes.ApiKeyRoutes;
 import org.pragmatica.aether.api.routes.GossipKeyRoutes;
+import org.pragmatica.aether.api.routes.WarningsRoutes;
 import org.pragmatica.aether.api.routes.ClusterAwaitQuiescedRoute;
 import org.pragmatica.aether.api.routes.ClusterConfigRoutes;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
@@ -418,6 +419,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                        () -> nodeSupplier.get()
                                                                                          .kvStore()));
         routeSources.add(ClusterAwaitQuiescedRoute.clusterAwaitQuiescedRoute(nodeSupplier));
+        routeSources.add(WarningsRoutes.warningsRoutes(nodeSupplier));
         routeSources.add(nodeSupplier.get()
                                      .clusterTopologyManager()
                                      .map(ClusterConfigApplier::clusterConfigApplier)

@@ -96,16 +96,14 @@ public sealed interface DepartureFlow {
 
     /// A leaving node's pending join is dropped; one reported unmatched is closed with the reason subject-gone (D.6 row 13).
     private static ClusterModel dropPendingJoin(ClusterModel m, Ctx ctx, NodeId node) {
-        if (m.unmatchedWarned.contains(node)) {
-            m.unmatchedWarned = m.unmatchedWarned.remove(node);
-            ctx.warn(Recoveries.JOIN_MATCHED,
-                     node.id(),
-                     Recoveries.gone(node.id(), "the node departed and its pending join was dropped"));
-        }
-
         m.pendingJoins = m.pendingJoins.remove(node);
 
-        return m;
+        return Warnings.raise(m,
+                              Recoveries.JOIN_MATCHED,
+                              node.id(),
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              Recoveries.gone(node.id(), "the node departed and its pending join was dropped"));
     }
 
     /// The pairs of a node that is leaving get no new goals.
