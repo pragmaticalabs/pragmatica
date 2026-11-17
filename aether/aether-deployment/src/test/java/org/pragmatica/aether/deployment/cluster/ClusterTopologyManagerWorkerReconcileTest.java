@@ -345,6 +345,25 @@ class ClusterTopologyManagerWorkerReconcileTest {
         commitConfigVersion(2L, entry("pool", "core", 2), entry("pool", "worker", 1));
 
         assertThat(manager.scalingHeld(core)).as("core count committed after the disable").isFalse();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 2);
+        assertThat(warnings).as("the release of the core subject is announced").containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
+    }
+
+    /// #3324: re-enabling auto-heal announces the held core subject as resumed, as it does every other held subject.
+    @Test
+    void scalingHeld_core_resumedWhenAutoHealIsReEnabled() {
+        var manager = (ClusterTopologyManagerRecord) ctm;
+        var core = ClusterTopologyManager.coreSubject();
+        seedTopology(entry("pool", "core", 3), entry("pool", "worker", 1));
+        autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, ClusterTopologyManagerRecord.scalingOf(configRef.get()))));
+
+        assertThat(manager.scalingHeld(core)).as("held while disabled").isTrue();
+
+        autoHealRef.set(Option.none());
+
+        assertThat(manager.scalingHeld(core)).as("auto-heal enabled again").isFalse();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 2);
+        assertThat(warnings).containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
     }
 
     /// v2711 survivor 9 (c34): with no auto-heal record at all, auto-heal is enabled, and every subject held earlier is announced as resumed
