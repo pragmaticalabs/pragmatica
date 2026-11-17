@@ -169,6 +169,33 @@ public sealed interface QuicClusterClient {
                                                Option<EventLoopGroup> eventLoop,
                                                QuicClusterServer.MessageReceiver messageReceiver,
                                                BootTokens bootTokens) {
+        return quicClusterClient(selfId,
+                                 selfAddress,
+                                 selfLabels,
+                                 serializer,
+                                 deserializer,
+                                 quicMetrics,
+                                 sslContext,
+                                 eventLoop,
+                                 messageReceiver,
+                                 bootTokens,
+                                 QuicLaneDataHandler.BackpressureSettler.NONE);
+    }
+
+    /// As above, handing every lane stream's writability event to `settler` (#3313): the transport passes its
+    /// backpressure-episode closer. The overloads without it pass [QuicLaneDataHandler.BackpressureSettler#NONE] and
+    /// serve transports with no episode ledger (tests).
+    static QuicClusterClient quicClusterClient(NodeId selfId,
+                                               NodeAddress selfAddress,
+                                               Map<String, String> selfLabels,
+                                               Serializer serializer,
+                                               Deserializer deserializer,
+                                               QuicTransportMetrics quicMetrics,
+                                               QuicSslContext sslContext,
+                                               Option<EventLoopGroup> eventLoop,
+                                               QuicClusterServer.MessageReceiver messageReceiver,
+                                               BootTokens bootTokens,
+                                               QuicLaneDataHandler.BackpressureSettler settler) {
         return new QuicClusterClientInstance(selfId,
                                              selfAddress,
                                              selfLabels,
@@ -178,7 +205,8 @@ public sealed interface QuicClusterClient {
                                              sslContext,
                                              eventLoop,
                                              messageReceiver,
-                                             bootTokens);
+                                             bootTokens,
+                                             settler);
     }
 
     record Unused() implements QuicClusterClient {
@@ -317,7 +345,8 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                               QuicSslContext sslContext,
                               Option<EventLoopGroup> eventLoop,
                               QuicClusterServer.MessageReceiver messageReceiver,
-                              BootTokens bootTokens) {
+                              BootTokens bootTokens,
+                              QuicLaneDataHandler.BackpressureSettler settler) {
         this.selfId = selfId;
         this.selfAddress = selfAddress;
         this.selfLabels = JoinGenerationGuard.advertised(selfLabels);
@@ -329,7 +358,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         this.eventLoopGroup = eventLoop.or(QuicClusterClientInstance::createEventLoop);
         this.messageReceiver = messageReceiver;
         this.bootTokens = bootTokens;
-        this.laneRouter = new PeerOpenedLaneRouter(deserializer, quicMetrics, messageReceiver, log);
+        this.laneRouter = new PeerOpenedLaneRouter(deserializer, quicMetrics, messageReceiver, log, settler);
     }
 
     @Override
@@ -946,12 +975,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             ctx.pipeline()
                .replace(this,
                         "data-handler",
-                        new QuicLaneDataHandler(peerId,
-                                                StreamType.CONTROL,
-                                                deserializer,
-                                                quicMetrics,
-                                                messageReceiver,
-                                                log));
+                        laneRouter.dataHandler(peerId, StreamType.CONTROL));
             log.info("QUIC Hello handshake complete with peer {} — opening data lanes", peerId);
             openDataLanes(peerConnection, peerId);
         }
@@ -979,7 +1003,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                     ch.pipeline()
                       .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
                       .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
-                      .addLast(new QuicLaneDataHandler(peerNodeId, lane, deserializer, quicMetrics, messageReceiver, log));
+                      .addLast(laneRouter.dataHandler(peerNodeId, lane));
                 }
             };
 
@@ -1038,7 +1062,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                     ch.pipeline()
                       .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
                       .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
-                      .addLast(new QuicLaneDataHandler(peerNodeId, lane, deserializer, quicMetrics, messageReceiver, log));
+                      .addLast(laneRouter.dataHandler(peerNodeId, lane));
                 }
             };
 

@@ -353,6 +353,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// [#viewReadObserverForTests].
     private volatile Consumer<List<NodeId>> viewReadObserver = ignored -> {};
 
+    /// Test hook (#3313): told of every lane stream's writability event after the closer ran for it
+    /// ([#onStreamWritable]). Lets a test tell the event itself, not a write, reached the closer. Defaults to a no-op;
+    /// set only through [#writabilityEventObserverForTests].
+    private volatile Consumer<QuicStreamChannel> writabilityEventObserver = ignored -> {};
+
     /// REMOVE view-changes report a connectivity observation upstream via
     /// `PeerConnectivityReporter` on leader and follower alike (#691 removed the leader-only
     /// `QuicDisconnectListener`, a v1 surface whose only consumer was deleted with the
@@ -805,7 +810,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      Option.empty(),
                                                      this::onPeerConnected,
                                                      this::onMessageReceived,
-                                                     bootTokens);
+                                                     bootTokens,
+                                                     this::onStreamWritable);
         client = QuicClusterClient.quicClusterClient(self.id(),
                                                      self.address(),
                                                      self.labels(),
@@ -815,7 +821,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      clientSslContext,
                                                      Option.empty(),
                                                      this::onMessageReceived,
-                                                     bootTokens);
+                                                     bootTokens,
+                                                     this::onStreamWritable);
         // #1461: a stop() that overtook this start (after the check above) may have read `server`/`client`
         // before they were assigned and released nothing. Re-checked after the assignment, this start then
         // releases what it just created itself.
@@ -1422,7 +1429,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      Option.empty(),
                                                      this::onPeerConnected,
                                                      this::onMessageReceived,
-                                                     bootTokens);
+                                                     bootTokens,
+                                                     this::onStreamWritable);
         client = QuicClusterClient.quicClusterClient(self.id(),
                                                      self.address(),
                                                      self.labels(),
@@ -1432,7 +1440,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      newClientSsl,
                                                      Option.empty(),
                                                      this::onMessageReceived,
-                                                     bootTokens);
+                                                     bootTokens,
+                                                     this::onStreamWritable);
         var serverRef = server;
 
         return serverRef.start(port)
@@ -3180,6 +3189,21 @@ public class QuicClusterNetwork implements ClusterNetwork {
                             .forEach(stream -> settle(stream, true));
     }
 
+    /// #3313 — a lane stream's writability event, wired at every handler construction through
+    /// [PeerOpenedLaneRouter#dataHandler] (the server and client get it as their [QuicLaneDataHandler.BackpressureSettler]).
+    /// It runs the closer for the stream: the end of an episode whose stream turned writable must not wait for a write.
+    @Contract
+    private void onStreamWritable(QuicStreamChannel stream) {
+        settleEpisodes(stream);
+        writabilityEventObserver.accept(stream);
+    }
+
+    /// The settler the server and client are built with: what a lane stream's writability event runs. Package-private
+    /// so a test can drive the event through the same settler a production construction receives.
+    QuicLaneDataHandler.BackpressureSettler backpressureSettler() {
+        return this::onStreamWritable;
+    }
+
     /// Package-private test seam: the number of open backpressure episodes, so tests can show an entry is gone.
     int openBackpressureEpisodesForTests() {
         return backpressureEpisodes.size();
@@ -4154,6 +4178,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
         this.attachObserver = observer == null
                               ? ignored -> {}
                               : observer;
+    }
+
+    /// Package-private test hook (#3313) — observe every lane stream's writability event. A null observer restores the
+    /// no-op.
+    @Contract
+    void writabilityEventObserverForTests(Consumer<QuicStreamChannel> observer) {
+        this.writabilityEventObserver = observer == null
+                                        ? ignored -> {}
+                                        : observer;
     }
 
     /// Package-private test hook (#2971) — observe every view read for a view-carrying observation, on the reading

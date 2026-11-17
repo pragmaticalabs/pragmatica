@@ -17,6 +17,7 @@ package org.pragmatica.consensus.net.quic;
 
 import java.nio.ByteBuffer;
 
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.quic.QuicClusterServer.MessageReceiver;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
@@ -43,10 +44,15 @@ import static org.pragmatica.lang.Unit.unit;
 /// while the writer saw success. Both ends now attribute a peer-opened stream by its 1-byte preamble
 /// and read it with the same [QuicLaneDataHandler]; which stream the lane keeps is decided by
 /// [QuicPeerConnection#registerStream], identically at both ends.
+///
+/// It is also the ONE place a [QuicLaneDataHandler] is built ([#dataHandler]): every lane stream of both ends, the
+/// CONTROL stream, the dialer's data lanes, lazily (re)opened lanes and peer-opened lanes, gets its handler here, so all
+/// of them hand their writability event to the same [QuicLaneDataHandler.BackpressureSettler] (#3313).
 record PeerOpenedLaneRouter(Deserializer deserializer,
                             QuicTransportMetrics quicMetrics,
                             MessageReceiver messageReceiver,
-                            Logger log) {
+                            Logger log,
+                            QuicLaneDataHandler.BackpressureSettler settler) {
     /// Parent-QuicChannel attribute carrying the per-peer connection. Stamped once the Hello
     /// handshake has verified the peer (acceptor: on the Hello; dialer: on the Hello response) and
     /// read by each peer-opened data-lane stream to find the connection it belongs to.
@@ -113,15 +119,15 @@ record PeerOpenedLaneRouter(Deserializer deserializer,
         ctx.pipeline()
            .replace(preambleHandler,
                     "data-handler",
-                    new QuicLaneDataHandler(peerConnection.peerId(),
-                                            lane,
-                                            deserializer,
-                                            quicMetrics,
-                                            messageReceiver,
-                                            log));
+                    dataHandler(peerConnection.peerId(), lane));
         log.debug("Attached peer-opened {} lane stream from peer {}", lane, peerConnection.peerId());
 
         return unit();
+    }
+
+    /// The data handler of `peerId`'s `lane` stream, wired to this transport's [#settler].
+    QuicLaneDataHandler dataHandler(NodeId peerId, StreamType lane) {
+        return new QuicLaneDataHandler(peerId, lane, deserializer, quicMetrics, messageReceiver, log, settler);
     }
 
     private Unit refuseUnverified(ChannelHandlerContext ctx, StreamType lane) {

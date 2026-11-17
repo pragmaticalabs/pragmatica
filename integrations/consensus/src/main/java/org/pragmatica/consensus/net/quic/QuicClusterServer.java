@@ -149,6 +149,35 @@ public sealed interface QuicClusterServer {
                                                PeerConnectionHandler connectionHandler,
                                                MessageReceiver messageReceiver,
                                                BootTokens bootTokens) {
+        return quicClusterServer(selfId,
+                                 selfAddress,
+                                 selfLabels,
+                                 serializer,
+                                 deserializer,
+                                 quicMetrics,
+                                 sslContext,
+                                 sharedEventLoop,
+                                 connectionHandler,
+                                 messageReceiver,
+                                 bootTokens,
+                                 QuicLaneDataHandler.BackpressureSettler.NONE);
+    }
+
+    /// As above, handing every lane stream's writability event to `settler` (#3313): the transport passes its
+    /// backpressure-episode closer. The overloads without it pass [QuicLaneDataHandler.BackpressureSettler#NONE] and
+    /// serve transports with no episode ledger (tests).
+    static QuicClusterServer quicClusterServer(NodeId selfId,
+                                               NodeAddress selfAddress,
+                                               Map<String, String> selfLabels,
+                                               Serializer serializer,
+                                               Deserializer deserializer,
+                                               QuicTransportMetrics quicMetrics,
+                                               QuicSslContext sslContext,
+                                               Option<EventLoopGroup> sharedEventLoop,
+                                               PeerConnectionHandler connectionHandler,
+                                               MessageReceiver messageReceiver,
+                                               BootTokens bootTokens,
+                                               QuicLaneDataHandler.BackpressureSettler settler) {
         return new QuicClusterServerInstance(selfId,
                                              selfAddress,
                                              selfLabels,
@@ -159,7 +188,8 @@ public sealed interface QuicClusterServer {
                                              sharedEventLoop,
                                              connectionHandler,
                                              messageReceiver,
-                                             bootTokens);
+                                             bootTokens,
+                                             settler);
     }
 
     record Unused() implements QuicClusterServer {
@@ -239,7 +269,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                               Option<EventLoopGroup> sharedEventLoop,
                               PeerConnectionHandler connectionHandler,
                               MessageReceiver messageReceiver,
-                              BootTokens bootTokens) {
+                              BootTokens bootTokens,
+                              QuicLaneDataHandler.BackpressureSettler settler) {
         this.selfId = selfId;
         this.selfAddress = selfAddress;
         this.selfLabels = JoinGenerationGuard.advertised(selfLabels);
@@ -251,7 +282,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         this.connectionHandler = connectionHandler;
         this.messageReceiver = messageReceiver;
         this.bootTokens = bootTokens;
-        this.laneRouter = new PeerOpenedLaneRouter(deserializer, quicMetrics, messageReceiver, log);
+        this.laneRouter = new PeerOpenedLaneRouter(deserializer, quicMetrics, messageReceiver, log, settler);
     }
 
     @Override
@@ -719,12 +750,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             ctx.pipeline()
                .replace(this,
                         "data-handler",
-                        new QuicLaneDataHandler(hello.sender(),
-                                                StreamType.CONTROL,
-                                                deserializer,
-                                                quicMetrics,
-                                                messageReceiver,
-                                                log));
+                        laneRouter.dataHandler(hello.sender(), StreamType.CONTROL));
             log.info("QUIC Hello handshake complete with peer {} (address={})", hello.sender(), hello.address());
             connectionHandler.onPeerConnected(peerConnection, hello.address(), hello.labels());
         }
@@ -760,7 +786,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                     ch.pipeline()
                       .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
                       .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
-                      .addLast(new QuicLaneDataHandler(peerNodeId, lane, deserializer, quicMetrics, messageReceiver, log));
+                      .addLast(laneRouter.dataHandler(peerNodeId, lane));
                 }
             };
 

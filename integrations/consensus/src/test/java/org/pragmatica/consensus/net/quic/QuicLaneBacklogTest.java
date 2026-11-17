@@ -48,6 +48,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.AWAIT;
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.PEER;
+import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.fireWritabilityEvent;
 
 /// #3168 / #3179 fix round 1: the per-stream [LaneBacklog] seen through [QuicClusterNetwork]'s write path. Each test
 /// names the checklist item it pins; each goes red with that item's fix reverted.
@@ -461,10 +462,10 @@ class QuicLaneBacklogTest {
 
     /// Every held frame expires while the stream is unwritable: the episode stays open (the last write attempt found the
     /// stream unwritable), and the closer run by the stream's writability event ends it once the stream turns writable.
-    /// Nothing is written to the lane after the holds: the end must not depend on later traffic. The test runs the closer
-    /// as the writability event does (the handler wiring is pinned by its own tests).
+    /// Nothing is written to the lane after the holds: the end must not depend on later traffic. The stream's writability
+    /// event, delivered through a production-built data handler, is the only closer run after the holds.
     @Test
-    void episode_everyHeldFrameGivenUp_endsWhenTheStreamTurnsWritable_withoutALaterWrite() {
+    void episode_everyHeldFrameGivenUp_endsWhenTheStreamTurnsWritable_withoutALaterWrite() throws Exception {
         var network = LossAccountingFixtures.network(5, TimeSpan.timeSpan(10).millis());
         var lane = new Lane(succeeded(), -1);
 
@@ -477,7 +478,7 @@ class QuicLaneBacklogTest {
             assertThat(network.openBackpressureEpisodesForTests()).as("still unwritable: the episode stays open").isEqualTo(1);
 
             lane.writable.set(true);
-            network.settleEpisodes(lane.ch);
+            fireWritabilityEvent(network, lane.ch);
 
             awaitWithin("the episode ends once the stream is writable", AWAIT, () -> network.openBackpressureEpisodesForTests() == 0);
             awaitWithin("the backlog entry goes", AWAIT, () -> network.laneBacklogCountForTests() == 0);
@@ -512,9 +513,9 @@ class QuicLaneBacklogTest {
     }
 
     /// A held DHT frame is given up: the episode it ends is keyed by its OWN lane, (peer, DHT), whichever stream held it
-    /// (a DHT frame can share the CONSENSUS stream). The closer is run as the stream's writability event runs it.
+    /// (a DHT frame can share the CONSENSUS stream). The stream's writability event alone ends it.
     @Test
-    void episode_dhtFrameGivenUp_endsTheEpisodeOfItsOwnLane() {
+    void episode_dhtFrameGivenUp_endsTheEpisodeOfItsOwnLane() throws Exception {
         var network = LossAccountingFixtures.network(5, TimeSpan.timeSpan(10).millis());
         var lane = new Lane(succeeded(), -1);
 
@@ -525,7 +526,7 @@ class QuicLaneBacklogTest {
                         AWAIT,
                         () -> network.quicMetrics().droppedAfterSentCount(StreamType.DHT, DropSite.RETRY_GAVE_UP) == 1L);
             lane.writable.set(true);
-            network.settleEpisodes(lane.ch);
+            fireWritabilityEvent(network, lane.ch);
 
             awaitWithin("the DHT episode ends once the stream is writable", AWAIT, () -> network.openBackpressureEpisodesForTests() == 0);
 

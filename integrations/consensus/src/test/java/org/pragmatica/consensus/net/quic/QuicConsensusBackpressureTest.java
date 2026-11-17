@@ -534,6 +534,32 @@ class QuicConsensusBackpressureTest {
             }
         }
 
+        /// #3313 T3: a refused fast-fail write (no backlog, so no frame exit will ever run the closer) opens an episode on a
+        /// live, unwritable stream; the stream turns writable and its writability event, delivered through a
+        /// production-built data handler, ends the episode with no later write.
+        @Test
+        void refusedFastFailEpisode_endsOnTheWritabilityEventAlone() throws Exception {
+            var writableNow = new AtomicBoolean(false);
+            var lane = switchableChannel(writableNow);
+            var network = network();
+
+            try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+                assertThat(network.writeIfWritableForTest(lane, payload(), PEER, StreamType.METRICS))
+                    .isInstanceOf(WriteOutcome.BackpressureRefused.class);
+                assertThat(network.openBackpressureEpisodesForTests()).as("the refusal opened the episode").isEqualTo(1);
+
+                writableNow.set(true);
+                assertThat(network.openBackpressureEpisodesForTests()).as("writable, but nothing ran the closer yet")
+                                                                      .isEqualTo(1);
+
+                LossAccountingFixtures.fireWritabilityEvent(network, lane);
+
+                assertThat(network.openBackpressureEpisodesForTests()).as("the writability event ended the episode").isZero();
+                assertSummaryOf(capture, 1);
+                verify(lane, never()).writeAndFlush(any());
+            }
+        }
+
         /// #3313 ruling: backpressure is a state of a live stream. Writes refused because the stream is gone open no
         /// episode: no entry WARN, no summary, nothing left in the map (the drop metrics count them).
         @Test
