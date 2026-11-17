@@ -58,10 +58,10 @@ RabiaEpoch	integrations/consensus/src/main/java	paper_d2_np	pass	-	-	D2 paper ru
 RabiaEpoch	integrations/consensus/src/main/java	paper_d12_np	pass	-	-	D12 paper rule under sync adoption: safe
 RabiaEpoch	integrations/consensus/src/main/java	noretainmaj	fail	Progress	-	D6 target-majority check dropped: a reconfiguration can leave a roster that cannot decide
 RabiaEpoch	integrations/consensus/src/main/java	noprefix	fail	GovernedVote	-	in-order commit assumption removed: a ballot carries an epoch that does not govern its slot
-RabiaEpoch	integrations/consensus/src/main/java	codesync_gov	fail	GovernedVote	-	the code without prefix, LIVE and COLD responses: a COLD answer carries the phase without the roster, so a lagging replica casts a ballot at an epoch that does not govern its slot (acceptsBallot does not count it)
-RabiaEpoch	integrations/consensus/src/main/java	codesync_agree	fail	Agreement	-	#3213: a configuration-less (COLD) sync installs a later phase at epoch 0, and two lagging replicas re-decide a slot at epoch 0 that the new roster decided at epoch 1
-RabiaEpoch	integrations/consensus/src/main/java	codesync_gov_nocoldconfig	fail	GovernedVote	-	#3213 mutant ("coldconfig" dropped, the pre-#3216 COLD answer): the phase arrives without the roster (unrun)
-RabiaEpoch	integrations/consensus/src/main/java	codesync_agree_nocoldconfig	fail	Agreement	-	#3213 mutant ("coldconfig" dropped): two lagging replicas re-decide at epoch 0 a slot the new roster decided at epoch 1 (unrun)
+RabiaEpoch	integrations/consensus/src/main/java	codesync_gov	pass	-	-	the code with "coldconfig" (#3216): a COLD answer is eligible only as a LIVE answer at the same epoch and roster, so no ungoverned ballot is cast (the pre-fix behaviour is codesync_gov_nocoldconfig); exhaustive, 15,710,785 distinct, depth 23
+RabiaEpoch	integrations/consensus/src/main/java	codesync_agree	pass	-	-	the code with "coldconfig" (#3216): a COLD answer never installs a later phase at epoch 0 (the pre-fix behaviour is codesync_agree_nocoldconfig); exhaustive, 15,710,785 distinct, depth 23
+RabiaEpoch	integrations/consensus/src/main/java	codesync_gov_nocoldconfig	fail	GovernedVote	-	#3213 mutant ("coldconfig" dropped, the pre-#3216 COLD answer): the phase arrives without the roster
+RabiaEpoch	integrations/consensus/src/main/java	codesync_agree_nocoldconfig	fail	Agreement	-	#3213 mutant ("coldconfig" dropped): two lagging replicas re-decide at epoch 0 a slot the new roster decided at epoch 1
 RabiaEpoch	integrations/consensus/src/main/java	nocrashstop	fail	Agreement	-	crash-stop assumption removed (relay without vote evidence): two values committed
 RabiaEpoch	integrations/consensus/src/main/java	noexactepoch_noprefix	fail	Agreement	-	D6 exact-epoch counting dropped under sync adoption: two values committed
 RabiaEpoch	integrations/consensus/src/main/java	paper_d6_np	fail	Agreement	-	D6 paper rule under sync adoption: two values committed (the paper rule is unsafe against sync adoption)
@@ -84,15 +84,15 @@ RabiaAdopt	integrations/consensus/src/main/java	noselfvouch_savefail	pass	-	-	as
 RabiaAdopt	integrations/consensus/src/main/java	paperD4	pass	-	-	D4 paper rule (adopt from any single response): stays green
 RabiaAdopt	integrations/consensus/src/main/java	paperD5	pass	-	-	D5 paper rule (newer epoch from any single response): stays green
 RabiaAdopt	integrations/consensus/src/main/java	paperD5iso	pass	-	-	D5 paper rule, newer-epoch path only: stays green
-RabiaAdopt	integrations/consensus/src/main/java	rjT_allfixes	fail	Agreement	-	#3211: a restarted voter pauses from Syncing and resumes straight to active with no sync round, then decides a slot again
+RabiaAdopt	integrations/consensus/src/main/java	rjT_allfixes	pass	-	-	token-memory rejoin with "syncresume" (#3217): a voter paused from Syncing resumes to syncing, not active; exhaustive, 12,784,410 distinct, depth 21
 RabiaAdopt	integrations/consensus/src/main/java	rjT_nooneconfig	pass	-	-	token-memory rejoin, D5 one-configuration check dropped (vacuous for rejoin)
-RabiaAdopt	integrations/consensus/src/main/java	rjT_noselfvouch	fail	Agreement	-	#3211 with D4 self-vouch dropped: same pause-from-Syncing resume, two values chosen
-RabiaAdopt	integrations/consensus/src/main/java	rjT_allfixes_savefail	fail	Agreement	-	#3211 with a failing save on pause: the pause-from-Syncing resume still decides a slot again
-RabiaAdopt	integrations/consensus/src/main/java	rjT_noselfvouch_savefail	fail	Agreement	-	#3211 with a failing save on pause, D4 self-vouch dropped
+RabiaAdopt	integrations/consensus/src/main/java	rjT_noselfvouch	pass	-	-	#3217 fixed, D4 self-vouch dropped: self-vouch is not reached under token rejoin; exhaustive, 12,784,410 distinct (same as rjT_allfixes), depth 21
+RabiaAdopt	integrations/consensus/src/main/java	rjT_allfixes_savefail	pass	-	-	"syncresume" with a failing save on pause: a paused Syncing roster member saves nothing and resumes to syncing; exhaustive, 16,791,658 distinct, depth 21
+RabiaAdopt	integrations/consensus/src/main/java	rjT_noselfvouch_savefail	pass	-	-	as rjT_allfixes_savefail with D4 self-vouch dropped; exhaustive, 16,791,658 distinct, depth 21
 RabiaAdopt	integrations/consensus/src/main/java	rjT_paperD4	pass	-	-	token-memory rejoin, D4 paper rule (vacuous for rejoin)
 RabiaAdopt	integrations/consensus/src/main/java	rjT_paperD5	pass	-	-	token-memory rejoin, D5 paper rule (vacuous for rejoin)
-RabiaAdopt	integrations/consensus/src/main/java	rjT_nosyncresume	fail	Agreement	-	#3211 mutant ("syncresume" dropped, the pre-#3217 code): a voter paused from Syncing resumes straight to active and decides a slot again (unrun)
-RabiaAdopt	integrations/consensus/src/main/java	rjT_nosyncresume_savefail	fail	Agreement	-	#3211 mutant with a failing save on pause (unrun)
+RabiaAdopt	integrations/consensus/src/main/java	rjT_nosyncresume	fail	Agreement	-	#3211 mutant ("syncresume" dropped, the pre-#3217 code): a voter paused from Syncing resumes straight to active and decides a slot again
+RabiaAdopt	integrations/consensus/src/main/java	rjT_nosyncresume_savefail	fail	Agreement	-	#3211 mutant with a failing save on pause
 RabiaAdopt	integrations/consensus/src/main/java	ctl_rjTAmnesiac	pass	-	-	control: under token memory a rejoined amnesiac never adopts
 RabiaAdopt	integrations/consensus/src/main/java	ctl_rjTAmnesiac1	pass	-	-	control: as ctl_rjTAmnesiac, 1 responder
 RabiaAdopt	integrations/consensus/src/main/java	ctl_rjTAmnesiac1_selfvouch	pass	-	-	control: as ctl_rjTAmnesiac1 with self-vouch
@@ -132,7 +132,7 @@ RabiaAdopt	integrations/consensus/src/main/java	ballotlossD5_nooneconfig	fail	Ag
 RabiaAdopt	integrations/consensus/src/main/java	ballotlossD5_noselfvouch	fail	Agreement	-	ballots lost on pause, newer-epoch path only, D4 self-vouch dropped: two values chosen
 RabiaAdopt	integrations/consensus/src/main/java	ctl_held	fail	Held	-	negative control for Held: a responder answering with an arbitrary log hands over a value nobody chose
 RabiaAdopt	integrations/consensus/src/main/java	resync	pass	-	-	D10: allfixes with Resync enabled (far-future ballot or expired gap timer re-enters Syncing): Agreement, Held, DurableDecision hold (TLC: exhaustive PASS, 9,843,922 distinct, 148,011,336 generated, 0 left on queue)
-RabiaAdopt	integrations/consensus/src/main/java	resync_noselfvouch	fail	Agreement	-	D10 with D4 self-vouch dropped: a resynced voter adopts on n/2 responders (RED: control passes exhaustively (9,843,922 distinct), does not discriminate)
+RabiaAdopt	integrations/consensus/src/main/java	resync_noselfvouch	pass	-	-	D10 with D4 self-vouch dropped: exhaustive pass (9,843,922 distinct); control does not discriminate: self-vouch is not load-bearing for a resynced voter while ballots are kept [hypothesis, rabiam3; probe not run]
 RabiaAdopt	integrations/consensus/src/main/java	resync_ballotloss	fail	Agreement	-	D10 with ballot memory lost on adoption (KeepBallots FALSE): a resynced voter may vote a slot twice (TLC: Agreement violated at 49,589 distinct)
 RabiaAdopt	integrations/consensus/src/main/java	ctl_resync	fail	NoSyncingVoter	-	instrument for Resync: no crash, restart or pause, a founding node reaches Syncing only through Resync (TLC: red in 42 distinct states)
 RabiaAdopt	integrations/consensus/src/main/java	ctl_resync_off	pass	-	-	positive control for ctl_resync: same bounds with Resync disabled hold NoSyncingVoter (TLC: exhaustive, 7,195 distinct)
