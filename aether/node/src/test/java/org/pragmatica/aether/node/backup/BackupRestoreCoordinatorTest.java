@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -1128,6 +1129,143 @@ class BackupRestoreCoordinatorTest {
             fireRetries(3);
 
             assertThat(warnings).as("the same step repeats: no new warning").hasSize(2);
+        }
+
+        /// The warning follows its text, which is a function of (step, marker committed): the same step failing again once a REAL pass
+        /// has committed the marker is a new warning with the marker advice, and a third identical failure is silent. The pass that commits
+        /// the marker then fails transiently (the committed leader changes, a non-blocked cause), so the latch still holds the first warning.
+        @Test
+        void theBlockedWarning_isRaisedAgain_whenAPassCommitsTheMarkerBetweenTwoFailuresOfTheSameStep() throws IOException {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            var aside = temp.resolve("remote-aside.git");
+
+            Files.move(Path.of(remote), aside);
+            var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            worker.advance(0);
+            fireRetries(3);
+
+            assertThat(outcome()).as("CONTROL: no marker").isEqualTo(BackupRestoreOutcome.UNKNOWN);
+            assertThat(warnings).as("CONTROL: one warning, unmarked").hasSize(1);
+            assertThat(warnings.getFirst().detail()).contains(Step.SOURCE_UNREACHABLE.label(), FRESH_EXIT).doesNotContain("is in progress");
+
+            var sourceTakenDown = new AtomicBoolean(false);
+
+            whileRestoring = () -> takeTheSourceDownAndChangeTheLeader(sourceTakenDown, remote, aside);
+            Files.move(aside, Path.of(remote));
+            fireRetries(3);
+
+            assertThat(sourceTakenDown).as("CONTROL: the pass committed the marker and then lost the source").isTrue();
+            assertThat(outcome()).as("CONTROL: the marker is committed").isEqualTo(BackupRestoreOutcome.IN_PROGRESS);
+            assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED, Code.BACKUP_RESTORE_BLOCKED);
+            assertThat(warnings.get(1).detail()).contains(Step.SOURCE_UNREACHABLE.label(), "is in progress", RESUME_EXIT)
+                                                .doesNotContain("No restore marker", FRESH_EXIT);
+
+            fireRetries(3);
+
+            assertThat(warnings).as("the same step under the same marker state repeats: no new warning").hasSize(2);
+        }
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        private void takeTheSourceDownAndChangeTheLeader(AtomicBoolean sourceTakenDown, String remote, Path aside) {
+            if (sourceTakenDown.compareAndSet(false, true)) {
+                try {
+                    Files.move(Path.of(remote), aside);
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
+                }
+                kvStore.processCommitted(kvStore.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE,
+                                                                                                LeaderValue.leaderValue(NodeId.nodeId("node-2")
+                                                                                                                              .unwrap(),
+                                                                                                                        2L)))),
+                                         ++slot);
+            }
+        }
+
+        /// The advice speaks of a restore in progress only for an `IN_PROGRESS` marker, the condition the pass resumes on. A failure that
+        /// lands after a terminal decision was committed is stale: it announces nothing, and the next pass finishes at once.
+        @Test
+        void aFailureLandingAfterATerminalDecision_announcesNothing_andTheNextPassFinishes() {
+            var coordinator = coordinator(Option.some(source(Option.some(temp.resolve("gone.git").toString()), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
+                                            BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.RESTORED, LINEAGE, 3, 40, ABSENT_COMMIT)));
+            worker.advance(0);
+            fireRetries(2);
+
+            assertThat(outcome()).as("CONTROL: the terminal decision stands").isEqualTo(BackupRestoreOutcome.RESTORED);
+            assertThat(warnings).as("no warning, in particular none with an in-progress or no-marker advice").isEmpty();
+            assertThat(coordinator.isComplete()).as("the next pass finished at once").isTrue();
+        }
+
+        /// Recovery clears the latch: after the block is closed on stopping leading, the same step failing under the next term is a new
+        /// warning (the `recoverRestoreBlocked` promise: a leader that still cannot read the backup raises it again).
+        @Test
+        void afterTheBlockIsClosedOnLosingLeadership_theSameStepFailingAgain_raisesANewWarning() {
+            var coordinator = coordinator(Option.some(source(Option.some(temp.resolve("never.git").toString()), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            worker.advance(0);
+            fireRetries(2);
+            coordinator.deactivate();
+            assertThat(warnings).extracting(BackupWarning::code)
+                                .as("CONTROL: blocked, then closed")
+                                .containsExactly(Code.BACKUP_RESTORE_BLOCKED, Code.BACKUP_RESTORE_UNBLOCKED);
+
+            retries.clear();
+            coordinator.activate();
+            worker.advance(0);
+            fireRetries(2);
+
+            assertThat(warnings).extracting(BackupWarning::code)
+                                .containsExactly(Code.BACKUP_RESTORE_BLOCKED, Code.BACKUP_RESTORE_UNBLOCKED, Code.BACKUP_RESTORE_BLOCKED);
+        }
+
+        /// Success clears the latch: a block closed by the restore finishing leaves nothing standing, so stopping afterwards raises no
+        /// second recovery.
+        @Test
+        void afterTheBlockIsClosedBySuccess_stoppingRaisesNoSecondRecovery() throws IOException {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var aside = temp.resolve("remote-aside.git");
+
+            Files.move(Path.of(remote), aside);
+            var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            worker.advance(0);
+            fireRetries(2);
+            Files.move(aside, Path.of(remote));
+            fireRetries(1);
+            for (int i = 0; i < 200 && !coordinator.isComplete(); i++) {
+                fireRetries(1);
+            }
+
+            assertThat(warnings).extracting(BackupWarning::code)
+                                .as("CONTROL: blocked, then closed by the decision")
+                                .containsExactly(Code.BACKUP_RESTORE_BLOCKED, Code.BACKUP_RESTORE_UNBLOCKED);
+
+            coordinator.onNodeStopping();
+
+            assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED, Code.BACKUP_RESTORE_UNBLOCKED);
+        }
+
+        /// No fault injection: a remote branch that names a non-commit object fetches fine and then fails to resolve to a commit.
+        @Test
+        void aRemoteBranchNamingANonCommit_namesRefUnresolved_andTheUnmarkedAdvice() throws IOException {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var blob = temp.resolve("blob.txt");
+
+            Files.writeString(blob, "not a commit\n");
+            var blobId = git(Path.of(remote), "hash-object", "-w", blob.toString()).strip();
+
+            Files.writeString(Path.of(remote).resolve("refs/heads/backup"), blobId + "\n");
+            blockOver(remote, Option.none());
+
+            assertNamesStepAndAdvice(Step.REF_UNRESOLVED, false);
         }
 
         /// One warning, naming `step`, with the advice chosen by marker presence alone, and no sentence predicting the outcome.

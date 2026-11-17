@@ -112,8 +112,9 @@ public final class BackupRestoreCoordinator {
     private final RetryScheduler scheduler;
     private final AtomicBoolean leader = new AtomicBoolean(false);
     private final AtomicBoolean done = new AtomicBoolean(false);
-    /// The step of the last announced `backup-restore-blocked` warning; none when not blocked. A new warning follows a change of step.
-    private final AtomicReference<Option<Step>> blocked = new AtomicReference<>(Option.none());
+    /// What the last announced `backup-restore-blocked` warning said, as the pair its text is a function of; none when not blocked.
+    /// A new warning follows any change of the pair, never a repeat.
+    private final AtomicReference<Option<Announced>> blocked = new AtomicReference<>(Option.none());
     private final AtomicBoolean missingReported = new AtomicBoolean(false);
     private final AtomicReference<ScheduledFuture<?>> pendingRetry = new AtomicReference<>();
     private final AtomicReference<TimeSpan> nextBackoff = new AtomicReference<>(INITIAL_BACKOFF);
@@ -123,6 +124,13 @@ public final class BackupRestoreCoordinator {
     public record Source(KvBackupService service, RestoreMode mode) {
         public static Source source(KvBackupService service, RestoreMode mode) {
             return new Source(service, mode);
+        }
+    }
+
+    /// The facts a blocked warning's text depends on: the failed step, and whether an `IN_PROGRESS` marker is committed (the advice).
+    private record Announced(Step step, boolean marked) {
+        static Announced announced(Step step, boolean marked) {
+            return new Announced(step, marked);
         }
     }
 
@@ -362,9 +370,15 @@ public final class BackupRestoreCoordinator {
     }
 
     private Promise<Unit> continueFrom(BackupRestoreValue marker) {
-        return marker.outcome() == BackupRestoreOutcome.IN_PROGRESS
+        return inProgress(marker)
                ? resume(marker)
                : Promise.unitPromise();
+    }
+
+    /// The one condition that makes a committed decision a restore to continue: [#continueFrom] resumes on it and the blocked
+    /// advice speaks of a pinned restore on it, so the two cannot disagree.
+    private static boolean inProgress(BackupRestoreValue marker) {
+        return marker.outcome() == BackupRestoreOutcome.IN_PROGRESS;
     }
 
     private Promise<Unit> decide() {
@@ -801,14 +815,18 @@ public final class BackupRestoreCoordinator {
                  decision.commit());
     }
 
+    /// The decision is read once: the latch key and the advice come from the same read. A failure that lands after a terminal
+    /// decision was committed is stale (the next pass finishes at once), so it announces nothing and leaves the latch alone.
     @Contract
     private void onFailure(Cause cause) {
-        if (cause instanceof RestoreError.Blocked blockedCause && announce(blockedCause)) {
+        var decision = RestoreGate.decision(kvStore);
+
+        if (cause instanceof RestoreError.Blocked blockedCause && !settled(decision) && announce(blockedCause, decision)) {
             // Also an OperatorWarning cluster event through the node's sink ([BackupWarning.Sink#operatorWarnings]).
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_BLOCKED,
                                                       cause.message()
                                                      + "; this cluster will not start fresh on its own, and writes to cluster state"
-                                                     + " stay refused while the restore is blocked. " + blockedAdvice()));
+                                                     + " stay refused while the restore is blocked. " + blockedAdvice(decision)));
         } else {
             LOG.debug("Backup restore: transient failure: {} — will retry", cause.message());
         }
@@ -816,9 +834,16 @@ public final class BackupRestoreCoordinator {
         scheduleRetry();
     }
 
-    /// True when this step differs from the last announced one: the warning follows the failed step, a repeat stays at debug.
-    private boolean announce(RestoreError.Blocked cause) {
-        var announced = Option.some(cause.step());
+    /// A terminal decision is committed: nothing is left to restore, so nothing is blocked.
+    private static boolean settled(Option<BackupRestoreValue> decision) {
+        return decision.filter(marker -> !inProgress(marker))
+                       .isPresent();
+    }
+
+    /// True when the pair (failed step, `IN_PROGRESS` marker committed) differs from the last announced one: the warning is
+    /// re-raised exactly when its text would differ, a repeat stays at debug.
+    private boolean announce(RestoreError.Blocked cause, Option<BackupRestoreValue> decision) {
+        var announced = Option.some(Announced.announced(cause.step(), decision.isPresent()));
 
         return ! blocked.getAndSet(announced)
                         .equals(announced);
@@ -827,8 +852,8 @@ public final class BackupRestoreCoordinator {
     /// The advice is a function of one fact, the one [#pass] folds on: is a restore marker committed? It never depends on the
     /// step, because the coordinator cannot know whether a failed step is repairable at the source (#3300). No sentence promises
     /// that a retry will succeed or that nothing can help.
-    private String blockedAdvice() {
-        return RestoreGate.decision(kvStore).fold(this::unmarkedAdvice, this::markedAdvice);
+    private String blockedAdvice(Option<BackupRestoreValue> decision) {
+        return decision.fold(this::unmarkedAdvice, this::markedAdvice);
     }
 
     /// No marker: the first decision is blocked, `[backup] restore` is still read, and every retry reads the source afresh.
