@@ -1,0 +1,2 @@
+### Added (2026-11-17 — #2524: `@UseCase`, the use case anchor, in `core`)
+- **`org.pragmatica.lang.UseCase`** marks the interface of a JBCT use case (`@Target(TYPE)`, `@Retention(SOURCE)`, like `@Contract`). It is the anchor the structure rules use to tell a use case from the grouping levels above it and the step packages below it. It is not a deployment unit and is independent of Aether's `@Slice`: neither implies the other. [verified: `UseCaseAnnotationTest`]
