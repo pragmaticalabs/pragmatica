@@ -30,6 +30,7 @@
         <module>notification</module>
         <module>durable-entity</module>
         <module>durable-entity-pg</module>
+        <module>scheduler-pg</module>
     </modules>
 
     <properties>

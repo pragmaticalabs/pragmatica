@@ -101,7 +101,7 @@ class AdmissionEpochTest {
         w.admit(W1, 0xBBBBL);
         w.directive(W1, Fixtures.worker("east-w-0"))
          .record(W1, DepartureState.DEPARTED, 4L, 0xBBBBL, DepartureCause.WORKER_LEAVE)
-         .activate();
+         .c17bLost().activate();
         w.h.clearLog();
         w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admissionOf(W1)));
 
@@ -116,7 +116,7 @@ class AdmissionEpochTest {
         w.admit(W1, 0xBBBBL);
         w.directive(W1, Fixtures.worker("east-w-0"))
          .record(W1, DepartureState.DEPARTED, 0L, 0xBBBBL, DepartureCause.STALE)
-         .activate();
+         .c17bLost().activate();
         w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admissionOf(W1)));
 
         assertThat(epochOf(w, W1)).isEqualTo(Option.some(1L));
@@ -268,7 +268,7 @@ class AdmissionEpochTest {
          .directive(W1, Fixtures.worker("east-w-0"))
          .target(ORDERS, 1, "WORKERS_ONLY")
          .instance(W1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), 0xBBBBL)
-         .activate();
+         .c17bLost().activate();
         w.h.deliver(new ClusterInput.WorkerLeave(W1));
 
         return w;

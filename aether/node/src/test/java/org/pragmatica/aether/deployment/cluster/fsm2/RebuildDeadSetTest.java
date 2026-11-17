@@ -118,7 +118,7 @@ class RebuildDeadSetTest {
          .directive(worker,
                     Fixtures.worker("c1"));
         w.h.dead = DeadSet.deadSet(Set.of(), Set.of(worker));
-        w.activate();
+        w.c17bLost().activate();
 
         assertThat(stateOf(w, worker)).isEqualTo(Option.some(DepartureState.DEPARTED));
         assertThat(w.recordOf(worker)

@@ -38,7 +38,8 @@ import org.pragmatica.lang.Verify;
 /// Directives, communities and governor announcements (spec C13, C14, J5, B-066, B-069, B-070, R-4.3.3).
 ///
 /// - A **directive** names a node's role; the FSM assigns a CORE directive to a joining non-seed core (J5) and a WORKER
-///   directive, minting the community when needed, to a joining worker (B-069, B-070). It **never removes** one (R-4.3.1).
+///   directive, minting the community when needed, to a joining worker (B-069, B-070). It removes a departed WORKER's directive in C17b,
+///   with the worker's record in the same transaction (#3193, `DepartureFlow#cleanup`), never a core's (R-4.3.1).
 /// - A **community** is chosen by incumbency, then by the lowest fill ratio, counting only live, non-departed assignments
 ///   (R-3.3.9, N4-4, NT-39).
 /// - An **announcement** refreshes the leader-local freshness clock of its community (R-2.14c).
@@ -65,12 +66,13 @@ public sealed interface Directory {
     /// reported `community-assignment-unplaced` is reported `community-assignment-placed`, same subject.
     private static ClusterModel placed(ClusterModel m, Ctx ctx, NodeId node) {
         m.assignmentRefusals = m.assignmentRefusals.remove(node);
-        if (m.unplacedWarned.contains(node)) {
-            m.unplacedWarned = m.unplacedWarned.remove(node);
-            ctx.warn(ASSIGNMENT_PLACED, node.id(), "Worker " + node.id() + " was assigned a community");
-        }
 
-        return m;
+        return Warnings.raise(m,
+                              ASSIGNMENT_PLACED,
+                              node.id(),
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              "Worker " + node.id() + " was assigned a community");
     }
 
     /// R-CF.17 parity (LEGACY `settleAssignment` / `retryOrReport`): a WORKER assignment commit was refused (the community moved between
@@ -115,31 +117,28 @@ public sealed interface Directory {
     private static ClusterModel giveUp(ClusterModel m, Ctx ctx, NodeId node) {
         m.assignmentRefusals = m.assignmentRefusals.remove(node);
         m.pendingJoins = m.pendingJoins.remove(node);
-        // #2834: once per episode: an open warning, this leader's or inherited from the committed open set (`Warnings.inherit`), is not raised again.
-        if (!m.unplacedWarned.contains(node)) {
-            m.unplacedWarned = m.unplacedWarned.add(node);
-            ctx.warn(ASSIGNMENT_UNPLACED,
-                     node.id(),
-                     "Worker " + node.id()
-                    + " has no community: its assignment changed before commit " + MAX_ASSIGNMENT_ATTEMPTS
-                    + " times in a row. It takes one when it is admitted again");
-        }
-
-        return m;
+        // #3274: evidence at every give-up; `Warnings.raise` opens once per episode (a held key is not raised again).
+        return Warnings.raise(m,
+                              ASSIGNMENT_UNPLACED,
+                              node.id(),
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              "Worker " + node.id()
+                             + " has no community: its assignment changed before commit " + MAX_ASSIGNMENT_ATTEMPTS
+                             + " times in a row. It takes one when it is admitted again");
     }
 
     /// R-CF.17 parity: a departing worker's run of refusals is dropped; one reported unplaced is closed with the reason subject-gone (the
     /// D.6 convention of FSM2's recoveries; LEGACY leaves it open).
     static ClusterModel assignmentGone(ClusterModel m, Ctx ctx, NodeId node) {
         m.assignmentRefusals = m.assignmentRefusals.remove(node);
-        if (m.unplacedWarned.contains(node)) {
-            m.unplacedWarned = m.unplacedWarned.remove(node);
-            ctx.warn(ASSIGNMENT_PLACED,
-                     node.id(),
-                     Recoveries.gone(node.id(), "the worker departed before it was assigned a community"));
-        }
 
-        return m;
+        return Warnings.raise(m,
+                              ASSIGNMENT_PLACED,
+                              node.id(),
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              Recoveries.gone(node.id(), "the worker departed before it was assigned a community"));
     }
 
     /// C13 on Remove: a node that is departed gets R-4.3.3: its departure record goes with its rows, in one transaction.
@@ -172,8 +171,9 @@ public sealed interface Directory {
                      .toList();
     }
 
-    /// R-4.3.3 derived again from the mirror, after a refusal (R-5.7.2) or a lost or failed submission (#2143). R-4.3.3 is the only remover
-    /// of a departure record (R-4.3.5, MQ-4) and the directive it answers is already gone, so no reconcile step derives it: dropping it
+    /// R-4.3.3 derived again from the mirror, after a refusal (R-5.7.2) or a lost or failed submission (#2143). Besides a worker's C17b
+    /// (which removes the record with its directive, #3193), R-4.3.3 is the only remover of a departure record (R-4.3.5, MQ-4) and the
+    /// directive it answers is already gone, so no reconcile step derives it: dropping it
     /// would leave the record of a terminated id for good (NT-106). It stops when the node is no longer departed (its record moved or went)
     /// or has a directive again.
     static Option<TxDraft> refreshedRemoval(ClusterModel m, TxDraft draft) {
@@ -307,26 +307,24 @@ public sealed interface Directory {
     /// D.6 row 22: a worker reported `worker-no-community-policy` that J5 has now placed (its directive is in flight) ends the episode:
     /// `worker-community-policy-matched`, same subject.
     private static ClusterModel policyMatched(ClusterModel m, Ctx ctx, NodeId node) {
-        if (m.noPolicyWarned.contains(node) && directiveInFlight(m, node)) {
-            m.noPolicyWarned = m.noPolicyWarned.remove(node);
-            ctx.warn(Recoveries.WORKER_COMMUNITY_POLICY_MATCHED,
-                     node.id(),
-                     "A community policy now accepts worker " + node.id());
-        }
-
-        return m;
+        return directiveInFlight(m, node)
+               ? Warnings.raise(m,
+                                Recoveries.WORKER_COMMUNITY_POLICY_MATCHED,
+                                node.id(),
+                                Warnings.SINGLE,
+                                Warnings.SINGLE,
+                                "A community policy now accepts worker " + node.id())
+               : m;
     }
 
     /// D.6 row 22: a reported worker departed before any policy matched it: closed with the reason subject-gone.
     static ClusterModel policyGone(ClusterModel m, Ctx ctx, NodeId node) {
-        if (m.noPolicyWarned.contains(node)) {
-            m.noPolicyWarned = m.noPolicyWarned.remove(node);
-            ctx.warn(Recoveries.WORKER_COMMUNITY_POLICY_MATCHED,
-                     node.id(),
-                     Recoveries.gone(node.id(), "the worker departed before a community policy accepted it"));
-        }
-
-        return m;
+        return Warnings.raise(m,
+                              Recoveries.WORKER_COMMUNITY_POLICY_MATCHED,
+                              node.id(),
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              Recoveries.gone(node.id(), "the worker departed before a community policy accepted it"));
     }
 
     private static ClusterModel place(ClusterModel m, Ctx ctx, NodeId node) {
@@ -363,17 +361,15 @@ public sealed interface Directory {
     // (D.6 row 22). No join stays pending for the worker (no directive is queued), so only its next join runs J5 again: a seams refresh
     // that adds a policy places it at that rejoin, not by itself.
     private static ClusterModel unplaceable(ClusterModel m, Ctx ctx, NodeId node, String source) {
-        // #2834: once per episode: an open warning, this leader's or inherited from the committed open set (`Warnings.inherit`), is not raised again.
-        if (!m.noPolicyWarned.contains(node)) {
-            m.noPolicyWarned = m.noPolicyWarned.add(node);
-            ctx.warn("worker-no-community-policy",
-                     node.id(),
-                     "No community policy accepts worker " + node.id()
-                    + " of source " + source
-                    + "; it gets no directive");
-        }
-
-        return m;
+        // #3274: evidence at every attempt; `Warnings.raise` opens once per episode (a held key is not raised again).
+        return Warnings.raise(m,
+                              Warnings.NO_POLICY,
+                              node.id(),
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              "No community policy accepts worker " + node.id()
+                             + " of source " + source
+                             + "; it gets no directive");
     }
 
     // -- J5: a derived community (R-CF.16, R-CF.17, #241) ------------------------------------------------------------
@@ -408,18 +404,20 @@ public sealed interface Directory {
                                       CommunityPolicy policy) {
         commit(m, ctx, node, communityId, source, policy.maxSize());
 
-        return m.growthBlocked.contains(source)
-               ? growthResumed(m, ctx, node, source, communityId)
-               : m;
+        return growthResumed(m, ctx, node, source, communityId);
     }
 
+    /// #3274: every admission is closed evidence for the source; `Warnings.raise` closes the key only if held.
     private static ClusterModel growthResumed(ClusterModel m, Ctx ctx, NodeId node, String source, String communityId) {
-        m.growthBlocked = m.growthBlocked.remove(source);
-        ctx.warn(GROWTH_RESUMED,
-                 source,
-                 "Worker " + node.id() + " of source " + source + " was admitted to community " + communityId + " again");
-
-        return m;
+        return Warnings.raise(m,
+                              GROWTH_RESUMED,
+                              source,
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              "Worker " + node.id()
+                             + " of source " + source
+                             + " was admitted to community " + communityId
+                             + " again");
     }
 
     // FER (degrade forward), as the legacy refusal: the refused worker gets no community now and the refusal is reported. Guarantee: the
@@ -431,21 +429,19 @@ public sealed interface Directory {
                                              NodeId node,
                                              String source,
                                              CommunityPolicy policy) {
-        // #2834: once per episode: an open warning, this leader's or inherited from the committed open set (`Warnings.inherit`), is not raised again.
-        if (!m.growthBlocked.contains(source)) {
-            m.growthBlocked = m.growthBlocked.add(source);
-            ctx.warn(GROWTH_BLOCKED,
-                     source,
-                     "No community can take worker " + node.id()
-                    + " of source " + source
-                    + ": its communities are at the " + CommunityPolicy.CEILING
-                    + " ceiling and the source is at the bound of " + policy.maxCommunities()
-                    + " (max_size " + policy.maxSize()
-                    + "). Raise community_policy.max_communities or max_size, or add worker capacity under another source; "
-                    + "the worker takes a community when it rejoins");
-        }
-
-        return m;
+        // #3274: evidence at every refusal; `Warnings.raise` opens once per episode (a held key is not raised again).
+        return Warnings.raise(m,
+                              GROWTH_BLOCKED,
+                              source,
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              "No community can take worker " + node.id()
+                             + " of source " + source
+                             + ": its communities are at the " + CommunityPolicy.CEILING
+                             + " ceiling and the source is at the bound of " + policy.maxCommunities()
+                             + " (max_size " + policy.maxSize()
+                             + "). Raise community_policy.max_communities or max_size, or add worker capacity under another source; "
+                             + "the worker takes a community when it rejoins");
     }
 
     /// The source's derived communities, committed and being minted, with the live-aware load the growth policy chooses by (legacy

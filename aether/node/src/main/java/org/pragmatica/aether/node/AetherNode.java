@@ -2477,6 +2477,11 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
+            public boolean isConfiguredWorker() {
+                return AetherNode.configuredWorker(config);
+            }
+
+            @Override
             public boolean hasCompleteClusterView() {
                 return config.workerConfig()
                              .isEmpty()
@@ -3158,7 +3163,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               growthLog,
                                                                                                                               selfId,
                                                                                                                               gossipKeyRotationHandler,
-                                                                                                                              reactors.executor("WorkerActivation")));
+                                                                                                                              reactors.executor("WorkerActivation"),
+                                                                                                                              drainProcedure,
+                                                                                                                              nodeReportedStateHolder,
+                                                                                                                              operatorWarningSink));
         var governorAnnouncerHolder = workerActivationOut.governorAnnouncerHolder();
         var communityDirectory = workerActivationOut.communityDirectory();
         var activationKvRouter = workerActivationOut.activationKvRouter();
@@ -5190,9 +5198,9 @@ public interface AetherNode extends ManageableNode {
         // #231 Step 2 — CDM (DEPLOYMENT) leader-pinned. LoadBalancer (DEPLOYMENT) MUST be registered
         // AFTER CDM since it reconciles routes CDM produces.
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              deploymentWiring.legacyGated("B7.LeaderChange",
-                                                                           change -> toggleCdmOnLeaderChange(change,
-                                                                                                             clusterDeploymentManager))));
+                                              deploymentWiring.legacyGatedLeaderToggle("B7.LeaderChange",
+                                                                                       change -> toggleCdmOnLeaderChange(change,
+                                                                                                                         clusterDeploymentManager))));
         loadBalancerManager.onPresent(lbm -> entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                                                    change -> toggleLbOnLeaderChange(change,
                                                                                                                     lbm))));

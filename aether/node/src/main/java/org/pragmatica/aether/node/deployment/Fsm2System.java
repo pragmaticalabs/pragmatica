@@ -517,9 +517,10 @@ public final class Fsm2System {
     /// CI-1: this node became, or stopped being, the leader.
     @Contract
     public void onLeaderChange(LeaderNotification.LeaderChange change) {
-        guard.whenOpen(CLUSTER_ACTIVATION,
-                       change.localNodeIsLeader()
-                       ? cluster::activate
-                       : cluster::deactivate);
+        if (change.localNodeIsLeader()) {
+            guard.whenOpenAfterParked(CLUSTER_ACTIVATION, cluster::activate);
+        } else {
+            guard.whenOpen(CLUSTER_ACTIVATION, cluster::deactivate);
+        }
     }
 }

@@ -39,7 +39,7 @@ class EmberClusterHeldBackRegistrationTest {
     @Test
     @Timeout(30)
     void startHeldBackNodes_doesNotReachTheCaller_untilTheStartedNodeIsRegistered() {
-        var cluster = emberCluster(1, BASE_PORT, BASE_MGMT_PORT, "held");
+        var cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "held");
         var start = Promise.<Unit> promise();
 
         cluster.adoptHeldBackNode(HELD_ID, fakeNode(nodeId(HELD_ID).unwrap(), start));

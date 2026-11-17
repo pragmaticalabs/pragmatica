@@ -45,7 +45,7 @@ B3.ActivationDriver -> legacy+gate
 B4.PassiveClientSwitch -> legacy+gate
 B5.ConfigApplied -> legacy
 B6.SelfReady -> legacy
-B7.LeaderChange -> legacy+gate
+B7.LeaderChange -> legacy+gate+toggle
 B9.cdm.NodeDecommissioned -> legacy
 B9.cdm.NodeDraining -> legacy
 B9.cdm.NodeFailedDrain -> legacy

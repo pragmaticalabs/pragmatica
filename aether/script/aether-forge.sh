@@ -13,7 +13,7 @@
 #
 # Environment variables:
 #   FORGE_PORT    Forge API port (default: 8888)
-#   CLUSTER_SIZE  Number of simulated nodes (default: 5)
+#   CLUSTER_SIZE  Number of simulated nodes (default: 5, minimum: 3)
 #   LOAD_RATE     Initial requests per second (default: 1000)
 #
 # Examples:

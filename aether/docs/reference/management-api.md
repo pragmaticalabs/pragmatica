@@ -386,6 +386,30 @@ Returns the principal, authorization role, and roles attached to the request's a
 
 Route is `LOCAL` (no forwarding) — the answer is per-request, not per-cluster.
 
+### GET /api/v1/warnings
+
+The open FSM warnings of ONE committed state, read on the answering core node and labelled by that core's committed revision. Core nodes only; the route is not forwarded, so point the client at a core.
+
+```bash
+curl http://localhost:8080/api/v1/warnings
+```
+
+```json
+{
+  "revision": 1842,
+  "warnings": [
+    {"code": "STRAY", "subject": "node-4", "members": {"node-4": "..."}, "message": "..."}
+  ]
+}
+```
+
+- `warnings` are sorted by `code`, then `subject`. `members` are the parts of a subject that covers several instances (empty for a single-instance subject). `message` is the row's latest message, as the writing leader committed it. A closed row (a recovered warning: `open` false, no members) is not listed.
+- **Refusals (503, typed, each with its own detail):** (1) the node is a worker (its replica holds no warning rows); (2) the core does not hold quorum (the same signal `/api/status`, `/api/health` and `/health/ready` report); (3) the core has committed no state yet (revision 0, genesis or a reset store); (4) the core's revision label is not exact (a snapshot restore moved the label without the content). Recovery: query another core, or retry; the not-exact refusal clears at the core's next snapshot install.
+- **Staleness of a served answer:** the answering core's apply lag, which is not bounded. The quorum check is an observation read just before the store read, not a safety guard. `[mechanism: one KVStore monitor hold reads revision, exact flag and rows together]`
+- **Guarantee:** the answer is one committed state of ONE core, read under one store monitor hold. It is not linearizable: two cores, or two requests to one core, may answer from different states. `revision` is the only ordering signal, and it is not monotone across cores, a reset, a snapshot install or a restart (a reset or restart returns it to a lower value). A served answer can trail the cluster by the core's apply lag. Do not use it as an automation gate (for example "no warnings, so proceed"): an empty list says only that this core's state at `revision` holds none.
+
+CLI: `aether warnings`.
+
 ### GET /api/v1/events
 
 Get cluster events from the event aggregator. Returns structured events including topology changes, leader elections, deployments, slice failures, and network events.
@@ -506,6 +530,7 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 
 - `swim-kill-gate-held` (WARNING — SWIM is holding the death of a long-healthy peer that only this node accused)
 - `core-absence-fence` (CRITICAL — a worker lost the core and is dissolving locally)
+- `own-directive-retired` (CRITICAL — a live worker's own activation directive was removed with no replacement, so it halts with exit code 2; subject is the worker's node id; no recovery code, the node returns only by joining again)
 - `replica-fsync-failed` (WARNING — a replica withheld its ack because fsync failed; the owner does not count that copy)
 - `node-never-joined` (WARNING — a configured core member died on this node's view without this node ever observing it reachable; it never joined, so no `NODE_FAILED` event or CRITICAL node-health alert is raised for it, issue #1835)
 - `swim-member-address-conflict` (WARNING — an ANNOUNCE for a member arrived from an address other than the one that member is pinned to and was refused, or gossip carried another address for a pinned member and its address was ignored; `subject` is the member, the message names both addresses; replace the member under a fresh NodeId or restore its address)
@@ -1198,13 +1223,14 @@ whose violation leaves nothing to bind refuse the publish outright with **`422`*
 usual problem document, whose `detail` is the text `Stream resource validation failed (N errors):` followed
 by one `[rule] field — message` line per failure (not the structured triples above): a `resources.toml` that does not parse
 (`resources-toml-parse`), a blueprint whose own namespace cannot be derived
-(`blueprint-namespace-invalid`, `namespace-reserved`) while it declares at least one stream, and an
+(`blueprint-namespace-invalid`, `namespace-reserved`) while it declares at least one stream, an
 `External` source naming a runtime-provisioned stream kind (`source-reserved-kind`, #1282 — refused here
-exactly as the management API refuses it on every mint path). Every other rule costs only its own alias:
+exactly as the management API refuses it on every mint path), and #576's inert keys (`inert-stream-config-key`,
+`inert-consumer-config-key`; #3269, owner ruling 2026-11-14, amending #1336 — a key leaves the refused set when it is wired). Every other rule costs only its own alias:
 the parser's per-section rules — `version-and-source-mutually-exclusive`, `producer-version-must-be-exact`,
 `partitions-over-ceiling`, `replication-policy-invalid` (#1564: `1 <= confirmation_factor <= replication_factor` does not hold, or a `replication_factor` below 3 came from the cluster default rather than the declaration), `replication-exceeds-core-count` (#1564: `replication_factor` above the cluster's desired core count), `unknown-stream-key` (a key under `[streams.X]` the stream parser does not read, #1549; the removed #1564 keys `replicas`, `min-sync-replicas` and `min_sync_replicas` land here, naming `replication_factor` / `confirmation_factor`), `stream-key-invalid` (a malformed, overflowing, non-integer or below-minimum value), `source-address-invalid`, `namespace-invalid`,
 `stream-name-invalid`, `version-format-invalid`, and `stream-resource-invalid` for a parser refusal no rule
-names yet — and #576's inert keys (`inert-stream-config-key`, `inert-consumer-config-key`). The rule is
+names yet. The rule is
 derived from the parser's typed cause, never from message text. Before #1336 any one failing rule silently emptied the whole bindings entry, valid
 declarations included.
 
