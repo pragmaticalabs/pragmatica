@@ -9,6 +9,8 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.pragmatica.jbct.config.JbctConfig;
+import org.pragmatica.jbct.config.JbctMode;
+import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.LintRun;
 import org.pragmatica.jbct.shared.FileCollector;
@@ -60,6 +62,37 @@ public sealed interface CliRoots {
                      .anyMatch(Option::isEmpty)
                ? Option.none()
                : Option.some(ownedByDeepest(loaded.stream().map(Option::unwrap).toList()));
+    }
+
+    /// One file with the formatter of its own source root.
+    record FormatJob(Path file, JbctFormatter formatter) {
+        public static FormatJob formatJob(Path file, JbctFormatter formatter) {
+            return new FormatJob(file, formatter);
+        }
+    }
+
+    /// The files a format run touches, each with the formatter built from its own root's `[format]` settings, in root
+    /// order. A `disabled` root contributes none and is announced once on `err`; `business`, `infrastructure` and
+    /// `format-only` roots all format (§2.3 "Modes": formatting runs in every mode except `disabled`).
+    static List<FormatJob> formatJobs(List<ResolvedRoot> roots, PrintStream err) {
+        return roots.stream()
+                    .flatMap(root -> formatJobsOf(root, err).stream())
+                    .toList();
+    }
+
+    private static List<FormatJob> formatJobsOf(ResolvedRoot root, PrintStream err) {
+        if (root.context().mode() == JbctMode.DISABLED) {
+            err.println("Not formatted: mode=disabled root=" + root.path().toAbsolutePath().normalize());
+
+            return List.of();
+        }
+
+        var formatter = JbctFormatter.jbctFormatter(root.config().formatter());
+
+        return root.files()
+                   .stream()
+                   .map(file -> FormatJob.formatJob(file, formatter))
+                   .toList();
     }
 
     /// Every collected file of the run, in root order.

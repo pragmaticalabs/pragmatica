@@ -59,7 +59,6 @@ public class CheckCommand implements Callable<Integer> {
         }
 
         var roots = resolvedRoots.unwrap();
-        var formatter = JbctFormatter.jbctFormatter(roots.getFirst().config().formatter());
         var run = runFactory.apply(roots.stream().map(CliRoots.ResolvedRoot::sourceRoot).toList());
         var filesToProcess = CliRoots.allFiles(roots);
 
@@ -81,8 +80,11 @@ public class CheckCommand implements Callable<Integer> {
         var warnings = new AtomicInteger(0);
         var parseErrors = new AtomicInteger(0);
 
+        for (var job : CliRoots.formatJobs(roots, System.err)) {
+            checkFormat(job.file(), job.formatter(), needsFormatting, formatErrors);
+        }
+
         for (var file : filesToProcess) {
-            checkFormat(file, formatter, needsFormatting, formatErrors);
             checkLint(file, run, allDiagnostics, lintErrors, warnings, parseErrors);
         }
 

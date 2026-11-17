@@ -8,7 +8,7 @@ import java.util.concurrent.Callable;
 import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.shared.AnalysisCoverage;
-import org.pragmatica.jbct.shared.FileCollector;
+import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
 
@@ -37,27 +37,29 @@ public class FormatCommand implements Callable<Integer> {
     @picocli.CommandLine.Option(names = {"--mode"}, description = "JBCT mode for this run, overriding jbct.toml and --config: business or infrastructure")
     String mode;
 
-    private JbctFormatter formatter;
-
     @Override
     public Integer call() {
-        // Load configuration
-        var loadedConfig = CliConfig.load(Option.option(configPath), Option.option(mode), paths.getFirst(), System.err);
+        // Resolve one configuration per argument path's source root
+        var resolvedRoots = CliRoots.resolve(Option.option(configPath),
+                                             Option.option(mode),
+                                             paths,
+                                             this::createContext,
+                                             System.err);
 
-        if (loadedConfig.isEmpty()) {
+        if (resolvedRoots.isEmpty()) {
             return CliConfig.CONFIG_ERROR_EXIT;
         }
 
-        var config = loadedConfig.unwrap();
+        var roots = resolvedRoots.unwrap();
 
-        formatter = JbctFormatter.jbctFormatter(config.formatter());
-        var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
-
-        if (filesToProcess.isEmpty()) {
+        if (CliRoots.allFiles(roots).isEmpty()) {
             System.out.println("No Java files found.");
 
             return 0;
         }
+
+        var jobs = CliRoots.formatJobs(roots, System.err);
+        var filesToProcess = jobs.stream().map(CliRoots.FormatJob::file).toList();
 
         if (verbose) {
             System.out.println("Found " + filesToProcess.size() + " Java file(s) to process.");
@@ -67,8 +69,8 @@ public class FormatCommand implements Callable<Integer> {
         // 0=formatted, 1=unchanged, 2=errors
         var needsFormatting = new ArrayList<Path>();
 
-        for (var file : filesToProcess) {
-            processFile(file, counters, needsFormatting);
+        for (var job : jobs) {
+            processFile(job, counters, needsFormatting);
         }
         // Print summary
         printSummary(counters[0], counters[1], counters[2], needsFormatting, filesToProcess.size());
@@ -84,23 +86,38 @@ public class FormatCommand implements Callable<Integer> {
         return 0;
     }
 
-    private void processFile(Path file, int[] counters, List<Path> needsFormatting) {
+    LintContext createContext(JbctConfig jbctConfig) {
+        return CliConfig.lintContext(jbctConfig, false);
+    }
+
+    private void processFile(CliRoots.FormatJob job, int[] counters, List<Path> needsFormatting) {
+        var file = job.file();
+
         SourceFile.sourceFile(file)
-                  .flatMap(source -> checkAndFormat(source, file, counters, needsFormatting))
+                  .flatMap(source -> checkAndFormat(job.formatter(),
+                                                    source,
+                                                    file,
+                                                    counters,
+                                                    needsFormatting))
                   .onFailure(cause -> {
                       counters[2]++;
                       System.err.println("  error: " + file + " - " + cause.message());
                   });
     }
 
-    private org.pragmatica.lang.Result<SourceFile> checkAndFormat(SourceFile source,
+    private org.pragmatica.lang.Result<SourceFile> checkAndFormat(JbctFormatter formatter,
+                                                                  SourceFile source,
                                                                   Path file,
                                                                   int[] counters,
                                                                   List<Path> needsFormatting) {
         return formatter.isFormatted(source)
                         .flatMap(isFormatted -> isFormatted
                                                 ? handleUnchanged(source, file, counters)
-                                                : handleNeedsFormatting(source, file, counters, needsFormatting));
+                                                : handleNeedsFormatting(formatter,
+                                                                        source,
+                                                                        file,
+                                                                        counters,
+                                                                        needsFormatting));
     }
 
     private org.pragmatica.lang.Result<SourceFile> handleUnchanged(SourceFile source, Path file, int[] counters) {
@@ -112,7 +129,8 @@ public class FormatCommand implements Callable<Integer> {
         return org.pragmatica.lang.Result.success(source);
     }
 
-    private org.pragmatica.lang.Result<SourceFile> handleNeedsFormatting(SourceFile source,
+    private org.pragmatica.lang.Result<SourceFile> handleNeedsFormatting(JbctFormatter formatter,
+                                                                         SourceFile source,
                                                                          Path file,
                                                                          int[] counters,
                                                                          List<Path> needsFormatting) {
@@ -123,10 +141,13 @@ public class FormatCommand implements Callable<Integer> {
             return org.pragmatica.lang.Result.success(source);
         }
 
-        return formatAndWrite(source, file, counters);
+        return formatAndWrite(formatter, source, file, counters);
     }
 
-    private org.pragmatica.lang.Result<SourceFile> formatAndWrite(SourceFile source, Path file, int[] counters) {
+    private org.pragmatica.lang.Result<SourceFile> formatAndWrite(JbctFormatter formatter,
+                                                                  SourceFile source,
+                                                                  Path file,
+                                                                  int[] counters) {
         return formatter.format(source)
                         .flatMap(formattedSource -> writeFormatted(formattedSource, file, counters));
     }
