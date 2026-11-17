@@ -83,7 +83,9 @@ import static org.pragmatica.aether.node.backup.GitFixtures.git;
 class BackupRestoreCoordinatorTest {
     static final String INCARNATION_ID = "01K4ZT9Q6W3X8Y2B7C5D1INST0";
     /// #3300: the two exits of the blocked-restore warning, as the coordinator words them.
-    private static final String RESUME_EXIT = "resumes on a retry once that exact commit can be read and restored";
+    private static final String RESUME_EXIT = "resumes on a retry once what the failed step names is readable again at the backup source";
+    private static final String QUALIFIED_FRESH = "restarting any subset of the nodes with [backup] restore = \"fresh\" does not abandon it";
+    private static final String COLD_START_EXIT = "If it cannot be repaired there, the exit is to stop ALL nodes and cold-start them with [backup] restore = \"fresh\"";
     private static final String FRESH_EXIT = "restart with [backup] restore = \"fresh\" to skip the restore and abandon the backup";
     private static final String ABSENT_COMMIT = "1111111111111111111111111111111111111111";
     private static final SliceCodec NODE_CODEC = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
@@ -913,7 +915,7 @@ class BackupRestoreCoordinatorTest {
             assertThat(RestoreGate.isOpen(kvStore)).as("the gate stays closed: writes to backed-up keys stay refused").isFalse();
             assertThat(coordinator.isComplete()).isFalse();
             assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED);
-            assertThat(warnings.getFirst().detail()).contains("does not abandon it", RESUME_EXIT, "stop ALL nodes", "cold-start",
+            assertThat(warnings.getFirst().detail()).contains(QUALIFIED_FRESH, RESUME_EXIT, COLD_START_EXIT,
                                                               "discards the partly restored state", "whole-cluster stop");
         }
 
@@ -930,7 +932,7 @@ class BackupRestoreCoordinatorTest {
             assertThat(RestoreGate.decision(kvStore)).as("CONTROL: no marker").isEqualTo(Option.none());
             assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED);
             assertThat(warnings.getFirst().detail()).contains(FRESH_EXIT)
-                                                    .doesNotContain("does not abandon it", "stop ALL nodes");
+                                                    .doesNotContain("does not abandon it", "stop ALL nodes").doesNotContain("only exit");
         }
 
         /// WANTED once the abandon mechanism exists: the data-loss choice is the operator's, and it ends with its own committed outcome.
@@ -1060,7 +1062,7 @@ class BackupRestoreCoordinatorTest {
 
             assertNamesStepAndAdvice(Step.COMMIT_UNREADABLE, true);
             assertThat(warnings.getFirst().detail()).contains("A restore of commit " + ABSENT_COMMIT + " is in progress",
-                                                              "cannot be put back there");
+                                                              COLD_START_EXIT);
         }
 
         @Test
@@ -1281,7 +1283,7 @@ class BackupRestoreCoordinatorTest {
             assertThat(detail).contains("blocked at step " + step.label())
                               .doesNotContain("whatever the source does", "does not help", "the next retry resumes the restore", "will succeed");
             if (marked) {
-                assertThat(detail).contains("is in progress", "does not abandon it", RESUME_EXIT, "stop ALL nodes", "cold-start",
+                assertThat(detail).contains("is in progress", QUALIFIED_FRESH, RESUME_EXIT, COLD_START_EXIT,
                                             "whole-cluster stop")
                                   .doesNotContain("No restore marker", FRESH_EXIT);
             } else {

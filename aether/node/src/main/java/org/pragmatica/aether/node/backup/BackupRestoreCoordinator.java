@@ -84,8 +84,8 @@ import static org.pragmatica.lang.Result.success;
 ///    [#MAX_BACKOFF], never a silent fresh boot and never a crash loop. The warning names the failed step and the exits, and
 ///    predicts neither (#3300): with no committed marker, fix what failed (the next retry reads the source again) or restart with
 ///    `[backup] restore = fresh`; once an `IN_PROGRESS` marker is committed, step 2 never reads `restore` again, so the restore
-///    resumes once its pinned commit can be read and restored from the source, and otherwise only a whole-cluster cold start with
-///    `fresh` exits.
+///    resumes once what the failed step names is readable again at the source, and if it cannot be repaired there a whole-cluster
+///    cold start with `fresh` is the exit.
 ///
 /// **The restore.** Every git step runs on the backup worker ([KvBackupService#onWorker]), so a restore
 /// never races a flush on the same working tree. Entries are applied in `LeaderTransaction`s of at most
@@ -867,10 +867,10 @@ public final class BackupRestoreCoordinator {
     /// with it, on any subset of nodes, leaves the blocked restore standing.
     private String markedAdvice(BackupRestoreValue marker) {
         return "A restore of commit " + marker.commit()
-             + " is in progress and that commit is pinned, so restarting with [backup] restore = \"fresh\" does not abandon it."
-             + " It resumes on a retry once that exact commit can be read and restored from the backup source (" + sourceDescription()
-             + "). If that commit is gone, damaged or cannot be restored, and cannot be put back there in a form that can, the only"
-             + " exit is to stop ALL nodes and cold-start them with [backup] restore = \"fresh\": that discards the partly restored state and is a whole-cluster stop";
+             + " is in progress and that commit is pinned, so restarting any subset of the nodes with [backup] restore = \"fresh\" does not abandon it."
+             + " It resumes on a retry once what the failed step names is readable again at the backup source (" + sourceDescription()
+             + "). If it cannot be repaired there, the exit is to stop ALL nodes and cold-start them with [backup] restore = \"fresh\":"
+             + " that discards the partly restored state and is a whole-cluster stop";
     }
 
     private String sourceDescription() {

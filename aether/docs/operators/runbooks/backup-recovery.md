@@ -94,7 +94,7 @@ NodeIds with empty state is not a supported restart mode (#1543).
 
 **When the restore cannot read the backup** (remote unreachable, head undecodable): the cluster stays up
 and GATED — no fresh boot, no crash loop. A `BACKUP_RESTORE_BLOCKED` warning names the remote, the step that failed and the
-exits; the restore retries with backoff capped at 60 s, and a new warning follows only when the failed step changes. The
+exits; the restore retries with backoff capped at 60 s, and a new warning follows whenever the step or the marker state changes. The
 steps it can name: `source unreachable` (preparing the local repository or fetching the backup ref), `ref unresolved`,
 `backup vanished` (the source holds no backup branch), `commit unreadable` (`git show` of the commit failed: a missing
 object and a git failure look the same here), `document undecodable`, `history unreadable` (the backup history reachable
@@ -108,11 +108,10 @@ names depends on one fact only, whether the restore has committed its `IN_PROGRE
 - **Marker committed** (the warning says "A restore of commit <sha> is in progress"): that commit is pinned. `restore =
   "fresh"` on a restart does NOT abandon it, on any subset of nodes, because the marker is cluster state and a resumed restore
   never reads `restore` again `[verified: BackupRestoreCoordinatorTest.Blocked
-  aBlockedResume_ignoresRestoreFresh_andNamesBothExits]`. The restore resumes on a retry once that exact commit can be read
-  and restored from the source `[verified: BackupRestoreCoordinatorTest.Blocked
-  aBlockedMarkedRestore_finishes_onceTheSourceIsReadableAgain]`. If that commit is gone, damaged or cannot be restored, and
-  cannot be put back at the source in a form that can, the only exit is the cold start below.
-- **The cold start** (the exit when a pinned commit cannot be put back): stop ALL nodes, then start them with `restore = "fresh"`. This discards the
+  aBlockedResume_ignoresRestoreFresh_andNamesBothExits]`. The restore resumes on a retry once what the failed step names is
+  readable again at the source `[verified: BackupRestoreCoordinatorTest.Blocked
+  aBlockedMarkedRestore_finishes_onceTheSourceIsReadableAgain]`. If it cannot be repaired there, the exit is the cold start below.
+- **The cold start** (the exit when what the failed step names cannot be repaired at the source): stop ALL nodes, then start them with `restore = "fresh"`. This discards the
   partly restored state and is a whole-cluster outage. A full stop leaves an empty store, and a new coordinator over it with
   `fresh` decides FRESH and opens the gate `[verified: BackupRestoreCoordinatorTest.Blocked
   aColdStart_fromAMarkedBlockedState_withRestoreFresh_decidesFresh_andOpensTheGate]` `[unverified: a real three-node stop and
@@ -285,7 +284,7 @@ mode; a remote that needs credentials the process does not hold fails, and the b
 |------|---------|-----------------|
 | `BACKUP_GATED` | The head belongs to another lineage | Restore it, or `aether backup declare-genesis` to make this cluster the head |
 | `BACKUP_FORKED` | Another cluster (a different incarnation id) holds the head at this cluster's own lineage and incarnation (two clusters restored from the same backup) | Retire one cluster; run `aether backup declare-genesis` on the one whose state continues |
-| `backup-restore-blocked` (cluster event, CRITICAL) | A cold start cannot read the backup; cluster-state writes stay refused until it can (#1533). The warning names the failed step | No marker committed (the warning says "No restore marker is committed"): fix what the failed step names (the next retry reads the source again), or restart with `[backup] restore = "fresh"` to abandon the backup. Marker committed (the warning says "A restore of commit <sha> is in progress"): the restore resumes once that commit can be read and restored from the source; if it cannot be put back there, stop ALL nodes and cold-start with `restore = "fresh"` (discards the partly restored state). A restart with `fresh` alone does not abandon a marked restore |
+| `backup-restore-blocked` (cluster event, CRITICAL) | A cold start cannot read the backup; cluster-state writes stay refused until it can (#1533). The warning names the failed step | No marker committed (the warning says "No restore marker is committed"): fix what the failed step names (the next retry reads the source again), or restart with `[backup] restore = "fresh"` to abandon the backup. Marker committed (the warning says "A restore of commit <sha> is in progress"): the restore resumes once what the failed step names is readable again at the source; if it cannot be repaired there, stop ALL nodes and cold-start with `restore = "fresh"` (discards the partly restored state). A restart of any subset of the nodes with `fresh` does not abandon a marked restore |
 | `backup-restore-unblocked` (INFO) | The block ended: the backup was read and the restore decided, or the blocked node stopped leading or is stopping (a restart is a stop first) | None. A crash of the blocked node cannot raise it (see `backup-config-restored`); a leader that still cannot read the backup raises `backup-restore-blocked` again |
 | `backup-config-missing` (cluster event, `OPERATOR_WARNING`) | This leader has no `[backup]` while the committed state says the backup is in use; nothing is backed up while it leads (#1968) | Restart it with the cluster's `[backup]` (or `AETHER_BACKUP_*`), or move leadership |
 | `backup-config-restored` (INFO) | The leader that lacked `[backup]` no longer leads, or its node is stopping (graceful stop, drain, self-fence) | None; a new leader without `[backup]` raises the warning again. A crash (`kill -9`, power loss, OOM kill) cannot raise it: that node's `backup-config-missing` then stays the last event for the code, and only another node's event layer could close it, which the event design does not allow. Treat a `backup-config-missing` whose node is gone as closed |
@@ -294,7 +293,7 @@ mode; a remote that needs credentials the process does not hold fails, and the b
 | `BACKUP_REMOTE_UNREADABLE` | The head cannot be decoded | Repair or move the head |
 | `BACKUP_PUSH_FAILING` | Commits have not reached the remote for 60 s | Check remote, credentials, network |
 | `BACKUP_COMMIT_FAILED` | The local repository cannot take a commit | Check disk, permissions, git |
-| `BACKUP_RESTORE_BLOCKED` | A cold start cannot read the backup; cluster-state writes are refused. The warning names the failed step | No marker: fix what the step names, or restart with `restore = "fresh"`. Marker committed: the restore resumes once its pinned commit can be read and restored from the remote; if that commit cannot be put back, only the whole-cluster cold start exits (see above) |
+| `BACKUP_RESTORE_BLOCKED` | A cold start cannot read the backup; cluster-state writes are refused. The warning names the failed step | No marker: fix what the step names, or restart with `restore = "fresh"`. Marker committed: the restore resumes once what the failed step names is readable again at the remote; if it cannot be repaired there, the whole-cluster cold start is the exit (see above) |
 | `BACKUP_RESTORE_SOURCE_LOCAL` | No remote: the restore reads one node's local repository | Configure `remote` |
 | `BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED` | A restore withheld entity checkpoints; entity state restarts empty | None — this is the documented limit |
 | `BACKUP_RECOVERED` | A failing backup is current again | — |
