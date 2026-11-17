@@ -233,7 +233,12 @@
 /// \*   "relayepoch" handleDecision refuses a current-slot Decision whose epoch != voterEpoch()
 /// \*   "retainmaj"  ReconfigurationCommand.retainsTargetMajority in admission and in appliesTo (liveness guard)
 /// \*   "coldconfig" (#3213) a COLD answer carries the configuration its responder persisted (coldAnswerState); dropped,
-/// \*                it carries none (withoutConfiguration, the pre-#3216 code)
+/// \*                it carries none (withoutConfiguration, the pre-#3216 code). The code keeps the configuration only
+/// \*                while `persistedByThisEngine` is true (RabiaEngine: the field, set only when a save succeeds):
+/// \*                a responder whose persisted state this engine instance did not write (a restored backup; with
+/// \*                durable persistence also a restarted engine before its first save) still answers stripped. The
+/// \*                model takes "coldconfig" as unconditional, so a cfg with it does not cover those responders; their
+/// \*                answer is the dropped arm (the *_nocoldconfig rows, which go red)
 /// \* Assume (code-relied environment; every cfg assigns it):
 /// \*   "prefix"     a replica enters slot s+1 only by committing slot s (code comment at handleDecision: "the epoch
 /// \*                governing a slot is a function of the applied prefix"). Removed: Jump (JumpShape "code":

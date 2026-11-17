@@ -3503,6 +3503,10 @@ public class RabiaEngine<C extends Command> {
     /// \*        (newerEpochCandidates takes LIVE responses only): only the same epoch and roster adopt, and never learn.
     /// \*        Without it (the pre-#3216 mutant) withoutConfiguration: the phase arrives with no roster, eligible only
     /// \*        when voterEpoch() == 0 and the sender is a voter here.
+    /// \*        Condition the model drops: coldAnswerState keeps the configuration only while persistedByThisEngine is
+    /// \*        true (set only when a save succeeds); a responder whose persisted state this instance did not write (a
+    /// \*        restored backup; with durable persistence also a restarted engine before its first save) still answers
+    /// \*        stripped, which is the "coldconfig"-dropped arm above, red in the *_nocoldconfig rows.
     /// \* Over-approximations: one response stands for the response quorum; a COLD responder's persisted phase is
     /// \* taken as its current slot (persisted <= current), and the model does not stop it while it answers.
     /// \* JumpShape = "free" replaces this with the decoupled FreeJump and FreeLearn of the skeleton.
