@@ -59,6 +59,9 @@ public record NodeInfo(NodeId id, NodeAddress address, Map<String, String> label
     /// Standard label key for the software version the node is running (#1543 part C). Rides ANNOUNCE and the
     /// QUIC Hello with the other labels; it is not in the steady-state gossip subset.
     public static final String LABEL_VERSION = "version";
+    /// Standard label key for the node's wire generation (#2981 step 6). Rides the QUIC Hello; a member that
+    /// handshakes without it is generation 1. See [JoinGenerationGuard].
+    public static final String LABEL_WIRE_GENERATION = "wire-generation";
 
     /// Compact constructor ensures labels are an immutable copy.
     public NodeInfo {

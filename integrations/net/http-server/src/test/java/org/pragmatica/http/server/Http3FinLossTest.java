@@ -55,6 +55,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Http3FinLossTest {
     private static final int HEAD = 512 * 1024;
     private static final int TAIL = 6 * 1024;
+    /// Any count of at least 1 gives the loss pattern: quiche needs one acknowledged packet numbered above the burst's
+    /// to detect the burst's loss (#2873: PROBES=1 stayed green 12/12). Four is margin, so that the acknowledgements
+    /// cover the burst under load; the count is not pinned by a test, [TailLossInjectorTest] pins that the wait honours it.
     private static final int PROBES = 4;
     private static final int ATTEMPTS = 3;
 

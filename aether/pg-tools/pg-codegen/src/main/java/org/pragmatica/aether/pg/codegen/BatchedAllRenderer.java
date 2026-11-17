@@ -11,18 +11,19 @@ import java.util.Queue;
 import org.pragmatica.lang.Contract;
 
 
-/// Renders a `<Monad>.all(...).map(<Type>::new)` row-mapper assembly that respects the core
-/// combinator ceiling.
+/// Renders a `<Monad>.all(...).map(<Type>::<type>)` row-mapper assembly that respects the core
+/// combinator ceiling. The record is built through its type-named static factory ([Factory]), never through its
+/// canonical constructor, so the invariants the factory checks run at the decode boundary; a fallible factory (one
+/// returning `Result`) is joined with `flatMap`, so its failure becomes the mapper's failure.
 ///
 /// Core's `all`/`MapperN`/`FnN`/`TupleN` ladders top out at arity 15 (`Result.all` →
 /// `Result.Mapper15` → `Fn15` → `Tuple15`), so a flat `.all(a1..aN)` only compiles for N &lt;= 15.
 ///
-///   - N &lt;= 15 → the UNCHANGED flat fast-path `Result.all(a1..aN).map(Type::new)`, byte-identical
-///     to the hand-written form.
+///   - N &lt;= 15 → the UNCHANGED flat fast-path `Result.all(a1..aN).map(Type::type)`.
 ///   - N &gt; 15 → the components are batched into &lt;=15-wide parts, each materialized as a tuple with
 ///     `.id()` (`Result.Mapper15.id()` → `Result<Tuple15<...>>`); the parts are joined and the
 ///     cascade of `Tuple.map` calls (each returning a plain value, so the nesting does not stack
-///     wrappers) rebinds every component for the constructor. All parts are constructed before the
+///     wrappers) rebinds every component for the factory call. All parts are constructed before the
 ///     outer join. The batching recurses at the parts level, so &gt;225 components (more than 15 parts)
 ///     does not reintroduce a cliff.
 @Contract
@@ -33,30 +34,60 @@ public final class BatchedAllRenderer {
 
     private BatchedAllRenderer() {}
 
-    /// Appends a complete `return <monad>.all(...).map(<typeName>::new);` statement, batching when the
-    /// argument count exceeds {@link #MAX_FLAT_ARITY}. `indent` is the leading whitespace of the
-    /// `return` statement; argument lines are indented one level (four spaces) deeper.
-    public static void appendReturn(StringBuilder sb,
-                                    String monad,
-                                    String typeName,
-                                    List<String> exprs,
-                                    String indent) {
-        if (exprs.size() <= MAX_FLAT_ARITY) {
-            appendFlat(sb, monad, typeName, exprs, indent);
-        } else {
-            appendBatched(sb, monad, typeName, exprs, indent);
+    /// The type-named static factory a row record is built through: `Type.type(components...)`.
+    ///
+    /// @param typeName the record's name as written in generated code (`Row`, or `Outer.Row` for a nested record)
+    /// @param fallible whether the factory returns `Result<Type>` (the record has an invariant) rather than `Type`
+    public record Factory(String typeName, boolean fallible) {
+        public static Factory factory(String typeName, boolean fallible) {
+            return new Factory(typeName, fallible);
+        }
+
+        /// The factory's name: the record's simple name with a lowercase first letter.
+        public String methodName() {
+            var simple = typeName.substring(typeName.lastIndexOf('.') + 1);
+
+            return Character.toLowerCase(simple.charAt(0)) + simple.substring(1);
+        }
+
+        private String joinOperator() {
+            return fallible
+                   ? "flatMap"
+                   : "map";
         }
     }
 
-    private static void appendFlat(StringBuilder sb, String monad, String typeName, List<String> exprs, String indent) {
+    /// Appends a complete `return <monad>.all(...).map(<Type>::<type>);` statement (`flatMap` for a fallible
+    /// factory), batching when the argument count exceeds {@link #MAX_FLAT_ARITY}. `indent` is the leading
+    /// whitespace of the `return` statement; argument lines are indented one level (four spaces) deeper.
+    public static void appendReturn(StringBuilder sb,
+                                    String monad,
+                                    Factory factory,
+                                    List<String> exprs,
+                                    String indent) {
+        if (exprs.size() <= MAX_FLAT_ARITY) {
+            appendFlat(sb, monad, factory, exprs, indent);
+        } else {
+            appendBatched(sb, monad, factory, exprs, indent);
+        }
+    }
+
+    private static void appendFlat(StringBuilder sb, String monad, Factory factory, List<String> exprs, String indent) {
         sb.append(indent).append("return ").append(monad).append(".all(\n");
         appendArgList(sb, exprs, indent + "    ");
-        sb.append(indent).append(").map(").append(typeName).append("::new);\n");
+        sb.append(indent)
+          .append(").")
+          .append(factory.joinOperator())
+          .append('(')
+          .append(factory.typeName())
+          .append("::")
+          .append(factory.methodName())
+          .append(");\n");
     }
 
     private static void appendBatched(StringBuilder sb,
                                       String monad,
-                                      String typeName,
+                                      Factory factory,
                                       List<String> exprs,
                                       String indent) {
         var roots = buildRoots(exprs);
@@ -89,7 +120,12 @@ public final class BatchedAllRenderer {
           .append(".all(")
           .append(String.join(", ", topArgs))
           .append(")\n");
-        sb.append(indent).append("        .map((").append(String.join(", ", topBinds)).append(") ->\n");
+        sb.append(indent)
+          .append("        .")
+          .append(factory.joinOperator())
+          .append("((")
+          .append(String.join(", ", topBinds))
+          .append(") ->\n");
         var order = bfsGroups(roots);
         var stepIndent = indent + "             ";
 
@@ -109,8 +145,10 @@ public final class BatchedAllRenderer {
         }
 
         sb.append(stepIndent)
-          .append("    new ")
-          .append(typeName)
+          .append("    ")
+          .append(factory.typeName())
+          .append('.')
+          .append(factory.methodName())
           .append('(')
           .append(String.join(", ", leafNames))
           .append(')')

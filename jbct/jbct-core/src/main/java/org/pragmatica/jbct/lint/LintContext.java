@@ -81,6 +81,6 @@ public record LintContext(List<Pattern> excludedPackagePatterns,
     /// Factory method from JbctConfig.
     public static LintContext fromConfig(org.pragmatica.jbct.config.JbctConfig jbctConfig) {
         return lintContext(jbctConfig.excludePackages()).withConfig(jbctConfig.lint())
-                                                        .withLayers(jbctConfig.layers());
+                          .withLayers(jbctConfig.layers());
     }
 }

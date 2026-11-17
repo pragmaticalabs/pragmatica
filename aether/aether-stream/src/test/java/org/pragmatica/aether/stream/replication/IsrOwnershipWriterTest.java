@@ -485,7 +485,7 @@ class IsrOwnershipWriterTest {
         /// checked against the boundary it crossed.
         @Test
         void next_failover_keepsTheEpochStartsOfTheEarlierEpochs() {
-            var started = new org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart(GENERATION.withCounter(3L), 7L);
+            var started = org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart.epochStart(GENERATION.withCounter(3L), 7L, Option.some(A));
             var current = record(A, 3L, List.of(A, B, C), 4L).withEpochStart(7L);
             var next = writer.next(STREAM, PARTITION, Option.some(current), A, GENERATION, List.of(B, C)).unwrap();
 

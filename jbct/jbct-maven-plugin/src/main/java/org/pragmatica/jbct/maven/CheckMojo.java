@@ -65,9 +65,7 @@ public class CheckMojo extends AbstractJbctMojo {
             checkLint(file, linter, allDiagnostics, lintErrors, warnings, parseErrors);
         }
 
-        LayerCoverage.coverage(filesToProcess, context)
-                     .map(LayerCoverage::render)
-                     .onPresent(getLog()::info);
+        LayerCoverage.coverage(filesToProcess, context).map(LayerCoverage::render).onPresent(getLog()::info);
         var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), parseErrors.get());
         // Report format issues
         if (!needsFormatting.isEmpty()) {
@@ -142,8 +140,8 @@ public class CheckMojo extends AbstractJbctMojo {
                   .flatMap(formatter::isFormatted)
                   .onSuccess(isFormatted -> {
                       if (!isFormatted) {
-                      needsFormatting.add(file);
-                  }
+                          needsFormatting.add(file);
+                      }
                   })
                   .onFailure(cause -> {
                                  errors.incrementAndGet();
@@ -162,12 +160,12 @@ public class CheckMojo extends AbstractJbctMojo {
                   .onSuccess(diagnostics -> {
                                  allDiagnostics.addAll(diagnostics);
                                  for (var d : diagnostics) {
-                                 switch (d.severity()) {
-            case ERROR -> errors.incrementAndGet();
-            case WARNING -> warnings.incrementAndGet();
-            default -> {}
-        }
-                             }
+                                     switch (d.severity()) {
+                                         case ERROR -> errors.incrementAndGet();
+                                         case WARNING -> warnings.incrementAndGet();
+                                         default -> {}
+                                     }
+                                 }
                              })
                   .onFailure(cause -> {
                                  parseErrors.incrementAndGet();

@@ -44,6 +44,7 @@ import org.pragmatica.cluster.state.kvstore.WitnessedRemoval;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
 
@@ -771,6 +772,15 @@ public sealed interface AetherValue {
 
         public boolean isCron() {
             return ! cron.isEmpty();
+        }
+    }
+
+    /// One node lease renewal (#2981 §2.1), stored under [AetherKey.NodeLeaseKey]. `seq` rises with every renewal the node
+    /// submits, so no two renewals are content-identical and none merges with another; the submitter matches the delivered
+    /// `seq` against the renewals it has in flight to learn which submission time the delivery anchors.
+    record NodeLeaseValue(long seq) implements AetherValue {
+        public static NodeLeaseValue nodeLeaseValue(long seq) {
+            return new NodeLeaseValue(seq);
         }
     }
 
@@ -2371,6 +2381,9 @@ public sealed interface AetherValue {
     /// for a datasource another blueprint already migrates, and the activation gate in
     /// `ClusterDeploymentState.areSchemasReady` matches records to slices by this owner so one
     /// blueprint's failed migration cannot hold an unrelated blueprint's slices.
+    ///
+    /// `artifactCoords` is the migration source: artifact coordinates, or `set:<id>@<version>`. It is read
+    /// only through [#source()]; no reader parses the string by hand.
     record SchemaVersionValue(String datasourceName,
                               int currentVersion,
                               String lastMigration,
@@ -2410,6 +2423,12 @@ public sealed interface AetherValue {
                                           owningBlueprint,
                                           attemptCount,
                                           System.currentTimeMillis());
+        }
+
+        /// The typed reading of `artifactCoords`: [MigrationSourceError.Absent] when blank,
+        /// [MigrationSourceError.Malformed] when it is neither artifact coordinates nor `set:<id>@<version>`.
+        public Result<MigrationSource> source() {
+            return MigrationSource.migrationSource(artifactCoords);
         }
 
         /// The same record with only `status` replaced — every other field, `updatedAt` included, kept.
@@ -2481,7 +2500,14 @@ public sealed interface AetherValue {
         /// Never re-arms a migration -- an unreadable schema status must not start one.
         /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as
         /// UNKNOWN by an older node either way.
-        UNKNOWN
+        UNKNOWN;
+        /// Whether the operator's retry lever (`POST /api/v1/schema/retry/{datasource}`, `aether schema retry`) accepts a record in
+        /// this status: FAILED (a permanently failed migration) and PENDING (#724: a migration that never ran). MIGRATING already has a
+        /// runner in flight, and re-arming a COMPLETED record would replay a migration nothing marked failed. The retry route and the
+        /// cluster FSM's stall warning (#2773) both ask this, so the warning names the lever only when the route would accept it.
+        public boolean canRetryManually() {
+            return this == FAILED || this == PENDING;
+        }
     }
 
     record AbTestValue(String testId,
@@ -3063,6 +3089,26 @@ public sealed interface AetherValue {
         }
     }
 
+    /// #2635: the empty group's release of one partition. An absent key cannot refuse a stale `Put` (the applier's fence
+    /// compares only against a committed value), so a rebalance batch derived before the last member left, committing
+    /// after the clear, would resurrect the departed owner. The clear therefore WRITES this value at its freshly minted
+    /// epoch for every partition: it shares [ConsumerGroupValue]'s fence kind (an `Epoch`), so the applier refuses any
+    /// older assignment `Put` over it, and the registry reads it as "no owner". It is reclaimed by the next rebalance of
+    /// the group, which mints a higher epoch and overwrites it; a group that never rebalances again keeps one such
+    /// entry per partition.
+    ///
+    /// @param epoch the clear this tombstone belongs to; strictly newer than every assignment it releases
+    record ConsumerGroupTombstone(Epoch epoch) implements AetherValue, EpochBearing<Epoch> {
+        @Override
+        public Epoch fenceEpoch() {
+            return epoch;
+        }
+
+        public static ConsumerGroupTombstone consumerGroupTombstone(Epoch epoch) {
+            return new ConsumerGroupTombstone(epoch);
+        }
+    }
+
     /// #1278: fenced on the stream's incarnation ([IncarnationFenced]), so while a life of the name is committed no
     /// other life can commit over it — concurrent first creates resolve first-wins, and a recreate commits only after
     /// the removal of the old life has applied.
@@ -3242,7 +3288,8 @@ public sealed interface AetherValue {
             kept.set(0,
                      new EpochStart(oldest.epoch(),
                                     Math.min(oldest.startOffset(), lowest.startOffset()),
-                                    lowest.coversFrom()));
+                                    lowest.coversFrom(),
+                                    oldest.owner()));
 
             return List.copyOf(kept);
         }
@@ -3380,9 +3427,11 @@ public sealed interface AetherValue {
         }
 
         /// The same record with the owner of `ownerEpoch` recorded as beginning to write at `startOffset` (#1730 phase 2).
-        /// Recording the epoch that is already the newest start changes nothing.
+        /// Recording the epoch that is already the newest start changes nothing. The start names this record's `owner`
+        /// (#2981 step 3, design §2.3 B1): the lineage write is guarded on the exact current record, so the record being
+        /// written names the activating owner, which a later owner's move fence probes.
         public StreamPartitionOwnershipValue withEpochStart(long startOffset) {
-            var next = new EpochStart(ownerEpoch, startOffset);
+            var next = EpochStart.epochStart(ownerEpoch, startOffset, Option.some(owner));
 
             return lastEpochStart().filter(next::equals)
                                  .isPresent()
@@ -3406,7 +3455,8 @@ public sealed interface AetherValue {
                                                      failoverRefused,
                                                      fenced,
                                                      failoverRefusalSeq,
-                                                     append(epochStarts, new EpochStart(epoch, startOffset)));
+                                                     append(epochStarts,
+                                                            EpochStart.epochStart(epoch, startOffset, Option.some(owner))));
         }
 
         private StreamPartitionOwnershipValue withStarts(List<EpochStart> starts) {
@@ -3444,20 +3494,27 @@ public sealed interface AetherValue {
     /// in which case the oldest dropped epoch, the one that really began at `startOffset` (a re-fold keeps the older). So an
     /// entry proves "every epoch from `coversFrom` to `epoch` began at or above `startOffset`, and `coversFrom` began AT it",
     /// and a loss from `startOffset` is proven for a consumer only when `coversFrom` is later than the consumer's epoch.
-    /// A null or [Epoch#ZERO] `coversFrom` means "unfolded" and is read as the entry's own epoch (the two-argument constructor, and a
+    /// A null or [Epoch#ZERO] `coversFrom` means "unfolded" and is read as the entry's own epoch ([#epochStart], and a
     /// value that carries no fold). The substitution is deliberate and is pinned by a round trip through the node codec in
     /// which a FOLDED entry's `coversFrom` must come back unchanged (`EpochStartCodecTest`), so a codec that dropped the field
     /// would not hide behind it.
+    ///
+    /// `owner` (#2981 step 3, design §2.3 B1) is the node whose lineage write recorded this start: the owner of `epoch` (of the
+    /// kept epoch for a folded entry). A later owner's move fence probes the owner of the newest start older than its own
+    /// epoch. Empty means unknown (an entry recorded before the field existed), and the fence then waits the full deadline.
+    /// There is no constructor or factory without it, so no construction site can default it silently; it joins equality,
+    /// which the exact-record lineage guard compares.
     @Codec
-    record EpochStart(Epoch epoch, long startOffset, Epoch coversFrom) {
+    record EpochStart(Epoch epoch, long startOffset, Epoch coversFrom, Option<NodeId> owner) {
         public EpochStart {
             coversFrom = coversFrom == null || coversFrom.equals(Epoch.ZERO)
                          ? epoch
                          : coversFrom;
         }
 
-        public EpochStart(Epoch epoch, long startOffset) {
-            this(epoch, startOffset, epoch);
+        /// An unfolded start of `epoch` at `startOffset`, recorded by `owner`.
+        public static EpochStart epochStart(Epoch epoch, long startOffset, Option<NodeId> owner) {
+            return new EpochStart(epoch, startOffset, epoch, owner);
         }
 
         /// Whether this entry proves that an epoch AFTER `consumerEpoch` began at [#startOffset()]: it stands for no epoch the
@@ -3606,6 +3663,47 @@ public sealed interface AetherValue {
     /// is set when a listing SUCCEEDED and did not contain the instance: no listing can ever confirm such a mark, so it is not re-checked. A listing
     /// that FAILED proves nothing, and a mark that only ever met failures keeps `absent` false and keeps being re-checked.
     record UnconfirmedTerminationValue(String cause, boolean seen, boolean absent) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
+
+    /// #2834: an open leader-local warning of the cluster FSM, keyed by `FsmWarningKey(code, subject)`. `members` are the parts of a
+    /// subject that covers several instances (a stray's condemned nodes, a schema hold's held nodes with their hold signature), keyed by
+    /// node id; empty for a single-instance subject. Held sorted by node id: every node encodes the same bytes.
+    ///
+    /// #3274: `open` is the fold of the members: some member held (a single-instance subject: the warning held). `message` is the text
+    /// of the transition the row records: the opener's message on an open row, the recovery's on a closed one. A close writes `open`
+    /// false, no members and the recovery text; no row is ever removed. The writer's stamp (`writerNode`, `writerProcess`,
+    /// `writerIncarnation`) names the leader incarnation that wrote the row: a reader tells its own rows from an earlier self's and from
+    /// another node's by it (`Warnings`, rule O). Flat components, so no new wire tag: `ProcessIncarnation` is pinned already.
+    ///
+    /// #3274: `revision` grows with every write of the key, so a written row never equals an earlier one: a stale transaction whose CAS
+    /// expects the earlier value cannot commit after it.
+    record FsmWarningValue(Map<String, String> members,
+                           boolean open,
+                           String message,
+                           long revision,
+                           NodeId writerNode,
+                           ProcessIncarnation writerProcess,
+                           long writerIncarnation) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
+        public FsmWarningValue {
+            members = Collections.unmodifiableSortedMap(new TreeMap<>(members));
+        }
+
+        public static FsmWarningValue fsmWarningValue(Map<String, String> members,
+                                                      boolean open,
+                                                      String message,
+                                                      long revision,
+                                                      NodeId writerNode,
+                                                      ProcessIncarnation writerProcess,
+                                                      long writerIncarnation) {
+            return new FsmWarningValue(members, open, message, revision, writerNode, writerProcess, writerIncarnation);
+        }
+
+        /// The row's content without its revision and writer: two rows saying the same thing compare equal (`Warnings.same`).
+        public boolean sameContent(FsmWarningValue other) {
+            return open == other.open
+                   && members.equals(other.members)
+                   && message.equals(other.message);
+        }
+    }
 
     /// #1543 replacement steps. `DONE` and `ROLLED_BACK` are terminal and inert; `FAILED_KEPT_BOTH` is terminal
     /// and keeps both nodes until an operator settles it. `REVERTING` swaps the original back into the electorate
@@ -3895,6 +3993,11 @@ public sealed interface AetherValue {
 
     /// rc6 §4.3: the workflow holding a conflict key, keyed by `WorkflowClaimKey(conflictKey)`.
     record WorkflowClaimValue(String holderRunId) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
+
+    /// #1715: the highest ordinal reserved so far for one (source, role), keyed by `NodeIdHighWaterKey(source, role)`. A reservation advances
+    /// it by `count` in one compare-and-set transaction BEFORE any VM is created, so a crash between reserve and provision leaves a gap in the
+    /// ordinals and never a reuse. [LeaderAuthorized]: every write is a `LeaderTransaction` mutation expecting the value the leader read.
+    record NodeIdHighWaterValue(int highWater) implements AetherValue, LeaderAuthorized {}
 
     /// A definitive no-create refusal. The operation itself is the exclusive recovery-probe token.
     record CommunityPlacementAvailabilityValue(String policyIdentity,

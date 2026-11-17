@@ -1,0 +1,2 @@
+### Added (2026-11-12 — #2923: Ember NT-149, owner behind a budget-deferred replica)
+- **Ember per-node `[streaming]` seam and the NT-149 test** (#2923). `EmberCluster.withStreamingConfig(nodeId, config)` gives one node its own off-heap stream budget; `EmberOwnerBehindBudgetDeferredReplicaTest` starts one replica below a partition's floor, lags the other replica out of the in-sync set, kills the owner and asserts the new owner reaches the deferred replica's WAL tail while that replica stays unmaterialized. Test-harness only; no product change.

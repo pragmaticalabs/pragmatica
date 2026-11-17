@@ -49,13 +49,15 @@ public class CstShapeUnclassifiedRule implements CstLintRule {
         }
 
         return findAllMethods(root).stream()
-                                   .flatMap(method -> diagnose(method, ctx));
+                             .flatMap(method -> diagnose(method, ctx));
     }
 
     private Stream<Diagnostic> diagnose(Cursor method, LintContext ctx) {
         return MethodShapeClassifier.classify(method)
                                     .filter(verdict -> verdict.shape() == MethodShape.UNCLASSIFIED)
-                                    .map(verdict -> createDiagnostic(method, verdict.reason(), ctx))
+                                    .map(verdict -> createDiagnostic(method,
+                                                                     verdict.reason(),
+                                                                     ctx))
                                     .stream();
     }
 

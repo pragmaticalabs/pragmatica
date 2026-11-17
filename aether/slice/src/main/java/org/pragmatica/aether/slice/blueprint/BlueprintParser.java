@@ -6,6 +6,7 @@ package org.pragmatica.aether.slice.blueprint;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -94,7 +95,7 @@ public interface BlueprintParser {
     }
 
     private static Option<Strategy> parseStrategy(String raw) {
-        return switch (raw.toLowerCase()) {
+        return switch (raw.toLowerCase(Locale.ROOT)) {
             case "rolling" -> some(Strategy.ROLLING);
             case "canary" -> some(Strategy.CANARY);
             case "blue-green", "blue_green" -> some(Strategy.BLUE_GREEN);

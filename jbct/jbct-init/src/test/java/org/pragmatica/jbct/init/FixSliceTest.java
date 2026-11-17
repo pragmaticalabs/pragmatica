@@ -3,6 +3,7 @@ package org.pragmatica.jbct.init;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import java.util.Locale;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -211,7 +212,7 @@ class FixSliceTest {
         Files.createDirectories(manifestDir);
         var content = "slice.name=" + sliceName + "\n"
                       + "slice.package=" + slicePackage + "\n"
-                      + "slice.artifactId=slice-" + sliceName.toLowerCase() + "\n"
+                      + "slice.artifactId=slice-" + sliceName.toLowerCase(Locale.ROOT) + "\n"
                       + extra;
         Files.writeString(manifestDir.resolve(sliceName + ".manifest"), content);
     }

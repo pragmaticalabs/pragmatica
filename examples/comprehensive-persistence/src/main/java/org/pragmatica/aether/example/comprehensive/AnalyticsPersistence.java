@@ -19,7 +19,16 @@ public interface AnalyticsPersistence {
                        long customerId,
                        int orderCount,
                        BigDecimal revenue,
-                       Instant createdAt) {}
+                       Instant createdAt) {
+        static OrderMetric orderMetric(long id,
+                                       LocalDate eventDate,
+                                       long customerId,
+                                       int orderCount,
+                                       BigDecimal revenue,
+                                       Instant createdAt) {
+            return new OrderMetric(id, eventDate, customerId, orderCount, revenue, createdAt);
+        }
+    }
 
     record NewOrderMetric(LocalDate eventDate, long customerId, int orderCount, BigDecimal revenue) {}
 
@@ -29,7 +38,11 @@ public interface AnalyticsPersistence {
                          int totalOrders,
                          BigDecimal totalRevenue) {}
 
-    record RevenueTotal(long customerId, BigDecimal totalRevenue) {}
+    record RevenueTotal(long customerId, BigDecimal totalRevenue) {
+        static RevenueTotal revenueTotal(long customerId, BigDecimal totalRevenue) {
+            return new RevenueTotal(customerId, totalRevenue);
+        }
+    }
 
     @Table(OrderMetric.class)
     Promise<Option<OrderMetric>> findById(Long id);

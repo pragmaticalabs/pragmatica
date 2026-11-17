@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
@@ -882,7 +883,7 @@ public class RouteSourceGenerator {
                       ? routePath
                       : prefix + routePath;
         var fullPath = escapeJavaString(rawPath);
-        var httpMethod = routeDsl.method().toLowerCase();
+        var httpMethod = routeDsl.method().toLowerCase(Locale.ROOT);
         var responseType = method.responseType().toString();
         // Use business parameter type (excludes security params like Principal/SecurityContext)
         // Lazy: only resolve when route actually needs a body/parameter type

@@ -290,11 +290,12 @@ class Fsm2EngineMarkerMixedClusterTest {
         return http.sendString(request).await().map(HttpResult::body).or("{\"error\":\"request failed\"}");
     }
 
-    /// The newcomer is added by the test, never by auto-heal, so the cluster's raised core count does not provision a node of its own.
-    private static final class BlockedProvisioning implements ComputeProvider {
+    /// The newcomer is added by the test, never by auto-heal, so the cluster's raised core count does not provision a node of its own. Shared
+    /// with `Fsm2E15RelaunchTest` (a replacement is added by the test, never by auto-heal).
+    static final class BlockedProvisioning implements ComputeProvider {
         private final ComputeProvider delegate;
 
-        private BlockedProvisioning(ComputeProvider delegate) {
+        BlockedProvisioning(ComputeProvider delegate) {
             this.delegate = delegate;
         }
 

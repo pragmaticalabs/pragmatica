@@ -102,7 +102,8 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
                             : countJavaFiles(Option.option(testSourceDirectory).map(File::toPath));
 
         if (excludedTests > 0) {
-            getLog().warn("JBCT " + goalName + " examined NOTHING in " + project.getArtifactId()
+            getLog().warn("JBCT " + goalName
+                         + " examined NOTHING in " + project.getArtifactId()
                          + ": no Java files under " + sourceDirectory
                          + ", and " + excludedTests
                          + " test file(s) under " + testSourceDirectory
@@ -125,7 +126,8 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
     private static int countJavaFilesIn(Path directory) {
         try (var paths = Files.walk(directory)) {
             return (int) paths.filter(Files::isRegularFile)
-                              .filter(path -> path.toString().endsWith(".java"))
+                              .filter(path -> path.toString()
+                                                  .endsWith(".java"))
                               .count();
         } catch (IOException _) {
             // Counting is only ever used to make a message more honest; a failure here must not

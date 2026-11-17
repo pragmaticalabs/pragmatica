@@ -10,6 +10,7 @@ import java.util.Arrays;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.function.Predicate;
@@ -1029,7 +1030,7 @@ public class ClusterConfigWizard {
 
     private static FirewallRule readSingleRule(Prompt prompt) {
         var port = prompt.promptValidated("Rule port", "8080", InputValidators::validatePort);
-        var protocolRaw = prompt.prompt("Rule protocol (tcp/udp)", "tcp").trim().toLowerCase();
+        var protocolRaw = prompt.prompt("Rule protocol (tcp/udp)", "tcp").trim().toLowerCase(Locale.ROOT);
         var protocol = "udp".equals(protocolRaw)
                        ? "udp"
                        : "tcp";

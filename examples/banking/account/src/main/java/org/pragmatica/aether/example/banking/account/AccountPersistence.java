@@ -36,9 +36,22 @@ public interface AccountPersistence {
                       String email,
                       String currency,
                       String status,
-                      Instant createdAt) {}
+                      Instant createdAt) {
+        static AccountRow accountRow(String accountId,
+                                     String holderName,
+                                     String email,
+                                     String currency,
+                                     String status,
+                                     Instant createdAt) {
+            return new AccountRow(accountId, holderName, email, currency, status, createdAt);
+        }
+    }
 
-    record BalanceRow(String accountId, BigDecimal amount, BigDecimal pending, String currency) {}
+    record BalanceRow(String accountId, BigDecimal amount, BigDecimal pending, String currency) {
+        static BalanceRow balanceRow(String accountId, BigDecimal amount, BigDecimal pending, String currency) {
+            return new BalanceRow(accountId, amount, pending, currency);
+        }
+    }
 
     @Query("INSERT INTO accounts (account_id, holder_name, email, currency, status) "
           + "VALUES (:accountId, :holderName, :email, :currency, :status) "

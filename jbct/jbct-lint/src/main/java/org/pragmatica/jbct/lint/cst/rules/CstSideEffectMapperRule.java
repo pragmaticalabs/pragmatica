@@ -27,20 +27,18 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// is a false negative. Block-body lambdas are left to JBCT-LAM-02. Suppressible like any rule.
 public class CstSideEffectMapperRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-SIDE-01";
-
     /// Carrier/stream combinators whose lambda argument is a transformation (pure) position.
     private static final Set<String> MAPPER_METHODS = Set.of("map", "filter");
-
     /// The outermost invoked method name inside a lambda body — identifier before the first `(`.
     private static final Pattern OUTERMOST_CALL = Pattern.compile("([A-Za-z_$][A-Za-z0-9_$]*)\\s*\\(");
 
     /// Side-effect verbs: the method name equals a verb or is `verb` + a CamelCase tail
     /// (`save`, `saveUser`, `set`, `setName`, `println`).
     private static final Pattern SIDE_EFFECT_VERB = Pattern.compile("^(?:log|debug|info|warn|error|trace|print|println"
-                                                                    + "|save|store|persist|update|insert|delete|remove"
-                                                                    + "|add|put|set|write|append|flush|close|send"
-                                                                    + "|publish|emit|notify|record|register|increment"
-                                                                    + "|report|track)(?:[A-Z][A-Za-z0-9_$]*)?$");
+                                                                   + "|save|store|persist|update|insert|delete|remove"
+                                                                   + "|add|put|set|write|append|flush|close|send"
+                                                                   + "|publish|emit|notify|record|register|increment"
+                                                                   + "|report|track)(?:[A-Z][A-Za-z0-9_$]*)?$");
 
     @Override
     public String ruleId() {
@@ -56,22 +54,22 @@ public class CstSideEffectMapperRule implements CstLintRule {
         var masked = MapperSafety.blankNonCode(source);
 
         return findAllLambdas(root).stream()
-                      .filter(lambda -> isMapperLambda(masked, lambda))
-                      .filter(lambda -> hasSideEffectBody(lambda))
-                      .map(lambda -> createDiagnostic(lambda, ctx));
+                             .filter(lambda -> isMapperLambda(masked, lambda))
+                             .filter(lambda -> hasSideEffectBody(lambda))
+                             .map(lambda -> createDiagnostic(lambda, ctx));
     }
 
     private boolean isMapperLambda(String masked, Cursor lambda) {
-        return MapperSafety.enclosingCallName(masked, lambda.spanStart())
+        return MapperSafety.enclosingCallName(masked,
+                                              lambda.spanStart())
                            .map(MAPPER_METHODS::contains)
                            .or(false);
     }
 
     private boolean hasSideEffectBody(Cursor lambda) {
         return expressionBody(lambda).flatMap(this::outermostCall)
-                                     .map(name -> SIDE_EFFECT_VERB.matcher(name)
-                                                                  .matches())
-                                     .or(false);
+                             .map(name -> SIDE_EFFECT_VERB.matcher(name).matches())
+                             .or(false);
     }
 
     /// Expression body of the lambda (text after `->`), or none for a block body (handled by
@@ -84,8 +82,7 @@ public class CstSideEffectMapperRule implements CstLintRule {
             return Option.none();
         }
 
-        var body = masked.substring(arrow + 2)
-                         .trim();
+        var body = masked.substring(arrow + 2).trim();
 
         return body.isEmpty() || body.charAt(0) == '{'
                ? Option.none()

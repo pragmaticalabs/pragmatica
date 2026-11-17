@@ -1,0 +1,2 @@
+### Fixed (2026-11-11 — #3067: EmberCheckpointReclaimTest first save raced the core ownership bootstrap)
+- **EmberCheckpointReclaimTest waits for the committed incarnation** (#3067). Its readiness gate passed before the core DhtPartitionOwnership record was minted and rewritten, so the first save could fail "1 refused by owner-epoch fences". Test-only. [verified: 50 repetitions, no gate 1 red, final gate 0 red]

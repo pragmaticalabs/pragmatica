@@ -123,6 +123,8 @@ public final class MembershipFsm {
 
     /// FSM kind tag — groups all per-member FSMs under one name for observer dashboards.
     private static final String FSM_KIND = "membership";
+    /// #3028 S3: how often a rejoin refused for quorum loss is re-offered to a DEAD member [guess: 2 s, a few SWIM periods].
+    private static final TimeSpan REJOIN_REOFFER = TimeSpan.timeSpan(2).seconds();
     /// Up-hysteresis promotion threshold for this **edge-driven** manager (= 1). SWIM emits
     /// `HealthyObserved` once, on the edge into ALIVE — not as a periodic sample — so the first
     /// observation is the promotion signal. presence sampler's 2-sample
@@ -1061,6 +1063,19 @@ public final class MembershipFsm {
         return coreMembers();
     }
 
+    /// The worker-tier counterpart of [`#coreCountedMembers`] (#2600): counted members (MEMBER + SUSPECT) whose
+    /// descriptor role is explicitly `worker` or `spot`. An unknown role is in neither projection. A
+    /// worker-hosted consumer's candidate set reads this: the declarative stream-consumer manager must see the live
+    /// workers a slice is ACTIVE on, which the core-only ownership view cannot name. Insertion-ordered.
+    public Set<NodeId> workerCountedMembers() {
+        return members.entrySet()
+                      .stream()
+                      .filter(entry -> entry.getValue()
+                                            .isWorkerCountedMember())
+                      .map(Map.Entry::getKey)
+                      .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
     /// The OBSERVED-REACHABILITY projection (#557 / #558): [`#coreCountedMembers`] narrowed to
     /// members for which first-hand reachability evidence was latched — a completed QUIC handshake
     /// or a SWIM ALIVE observation ([`MemberTracking#everReachable`]) — plus `self`, which is
@@ -1274,6 +1289,23 @@ public final class MembershipFsm {
                 tracking.dispatch(new UpHysteresisMet());
             }
         });
+        reofferIfRefusedForQuorumLoss(tracking, incarnation);
+    }
+
+    /// #3028 S3: a newer-incarnation `SwimHealthy` that [`MembershipState.Dead`] refused only because the member reports
+    /// quorum loss is remembered and re-offered every [`#REJOIN_REOFFER`] until the report clears or the identity leaves
+    /// DEAD. Nothing else re-offers it: the refutation is spent (holders already hold the refuted incarnation, so no
+    /// further notice arrives) and the report's clearing carries a further bump only when the member's incarnation moves.
+    @Contract
+    private void reofferIfRefusedForQuorumLoss(MemberTracking tracking, long incarnation) {
+        if (tracking.armRejoinReoffer(incarnation)) {
+            SharedScheduler.schedule(() -> reofferRefusedRejoin(tracking), REJOIN_REOFFER);
+        }
+    }
+
+    @Contract
+    private void reofferRefusedRejoin(MemberTracking tracking) {
+        tracking.takeRefusedRejoin().onPresent(incarnation -> healthy(tracking, incarnation));
     }
 
     private void suspect(MemberTracking tracking, long incarnation) {
@@ -1462,6 +1494,19 @@ public final class MembershipFsm {
         return org.pragmatica.lang.Unit.unit();
     }
 
+    /// #3119 — this node's OWN quorum-loss report (its detector's current `LOST`). Default: never lost (a host without
+    /// a detector, the legacy factories, tests that do not set it), so the #2936 hold applies as before.
+    private volatile BooleanSupplier selfQuorumLost = () -> false;
+
+    /// #3119 — wire this node's own quorum-loss report. While it is lost, a member's report does not hold the member
+    /// out of re-admission: a quorumless observer cannot exclude a quorumless member, since its own report clears only
+    /// after it re-admits its peers. [#forwardableMembers] is unaffected (it does not feed the member count).
+    public org.pragmatica.lang.Unit setSelfQuorumLoss(BooleanSupplier lost) {
+        selfQuorumLost = lost;
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
     /// #1717 — whether THIS node may evict a worker or spot on a single death plane. A core holds evidence
     /// sources for a member (governor reports, worker admission) that veto a wrong signal inside the backstop
     /// window, so one plane is enough there. A worker node holds none of them for its peer workers (governor
@@ -1522,7 +1567,10 @@ public final class MembershipFsm {
     }
 
     private MemberTracking newTracking(NodeId id) {
-        var fsm = Fsm.fsm(FSM_KIND, id.id(), initialStateFactory(id, () -> quorumLossReported.test(id)), observer);
+        var fsm = Fsm.fsm(FSM_KIND,
+                          id.id(),
+                          initialStateFactory(id, () -> quorumLossReported.test(id), () -> selfQuorumLost.getAsBoolean()),
+                          observer);
         var tracking = new MemberTracking(id,
                                           fsm,
                                           this::onEnteredDead,
@@ -1550,10 +1598,12 @@ public final class MembershipFsm {
     /// Explicitly-typed initial-state factory so the [`Fsm#fsm`] constructor-driven overload is
     /// selected unambiguously (the bare lambda is ambiguous against the plain `S initial` overload).
     /// Builds the per-member [`MembershipContext`] bound to the partially-constructed FSM and returns
-    /// its OBSERVED initial state. `quorumLossReported` reads the member's quorum-loss report live (#2936).
+    /// its OBSERVED initial state. `quorumLossReported` reads the member's quorum-loss report live (#2936);
+    /// `observerQuorumLost` reads this node's own (#3119).
     private static Function<Fsm<MembershipState, MembershipEvent>, MembershipState> initialStateFactory(NodeId id,
-                                                                                                        BooleanSupplier quorumLossReported) {
-        return holder -> new MembershipContext(holder, id, quorumLossReported).observed();
+                                                                                                        BooleanSupplier quorumLossReported,
+                                                                                                        BooleanSupplier observerQuorumLost) {
+        return holder -> new MembershipContext(holder, id, quorumLossReported, observerQuorumLost).observed();
     }
 
     /// Mutable per-member bookkeeping: the member's FSM plus the promotion streak counter and the two
@@ -1704,6 +1754,10 @@ public final class MembershipFsm {
         /// projections and the SWIM health filter. Once observed, always observed; departure is
         /// handled by the member leaving [`#coreCountedMembers`] on death.
         private boolean everReachable = false;
+        /// #3028 S3: highest incarnation a DEAD member's rejoin was refused at for quorum loss, and whether a re-offer is scheduled.
+        /// Mutated only under the per-member monitor.
+        private long refusedRejoin = 0L;
+        private boolean rejoinReofferPending = false;
         private long lastDoubtAtMs = 0L;
         private MemberDescriptor descriptor = MemberDescriptor.UNKNOWN;
         /// Pending terminal-eviction backstop (#131 Model C). `Some(future)` while a co-confirmed-death
@@ -2014,6 +2068,33 @@ public final class MembershipFsm {
 
         private synchronized boolean isDead() {
             return fsm.current() instanceof MembershipState.Dead;
+        }
+
+        /// #3028 S3: records `incarnation` as a rejoin refused for quorum loss when this member is DEAD, `incarnation`
+        /// exceeds the incarnation it died at. The report is not re-read here: the DEAD refusal of a newer incarnation is for quorum loss
+        /// alone, and a second read could see the report cleared and leave the refusal permanent (v3107a F1). True when the caller must schedule the
+        /// re-offer (none is pending yet), so at most one re-offer timer exists per member.
+        synchronized boolean armRejoinReoffer(long incarnation) {
+            if (! (fsm.current() instanceof MembershipState.Dead dead) || incarnation <= dead.terminalIncarnation()) {
+                return false;
+            }
+
+            refusedRejoin = Math.max(refusedRejoin, incarnation);
+            var schedule = !rejoinReofferPending;
+
+            rejoinReofferPending = true;
+
+            return schedule;
+        }
+
+        /// #3028 S3: the pending re-offer fires. Returns the refused incarnation to re-feed, or empty when the member
+        /// left DEAD meanwhile (a rejoin through another path needs no re-offer).
+        synchronized Option<Long> takeRefusedRejoin() {
+            rejoinReofferPending = false;
+
+            return isDead()
+                   ? Option.some(refusedRejoin)
+                   : Option.none();
         }
 
         private synchronized boolean isDeparting() {
@@ -2411,6 +2492,11 @@ public final class MembershipFsm {
         /// AND its descriptor role is not the explicit literal `worker` (unknown role = included).
         synchronized boolean isCoreCountedMember() {
             return countsTowardEffective() && descriptor.isCore();
+        }
+
+        /// Whether this member counts (MEMBER + SUSPECT) AND its descriptor role is `worker` or `spot`.
+        synchronized boolean isWorkerCountedMember() {
+            return countsTowardEffective() && descriptor.isWorker();
         }
 
         /// Strict quorum-numerator predicate ([`MembershipFsm#strictCoreMemberCount`], Wave 2 /

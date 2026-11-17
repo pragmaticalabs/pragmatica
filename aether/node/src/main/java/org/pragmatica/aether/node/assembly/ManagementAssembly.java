@@ -31,6 +31,7 @@ import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
 import org.pragmatica.aether.slice.*;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.SliceRowSource;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.*;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -88,6 +89,7 @@ public sealed interface ManagementAssembly {
     /// What `managementServer` reads from the assembly built so far.
     record ManagementServerInputs(AetherNodeConfig config,
                                   KVStore<AetherKey, AetherValue> kvStore,
+                                  SliceRowSource sliceRows,
                                   RabiaNode<KVCommand<AetherKey>> clusterNode,
                                   Serializer serializer,
                                   Deserializer deserializer,
@@ -216,7 +218,8 @@ public sealed interface ManagementAssembly {
 
         // #1720: operator drain and shutdown honour the slice minAvailable floor,
         // as the automatic drain does (same KV-backed guard, same counting rules).
-        NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore),
+        NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore,
+                                                                                                  in.sliceRows()),
                                                   operatorWarningSink));
 
         managementServer.setOperatorWarningSink(operatorWarningSink);

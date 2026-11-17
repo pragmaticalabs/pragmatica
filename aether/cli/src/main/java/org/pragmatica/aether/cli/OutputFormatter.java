@@ -6,6 +6,7 @@ package org.pragmatica.aether.cli;
 import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.StringJoiner;
 
 import org.pragmatica.json.JsonMapper;
@@ -368,7 +369,7 @@ public sealed interface OutputFormatter {
             return false;
         }
 
-        var errorText = node.path("error").asText().toLowerCase();
+        var errorText = node.path("error").asText().toLowerCase(Locale.ROOT);
 
         return errorText.contains("not found") || errorText.contains("404");
     }

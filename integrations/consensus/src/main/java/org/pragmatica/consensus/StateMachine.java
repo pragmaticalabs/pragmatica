@@ -72,6 +72,15 @@ public interface StateMachine<C extends Command> {
         return Unit.unit();
     }
 
+    /// Told by the engine's restore path that it adopted `nextSlot` as its phase frontier: after a snapshot install it is
+    /// `max(currentPhase, snapshot phase)`, and after an empty snapshot it is the source's phase over content the restore did not touch.
+    /// Unlike [#onPhaseCompleted], the slots below `nextSlot` were not necessarily applied here, so a state machine that labels its content
+    /// with the revision records that the label may now run ahead of the content (#3274). Must not throw and must be idempotent. Default:
+    /// [#onPhaseCompleted].
+    default Unit onPhaseAdopted(long nextSlot) {
+        return onPhaseCompleted(nextSlot);
+    }
+
     /// Create a snapshot of the current state machine state.
     /// The snapshot should be serializable and capture the complete state.
     ///

@@ -2,6 +2,7 @@ package org.pragmatica.jbct.derive.model;
 
 import java.util.List;
 
+
 /// The current position of a living system on the six vector axes (SPEC.md §3,
 /// `[current_vector]`), each entry scoped, so an audit run can start from where the system
 /// already is rather than from nothing.

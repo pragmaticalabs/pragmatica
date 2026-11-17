@@ -107,13 +107,20 @@ public class SliceProcessor extends AbstractProcessor {
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
         var target = processingEnv.getOptions().getOrDefault("slice.target", "aether");
+
         if (!target.equals("aether") && !target.equals("terra")) {
             processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, "Unknown slice.target: " + target);
+
             return true;
         }
+
         if (roundEnv.processingOver() && target.equals("terra")) {
-            terraGenerator.finish().onFailure(cause -> processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, cause.message()));
+            terraGenerator.finish()
+                          .onFailure(cause -> processingEnv.getMessager()
+                                                           .printMessage(Diagnostic.Kind.ERROR,
+                                                                         cause.message()));
         }
+
         for (var annotation : annotations) {
             for (var element : roundEnv.getElementsAnnotatedWith(annotation)) {
                 if (element.getKind() != ElementKind.INTERFACE) {
@@ -186,6 +193,7 @@ public class SliceProcessor extends AbstractProcessor {
         if ("terra".equals(processingEnv.getOptions().get("slice.target")) && !terraGenerator.validate(sliceModel)) {
             return;
         }
+
         var topicBindings = ResolvedTopicConstant.resolveBindings(sliceModel, roundRoots, processingEnv);
 
         if (!topicBindings.errors().isEmpty()) {
@@ -201,17 +209,16 @@ public class SliceProcessor extends AbstractProcessor {
 
             return;
         }
-
         // The route config is loaded first: whether the slice has routes decides what the factory provisions (#2378).
         loadRouteConfig(sliceModel.packageName()).flatMap(configOpt -> generateFactory(interfaceElement,
                                                                                        sliceModel,
                                                                                        topicBindings.bindings(),
                                                                                        configOpt.isPresent()).flatMap(_ -> generateRoutesAndManifest(interfaceElement,
-                                                                                                                                                      sliceModel,
-                                                                                                                                                      configOpt,
-                                                                                                                                                      topicBindings.bindings())))
-                                                 .onFailure(cause -> error(interfaceElement,
-                                                                           cause.message()));
+                                                                                                                                                     sliceModel,
+                                                                                                                                                     configOpt,
+                                                                                                                                                     topicBindings.bindings())))
+                       .onFailure(cause -> error(interfaceElement,
+                                                 cause.message()));
     }
 
     private Result<Unit> generateFactory(TypeElement interfaceElement,
@@ -227,13 +234,11 @@ public class SliceProcessor extends AbstractProcessor {
                                                    SliceModel sliceModel,
                                                    Option<RouteConfig> configOpt,
                                                    Map<String, ResolvedTopicConstant> topicBindings) {
-        return generateRoutesClass(interfaceElement,
-                                   sliceModel,
-                                   configOpt).flatMap(routesClassOpt -> generateSliceManifest(interfaceElement,
-                                                                                              sliceModel,
-                                                                                              routesClassOpt,
-                                                                                              configOpt,
-                                                                                              topicBindings));
+        return generateRoutesClass(interfaceElement, sliceModel, configOpt).flatMap(routesClassOpt -> generateSliceManifest(interfaceElement,
+                                                                                                                            sliceModel,
+                                                                                                                            routesClassOpt,
+                                                                                                                            configOpt,
+                                                                                                                            topicBindings));
     }
 
     private Result<Option<String>> generateRoutesClass(TypeElement interfaceElement,
@@ -251,6 +256,7 @@ public class SliceProcessor extends AbstractProcessor {
         if ("terra".equals(processingEnv.getOptions().get("slice.target"))) {
             return terraGenerator.generate(sliceModel, topicBindings);
         }
+
         return manifestGenerator.generateSliceManifest(sliceModel, routesClass, routeConfig, topicBindings)
                                 .onSuccess(_ -> note(interfaceElement,
                                                      "Generated slice manifest: META-INF/slice/" + sliceModel.simpleName()
@@ -271,14 +277,16 @@ public class SliceProcessor extends AbstractProcessor {
         sliceModel.methods()
                   .stream()
                   .filter(MethodModel::hasMessageContext)
-                  .forEach(method -> sites.add(new SubscriptionSite(method.name(), method, true)));
+                  .forEach(method -> sites.add(new SubscriptionSite(method.name(),
+                                                                    method,
+                                                                    true)));
         sliceModel.transitiveReactiveMethods()
                   .stream()
-                  .filter(transitive -> transitive.method().hasMessageContext())
+                  .filter(transitive -> transitive.method()
+                                                  .hasMessageContext())
                   .forEach(transitive -> sites.add(new SubscriptionSite(transitive.qualifiedMethodName(),
                                                                         transitive.method(),
                                                                         false)));
-
         if (sites.isEmpty()) {
             return List.of();
         }
@@ -291,15 +299,17 @@ public class SliceProcessor extends AbstractProcessor {
             // carrying one) and then walks EVERY direct method, so an interceptor on an unrelated
             // method still drags this handler through it. A per-method check misses exactly that.
             // Transitive handlers are not in the wrapper, so only their own interceptors count.
-            if (site.method().hasInterceptors()
-                || (site.direct() && sliceModel.hasMethodInterceptors())) {
+            if (site.method().hasInterceptors() || (site.direct() && sliceModel.hasMethodInterceptors())) {
                 violations.add(MessageContextRule.interceptorViolation(site.displayName()));
             }
 
             for (var binding : site.method().reactiveOfCategory("subscription")) {
-                var section = topicSection(binding.qualifier().configSection(), topicBindings);
+                var section = topicSection(binding.qualifier().configSection(),
+                                           topicBindings);
 
-                MessageContextRule.durabilityViolation(site.displayName(), section, durability)
+                MessageContextRule.durabilityViolation(site.displayName(),
+                                                       section,
+                                                       durability)
                                   .onPresent(violations::add);
             }
         }

@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
+import java.util.Locale;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
@@ -27,6 +29,6 @@ public record EnvSecretsProvider() implements SecretsProvider {
 
     static String toEnvVarName(String path) {
         return PREFIX + path.replace('/', '_')
-                            .toUpperCase();
+                            .toUpperCase(Locale.ROOT);
     }
 }

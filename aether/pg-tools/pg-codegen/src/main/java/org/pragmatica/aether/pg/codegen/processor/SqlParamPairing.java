@@ -80,7 +80,7 @@ public final class SqlParamPairing {
         }
 
         if (INSERT.equals(nt.ruleName())) {
-            return Option.present(CstNavigator.of(nt));
+            return Option.present(CstNavigator.cstNavigator(nt));
         }
 
         for (var child : nt.children()) {
@@ -206,7 +206,7 @@ public final class SqlParamPairing {
 
         void visit(CstNode node, Scope scope) {
             switch (node) {
-                case CstNode.NonTerminal nt -> visitRule(CstNavigator.of(nt), scope);
+                case CstNode.NonTerminal nt -> visitRule(CstNavigator.cstNavigator(nt), scope);
                 case CstNode.Token token when"ParamRef".equals(token.ruleName()) -> hitOf(token, Cast.NONE).onPresent(occurrences::add);
                 default -> {}
             }
@@ -255,7 +255,7 @@ public final class SqlParamPairing {
                     // The source query never sees the target relation.
                     visit(child, outer);
                 } else if (child instanceof CstNode.NonTerminal nt && "OnConflictClause".equals(nt.ruleName())) {
-                    visitOnConflict(CstNavigator.of(nt), scope, table);
+                    visitOnConflict(CstNavigator.cstNavigator(nt), scope, table);
                 } else {
                     visit(child, scope);
                 }
@@ -313,7 +313,7 @@ public final class SqlParamPairing {
             actionScope.register(EXCLUDED, table);
             for (var child : clause.node().children()) {
                 if (child instanceof CstNode.NonTerminal nt && "ConflictAction".equals(nt.ruleName())) {
-                    var action = CstNavigator.of(nt);
+                    var action = CstNavigator.cstNavigator(nt);
 
                     table.onPresent(known -> pairSetItems(action, known));
                     visit(child, actionScope);
@@ -351,14 +351,14 @@ public final class SqlParamPairing {
             }
 
             if ("BaseTableRef".equals(nt.ruleName())) {
-                registerRelation(CstNavigator.of(nt), scope);
+                registerRelation(CstNavigator.cstNavigator(nt), scope);
 
                 return;
             }
 
             if (DERIVED_RELATIONS.contains(nt.ruleName())) {
                 // A subquery or function in FROM: its columns are unknown, so it blocks bare-name resolution.
-                scope.register(CstNavigator.of(nt)
+                scope.register(CstNavigator.cstNavigator(nt)
                                            .child("Alias")
                                            .flatMap(SqlParamPairing::aliasName)
                                            .or("(derived " + nt.span().start().offset() + ")"),
@@ -470,19 +470,19 @@ public final class SqlParamPairing {
                 return;
             }
 
-            var column = columnOf(CstNavigator.of(first), scope);
+            var column = columnOf(CstNavigator.cstNavigator(first), scope);
 
             for (var part : parts.subList(1, parts.size())) {
                 if (part instanceof CstNode.NonTerminal nt) {
-                    var operands = operands(CstNavigator.of(nt));
+                    var operands = operands(CstNavigator.cstNavigator(nt));
 
                     column.onPresent(known -> operands.forEach(operand -> paramOf(operand).onPresent(hit -> addPair(known.table(),
                                                                                                                     known.name(),
                                                                                                                     hit))));
                     if ("IsExpr".equals(nt.ruleName())) {
-                        columnOf(CstNavigator.of(nt), scope).onPresent(known -> paramOf(CstNavigator.of(first)).onPresent(hit -> addPair(known.table(),
-                                                                                                                                         known.name(),
-                                                                                                                                         hit)));
+                        columnOf(CstNavigator.cstNavigator(nt), scope).onPresent(known -> paramOf(CstNavigator.cstNavigator(first)).onPresent(hit -> addPair(known.table(),
+                                                                                                                                                             known.name(),
+                                                                                                                                                             hit)));
                     }
                 }
             }
@@ -523,7 +523,7 @@ public final class SqlParamPairing {
 
             for (var child : node.children()) {
                 if (child instanceof CstNode.NonTerminal nt) {
-                    result.add(CstNavigator.of(nt));
+                    result.add(CstNavigator.cstNavigator(nt));
                 }
             }
 
@@ -660,7 +660,7 @@ public final class SqlParamPairing {
             var parts = node.children();
 
             if (parts.size() == 1 && parts.getFirst() instanceof CstNode.NonTerminal nt) {
-                return Option.present(CstNavigator.of(nt));
+                return Option.present(CstNavigator.cstNavigator(nt));
             }
 
             return Option.empty();

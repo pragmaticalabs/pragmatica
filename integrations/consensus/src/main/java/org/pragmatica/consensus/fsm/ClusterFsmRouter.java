@@ -41,16 +41,19 @@ public final class ClusterFsmRouter {
                                                                      AtomicLong quorumSequence) {
         router.addRoute(TransportObservation.PeerJoined.class,
                         notification -> fsm.dispatch(new ClusterFsmEvent.NodeAdded(notification.nodeId(),
-                                                                                   notification.topology())));
+                                                                                   notification.topology(),
+                                                                                   notification.sequence())));
         router.addRoute(TransportObservation.PeerDisconnected.class,
                         notification -> fsm.dispatch(new ClusterFsmEvent.NodeGone(notification.nodeId(),
-                                                                                  notification.topology())));
+                                                                                  notification.topology(),
+                                                                                  notification.sequence())));
         router.addRoute(TransportObservation.PeerObservedFaulty.class,
                         notification -> fsm.dispatch(new ClusterFsmEvent.NodeGone(notification.nodeId(),
                                                                                   notification.topology())));
         router.addRoute(TransportObservation.PeerReconnected.class,
                         notification -> fsm.dispatch(new ClusterFsmEvent.NodeAdded(notification.nodeId(),
-                                                                                   notification.topology())));
+                                                                                   notification.topology(),
+                                                                                   notification.sequence())));
         router.addRoute(TransportObservation.SelfShutdown.class,
                         notification -> fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared()));
         router.addRoute(ClusterStateNotification.class,

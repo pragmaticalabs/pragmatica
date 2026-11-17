@@ -1,5 +1,6 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.Locale;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
@@ -34,7 +35,7 @@ class DocLinkTargetTest {
                                                        .findFirst()
                                                        .orElseGet(() -> fail("no finding for " + fixture.ruleId()));
 
-        assertEquals(CATALOGUE + fixture.ruleId().toLowerCase(),
+        assertEquals(CATALOGUE + fixture.ruleId().toLowerCase(Locale.ROOT),
                      diagnostic.docLink().or("<none>"),
                      fixture.ruleId());
     }

@@ -10,6 +10,7 @@ import java.util.Set;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
@@ -87,7 +88,7 @@ class IncarnationTest {
          .directive(W1,
                     Fixtures.worker(C))
          .record(W1, DepartureState.DEPARTED, 1L, P1, DepartureCause.WORKER_LEAVE)
-         .activate();
+         .c17bLost().activate();
         w.h.clearLog();
         w.tokens.admit(W1, P2);
         w.h.deliver(new ClusterInput.WorkerJoin(W1, new Admission(process(P2))));
@@ -132,8 +133,10 @@ class IncarnationTest {
         assertThat(w.tokens.tokenOf(W1)).as("the real registry knows nothing").isZero();
         assertThat(Rows.activeCount(w.h.model(), ORDERS)).isEqualTo(1);
         assertThat(Rows.occupies(w.h.model(), MbWorld.pair(W1, ORDERS))).isTrue();
-        assertThat(w.h.submits().stream().filter(s -> s.kind() != SubmitKind.COMMUNITY)).as("nothing is written for the rows")
+        assertThat(w.h.submitsBesides(SubmitKind.WARNINGS).stream().filter(s -> s.kind() != SubmitKind.COMMUNITY)).as("nothing is written for the rows")
                   .isEmpty();
+        assertThat(w.h.warningPuts()).as("the unjudgeable worker class is the only open warning persisted (one write carries the open row, #3274)")
+                  .containsExactly(new FsmWarningKey("worker-absence-unjudgeable", "worker"));
     }
 
     // NT-123 (d)
@@ -211,9 +214,11 @@ class IncarnationTest {
         assertThat(Rows.activeCount(model, ORDERS)).as(arm + ": activeCount").isEqualTo(5);
         assertThat(Rows.liveCount(model, ORDERS)).as(arm + ": liveCount").isEqualTo(5);
         assertThat(Rows.placed(model, ORDERS)).as(arm + ": placed").isEqualTo(5);
-        assertThat(w.h.submits().stream().filter(s -> s.kind() != SubmitKind.COMMUNITY)).as(arm
+        assertThat(w.h.submitsBesides(SubmitKind.WARNINGS).stream().filter(s -> s.kind() != SubmitKind.COMMUNITY)).as(arm
                                                                                            + ": no goal, no removal, nothing submitted")
                   .isEmpty();
+        assertThat(w.h.warningPuts()).as(arm + ": the unjudgeable worker class is the only open warning persisted (one write carries the open row, #3274)")
+                  .containsExactly(new FsmWarningKey("worker-absence-unjudgeable", "worker"));
         assertThat(w.h.metricTotal("aether_deployment_fsm_stale_rows_total", t -> true)).as(arm + ": stale_rows_total")
                   .isZero();
         assertThat(w.stored(new DeploymentOutcomeKey(blueprintId("org.example:app:1.0.0")))

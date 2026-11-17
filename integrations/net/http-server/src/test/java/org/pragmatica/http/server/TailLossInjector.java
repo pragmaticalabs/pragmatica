@@ -110,7 +110,12 @@ final class TailLossInjector extends ChannelOutboundHandlerAdapter {
     /// Returns once `probes` datagrams are held past the burst, the endpoint's PTO probes (at most 10 s: the bound only
     /// stops a hang). A fixed delay is not enough on a starved host (#2866).
     void awaitProbes(Channel channel, int probes) {
-        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        awaitProbes(channel, probes, TimeUnit.SECONDS.toMillis(10));
+    }
+
+    /// As [#awaitProbes(Channel, int)], waiting at most `boundMillis`.
+    void awaitProbes(Channel channel, int probes, long boundMillis) {
+        var deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(boundMillis);
 
         while (System.nanoTime() < deadline && channel.eventLoop().submit(this::heldAfterBurst).syncUninterruptibly().getNow() < probes) {
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));

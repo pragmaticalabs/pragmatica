@@ -32,7 +32,15 @@ public class CstWireRecordTotalityRule implements CstLintRule {
 
     private static final Pattern ANNOTATION_STRIP = Pattern.compile("@[A-Za-z_$][\\w$.]*\\s*(\\([^)]*\\))?");
 
-    private static final Set<String> PRIMITIVES = Set.of("int", "long", "double", "float", "boolean", "char", "byte", "short", "void");
+    private static final Set<String> PRIMITIVES = Set.of("int",
+                                                         "long",
+                                                         "double",
+                                                         "float",
+                                                         "boolean",
+                                                         "char",
+                                                         "byte",
+                                                         "short",
+                                                         "void");
 
     @Override
     public String ruleId() {
@@ -51,8 +59,7 @@ public class CstWireRecordTotalityRule implements CstLintRule {
     }
 
     private boolean isJacksonRecord(Cursor record) {
-        return JACKSON_MARKER.matcher(text(record))
-                             .find();
+        return JACKSON_MARKER.matcher(text(record)).find();
     }
 
     private Stream<Diagnostic> checkRecord(Cursor record, LintContext ctx) {
@@ -68,15 +75,18 @@ public class CstWireRecordTotalityRule implements CstLintRule {
 
     private Stream<Diagnostic> checkMethod(Cursor method, Set<String> refComponents, LintContext ctx) {
         return methodBody(method).map(body -> checkBody(body, refComponents, ctx))
-                                 .or(Stream.empty());
+                         .or(Stream.empty());
     }
 
     private Stream<Diagnostic> checkBody(Cursor body, Set<String> refComponents, LintContext ctx) {
         var bodyText = MapperSafety.blankNonCode(text(body));
 
         return refComponents.stream()
-                            .flatMap(component -> unguardedDereference(bodyText, component).map(offset -> report(body, component, offset, ctx))
-                                                                                           .stream())
+                            .flatMap(component -> unguardedDereference(bodyText, component).map(offset -> report(body,
+                                                                                                                 component,
+                                                                                                                 offset,
+                                                                                                                 ctx))
+                                                                      .stream())
                             .limit(1);
     }
 
@@ -101,11 +111,12 @@ public class CstWireRecordTotalityRule implements CstLintRule {
     /// upstream so a guard mentioned only in a comment does not count.
     private boolean isGuarded(String bodyText, String component) {
         var word = "\\b" + Pattern.quote(component) + "\\b";
-        var guard = Pattern.compile(word + "\\s*[=!]=\\s*null"
-                                    + "|null\\s*[=!]=\\s*" + word
-                                    + "|requireNonNull\\s*\\(\\s*" + word
-                                    + "|ofNullable\\s*\\(\\s*" + word
-                                    + "|Option\\.option\\s*\\(\\s*" + word);
+        var guard = Pattern.compile(word
+                                   + "\\s*[=!]=\\s*null"
+                                   + "|null\\s*[=!]=\\s*" + word
+                                   + "|requireNonNull\\s*\\(\\s*" + word
+                                   + "|ofNullable\\s*\\(\\s*" + word
+                                   + "|Option\\.option\\s*\\(\\s*" + word);
 
         return guard.matcher(bodyText)
                     .find();
@@ -127,7 +138,8 @@ public class CstWireRecordTotalityRule implements CstLintRule {
     }
 
     private Set<String> referenceComponents(Cursor record) {
-        var components = childByRule(record, RuleKind.RECORD_DECL).flatMap(rd -> childByRule(rd, RuleKind.RECORD_COMPONENTS))
+        var components = childByRule(record, RuleKind.RECORD_DECL).flatMap(rd -> childByRule(rd,
+                                                                                             RuleKind.RECORD_COMPONENTS))
                                     .map(rc -> childrenByRule(rc, RuleKind.RECORD_COMP))
                                     .or(List.of());
         var names = new LinkedHashSet<String>();
@@ -141,9 +153,7 @@ public class CstWireRecordTotalityRule implements CstLintRule {
 
     /// Name of a reference-typed record component, or `none` for a primitive component.
     private Option<String> parseComponent(String componentText) {
-        var stripped = ANNOTATION_STRIP.matcher(componentText)
-                                       .replaceAll("")
-                                       .trim();
+        var stripped = ANNOTATION_STRIP.matcher(componentText).replaceAll("").trim();
         var matcher = COMPONENT_SPLIT.matcher(stripped);
 
         if (!matcher.matches() || isPrimitive(matcher.group(1))) {

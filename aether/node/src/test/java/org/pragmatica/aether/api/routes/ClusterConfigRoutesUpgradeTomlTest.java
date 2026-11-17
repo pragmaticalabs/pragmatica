@@ -105,7 +105,7 @@ class ClusterConfigRoutesUpgradeTomlTest {
         var scaled = upgraded.tomlContent().unwrap().replace("count = 2", "count = 4");
 
         var applied = ClusterConfigRoutes.clusterConfigRoutes(() -> nodeWith(store), permissiveApplier())
-                                         .handleApplyConfig(new ApplyConfigRequest(scaled, upgraded.configVersion()))
+                                         .handleApplyConfig(new ApplyConfigRequest(scaled, upgraded.configVersion(), Option.none()))
                                          .await();
 
         assertThat(applied.isSuccess()).as(String.valueOf(applied)).isTrue();

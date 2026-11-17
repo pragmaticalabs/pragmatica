@@ -17,8 +17,8 @@ import org.pragmatica.lang.utils.Causes;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
-/// FDB-2a (#2591): lets an in-memory connector double that drives the REAL migration runner on a tier-1 engine
-/// (PostgreSQL, MySQL) answer the runner's database-fence statements as an uncontended database would: the fence is
+/// FDB-2a/2b (#2591): lets an in-memory connector double that drives the REAL migration runner on a session-fenced
+/// engine (PostgreSQL, MySQL, SQL Server, Oracle) answer the runner's database-fence statements as an uncontended database would: the fence is
 /// granted and held, the engine is not CockroachDB, no topology is refused, no index is invalid. Any other statement is
 /// left to the double. A double that answered these with nulls or "unsupported" would fail every migration at the fence.
 final class FakeMigrationFence {
@@ -39,6 +39,12 @@ final class FakeMigrationFence {
         return sql.contains("SHOW VARIABLES") || sql.contains("pg_advisory_unlock_all") || sql.contains("RELEASE_ALL_LOCKS");
     }
 
+    /// The tier-2 fence statements issued as updates (Oracle `DBMS_LOCK` take/verify/release, SQL Server unlock): the
+    /// double answers them as an uncontended database and does not count them as migration statements.
+    static boolean isFenceUpdate(String sql) {
+        return sql.contains("DBMS_LOCK") || sql.contains("sp_releaseapplock");
+    }
+
     /// The double's single logical session: `body` runs on it, then `release`; the result is `body`'s.
     static <T> Promise<T> pinnedOn(SqlConnector session,
                                    SqlConnector.TransactionCallback<T> body,
@@ -54,6 +60,12 @@ final class FakeMigrationFence {
         }
         if (sql.contains("GET_LOCK(")) {
             return some(Map.of("granted", 1));
+        }
+        if (sql.contains("sp_getapplock")) {
+            return some(Map.of("granted", 0));
+        }
+        if (sql.contains("APPLOCK_MODE")) {
+            return some(Map.of("n", 1));
         }
         if (sql.contains("indisvalid")) {
             return some(Map.of("n", 0));

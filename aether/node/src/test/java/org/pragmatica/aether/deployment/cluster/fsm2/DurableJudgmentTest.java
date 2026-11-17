@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Map;
+import java.util.List;
 import java.util.Set;
 
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
@@ -175,6 +176,9 @@ class DurableJudgmentTest {
         assertThat(h.model().applies.isEmpty()).as("the restore is not tracked as an apply").isTrue();
         assertThat(h.store.get(new DeploymentOutcomeKey(first.blueprint().id()))
                           .map(v -> ((DeploymentOutcomeValue) v).status())).isEqualTo(Option.some(DeploymentOutcomeStatus.ROLLED_BACK));
+        assertThat(h.store.get(new DeploymentOutcomeKey(first.blueprint().id()))
+                    .map(v -> ((DeploymentOutcomeValue) v).failingSlices())).as("the rollback names the failed slice")
+                   .isEqualTo(Option.some(List.of(ORDERS_V2.asString())));
     }
 
     // NT-27

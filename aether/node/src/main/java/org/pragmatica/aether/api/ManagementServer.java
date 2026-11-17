@@ -44,6 +44,7 @@ import org.pragmatica.http.ContentType;
 import org.pragmatica.aether.api.routes.AlertRoutes;
 import org.pragmatica.aether.api.routes.ApiKeyRoutes;
 import org.pragmatica.aether.api.routes.GossipKeyRoutes;
+import org.pragmatica.aether.api.routes.WarningsRoutes;
 import org.pragmatica.aether.api.routes.ClusterAwaitQuiescedRoute;
 import org.pragmatica.aether.api.routes.ClusterConfigRoutes;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
@@ -58,6 +59,7 @@ import org.pragmatica.aether.api.routes.LogLevelRoutes;
 import org.pragmatica.aether.api.routes.ManagementRouter;
 import org.pragmatica.aether.api.routes.MavenProtocolRoutes;
 import org.pragmatica.aether.api.routes.MetricsRoutes;
+import org.pragmatica.aether.api.routes.NodeIdRoutes;
 import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.api.routes.NodeReplacementRoutes;
 import org.pragmatica.aether.api.routes.UpgradeRunRoutes;
@@ -417,6 +419,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                        () -> nodeSupplier.get()
                                                                                          .kvStore()));
         routeSources.add(ClusterAwaitQuiescedRoute.clusterAwaitQuiescedRoute(nodeSupplier));
+        routeSources.add(WarningsRoutes.warningsRoutes(nodeSupplier));
         routeSources.add(nodeSupplier.get()
                                      .clusterTopologyManager()
                                      .map(ClusterConfigApplier::clusterConfigApplier)
@@ -448,6 +451,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(org.pragmatica.aether.api.routes.VersionRoutes.versionRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.WorkerRoutes.workerRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.CommunityRoutes.communityRoutes(nodeSupplier));
+        routeSources.add(NodeIdRoutes.nodeIdRoutes(nodeSupplier));
         // #525: turns declared-but-unbuilt routes into an honest 501 instead of a bare 404.
         // Registration order is irrelevant (route names are unique); registration itself is not —
         // dropping this source silently resurrects the dead-route class. Reasons live per-route in
@@ -786,7 +790,18 @@ class ManagementServerImpl implements ManagementServer {
         observability.gauge("aether.streams.memory.used.ratio", usedRatio);
         observability.gauge("aether.streams.seams.unbound.safety", unboundSafetySeams);
         observability.gauge("aether.streams.wal.failstopped", failStoppedWals);
+        registerTruncationBelowVisibleMetrics(spm);
         registerConsensusBatchMetrics();
+    }
+
+    /// #2981 step 2 (design 2.2 check 3): truncations asked to cut below a ring's visible offset, by outcome. `refused` (CF >= 2) is a
+    /// defect count and should read 0; `retracted` (CF = 1 or non-durable) is an operating count of legitimate rejoin repairs.
+    private void registerTruncationBelowVisibleMetrics(StreamPartitionManager spm) {
+        Supplier<Number> refused = spm::truncationRefusedBelowVisible;
+        Supplier<Number> retracted = spm::truncationRetractedBelowVisible;
+
+        observability.gauge("aether.stream.truncation.below_visible", refused, "outcome", "refused");
+        observability.gauge("aether.stream.truncation.below_visible", retracted, "outcome", "retracted");
     }
 
     /// #2590: consumer progress's load on consensus, cumulative since boot -- the batches the cursor command writer proposed
@@ -1659,7 +1674,7 @@ class ManagementServerImpl implements ManagementServer {
 
     private static Option<org.pragmatica.http.HttpMethod> parseRoutingMethod(String raw) {
         return Result.lift(Causes::fromThrowable,
-                           () -> org.pragmatica.http.HttpMethod.valueOf(raw.toUpperCase()))
+                           () -> org.pragmatica.http.HttpMethod.valueOf(raw.toUpperCase(Locale.ROOT)))
                      .option();
     }
 
@@ -1835,7 +1850,7 @@ class ManagementServerImpl implements ManagementServer {
 
         if (securityEnabled) {
             var method = Result.lift(Causes::fromThrowable,
-                                     () -> HttpMethod.valueOf(context.method().toUpperCase()))
+                                     () -> HttpMethod.valueOf(context.method().toUpperCase(Locale.ROOT)))
                                .option();
 
             if (method.isEmpty()) {

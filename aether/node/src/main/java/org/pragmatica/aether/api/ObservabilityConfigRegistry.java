@@ -295,7 +295,7 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
     /// at any scope (fleet baseline runs); CONFIGURED = an explicit non-off config (its selected facets);
     /// DARKENED = an explicit all-off config (identity, the operator's deliberate opt-out).
     public ObservabilityState effectiveState(String artifactBase, String methodName) {
-        return effectiveConfigFor(artifactBase + "/" + methodName).map(ObservabilityState::of)
+        return effectiveConfigFor(artifactBase + "/" + methodName).map(ObservabilityState::observabilityState)
                                  .or(ObservabilityState.BASELINE);
     }
 
@@ -538,7 +538,7 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
 
         record Darkened(AspectObservabilityConfig config) implements ObservabilityState {}
 
-        static ObservabilityState of(AspectObservabilityConfig config) {
+        static ObservabilityState observabilityState(AspectObservabilityConfig config) {
             return config.allOff()
                    ? new Darkened(config)
                    : new Configured(config);

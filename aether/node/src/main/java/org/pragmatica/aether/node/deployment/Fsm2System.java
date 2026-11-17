@@ -13,11 +13,13 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.config.TimeoutsConfig;
 import org.pragmatica.aether.deployment.cluster.fsm2.AbsenceBounds;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterFsm;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
 import org.pragmatica.aether.deployment.cluster.fsm2.Seams;
 import org.pragmatica.aether.deployment.cluster.fsm2.Settings;
+import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.cluster.fsm2.Timing;
 import org.pragmatica.aether.deployment.node.machine.NodeFsm;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmConfig;
@@ -221,10 +223,7 @@ public final class Fsm2System {
                                       config.atomicity(),
                                       Set.of(),
                                       bounds)
-                            .withTiming(Timing.DEFAULT.withTick(config.timeouts()
-                                                                      .deployment()
-                                                                      .reconciliationInterval()
-                                                                      .millis()))
+                            .withTiming(timing(config.timeouts().deployment()))
                             .withCommunitySizing(sizing.targetSize(),
                                                  sizing.viabilityFloor());
 
@@ -233,10 +232,20 @@ public final class Fsm2System {
                     .withSeedCores(seedCores(config.topology()));
     }
 
-    /// The configured core nodes, which `Absence.classOf` classes CORE without a directive (#2868).
+    /// The time constants the operator sets under `[timeouts.deployment]`: the reconcile tick and the apply deadline of R-4.1.7 (#970).
+    static Timing timing(TimeoutsConfig.DeploymentTimeouts deployment) {
+        return Timing.DEFAULT.withTick(deployment.reconciliationInterval().millis())
+                             .withApplyDeadline(deployment.applyDeadline().millis())
+                             .withApplySchemaPauseMax(deployment.applySchemaPauseMax().millis());
+    }
+
+    /// The configured nodes of role `core` (an entry with no role label counts as core), which `Absence.classOf` classes CORE without a directive
+    /// (#2868). The same role rule as the poller's `coreRoleMembers` seam (#2887): a listed worker is judged by the worker rule.
     static Set<NodeId> seedCores(TopologyConfig topology) {
         return topology.coreNodes()
                        .stream()
+                       .filter(info -> MemberDescriptor.isCoreRole(info.labels()
+                                                                       .getOrDefault(NodeInfo.LABEL_ROLE, "core")))
                        .map(NodeInfo::id)
                        .collect(Collectors.toUnmodifiableSet());
     }
@@ -508,9 +517,10 @@ public final class Fsm2System {
     /// CI-1: this node became, or stopped being, the leader.
     @Contract
     public void onLeaderChange(LeaderNotification.LeaderChange change) {
-        guard.whenOpen(CLUSTER_ACTIVATION,
-                       change.localNodeIsLeader()
-                       ? cluster::activate
-                       : cluster::deactivate);
+        if (change.localNodeIsLeader()) {
+            guard.whenOpenAfterParked(CLUSTER_ACTIVATION, cluster::activate);
+        } else {
+            guard.whenOpen(CLUSTER_ACTIVATION, cluster::deactivate);
+        }
     }
 }

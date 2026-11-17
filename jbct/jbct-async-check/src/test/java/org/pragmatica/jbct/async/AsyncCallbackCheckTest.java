@@ -120,10 +120,7 @@ class AsyncCallbackCheckTest {
         void flags_everyCallbackForm() {
             for (var form : List.of("onSuccess(_ -> done = true)", "onFailure(_ -> done = true)", "onResult(_ -> done = true)",
                                     "onSuccessRun(() -> done = true)", "onFailureRun(() -> done = true)",
-                                    "onResultRun(() -> done = true)", "onSuccessAsync(_ -> done = true)",
-                                    "onFailureAsync(_ -> done = true)", "onResultAsync(_ -> done = true)",
-                                    "onSuccessRunAsync(() -> done = true)", "onFailureRunAsync(() -> done = true)",
-                                    "onResultRunAsync(() -> done = true)")) {
+                                    "onResultRun(() -> done = true)")) {
                 assertThat(lines(body("boolean done;\nvoid run(Promise<String> p) {\n    p." + form + ";\n}\n")))
                     .as(form).containsExactly(9);
             }

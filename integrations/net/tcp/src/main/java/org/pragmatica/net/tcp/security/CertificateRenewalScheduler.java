@@ -88,14 +88,12 @@ public final class CertificateRenewalScheduler {
         /// Raised inside `timerLock` by `Stopped.onEntry`, in the same critical section that drains
         /// `scheduledTask` — see `markTerminatedAndDrain`.
         final AtomicBoolean terminated = new AtomicBoolean(false);
-
         /// Guards the PAIRING of `terminated` with `scheduledTask`. They are two separate
         /// references, so no arrangement of atomics makes "is this scheduler terminal" and "what is
         /// armed" a single observation, and a check-then-store leaves a window in both directions.
         /// Arming, draining and marking terminal all take this lock. Cold path: a timer is armed
         /// once per renewal cycle, never per request.
         final Object timerLock = new Object();
-
         /// Monotonic arming epoch. Every hook that arms a timer opens a new epoch, captures it, and
         /// hands that value back to `armScheduledTask`.
         ///
@@ -108,7 +106,6 @@ public final class CertificateRenewalScheduler {
         /// stops permanently while the status surface still reports FAILED. Strictly worse than the
         /// orphan it was meant to fix.
         final AtomicLong epoch = new AtomicLong(0);
-
         final Idle idle;
         final Healthy healthy;
         final Renewing renewing;
@@ -198,11 +195,11 @@ public final class CertificateRenewalScheduler {
                 // would kill a live retry armed by the hook that overtook this one.
                 if (terminated.get() || epoch.get() != armingEpoch) {
                     task.cancel(false);
+
                     return;
                 }
 
-                scheduledTask.getAndSet(Option.some(task))
-                             .onPresent(displaced -> displaced.cancel(false));
+                scheduledTask.getAndSet(Option.some(task)).onPresent(displaced -> displaced.cancel(false));
             }
         }
 

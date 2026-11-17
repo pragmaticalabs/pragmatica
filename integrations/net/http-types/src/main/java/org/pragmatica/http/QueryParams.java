@@ -40,8 +40,7 @@ public interface QueryParams {
         record queryParams(Map<String, List<String>> params) implements QueryParams {
             @Override
             public Option<String> get(String name) {
-                return Option.option(params.get(name))
-                             .flatMap(values -> Option.from(values.stream().findFirst()));
+                return Option.option(params.get(name)).flatMap(values -> Option.from(values.stream().findFirst()));
             }
 
             @Override

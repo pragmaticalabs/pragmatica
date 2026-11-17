@@ -42,6 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SliceStoreTest {
 
@@ -398,6 +399,45 @@ class SliceStoreTest {
     // parse-failure branch is pinned here: the malformed slice file drops the whole composite (node
     // keys included — the layering is all-or-nothing), and the refusal the slice receives must be
     // true for that branch, i.e. it must name the slice's own layer as a candidate.
+
+    /// The lenient reader's catch is the `IOException` the read can throw, no wider: a runtime failure of
+    /// the loader is a defect and propagates to the caller instead of being logged and dropped.
+    @Test
+    void buildSliceCompositeFromClassLoader_runtimeFailureOfTheLoader_propagates() {
+        var store = storeWithNodeComposite(Map.of("deployed.endpoint.host", "node.internal"));
+        var failing = new ClassLoader(SliceStoreTest.class.getClassLoader()) {
+            @Override
+            public InputStream getResourceAsStream(String name) {
+                throw new IllegalStateException("loader defect");
+            }
+        };
+
+        assertThatThrownBy(() -> store.buildSliceCompositeFromClassLoader(artifact, failing))
+                                       .isInstanceOf(IllegalStateException.class)
+                                       .hasMessage("loader defect");
+    }
+
+    /// An `IOException` while reading the entry degrades to "no file": the composite keeps the node layer.
+    @Test
+    void buildSliceCompositeFromClassLoader_unreadableEntry_degradesToNoSliceFile() {
+        var store = storeWithNodeComposite(Map.of("deployed.endpoint.host", "node.internal"));
+        var unreadable = new ClassLoader(SliceStoreTest.class.getClassLoader()) {
+            @Override
+            public InputStream getResourceAsStream(String name) {
+                return new InputStream() {
+                    @Override
+                    public int read() throws IOException {
+                        throw new IOException("entry unreadable");
+                    }
+                };
+            }
+        };
+
+        var composite = store.buildSliceCompositeFromClassLoader(artifact, unreadable);
+
+        assertThat(composite.isPresent()).isTrue();
+        assertThat(composite.unwrap().getString("deployed.endpoint.host").unwrap()).isEqualTo("node.internal");
+    }
 
     @Test
     void buildSliceCompositeFromClassLoader_dropsWholeComposite_whenResourcesTomlIsMalformed() {

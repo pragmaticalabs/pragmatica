@@ -86,6 +86,18 @@ class ConsumerGroupCoordinatorTest {
         }
 
         @Test
+        void leaveGroup_lastMember_incarnationNone_succeedsAndWritesNothing() {
+            incarnation.set(Epoch.NO_INCARNATION);
+            activateAsLeader();
+            coordinator.joinGroup(GROUP, STREAM, 4, "c1", NODE_A);
+
+            coordinator.leaveGroup(GROUP, STREAM, "c1")
+                       .onFailure(cause -> Assertions.fail("Expected success, got: " + cause.message()));
+
+            assertThat(appliedCommands).isEmpty();
+        }
+
+        @Test
         void joinGroup_afterTheIncarnationCommits_assignsTheRefusedMemberAtTheCommittedIncarnation() {
             incarnation.set(Epoch.NO_INCARNATION);
             activateAsLeader();

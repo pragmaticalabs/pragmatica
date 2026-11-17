@@ -144,6 +144,9 @@ public final class H3Probe {
 
             trace.add("stream-open");
             writer.write(stream);
+            // A writer that only `write`s leaves its frames unflushed; whether anything else flushes them then depends
+            // on later traffic on the connection (#3206).
+            stream.flush();
             trace.add("request-written");
 
             var answer = awaitAnswer(reader, trace);

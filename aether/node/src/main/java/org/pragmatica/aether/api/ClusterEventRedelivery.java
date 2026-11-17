@@ -386,14 +386,15 @@ final class ClusterEventRedelivery {
     }
 
     /// The refusals that mean "this partition's owner is not promoted yet", by exact type: [StreamError.OwnerNotActivated],
+    /// [StreamError.OwnerLeaseLapsed] (#2981: the owner's lease lapsed, restored by its next renewal),
     /// [StreamError.StreamConfigNotYetVisible], and either of them as a forwarder sees it, a
     /// [StreamForwardError.RemotePublishRetryable] whose detail is that refusal's own text (the wire carries a string only).
     /// Every other cause, `Cause.Transient` timeouts, open breakers and replication timeouts included, ages as on rc4, and so
     /// does `PublishOutcomeUnknown`: the event may have landed, and re-publishing past the horizon risks duplicates.
     static boolean isPromotionRefusal(Cause cause) {
         return switch (cause) {
-            case StreamError.OwnerNotActivated _, StreamError.StreamConfigNotYetVisible _ -> true;
-            case StreamForwardError.RemotePublishRetryable retryable -> StreamError.OwnerNotActivated.describes(retryable.detail()) || StreamError.StreamConfigNotYetVisible.describes(retryable.detail());
+            case StreamError.OwnerNotActivated _, StreamError.OwnerLeaseLapsed _, StreamError.StreamConfigNotYetVisible _ -> true;
+            case StreamForwardError.RemotePublishRetryable retryable -> StreamError.OwnerNotActivated.describes(retryable.detail()) || StreamError.OwnerLeaseLapsed.describes(retryable.detail()) || StreamError.StreamConfigNotYetVisible.describes(retryable.detail());
             default -> false;
         };
     }

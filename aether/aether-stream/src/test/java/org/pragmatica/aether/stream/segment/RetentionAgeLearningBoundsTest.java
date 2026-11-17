@@ -165,6 +165,25 @@ class RetentionAgeLearningBoundsTest {
         assertUnknownAged(setup);
     }
 
+    /// #1649: only a `VirtualMachineError` escape is transient. Any other throwable escaping the read or decode (an
+    /// ordinary decode bug, here an `IllegalStateException` wrapped as `CoreError.Exception` the way `Promise` wraps
+    /// an escape) says something about the block: it is read once over three passes, withheld, counted, never
+    /// retried silently forever. Red under "any escape is transient" (`exhaustedVm` true for every
+    /// `CoreError.Exception`).
+    @Test
+    void anOrdinaryEscape_isDeterministic_readOnceOverThreePasses() {
+        var tier = new CountingTier();
+        var setup = restartedWith(tier, 1);
+
+        tier.failAlways.set(Option.some(new CoreError.Exception("decode bug", new IllegalStateException("probe"))));
+        setup.enforcer().enforceNow().await();
+        setup.enforcer().enforceNow().await();
+        setup.enforcer().enforceNow().await();
+
+        assertThat(tier.failures.get()).as("the block is read on the first pass only").isEqualTo(1);
+        assertUnknownAged(setup);
+    }
+
     private static void assertUnknownAged(Setup setup) {
         assertThat(setup.index().listSegments("orders", 0)).singleElement()
                                                          .extracting(SegmentIndex.SegmentRef::maxTimestamp)

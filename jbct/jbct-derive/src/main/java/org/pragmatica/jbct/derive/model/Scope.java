@@ -6,14 +6,14 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// A typed scope such as `operation:submit-filing`, `data-class:filings`, `path:search`,
 /// `policy:filing-rules`, or the bare `system` (SPEC.md §3).
 ///
 /// The prefix determines the [ScopeKind]; the remainder is the scope's name. The bare
 /// `system` scope carries an empty name.
 public record Scope(ScopeKind kind, String name) {
-    private static final Fn1<Cause, String> INVALID_SCOPE =
-        Causes.forOneValue("Invalid scope '%s' — expected one of operation:/data-class:/path:/policy: or bare 'system'");
+    private static final Fn1<Cause, String> INVALID_SCOPE = Causes.forOneValue("Invalid scope '%s' — expected one of operation:/data-class:/path:/policy: or bare 'system'");
 
     /// Parse a raw scope string into a typed [Scope].
     public static Result<Scope> scope(String raw) {

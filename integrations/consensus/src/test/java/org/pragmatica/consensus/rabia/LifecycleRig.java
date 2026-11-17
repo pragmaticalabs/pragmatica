@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -221,6 +222,30 @@ final class LifecycleRig {
 
     void episodeStart() {
         invoke("doClusterConnected");
+    }
+
+    /// Submits several tasks so that all of them are queued before the first one runs. Submitted back to back from
+    /// the test thread they would race the follow-up tasks the engine queues for itself (the resync after a genesis
+    /// join): a slow test thread lets that follow-up run between two submissions and reorders the emitted messages
+    /// (#3222). The engine thread is held on a latch while `submissions` runs, then released and settled.
+    void submitTogether(Runnable submissions) {
+        var gate = new CountDownLatch(1);
+
+        engine.safeExecuteForTesting(() -> awaitGate(gate));
+        try {
+            submissions.run();
+        } finally {
+            gate.countDown();
+        }
+        settle();
+    }
+
+    private static void awaitGate(CountDownLatch gate) {
+        try {
+            gate.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private void invoke(String name) {

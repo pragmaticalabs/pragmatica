@@ -64,6 +64,8 @@ All configurable timeouts in a single table, grouped by TOML section.
 | `transition_retry_delay` | `2s` | Delay between lifecycle state transition retries |
 | `reconciliation_interval` | `30s` | Interval for deployment state reconciliation (CDM) |
 | `max_lifecycle_retries` | `60` | Maximum number of lifecycle transition retries |
+| `apply_deadline` | `15m` | FSM2 only (the LEGACY engine ignores this key). Longest an open blueprint apply may stay unresolved (not every declared slice ACTIVE), in unpaused time, measured from when the leader first saw it; slice progress does not reset the clock (#970). Past it the apply reaches a terminal: ROLLED_BACK under ALL_OR_NOTHING, FAILED under BEST_EFFORT, cause `apply-deadline-exceeded`, with the `apply-deadline-exceeded` warning. Must be positive. The clock restarts when the leader changes, so leader tenures shorter than the deadline can postpone it indefinitely (see #3120). Recovery: republish or delete the blueprint |
+| `apply_schema_pause_max` | `2h` | FSM2 only (ignored by LEGACY). Most time an open schema migration (PENDING or MIGRATING datasource of the blueprint) may pause the `apply_deadline` clock; a FAILED datasource does not pause it. `0` disables the pause. Must not be negative |
 
 ### `[timeouts.rolling_update]`
 

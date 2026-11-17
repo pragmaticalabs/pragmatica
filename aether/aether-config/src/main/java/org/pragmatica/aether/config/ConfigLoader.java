@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
@@ -287,6 +288,9 @@ public final class ConfigLoader {
                                                      "streaming",
                                                      "replication_batch_max_delay",
                                                      defaults.replicationBatchMaxDelay());
+        var ownerLease = parseTimeSpan(doc, "streaming", "owner_lease", defaults.ownerLease());
+        var ownerLeaseRenewal = parseTimeSpan(doc, "streaming", "owner_lease_renewal", defaults.ownerLeaseRenewal());
+        var clockDriftBound = doc.getDouble("streaming", "clock_drift_bound").or(defaults.clockDriftBound());
 
         builder.streaming(StreamingConfig.streamingConfig(publishTimeout,
                                                           readTimeout,
@@ -300,7 +304,8 @@ public final class ConfigLoader {
                                          .withPromotionEscapeAfter(promotionEscapeAfter)
                                          .withSealRun(sealRunBytes, sealRunEvents, sealRunAge, sealMergeBytes)
                                          .withMemoryBudget(maxMemoryBytes, sealPendingCapBytes)
-                                         .withReplicationBatch(replicationBatchMaxEvents, replicationBatchMaxDelay));
+                                         .withReplicationBatch(replicationBatchMaxEvents, replicationBatchMaxDelay)
+                                         .withOwnerLease(ownerLease, ownerLeaseRenewal, clockDriftBound));
     }
 
     /// #2201 C-03 (spec 4.4 items 1 and 3, D-12): a written `[streaming] max_memory_bytes` or `seal_pending_cap_bytes` must be
@@ -1352,7 +1357,15 @@ public final class ConfigLoader {
                                                      parseInt(doc,
                                                               "timeouts.deployment",
                                                               "max_lifecycle_retries",
-                                                              d.maxLifecycleRetries()));
+                                                              d.maxLifecycleRetries()),
+                                                     parseTimeSpan(doc,
+                                                                   "timeouts.deployment",
+                                                                   "apply_deadline",
+                                                                   d.applyDeadline()),
+                                                     parseTimeSpan(doc,
+                                                                   "timeouts.deployment",
+                                                                   "apply_schema_pause_max",
+                                                                   d.applySchemaPauseMax()));
     }
 
     private static TimeoutsConfig.RollingUpdateTimeouts parseRollingUpdateTimeouts(TomlDocument doc,
@@ -1678,7 +1691,7 @@ public final class ConfigLoader {
     /// without one, and `--tls=yes` turned TLS off; a value that is not `true` or `false` refuses the load like the
     /// neighbouring `restore` mode does. The CLI overrides use the same parse as the TOML booleans.
     private static Result<Boolean> strictBoolean(String raw) {
-        return switch (raw.toLowerCase()) {
+        return switch (raw.toLowerCase(Locale.ROOT)) {
             case "true" -> success(true);
             case "false" -> success(false);
             default -> ConfigError.invalidConfig("'" + raw + "' is not true or false").result();
@@ -1713,7 +1726,7 @@ public final class ConfigLoader {
     }
 
     public static Duration parseDuration(String value) {
-        var normalized = value.trim().toLowerCase();
+        var normalized = value.trim().toLowerCase(Locale.ROOT);
 
         return normalized.isEmpty()
                ? Duration.ofSeconds(1)

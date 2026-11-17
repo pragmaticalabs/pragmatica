@@ -41,7 +41,7 @@ class ReplicaFilterTripwireTest {
     private static final BlueprintId BLUEPRINT = BlueprintId.blueprintId("org.example:blueprint:1.0.0").unwrap();
     private static final String OPAQUE = "opaque value: the unscoped arms of the projection never read it";
 
-    /// The 20 `AetherKey` classes the projection gives NO scope (`WorkerMetadataIndex.scopesFor`, the arm that
+    /// The 22 `AetherKey` classes the projection gives NO scope (`WorkerMetadataIndex.scopesFor`, the arm that
     /// returns `Set.of()`), keyed by class name. `ClusterConfigKey` is the one the design keeps EXCLUDED.
     private static Map<String, StructuredKey> unscopedKeys() {
         var keys = new LinkedHashMap<String, StructuredKey>();
@@ -66,6 +66,8 @@ class ReplicaFilterTripwireTest {
         keys.put("CommunityPlacementAvailabilityKey", new AetherKey.CommunityPlacementAvailabilityKey("community-1", "source-1", Option.none()));
         keys.put("ProvisioningSlotKey", new AetherKey.ProvisioningSlotKey("slot-1"));
         keys.put("AutoHealStateKey", new AetherKey.AutoHealStateKey());
+        keys.put("NodeIdHighWaterKey", new AetherKey.NodeIdHighWaterKey("src", "core"));
+        keys.put("NodeLeaseKey", AetherKey.NodeLeaseKey.nodeLeaseKey(CORE));
 
         return keys;
     }
@@ -97,9 +99,9 @@ class ReplicaFilterTripwireTest {
 
         keys.forEach((name, key) -> index.put(key, OPAQUE));
 
-        assertThat(keys).as("the 20 key classes the projection leaves unscoped (TW-O1)").hasSize(20);
-        assertThat(index.revision()).as("TW-O1: an unscoped key moves no scope revision, so none of the 20 is in any scope").isEqualTo(before);
-        assertThat(workerView(index)).as("TW-O1: none of the 20 reaches a worker today; W1 replaces this with the ReplicaFilter assertion (enable replicaHoldsEveryKeyOutsideTheFilter)")
+        assertThat(keys).as("the 22 key classes the projection leaves unscoped (TW-O1)").hasSize(22);
+        assertThat(index.revision()).as("TW-O1: an unscoped key moves no scope revision, so none of the 22 is in any scope").isEqualTo(before);
+        assertThat(workerView(index)).as("TW-O1: none of the 22 reaches a worker today; W1 replaces this with the ReplicaFilter assertion (enable replicaHoldsEveryKeyOutsideTheFilter)")
                                      .doesNotContainAnyElementsOf(keys.values());
     }
 
@@ -143,7 +145,8 @@ class ReplicaFilterTripwireTest {
         assertThat(filter.excludes(AetherKey.SliceObservedKey.sliceObservedKey(CORE, ARTIFACT))).as("the observed rows, the own echo included").isFalse();
         assertThat(filter.excludes(instanceOf(AetherKey.DeploymentApplyKey.class))).as("cluster FSM only").isTrue();
         assertThat(filter.excludes(instanceOf(AetherKey.ArtifactJudgmentKey.class))).as("cluster FSM only").isTrue();
-        assertThat(filter.excludes(instanceOf(AetherKey.NodeDepartureKey.class))).as("cluster FSM only").isTrue();
+        assertThat(filter.excludes(instanceOf(AetherKey.NodeDepartureKey.class))).as("INCLUDED (F5a, know 63ff3388bd): a worker's traffic feed binds departures").isFalse();
+        assertThat(filter.excludes(instanceOf(AetherKey.FsmWarningKey.class))).as("cluster FSM only (#2834)").isTrue();
     }
 
     @Disabled("enable at W3/W4 (worker replica): when the worker holds a full replica minus the exclusion set, re-point workerView at the filtered replica")
@@ -202,14 +205,14 @@ class ReplicaFilterTripwireTest {
 
     /// TW-O15, flipped by W1. The filter is an exhaustive `switch` over the sealed `AetherKey` with no default, so a new key class does not
     /// compile until it is classified: that property is the compiler's, and a reflection test cannot add to it. What the test pins is the
-    /// classification itself, on the classes the worker projection never saw (the 20 that had no scope) plus the excluded ones, and the
+    /// classification itself, on the classes the worker projection never saw (the 22 that had no scope) plus the excluded ones, and the
     /// fail-closed rule for a key type the filter does not know.
     @Test
     void theFilterClassifiesTheKeyClasses_andFailsClosedOnAnUnknownKeyType() {
         var filter = ReplicaFilter.replicaFilter();
         var excluded = unscopedKeys().entrySet().stream().filter(entry -> filter.excludes(entry.getValue())).map(Map.Entry::getKey).toList();
 
-        assertThat(excluded).as("of the 20 classes the projection left unscoped only the cluster configuration is EXCLUDED (credentials in its TOML)").containsExactly("ClusterConfigKey");
+        assertThat(excluded).as("of the 22 classes the projection left unscoped only the cluster configuration is EXCLUDED (credentials in its TOML)").containsExactly("ClusterConfigKey");
         assertThat(filter.excludes(new AetherKey.StreamCursorCheckpointKey("orders", 0, "billing"))).as("cursor checkpoints are EXCLUDED").isTrue();
         assertThat(filter.excludes(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE)).as("the leader key is INCLUDED").isFalse();
 
@@ -255,7 +258,7 @@ class ReplicaFilterTripwireTest {
     }
 
     /// TW-O15, the full classification: every `AetherKey` class in the sealed hierarchy, not a sample, is classified, and the EXCLUDE set is
-    /// exactly the stream cursor checkpoints, the cluster configuration and the three cluster-FSM-only deployment keys (P3-D, F3). Mutation: move
+    /// exactly the stream cursor checkpoints, the cluster configuration and the three cluster-FSM-only keys (P3-D, F3; #2834). Mutation: move
     /// any other class (say `SliceTargetKey`) to EXCLUDE, and the set has an extra member.
     @Test
     void everyAetherKeyClass_isIncluded_exceptTheCheckpointsTheConfigurationAndTheClusterFsmKeys() {
@@ -265,11 +268,11 @@ class ReplicaFilterTripwireTest {
                               .map(Class::getSimpleName)
                               .collect(Collectors.toSet());
 
-        assertThat(classes).as("control: the walk reaches the whole hierarchy, the 20 classes of TW-O1 among them")
+        assertThat(classes).as("control: the walk reaches the whole hierarchy, the 22 classes of TW-O1 among them")
                            .hasSizeGreaterThan(60)
                            .extracting(Class::getSimpleName)
                            .containsAll(unscopedKeys().keySet());
-        assertThat(excluded).as("the EXCLUDE set, over every AetherKey class").containsExactlyInAnyOrder("StreamCursorCheckpointKey", "ClusterConfigKey", "DeploymentApplyKey", "ArtifactJudgmentKey", "NodeDepartureKey");
+        assertThat(excluded).as("the EXCLUDE set, over every AetherKey class").containsExactlyInAnyOrder("StreamCursorCheckpointKey", "ClusterConfigKey", "DeploymentApplyKey", "ArtifactJudgmentKey", "FsmWarningKey");
     }
 
     /// The ring's byte measure sizes a key by `asString()` (R-07). `StructuredKey` gives a default for key families with no canonical text;

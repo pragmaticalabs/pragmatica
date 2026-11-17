@@ -33,6 +33,8 @@ import org.pragmatica.config.ProviderBasedConfigService;
 import org.pragmatica.config.source.TomlConfigSource;
 import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.utility.warning.OperatorWarning;
@@ -316,6 +318,57 @@ class SliceRuntimeAdapterTest {
         assertThat(bridge.calls).containsExactly("unregister " + ORDERS);
         configNotifications.notifyChange("database.pool", artifact -> RuntimeFixtures.noConfig());
         await().atMost(Duration.ofSeconds(5)).until(() -> ConfigProbe.calls.contains("database"));
+    }
+
+    /// #3174: SUSPEND runs in the stop drain after quorum is lost, so the route removal it asks the cluster for cannot settle until the engine
+    /// stops. Awaiting it held the stop for the whole drain bound.
+    @Test
+    void suspend_isDoneAtOnce_withoutWaitingForAnUnpublishThatCannotSettle() {
+        publisher.unpublishPending = Promise.promise();
+
+        var outcome = adapter(true).run(new NodeFsmEffect.LocalOp(1, 7, Option.some(ORDERS), LocalStep.SUSPEND, 0, Option.none()));
+
+        await().atMost(Duration.ofSeconds(1)).until(outcome::isResolved);
+        assertThat(outcome.await().unwrap()).isInstanceOf(LocalOutcome.Done.class);
+        assertThat(publisher.calls).as("the unpublish was still asked for").containsExactly("unpublish " + ORDERS);
+        assertThat(bridge.calls).containsExactly("unregister " + ORDERS);
+    }
+
+    /// H3b, route half: SUSPEND frees its lane at once, but a reactivation's PUBLISH_ROUTES must not submit its Put before the SUSPEND's
+    /// Remove has settled, or the late Remove deletes the fresh routes.
+    @Test
+    void publishRoutes_waitsForTheSuspendsUnsettledUnpublish() {
+        store.withLoaded(ORDERS, new RuntimeFixtures.BareSlice());
+        var removal = Promise.<Unit> promise();
+        publisher.unpublishPending = removal;
+        var adapter = adapter(true);
+
+        var suspended = adapter.run(new NodeFsmEffect.LocalOp(1, 7, Option.some(ORDERS), LocalStep.SUSPEND, 0, Option.none()));
+        await().atMost(Duration.ofSeconds(1)).until(suspended::isResolved);
+
+        var published = adapter.run(new NodeFsmEffect.LocalOp(2, 8, Option.some(ORDERS), LocalStep.PUBLISH_ROUTES, 0, Option.none()));
+
+        await().during(Duration.ofMillis(300)).atMost(Duration.ofSeconds(2)).until(() -> !published.isResolved());
+        assertThat(publisher.calls).as("no Put while the Remove is unsettled").containsExactly("unpublish " + ORDERS);
+
+        removal.succeed(Unit.unit());
+        await().atMost(Duration.ofSeconds(5)).until(published::isResolved);
+        assertThat(published.await().unwrap()).isInstanceOf(LocalOutcome.Done.class);
+        assertThat(publisher.calls).containsExactly("unpublish " + ORDERS, "publish " + ORDERS);
+    }
+
+    /// The other half of #3174's choice: UNPUBLISH runs under quorum in a teardown chain and still waits for the publisher.
+    @Test
+    void unpublish_stillWaitsForThePublisher() {
+        var pending = Promise.<Unit> promise();
+        publisher.unpublishPending = pending;
+
+        var outcome = adapter(true).run(new NodeFsmEffect.LocalOp(1, 7, Option.some(ORDERS), LocalStep.UNPUBLISH, 0, Option.none()));
+
+        await().during(Duration.ofMillis(300)).atMost(Duration.ofSeconds(2)).until(() -> !outcome.isResolved());
+        pending.succeed(Unit.unit());
+        await().atMost(Duration.ofSeconds(5)).until(outcome::isResolved);
+        assertThat(outcome.await().unwrap()).isInstanceOf(LocalOutcome.Done.class);
     }
 
     @Test

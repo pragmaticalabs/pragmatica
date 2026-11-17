@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config;
 
+import java.util.Locale;
 import java.util.Set;
 
 
@@ -18,7 +19,7 @@ public record ApiKeyEntry(String name, Set<String> roles, String authorizationRo
                 : Set.copyOf(roles);
         authorizationRole = authorizationRole == null || authorizationRole.isBlank()
                             ? DEFAULT_ROLE
-                            : authorizationRole.toUpperCase();
+                            : authorizationRole.toUpperCase(Locale.ROOT);
     }
 
     public static ApiKeyEntry apiKeyEntry(String name, Set<String> roles) {

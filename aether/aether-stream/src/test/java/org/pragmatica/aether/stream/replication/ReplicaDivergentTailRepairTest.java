@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
@@ -111,6 +112,11 @@ class ReplicaDivergentTailRepairTest {
     /// owner's next report. Red when the cut drops the announced flag.
     @Test
     void cutBelowTheReportedPosition_keepsItAnAnnouncement_soTheCopyIsNotBehind() {
+        // #2981 S8: at confirmation factor >= 2 a cut below visible is refused; the announcement mechanics under test are CF-independent, so CF 1.
+        manager.close();
+        manager = streamPartitionManager(Long.MAX_VALUE);
+        manager.createStream(StreamConfig.streamConfig(STREAM).withReplication(ReplicationFactors.replicationFactors(1, 1).unwrap()))
+               .onFailure(cause -> fail(cause.message()));
         manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
         seedReplica(10, 3);
         manager.commitAdvanced(STREAM, PARTITION, 9L, committedEpoch);

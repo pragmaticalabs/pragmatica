@@ -413,7 +413,7 @@ final class NettyHttpServer implements HttpServer {
         /// A refusal is a response like any other: it waits for the responses of the requests before it (see
         /// [ResponseSequence]), so closing the connection cannot lose one of them.
         private static void inOrder(ChannelHandlerContext ctx, Runnable write, boolean closes) {
-            var sequence = ResponseSequence.of(ctx.channel());
+            var sequence = ResponseSequence.responseSequence(ctx.channel());
 
             sequence.complete(sequence.reserve(), write, closes);
         }
@@ -741,7 +741,7 @@ final class NettyHttpServer implements HttpServer {
             this.keepAlive = keepAlive;
             this.onWritten = onWritten;
             this.lingerClose = lingerClose;
-            this.sequence = ResponseSequence.of(ctx.channel());
+            this.sequence = ResponseSequence.responseSequence(ctx.channel());
             this.slot = sequence.reserve();
             this.responseHeaders = new DefaultHttpHeaders();
         }
@@ -787,15 +787,20 @@ final class NettyHttpServer implements HttpServer {
             response.headers().set(X_REQUEST_ID, requestId);
             if (keepAlive) {
                 response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
-            } else if (lingerClose) {
+            } else {
+                // #2407: a response that ends the connection says so, whether it answers a Connection: close request or a refusal.
                 response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
             }
 
             if (extraHeaders.contains(X_REQUEST_ID)) {
                 response.headers().remove(X_REQUEST_ID);
             }
-
-            response.headers().add(extraHeaders);
+            // #2984: the typed ContentType argument is the one Content-Type; a handler-set copy is dropped, not added twice.
+            // copy(): the 500 path re-enters with the read-only EmptyHttpHeaders.INSTANCE, whose remove throws; pinned by
+            // Http1ResponseFailureTest#failureBeforeTheResponseIsSent_isAnswered500_promptly.
+            // #2407: the server's Connection value is the only one; a handler-set copy would repeat the header and could contradict it.
+            response.headers()
+                    .add(extraHeaders.copy().remove(HttpHeaderNames.CONTENT_TYPE).remove(HttpHeaderNames.CONNECTION));
 
             return response;
         }

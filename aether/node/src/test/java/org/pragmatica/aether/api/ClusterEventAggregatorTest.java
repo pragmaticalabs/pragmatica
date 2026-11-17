@@ -39,6 +39,11 @@ import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
@@ -2005,6 +2010,38 @@ class ClusterEventAggregatorTest {
         assertThat(codes(successor)).containsExactly("instance-termination-confirmed");
     }
 
+    /// #2825 (v3046 PROBE3): the abandoned-data warning is raised by boot N and the recovery by boot N+1, a fresh process whose aggregator never saw
+    /// the warning. The code closes across nodes, so the fresh aggregator publishes the recovery, once.
+    @Test
+    void onOperatorWarning_anAbandonedStreamDataRecovery_isPublishedByAFreshAggregatorOfALaterBoot() {
+        var laterBoot = Harness.create();
+
+        laterBoot.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED,
+                                                                                 "/data/root",
+                                                                                 "clear"));
+
+        assertThat(codes(laterBoot)).containsExactly("stream-data-abandoned-cleared");
+    }
+
+    /// #2825 (v3046c ruling 2): the key is code + subject and the subject carries the node id, so node B's clear closes only B's warning, even when
+    /// both nodes use one data-root path; A's stays open until A's own clear.
+    @Test
+    void onOperatorWarning_anAbandonedStreamDataClearOfOneNode_leavesTheOtherNodesWarningOpen() {
+        var h = Harness.create();
+
+        h.aggregator().onOperatorWarning(abandoned(OperatorWarningCode.STREAM_DATA_ABANDONED, "node-a@/data/root"));
+        h.aggregator().onOperatorWarning(abandoned(OperatorWarningCode.STREAM_DATA_ABANDONED, "node-b@/data/root"));
+        h.aggregator().onOperatorWarning(abandoned(OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED, "node-b@/data/root"));
+
+        assertThat(h.aggregator().openRecoverableCount()).as("node-a's warning stays open").isEqualTo(1);
+        h.aggregator().onOperatorWarning(abandoned(OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED, "node-a@/data/root"));
+        assertThat(h.aggregator().openRecoverableCount()).isZero();
+    }
+
+    private static OperatorWarning abandoned(OperatorWarningCode code, String subject) {
+        return OperatorWarning.operatorWarning(code, subject, "text");
+    }
+
     /// F1 (v2803): the owner of the cluster events may have moved or restarted since the ESCALATED was raised; the successor holds no open state
     /// but the committed run state closes the incident, so the recovery is published, once.
     @Test
@@ -2040,6 +2077,22 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.DEPARTURE_INFERRED_REVERSED,
                 OperatorWarningCode.DEPARTURE_INFERRED_CONFIRMED,
                 OperatorWarningCode.SLICE_UNRESPONSIVE_EXPIRED,
+                // #2834: the leader-local FSM2 families commit their open set (FsmWarningKey)
+                OperatorWarningCode.DEPARTURE_BREAKER_CLEARED,
+                OperatorWarningCode.PLACEMENT_VALID,
+                OperatorWarningCode.JOIN_MATCHED,
+                OperatorWarningCode.RETRY_EXHAUSTED_SETTLED,
+                OperatorWarningCode.SCHEMA_HOLD_CLEARED,
+                OperatorWarningCode.SCHEMA_STATUS_READABLE,
+                OperatorWarningCode.SCHEMA_MIGRATION_PROGRESSED,
+                OperatorWarningCode.STRAY_INSTANCE_REMOVED,
+                OperatorWarningCode.WORKER_ABSENCE_JUDGEABLE,
+                OperatorWarningCode.WORKER_COMMUNITY_POLICY_MATCHED,
+                OperatorWarningCode.COMMUNITY_GROWTH_RESUMED,
+                OperatorWarningCode.COMMUNITY_ASSIGNMENT_PLACED,
+                OperatorWarningCode.APPLY_DEADLINE_CLEARED,
+                // #2825: the warning belongs to an earlier boot; the raiser's marker file owns "is it open"
+                OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED,
             });
     }
 
@@ -2642,6 +2695,45 @@ class ClusterEventAggregatorTest {
                                                .contains("Reactivation after quorum restore failed");
     }
 
+    /// FSM2 (deployment state machine spec 1.6.1): the aggregator reads the observed rows the state feed shows. A FAILED observed row is one
+    /// WARNING `DeploymentFailed` with the row's reason. Red if the aggregator reads only `NodeArtifactKey` puts.
+    @Test
+    void observedFailedRow_emitsOneWarningDeploymentFailed_namingNodeArtifactAndReason() {
+        var h = Harness.create();
+        var key = SliceObservedKey.sliceObservedKey(new NodeId("node-2"), ROLLBACK_ARTIFACT);
+
+        h.aggregator().onObservedSlice(key, observedRow(SliceObservedState.FAILED, Option.some("activation timed out")));
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.DeploymentFailed.class);
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.getFirst().summary()).contains("node-2")
+                                               .contains(ROLLBACK_ARTIFACT.asString())
+                                               .contains("activation timed out");
+    }
+
+    /// FSM2: the first observed write of a chain is LOADING (there is no observed LOAD), so LOADING starts the deployment and ACTIVE completes
+    /// it; the states between raise nothing, and a row gone raises nothing.
+    @Test
+    void observedLoadingThenActive_emitsStartedThenCompleted_andNothingElse() {
+        var h = Harness.create();
+        var key = SliceObservedKey.sliceObservedKey(new NodeId("node-3"), ROLLBACK_ARTIFACT);
+
+        h.aggregator().onObservedSlice(key, observedRow(SliceObservedState.LOADING, Option.none()));
+        h.aggregator().onObservedSlice(key, observedRow(SliceObservedState.LOADED, Option.none()));
+        h.aggregator().onObservedSlice(key, observedRow(SliceObservedState.ACTIVATING, Option.none()));
+        h.aggregator().onObservedSlice(key, observedRow(SliceObservedState.ACTIVE, Option.none()));
+        h.aggregator().onObservedSliceGone(key);
+
+        assertThat(h.events()).extracting(event -> event.getClass().getSimpleName())
+                              .containsExactly("DeploymentStarted", "DeploymentCompleted");
+    }
+
+    private static SliceObservedValue observedRow(SliceObservedState state, Option<String> reason) {
+        return new SliceObservedValue(state, 1L, new Generation(1L, 1L), new ProcessIncarnation(1L, 0L), reason, false, 0, List.of(), 0L);
+    }
+
     // --- production retention -------------------------------------------------------------------
 
     /// Count bound: with maxCount=3 the partition evicts oldest-on-append; only the newest 3 remain.
@@ -2824,7 +2916,7 @@ class ClusterEventAggregatorTest {
     }
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the three consumer pairs of #2201
-    /// C-16 (behind the ring, the hole, and the cursor expiry), the held detach flush of #1960, the 13 FSM2 recoveries of the D.6 ruling (#2761), the oversized-event refusal and the
+    /// C-16 (behind the ring, the hole, and the cursor expiry), the held detach flush of #1960, the 13 FSM2 recoveries of the D.6 ruling (#2761) and the schema-migration stall pair (#2773), the oversized-event refusal and the
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316, a stream partition's WAL fail-stop of #2201); every other code keeps the plain 60 s throttle.
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the departure sole-copy pair of #2034); every other code keeps the plain 60 s throttle.
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316); every other code keeps the plain 60 s throttle.
@@ -2846,6 +2938,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
                 OperatorWarningCode.AUTO_HEAL_SCALING_RESUMED,
                 OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
+                OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED,
                 OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
                 OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
                 OperatorWarningCode.STREAM_CONSUMER_BACK_IN_RING,
@@ -2861,6 +2954,9 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
                 OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
                 OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
+                OperatorWarningCode.STREAM_OWNER_LEASE_RESTORED,
+                OperatorWarningCode.NODE_CLOCK_RATE_NORMAL,
+                OperatorWarningCode.STREAM_TRUNCATION_QUARANTINE_CLEARED,
                 OperatorWarningCode.STREAM_OWNER_CATCHUP_PROGRESSING,
                 OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
                 OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED,
@@ -2894,6 +2990,9 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STORAGE_WAL_RETIRED,
                 OperatorWarningCode.STORAGE_DHT_MARKER_VERIFIED,
                 OperatorWarningCode.STORAGE_MAINTENANCE_STARTED,
+                OperatorWarningCode.STORAGE_MAINTENANCE_STOPPED,
+                OperatorWarningCode.STORAGE_MAINTENANCE_PASS_RECOVERED,
+                OperatorWarningCode.STORAGE_MAINTENANCE_PASS_COMPLETED,
                 OperatorWarningCode.STORAGE_PREFETCH_STARTED,
                 OperatorWarningCode.STORAGE_WRITE_BEHIND_FLUSHED,
                 OperatorWarningCode.STORAGE_ANCHOR_READABLE,
@@ -2910,7 +3009,10 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.SCHEMA_MIGRATION_FENCED,
                 OperatorWarningCode.KV_DISPATCH_CAUGHT_UP,
                 OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER_RETURNED,
+                OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED,
                 OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED,
+                // the unpublish-bound recovery of #3174 (H3b)
+                OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_SETTLED,
                 // the datasource recoveries of #2973: demand back within the server limit, a refused server answering again
                 OperatorWarningCode.DATASOURCE_DEMAND_WITHIN_SERVER_LIMIT,
                 OperatorWarningCode.DATASOURCE_SERVER_ACCEPTING_CONNECTIONS,
@@ -2925,14 +3027,17 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.JOIN_MATCHED,
                 OperatorWarningCode.RETRY_EXHAUSTED_SETTLED,
                 OperatorWarningCode.SCHEMA_STATUS_READABLE,
+                OperatorWarningCode.SCHEMA_MIGRATION_PROGRESSED,
                 OperatorWarningCode.STRAY_INSTANCE_REMOVED,
                 OperatorWarningCode.WORKER_ABSENCE_JUDGEABLE,
                 OperatorWarningCode.WORKER_COMMUNITY_POLICY_MATCHED,
+                OperatorWarningCode.APPLY_DEADLINE_CLEARED,
             });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
                 OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER,
                 OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED,
+                OperatorWarningCode.STREAM_DATA_ABANDONED,
                 OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED,
                 OperatorWarningCode.NODE_REPLACEMENT_STARTED,
                 OperatorWarningCode.NODE_REPLACEMENT_JOIN_OVERDUE,
@@ -2945,6 +3050,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.UPGRADE_PAUSED,
                 OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
                 OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE,
                 OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
                 OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
                 OperatorWarningCode.STREAM_CONSUMER_BEHIND_RING,
@@ -2965,6 +3071,9 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
                 OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
                 OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED,
+                OperatorWarningCode.STREAM_OWNER_LEASE_LAPSED,
+                OperatorWarningCode.NODE_CLOCK_RATE_DIVERGENCE,
+                OperatorWarningCode.STREAM_TRUNCATION_REFUSED,
                 OperatorWarningCode.STREAM_OWNER_CATCHUP_STALLED,
                 OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED,
                 OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING,
@@ -2977,6 +3086,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.SLICE_START_AWAITING_TARGET,
                 OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING,
                 OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED,
+                OperatorWarningCode.APPLY_DEADLINE_EXCEEDED,
                 OperatorWarningCode.COMMUNITY_PLACEMENT_PARKED,
                 OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED,
                 OperatorWarningCode.STORAGE_PROMOTION_STALLED,
@@ -2986,6 +3096,9 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED,
                 OperatorWarningCode.STORAGE_DHT_MARKER_UNVERIFIED,
                 OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STARTED,
+                OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STOPPED,
+                OperatorWarningCode.STORAGE_MAINTENANCE_PASS_FAILED,
+                OperatorWarningCode.STORAGE_MAINTENANCE_PASS_OVERDUE,
                 OperatorWarningCode.STORAGE_PREFETCH_NOT_STARTED,
                 OperatorWarningCode.STORAGE_WRITE_BEHIND_FLUSH_FAILED,
                 OperatorWarningCode.STORAGE_ANCHOR_CORRUPT,
@@ -3003,6 +3116,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.KV_DISPATCH_LAGGING,
                 OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER,
                 OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK,
+                OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_EXPIRED,
                 OperatorWarningCode.DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT,
                 OperatorWarningCode.DATASOURCE_SERVER_REFUSED_CONNECTION,
                 // the 12 FSM2 openers the D.6 recoveries close (#2761)
@@ -3014,6 +3128,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.RETRY_EXHAUSTED_UNSETTLED,
                 OperatorWarningCode.SCHEMA_HOLD,
                 OperatorWarningCode.SCHEMA_STATUS_UNKNOWN,
+                OperatorWarningCode.SCHEMA_MIGRATION_STALLED,
                 OperatorWarningCode.SLICE_UNRESPONSIVE,
                 OperatorWarningCode.STRAY_INSTANCE,
                 OperatorWarningCode.WORKER_ABSENCE_UNJUDGEABLE,

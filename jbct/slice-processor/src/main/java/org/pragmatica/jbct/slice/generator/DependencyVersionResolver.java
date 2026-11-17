@@ -142,7 +142,9 @@ public class DependencyVersionResolver {
     }
 
     private static boolean isUsableCoordinate(String value) {
-        return value != null && !value.isEmpty() && !value.equals("unknown");
+        return value != null
+               && !value.isEmpty()
+               && !value.equals("unknown");
     }
 
     private static String toKebabCase(String camelCase) {

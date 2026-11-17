@@ -203,10 +203,10 @@ public interface Server {
                                   address.port())
                          .addListener((ChannelFutureListener) future -> {
                                           if (future.isSuccess()) {
-                                          promise.succeed(future.channel());
-                                      } else {
-                                          promise.fail(Causes.fromThrowable(future.cause()));
-                                      }
+                                              promise.succeed(future.channel());
+                                          } else {
+                                              promise.fail(Causes.fromThrowable(future.cause()));
+                                          }
                                       });
 
                 return promise;
@@ -232,25 +232,25 @@ public interface Server {
         bootstrap.bind(config.port())
                  .addListener((ChannelFutureListener) future -> {
                                   if (future.isSuccess()) {
-                                  logTcpStarted(config, sslContext);
-                                  var tcpChannel = future.channel();
+                                      logTcpStarted(config, sslContext);
+                                      var tcpChannel = future.channel();
 
-                                  bindUdpIfConfigured(config,
-                                                      workerGroup,
-                                                      udpHandlers,
-                                                      udpChannel -> promise.succeed(new server(config.name(),
-                                                                                               config.port(),
-                                                                                               bossGroup,
-                                                                                               workerGroup,
-                                                                                               tcpChannel,
-                                                                                               udpChannel,
-                                                                                               channelHandlers,
-                                                                                               clientSslContext)));
-                              } else {
-                                  bossGroup.shutdownGracefully();
-                                  workerGroup.shutdownGracefully();
-                                  promise.fail(Causes.fromThrowable(future.cause()));
-                              }
+                                      bindUdpIfConfigured(config,
+                                                          workerGroup,
+                                                          udpHandlers,
+                                                          udpChannel -> promise.succeed(new server(config.name(),
+                                                                                                   config.port(),
+                                                                                                   bossGroup,
+                                                                                                   workerGroup,
+                                                                                                   tcpChannel,
+                                                                                                   udpChannel,
+                                                                                                   channelHandlers,
+                                                                                                   clientSslContext)));
+                                  } else {
+                                      bossGroup.shutdownGracefully();
+                                      workerGroup.shutdownGracefully();
+                                      promise.fail(Causes.fromThrowable(future.cause()));
+                                  }
                               });
 
         return promise;

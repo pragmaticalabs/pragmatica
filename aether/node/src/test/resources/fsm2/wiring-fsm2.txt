@@ -27,6 +27,8 @@ B1.cluster.DeploymentApplyKey.put -> fsm2:Fsm2Routes
 B1.cluster.DeploymentApplyKey.remove -> fsm2:Fsm2Routes
 B1.cluster.DeploymentOutcomeKey.put -> fsm2:Fsm2Routes
 B1.cluster.DeploymentOutcomeKey.remove -> fsm2:Fsm2Routes
+B1.cluster.FsmWarningKey.put -> fsm2:Fsm2Routes
+B1.cluster.FsmWarningKey.remove -> fsm2:Fsm2Routes
 B1.cluster.GovernorAnnouncementKey.put -> fsm2:Fsm2Routes
 B1.cluster.GovernorAnnouncementKey.remove -> fsm2:Fsm2Routes
 B1.cluster.NodeDepartureKey.put -> fsm2:Fsm2Routes
@@ -74,6 +76,20 @@ B19.ForceClearDirectiveDelete -> on
 B2.ClusterStateNotification -> fsm2:Fsm2System.onClusterStateNotification
 B20.EngineMarkerGuard -> guard
 B20.LineageMint -> marker=FSM2
+B21.SliceRows -> fsm2:SliceRowSource.observed
+B21.controlLoop.NodeArtifactKey.put -> dropped
+B21.controlLoop.NodeArtifactKey.remove -> dropped
+B21.deploymentMap.NodeArtifactKey.put -> dropped
+B21.deploymentMap.NodeArtifactKey.remove -> dropped
+B21.endpoints.NodeArtifactKey.put -> dropped
+B21.endpoints.NodeArtifactKey.remove -> dropped
+B21.events.NodeArtifactKey.put -> dropped
+B21.readers.state.SliceObservedKey -> fsm2:ObservedSliceFeed.stateFeed[ArtifactDeploymentTrackerImpl,IndexedDeploymentMap,ControlLoop$ControlLoopAdapter,ClusterEventAggregator]
+B21.readers.traffic.NodeDepartureKey -> fsm2:ObservedSliceFeed.trafficFeed[EndpointRegistry$1endpointRegistry]
+B21.readers.traffic.SliceObservedKey -> fsm2:ObservedSliceFeed.trafficFeed[EndpointRegistry$1endpointRegistry]
+B21.tracker.NodeArtifactKey.put -> dropped
+B21.tracker.NodeArtifactKey.remove -> dropped
+B22.AllInstancesFailedDetector.activeInstances -> fsm2:observed
 B3.ActivationDriver -> fsm2:Fsm2System.reconcileActivation
 B4.PassiveClientSwitch -> dropped
 B5.ConfigApplied -> fsm2:NodeFsmInput.ConfigChanged
@@ -92,3 +108,4 @@ B9.cdm.NodeShuttingDown -> dropped
 B9.cdm.SelfShutdown -> dropped
 B9.cdm.WorkerLeave -> fsm2:MembershipInputs.onWorkerLeave
 B9.ndm.NodeShuttingDown -> dropped
+C3.ndm.ReplayEnd -> dropped

@@ -4,6 +4,7 @@ import java.util.List;
 
 import org.pragmatica.lang.Option;
 
+
 /// A verification floor (SPEC.md §3, `[[floors]]`): the physical hop budget for one path, the
 /// arithmetic the verification step needs. A floor the sheet does not supply produces an explicit
 /// `UNVERIFIED`, never a silently assumed default — but verification itself is a Phase-B concern;

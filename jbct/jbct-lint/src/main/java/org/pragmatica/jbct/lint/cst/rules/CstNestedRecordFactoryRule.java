@@ -46,11 +46,10 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
     private int countAbstractMethods(Cursor iface) {
         // Use the type body's direct members to avoid counting methods inside nested types
         return (int) typeBodyMembers(iface).stream()
-                                           .filter(member -> !contains(member,
-                                                                       RuleKind.TYPE_KIND))
-                                           .filter(member -> containsMethod(member))
-                                           .filter(this::isAbstractMethod)
-                                           .count();
+                                    .filter(member -> !contains(member, RuleKind.TYPE_KIND))
+                                    .filter(member -> containsMethod(member))
+                                    .filter(this::isAbstractMethod)
+                                    .count();
     }
 
     private boolean isAbstractMethod(Cursor member) {

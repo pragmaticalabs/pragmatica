@@ -170,7 +170,7 @@ class ManagementPostClientErrorStatusTest {
     @Test
     void clusterConfigApply_answers400_whenTomlIsMissing() {
         var routes = ClusterConfigRoutes.clusterConfigRoutes(() -> node(true));
-        var body = new ManagementApiResponses.ApplyConfigRequest(null, 0L);
+        var body = new ManagementApiResponses.ApplyConfigRequest(null, 0L, Option.none());
 
         assertThat(statusOf(routes.routes(), ManagementRoute.CLUSTER_CONFIG_APPLY, body)).isEqualTo(HttpStatus.BAD_REQUEST);
     }

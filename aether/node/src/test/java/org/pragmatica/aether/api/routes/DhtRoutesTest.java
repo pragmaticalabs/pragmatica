@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.Locale;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -96,7 +97,7 @@ class DhtRoutesTest {
                                 .await();
 
             assertTrue(result.isFailure());
-            result.onFailure(cause -> assertTrue(cause.message().toLowerCase().contains("key"),
+            result.onFailure(cause -> assertTrue(cause.message().toLowerCase(Locale.ROOT).contains("key"),
                                                   "Failure must mention missing key: " + cause.message()));
         }
 
@@ -109,7 +110,7 @@ class DhtRoutesTest {
                                 .await();
 
             assertTrue(result.isFailure());
-            result.onFailure(cause -> assertTrue(cause.message().toLowerCase().contains("value"),
+            result.onFailure(cause -> assertTrue(cause.message().toLowerCase(Locale.ROOT).contains("value"),
                                                   "Failure must mention missing value: " + cause.message()));
         }
 
@@ -122,7 +123,7 @@ class DhtRoutesTest {
                                 .await();
 
             assertTrue(result.isFailure());
-            result.onFailure(cause -> assertTrue(cause.message().toLowerCase().contains("hlc"),
+            result.onFailure(cause -> assertTrue(cause.message().toLowerCase(Locale.ROOT).contains("hlc"),
                                                   "Failure must mention missing hlc: " + cause.message()));
         }
     }

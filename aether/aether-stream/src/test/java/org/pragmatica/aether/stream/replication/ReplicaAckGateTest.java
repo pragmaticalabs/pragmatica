@@ -59,6 +59,7 @@ import static org.pragmatica.aether.stream.replication.ReplicationReceiveHandler
 class ReplicaAckGateTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
+    private static final long BOOT_TOKEN = 7L;
     private static final Epoch E1 = Epoch.epoch(1L, 1L, 1L);
     private static final Epoch E2 = Epoch.epoch(1L, 1L, 2L);
     private static final Epoch E3 = Epoch.epoch(1L, 1L, 3L);
@@ -73,6 +74,9 @@ class ReplicaAckGateTest {
     private final AtomicReference<Epoch> committed = new AtomicReference<>(E1);
     private final ConcurrentLinkedQueue<ReplicationMessage.ReplicateAck> acks = new ConcurrentLinkedQueue<>();
     private final AtomicInteger gapRepairs = new AtomicInteger();
+    /// The (stream, partition) every gap repair was asked for, as `stream[partition]`: the count alone cannot tell a repair for
+    /// the wrong key from the right one.
+    private final ConcurrentLinkedQueue<String> gapTargets = new ConcurrentLinkedQueue<>();
     private final AtomicBoolean holdSyncs = new AtomicBoolean();
     private final ConcurrentLinkedQueue<Promise<Unit>> heldSyncs = new ConcurrentLinkedQueue<>();
     /// The next-expected offset the handler reads, lowered by a test to stand for a repair that cut the tail.
@@ -89,20 +93,26 @@ class ReplicaAckGateTest {
         replica.ownerEpochSource((_, _) -> committed.get());
         replica.placementRoleSupplier((_, _) -> Role.REPLICA);
         // the committed record lists every epoch's start, the current one included (#1873: committed before activation)
-        replica.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E2, E2_START)));
+        replica.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, E2_START, Option.none())));
         handler = replicationReceiveHandler(self,
                                             replica::appendRecovered,
                                             (stream, partition) -> Math.min(replica.nextExpectedOffset(stream, partition),
                                                                             cutNext.get()),
                                             AcceptingReplicationTransport.accepting((_, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
-                                            (_, _) -> gapRepairs.incrementAndGet(),
+                                            this::recordGapRepair,
                                             this::sync,
                                             committedOwners(),
-                                            OperatorWarningSink.handingOffTo(warnings::add));
+                                            OperatorWarningSink.handingOffTo(warnings::add),
+                                            () -> BOOT_TOKEN);
         // The production wiring (StreamAssembly).
         handler.ackGate(replica::replicaVerified);
         replica.onEpochVerified(handler::releaseDeferredAck);
         replica.onStreamRemoved(handler::forgetDeferredAcks);
+    }
+
+    private void recordGapRepair(String stream, int partition) {
+        gapTargets.add(stream + "[" + partition + "]");
+        gapRepairs.incrementAndGet();
     }
 
     @AfterEach
@@ -144,6 +154,7 @@ class ReplicaAckGateTest {
 
         assertThat(acks).as("no ack on a pre-apply reading for another epoch").isEmpty();
         assertThat(gapRepairs.get()).isEqualTo(1);
+        assertThat(gapTargets).as("the compare is asked for this partition").containsExactly(STREAM + "[" + PARTITION + "]");
     }
 
     /// A genuinely unverified copy (head at or above the start before the batch): the ack is deferred, not dropped, and sent
@@ -156,6 +167,7 @@ class ReplicaAckGateTest {
 
         assertThat(acks).as("the gate holds the ack").isEmpty();
         assertThat(gapRepairs.get()).as("the compare is asked for").isEqualTo(1);
+        assertThat(gapTargets).as("the compare is asked for this partition").containsExactly(STREAM + "[" + PARTITION + "]");
 
         holdSyncs.set(true);
         replica.markVerifiedForEpoch(STREAM, PARTITION, E2);
@@ -505,14 +517,32 @@ class ReplicaAckGateTest {
         assertThat(injected.get()).as("the E3 batch was injected").isTrue();
         assertThat(replica.nextExpectedOffset(STREAM, PARTITION)).as("the E3 batch landed at the head").isEqualTo(8L);
 
-        var e3LiveSync = heldSyncs.poll();
         var releaseSync = heldSyncs.poll();
 
-        assertThat(releaseSync).as("two barriers in flight").isNotNull();
+        assertThat(releaseSync).as("the E3 batch is not acked (#2840), so only the release's barrier is in flight").isNotNull();
+        assertThat(heldSyncs).as("no barrier for an E3 ack").isEmpty();
         drain(releaseSync);
 
         assertThat(ackOffsetsUnder(E2)).as("acks under E2 cover only E2's records (0..5); all acks = %s", acks).containsExactly(5L);
-        drain(e3LiveSync);
+        assertThat(ackOffsetsUnder(E3)).as("no ack under E3").isEmpty();
+    }
+
+    /// #2840: the copy is verified for E2 and acked 7 under E2; a batch of E3 (from another node) lands at offset 8 while this
+    /// replica's view still says E2. The gate reads the view's epoch, so it would open: ack 8 under E3, counting offsets 6..7
+    /// (E2 lineage) as E3's. No ack under E3 until the copy is verified for E3.
+    @Test
+    void liveBatch_ofANewerEpochThanTheLaggingView_isNotAckedUnderTheNewerEpoch() {
+        unverifiedCopyUnderE2();
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E2);
+        handler.onReplicateEvents(liveBatch(5, 3, E2));
+        assertThat(ackOffsets(E2)).as("fixture: acked under E2").containsExactly(7L);
+
+        handler.onReplicateEvents(newerEpochBatch(8, E3));
+
+        assertThat(replica.nextExpectedOffset(STREAM, PARTITION)).as("the E3 batch landed").isEqualTo(9L);
+        assertThat(ackOffsetsUnder(E3)).as("no ack under E3 on a lagging view; all acks = %s", acks).isEmpty();
+        assertThat(gapRepairs.get()).as("the compare is asked for").isEqualTo(1);
+        assertThat(gapTargets).as("the compare is asked for this partition").containsExactly(STREAM + "[" + PARTITION + "]");
     }
 
     /// #2753 (the v2735d probe): the gate opens only on a verification for the committed epoch, never on the OWNER placement
@@ -822,6 +852,62 @@ class ReplicaAckGateTest {
                                fromOffset,
                                IntStream.range(fromOffset, fromOffset + count).mapToObj(ReplicaAckGateTest::payload).toList(),
                                IntStream.range(fromOffset, fromOffset + count).mapToObj(i -> 1000L + i).toList(),
+                               epoch);
+    }
+
+    /// #2840 (race): the copy is verified for E2 and the view advances to E3 right after the gate's reading. The gate judged the
+    /// copy for E2, so the ack must not go out under E3 on a copy not verified for E3: "ahead" is derived from the one reading
+    /// of the view taken before the gate, not from a second one after it.
+    @Test
+    void liveBatch_viewAdvancesBetweenTheGateReadingAndTheAheadReading_isNotAckedUnderTheNewerEpoch() {
+        unverifiedCopyUnderE2();
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E2);
+        handler.onReplicateEvents(liveBatch(5, 3, E2));
+        var first = new AtomicBoolean(true);
+
+        handler.ackGate((stream, partition) -> verifiedThenAdvanceView(first, stream, partition));
+        handler.onReplicateEvents(newerEpochBatch(8, E3));
+
+        assertThat(replica.replicaVerified(STREAM, PARTITION)).as("fixture: copy NOT verified for E3").isFalse();
+        assertThat(ackOffsetsUnder(E3)).as("no ack under E3 on an E3-unverified copy; all acks = %s", acks).isEmpty();
+    }
+
+    /// #2840 (liveness): the withheld ack is not in the deferral map, so catch-up and verification release nothing; the owner's
+    /// next batch, once the view and the copy are at E3, is acked.
+    @Test
+    void liveBatch_afterAWithheldNewerEpochAck_catchUpReleasesNothing_andTheNextBatchIsAcked() {
+        unverifiedCopyUnderE2();
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E2);
+        handler.onReplicateEvents(liveBatch(5, 3, E2));
+        handler.onReplicateEvents(newerEpochBatch(8, E3));
+        assertThat(ackOffsetsUnder(E3)).as("fixture: the E3 batch is withheld").isEmpty();
+
+        committed.set(E3);
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E3);
+        handler.releaseDeferredAck(STREAM, PARTITION);
+        assertThat(ackOffsetsUnder(E3)).as("catch-up and verification release nothing: withheld, not deferred").isEmpty();
+
+        handler.onReplicateEvents(liveBatch(9, 1, E3));
+
+        assertThat(ackOffsetsUnder(E3)).as("the next batch is acked after catch-up").containsExactly(9L);
+    }
+
+    private boolean verifiedThenAdvanceView(AtomicBoolean first, String stream, int partition) {
+        var verified = replica.replicaVerified(stream, partition);
+
+        if (first.getAndSet(false)) {
+            committed.set(E3);
+        }
+        return verified;
+    }
+
+    private ReplicationMessage.ReplicateEvents newerEpochBatch(int fromOffset, Epoch epoch) {
+        return replicateEvents(NODE_C,
+                               STREAM,
+                               PARTITION,
+                               fromOffset,
+                               List.of(payload(fromOffset)),
+                               List.of(1000L + fromOffset),
                                epoch);
     }
 

@@ -11,5 +11,5 @@ import org.pragmatica.aether.slice.topic.Topic;
 /// a `TypedPublisher`, generates the topic name into each slice manifest, and rejects a payload-type
 /// mismatch at compile time (#396).
 public interface Topics {
-    Topic<ClickEvent> CLICK_EVENTS = Topic.of("click-events", ClickEvent.class);
+    Topic<ClickEvent> CLICK_EVENTS = Topic.topic("click-events", ClickEvent.class);
 }

@@ -13,6 +13,8 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
@@ -44,6 +46,11 @@ class ReadCommittedStreamTest {
     private static final NodeId PEER2 = NodeId.randomNodeId();
     private static final Epoch EPOCH_1 = Epoch.epoch(1L, 1L, 1L);
     private static final Epoch EPOCH_2 = Epoch.epoch(1L, 2L, 1L);
+
+    private static final StreamPartitionOwnershipValue OWNER_RECORD = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(SELF,
+                                                                                                                                  EPOCH_1,
+                                                                                                                                  1L,
+                                                                                                                                  HlcTimestamp.ZERO);
 
     private StreamPartitionManager manager;
 
@@ -295,11 +302,34 @@ class ReadCommittedStreamTest {
     @Nested
     class Promoted {
 
+        /// #2087 / #2981 R3-L2, wired NOT-activated arm: the record names this node under a valid lease but the promotion gate has not
+        /// activated it, so the acks do not expose the landed record (it stays at the replica bound). Mutation: `ownerRoleHolds`
+        /// ignoring `ownerActivated` -> RED.
         @Test
-        void catchUpLandedOnANewOwner_isVisibleOnlyOnceItsPeersAcknowledgeIt() {
+        void catchUpLandedOnANewOwner_wiredButNotActivated_staysAtTheReplicaBoundAfterTheAcks() {
             var replication = replicationManager(SELF, registryWithPeers());
 
             manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
+            wireOwnerChecks(manager, false);
+            createStream(manager, 3, 3);
+            manager.appendRecovered(STREAM, PARTITION, "c0".getBytes(UTF_8), 1L).onFailure(cause -> fail(cause.message()));
+
+            assertThat(readLocal(manager)).as("landed here, acknowledged by nobody").isEmpty();
+
+            replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 0L));
+            replication.handleAck(replicateAck(PEER2, STREAM, PARTITION, 0L));
+
+            assertThat(readLocal(manager)).as("not activated: the owner bound is not taken").isEmpty();
+        }
+
+        /// #2087, wired activated-with-valid-lease arm: the landed record becomes visible only once its peers acknowledge it.
+        /// Mutation: `peerAcknowledgedThrough` ignoring the acks -> RED (here and in the unwired twin below).
+        @Test
+        void catchUpLandedOnANewOwner_wiredAndActivated_isVisibleOnlyOnceItsPeersAcknowledgeIt() {
+            var replication = replicationManager(SELF, registryWithPeers());
+
+            manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
+            wireOwnerChecks(manager, true);
             createStream(manager, 3, 3);
             manager.appendRecovered(STREAM, PARTITION, "c0".getBytes(UTF_8), 1L).onFailure(cause -> fail(cause.message()));
 
@@ -312,11 +342,32 @@ class ReadCommittedStreamTest {
         }
     }
 
+    private static void wireOwnerChecks(StreamPartitionManager target, boolean activated) {
+        target.ownerLease(OwnerLease.TEST_VALID);
+        target.ownershipRecords((_, _) -> Option.some(OWNER_RECORD));
+        target.ownerActivated((_, _) -> activated);
+    }
+
     @Test
     void markVerifiedOnANodeThatIsNoLongerAReplica_doesNotOutrunThePeerAcknowledgements() {
         var replication = replicationManager(SELF, registryWithPeers());
 
         manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
+        createStream(manager, 3, 3);
+        manager.appendRecovered(STREAM, PARTITION, "c0".getBytes(UTF_8), 1L).onFailure(cause -> fail(cause.message()));
+        manager.appendRecovered(STREAM, PARTITION, "c1".getBytes(UTF_8), 2L).onFailure(cause -> fail(cause.message()));
+
+        manager.markVerified(STREAM, PARTITION, 1L);
+
+        assertThat(readLocal(manager)).as("compared with the owner is not acknowledged by the peers").isEmpty();
+    }
+
+    @Test
+    void markVerifiedOnANodeThatIsNoLongerAReplica_wiredAndActivated_doesNotOutrunThePeerAcknowledgements() {
+        var replication = replicationManager(SELF, registryWithPeers());
+
+        manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
+        wireOwnerChecks(manager, true);
         createStream(manager, 3, 3);
         manager.appendRecovered(STREAM, PARTITION, "c0".getBytes(UTF_8), 1L).onFailure(cause -> fail(cause.message()));
         manager.appendRecovered(STREAM, PARTITION, "c1".getBytes(UTF_8), 2L).onFailure(cause -> fail(cause.message()));

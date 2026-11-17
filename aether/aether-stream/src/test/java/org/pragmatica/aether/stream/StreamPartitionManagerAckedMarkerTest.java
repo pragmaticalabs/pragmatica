@@ -9,6 +9,8 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 import java.util.zip.CRC32;
@@ -29,8 +31,10 @@ import org.pragmatica.aether.stream.segment.SegmentSealer;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.MemoryTier;
@@ -89,6 +93,7 @@ class StreamPartitionManagerAckedMarkerTest {
     private final AtomicReference<Result<Unit>> gate = new AtomicReference<>(Result.unitResult());
     private final AtomicReference<Option<NodeId>> remoteOwner = new AtomicReference<>(Option.none());
     private final AtomicReference<ReplicaSetController.Role> role = new AtomicReference<>(ReplicaSetController.Role.OWNER);
+    private final AtomicBoolean leaseValid = new AtomicBoolean(true);
 
     @BeforeEach
     void setUp() {
@@ -198,12 +203,100 @@ class StreamPartitionManagerAckedMarkerTest {
         assertThat(visible()).isEqualTo(4L);
     }
 
+    /// #2981 step 2 (design §2.2 check 3, §8 `raiseToMarker`): the gate admitted (here it admits regardless of the lease, the
+    /// lapse landing after the admission edge), but the node's lease has lapsed by the time the marker raise runs, so visible stays
+    /// at the replica bound (no committed mark on this owner: nothing) instead of the trusted marker.
+    @Test
+    void lapsedLease_afterTheAdmissionEdge_neverRaisesFromTheMarker() {
+        restartWithMarkerAt4();
+        leaseValid.set(false);
+        assertThat(manager.mayServeAsOwner(STREAM, PARTITION)).as("control: the gate admits").isTrue();
+        assertThat(visible()).as("the marker raise went through ownerAdvance and fell back").isEqualTo(-1L);
+        assertThat(durable()).as("control: the tail is durable").isEqualTo(9L);
+    }
+
     /// [StreamPartitionManager#mayServeAsOwner] is an owner-admission site too.
     @Test
     void mayServeAsOwner_restoresTheMarker() {
         restartWithMarkerAt4();
         assertThat(manager.mayServeAsOwner(STREAM, PARTITION)).isTrue();
         assertThat(visible()).isEqualTo(4L);
+    }
+
+    // ---- #3307: the activation restores the marker -------------------------------------------------------------------
+
+    /// #3307: the owner's activation ALONE raises visible to the trusted marker. The manager is wired to a real
+    /// [OwnerActivation] as `StreamAssembly` wires it (listener, activated view), and its admission gate fails the test if
+    /// anything calls it: no read, write or snapshot reaches the owner, as when every read of the partition is served by a
+    /// replica's own ring. Mutation: dropping the listener call in [OwnerActivation] leaves visible at -1 (red).
+    @Test
+    void ownerActivation_alone_raisesVisibleToTheTrustedMarker_withNoAdmission() {
+        restartWithMarkerAt4();
+        var activation = activationWiredTo(manager);
+
+        assertThat(visible()).as("control: nothing raised at the restart").isEqualTo(-1L);
+        assertThat(activation.activate(STREAM, PARTITION).await().isSuccess()).as("control: the activation completes").isTrue();
+        assertThat(visible()).as("the activation raised visible to the marker").isEqualTo(4L);
+        assertThat(durable()).as("control: the tail is durable").isEqualTo(9L);
+    }
+
+    /// #3307: an activation that completes under a lapsed lease cannot raise ([#ownerRoleHolds] fails), so it leaves the marker
+    /// pending instead of taking it; the lease-regained edge restores it, still with no admission. Mutation: dropping the
+    /// restore from `onLeaseRegained` leaves visible at -1 (red). The owner-path guard in `restoreAckedMarker` is an early
+    /// exit since the raise itself decides the take (see the next test).
+    @Test
+    void ownerActivation_underALapsedLease_leavesTheMarkerPending_untilTheLeaseIsRegained() {
+        restartWithMarkerAt4();
+        var activation = activationWiredTo(manager);
+
+        leaseValid.set(false);
+        assertThat(activation.activate(STREAM, PARTITION).await().isSuccess()).as("control: the activation completes").isTrue();
+        assertThat(visible()).as("no raise under a lapsed lease").isEqualTo(-1L);
+        leaseValid.set(true);
+        manager.onLeaseRegained();
+        assertThat(visible()).as("the regained lease restored the pending marker").isEqualTo(4L);
+    }
+
+    /// #3307: the role holds at the restore's check, and the lease lapses before the raise (the seam answers valid for its
+    /// first read only, so the raise's own [StreamPartitionManager] role read finds it lapsed). The raise is refused, so the
+    /// marker is not taken: visible stays at -1, and the lease-regained edge -- with no admission, write or peer ack, the
+    /// only other ways visible could rise -- raises it to the marker, which it can only do from a marker still pending.
+    /// Mutation: taking the marker before the raise (or ignoring the raise's verdict in `settleMarker`) consumes it at the
+    /// refused raise, and visible stays at -1 after the regained lease (red).
+    @Test
+    void ownerActivation_leaseLapsingBetweenTheCheckAndTheRaise_keepsTheMarkerPending_untilTheLeaseIsRegained() {
+        restartWithMarkerAt4();
+        var activation = activationWiredTo(manager);
+        var leaseReads = new AtomicInteger();
+
+        manager.ownerLease(() -> leaseReads.incrementAndGet() == 1);
+        assertThat(activation.activate(STREAM, PARTITION).await().isSuccess()).as("control: the activation completes").isTrue();
+        assertThat(leaseReads.get()).as("control: the check read a valid lease and the raise re-read it").isEqualTo(2);
+        assertThat(visible()).as("no raise once the lease lapsed before it").isEqualTo(-1L);
+        manager.ownerLease(leaseValid::get);
+        manager.onLeaseRegained();
+        assertThat(visible()).as("the regained lease raised visible from the still-pending marker").isEqualTo(4L);
+    }
+
+    /// #3307, NT-111 (ii) at the activation trigger: a marker of a foreign epoch (one the history does not attribute 4 to, the
+    /// fixture of [#unattributedMarker_isNeverTrusted]) is not raised by the activation alone, with no admission (the wired
+    /// gate fails the test if one runs), and the lease-regained edge after it -- the trigger that raises a marker the
+    /// activation left pending (the two tests above) -- does not raise it either, whether the activation took the marker or
+    /// left it pending. Mutation: the trust check always passing raises visible to 4 at the activation (red).
+    @Test
+    void foreignEpochMarker_isNotRaisedAtActivation_norLaterByTheLeaseRegainedEdge() throws IOException {
+        restartWithMarkerAt4();
+        manager.close();
+        manager = null;
+        Files.writeString(walFile(walDir).resolveSibling(PARTITION + ".acked"), validMarkerLine("999", 4L));
+        restartOn(walDir);
+        var activation = activationWiredTo(manager);
+
+        assertThat(activation.activate(STREAM, PARTITION).await().isSuccess()).as("control: the activation completes").isTrue();
+        assertThat(visible()).as("an epoch the history does not attribute 4 to is not raised at activation").isEqualTo(-1L);
+        manager.onLeaseRegained();
+        assertThat(visible()).as("nor by the lease-regained edge after it").isEqualTo(-1L);
+        assertThat(durable()).as("control: the tail is durable").isEqualTo(9L);
     }
 
     /// NT-111 (ii), same rank: a key of the marker's own epoch rank but another incarnation passes the lineage check and
@@ -404,11 +497,35 @@ class StreamPartitionManagerAckedMarkerTest {
                                          Option.some(dir),
                                          index::lastSealedOffset);
         manager.ownerEpochSource((_, _) -> Option.option(committed.get()).map(StreamPartitionOwnershipValue::ownerEpoch).or(Epoch.ZERO));
+        manager.ownerLease(leaseValid::get);
         manager.ownershipRecords((_, _) -> Option.option(committed.get()));
         manager.ownerWriteAdmission((_, _) -> remoteOwner.get());
         manager.ownerServeGate((_, _) -> gate.get());
         manager.placementRoleSupplier((_, _) -> role.get());
         manager.createStream(config()).onFailure(cause -> fail(cause.message()));
+    }
+
+    /// A real activation gate over the same committed record, with no peers (nothing to probe or catch up from), bound to the
+    /// manager as `StreamAssembly` binds it; the manager's admission gate is replaced by one that fails the test.
+    private OwnerActivation activationWiredTo(StreamPartitionManager owner) {
+        var activation = OwnerActivation.ownerActivation(SELF,
+                                                         (_, _) -> Option.option(committed.get()),
+                                                         (_, _) -> role.get() == ReplicaSetController.Role.OWNER,
+                                                         Option.none(),
+                                                         List::of,
+                                                         (_, _, _) -> Promise.success(-1L),
+                                                         (_, _) -> durable(),
+                                                         (_, _, _, tail) -> Promise.success(tail),
+                                                         () -> true,
+                                                         (_, _, _, _, _) -> Promise.success(List.of()),
+                                                         _ -> Unit.unit(),
+                                                         TimeSpan.timeSpan(1).hours());
+
+        owner.ownerServeGate((_, _) -> fail("an owner admission ran; the activation alone must raise visible"));
+        owner.ownerActivated(activation::isActivated);
+        activation.activationListener(owner::onOwnerActivated);
+
+        return activation;
     }
 
     private SegmentSealer segmentSealer(SegmentIndex index) {

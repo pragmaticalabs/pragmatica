@@ -16,6 +16,7 @@ package org.pragmatica.postgres.message.frontend;
 import java.nio.charset.Charset;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Locale;
 
 import org.pragmatica.postgres.message.FrontendMessage;
 
@@ -38,11 +39,11 @@ public record PasswordMessage(String password, byte[] passwordHash) implements F
 
         md5.update(password.getBytes(encoding));
         md5.update(username.getBytes(encoding));
-        byte[] hash = printHexBinary(md5.digest()).toLowerCase().getBytes(encoding);
+        byte[] hash = printHexBinary(md5.digest()).toLowerCase(Locale.ROOT).getBytes(encoding);
 
         md5.update(hash);
         md5.update(md5salt);
-        hash = printHexBinary(md5.digest()).toLowerCase().getBytes(encoding);
+        hash = printHexBinary(md5.digest()).toLowerCase(Locale.ROOT).getBytes(encoding);
         var prefixed = new byte[hash.length + 3];
 
         prefixed[0] = (byte)'m';

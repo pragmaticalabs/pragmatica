@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.util.Locale;
 import java.util.concurrent.Callable;
 
 import org.pragmatica.aether.cli.DestructiveAction;
@@ -99,8 +100,8 @@ class ClusterMigrateCommand implements Callable<Integer> {
     }
 
     private Result<String> validateStrategy() {
-        return switch (strategy.toLowerCase()) {
-            case "rolling", "blue_green" -> Result.success(strategy.toLowerCase());
+        return switch (strategy.toLowerCase(Locale.ROOT)) {
+            case "rolling", "blue_green" -> Result.success(strategy.toLowerCase(Locale.ROOT));
             default -> new MigrateError.InvalidStrategy(strategy).result();
         };
     }

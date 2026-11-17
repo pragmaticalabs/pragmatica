@@ -10,6 +10,7 @@ import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.StreamPublisher;
+import org.pragmatica.aether.slice.stream.StreamEngineKey;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -22,8 +23,13 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Serializer;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 
 public final class StreamPublisherFactory implements ResourceFactory<StreamPublisher, StreamConfig> {
+    private static final Logger log = LoggerFactory.getLogger(StreamPublisherFactory.class);
+
     private static final Cause REQUIRES_CONTEXT = Causes.cause("StreamPublisher requires ProvisioningContext with runtime extensions");
 
     @Override
@@ -76,7 +82,7 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
                                                           Serializer serializer,
                                                           StreamConfig config,
                                                           ProvisioningContext context) {
-        return ensureStreamExists(manager, config).map(_ -> assemblePublisher(manager, serializer, config, context));
+        return ensureStreamExists(manager, config).flatMap(_ -> assemblePublisher(manager, serializer, config, context));
     }
 
     /// Shared publisher assembly — the ONE place the stream-publish collaborator set (partition
@@ -86,10 +92,22 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
     /// path over its `topic:<address>` stream; a second hand-rolled assembly would drift from this
     /// one collaborator by collaborator.
     @SuppressWarnings("unchecked")
-    public static StreamPublisher assemblePublisher(StreamPartitionManager manager,
-                                                    Serializer serializer,
-                                                    StreamConfig config,
-                                                    ProvisioningContext context) {
+    public static Result<StreamPublisher> assemblePublisher(StreamPartitionManager manager,
+                                                            Serializer serializer,
+                                                            StreamConfig config,
+                                                            ProvisioningContext context) {
+        return routedPartitions(manager, config).map(partitions -> assemblePublisher(manager,
+                                                                                     serializer,
+                                                                                     config,
+                                                                                     context,
+                                                                                     partitions));
+    }
+
+    private static StreamPublisher assemblePublisher(StreamPartitionManager manager,
+                                                     Serializer serializer,
+                                                     StreamConfig config,
+                                                     ProvisioningContext context,
+                                                     int partitions) {
         var keyExtractor = extractPartitionKeyFunction(context);
         var forwardClient = context.extension(StreamForwardClient.class).option();
         var governor = context.extension(GovernorResolver.class).option();
@@ -107,7 +125,7 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
         return DefaultStreamPublisher.streamPublisher(manager,
                                                       serializer,
                                                       config.name(),
-                                                      config.partitions(),
+                                                      partitions,
                                                       keyExtractor,
                                                       config.consistencyMode(),
                                                       Option.none(),
@@ -115,6 +133,52 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
                                                       governorResolver,
                                                       partitionOwnerResolver,
                                                       self);
+    }
+
+    /// #3263: routing uses the partition count of the COMMITTED stream config, never the one this declaration asks for.
+    /// This is the ONE place a stream binding's partition count is read: the publisher ([#assemblePublisher]) and the
+    /// consumer access ([StreamAccessFactory]) both route by it, so a producer and a consumer cannot disagree on which
+    /// partition holds a key. A later split of an existing stream's count replaces THIS site only.
+    ///
+    /// An existing stream keeps its count (the `STREAM_CONFIG_CHANGE_NOT_APPLIED` contract,
+    /// [StreamPartitionManager#notAppliedReason]), so a binding routing by a different count either fails
+    /// `PartitionOutOfRange` (declared higher) or maps keys to partitions no other party uses (declared lower).
+    ///
+    /// Capture-once: the count is read when the binding is assembled and fixed for its life. Only destroy + recreate of
+    /// the stream (a new incarnation) changes a stream's count, and a live publisher or access keeps the count it
+    /// captured until it is provisioned again.
+    ///
+    /// While this node holds no committed config a non-system stream is REFUSED retriably
+    /// ([StreamError.StreamConfigNotYetVisible]): routing by the declared count there would be a guess that hides exactly
+    /// the defect class above. A `system:` stream is created by the runtime alone, which owns its count: with no committed
+    /// config the count is the one this node ENFORCES for the stream ([StreamPartitionManager#enforcedConfig], the config
+    /// `createStream` used), never the slice's declaration, which is not the runtime's configuration. A system stream this
+    /// node does not hold at all is refused the same way as a non-system one.
+    static Result<Integer> routedPartitions(StreamPartitionManager manager, StreamConfig declared) {
+        return manager.committedPartitions(declared.name())
+                      .fold(() -> runtimeOwnedCount(manager, declared),
+                            committed -> Result.success(warnWhenNotApplied(declared, committed)));
+    }
+
+    private static Result<Integer> runtimeOwnedCount(StreamPartitionManager manager, StreamConfig declared) {
+        return StreamEngineKey.isSystemStream(declared.name())
+               ? manager.enforcedConfig(declared.name())
+                        .map(StreamConfig::partitions)
+                        .toResult(new StreamError.StreamConfigNotYetVisible(declared.name()))
+               : new StreamError.StreamConfigNotYetVisible(declared.name()).result();
+    }
+
+    private static int warnWhenNotApplied(StreamConfig declared, int committed) {
+        if (declared.partitions() != committed) {
+            log.warn("Stream '{}' declares {} partitions but the committed stream has {}: the declared count is NOT applied,"
+                    + " this binding routes by {}",
+                     declared.name(),
+                     declared.partitions(),
+                     committed,
+                     committed);
+        }
+
+        return committed;
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

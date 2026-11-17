@@ -29,6 +29,7 @@ import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionContext;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.JoinGenerationGuard;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoverNodes;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes;
@@ -555,6 +556,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                           RabiaEngine.DEFAULT_PHASE_STALL_CHECK,
                                           consensusBridge);
 
+        consensus.preSyncCheck(joinGuard(topologyManager, network, config.joinGenerationWait()));
         network.setProposalRelayMembership(id -> consensus.voterConfiguration()
                                                           .map(voters -> voters.contains(id))
                                                           .or(false));
@@ -1056,6 +1058,24 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// proposal mid-reconnect doesn't time out before the link is rebuilt — otherwise
     /// election cascades retry-loops under chaos.
     TimeSpan DEFAULT_PROPOSAL_TIMEOUT = timeSpan(8).seconds();
+
+    /// The pre-sync check the engine runs on a cluster ACTIVE edge: the wire-generation join guard (#2981 step 6).
+    static Supplier<Promise<Unit>> joinGuard(TopologyObserver topologyManager, ClusterNetwork network, TimeSpan wait) {
+        return () -> JoinGenerationGuard.admit(joinDecisionSet(topologyManager),
+                                               network::peerHelloLabels,
+                                               wait,
+                                               JoinGenerationGuard.ownGeneration(topologyManager.self().labels()));
+    }
+
+    /// The wire-generation join guard decides over the core voters other than this node (#2981 step 6).
+    static Set<NodeId> joinDecisionSet(TopologyObserver topologyManager) {
+        var self = topologyManager.self().id();
+
+        return topologyManager.coreNodes()
+                              .stream()
+                              .filter(id -> !id.equals(self))
+                              .collect(Collectors.toUnmodifiableSet());
+    }
 
     @SuppressWarnings("unchecked")
     private static <C extends Command> Promise<Unit> submitLeaderProposal(RabiaEngine<C> consensus,

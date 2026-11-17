@@ -71,20 +71,19 @@ public class CstTryCatchRule implements CstLintRule {
     }
 
     private static boolean isMethodOrConstructor(Cursor member) {
-        return hasChildOfRule(member, RuleKind.METHOD_DECL) || hasChildOfRule(member, RuleKind.CONSTRUCTOR_DECL)
-               || hasChildOfRule(member, RuleKind.COMPACT_CONSTRUCTOR);
+        return hasChildOfRule(member, RuleKind.METHOD_DECL) || hasChildOfRule(member, RuleKind.CONSTRUCTOR_DECL) || hasChildOfRule(member,
+                                                                                                                                   RuleKind.COMPACT_CONSTRUCTOR);
     }
 
     private static boolean carriesBoundaryMark(Cursor wrapper) {
         return childrenByRule(wrapper, RuleKind.ANNOTATION).stream()
-                                                           .anyMatch(CstTryCatchRule::isBoundaryMark);
+                             .anyMatch(CstTryCatchRule::isBoundaryMark);
     }
 
     private static boolean isBoundaryMark(Cursor annotation) {
         var name = annotationSimpleName(annotation);
 
-        return "Contract".equals(name) || ("SuppressWarnings".equals(name) && MARK_PATTERN.matcher(tokenText(annotation))
-                                                                                         .find());
+        return "Contract".equals(name) || ("SuppressWarnings".equals(name) && MARK_PATTERN.matcher(tokenText(annotation)).find());
     }
 
     private Diagnostic createDiagnostic(Cursor root, Cursor clause, LintContext ctx) {

@@ -69,7 +69,8 @@ public class CstShapeZoneRule implements CstLintRule {
                                      ctx.fileName(),
                                      startLine(mismatch.method()),
                                      startColumn(mismatch.method()),
-                                     "Implementation-zone verb '" + mismatch.verb() + "' heads a " + mismatch.shape()
+                                     "Implementation-zone verb '" + mismatch.verb()
+                                    + "' heads a " + mismatch.shape()
                                     + " orchestration",
                                      "A Zone 3 implementation verb names a multi-step " + mismatch.shape()
                                     + ". Rename to a Zone 2 orchestration verb (load/process/handle/…), or, if it is "

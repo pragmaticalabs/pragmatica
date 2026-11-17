@@ -160,12 +160,12 @@ public interface JpaOperations {
                                                        .getResultList();
 
                                     if (results.isEmpty()) {
-                                    return Option.none();
-                                }
+                                        return Option.none();
+                                    }
 
                                     if (results.size() > 1) {
-                                    throw new jakarta.persistence.NonUniqueResultException("Query returned more than one result");
-                                }
+                                        throw new jakarta.persistence.NonUniqueResultException("Query returned more than one result");
+                                    }
 
                                     return Option.option(results.getFirst());
                                 });

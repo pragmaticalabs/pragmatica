@@ -201,12 +201,12 @@ public class CollectSliceDepsMojo extends AbstractMojo {
             var sliceNames = routesTomlFiles.stream()
                                             .map(path -> {
                                                      for (var dir : resourceDirs) {
-                                                     if (path.startsWith(dir.toPath())) {
-                                                     return dir.toPath()
-                                                               .relativize(path)
-                                                               .toString();
-                                                 }
-                                                 }
+                                                         if (path.startsWith(dir.toPath())) {
+                                                             return dir.toPath()
+                                                                       .relativize(path)
+                                                                       .toString();
+                                                         }
+                                                     }
 
                                                      return path.toString();
                                                  })

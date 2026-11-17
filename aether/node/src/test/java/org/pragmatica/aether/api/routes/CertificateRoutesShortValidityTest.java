@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.Locale;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -83,7 +84,7 @@ class CertificateRoutesShortValidityTest {
                                 .await();
 
             assertTrue(result.isFailure());
-            result.onFailure(cause -> assertTrue(cause.message().toLowerCase().contains("validity"),
+            result.onFailure(cause -> assertTrue(cause.message().toLowerCase(Locale.ROOT).contains("validity"),
                                                   "Failure must mention validity: " + cause.message()));
         }
 
@@ -111,7 +112,7 @@ class CertificateRoutesShortValidityTest {
                                 .await();
 
             assertTrue(result.isFailure());
-            result.onFailure(cause -> assertTrue(cause.message().toLowerCase().contains("scheduler"),
+            result.onFailure(cause -> assertTrue(cause.message().toLowerCase(Locale.ROOT).contains("scheduler"),
                                                   "Failure must mention scheduler: " + cause.message()));
         }
     }

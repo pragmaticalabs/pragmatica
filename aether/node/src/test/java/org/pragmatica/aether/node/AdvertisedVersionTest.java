@@ -44,19 +44,19 @@ class AdvertisedVersionTest {
 
     @Test
     void theTopologyLabelWins_overTheDescriptor() {
-        assertThat(AdvertisedVersion.of(PEER, topologyWith(Map.of(NodeInfo.LABEL_VERSION, "2.0.0")), membershipWith("1.0.0"))).isEqualTo("2.0.0");
+        assertThat(AdvertisedVersion.advertisedVersion(PEER, topologyWith(Map.of(NodeInfo.LABEL_VERSION, "2.0.0")), membershipWith("1.0.0"))).isEqualTo("2.0.0");
     }
 
     /// The bootstrap peer: configured in the topology with no version label; its version came with its handshake into the descriptor.
     @Test
     void aBootstrapPeerWithoutALabel_isKnownByItsMembershipDescriptor() {
-        assertThat(AdvertisedVersion.of(PEER, topologyWith(Map.of()), membershipWith("1.0.0"))).isEqualTo("1.0.0");
-        assertThat(AdvertisedVersion.of(PEER, topologyWith(Map.of(NodeInfo.LABEL_VERSION, " ")), membershipWith("1.0.0"))).isEqualTo("1.0.0");
+        assertThat(AdvertisedVersion.advertisedVersion(PEER, topologyWith(Map.of()), membershipWith("1.0.0"))).isEqualTo("1.0.0");
+        assertThat(AdvertisedVersion.advertisedVersion(PEER, topologyWith(Map.of(NodeInfo.LABEL_VERSION, " ")), membershipWith("1.0.0"))).isEqualTo("1.0.0");
     }
 
     @Test
     void aNodeKnownByNeither_isUnknown() {
-        assertThat(AdvertisedVersion.of(PEER, topologyWith(Map.of()), membershipWith(""))).isEmpty();
-        assertThat(AdvertisedVersion.of(PEER, topologyWith(Map.of()), Option.none())).isEmpty();
+        assertThat(AdvertisedVersion.advertisedVersion(PEER, topologyWith(Map.of()), membershipWith(""))).isEmpty();
+        assertThat(AdvertisedVersion.advertisedVersion(PEER, topologyWith(Map.of()), Option.none())).isEmpty();
     }
 }

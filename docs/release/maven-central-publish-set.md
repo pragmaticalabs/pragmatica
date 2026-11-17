@@ -106,10 +106,12 @@ The limits are cumulative per month, so a second release in the same month needs
 | `aether/resource/db-jooq-r2dbc` | `org.pragmatica-lite.aether:resource-db-jooq-r2dbc` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/db-r2dbc` | `org.pragmatica-lite.aether:resource-db-r2dbc` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/durable-entity` | `org.pragmatica-lite.aether:resource-durable-entity` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
+| `aether/resource/durable-entity-pg` | `org.pragmatica-lite.aether:resource-durable-entity-pg` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/http` | `org.pragmatica-lite.aether:resource-http` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/interceptors` | `org.pragmatica-lite.aether:resource-interceptors` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/json` | `org.pragmatica-lite.aether:resource-json` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/notification` | `org.pragmatica-lite.aether:resource-notification` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
+| `aether/resource/scheduler-pg` | `org.pragmatica-lite.aether:resource-scheduler-pg` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/services` | `org.pragmatica-lite.aether:resource-services` | pom | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/resource/services/artifact-repo` | `org.pragmatica-lite.aether:artifact-repo` | jar | skip | runtime resource provider shipped inside the node; slices use `resource-api` only |
 | `aether/slice` | `org.pragmatica-lite.aether:slice` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
@@ -168,6 +170,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `integrations/http-routing` | `org.pragmatica-lite:http-routing` | jar | publish | compile/runtime dependency of http-routing-adapter |
 | `integrations/json` | `org.pragmatica-lite:json` | pom | publish | parent pom of a published module; a consumer resolves it to read the child (parent of jackson) |
 | `integrations/json/jackson` | `org.pragmatica-lite:jackson` | jar | publish | compile/runtime dependency of http-routing-adapter |
+| `integrations/kafka-client` | `org.pragmatica-lite:kafka-client` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/messaging` | `org.pragmatica-lite:messaging` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/metrics` | `org.pragmatica-lite:metrics` | pom | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/metrics/micrometer` | `org.pragmatica-lite:micrometer` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
@@ -175,6 +178,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `integrations/net/http-client` | `org.pragmatica-lite:http-client` | jar | publish | compile/runtime dependency of jbct-core |
 | `integrations/net/http-server` | `org.pragmatica-lite:http-server` | jar | publish | seed: a library that applications built on Pragmatica consume directly (published rc1-rc3, dropped in rc4 by mistake) |
 | `integrations/net/http-types` | `org.pragmatica-lite:http-types` | jar | publish | compile/runtime dependency of http-routing |
+| `integrations/net/redis` | `org.pragmatica-lite:redis` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/net/smtp` | `org.pragmatica-lite:smtp` | jar | skip | library of the runtime or an optional integration (jpa, micrometer, ...) that no template references |
 | `integrations/net/tcp` | `org.pragmatica-lite:tcp` | jar | publish | closure: compile dependency of `http-server` |
 | `integrations/serialization` | `org.pragmatica-lite:serialization` | pom | publish | parent pom of a published module; a consumer resolves it to read the child (parent of serialization-api) |
@@ -203,6 +207,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `jbct/slice-processor-tests` | `org.pragmatica-lite:slice-processor-tests` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `script-gate` | `org.pragmatica-lite:script-gate` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `terra` | `org.pragmatica-lite:terra` | pom | skip | Terra runtime/build tooling built from this checkout and bundled in executable distributions; Central publication is not enabled in this increment |
+| `terra/conduit-acceptance` | `org.pragmatica-lite:conduit-terra` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
 | `terra/example-apps` | `org.pragmatica-lite:terra-example-apps` | pom | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
 | `terra/example-apps/banking-account` | `org.pragmatica-lite:terra-banking-account` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
 | `terra/example-apps/banking-app` | `org.pragmatica-lite:terra-banking-app` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |

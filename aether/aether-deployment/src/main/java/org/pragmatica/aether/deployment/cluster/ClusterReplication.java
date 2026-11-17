@@ -8,6 +8,7 @@ import java.util.function.Supplier;
 
 import org.pragmatica.aether.config.ReplicationDefaultsConfig;
 import org.pragmatica.aether.config.cluster.ReplicationDefaultsParser;
+import org.pragmatica.aether.config.cluster.TypedRefusal;
 import org.pragmatica.aether.slice.ReplicationContext;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
@@ -57,11 +58,17 @@ public sealed interface ClusterReplication {
     }
 
     /// The typed refusal of an inadmissible cluster config (see [#admissible]).
-    record ClusterEventsFactorsRefused(int desiredCoreCount, Cause cause) implements Cause {
+    record ClusterEventsFactorsRefused(int desiredCoreCount, Cause cause) implements Cause, TypedRefusal {
         @Override
         public String message() {
             return "[replication.cluster_events] confirmation_factor must not exceed the desired core count (" + desiredCoreCount
                  + "), which is system:cluster-events' replication_factor: " + cause.message();
+        }
+
+        /// #686 N3: reachable on the apply route path, so it carries a code like every other definitive refusal there.
+        @Override
+        public String code() {
+            return "ClusterEventsFactorsRefused";
         }
     }
 

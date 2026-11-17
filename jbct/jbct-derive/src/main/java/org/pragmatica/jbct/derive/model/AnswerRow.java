@@ -4,6 +4,7 @@ import java.util.List;
 
 import org.pragmatica.lang.Option;
 
+
 /// One scoped answer row from a `[[answers.qN]]` block (SPEC.md §3).
 ///
 /// Common fields are typed; question-specific fields the entry gate keys on are optional and

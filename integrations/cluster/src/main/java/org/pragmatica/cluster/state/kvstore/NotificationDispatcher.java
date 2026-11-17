@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -112,10 +113,14 @@ final class NotificationDispatcher {
     private final Map<String, Long> slowReportedAt = new ConcurrentHashMap<>();
     private final AtomicLong slowHandlerMaxNanos = new AtomicLong();
     private final AtomicLong closedDropped = new AtomicLong();
+    /// Told, on the delivering thread and in registration order, the revision of each replay item BEFORE its burst is computed and delivered, so
+    /// an install is signalled even when its burst is empty. A LIST, not one slot (#2981 C1): FSM2's install signal and the node lease's revoke
+    /// both listen, and a single slot would let whichever registers second silently displace the other. Appended at wiring.
+    private final List<LongConsumer> replayStartListeners = new CopyOnWriteArrayList<>();
 
-    /// Told, on the delivering thread, the revision of each replay item BEFORE its burst is computed and delivered, so an install is signalled even
-    /// when its burst is empty. Set once at wiring; the default ignores it.
-    private volatile LongConsumer replayStart = _ -> {};
+    /// Told, on the delivering thread, the revision of each replay item AFTER its whole burst is delivered (empty burst included), so a subscriber can
+    /// act on the caught-up delivered view (#3028). Set once at wiring; the default ignores it.
+    private volatile LongConsumer replayEnd = _ -> {};
 
     private final ThreadLocal<Boolean> replaying = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private final ThreadLocal<Option<DeliveryBatch>> delivering = ThreadLocal.withInitial(Option::none);
@@ -175,7 +180,12 @@ final class NotificationDispatcher {
 
     @Contract
     void onReplayStart(LongConsumer listener) {
-        replayStart = listener;
+        replayStartListeners.add(listener);
+    }
+
+    @Contract
+    void onReplayEnd(LongConsumer listener) {
+        replayEnd = listener;
     }
 
     String name() {
@@ -356,7 +366,7 @@ final class NotificationDispatcher {
         replaying.set(batch.replay());
         try {
             if (batch.replay()) {
-                replayStart.accept(batch.revision());
+                tellReplayStart(batch.revision());
             }
 
             var messages = batch.replay()
@@ -364,6 +374,9 @@ final class NotificationDispatcher {
                            : batch.notifications();
 
             messages.forEach(this::deliverOne);
+            if (batch.replay()) {
+                replayEnd.accept(batch.revision());
+            }
         } finally {
             replaying.set(Boolean.FALSE);
             delivering.set(Option.none());
@@ -386,6 +399,22 @@ final class NotificationDispatcher {
         }
 
         store.trackDelivered(message);
+    }
+
+    /// Tells every replay-start listener, in registration order; one that throws a `RuntimeException` is logged and does not skip the
+    /// others (#2981 C1). An `Error` is never contained, as for handlers.
+    @Contract
+    private void tellReplayStart(long revision) {
+        replayStartListeners.forEach(listener -> tellReplayStartIsolated(listener, revision));
+    }
+
+    @Contract
+    private void tellReplayStartIsolated(LongConsumer listener, long revision) {
+        try {
+            listener.accept(revision);
+        } catch (RuntimeException e) {
+            log.warn("KV dispatcher {}: replay-start listener failed at revision {} and was skipped", name, revision, e);
+        }
     }
 
     /// The per-handler catch: the router already isolates a `RuntimeException` per handler (P6); one that escapes the

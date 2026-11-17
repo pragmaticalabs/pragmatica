@@ -3,6 +3,7 @@ package org.pragmatica.jbct.derive.parse;
 import org.pragmatica.config.toml.TomlError;
 import org.pragmatica.lang.Cause;
 
+
 /// Structural errors raised while parsing an answer sheet into the typed model — distinct from
 /// entry-gate findings (SPEC.md §4), which are semantic and reported as diagnostics.
 ///
@@ -78,7 +79,8 @@ public sealed interface SheetError extends Cause {
     /// The unsupported-date case (SPEC.md §3's own example form) is surfaced as a specific,
     /// actionable [UnquotedDate] rather than a generic malformed-sheet error.
     static SheetError fromToml(TomlError error) {
-        return error instanceof TomlError.UnsupportedFeature feature && feature.feature().contains("date")
+        return error instanceof TomlError.UnsupportedFeature feature && feature.feature()
+                                                                               .contains("date")
                ? new UnquotedDate(feature.line())
                : new Malformed(tomlLine(error), error.message());
     }

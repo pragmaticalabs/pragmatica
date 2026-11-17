@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
@@ -415,7 +416,7 @@ public final class StatusRoutes implements RouteSource {
         // own doc instead of only the no-label default happening to already be uppercase.
         var role = info.map(i -> i.labels()
                                   .getOrDefault(ROLE_LABEL, ActivationDirectiveValue.CORE))
-                       .map(String::toUpperCase)
+                       .map(text -> text.toUpperCase(Locale.ROOT))
                        .or(ActivationDirectiveValue.CORE);
 
         return new LiveNodeEntry(nodeId.id(), address, role, swimAlive, reportedState);
@@ -476,13 +477,13 @@ public final class StatusRoutes implements RouteSource {
                           .option()
                           .flatMap(topology::get)
                           .flatMap(info -> Option.option(info.labels().get(ROLE_LABEL)));
-        var role = override.orElse(label).map(String::toUpperCase).or(ActivationDirectiveValue.CORE);
+        var role = override.orElse(label).map(text -> text.toUpperCase(Locale.ROOT)).or(ActivationDirectiveValue.CORE);
         var isLeader = leaderId.map(id::equals).or(false);
 
         return new EnrichedNodeInfo(id, role, isLeader);
     }
 
-    private HealthResponse buildHealthResponse() {
+    HealthResponse buildHealthResponse() {
         var node = nodeSupplier.get();
         var metrics = node.metricsCollector().allMetrics();
         var metricsNodeCount = metrics.size();
@@ -502,7 +503,19 @@ public final class StatusRoutes implements RouteSource {
                                   connectedNodeCount,
                                   metricsNodeCount,
                                   sliceCount,
-                                  BuildInfo.buildInfo().buildTimestamp());
+                                  BuildInfo.buildInfo().buildTimestamp(),
+                                  List.of(storageMaintenanceHealth(node.storageMaintenanceDegradation())));
+    }
+
+    /// #800: storage maintenance of the leader (`/health` is forwarded to the leader, where the passes run; a follower's own
+    /// failures surface in its per-node metrics and operator warnings), DEGRADED while ticks in a row fail or a pass is overdue. Served on
+    /// `/api/health` only and read by neither `status` nor `ready`: maintenance shrinks and warms tiers, so a fault in it must
+    /// not pull a node that still serves; `/health/ready` does not carry it.
+    static ComponentHealth storageMaintenanceHealth(Option<String> degradation) {
+        return degradation.fold(() -> new ComponentHealth("storage-maintenance",
+                                                          "UP",
+                                                          "Storage maintenance ticks complete"),
+                                reason -> new ComponentHealth("storage-maintenance", "DEGRADED", reason));
     }
 
     public LivenessResponse buildLivenessResponse() {

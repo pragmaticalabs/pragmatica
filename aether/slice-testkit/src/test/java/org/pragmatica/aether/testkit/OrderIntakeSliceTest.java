@@ -15,9 +15,9 @@ import org.pragmatica.aether.testkit.fixture.OrderIntake.OrderPlaced;
 import org.pragmatica.aether.testkit.fixture.OrderIntake.PlaceRequest;
 import org.pragmatica.aether.testkit.fixture.OrderIntakeFactory;
 import org.pragmatica.lang.io.TimeSpan;
-import org.testcontainers.DockerClientFactory;
 
 import java.util.Map;
+import org.pragmatica.testing.DockerRequirement;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -65,7 +65,7 @@ class OrderIntakeSliceTest {
 
     @Test
     void place_persistsOrder_throughRealPostgres() {
-        assumeTrue(DockerClientFactory.instance().isDockerAvailable(), "Docker/Colima not available");
+        assumeTrue(DockerRequirement.dockerAvailable(), "Docker/Colima not available");
 
         var inventory = FakeHttpClient.scripted()
                                       .onGet("/stock/XYZ", HttpResults.ok("{\"available\":9}"));

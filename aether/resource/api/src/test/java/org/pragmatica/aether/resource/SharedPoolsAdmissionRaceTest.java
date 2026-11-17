@@ -21,8 +21,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.resource.SharedPoolFixtures.TIMEOUT;
 
 /// An acquire that sees the node-stop flag AFTER its own admission fails with `ProviderClosed`, never a view of a pool
-/// that is closed at once. The interleaving is forced through a map seam: a hook runs right after the acquirer's first
-/// `compute` returned, before its closed re-check.
+/// that is closed at once. The interleavings are forced through seams: a hook runs right after the acquirer's first
+/// `compute` returned, before its closed re-check; or inside `provision`, after the check passed.
 class SharedPoolsAdmissionRaceTest {
     private static final class SeamMap extends ConcurrentHashMap<Object, Object> {
         private final AtomicInteger calls = new AtomicInteger();
@@ -139,5 +139,24 @@ class SharedPoolsAdmissionRaceTest {
 
         assertThat(joined.isFailure()).as("the joiner must fail, got %s", joined).isTrue();
         joined.onFailure(cause -> assertThat(cause).isSameAs(ResourceProvisioningError.ProviderClosed.INSTANCE));
+    }
+
+    /// Node stop begins inside the creator's `provision`, i.e. after its flag check passed and after the drain can see its
+    /// entry. The creator's holder slot is registered first (before `provision` runs), the drain's close after it, so
+    /// the view is made from a still-open pool and discarded by the flag re-read; the close runs afterwards. This is the
+    /// fill-then-close order; the close-then-fill order (#3171) is reached only by the Fray test. The holder must fail
+    /// with `ProviderClosed`, not be handed a view of a pool the drain closes.
+    @Test
+    void closeAllDuringProvisioning_holderFailsWithProviderClosed_notAViewOfAClosedPool() {
+        var acquired = pools.<FakeConnector> acquire("k", "slice-a", factory, () -> {
+            pools.closeAll();
+
+            return provision();
+        }, "label").await(TIMEOUT);
+
+        assertThat(acquired.isFailure()).as("the holder must fail, got %s", acquired).isTrue();
+        acquired.onFailure(cause -> assertThat(cause).isSameAs(ResourceProvisioningError.ProviderClosed.INSTANCE));
+        assertThat(closes.get()).as("the pool the drain captured closes exactly once").isEqualTo(1);
+        assertThat(pools.size()).isZero();
     }
 }

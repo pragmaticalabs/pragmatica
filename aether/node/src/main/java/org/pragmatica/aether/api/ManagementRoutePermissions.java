@@ -79,6 +79,7 @@ public sealed interface ManagementRoutePermissions {
         return List.of(ManagementRoute.CLUSTER_AWAIT_QUIESCED,
                        ManagementRoute.CLUSTER_CONFIG_APPLY,
                        ManagementRoute.CLUSTER_SCALE,
+                       ManagementRoute.CLUSTER_NODE_IDS_RESERVE,
                        ManagementRoute.CLUSTER_CIRCUIT_BREAKER_RESET,
                        ManagementRoute.CLUSTER_AUTO_HEAL_ENABLE,
                        ManagementRoute.CLUSTER_AUTO_HEAL_DISABLE,

@@ -15,7 +15,7 @@ import org.pragmatica.lang.Unit;
 
 @Slice
 public interface Events {
-    Topic<String> EVENTS = Topic.of("events", String.class);
+    Topic<String> EVENTS = Topic.topic("events", String.class);
 
     @Retention(RetentionPolicy.RUNTIME)
     @Target(ElementType.PARAMETER)

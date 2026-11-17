@@ -7,15 +7,24 @@ package org.pragmatica.aether.node.deployment;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.Executor;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.LongConsumer;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
+import org.pragmatica.aether.slice.kvstore.ObservedSliceFeed;
+import org.pragmatica.aether.slice.kvstore.ObservedSliceListener;
+import org.pragmatica.aether.slice.kvstore.SliceRowSource;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterState;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
@@ -100,6 +109,7 @@ public final class DeploymentWiring {
         bindings.put("B13.StopDrain", nodeTarget("fsm2:Fsm2System.drainNode"));
         bindings.put("B16.Seams", engineTarget("fsm2:SeamPoller"));
         bindings.put("B20.LineageMint", "marker=" + engine);
+        bindings.put("B21.SliceRows", nodeTarget("fsm2:SliceRowSource.observed"));
         this.routes = Fsm2Routes.fsm2Routes(routeTargets(node, this::deliverToNode, this::deliverToCluster));
     }
 
@@ -219,6 +229,20 @@ public final class DeploymentWiring {
         return engine;
     }
 
+    /// The committed model the FSM2 cluster FSM holds, for the management API's community count (#3159): none under LEGACY; under FSM2 a read
+    /// of the interpreter's published state at answer time, a dormant state while the system is not attached.
+    public Option<Supplier<ClusterState>> clusterModel() {
+        return isFsm2()
+               ? Option.some(this::clusterState)
+               : Option.none();
+    }
+
+    private ClusterState clusterState() {
+        return system.map(fsm2 -> fsm2.clusterInterpreter()
+                                      .state())
+                     .or(ClusterState.initial());
+    }
+
     public boolean isFsm2() {
         return engine == DeploymentEngine.FSM2;
     }
@@ -230,6 +254,15 @@ public final class DeploymentWiring {
     /// The admission seam the routes, the seam poller and the FSM2 system read tokens and incarnations through (delta 7).
     public AdmissionSeam admissions() {
         return admissions;
+    }
+
+    /// B21 (deployment state machine spec 1.6.1): where a reader that scans the store reads the per-node slice rows. The `NodeArtifactKey`
+    /// rows under LEGACY; under FSM2 the current `SliceObservedKey` rows, stale only when the seam's token for the node is known and differs
+    /// from the row's (C8: an unknown token reads current).
+    public SliceRowSource sliceRows() {
+        return isFsm2()
+               ? SliceRowSource.observed(admissions::tokenOf)
+               : SliceRowSource.legacy();
     }
 
     // -- the FSM2 engine -------------------------------------------------------------------------------------------
@@ -263,8 +296,8 @@ public final class DeploymentWiring {
                : recorded(point, LEGACY_TARGET, target);
     }
 
-    /// A legacy activation hook (B2, B3, B7): the legacy target, run only while the engine marker guard is open. The guard is inert under LEGACY
-    /// unless a mismatching marker is committed.
+    /// A legacy activation hook (B2, B3, B4; B7 is [#legacyGatedLeaderToggle]): the legacy target, run only while the engine marker guard is open.
+    /// The guard is inert under LEGACY unless a mismatching marker is committed.
     public <T> Consumer<T> legacyGated(String point, Consumer<T> target) {
         return isFsm2()
                ? recorded(point, DROPPED_TARGET, dropped(point))
@@ -278,6 +311,29 @@ public final class DeploymentWiring {
         return isFsm2()
                ? recorded(point, DROPPED_TARGET, () -> dropCounter(point).increment())
                : recorded(point, LEGACY_TARGET + "+gate", () -> guard.whenOpen(point, target));
+    }
+
+    /// The legacy leader toggle (B7), gated like [#legacyGated(String, Consumer)] except for what a parked election does (#3262, the #3253 shape
+    /// on the legacy path): a change that makes this node the leader is parked behind what is already parked under `point`, because a parked
+    /// leave followed by a parked election must reach the target as both, in order (`deactivate`, then `activate`, the re-incarnation), while an
+    /// Active legacy cluster FSM ignores the `activate` alone. A change away from this node still replaces the whole parked sequence (a later
+    /// leave supersedes a parked election).
+    public Consumer<LeaderNotification.LeaderChange> legacyGatedLeaderToggle(String point,
+                                                                             Consumer<LeaderNotification.LeaderChange> target) {
+        return isFsm2()
+               ? recorded(point, DROPPED_TARGET, dropped(point))
+               : recorded(point, LEGACY_TARGET + "+gate+toggle", change -> gateLeaderToggle(point, target, change));
+    }
+
+    @Contract
+    private void gateLeaderToggle(String point,
+                                  Consumer<LeaderNotification.LeaderChange> target,
+                                  LeaderNotification.LeaderChange change) {
+        if (change.localNodeIsLeader()) {
+            guard.whenOpenAfterParked(point, () -> target.accept(change));
+        } else {
+            guard.whenOpen(point, () -> target.accept(change));
+        }
     }
 
     private <T> Consumer<T> dropped(String point) {
@@ -322,6 +378,53 @@ public final class DeploymentWiring {
     private void recordNodeRoutes() {
         List.of("SliceDesiredKey", "SliceObservedKey", "SliceTargetKey", "VersionRoutingKey").forEach(family -> bindings.put("B1.node." + family,
                                                                                                                              "fsm2:Fsm2Routes"));
+    }
+
+    /// B21 (deployment state machine spec 1.6.1, R-1.6.6): the routes of the readers outside the two FSMs that follow the observed rows. Under
+    /// FSM2, on a core and on a worker alike, the `SliceObservedKey` puts and removes feed the `state` listeners through a state feed and the
+    /// `traffic` listeners through a traffic feed, which also follows the `NodeDepartureKey` records; both read tokens through the admission
+    /// seam. Under LEGACY nothing is registered here: those readers keep their `NodeArtifactKey` routes, each bound through [#legacy].
+    @Contract
+    public void registerReaders(KVNotificationRouter.Builder<AetherKey, AetherValue> builder,
+                                List<ObservedSliceListener> state,
+                                List<ObservedSliceListener> traffic) {
+        if (isFsm2()) {
+            registerObservedFeeds(builder,
+                                  ObservedSliceFeed.stateFeed(admissions::tokenOf, state),
+                                  ObservedSliceFeed.trafficFeed(admissions::tokenOf, traffic),
+                                  readerNames(state),
+                                  readerNames(traffic));
+        }
+    }
+
+    private void registerObservedFeeds(KVNotificationRouter.Builder<AetherKey, AetherValue> builder,
+                                       ObservedSliceFeed stateFeed,
+                                       ObservedSliceFeed trafficFeed,
+                                       String stateReaders,
+                                       String trafficReaders) {
+        builder.onPut(SliceObservedKey.class, stateFeed::onObservedPut)
+               .onRemove(SliceObservedKey.class, stateFeed::onObservedRemove)
+               .onPut(SliceObservedKey.class, trafficFeed::onObservedPut)
+               .onRemove(SliceObservedKey.class, trafficFeed::onObservedRemove)
+               .onPut(NodeDepartureKey.class, trafficFeed::onDeparturePut)
+               .onRemove(NodeDepartureKey.class, trafficFeed::onDepartureRemove);
+        bindings.put("B21.readers.state.SliceObservedKey", "fsm2:ObservedSliceFeed.stateFeed" + stateReaders);
+        bindings.put("B21.readers.traffic.SliceObservedKey", "fsm2:ObservedSliceFeed.trafficFeed" + trafficReaders);
+        bindings.put("B21.readers.traffic.NodeDepartureKey", "fsm2:ObservedSliceFeed.trafficFeed" + trafficReaders);
+    }
+
+    /// The readers a feed hands rows to, by type, so the baseline pins WHICH readers `AetherNode` wired and a dropped one is a changed row.
+    private static String readerNames(List<ObservedSliceListener> readers) {
+        return readers.stream()
+                      .map(DeploymentWiring::typeName)
+                      .collect(Collectors.joining(",", "[", "]"));
+    }
+
+    /// The class name without its package; unlike `getSimpleName` it is not empty for an anonymous class.
+    private static String typeName(Object reader) {
+        var name = reader.getClass().getName();
+
+        return name.substring(name.lastIndexOf('.') + 1);
     }
 
     /// B2, B7, B8, B9: the message routes the FSM2 engine consumes. Under LEGACY none; for a worker the quorum edge (B2) only.
@@ -472,6 +575,12 @@ public final class DeploymentWiring {
         system.onPresent(Fsm2System::onStateRestored);
     }
 
+    /// C3 (#3028): the registrar through which the legacy node manager subscribes to the KV store's replay-end signal: bound under LEGACY, a recorded
+    /// drop under FSM2.
+    public Consumer<LongConsumer> replayEnd(KVStore<AetherKey, AetherValue> kvStore) {
+        return target -> legacyBinding("C3.ndm.ReplayEnd", () -> kvStore.onReplayEnd(target));
+    }
+
     /// A one-time legacy registration (B6, the callbacks the NDM is handed): run now under LEGACY, not run under FSM2. Recorded either way; not
     /// an event, so nothing is counted as dropped.
     @Contract
@@ -482,6 +591,14 @@ public final class DeploymentWiring {
             bindings.put(point, LEGACY_TARGET);
             registration.run();
         }
+    }
+
+    // -- 4a sources (F5b, phase-3 design 8.2 D-10) ------------------------------------------------------------------
+    /// B22: a source read on demand: FSM2's observed rows under FSM2, the legacy source under LEGACY.
+    public <T> Supplier<T> source(String point, Supplier<T> fsm2, Supplier<T> legacy) {
+        return isFsm2()
+               ? recorded(point, "fsm2:observed", fsm2)
+               : recorded(point, LEGACY_TARGET, legacy);
     }
 
     /// B17 (Q8): whether the blueprint publish batch writes the apply record: on under FSM2, off under LEGACY.
@@ -570,14 +687,31 @@ public final class DeploymentWiring {
     /// Under LEGACY the drain is a no-op and the order is the one the node always had.
     ///
     /// #2688: `delivered` is taken right after PASSIVE is routed and resolves once the reactions that edge queued (the `LeaderChange` the FSM routes onto
-    /// a react executor) have run; the quiesce, which would drop them, waits for it. The returned promise resolves after the quiesce. The quiesce is
-    /// itself the pooled step, started once `delivered` has resolved, so the quiesce runs on a pooled
-    /// thread in every ordering (`delivered` resolved before this call or after it), never on the thread that resolved `delivered` and never on the
-    /// caller. A continuation the caller chains on the returned promise runs on that pooled thread, or on the caller's own thread if the quiesce has
-    /// already finished, and never on the thread that resolved `delivered`: that is the react executor whose reactions it waited for, or the shared timeout scheduler when the caller bounded the wait, and the node's
-    /// teardown chained here blocks (the final cursor commits are awaited, bounded). Promise continuations run inline on the resolving thread, so a
-    /// hop that only started a pooled task and then mapped its result could still run the quiesce inline when the task finished first (#2806).
+    /// a react executor) have run; the quiesce, which would drop them, waits for it. The returned promise resolves after the quiesce.
+    ///
+    /// Threads, per step (#2806, #3002):
+    /// - The quiesce is a pooled task started once `delivered` has resolved, so it runs on a pooled virtual thread in every ordering (`delivered`
+    ///   resolved before this call or after it), never on the thread that resolved `delivered` and never on the caller.
+    /// - The returned promise is resolved ONLY by a task on the async executor ([Promise#continueOn()]), after the quiesce. A continuation the caller
+    ///   chains on it therefore runs on that executor's thread, or on the caller's own thread if the hop has already finished when it is attached,
+    ///   and never on the thread that resolved `delivered`: that is the react executor whose reactions it waited for, or the shared timeout
+    ///   scheduler when the caller bounded the wait, and the node's teardown chained here blocks (the final cursor commits are awaited, bounded).
+    ///   Without the hop, the `flatMap` into the pooled quiesce resolved the returned promise inline on the thread that resolved `delivered`
+    ///   whenever the quiesce finished before `flatMap` looked at it (#3002).
     public Promise<Unit> leaveQuorum(Runnable routePassive, Supplier<Promise<Unit>> delivered, Runnable quiesce) {
+        return leftQuorum(routePassive, delivered, quiesce).continueOn();
+    }
+
+    /// Test seam (#3002): `hop` runs the task that resolves the returned promise ([Promise#continueOn(Executor)]); production uses the async
+    /// executor. A test executor that finishes the task before `execute` returns forces the "already resolved when attached" ordering.
+    Promise<Unit> leaveQuorum(Runnable routePassive,
+                              Supplier<Promise<Unit>> delivered,
+                              Runnable quiesce,
+                              Executor hop) {
+        return leftQuorum(routePassive, delivered, quiesce).continueOn(hop);
+    }
+
+    private Promise<Unit> leftQuorum(Runnable routePassive, Supplier<Promise<Unit>> delivered, Runnable quiesce) {
         routePassive.run();
         var reactionsRun = delivered.get();
 

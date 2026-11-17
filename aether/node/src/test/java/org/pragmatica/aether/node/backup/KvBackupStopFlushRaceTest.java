@@ -106,11 +106,17 @@ class KvBackupStopFlushRaceTest {
     /// A client-side pre-push hook that stamps the time and then moves the remote head (an empty commit from a scratch clone) just before git sends
     /// the push: every push is a genuine lost race, against a head that DID move, for ever.
     private static void installRacingHook(Node node, String remote, Path stamps) {
+        installRacingHook(node, remote, stamps, 0);
+    }
+
+    /// The same hook whose stamp clock reads `skewMillis` ahead of the test's clock: the wall clock of a CI VM is not monotonic (#3053), so a stamp is
+    /// only ever a hint of the order of the pushes.
+    private static void installRacingHook(Node node, String remote, Path stamps, long skewMillis) {
         node.repository().prepare().onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
         var hook = node.repository().dir().resolve(".git").resolve("hooks").resolve("pre-push");
 
         write(hook,
-              "#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE\ndate +%s%3N >> '" + stamps + "'\n{ date +%s%3N; ps -eo pid,ppid,stat,etime,args; } >> '" + stamps + ".ctx' 2>&1\nD=$(mktemp -d)\n"
+              "#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE\necho $(( $(date +%s%3N) + " + skewMillis + " )) >> '" + stamps + "'\n{ date +%s%3N; ps -eo pid,ppid,stat,etime,args; } >> '" + stamps + ".ctx' 2>&1\nD=$(mktemp -d)\n"
               + "git clone --quiet --branch backup '" + remote + "' \"$D/c\" && git -C \"$D/c\" -c user.email=s@x -c user.name=racer commit --quiet --allow-empty -m race"
               + " && git -C \"$D/c\" push --quiet origin backup\nrm -rf \"$D\"\nexit 0\n");
     }
@@ -265,18 +271,29 @@ class KvBackupStopFlushRaceTest {
     /// the production one (`nanoTime`), so the bound has no margin to guess.
     @Test
     void reDecide_runsUntilTheProductionDeadline_andPushesNothingAfterTheStop() throws Exception {
+        runsUntilTheProductionDeadline(0);
+    }
+
+    /// The same run with the hook's stamps 3 s ahead of the test's clock (what a non-monotonic VM clock does to a stamp, #3053): the order of the
+    /// pushes against the stop is read from the count of the pushes at the return of the stop, not from a clock.
+    @Test
+    void reDecide_pushesNothingAfterTheStop_whateverTheStampClockReads() throws Exception {
+        runsUntilTheProductionDeadline(3_000);
+    }
+
+    private void runsUntilTheProductionDeadline(long skewMillis) throws Exception {
         var remote = bareRemote(temp.resolve("remote.git"));
         var stamps = temp.resolve("push.stamps");
         var node = node(remote, "node", 2);
 
         seedHead(remote);
-        installRacingHook(node, remote, stamps);
+        installRacingHook(node, remote, stamps, skewMillis);
         var startedEpoch = System.currentTimeMillis();
         var startedNanos = System.nanoTime();
 
         await(node.service().stopFlushed(TimeSpan.timeSpan(10).seconds()));
+        var pushesAtTheStop = Files.readAllLines(stamps).size();
         var returnedAfterMs = (System.nanoTime() - startedNanos) / 1_000_000;
-        var stoppedEpoch = System.currentTimeMillis();
 
         Thread.sleep(3_000);
         var lines = Files.readAllLines(stamps);
@@ -286,8 +303,9 @@ class KvBackupStopFlushRaceTest {
         assertThat(lines).as("control: it did decide again, every push being a lost race").hasSizeGreaterThanOrEqualTo(2);
         assertThat(returnedAfterMs - last).as("and it was still deciding at the end: the last decision is within two of its own longest passes (+500 ms) of the return")
                                           .isLessThanOrEqualTo(2 * longestGap(lines) + 500);
-        assertThat(last).as("nothing is pushed after the stop returned; stop returned at " + (stoppedEpoch - startedEpoch) + " ms, stamps " + lines + ", at the last stamp:\n" + lastContext(stamps))
-                        .isLessThanOrEqualTo(stoppedEpoch - startedEpoch + 200);
+        assertThat(lines).as("nothing is pushed after the stop returned: " + pushesAtTheStop + " pushes had started at the return, stop returned at " + returnedAfterMs
+                           + " ms, at the last stamp:\n" + lastContext(stamps))
+                         .hasSize(pushesAtTheStop);
         assertThat(node.warnings()).extracting(BackupWarning::code).containsExactly(Code.BACKUP_STOP_FLUSH_FAILED);
     }
 

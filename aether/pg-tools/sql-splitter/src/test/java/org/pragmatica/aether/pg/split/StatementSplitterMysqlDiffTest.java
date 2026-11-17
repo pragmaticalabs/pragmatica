@@ -7,6 +7,7 @@ package org.pragmatica.aether.pg.split;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testing.RequiresDocker;
 import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -21,8 +22,6 @@ import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
-import static org.testcontainers.DockerClientFactory.instance;
 
 /// Differential test that proves [StatementSplitter] against a real MySQL engine.
 ///
@@ -49,8 +48,9 @@ import static org.testcontainers.DockerClientFactory.instance;
 /// `CREATE DATABASE`), so each object is uniquely named to keep cases isolated; the suite drops
 /// every case object after each test via [#dropCaseObjects].
 ///
-/// If Docker is unavailable the whole class is skipped via [#dockerAvailable] rather than failing.
-@Testcontainers(disabledWithoutDocker = true)
+/// If Docker is unavailable the whole class is skipped via [RequiresDocker] rather than failing.
+@RequiresDocker
+@Testcontainers
 class StatementSplitterMysqlDiffTest {
     private static final DialectSpec MYSQL = Dialects.MYSQL;
 
@@ -58,17 +58,7 @@ class StatementSplitterMysqlDiffTest {
     private static final MySQLContainer<?> MY_SQL = new MySQLContainer<>("mysql:8.0");
 
     @BeforeAll
-    static void requireDocker() {
-        assumeTrue(dockerAvailable(), "Docker is not available — skipping real-MySQL differential test");
-    }
-
-    /// Whether a Docker daemon is reachable, probed without throwing so the suite skips cleanly.
-    private static boolean dockerAvailable() {
-        try {
-            return instance().isDockerAvailable();
-        } catch (Throwable ignored) {
-            return false;
-        }
+    static void awaitReady() {
     }
 
     // ----- corpus: each script exercises a distinct MySQL split hazard ----------------
@@ -335,7 +325,7 @@ class StatementSplitterMysqlDiffTest {
     /// test ran. Best-effort: the shared container is discarded after the class anyway.
     @AfterEach
     void dropCaseObjects() {
-        if (!dockerAvailable() || !MY_SQL.isRunning()) {
+        if (!MY_SQL.isRunning()) {
             return;
         }
         try (var connection = openConnection();

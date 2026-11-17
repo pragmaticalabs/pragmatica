@@ -2,6 +2,7 @@ package org.pragmatica.http.routing;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Stream;
 
@@ -156,7 +157,7 @@ public interface StaticFileRouteSource extends RouteSource {
             return DEFAULT_CONTENT_TYPE;
         }
 
-        var extension = path.substring(lastDot).toLowerCase();
+        var extension = path.substring(lastDot).toLowerCase(Locale.ROOT);
 
         return CONTENT_TYPES.getOrDefault(extension, DEFAULT_CONTENT_TYPE);
     }

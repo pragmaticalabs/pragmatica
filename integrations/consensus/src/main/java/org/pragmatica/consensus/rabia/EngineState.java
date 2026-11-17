@@ -25,8 +25,10 @@ import java.util.concurrent.ScheduledFuture;
 /// Membership-architecture-spec §4.5 / §7.3: `Paused` is the canonical quorum-loss state.
 /// Distinct from `Stopped` — Paused retains in-memory protocol state (phases map,
 /// currentPhase, pendingBatches, lockedValue, correlationMap, bufferedDecisions). On quorum
-/// return (`ESTABLISHED`), resume to `Idle` without a state reset. The only path to a full
-/// reset is the explicit `reconfigure(ClusterConfig)` API; quorum-loss never resets.
+/// return (`ESTABLISHED`), an engine that had activated resumes to `Idle` without a state reset;
+/// an engine paused before it activated (from `Syncing`) resumes into a fresh sync round (#3211).
+/// The only path to a full reset is the explicit `reconfigure(ClusterConfig)` API; quorum-loss
+/// never resets.
 sealed interface EngineState {
     record Stopped() implements EngineState {}
 
@@ -41,8 +43,15 @@ sealed interface EngineState {
     /// Paused: quorum is currently unavailable. All in-memory protocol state is retained;
     /// inbound `Decision` messages are still applied so the engine catches up transparently
     /// when quorum returns. New `apply()` submissions are rejected. This state is exited
-    /// only by a quorum `ESTABLISHED` notification (→ `Idle`) or by `reconfigure` (→ full reset).
-    record Paused() implements EngineState {}
+    /// only by a quorum `ESTABLISHED` notification or by `reconfigure` (→ full reset).
+    ///
+    /// `activated` records whether the engine had completed synchronisation (adoption or the restart
+    /// self-vouch, and the participation record) before the pause. Only an activated engine resumes
+    /// to `Idle`/`Observing`; one paused from `Syncing` resumes into `Syncing` (#3211, #2287), so it
+    /// cannot vote before it has adopted state by the same path an uninterrupted sync takes. The pause
+    /// persists nothing in that case: an unsynchronised node's live state is not authoritative, and saving it
+    /// would overwrite a durable persisted phase with the empty restart state.
+    record Paused(boolean activated) implements EngineState {}
 
     default boolean isActive() {
         return this instanceof Idle || this instanceof InPhase;

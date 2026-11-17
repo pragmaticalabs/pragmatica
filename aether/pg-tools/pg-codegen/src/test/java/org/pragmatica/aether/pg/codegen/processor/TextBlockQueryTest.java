@@ -40,7 +40,7 @@ class TextBlockQueryTest {
                 @PgSql
                 public interface TextBlockRepo {
 
-                    record UserRow(long id, String name, String email) {}
+                    record UserRow(long id, String name, String email) { static UserRow userRow(long id, String name, String email) { return new UserRow(id, name, email); } }
 
                     @Query(""\"
                         SELECT id, name, email
@@ -84,7 +84,7 @@ class TextBlockQueryTest {
                 @PgSql
                 public interface LiteralRepo {
 
-                    record UserRow(long id, String name, String email) {}
+                    record UserRow(long id, String name, String email) { static UserRow userRow(long id, String name, String email) { return new UserRow(id, name, email); } }
 
                     @Query(""\"
                         SELECT id, name, email
@@ -125,7 +125,7 @@ class TextBlockQueryTest {
                 @PgSql
                 public interface TbRepo {
 
-                    record UserRow(long id, String name, String email) {}
+                    record UserRow(long id, String name, String email) { static UserRow userRow(long id, String name, String email) { return new UserRow(id, name, email); } }
 
                     @Query(""\"
                         SELECT id, name, email
@@ -148,7 +148,7 @@ class TextBlockQueryTest {
                 @PgSql
                 public interface ConcatRepo {
 
-                    record UserRow(long id, String name, String email) {}
+                    record UserRow(long id, String name, String email) { static UserRow userRow(long id, String name, String email) { return new UserRow(id, name, email); } }
 
                     @Query("SELECT id, name, email "
                          + "FROM users "

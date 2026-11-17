@@ -12,7 +12,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -304,11 +306,183 @@ class EngineMarkerGuardTest {
 
             assertThat(activations).as("level-triggered: the latest wins").containsExactly("deactivate");
         }
+
+        @Test
+        void aParkedActivation_keepsAParkedDeactivationAheadOfIt_soTheFsmReincarnates() {
+            var guard = guard(DeploymentEngine.FSM2);
+
+            marker = Option.some(FSM2_MARKER);
+            incarnation = true;
+            guard.evaluate();
+            marker = Option.none();
+            incarnation = false;
+            guard.evaluate();
+            assertThat(guard.state()).isEqualTo(State.WAITING);
+
+            guard.whenOpen("leader", () -> activations.add("deactivate"));
+            guard.whenOpenAfterParked("leader", () -> activations.add("activate"));
+            marker = Option.some(FSM2_MARKER);
+            incarnation = true;
+            guard.evaluate();
+
+            assertThat(activations).as("#3253: Deactivate then Activate, in order").containsExactly("deactivate", "activate");
+        }
+
+        @Test
+        void aLaterDeactivation_supersedesAParkedDeactivateActivatePair() {
+            var guard = guard(DeploymentEngine.FSM2);
+
+            guard.whenOpen("leader", () -> activations.add("deactivate-1"));
+            guard.whenOpenAfterParked("leader", () -> activations.add("activate"));
+            guard.whenOpen("leader", () -> activations.add("deactivate-2"));
+            marker = Option.some(FSM2_MARKER);
+            incarnation = true;
+            guard.evaluate();
+
+            assertThat(activations).as("level-triggered: the latest Deactivate wins").containsExactly("deactivate-2");
+        }
+
+        @Test
+        void aParkedActivation_withNothingParkedUnderTheName_runsAlone() {
+            var guard = guard(DeploymentEngine.FSM2);
+
+            guard.whenOpenAfterParked("leader", () -> activations.add("activate"));
+            marker = Option.some(FSM2_MARKER);
+            incarnation = true;
+            guard.evaluate();
+
+            assertThat(activations).containsExactly("activate");
+        }
+
+        /// Every closed-guard Deactivate/Activate sequence of length 1-4 under one name, a second name parked at every position (or not at all),
+        /// from both FSM start states: the FSM outcome of what runs on open equals the outcome of the sequence applied directly, and the second
+        /// name's action runs exactly once. Red when: `whenOpenAfterParked` stops keeping the parked sequence, or appends in the wrong place.
+        @Test
+        void everyParkedSequenceUpToFour_reachesTheFsmOutcomeOfTheDirectSequence() {
+            var mismatches = new ArrayList<String>();
+            int cases = 0;
+
+            for (var sequence : allSequences(4)) {
+                for (int other = -1; other <= sequence.length(); other++) {
+                    for (var start : List.of(new FsmModel(true, 1), new FsmModel(false, 1))) {
+                        cases++;
+                        parkAndOpen(sequence, other).onPresent(mismatches::add);
+                        var ranOnOpen = activations.stream().filter(s -> !s.equals("E")).collect(Collectors.joining());
+                        var expected = start.run(sequence).verdict(start);
+                        var actual = start.run(ranOnOpen).verdict(start);
+                        long entries = activations.stream().filter("E"::equals).count();
+
+                        if (!expected.equals(actual) || entries != (other >= 0 ? 1 : 0)) {
+                            mismatches.add(sequence + " other@" + other + " start=" + start + " ran=" + activations + " expected=" + expected
+                                           + " actual=" + actual);
+                        }
+                    }
+                }
+            }
+            assertThat(cases).as("cases enumerated").isEqualTo(316);
+            assertThat(mismatches).as("sequences whose parked run differs from the direct run (of %d)", cases).isEmpty();
+        }
+
+        /// Drain order across names is the order each name was first parked, and a re-put under a name keeps that position.
+        @Test
+        void drainOrder_isFirstParkedPosition_andARePutKeepsIt() {
+            var guard = guard(DeploymentEngine.FSM2);
+
+            guard.whenOpen("leader", () -> activations.add("D1"));
+            guard.whenOpen("entry", () -> activations.add("E1"));
+            guard.whenOpenAfterParked("leader", () -> activations.add("A1"));
+            guard.whenOpen("heal", () -> activations.add("H1"));
+            guard.whenOpen("entry", () -> activations.add("E2"));
+            marker = Option.some(FSM2_MARKER);
+            incarnation = true;
+            guard.evaluate();
+
+            assertThat(activations).containsExactly("D1", "A1", "E2", "H1");
+        }
+
+        /// Parks the sequence under "leader" with the "entry" action at position `other` (-1: none), then opens the gate; `activations` is cleared first.
+        private Option<String> parkAndOpen(String sequence, int other) {
+            var guard = guard(DeploymentEngine.FSM2);
+
+            marker = Option.none();
+            incarnation = false;
+            activations.clear();
+            guard.evaluate();
+            for (int i = 0; i < sequence.length(); i++) {
+                parkEntryAt(guard, i, other);
+                parkLeaderAction(guard, sequence.charAt(i));
+            }
+            parkEntryAt(guard, sequence.length(), other);
+            marker = Option.some(FSM2_MARKER);
+            incarnation = true;
+            guard.evaluate();
+
+            return guard.isOpen() ? Option.none() : Option.some("did not open: " + sequence);
+        }
+
+        private void parkEntryAt(EngineMarkerGuard guard, int position, int other) {
+            if (position == other) {
+                guard.whenOpen("entry", () -> activations.add("E"));
+            }
+        }
+
+        /// Mirrors Fsm2System.onLeaderChange: Activate parks with whenOpenAfterParked, Deactivate with whenOpen.
+        private void parkLeaderAction(EngineMarkerGuard guard, char input) {
+            if (input == 'A') {
+                guard.whenOpenAfterParked("leader", () -> activations.add("A"));
+            } else {
+                guard.whenOpen("leader", () -> activations.add("D"));
+            }
+        }
+
+        private List<String> allSequences(int maxLength) {
+            var all = new ArrayList<String>();
+            var frontier = List.of("");
+
+            for (int length = 1; length <= maxLength; length++) {
+                var next = new ArrayList<String>();
+
+                for (var sequence : frontier) {
+                    next.add(sequence + "D");
+                    next.add(sequence + "A");
+                }
+                all.addAll(next);
+                frontier = next;
+            }
+            return all;
+        }
+    }
+
+    /// The ClusterFsm activation rule (whileDormant / whileActive / whileRebuilding): Dormant + Activate mints a new incarnation; Dormant +
+    /// Deactivate is dropped; Active + Deactivate goes Dormant; Active + Activate is ignored. Rebuilding behaves as Active for both.
+    private record FsmModel(boolean active, int incarnation) {
+        FsmModel step(char input) {
+            if (input == 'D') {
+                return new FsmModel(false, incarnation);
+            }
+
+            return active ? this : new FsmModel(true, incarnation + 1);
+        }
+
+        FsmModel run(String inputs) {
+            var fsm = this;
+
+            for (var input : inputs.toCharArray()) {
+                fsm = fsm.step(input);
+            }
+            return fsm;
+        }
+
+        /// Observable class: final activity, and whether the incarnation moved at all (a Dormant FSM's next Activate always mints
+        /// last + 1, so the number is observable only while Active).
+        String verdict(FsmModel start) {
+            return active ? "Active/" + (incarnation > start.incarnation ? "reincarnated" : "same") : "Dormant";
+        }
     }
 
     @Nested
     class Actions {
-        /// A running action never makes a deciding thread wait: the guard sits on the default (LEGACY) path of every gated hook, and `evaluate`
+        /// With no drained work pending, a running action never makes a deciding thread wait: the guard sits on the default (LEGACY) path of every gated hook, and `evaluate`
         /// is called from the KV dispatch, so it must not queue behind legacy work.
         @Test
         void evaluate_neverWaitsForARunningAction() throws Exception {
@@ -442,6 +616,274 @@ class EngineMarkerGuardTest {
             assertThat(inversions).as("older parked activation ran after a newer admitted one, in %d runs that reached the interleaving", aWon).isZero();
         }
 
+        /// The window between `takeDrained` and the recursive decision: a drained action closes the gate and re-entrantly parks a Deactivate
+        /// under the name before the recursive decision for a `whenOpenAfterParked` Activate. The Activate must be appended behind the parked
+        /// Deactivate (#3253 inside the window). Red when: the recursive `runAdmitted` is called with `keepParked=false` (the Deactivate is
+        /// erased, so a drained FSM that is Active again sees only the ignored Activate).
+        @Test
+        @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+        void m5Window_reentrantParkBeforeTheRecursiveDecision_keepsTheDeactivateAhead() throws Exception {
+            var marker = new AtomicReference<>(Option.some(FSM2_MARKER));
+            var guard = sharedMarkerGuard(marker);
+            var order = Collections.synchronizedList(new ArrayList<String>());
+            var openers = new CopyOnWriteArrayList<Thread>();
+
+            guard.evaluate();
+            guard.whenOpen("hold", () -> {
+                close(guard, marker);
+                guard.whenOpen("leader", () -> order.add("D_old"));
+                guard.whenOpenAfterParked("leader", () -> {
+                    order.add("A_mid");
+                    close(guard, marker);
+                    guard.whenOpen("leader", () -> order.add("D2"));
+                });
+                marker.set(Option.some(FSM2_MARKER));
+                openers.add(Thread.ofPlatform().start(guard::evaluate));
+                awaitOpen(guard);
+                guard.whenOpenAfterParked("leader", () -> order.add("A_new"));
+            });
+            assertThat(guard.isOpen()).as("the gate is closed again after the drained work").isFalse();
+            marker.set(Option.some(FSM2_MARKER));
+            guard.evaluate();
+            for (var opener : openers) {
+                opener.join(10_000);
+            }
+
+            assertThat(order).as("the window was reached: D_old and A_mid ran from the drain, then D2 was parked re-entrantly")
+                             .startsWith("D_old", "A_mid");
+            assertThat(order).as("A_mid made the FSM Active again, so D2 then A_new must re-incarnate it once more")
+                             .containsExactly("D_old", "A_mid", "D2", "A_new");
+        }
+
+        /// The same window with a `whenOpen` caller: a drained action closes the gate and re-entrantly parks D2 under the name, then the recursive
+        /// decision for a `whenOpen` Deactivate must replace the parked D2 (a later `whenOpen` supersedes the whole parked sequence). Red when: the
+        /// recursive `runAdmitted` is called with `keepParked=true` (D2 survives ahead of the Deactivate).
+        @Test
+        @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+        void m5Window_reentrantParkBeforeTheRecursiveDecision_whenOpenCallerReplacesTheParkedSequence() throws Exception {
+            var marker = new AtomicReference<>(Option.some(FSM2_MARKER));
+            var guard = sharedMarkerGuard(marker);
+            var order = Collections.synchronizedList(new ArrayList<String>());
+            var openers = new CopyOnWriteArrayList<Thread>();
+
+            guard.evaluate();
+            guard.whenOpen("hold", () -> {
+                close(guard, marker);
+                guard.whenOpen("leader", () -> order.add("D_old"));
+                guard.whenOpenAfterParked("leader", () -> {
+                    order.add("A_mid");
+                    close(guard, marker);
+                    guard.whenOpen("leader", () -> order.add("D2"));
+                });
+                marker.set(Option.some(FSM2_MARKER));
+                openers.add(Thread.ofPlatform().start(guard::evaluate));
+                awaitOpen(guard);
+                guard.whenOpen("leader", () -> order.add("D_new"));
+            });
+            assertThat(guard.isOpen()).as("the gate is closed again after the drained work").isFalse();
+            marker.set(Option.some(FSM2_MARKER));
+            guard.evaluate();
+            for (var opener : openers) {
+                opener.join(10_000);
+            }
+
+            assertThat(order).as("the window was reached: D_old and A_mid ran from the drain, then D2 was parked re-entrantly")
+                             .startsWith("D_old", "A_mid");
+            assertThat(order).as("D_new is a whenOpen caller: it replaces the parked D2 rather than queueing behind it")
+                             .containsExactly("D_old", "A_mid", "D_new");
+        }
+
+        /// #3261: an opening drains parked work, and its evaluating thread queues on `running` behind a running action. Meanwhile the gate goes
+        /// undecided (marker and incarnation absent: WAITING) and opens again before that thread gets the lock. The second opening drains again;
+        /// the first drain's work must still run, exactly once. Red when: `drain` replaces the pending drained work instead of appending to it.
+        @Test
+        @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+        void aCloseAndReopenWhileTheOpenerWaitsForTheLock_neverLosesDrainedWork() throws Exception {
+            var marker = new AtomicReference<>(Option.some(FSM2_MARKER));
+            var incarnation = new AtomicBoolean(true);
+            var guard = sharedGuard(marker, incarnation);
+            var ran = Collections.synchronizedList(new ArrayList<String>());
+            var parked = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+
+            guard.evaluate();
+            var holder = Thread.ofPlatform().start(() -> guard.whenOpen("hold", () -> {
+                marker.set(Option.none());
+                incarnation.set(false);
+                guard.evaluate();
+                guard.whenOpen("leader", () -> ran.add("X"));
+                parked.countDown();
+                hold(new CountDownLatch(1), release);
+            }));
+            assertThat(parked.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(guard.isOpen()).isFalse();
+
+            marker.set(Option.some(FSM2_MARKER));
+            incarnation.set(true);
+            var opener = Thread.ofPlatform().start(guard::evaluate);
+            awaitOpen(guard);
+            pause(200);
+            marker.set(Option.none());
+            incarnation.set(false);
+            var waiter = Thread.ofPlatform().start(guard::evaluate);
+            awaitState(guard, State.WAITING);
+            pause(200);
+            marker.set(Option.some(FSM2_MARKER));
+            incarnation.set(true);
+            guard.evaluate();
+            assertThat(guard.isOpen()).isTrue();
+
+            release.countDown();
+            holder.join(10_000);
+            opener.join(10_000);
+            waiter.join(10_000);
+
+            assertThat(ran).as("the drained action ran exactly once").containsExactly("X");
+        }
+
+        /// #3271: an opening drains parked work, and its evaluating thread queues on `running` behind a running action. Before that thread gets the
+        /// lock, the node refuses itself. The drained action must not run after the exit, neither through the queued opener nor through an admitting
+        /// thread that picks the drained work up. Red when: the refusal leaves the drained work in place and nothing re-checks it before it runs.
+        @Test
+        @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+        void refuse_whileDrainedWorkIsPending_runsNoneOfIt() throws Exception {
+            var clock = new ManualClock();
+            var marker = new AtomicReference<>(Option.some(FSM2_MARKER));
+            var guard = sharedGuard(marker, new AtomicBoolean(true), clock);
+            var ran = Collections.synchronizedList(new ArrayList<String>());
+            var release = new CountDownLatch(1);
+            var holder = holdWithParked(guard, marker, ran, release);
+
+            marker.set(Option.some(FSM2_MARKER));
+            var opener = Thread.ofPlatform().start(guard::evaluate);
+            awaitOpen(guard);
+            var admitter = Thread.ofPlatform().start(() -> guard.whenOpen("late", () -> ran.add("late")));
+            pause(200);
+            var closer = closeFrom(guard, marker);
+            var refuser = Thread.ofPlatform().start(() -> clock.advance(WINDOW_MS));
+            awaitState(guard, State.REFUSED);
+            assertThat(exits).as("the node refused itself").hasSize(1);
+
+            release.countDown();
+            holder.join(10_000);
+            opener.join(10_000);
+            admitter.join(10_000);
+            closer.join(10_000);
+            refuser.join(10_000);
+
+            assertThat(ran).as("nothing drained or admitted runs after the refusal").isEmpty();
+        }
+
+        /// #3271: the refusal drops the pending drained work, so neither the refusing evaluation nor a later one queues on `running` behind an action
+        /// that is still running. Red when: the refusal leaves the drained work pending, so every evaluation still reports drained work to run.
+        @Test
+        @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+        void refuse_whileDrainedWorkIsPending_neverWaitsForTheRunningAction() throws Exception {
+            var clock = new ManualClock();
+            var marker = new AtomicReference<>(Option.some(FSM2_MARKER));
+            var guard = sharedGuard(marker, new AtomicBoolean(true), clock);
+            var ran = Collections.synchronizedList(new ArrayList<String>());
+            var release = new CountDownLatch(1);
+            var holder = holdWithParked(guard, marker, ran, release);
+
+            marker.set(Option.some(FSM2_MARKER));
+            var opener = Thread.ofPlatform().start(guard::evaluate);
+            awaitOpen(guard);
+            var closer = closeFrom(guard, marker);
+            try {
+                CompletableFuture.runAsync(() -> clock.advance(WINDOW_MS)).get(2, TimeUnit.SECONDS);
+                assertThat(guard.state()).isEqualTo(State.REFUSED);
+                CompletableFuture.runAsync(guard::evaluate).get(2, TimeUnit.SECONDS);
+            } finally {
+                release.countDown();
+                holder.join(10_000);
+                opener.join(10_000);
+                closer.join(10_000);
+            }
+
+            assertThat(ran).isEmpty();
+        }
+
+        /// #3271: a refusal that lands while an earlier action of a drained batch runs drops the rest of the batch, which a thread already holds.
+        /// Red when: the drained actions are handed out without a refusal check just before each one runs.
+        @Test
+        void refuse_duringADrainedAction_dropsTheRestOfTheBatch() {
+            var clock = new ManualClock();
+            var marker = new AtomicReference<>(Option.some(LEGACY_MARKER));
+            var guard = sharedGuard(marker, new AtomicBoolean(true), clock);
+            var ran = Collections.synchronizedList(new ArrayList<String>());
+
+            guard.evaluate();
+            assertThat(guard.state()).isEqualTo(State.MISMATCH_WINDOW);
+            guard.whenOpen("first", () -> refuseInside(guard, marker, clock, ran));
+            guard.whenOpen("second", () -> ran.add("second"));
+            marker.set(Option.some(FSM2_MARKER));
+            guard.evaluate();
+
+            assertThat(guard.state()).isEqualTo(State.REFUSED);
+            assertThat(exits).as("the node refused itself").hasSize(1);
+            assertThat(ran).as("the action behind the refusal never ran").containsExactly("first");
+        }
+
+        /// With the gate open: takes `running` on a new thread, closes the gate, parks an action under "leader" (recorded in `ran` as "X"), and
+        /// holds the lock until `release`.
+        private Thread holdWithParked(EngineMarkerGuard guard,
+                                      AtomicReference<Option<DeploymentEngineValue>> marker,
+                                      List<String> ran,
+                                      CountDownLatch release) throws InterruptedException {
+            var parked = new CountDownLatch(1);
+
+            guard.evaluate();
+            assertThat(guard.isOpen()).isTrue();
+            var holder = Thread.ofPlatform().start(() -> guard.whenOpen("hold", () -> {
+                marker.set(Option.some(LEGACY_MARKER));
+                guard.evaluate();
+                guard.whenOpen("leader", () -> ran.add("X"));
+                parked.countDown();
+                hold(new CountDownLatch(1), release);
+            }));
+            assertThat(parked.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(guard.isOpen()).isFalse();
+
+            return holder;
+        }
+
+        /// Closes the gate on a mismatch from a new thread, returning once its window is open: with drained work pending, that evaluation queues on
+        /// `running` (#3270), which is correct before a refusal.
+        private Thread closeFrom(EngineMarkerGuard guard, AtomicReference<Option<DeploymentEngineValue>> marker) {
+            marker.set(Option.some(LEGACY_MARKER));
+            var closer = Thread.ofPlatform().start(guard::evaluate);
+
+            awaitState(guard, State.MISMATCH_WINDOW);
+
+            return closer;
+        }
+
+        private void refuseInside(EngineMarkerGuard guard,
+                                  AtomicReference<Option<DeploymentEngineValue>> marker,
+                                  ManualClock clock,
+                                  List<String> ran) {
+            ran.add("first");
+            marker.set(Option.some(LEGACY_MARKER));
+            guard.evaluate();
+            clock.advance(WINDOW_MS);
+        }
+
+        private void awaitState(EngineMarkerGuard guard, State expected) {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+            while (guard.state() != expected && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertThat(guard.state()).isEqualTo(expected);
+        }
+
+        private void close(EngineMarkerGuard guard, AtomicReference<Option<DeploymentEngineValue>> marker) {
+            marker.set(Option.some(LEGACY_MARKER));
+            guard.evaluate();
+            assertThat(guard.isOpen()).as("the gate closed").isFalse();
+        }
+
         /// Closes the gate, parks `action` under `name`, and reopens it from a new thread, returning once that thread's decision has drained it.
         private void parkAndReopen(EngineMarkerGuard guard,
                                    AtomicReference<Option<DeploymentEngineValue>> marker,
@@ -482,6 +924,16 @@ class EngineMarkerGuardTest {
         }
 
         private EngineMarkerGuard sharedMarkerGuard(AtomicReference<Option<DeploymentEngineValue>> marker) {
+            return sharedGuard(marker, new AtomicBoolean(true));
+        }
+
+        private EngineMarkerGuard sharedGuard(AtomicReference<Option<DeploymentEngineValue>> marker, AtomicBoolean incarnation) {
+            return sharedGuard(marker, incarnation, new ManualClock());
+        }
+
+        private EngineMarkerGuard sharedGuard(AtomicReference<Option<DeploymentEngineValue>> marker,
+                                              AtomicBoolean incarnation,
+                                              ManualClock clock) {
             return EngineMarkerGuard.engineMarkerGuard(DeploymentEngine.FSM2, SELF, WINDOW_MS, new EngineMarkerGuard.Reader() {
                 @Override
                 public Option<DeploymentEngineValue> marker() {
@@ -490,14 +942,14 @@ class EngineMarkerGuardTest {
 
                 @Override
                 public boolean incarnationPresent() {
-                    return true;
+                    return incarnation.get();
                 }
 
                 @Override
                 public Option<LeaderValue> leader() {
                     return Option.some(new LeaderValue(MINTER, 1L));
                 }
-            }, new ManualClock(), () -> NOW, sink, exits::add);
+            }, clock, () -> NOW, sink, exits::add);
         }
 
         private void hold(CountDownLatch entered, CountDownLatch release) {

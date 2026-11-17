@@ -14,6 +14,7 @@
 
 package org.pragmatica.postgres;
 
+import java.util.Locale;
 import org.pragmatica.postgres.net.ResultSet;
 import org.pragmatica.postgres.net.SqlException;
 import org.junit.jupiter.api.AfterAll;
@@ -60,7 +61,7 @@ public class QueryResultTest {
         assertEquals(2, dbr.query("INSERT INTO CONN_TEST (ID) VALUES (1),(2)").affectedRows());
         ResultSet result = dbr.query("SELECT * FROM CONN_TEST WHERE ID <= 2 ORDER BY ID");
         assertEquals(2, result.size());
-        assertEquals("ID", result.orderedColumns().getFirst().name().toUpperCase());
+        assertEquals("ID", result.orderedColumns().getFirst().name().toUpperCase(Locale.ROOT));
 
         Iterator<PgRow> i = result.iterator();
         assertEquals(1L, i.next().getLong(0).longValue());

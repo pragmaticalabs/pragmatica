@@ -40,12 +40,7 @@ public record Firewall(long id, String name, List<Rule> rules, Map<String, Strin
                        String description) {
         /// An inbound rule opening `port`/`protocol` to `sourceCidr`.
         public static Rule inbound(int port, String protocol, String sourceCidr, String description) {
-            return new Rule(DIRECTION_IN,
-                            protocol,
-                            Integer.toString(port),
-                            List.of(sourceCidr),
-                            List.of(),
-                            description);
+            return new Rule(DIRECTION_IN, protocol, Integer.toString(port), List.of(sourceCidr), List.of(), description);
         }
 
         /// Identity for create-or-patch and withdraw: two rules are the same rule when they open the
@@ -57,7 +52,8 @@ public record Firewall(long id, String name, List<Rule> rules, Map<String, Strin
                    && otherProtocol.equals(protocol)
                    && sourceIps != null
                    && sourceIps.size() == 1
-                   && sourceIps.getFirst().equals(otherCidr);
+                   && sourceIps.getFirst()
+                               .equals(otherCidr);
         }
     }
 
@@ -111,12 +107,10 @@ public record Firewall(long id, String name, List<Rule> rules, Map<String, Strin
 
     /// Request to detach a firewall from a server. Hetzner keys this `remove_from`, NOT `apply_to` —
     /// reusing [ApplyToResourcesRequest] here silently re-attaches instead of detaching.
-    public record RemoveFromResourcesRequest(
-            @JsonProperty("remove_from") List<ApplyToResourcesRequest.ResourceTarget> removeFrom) {
+    public record RemoveFromResourcesRequest(@JsonProperty("remove_from") List<ApplyToResourcesRequest.ResourceTarget> removeFrom) {
         public static RemoveFromResourcesRequest removeFromServer(long serverId) {
-            return new RemoveFromResourcesRequest(List.of(new ApplyToResourcesRequest.ResourceTarget(
-                    "server",
-                    new ApplyToResourcesRequest.ServerRef(serverId))));
+            return new RemoveFromResourcesRequest(List.of(new ApplyToResourcesRequest.ResourceTarget("server",
+                                                                                                     new ApplyToResourcesRequest.ServerRef(serverId))));
         }
     }
 }

@@ -146,11 +146,12 @@ an untrusted slice**: someone who can reach your cluster's ports but does not ho
 | Surface | Mechanism | Evidence |
 |---|---|---|
 | Node-to-node TCP (consensus, invocation, DHT) | mutual TLS, certs derived from a shared `cluster_secret` via HKDF | [mechanism: `aether/docs/operators/tls-certificates.md`; `SelfSignedCertificateProvider`] |
-| SWIM gossip (UDP) | AES-256-GCM under a key HKDF-derived from `cluster_secret` and the current calendar day, re-derived on day change for the life of the process; datagrams under the previous and next UTC day's keys are accepted, so nodes whose clocks differ by less than a day at a UTC-day boundary decrypt each other regardless of uptime (#256, #1164, #1415). The day label is the UTC day of the clock's instant, whatever the host's time zone | [mechanism: `SelfSignedCertificateProvider.keysForToday` derives; `SwimGossipEncryptors.ProviderKeyedGossipEncryptor` follows it; `AesGcmGossipEncryptor` encrypts — per `aether/docs/architecture/10-security.md`] |
+| SWIM gossip (UDP), self-signed certificate provider (the default; no cloud secret-store provider) | AES-256-GCM under a key HKDF-derived from `cluster_secret` and the current calendar day, re-derived on day change for the life of the process; datagrams under the previous and next UTC day's keys are accepted, so nodes whose clocks differ by less than a day at a UTC-day boundary decrypt each other regardless of uptime (#256, #1164, #1415). The day label is the UTC day of the clock's instant, whatever the host's time zone | [mechanism: `SelfSignedCertificateProvider.keysForToday` derives; `SwimGossipEncryptors.ProviderKeyedGossipEncryptor` follows it; `AesGcmGossipEncryptor` encrypts — per `aether/docs/architecture/10-security.md`] |
+| SWIM gossip (UDP), AWS / GCP / Azure environments with a cloud certificate provider | AES-256-GCM under ONE static key that the node reads once from the cloud secret store at startup (`<prefix>/gossip-key` and `<prefix>/gossip-key-id` on AWS and GCP, `<prefix>-gossip-key` and `<prefix>-gossip-key-id` on Azure). **There is no daily rotation on these providers:** the key is not re-derived on day change, and no previous or next key is accepted (`previousGossipKey()` is empty). Changing it means replacing the secret-store entries; whether that takes effect without restarting every node was not checked [unverified]. `aether cluster rotate-gossip-key` (#683) is the in-place mechanism; whether it composes with a cloud certificate provider was not checked [unverified] | [mechanism: `CloudCertificateProvider` (AWS and GCP delegate to it) and `AzureCertificateProvider`: `currentGossipKey` returns the loaded key, `previousGossipKey` returns none] |
 | Management API | API-key authentication + role-based authorization (ADMIN / OPERATOR / VIEWER) | [mechanism: see "Default posture" below] |
 | Cluster secret at rest (file) | `aether.toml` and the CLI's persisted `api-key` file are written `chmod 600` | [mechanism: `aether/cli/.../cluster/SecureFiles.java` — `writeSecure`/`restrictToOwner`, owner-read/write only, POSIX systems] |
 
-All four of these authenticate **the transport or the caller**, not the slice code running behind
+All five of these authenticate **the transport or the caller**, not the slice code running behind
 it. None of them isolates one slice's data from another slice in the same cluster (see above).
 
 ### Default security posture (management API)
@@ -266,7 +267,8 @@ first, and never commit the exported value itself. If the old file with the lite
 committed or otherwise left where it could have been read, rotating `cluster_secret` is the only
 way to invalidate that exposure; deleting the file does not undo a leak into git or shell history.
 
-Separately: the daily-rotated gossip key described above is itself HKDF-derived from
+Separately: the daily-rotated gossip key of the self-signed provider (the first gossip row above; the AWS / GCP / Azure
+providers hold one static secret-store key instead) is itself HKDF-derived from
 `cluster_secret`, so rotating `cluster_secret` does not immediately revoke gossip decryption for
 an attacker who captured it beforehand. To push independent gossip key material without a full
 secret rotation/restart, use `aether cluster rotate-gossip-key` (see "All nodes in a cluster trust

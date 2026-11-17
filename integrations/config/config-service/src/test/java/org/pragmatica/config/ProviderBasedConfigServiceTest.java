@@ -11,6 +11,7 @@ import org.pragmatica.lang.utils.Retry.BackoffStrategy;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -56,6 +57,10 @@ class ProviderBasedConfigServiceTest {
     enum DbType { H2, POSTGRESQL, MYSQL }
 
     record EnumConfig(String name, DbType type) {}
+
+    enum Scope { SLICE, NODE }
+
+    record ScopeConfig(Scope poolScope) {}
 
     record ValidatedConfig(String host, int port) {
         private static final org.pragmatica.lang.Cause INVALID_PORT = Causes.cause("Port must be between 1 and 65535");
@@ -624,6 +629,26 @@ class ProviderBasedConfigServiceTest {
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(result.unwrap().type()).isEqualTo(DbType.H2);
+        }
+    }
+
+    @Nested
+    class EnumBindingTurkishLocale {
+
+        @Test
+        void config_enumField_bindsLowercaseValue_underTurkishLocale() {
+            var saved = Locale.getDefault();
+
+            try {
+                Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+
+                var result = serviceFrom(Map.of("test.pool_scope", "slice")).config("test", ScopeConfig.class);
+
+                assertThat(result.isSuccess()).isTrue();
+                assertThat(result.unwrap().poolScope()).isEqualTo(Scope.SLICE);
+            } finally {
+                Locale.setDefault(saved);
+            }
         }
     }
 

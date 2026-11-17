@@ -43,12 +43,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class ProjectionTest {
     private record OrderSeen(String orderId) {}
 
-    private static final Topic<OrderSeen> TOPIC = Topic.of("orders-seen", OrderSeen.class);
+    private static final Topic<OrderSeen> TOPIC = Topic.topic("orders-seen", OrderSeen.class);
 
     /// An event whose fold is ORDER-SENSITIVE (`state * 10 + value`), for pinning apply order.
     private record Digit(String key, int value) {}
 
-    private static final Topic<Digit> DIGITS = Topic.of("digits", Digit.class);
+    private static final Topic<Digit> DIGITS = Topic.topic("digits", Digit.class);
     private static final Cause WRITE_FAILED = Causes.cause("staged read-model write failure");
     private static final Cause FINALIZE_FAILED = Causes.cause("staged claim finalize failure");
     private static final TimeSpan LEASE = timeSpan(30).seconds();
@@ -282,13 +282,13 @@ class ProjectionTest {
     /// Same projection, with the cursor held by the caller — a test that reports a committed cursor needs the
     /// token that cursor's rewind was handed.
     private static Projection<Integer, OrderSeen> rebuildableWith(InMemoryStore store, RecordingCursor cursor) {
-        return Projection.of(TOPIC)
+        return Projection.projection(TOPIC)
                          .into(store, OrderSeen::orderId)
                          .apply("orders-seen", (current, event) -> current.or(0) + 1, cursor);
     }
 
     private static Projection<Integer, OrderSeen> countingProjection(InMemoryStore store) {
-        return Projection.of(TOPIC)
+        return Projection.projection(TOPIC)
                          .into(store, OrderSeen::orderId)
                          .apply((current, event) -> current.or(0) + 1);
     }
@@ -605,7 +605,7 @@ class ProjectionTest {
         @Test
         void rebuild_inFlightGuardedFold_appliesExactlyOnce() {
             var store = new InMemoryStore();
-            var projection = Projection.of(TOPIC)
+            var projection = Projection.projection(TOPIC)
                                        .into(store, OrderSeen::orderId)
                                        .apply("orders-seen", (current, event) -> current.or(0) + 1, new RecordingCursor(store, NOTHING_TO_REPLAY))
                                        .withClaims(new InMemoryClaims(), LEASE);
@@ -635,7 +635,7 @@ class ProjectionTest {
         void rebuild_foldWhoseClaimSpansTheRebuild_appliesExactlyOnce() {
             var store = new InMemoryStore();
             var claims = new GatedClaims();
-            var projection = Projection.of(TOPIC)
+            var projection = Projection.projection(TOPIC)
                                        .into(store, OrderSeen::orderId)
                                        .apply("orders-seen", (current, event) -> current.or(0) + 1, new RecordingCursor(store, NOTHING_TO_REPLAY))
                                        .withClaims(claims, LEASE);
@@ -710,7 +710,7 @@ class ProjectionTest {
         @Test
         void rebuilding_refusesAnOutOfOrderLiveWrite_andBuildsInOffsetOrder() {
             var store = new InMemoryStore();
-            var projection = Projection.of(DIGITS)
+            var projection = Projection.projection(DIGITS)
                                        .into(store, Digit::key)
                                        .apply("digits", (current, digit) -> current.or(0) * 10 + digit.value(), new RecordingCursor(store, REPLAY_TEN_TO_TWELVE))
                                        .withClaims(new InMemoryClaims(), LEASE);
@@ -859,7 +859,7 @@ class ProjectionTest {
         void rebuilding_ignoresAStaleInRangeCursorReport_deliveredAfterTheRewind() {
             var store = new InMemoryStore();
             var cursor = new RecordingCursor(store, REPLAY_TEN_TO_TWELVE);
-            var projection = Projection.of(DIGITS)
+            var projection = Projection.projection(DIGITS)
                                        .into(store, Digit::key)
                                        .apply("digits", (current, digit) -> current.or(0) * 10 + digit.value(), cursor)
                                        .withClaims(new InMemoryClaims(), LEASE);
@@ -1186,7 +1186,7 @@ class ProjectionTest {
     void rebuild_capturesFirst_resetsInOneStep_andRewindsLast() {
         var store = new InMemoryStore();
         var cursor = new RecordingCursor(store, NOTHING_TO_REPLAY);
-        var projection = Projection.of(TOPIC)
+        var projection = Projection.projection(TOPIC)
                                    .into(store, OrderSeen::orderId)
                                    .apply("orders-proj", (current, event) -> current.or(0) + 1, cursor)
                                    .withClaims(new InMemoryClaims(), LEASE);
@@ -1226,7 +1226,7 @@ class ProjectionTest {
                 return Promise.unitPromise();
             }
         };
-        var projection = Projection.of(TOPIC)
+        var projection = Projection.projection(TOPIC)
                                    .into(store, OrderSeen::orderId)
                                    .apply("orders-proj", (current, event) -> current.or(0) + 1, cursor)
                                    .withClaims(new InMemoryClaims(), LEASE);
@@ -1246,7 +1246,7 @@ class ProjectionTest {
     @Test
     void rebuild_inFlightUnguardedFold_doesNotWriteIntoTheResetModel() {
         var store = new InMemoryStore();
-        var projection = Projection.of(TOPIC)
+        var projection = Projection.projection(TOPIC)
                                    .into(store, OrderSeen::orderId)
                                    .apply("orders-seen", (current, event) -> current.or(0) + 1, new RecordingCursor(store, NOTHING_TO_REPLAY))
                                    .withClaims(new InMemoryClaims(), LEASE);
@@ -1292,7 +1292,7 @@ class ProjectionTest {
     void rebuild_ofAnUnguardedProjection_isRefusedBeforeAnythingIsTouched() {
         var store = new InMemoryStore();
         var cursor = new RecordingCursor(store, NOTHING_TO_REPLAY);
-        var projection = Projection.of(TOPIC)
+        var projection = Projection.projection(TOPIC)
                                    .into(store, OrderSeen::orderId)
                                    .apply("orders-proj", (current, event) -> current.or(0) + 1, cursor);
 

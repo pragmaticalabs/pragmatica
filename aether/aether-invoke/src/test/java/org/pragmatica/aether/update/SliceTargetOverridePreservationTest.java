@@ -38,6 +38,7 @@ import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.MessageRouter.Entry;
@@ -373,6 +374,18 @@ class SliceTargetOverridePreservationTest {
         final List<KVCommand<AetherKey>> appliedCommands = new CopyOnWriteArrayList<>();
         /// When set, every leader transaction is answered as refused by the fence (a concurrent change), as the applier does.
         volatile boolean refuseTransactions;
+        /// When set, every apply holding a leader transaction fails as consensus failing to commit it (the write may or may not have landed).
+        volatile boolean failTransactions;
+        /// When set, every apply holding a removal fails as consensus failing to commit it; a failed apply is not recorded in `appliedCommands`.
+        volatile boolean failRemovals;
+        /// When set, the next apply holding a leader transaction is NOT answered until `releaseHeld` runs (a fenced write in flight).
+        volatile boolean holdNextTransaction;
+        /// Releases the held transaction, answering it as accepted; non-null once a transaction is held.
+        volatile Runnable releaseHeld;
+        /// When set, every apply holding a leader transaction never completes (consensus hung).
+        volatile boolean hangTransactions;
+        /// When set, every apply holding a removal never completes (consensus hung).
+        volatile boolean hangRemovals;
 
         CapturingRabiaNode(NodeId self) {
             this.self = self;
@@ -401,7 +414,26 @@ class SliceTargetOverridePreservationTest {
         @Override
         @SuppressWarnings("unchecked")
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+            if (failTransactions && commands.stream().anyMatch(KVCommand.LeaderTransaction.class::isInstance)
+                || failRemovals && commands.stream().anyMatch(KVCommand.Remove.class::isInstance)) {
+                return Causes.cause("consensus did not commit").promise();
+            }
+
+            if (hangTransactions && commands.stream().anyMatch(KVCommand.LeaderTransaction.class::isInstance)
+                || hangRemovals && commands.stream().anyMatch(KVCommand.Remove.class::isInstance)) {
+                return Promise.promise();
+            }
+
             appliedCommands.addAll(commands);
+
+            if (holdNextTransaction && commands.stream().anyMatch(KVCommand.LeaderTransaction.class::isInstance)) {
+                holdNextTransaction = false;
+
+                var held = Promise.<List<R>> promise();
+
+                releaseHeld = () -> held.succeed((List<R>) acceptedResults(commands));
+                return held;
+            }
 
             return Promise.success((List<R>) (refuseTransactions
                                               ? refusedResults(commands)

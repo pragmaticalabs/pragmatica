@@ -24,6 +24,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -1434,7 +1435,7 @@ public class FactoryClassGenerator {
         }
 
         var argList = wire.stream().map(p -> callArgument(p, importTracker)).collect(Collectors.joining(", "));
-
+        // `new` is deliberate (owner ruling on #3019, 2026-11-10): the record is processor-synthesised and only wraps the call's parameters as they are, so it cannot fail.
         return "new " + method.requestRecordName() + "(" + argList + ")";
     }
 
@@ -2000,10 +2001,10 @@ public class FactoryClassGenerator {
 
         if (i < name.length()) {
             return name.substring(0, i - 1)
-                       .toLowerCase() + name.substring(i - 1);
+                       .toLowerCase(Locale.ROOT) + name.substring(i - 1);
         }
 
-        return name.toLowerCase();
+        return name.toLowerCase(Locale.ROOT);
     }
 
     private String capitalize(String name) {
@@ -2498,11 +2499,11 @@ public class FactoryClassGenerator {
 
             if (i == name.length() || i == 1) {
                 return name.substring(0, i)
-                           .toLowerCase() + name.substring(i);
+                           .toLowerCase(Locale.ROOT) + name.substring(i);
             }
 
             return name.substring(0, i - 1)
-                       .toLowerCase() + name.substring(i - 1);
+                       .toLowerCase(Locale.ROOT) + name.substring(i - 1);
         }
 
         /// Generates the full config access expression for use inside Result.all().
@@ -2742,7 +2743,7 @@ public class FactoryClassGenerator {
         }
 
         var ctorArgs = components.stream().map(ComponentInfo::name).collect(Collectors.joining(", "));
-
+        // `new` is deliberate (CTO ruling on #3019, 2026-11-11): the invariant ran in the producing side's factory and this rebuilds a value from a trusted internal wire; decode-side re-validation needs a Result channel in the reader contract.
         out.println("                            return new " + name + "(" + ctorArgs + ");");
         out.println("                        })" + comma);
     }

@@ -6,10 +6,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 import java.util.function.LongConsumer;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.StateMachine.Batch;
@@ -59,6 +62,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// Serializes writers and the append of their batches, so batches enter the delivery FIFO in commit order (design
     /// §3.1 step 3), without blocking read-only store captures. Inline delivery also runs under it.
     private final Object mutationLock = new Object();
+    /// Told before a [#reset()] empties the store (#2981): registration appends.
+    private final List<Runnable> resetListeners = new CopyOnWriteArrayList<>();
     /// The delivery side (design §3.1-§3.7): sequence numbers, the FIFO, the delivery loop, waits and the fence.
     private final NotificationDispatcher dispatcher;
     /// Monitor: the notifications of the batch being applied.
@@ -66,6 +71,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// Monitor: the `deliverySeq` of the batch being applied ([NotificationDispatcher#NO_SEQ] outside one, or once closed).
     private long currentSeq = NotificationDispatcher.NO_SEQ;
     private long committedRevision;
+    /// Monitor: whether the content equals the state at `committedRevision` (#3274). Set by [#restoreCommittedSnapshot] (content and
+    /// label in one mutation) and cleared by [#onPhaseAdopted] when it moves the label without content. [#reset()] and the apply path
+    /// leave it: a reset image is revision 0, which a reader already refuses, and an applied slot moves content and label together. True
+    /// at construction: the empty genesis store is exact at revision 0.
+    private boolean exact = true;
     private final Map<K, V> storage = new ConcurrentHashMap<>();
     private final Serializer serializer;
     private final Deserializer deserializer;
@@ -230,6 +240,41 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return Unit.unit();
     }
 
+    /// The engine's restore path adopted `nextSlot` as its frontier (#3274): raises the label like [#onPhaseCompleted], and clears `exact`
+    /// when that moves it, because the slots it passes were not applied to this content. An adoption at or below the label changes nothing.
+    @Override
+    public synchronized Unit onPhaseAdopted(long nextSlot) {
+        exact = exact && nextSlot <= committedRevision;
+
+        return onPhaseCompleted(nextSlot);
+    }
+
+    /// The entries whose keys match `filter`, with the committed revision and whether the content is exactly the state at that revision,
+    /// all read under ONE store monitor hold, so the three are mutually consistent (#3274). The filter takes the key as `Object`: the storage
+    /// holds keys of types outside `K` (the store is shared), and a `Predicate<K>` is invoked through a cast of every key to the erasure of `K`.
+    public synchronized RevisionedSnapshot<K, V> snapshotWithRevision(Predicate<Object> filter) {
+        var matching = storage.entrySet()
+                              .stream()
+                              .filter(entry -> filter.test(entry.getKey()))
+                              .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
+
+        return RevisionedSnapshot.revisionedSnapshot(committedRevision, exact, matching);
+    }
+
+    /// A filtered copy of the store with its label: `revision` is the committed revision and `exact` says whether the content is the state
+    /// at that revision (false after a restore adopted a frontier past the installed content).
+    public record RevisionedSnapshot<K, V>(long revision, boolean exact, Map<K, V> entries) {
+        public RevisionedSnapshot {
+            entries = Map.copyOf(entries);
+        }
+
+        public static <K, V> RevisionedSnapshot<K, V> revisionedSnapshot(long revision,
+                                                                         boolean exact,
+                                                                         Map<K, V> entries) {
+            return new RevisionedSnapshot<>(revision, exact, entries);
+        }
+    }
+
     /// The sixth storage writer, and the only write a replica makes besides a snapshot install: applies the plain `Put`/`Remove` effects of one
     /// ring entry raw, with no fence, no witness and no merge (the core already decided them), publishes the notifications with the old values,
     /// appends the entry to this store's own ring and sets the revision to `slot + 1`. An empty effect list (a range marker) only advances.
@@ -369,9 +414,17 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     @Override
     public Result<Unit> restoreCommittedSnapshot(byte[] snapshot, long nextSlot) {
-        return mutate(() -> restoreSilently(snapshot).onSuccess(_ -> committedRevision = nextSlot)
+        return mutate(() -> restoreSilently(snapshot).onSuccess(_ -> labelInstalledContent(nextSlot))
                                            .onSuccess(_ -> ring.invalidate(readTag(),
                                                                            nextSlot)));
+    }
+
+    /// Under the install's monitor hold: the content just installed is the state at `nextSlot`, so the label is exact (#3274).
+    private Unit labelInstalledContent(long nextSlot) {
+        committedRevision = nextSlot;
+        exact = true;
+
+        return Unit.unit();
     }
 
     private <T> T mutate(java.util.function.Supplier<T> mutation) {
@@ -970,11 +1023,19 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     /// Registers the listener told the revision of every replay item ([#replayNotifications()]) on the delivering thread, before the item's burst
     /// is delivered and whether or not the burst is empty: the snapshot install itself, not something to infer from its burst. The revision is the
-    /// store's committed revision at the replay: the install's for a `restoreCommittedSnapshot`, the unchanged one for a `restoreSnapshot`. One
-    /// listener; a second registration replaces the first.
+    /// store's committed revision at the replay: the install's for a `restoreCommittedSnapshot`, the unchanged one for a `restoreSnapshot`.
+    /// Registration APPENDS (#2981 C1): every registered listener is told, in registration order, and one that throws does not skip the others.
     @Contract
     public void onReplayStart(LongConsumer listener) {
         dispatcher.onReplayStart(listener);
+    }
+
+    /// Registers the listener told the revision of every replay item ([#replayNotifications()]) on the delivering thread, AFTER the item's burst is
+    /// delivered and whether or not the burst is empty: the delivered view ([#delivered]) then reflects the installed snapshot (#3028). One listener;
+    /// a second registration replaces the first.
+    @Contract
+    public void onReplayEnd(LongConsumer listener) {
+        dispatcher.onReplayEnd(listener);
     }
 
     /// The replay item carries no notifications: its burst is computed when the delivery loop dequeues it (§3.7).
@@ -1152,16 +1213,28 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return dispatcher.threadName();
     }
 
+    /// Registers a listener told, on the resetting thread and BEFORE the store is emptied, that a [#reset()] is about to install an empty
+    /// view (#2981 §2.1 r7 S2: a later restore may install a view OLDER than the one a node lease was renewed under, so the lease is revoked
+    /// first). Registration appends; listeners run in registration order.
+    @Contract
+    public void onReset(Runnable listener) {
+        resetListeners.add(listener);
+    }
+
     @Override
     public Unit reset() {
+        resetListeners.forEach(Runnable::run);
+
         return mutate(this::resetStorage);
     }
 
     /// The reset's remove burst, once delivered, empties the delivered view; this applying thread never writes the
     /// view (R3 N5). `deliverySeq` is not reset (design §3.1). The committed revision returns to 0, and the burst carries
-    /// revision 0 ([#notificationRevision()]): FSM2 drops it and re-snapshots on the restore.
+    /// revision 0 ([#notificationRevision()]): FSM2 drops it and re-snapshots on the restore. The emptied store is the exact state at
+    /// revision 0, so `exact` returns to true (#3274, design erratum 3).
     private Unit resetStorage() {
         committedRevision = 0;
+        exact = true;
         notifyRemoveAll();
         storage.keySet().forEach(key -> dispatcher.recordRemoval(key, currentSeq));
         storage.clear();
@@ -1180,6 +1253,12 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         dispatcher.onSnapshotRead();
 
         return Map.copyOf(storage);
+    }
+
+    /// A point read of the DELIVERED view: the value subscribers were last told for `key`, which may trail `storage` by the batches applied and not yet
+    /// delivered (#3028: a catch-up sweep compares local state with what was delivered, never with a snapshot mid-install).
+    public Option<V> delivered(K key) {
+        return Option.option(lastReplayedView.get(key));
     }
 
     /// A point read; on the delivering thread, a read of a key some later applied batch wrote counts a read-ahead
@@ -1206,6 +1285,18 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         }
 
         return Option.some((VV) raw);
+    }
+
+    /// Lock-free typed lookup for the node lease checks (#2981 §2.2): unlike [#getTyped] it does not take the store
+    /// monitor, so it never waits behind a batch the apply thread is applying, and it counts no read-ahead. `storage` is a
+    /// `ConcurrentHashMap` of immutable values, so a reader sees, per key, the old or the new value, never a torn one.
+    /// During `reset` and a snapshot install a key can read ABSENT; the lease checks treat absence as "the record does not
+    /// name me" and fail closed, so use it only where absence is safe to read as "not mine" (#2981 step 2 moves the whole `OwnershipRecordSource` lambda to it). Returns
+    /// `Option.none()` when the key is absent OR the stored value isn't an instance of `valueClass`.
+    public <VV> Option<VV> peekTyped(StructuredKey key, Class<VV> valueClass) {
+        return Option.option(storage.get(key))
+                     .filter(valueClass::isInstance)
+                     .map(valueClass::cast);
     }
 
     /// Iterates over entries matching the specified key and value types.

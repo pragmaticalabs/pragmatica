@@ -30,7 +30,6 @@ import static org.pragmatica.jbct.parser.CstNodes.packageName;
 /// (`Result::lift`) is not a call site and is not flagged.
 public class CstArchLiftZoneRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-ARCH-02";
-
     /// A `lift` / `lift1` / `lift2` ... call — the foreign-exception-to-Cause family.
     private static final Pattern LIFT_CALL = Pattern.compile("\\blift\\d*\\s*\\(");
 

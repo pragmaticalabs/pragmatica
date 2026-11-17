@@ -43,7 +43,7 @@ import static org.pragmatica.lang.Result.success;
 /// placeholder. When that does not give exactly one parameter per placeholder, the query is refused with a typed error:
 /// the raw value is never used in its place.
 interface QueryParams {
-    static Result<List<Param<?>>> of(Query query) {
+    static Result<List<Param<?>>> queryParams(Query query) {
         var collector = new Collector();
         var placeholders = query.getBindValues().size();
 

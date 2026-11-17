@@ -1,0 +1,2 @@
+### Changed (2026-11-13 — #2320: pin the `toOffset >= start` boundary in the catch-up path)
+- **`StreamPartitionManager.installUnattributed` had no test at the `toOffset >= start` boundary.** `InstallUnattributedBoundaryTest` pins `toOffset` at `start - 1` (already held: nothing claimed, no `HISTORY_INCOMPLETE`), `start` and `start + 1` (an `UNKNOWN` entry at `start`, `HISTORY_INCOMPLETE` raised). Test-only; no product change. `[verified: mutants "toOffset >= start -> true" and "toOffset >= start -> toOffset > start" both red under bb-mutate]`

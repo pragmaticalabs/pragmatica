@@ -17,6 +17,7 @@
 
 package org.pragmatica.lang;
 
+import java.util.Locale;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -1102,7 +1103,7 @@ public class PromiseTest {
         // Test liftFn1 with custom exception mapper
         var fn1 = Promise.liftFn1(Causes::fromThrowable, (String input) -> {
             if (input == null) throw new NullPointerException("Null input");
-            return input.toUpperCase();
+            return input.toUpperCase(Locale.ROOT);
         });
 
         fn1.apply("hello")
@@ -1240,7 +1241,7 @@ public class PromiseTest {
     void instanceAllWithTwoFunctionsReturnsSuccessWhenAllSucceed() {
         var result = Promise.success("hello")
                 .all(
-                        v -> Promise.success(v.toUpperCase()),
+                        v -> Promise.success(v.toUpperCase(Locale.ROOT)),
                         v -> Promise.success(v.length())
                 )
                 .map((upper, len) -> upper + "-" + len)

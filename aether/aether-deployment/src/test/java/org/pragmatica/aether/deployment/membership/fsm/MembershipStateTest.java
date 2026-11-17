@@ -41,7 +41,7 @@ class MembershipStateTest {
     private static FsmTestHarness<MembershipState, MembershipEvent> observedHarness() {
         return FsmTestHarness.<MembershipState, MembershipEvent>harness(
                 "membership-test",
-                fsm -> new MembershipContext(fsm, MEMBER, () -> false).observed());
+                fsm -> new MembershipContext(fsm, MEMBER, () -> false, () -> false).observed());
     }
 
     private static FsmTestHarness<MembershipState, MembershipEvent> harnessInMember() {

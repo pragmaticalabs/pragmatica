@@ -37,7 +37,6 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstArchUseCaseCouplingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-ARCH-03";
     private static final String USECASE_SUFFIX = "UseCase";
-
     /// An interface header that extends the `UseCase` marker (`extends UseCase.WithPromise<...>`).
     private static final Pattern EXTENDS_USECASE = Pattern.compile("\\bextends\\b[\\s\\S]*\\bUseCase\\b");
 
@@ -77,13 +76,12 @@ public class CstArchUseCaseCouplingRule implements CstLintRule {
     }
 
     private boolean isUseCaseFile(Cursor root, Set<String> ownNames) {
-        if (ownNames.stream()
-                    .anyMatch(name -> name.endsWith(USECASE_SUFFIX))) {
+        if (ownNames.stream().anyMatch(name -> name.endsWith(USECASE_SUFFIX))) {
             return true;
         }
 
         return findAllInterfaces(root).stream()
-                                      .anyMatch(this::extendsUseCaseMarker);
+                                .anyMatch(this::extendsUseCaseMarker);
     }
 
     private boolean extendsUseCaseMarker(Cursor interfaceDecl) {
@@ -93,8 +91,7 @@ public class CstArchUseCaseCouplingRule implements CstLintRule {
                      ? declText.substring(0, brace)
                      : declText;
 
-        return EXTENDS_USECASE.matcher(header)
-                              .find();
+        return EXTENDS_USECASE.matcher(header).find();
     }
 
     private Set<String> importedUseCaseNames(Cursor root, Set<String> ownNames) {
@@ -113,8 +110,11 @@ public class CstArchUseCaseCouplingRule implements CstLintRule {
 
     private Stream<Diagnostic> importReferences(Cursor root, Set<String> ownNames, LintContext ctx) {
         return findAll(root, RuleKind.IMPORT_DECL).stream()
-                      .filter(imp -> isForeignUseCase(ArchSupport.importedSimpleName(text(imp)), ownNames))
-                      .map(imp -> createDiagnostic(imp, ArchSupport.importedSimpleName(text(imp)), ctx));
+                      .filter(imp -> isForeignUseCase(ArchSupport.importedSimpleName(text(imp)),
+                                                      ownNames))
+                      .map(imp -> createDiagnostic(imp,
+                                                   ArchSupport.importedSimpleName(text(imp)),
+                                                   ctx));
     }
 
     private Stream<Diagnostic> typeReferences(Cursor root,

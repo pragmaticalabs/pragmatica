@@ -82,4 +82,11 @@ public final class LeaderElectionEvents {
     /// `ReElecting`. Carries the leader the round was about, so a verdict that outlives its tenure (leader
     /// swapped, follower left `Led`) is discarded rather than deposing the new leader.
     public record LeaderDoubtConfirmed(NodeId leader) implements ClusterFsmEvent {}
+
+    /// A view-free removal of one peer from the stored topology (#3044): the observer saw `node` fail but carries no
+    /// sequenced view, so it removes exactly that node and never adds one. It is not fenced and never stale; the
+    /// storage keeps the view when the node is absent, is this node itself, or is the last node left (see
+    /// `LeaderElectionContext#removeFromView`). In `Led`, a removal of the leader loses the leader whatever the
+    /// storage kept. Placed here rather than in `ClusterFsmEvent` so the cluster-lifecycle vocabulary is unchanged.
+    public record PeerRemovedFromView(NodeId node) implements ClusterFsmEvent {}
 }

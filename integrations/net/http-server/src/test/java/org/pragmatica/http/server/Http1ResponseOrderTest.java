@@ -21,6 +21,7 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
@@ -120,7 +121,7 @@ class Http1ResponseOrderTest {
             assertThat(statuses(response)).containsExactly("200", "504");
             assertThat(bodies(response)).containsExactly("f1");
             var timedOut = response.substring(response.indexOf("HTTP/1.1 504"));
-            var headers = timedOut.substring(0, timedOut.indexOf("\r\n\r\n")).toLowerCase();
+            var headers = timedOut.substring(0, timedOut.indexOf("\r\n\r\n")).toLowerCase(Locale.ROOT);
 
             assertThat(headers).contains("connection: close").contains("content-type: application/json").contains("x-request-id:");
             assertThat(timedOut).contains("Gateway Timeout");

@@ -134,7 +134,7 @@ class BackstopTest {
     // not remove w1's rows, desired keys and routes in one guarded transaction; placed(a) is not restored; the directive or
     // placement key is touched by any FSM write; the record is not collected with the directive; assignedByCommunity counted w1.
     @Test
-    void lostDeparture_afterTheBound_recordsStale_thenC17bRemovesRows_directiveWaits() {
+    void lostDeparture_afterTheBound_recordsStale_thenC17bRemovesRowsAndTheWorkerDirective() {
         var w = lostDeparture();
 
         w.h.deliver(new ClusterInput.WorkerJoin(W2, w.admit(W2, tokenOf(W2))));
@@ -158,27 +158,26 @@ class BackstopTest {
         var cleanup = w.h.submits(SubmitKind.CLEANUP);
 
         assertThat(cleanup).hasSize(1);
-        assertThat(cleanup.getFirst().transaction().guards()).anyMatch(g -> g.key()
-                                                                             .equals(new NodeDepartureKey(W1)));
+        assertThat(cleanup.getFirst().transaction().mutations()).as("a worker with a directive: the record is removed in the same transaction (exact-value), not guarded")
+                  .anyMatch(m -> m.key().equals(new NodeDepartureKey(W1)) && m.replacement().isEmpty());
         assertThat(w.present(new SliceObservedKey(W1, ORDERS))).isFalse();
         assertThat(w.present(new SliceDesiredKey(W1, ORDERS))).isFalse();
         assertThat(w.present(new NodeRoutesKey(W1, ORDERS))).isFalse();
-        assertThat(w.present(new ActivationDirectiveKey(W1))).as("the directive waits (Q1)").isTrue();
+        assertThat(w.present(new ActivationDirectiveKey(W1))).as("C17b retires the worker's directive, inferred departure included (#3193; supersedes Q1 for workers)").isFalse();
         assertThat(w.present(new NodePlacementKey(W1))).isTrue();
+        assertThat(cleanup.getFirst().transaction().mutations()).as("C17b carries the worker's directive removal")
+                  .anyMatch(m -> m.key() instanceof ActivationDirectiveKey k && k.nodeId().equals(W1) && m.replacement().isEmpty());
         assertThat(w.h.submits()
                       .stream()
                       .flatMap(s -> s.transaction()
                                      .mutations()
                                      .stream())
-                      .anyMatch(m -> m.key() instanceof ActivationDirectiveKey k && k.nodeId()
-                                                                                     .equals(W1) || m.key() instanceof NodePlacementKey p && p.nodeId()
-                                                                                                                                              .equals(W1))).isFalse();
+                      .anyMatch(m -> m.key() instanceof NodePlacementKey p && p.nodeId().equals(W1))).isFalse();
         assertThat(Rows.placed(w.h.model(), ORDERS)).as("placed(a) restored by a fresh goal").isEqualTo(2);
         assertThat(w.h.model().assignedByCommunity.get(C).map(set -> set.contains(W1))).as("not counted by the community accounting")
                   .isEqualTo(Option.some(false));
-        w.h.seedRemove(new ActivationDirectiveKey(W1));
         w.h.drain();
-        assertThat(w.recordOf(W1).isEmpty()).as("R-4.3.3: confirmed termination collects the record").isTrue();
+        assertThat(w.recordOf(W1).isEmpty()).as("R-4.3.3: the directive's retirement collects the record").isTrue();
     }
 
     // NT-126 (c) first arm
@@ -251,6 +250,9 @@ class BackstopTest {
     @Test
     void inferredDeparture_isConfirmed_whenItsIdentityIsRetired() {
         var w = lostDeparture();
+
+        // #3193: C17b would retire the worker's directive, hence its identity, at once; the "record stands" window is observed by losing it.
+        w.h.loseKinds = Set.of(SubmitKind.CLEANUP);
 
         w.evolve(C, GOV, ALIVE_WITHOUT_W1, WITHOUT_W1, 5_000L);
         var since = w.since(W1).or(0L);
@@ -630,5 +632,38 @@ class BackstopTest {
         assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.ADMITTED));
         assertThat(w.counts(CORE_2)).isTrue();
         assertThat(w.h.warns("join-refused-process")).isEmpty();
+    }
+
+    // #2887 (1): the boot topology snapshot lacks CORE_2 (cloud-discovery majority boot); consensus later installs it. Red when: classOf reads only
+    // the boot-time Settings.seedCores (the coreRoleMembers disjunct dropped): CORE_2 stays an unassigned worker, UNJUDGEABLE, rows never removed.
+    @Test
+    void seedCore_missingAtBoot_committedLater_departsBeforeActivation_rowsRemoved() {
+        var w = withoutCore2(departedSeedCore(Set.of(CORE_1))).seams(s -> s.withCoreRoleMembers(Set.of(CORE_1, CORE_2)));
+
+        w.activate();
+        assertRecordedAfterBrm_andRowsRemoved(w);
+    }
+
+    // #2887 (2), leader change / restart: the new leader's first activation samples the committed voters fresh, and the dropped NodeRemoved
+    // edge (the departure preceded activation) is stood in for by the backstop. Red when: the class depended on state the old leader held.
+    @Test
+    void seedCore_missingAtBoot_newLeaderSamplesCommittedSet_droppedEdge_rowsRemoved() {
+        var w = departedSeedCore(Set.of(CORE_1));
+
+        withoutCore2(w).seams(s -> s.withCoreRoleMembers(Set.of(CORE_1, CORE_2))).h.deliver(new ClusterInput.NodeRemoved(CORE_2));
+        w.activate();
+        assertThat(w.recordOf(CORE_2).isEmpty()).as("no departure record from the dropped edge").isTrue();
+        assertRecordedAfterBrm_andRowsRemoved(w);
+    }
+
+    // #2887 (3): a core that appears in the committed set only after activation is classed CORE from the next seam sample; before it, a worker.
+    @Test
+    void seedCore_missingAtBoot_classChangesWhenTheCommittedSetCatchesUp() {
+        var w = withoutCore2(departedSeedCore(Set.of(CORE_1)));
+
+        w.activate();
+        assertThat(Absence.classOf(w.h.model(), new Ctx(w.h.settings, w.h.wallMs, w.h.monoNs), CORE_2)).as("before").isEqualTo(Absence.NodeClass.UNASSIGNED_WORKER);
+        w.refreshSeams(s -> s.withCoreRoleMembers(Set.of(CORE_1, CORE_2)));
+        assertThat(Absence.classOf(w.h.model(), new Ctx(w.h.settings, w.h.wallMs, w.h.monoNs), CORE_2)).as("after").isEqualTo(Absence.NodeClass.CORE);
     }
 }

@@ -22,6 +22,12 @@
     </properties>
 
     <dependencies>
+        <!-- DockerRequirement / RequiresDocker: the one Docker guard (#3089) -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>testing</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!-- Runtime API modules the kit builds inward on -->
         <dependency>
             <groupId>org.pragmatica-lite</groupId>

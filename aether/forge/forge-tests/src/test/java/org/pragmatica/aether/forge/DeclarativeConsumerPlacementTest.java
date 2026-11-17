@@ -37,6 +37,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.MatchResult;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 
@@ -427,17 +428,71 @@ class DeclarativeConsumerPlacementTest {
                                                 .mapToInt(Map.Entry::getValue)
                                                 .sum();
 
-            // A counter read that fails answers 0, so wait until every surviving instance answers again before sampling.
+            // Sampled over a COMPLETE host set only: Ember's slice status is one arbitrary node's view, and the replacement
+            // node that heals the cluster after the kill joins with an empty view for a while. A bare hostNodes() then
+            // drops every host from the sum, which reads as -N "redelivered" events (#3099).
+            var survivors = receivedBefore.keySet()
+                                          .stream()
+                                          .filter(node -> !node.equals(victim))
+                                          .collect(Collectors.toSet());
+
             await().atMost(WAIT_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
-                   .until(() -> spreadReceived() >= survivorsBefore);
-            settledSpreadReceived();
+                   .until(() -> spreadReceivedOnCompleteHostSet(survivors) >= survivorsBefore);
+            settledOnCompleteHostSet(survivors);
             sleep(Duration.ofSeconds(12));
 
-            assertThat(spreadReceived() - survivorsBefore)
+            assertThat(completeHostSetCount(survivors) - survivorsBefore)
                     .describedAs("events delivered again after the assignee %s died: the cursor committed within one cadence of "
                                  + "the last ack, so nothing lies past the last checkpoint", victim)
                     .isZero();
+        }
+
+        /// The delivered count summed over the complete set of hosting instances, or -1 while that set is not complete:
+        /// the status view lacks one of the `required` survivors or shows fewer than `INSTANCES` hosts (the replacement
+        /// node has not synced its view yet), or any host's counter read failed (a failed read answers 0, which would
+        /// undercount). The host set and every read come from one pass, so a host cannot vanish between them.
+        private int spreadReceivedOnCompleteHostSet(Set<String> required) {
+            var hosts = hostNodes();
+
+            return hosts.containsAll(required) && hosts.size() == INSTANCES
+                   ? sumOfCountsOrIncomplete(hosts)
+                   : -1;
+        }
+
+        private int sumOfCountsOrIncomplete(Set<String> hosts) {
+            var counts = hostAppPorts(hosts).stream()
+                                            .map(port -> httpPost(port, "/api/stream-consumer/received-spread", "{}"))
+                                            .map(COUNT_FIELD::matcher)
+                                            .toList();
+
+            return counts.stream().allMatch(Matcher::find)
+                   ? counts.stream().mapToInt(matcher -> Integer.parseInt(matcher.group(1))).sum()
+                   : -1;
+        }
+
+        /// The first complete-host-set count that can be taken.
+        private int completeHostSetCount(Set<String> required) {
+            var sample = new AtomicInteger(-1);
+
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(() -> sample.updateAndGet(previous -> spreadReceivedOnCompleteHostSet(required)) >= 0);
+
+            return sample.get();
+        }
+
+        /// The complete-host-set count once two consecutive samples agree.
+        private void settledOnCompleteHostSet(Set<String> required) {
+            var lastSample = new AtomicInteger(-2);
+
+            await().atMost(DELIVERY_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(() -> isRepeatCompleteSample(lastSample, spreadReceivedOnCompleteHostSet(required)));
+        }
+
+        private static boolean isRepeatCompleteSample(AtomicInteger lastSample, int current) {
+            return current >= 0 && lastSample.getAndSet(current) == current;
         }
 
         /// The hosting node that is not the leader and is the assignee of the most spread-events partitions.
@@ -524,8 +579,10 @@ class DeclarativeConsumerPlacementTest {
     /// App-HTTP port of every hosting node. Ember assigns each node one slot and derives both ports from
     /// it, so the app port is the management port shifted by the base difference.
     private List<Integer> hostAppPorts() {
-        var hosts = hostNodes();
+        return hostAppPorts(hostNodes());
+    }
 
+    private List<Integer> hostAppPorts(Set<String> hosts) {
         return cluster.status()
                       .nodes()
                       .stream()

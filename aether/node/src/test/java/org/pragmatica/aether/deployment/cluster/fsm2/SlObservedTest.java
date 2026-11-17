@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
@@ -143,6 +144,38 @@ class SlObservedTest {
             assertThat(h.warns("stray-instance")).hasSize(1);
         }
 
+        /// #2834 (v3078a): an inherited open `stray-instance` (both instances in its members) is not raised again when the successor
+        /// condemns the stray. Red when: the once-per-instance guard in `Strays` is removed.
+        @Test
+        void condemnedStray_inheritedOpen_isNotRaisedAgain() {
+            var h = threeCores();
+
+            seedTarget(h, ORDERS, 1, 1);
+            seedRow(h, CORE_1, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
+            seedRow(h, CORE_2, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
+            h.seed(FsmWarningKey.fsmWarningKey("stray-instance", ORDERS.asString()),
+                   Fixtures.otherNodesRow(java.util.Map.of(CORE_1.id(), "", CORE_2.id(), ""), true, "stray"));
+            h.activate();
+            assertThat(h.submitsBesides(ClusterModel.SubmitKind.WARNINGS)).as("precondition: the successor condemned a stray").isNotEmpty();
+            assertThat(h.warns("stray-instance")).as("inherited open warning raised again").isEmpty();
+        }
+
+        /// #2834: once per condemned instance. Red when: the same stray is condemned again after its goal write was lost and raises `stray-instance` again.
+        @Test
+        void condemnedStray_reconciledAgain_isReportedOnce() {
+            var h = threeCores();
+
+            seedTarget(h, ORDERS, 1, 1);
+            seedRow(h, CORE_1, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
+            seedRow(h, CORE_2, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
+            h.policy = FsmHarness.SettlePolicy.HOLD;
+            h.warningsCommit = true;
+            h.activate();
+            h.settleHeld(h.submitsBesides(ClusterModel.SubmitKind.WARNINGS).getFirst(), new ClusterInput.Settlement.Failed("lost"));
+            h.deliver(new ClusterInput.Reconcile());
+            assertThat(h.warns("stray-instance")).as("condemned again after the goal write was lost").hasSize(1);
+        }
+
         /// D.6 row 20 (know 7cc9e79f61): the condemned row going is both the remediation completing and the subject leaving. Red when:
         /// the observed row of a condemned stray disappears and `stray-instance` stays open (no `stray-instance-removed`, same subject,
         /// once); the close is raised while the row stands; or a row that was never condemned raises it.
@@ -180,7 +213,7 @@ class SlObservedTest {
             seedRow(h, CORE_2, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
             seedRow(h, CORE_3, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
             h.activate();
-            assertThat(h.warns("stray-instance")).as("precondition: two surplus strays condemned").hasSize(2);
+            assertThat(h.warns("stray-instance")).as("precondition: two surplus strays condemned: one write holds both members, so one CAS pair and one opener (rule E)").hasSize(1);
             h.seedRemove(new SliceObservedKey(CORE_2, ORDERS));
             h.drain();
             assertThat(h.warns("stray-instance-removed")).as("CORE_3's condemned row still stands").isEmpty();

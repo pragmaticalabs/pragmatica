@@ -41,7 +41,7 @@ class StreamReadRouterEpochTest {
     private static final Epoch E1 = Epoch.epoch(1L, 1L, 1L);
     private static final Epoch E2 = Epoch.epoch(1L, 1L, 2L);
 
-    private final java.util.concurrent.atomic.AtomicReference<StreamPartitionOwnershipValue> ownerRecord = new java.util.concurrent.atomic.AtomicReference<>(record(List.of(new EpochStart(E1, 0L), new EpochStart(E2, 3L))));
+    private final java.util.concurrent.atomic.AtomicReference<StreamPartitionOwnershipValue> ownerRecord = new java.util.concurrent.atomic.AtomicReference<>(record(List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 3L, Option.none()))));
     private StreamPartitionManager ownerPartitions;
     private StreamPartitionManager assigneePartitions;
     private StreamReadRouter ownerRouter;
@@ -55,6 +55,7 @@ class StreamReadRouterEpochTest {
         for (var i = 0; i < 5; i++) {
             ownerPartitions.publishLocal(STREAM, PARTITION, new byte[]{(byte) i}, 1_000L + i).onFailure(cause -> fail(cause.message()));
         }
+        ownerPartitions.ownerLease(OwnerLease.TEST_VALID);
         ownerPartitions.ownershipRecords((_, _) -> Option.some(ownerRecord.get()));
         // The assignee knows the stream (its config is committed cluster-wide) and holds no ring: not a replica of it.
         assigneePartitions = StreamPartitionManager.streamPartitionManager();
@@ -98,7 +99,7 @@ class StreamReadRouterEpochTest {
     /// consumer's E1 predates the history), so the owner answers a conservative bound, and the assignee must learn that.
     @Test
     void forwardedConsumer_olderThanTheKeptHistory_getsAnInexactBoundary() {
-        ownerRecord.set(record(List.of(new EpochStart(E2, 3L, E1))));
+        ownerRecord.set(record(List.of(new EpochStart(E2, 3L, E1, Option.none()))));
 
         var read = assigneeRouter.readValidated(STREAM, PARTITION, 5L, 10, E1).await();
 

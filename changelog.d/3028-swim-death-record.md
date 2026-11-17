@@ -1,0 +1,3 @@
+### Fixed
+- SWIM: a death record (FAULTY incarnation and boot token, snapshotted at the FAULTY edge) now refuses a stale aliveness claim for a declared-dead node after its tombstone expires; it is cleared by a refutation at a higher incarnation, a new process token, or retirement (#3028).
+- SWIM: a peer holding a death record answers a stale aliveness claim of the recorded process with a death notice (`Faulty(X, k)`) so the falsely-dead node refutes and rejoins; a relayed `Ping` now carries the requester id (`onBehalfOf`, wire change), an isolated node probes its FAULTY peers and, with an empty member map, announces to a seed (#3028).

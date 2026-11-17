@@ -26,11 +26,11 @@ public final class StatusRoutes {
                                            Deque<ForgeEvent> events,
                                            long startTime,
                                            ConfigurableLoadRunner loadRunner) {
-        return RouteSource.of(statusRoute(cluster, metrics, startTime, loadRunner),
-                              nodeMetricsRoute(cluster),
-                              eventsRoute(events),
-                              healthRoute(),
-                              forgeStatusRoute());
+        return RouteSource.routeSource(statusRoute(cluster, metrics, startTime, loadRunner),
+                                       nodeMetricsRoute(cluster),
+                                       eventsRoute(events),
+                                       healthRoute(),
+                                       forgeStatusRoute());
     }
 
     private static Route<FullStatusResponse> statusRoute(EmberCluster cluster,

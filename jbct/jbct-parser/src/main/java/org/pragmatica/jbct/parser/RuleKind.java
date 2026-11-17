@@ -4,7 +4,7 @@ package org.pragmatica.jbct.parser;
 /// (see `Java25ParserV6.RULE_TABLE`, also surfaced via `Java25ParserV6.ruleKinds()`).
 ///
 /// Each value carries its `kindId` (matching the rule's index in v6's RULE_TABLE) and exposes
-/// it via {@link #kindId()}. `RuleKind.of(int)` performs O(1) reverse lookup. Switching on
+/// it via {@link #kindId()}. `RuleKind.ruleKind(int)` performs O(1) reverse lookup. Switching on
 /// `RuleKind` in formatter / linter dispatch restores the compile-time exhaustiveness that
 /// raw `int` switches cannot provide (the `default` arm is still required since UNKNOWN may
 /// surface for out-of-range kind ids).
@@ -178,7 +178,7 @@ public enum RuleKind {
     }
     /// O(1) lookup of the enum value for a v6 kindId. Returns UNKNOWN for out-of-range or
     /// unmapped kinds (defensive — should not occur in practice for grammar-emitted kinds).
-    public static RuleKind of(int kindId) {
+    public static RuleKind ruleKind(int kindId) {
         if (kindId < 0 || kindId >= BY_ID.length) {
             return UNKNOWN;
         }

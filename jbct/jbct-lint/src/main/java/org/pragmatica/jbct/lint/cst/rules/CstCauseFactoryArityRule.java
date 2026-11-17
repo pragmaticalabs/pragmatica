@@ -48,7 +48,7 @@ public class CstCauseFactoryArityRule implements CstLintRule {
         }
 
         var masked = MapperSafety.blankNonCode(source);
-        var diagnostics = Stream.<Diagnostic>builder();
+        var diagnostics = Stream.<Diagnostic> builder();
 
         for (var call : CauseHierarchies.factoryCalls(source, masked)) {
             var template = CauseHierarchies.leadingStringLiteral(call.args().getFirst().raw());
@@ -60,9 +60,12 @@ public class CstCauseFactoryArityRule implements CstLintRule {
             var conversions = CauseHierarchies.conversionCount(template);
 
             if (conversions != call.valueArity()) {
-                diagnostics.add(diagnostic(call.offset(), source, ctx,
-                                           "Template has " + conversions + " conversion(s) but the factory supplies "
-                                          + call.valueArity() + " value(s)"));
+                diagnostics.add(diagnostic(call.offset(),
+                                           source,
+                                           ctx,
+                                           "Template has " + conversions
+                                          + " conversion(s) but the factory supplies " + call.valueArity()
+                                          + " value(s)"));
                 continue;
             }
 
@@ -72,8 +75,11 @@ public class CstCauseFactoryArityRule implements CstLintRule {
                 var components = componentCounts.get(ctorRef.group(1));
 
                 if (components != null && components - 1 != call.valueArity()) {
-                    diagnostics.add(diagnostic(call.offset(), source, ctx,
-                                               "Record '" + ctorRef.group(1) + "' retains " + (components - 1)
+                    diagnostics.add(diagnostic(call.offset(),
+                                               source,
+                                               ctx,
+                                               "Record '" + ctorRef.group(1)
+                                              + "' retains " + (components - 1)
                                               + " value(s) but the factory formats " + call.valueArity()
                                               + " — the formatted value must be a component (R1)"));
                 }

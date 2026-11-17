@@ -78,8 +78,8 @@ public class FormatCheckMojo extends AbstractJbctMojo {
                   .flatMap(formatter::isFormatted)
                   .onSuccess(isFormatted -> {
                       if (!isFormatted) {
-                      needsFormatting.add(file);
-                  }
+                          needsFormatting.add(file);
+                      }
                   })
                   .onFailure(cause -> {
                                  errors.incrementAndGet();

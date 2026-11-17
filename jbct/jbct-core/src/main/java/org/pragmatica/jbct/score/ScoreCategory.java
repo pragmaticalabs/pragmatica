@@ -33,7 +33,6 @@ public enum ScoreCategory {
     /// and excluded from the total density.
     /// Typed-error construction conformance (the JBCT-CAUSE pack).
     CAUSE(false),
-
     STYLE(true);
     private final boolean advisory;
     ScoreCategory(boolean advisory) {

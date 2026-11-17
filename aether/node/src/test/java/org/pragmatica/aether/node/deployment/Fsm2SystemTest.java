@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -54,6 +55,7 @@ import org.pragmatica.utility.react.ReactGate;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 import static org.awaitility.Awaitility.await;
 
 /// The FSM2 system over the production route table, a real `KVStore` applier and real interpreters (phase-3 design 4.1, 4.4, 5.1, 8.3): the
@@ -277,6 +279,43 @@ class Fsm2SystemTest {
                 assertThat(harness.wiring.recorded()).contains("B10.WorkerAdmission -> fsm2:MembershipInputs.onWorkerJoin",
                                                               "B11.PlacementRedrive -> fsm2:MembershipInputs.onWorkerJoin",
                                                               "B9.cdm.WorkerLeave -> fsm2:MembershipInputs.onWorkerLeave");
+            }
+        }
+
+        /// #3253: two leader changes parked behind a closed guard reach the cluster FSM as `Deactivate` then `Activate` (the re-incarnation), not
+        /// as the `Activate` alone, which an FSM that is still Active ignores.
+        @Test
+        void twoLeaderChanges_parkedBehindAClosedGuard_reachTheClusterFsmAsDeactivateThenActivate() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false, false).assembled()) {
+                harness.router.route(LeaderNotification.leaderChange(Option.some(Fsm2Harness.PEER), false));
+                harness.router.route(LeaderNotification.leaderChange(Option.some(Fsm2Harness.SELF), true));
+                assertThat(stepped(harness, "cluster", "Activate")).as("closed: nothing ran").isZero();
+
+                harness.markerCommitted.set(true);
+                harness.commitLeader();
+                harness.guard.evaluate();
+
+                harness.awaitThat(() -> stepped(harness, "cluster", "Deactivate") == 1 && stepped(harness, "cluster", "Activate") == 1);
+            }
+        }
+
+        /// #3253: a leave parked behind a parked leader election supersedes it: the cluster FSM must see the `Deactivate` alone, never the
+        /// `Activate`, so no incarnation is minted. Red when: `onLeaderChange` routes the Deactivate through `whenOpenAfterParked` (parked
+        /// `[Activate]` then `Deactivate` becomes `[Activate, Deactivate]`, and the Activate runs on opening).
+        @Test
+        void aLeaderChangeAway_parkedBehindAParkedActivation_supersedesIt_soTheClusterFsmNeverActivates() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false, false).assembled()) {
+                harness.router.route(LeaderNotification.leaderChange(Option.some(Fsm2Harness.SELF), true));
+                harness.router.route(LeaderNotification.leaderChange(Option.some(Fsm2Harness.PEER), false));
+                assertThat(stepped(harness, "cluster", "Activate")).as("closed: nothing ran").isZero();
+
+                harness.markerCommitted.set(true);
+                harness.commitLeader();
+                harness.guard.evaluate();
+
+                harness.awaitThat(() -> stepped(harness, "cluster", "Deactivate") == 1);
+                assertThat(stepped(harness, "cluster", "Activate")).as("the parked Activate was superseded").isZero();
+                assertThat(activeModel(harness)).as("no incarnation was minted").isEqualTo(Option.none());
             }
         }
 
@@ -875,6 +914,89 @@ class Fsm2SystemTest {
             }
         }
 
+        /// #3002: what the caller chains on the returned promise (the node's teardown, which blocks) never runs on the thread that resolved the
+        /// wait. The hop executor finishes its task before `execute` returns, so a continuation attached before the hop must run on the hop's
+        /// thread; the earlier `flatMap` into the pooled quiesce resolved the returned promise inline on the resolver whenever the quiesce
+        /// finished first, and without the hop the continuation runs wherever the quiesce or the resolver left it.
+        @Test
+        void leaveQuorum_continuationRunsOnTheHop_neverOnTheThreadThatResolvedTheWait() {
+            var resolver = Executors.newSingleThreadExecutor(runnable -> new Thread(runnable, "resolver-3002"));
+
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false).assembled()) {
+                for (var round = 0; round < ROUNDS; round++) {
+                    var continuedOn = new AtomicReference<Thread>();
+                    var resolvedOn = new AtomicReference<Thread>();
+                    var delivered = Promise.<Unit> promise();
+                    var left = harness.wiring.leaveQuorum(() -> {}, () -> delivered, () -> {}, RUN_BEFORE_RETURN)
+                                             .map(_ -> recordOn(continuedOn));
+
+                    resolver.execute(() -> resolveOn(delivered, resolvedOn));
+
+                    assertThat(left.await(LEFT_BOUND).isSuccess()).as("the quorum is left").isTrue();
+                    assertThat(continuedOn.get().getName()).as("the continuation ran on the hop, round " + round).isEqualTo(HOP_THREAD);
+                    assertThat(continuedOn.get()).as("never on the resolver, round " + round).isNotSameAs(resolvedOn.get());
+                }
+            } finally {
+                resolver.shutdownNow();
+            }
+        }
+
+        /// #3002 through the production path: what the caller chains on the returned promise runs on neither the thread that resolved the wait nor
+        /// the pooled thread that ran the quiesce. Without the hop, the `flatMap` into the pooled quiesce resolves the returned promise either on
+        /// the quiesce's thread (the quiesce still pending when `flatMap` looked) or inline on the resolver (the quiesce already finished), so
+        /// this is RED in every round at the base; with the hop, a fresh virtual thread of the async executor resolves it.
+        @Test
+        void leaveQuorum_continuationRunsOffTheQuiesceAndOffTheResolver() {
+            var resolver = Executors.newSingleThreadExecutor(runnable -> new Thread(runnable, "resolver-3002"));
+
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false).assembled()) {
+                for (var round = 0; round < ROUNDS; round++) {
+                    var continuedOn = new AtomicReference<Thread>();
+                    var quiescedOn = new AtomicReference<Thread>();
+                    var resolvedOn = new AtomicReference<Thread>();
+                    var delivered = Promise.<Unit> promise();
+                    var left = harness.wiring.leaveQuorum(() -> {}, () -> delivered, () -> quiescedOn.set(Thread.currentThread()))
+                                             .map(_ -> recordOn(continuedOn));
+
+                    resolver.execute(() -> resolveOn(delivered, resolvedOn));
+
+                    assertThat(left.await(LEFT_BOUND).isSuccess()).as("the quorum is left").isTrue();
+                    assertThat(continuedOn.get()).as("off the resolver and off the quiesce's thread, round " + round)
+                                                 .isNotSameAs(resolvedOn.get())
+                                                 .isNotSameAs(quiescedOn.get());
+                }
+            } finally {
+                resolver.shutdownNow();
+            }
+        }
+
+        private static final String HOP_THREAD = "hop-3002";
+
+        /// Runs the task on a fresh thread and joins it before `execute` returns: the hop's promise is ALREADY resolved when anything is attached.
+        private static final Executor RUN_BEFORE_RETURN = StopDrain::runToCompletionOnFreshThread;
+
+        private static void runToCompletionOnFreshThread(Runnable task) {
+            var worker = Thread.ofPlatform().name(HOP_THREAD).unstarted(task);
+
+            worker.start();
+            joinUninterrupted(worker);
+        }
+
+        private static void joinUninterrupted(Thread worker) {
+            try {
+                worker.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                fail("interrupted joining the hop task: " + e);
+            }
+        }
+
+        private static Unit recordOn(AtomicReference<Thread> continuedOn) {
+            continuedOn.set(Thread.currentThread());
+
+            return Unit.unit();
+        }
+
         private static void resolveOn(Promise<Unit> delivered, AtomicReference<Thread> resolvedOn) {
             resolvedOn.set(Thread.currentThread());
             delivered.succeed(Unit.unit());
@@ -1251,6 +1373,71 @@ class Fsm2SystemTest {
             }
         }
 
+        /// #3262 (the #3253 shape on the legacy path): the B7 leader toggle parked behind a closed guard as a leave then an election reaches the
+        /// legacy CDM as `deactivate` then `activate` (the re-incarnation), not as the `activate` alone, which an Active legacy cluster FSM ignores.
+        /// Red when: `legacyGatedLeaderToggle` parks the election through `whenOpen` (it replaces the parked leave, and only `activate` runs).
+        @Test
+        void aLegacyLeaderToggle_parkedAsLeaveThenElection_reachesTheTargetAsDeactivateThenActivate() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false)) {
+                var toggles = new CopyOnWriteArrayList<String>();
+                var hook = harness.wiring.legacyGatedLeaderToggle("B7.test", change -> toggles.add(toggleOf(change)));
+
+                harness.markerEngine = DeploymentEngine.FSM2;
+                harness.guard.evaluate();
+                hook.accept(LeaderNotification.leaderChange(Option.some(Fsm2Harness.PEER), false));
+                hook.accept(LeaderNotification.leaderChange(Option.some(Fsm2Harness.SELF), true));
+
+                assertThat(toggles).as("closed: nothing ran").isEmpty();
+
+                harness.markerEngine = DeploymentEngine.LEGACY;
+                harness.guard.evaluate();
+
+                assertThat(toggles).as("the parked leave is kept ahead of the parked election").containsExactly("deactivate", "activate");
+            }
+        }
+
+        /// #3262: a leave parked behind a parked election supersedes it: the legacy CDM sees the `deactivate` alone, never the `activate`. Red
+        /// when: `legacyGatedLeaderToggle` parks the leave through `whenOpenAfterParked` (both run, the `activate` first).
+        @Test
+        void aLegacyLeaderToggle_parkedAsElectionThenLeave_reachesTheTargetAsTheLeaveAlone() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false)) {
+                var toggles = new CopyOnWriteArrayList<String>();
+                var hook = harness.wiring.legacyGatedLeaderToggle("B7.test", change -> toggles.add(toggleOf(change)));
+
+                harness.markerEngine = DeploymentEngine.FSM2;
+                harness.guard.evaluate();
+                hook.accept(LeaderNotification.leaderChange(Option.some(Fsm2Harness.SELF), true));
+                hook.accept(LeaderNotification.leaderChange(Option.some(Fsm2Harness.PEER), false));
+                harness.markerEngine = DeploymentEngine.LEGACY;
+                harness.guard.evaluate();
+
+                assertThat(toggles).as("the later leave supersedes the parked election").containsExactly("deactivate");
+            }
+        }
+
+        /// #3262: the B7 leader toggle runs each change at once while the guard is open, and is a counted drop under FSM2 (where
+        /// `Fsm2System.onLeaderChange` owns B7).
+        @Test
+        void aLegacyLeaderToggle_runsEachChangeWhileOpen_andIsACountedDropUnderFsm2() {
+            var fsm2Toggles = new CopyOnWriteArrayList<String>();
+
+            try (var legacy = new Fsm2Harness(DeploymentEngine.LEGACY, false); var fsm2 = new Fsm2Harness(DeploymentEngine.FSM2, false)) {
+                var toggles = new CopyOnWriteArrayList<String>();
+                var hook = legacy.wiring.legacyGatedLeaderToggle("B7.test", change -> toggles.add(toggleOf(change)));
+                var dropped = fsm2.wiring.legacyGatedLeaderToggle("B7.test", change -> fsm2Toggles.add(toggleOf(change)));
+
+                hook.accept(LeaderNotification.leaderChange(Option.some(Fsm2Harness.SELF), true));
+                hook.accept(LeaderNotification.leaderChange(Option.some(Fsm2Harness.PEER), false));
+                dropped.accept(LeaderNotification.leaderChange(Option.some(Fsm2Harness.SELF), true));
+
+                assertThat(toggles).as("open: each change ran, in order").containsExactly("activate", "deactivate");
+                assertThat(legacy.wiring.recorded()).contains("B7.test -> legacy+gate+toggle");
+                assertThat(fsm2.registry.counter("aether_deployment_fsm2_dropped_total", "point", "B7.test").count()).isEqualTo(1.0);
+            }
+
+            assertThat(fsm2Toggles).as("never runs under FSM2").isEmpty();
+        }
+
         /// B20: the guard re-reads the marker when the marker key commits.
         @Test
         void theCommittedMarkerKey_triggersTheGuard() {
@@ -1425,5 +1612,11 @@ class Fsm2SystemTest {
                                                                                       0,
                                                                                       List.of(),
                                                                                       1L);
+    }
+
+    private static String toggleOf(LeaderNotification.LeaderChange change) {
+        return change.localNodeIsLeader()
+               ? "activate"
+               : "deactivate";
     }
 }

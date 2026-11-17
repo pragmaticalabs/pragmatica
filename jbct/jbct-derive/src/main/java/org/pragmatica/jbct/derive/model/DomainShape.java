@@ -2,6 +2,7 @@ package org.pragmatica.jbct.derive.model;
 
 import java.util.List;
 
+
 /// A domain-shape fact (SPEC.md §3, `[[domain_shape]]`): a fact about an effectful operation
 /// the nine questions do not ask for directly but the derivation still needs (recovery cannot
 /// be derived without it).

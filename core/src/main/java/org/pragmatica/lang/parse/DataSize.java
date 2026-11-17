@@ -15,6 +15,7 @@
  */
 package org.pragmatica.lang.parse;
 
+import java.util.Locale;
 import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Cause;
@@ -123,7 +124,7 @@ public sealed interface DataSize {
     private static Result<Long> parseLongValue(String valueStr, String unit) {
         return Result.lift1(Long::parseLong, valueStr)
                      .map(value -> toBytes(value,
-                                           unit.toUpperCase()))
+                                           unit.toUpperCase(Locale.ROOT)))
                      .mapError(_ -> new DataSizeError.InvalidValue(valueStr, unit));
     }
 

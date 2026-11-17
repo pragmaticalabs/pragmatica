@@ -95,8 +95,8 @@ public sealed interface InPlaceTomlMerge {
     private static Result<Plan> plan(String existingText, TomlDocument existing, String generated, TomlDocument fresh) {
         var lines = List.of(existingText.split("\n", -1));
         var genLines = List.of(generated.split("\n", -1));
-        var index = Index.of(lines);
-        var genIndex = Index.of(genLines);
+        var index = Index.index(lines);
+        var genIndex = Index.index(genLines);
 
         if (!index.elementCountsMatch(existing) || !genIndex.elementCountsMatch(fresh)) {
             return new ClusterInitError.MergeError("line index and parsed document disagree on table-array elements").result();
@@ -357,7 +357,7 @@ public sealed interface InPlaceTomlMerge {
             blockOrder.add("");
         }
 
-        static Index of(List<String> lines) {
+        static Index index(List<String> lines) {
             var index = new Index();
             var current = index.sections.get("");
             var section = "";

@@ -9,7 +9,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.regex.Pattern;
-
 import javax.xml.parsers.DocumentBuilderFactory;
 
 import org.pragmatica.jbct.lint.cst.filetype.FileTypeClassifier;
@@ -22,6 +21,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
 import org.w3c.dom.Element;
+
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
 
@@ -48,16 +48,12 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// each I/O failure separately — need the composition chain decomposed into steps and each step's
 /// failure branch traced. That is a larger piece and is NOT attempted; this reports on compensations
 /// and absorptions only, and says so in its output rather than implying full coverage of the idea.
-@Command(name = "obligations",
-         description = "Report composition obligations (compensations, absorbed failures) that no test exercises",
-         mixinStandardHelpOptions = true)
+@Command(name = "obligations", description = "Report composition obligations (compensations, absorbed failures) that no test exercises", mixinStandardHelpOptions = true)
 public class ObligationsCommand implements Callable<Integer> {
     static final int USAGE_ERROR = 2;
     static final List<String> SUPPORTED_FORMATS = List.of("text", "json");
-
     /// A `.recover(...)` absorbs a failure; the absorbed branch is an obligation.
     private static final Pattern ABSORPTION = Pattern.compile("\\.recover\\s*\\(");
-
     /// A saga's undo step. Named rather than inferred: compensation is a role, and the codebases
     /// this serves name it consistently.
     private static final Pattern COMPENSATION = Pattern.compile("^(?:compensate|undo|rollback|revert)");
@@ -65,9 +61,7 @@ public class ObligationsCommand implements Callable<Integer> {
     @Parameters(paramLabel = "<path>", description = "Files or directories to analyse", arity = "1..*")
     List<Path> paths;
 
-    @picocli.CommandLine.Option(names = {"--coverage"},
-                                description = "JaCoCo XML report(s); repeat for a multi-module build",
-                                required = true)
+    @picocli.CommandLine.Option(names = {"--coverage"}, description = "JaCoCo XML report(s); repeat for a multi-module build", required = true)
     List<Path> coverageReports;
 
     @picocli.CommandLine.Option(names = {"--format", "-f"}, description = "Output format: text, json", defaultValue = "text")
@@ -82,7 +76,8 @@ public class ObligationsCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         if (!SUPPORTED_FORMATS.contains(format.toLowerCase(Locale.ROOT))) {
-            System.err.println("Unknown format '" + format + "'; supported formats: " + String.join(", ", SUPPORTED_FORMATS));
+            System.err.println("Unknown format '" + format
+                              + "'; supported formats: " + String.join(", ", SUPPORTED_FORMATS));
 
             return USAGE_ERROR;
         }
@@ -106,13 +101,15 @@ public class ObligationsCommand implements Callable<Integer> {
         var files = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
         var parser = new Java25Parser();
         var obligations = new ArrayList<Obligation>();
-
         var unanalysed = new int[1];
 
         for (var file : files) {
             SourceFile.sourceFile(file)
                       .flatMap(source -> parser.parse(source.content()))
-                      .onSuccess(root -> collect(root, file.getFileName().toString(), coverage, obligations))
+                      .onSuccess(root -> collect(root,
+                                                 file.getFileName().toString(),
+                                                 coverage,
+                                                 obligations))
                       .onFailure(cause -> reportUnanalysed(file, cause, unanalysed));
         }
 
@@ -128,8 +125,7 @@ public class ObligationsCommand implements Callable<Integer> {
         // a floor. What it must not do is stay silent: an obligation in a file the parser could not
         // read is simply absent from the list, and absence is indistinguishable from "no obligation"
         // unless the report says which it is (#977).
-        coverageOfRun.gapReport("obligations")
-                     .onPresent(System.err::println);
+        coverageOfRun.gapReport("obligations").onPresent(System.err::println);
 
         return 0;
     }
@@ -173,8 +169,7 @@ public class ObligationsCommand implements Callable<Integer> {
     /// directly, and the count stops matching the four obligations that are actually there.
     private boolean isInnermostAbsorber(Cursor method) {
         return findAllMethods(method).stream()
-                      .noneMatch(nested -> nested.idx() != method.idx()
-                                          && ABSORPTION.matcher(memberDeclText(nested)).find());
+                             .noneMatch(nested -> nested.idx() != method.idx() && ABSORPTION.matcher(memberDeclText(nested)).find());
     }
 
     /// `sourcefilename#methodName` -> whether any instruction in it executed. Keyed on the source
@@ -194,7 +189,6 @@ public class ObligationsCommand implements Callable<Integer> {
                 var factory = DocumentBuilderFactory.newInstance();
 
                 factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
-
                 var document = factory.newDocumentBuilder().parse(report.toFile());
                 var classes = document.getElementsByTagName("class");
 
@@ -225,7 +219,7 @@ public class ObligationsCommand implements Callable<Integer> {
             var counter = (Element) counters.item(i);
 
             if ("INSTRUCTION".equals(counter.getAttribute("type"))) {
-                return !"0".equals(counter.getAttribute("covered"));
+                return ! "0".equals(counter.getAttribute("covered"));
             }
         }
 
@@ -240,13 +234,15 @@ public class ObligationsCommand implements Callable<Integer> {
                           obligations.size(),
                           obligations.size() - gaps.size(),
                           gaps.size());
-
         if (gaps.isEmpty()) {
             System.out.println("  no gaps");
         } else {
             System.out.println();
             gaps.forEach(gap -> System.out.printf("  %s:%d  %-16s %s — never executed under test%n",
-                                                  gap.file(), gap.line(), gap.kind(), gap.method()));
+                                                  gap.file(),
+                                                  gap.line(),
+                                                  gap.kind(),
+                                                  gap.method()));
         }
 
         System.out.println();
@@ -257,13 +253,17 @@ public class ObligationsCommand implements Callable<Integer> {
         var builder = new StringBuilder("{\n  \"scope\": \"compensations and absorbed failures only\",\n");
 
         builder.append("  \"obligations\": [\n");
-
         for (int i = 0; i < obligations.size(); i++) {
             var o = obligations.get(i);
 
-            builder.append("    {\"file\": \"%s\", \"line\": %d, \"method\": \"%s\", \"kind\": \"%s\", \"covered\": %s}"
-                                   .formatted(o.file(), o.line(), o.method(), o.kind(), o.covered()));
-            builder.append(i < obligations.size() - 1 ? ",\n" : "\n");
+            builder.append("    {\"file\": \"%s\", \"line\": %d, \"method\": \"%s\", \"kind\": \"%s\", \"covered\": %s}".formatted(o.file(),
+                                                                                                                                   o.line(),
+                                                                                                                                   o.method(),
+                                                                                                                                   o.kind(),
+                                                                                                                                   o.covered()));
+            builder.append(i < obligations.size() - 1
+                           ? ",\n"
+                           : "\n");
         }
 
         builder.append("  ]\n}\n");

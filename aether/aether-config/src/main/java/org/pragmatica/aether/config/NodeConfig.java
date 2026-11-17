@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config;
 
+import java.util.Locale;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
@@ -51,7 +53,7 @@ public record NodeConfig(String heap,
     }
 
     public String javaOpts() {
-        var gcOpt = switch (gc.toLowerCase()) {
+        var gcOpt = switch (gc.toLowerCase(Locale.ROOT)) {
             case "zgc" -> "-XX:+UseZGC";
             case "g1" -> "-XX:+UseG1GC";
             default -> "-XX:+UseZGC";

@@ -41,7 +41,7 @@ public class CstOrElseThrowRule implements CstLintRule {
     private boolean spellsOrElseThrow(Cursor node) {
         if (node.kindIsAny(RuleKind.POST_OP, RuleKind.CHAIN_OP)) {
             return text(node).trim()
-                             .startsWith(".orElseThrow");
+                       .startsWith(".orElseThrow");
         }
 
         return node.kindIs(RuleKind.QUALIFIED_NAME) && text(node).contains(".orElseThrow");

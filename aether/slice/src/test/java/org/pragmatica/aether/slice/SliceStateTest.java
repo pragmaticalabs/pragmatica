@@ -4,6 +4,7 @@
 
 package org.pragmatica.aether.slice;
 
+import java.util.Locale;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -174,6 +175,22 @@ class SliceStateTest {
         @Test
         void aRealState_isStillReachableByName() {
             assertThat(SliceState.sliceState("ACTIVE").isSuccess()).isTrue();
+        }
+    }
+
+    @Test
+    void sliceState_resolvesLowercaseName_underTurkishLocale() {
+        underTurkishLocale(() -> assertThat(SliceState.sliceState("active").isSuccess()).isTrue());
+    }
+
+    private static void underTurkishLocale(Runnable body) {
+        var saved = Locale.getDefault();
+
+        try {
+            Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+            body.run();
+        } finally {
+            Locale.setDefault(saved);
         }
     }
 }

@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.pg.codegen.processor;
 
+import java.util.Locale;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -105,7 +106,7 @@ class ScalarAliasAndArrayBindTest {
         void keywordLikeAlias_isTheColumn(String alias) throws Exception {
             var source = factory("Promise<String>", "SELECT COALESCE(lower(name), '') AS " + alias + " FROM users WHERE name = ANY(:names)");
 
-            assertThat(source).contains("row.getString(\"" + alias.toLowerCase() + "\")").doesNotContain("???");
+            assertThat(source).contains("row.getString(\"" + alias.toLowerCase(Locale.ROOT) + "\")").doesNotContain("???");
         }
 
         @Test
@@ -142,7 +143,7 @@ class ScalarAliasAndArrayBindTest {
             import org.pragmatica.aether.resource.db.PgSql;
             import org.pragmatica.lang.Promise;
 
-            record UserRow(long id, String name, String email, boolean active) {}
+            record UserRow(long id, String name, String email, boolean active) { static UserRow userRow(long id, String name, String email, boolean active) { return new UserRow(id, name, email, active); } }
 
             @PgSql
             public interface UserCrud {

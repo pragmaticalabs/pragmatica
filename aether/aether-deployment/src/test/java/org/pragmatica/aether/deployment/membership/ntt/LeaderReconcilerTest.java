@@ -22,6 +22,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.SliceRowSource;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -1660,8 +1661,8 @@ class LeaderReconcilerTest {
         /// Wire both production KV-backed seams, exactly as `AetherNode` does.
         @Contract
         private void wireKvSliceSources() {
-            reconciler.setOwnsActiveSlices(SliceOwnershipQuery.ownsActiveSlices(kvStore));
-            reconciler.setSliceDrainGuard(SliceOwnershipQuery.minAvailableDrainGuard(kvStore));
+            reconciler.setOwnsActiveSlices(SliceOwnershipQuery.ownsActiveSlices(kvStore, SliceRowSource.legacy()));
+            reconciler.setSliceDrainGuard(SliceOwnershipQuery.minAvailableDrainGuard(kvStore, SliceRowSource.legacy()));
         }
 
         @Contract

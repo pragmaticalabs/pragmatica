@@ -292,7 +292,26 @@ CF == RF (losing any one replica refuses writes); CF == 1 (the owner's death los
 not replicated).
 
 **Scope:** node loss in a RUNNING cluster. It does NOT cover a whole-cluster cold restart (stream data is keyed by
-NodeId; see the cold-restart work).
+NodeId; real fix: #1569, rc6).
+
+**Restart guarantees per operation (D7, #2825).** Every restart mints a fresh NodeId (#1543) and stream state lives under
+`stream-segments/<nodeId>/` and `wal/<nodeId>`, so a restarted node does not read its previous directories.
+
+| Operation | Stream records and durable-entity state | Mechanism |
+|---|---|---|
+| Replica loss in a running cluster | survives while a confirmation-factor set of replicas remains | CF replicas hold every acknowledged record |
+| Rolling replacement (one node at a time) | survives | the replacement is re-replicated from the replicas that stayed up |
+| Whole-cluster restart | **lost**, even when the disks survive; KV state is restored from `[backup]` | the new NodeIds do not match the old directories |
+
+Recovery after a whole-cluster restart: republish the stream records from their source. A node that boots over a data root
+holding directories of another NodeId raises the operator warning `stream-data-abandoned` (naming each directory and its
+size) and deletes nothing; remove the directories by hand once nothing needs them. The warning leaves a marker file
+`.stream-data-abandoned` beside the stream data root; the first later boot that finds no directory of another NodeId raises
+`stream-data-abandoned-cleared` (which closes the warning even though a new process raised it), deletes the marker, and a
+boot over a root that never warned raises nothing. The warning subject is `<nodeId>@<data root>`; the marker lists the node ids that warned, so a clear closes only the warning of the node that raised it, even when two nodes share a data-root path. The marker is written before the warning, so a crash in between yields one clear for a warning never raised (harmless; the opposite order could leave a warning that never clears). If the marker cannot be written the warning is still raised, says so, and does not clear automatically; a replaced or fresh volume loses the marker the same way. A node restarted in place on its old disk during a rolling replacement gets the
+same warning for its own earlier directories (the check reads the disk, not the cluster); those records survive on the replicas
+that stayed up. See
+[known limitations](known-limitations.md#streams-and-durable-entities).
 
 | Kind | Operation | What the caller gets | Mechanism | Evidence |
 |---|---|---|---|---|

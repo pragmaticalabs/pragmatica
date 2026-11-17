@@ -219,6 +219,24 @@ final class MbWorld {
         return this;
     }
 
+    /// Activate with a DEPARTED worker record still carrying its directive: since #3193 C17b retires that directive, so the state
+    /// exists only until C17b commits. Only the CLEANUP submission is lost here, which models the join arriving first.
+    MbWorld activateBeforeC17b() {
+        h.loseKinds = java.util.Set.of(ClusterModel.SubmitKind.CLEANUP);
+        h.activate();
+        h.loseKinds = java.util.Set.of();
+
+        return this;
+    }
+
+    /// For a test that observes a DEPARTED worker's record and directive standing together: since #3193 that state lasts only until C17b
+    /// commits, so the CLEANUP submission (still logged) is lost for the whole test.
+    MbWorld c17bLost() {
+        h.loseKinds = java.util.Set.of(ClusterModel.SubmitKind.CLEANUP);
+
+        return this;
+    }
+
     /// A committed governor announcement (a LeaderTransaction through the real applier).
     MbWorld announce(String community, NodeId governor, NodeId... members) {
         h.seed(new GovernorAnnouncementKey(community), roster(governor, false, members));

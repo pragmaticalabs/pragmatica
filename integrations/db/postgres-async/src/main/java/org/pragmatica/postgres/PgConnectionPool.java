@@ -227,8 +227,8 @@ public class PgConnectionPool extends PgConnectible {
                                    },
                                    _ -> {
                                        if (remaining.decrementAndGet() == 0) {
-                                       result.succeed(unit());
-                                   }
+                                           result.succeed(unit());
+                                       }
 
                                        return null;
                                    }));

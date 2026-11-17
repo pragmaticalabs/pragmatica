@@ -15,7 +15,8 @@ import org.pragmatica.messaging.Message;
 /// keeps the core-delta invariant (workers never enter `announced`), so `processRemoved` used to
 /// discard a departed worker's edge entirely after pruning its own `announcedWorkers` guard.
 /// Nothing told the deployment FSM the worker was gone: its entry in the in-memory `workerNodes`
-/// allocation-pool set, its `SliceNodeKey`/`NodeArtifactKey`/`NodeRoutesKey` KV footprint, all
+/// allocation-pool set, its `SliceNodeKey`/`NodeArtifactKey`/`NodeRoutesKey` KV footprint (under FSM2
+/// the `SliceDesiredKey`/`SliceObservedKey` pair in place of `NodeArtifactKey`, spec 1.6.1), all
 /// lingered forever, and the reconciler never saw a shortfall to fill.
 ///
 /// Deliberately does not carry `role` — a leave has nothing to differentiate by, unlike a join.

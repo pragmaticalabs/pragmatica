@@ -27,6 +27,14 @@
             <artifactId>junit-jupiter-api</artifactId>
             <scope>provided</scope>
         </dependency>
+        <!-- provided: DockerRequirement's availability probe; every module that calls it already has testcontainers
+             at test scope (#3089). -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <version>1.21.4</version>
+            <scope>provided</scope>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-engine</artifactId>

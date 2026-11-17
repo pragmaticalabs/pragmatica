@@ -154,6 +154,7 @@ class ManagementStatusCoverageTest {
     @Test
     void centralTable_listsExactlyTheTypesThatDoNotStateTheirOwnStatus() throws Exception {
         var expected = new java.util.TreeSet<>(List.of("org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator$CoordinatorError#NOT_LEADER",
+                                                                    "org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator$CoordinatorError#SUPERSEDED",
                                                                     "org.pragmatica.aether.deployment.cluster.HierarchyStateWriter$Refusal#CONFLICT"));
 
         for (var type : causeTypes()) {
@@ -191,6 +192,13 @@ class ManagementStatusCoverageTest {
     @Test
     void coordinatorNotLeader_answers409() {
         assertThat(ManagementStatus.statusOf(ConsumerGroupCoordinator.CoordinatorError.NOT_LEADER)).isEqualTo(HttpStatus.CONFLICT);
+    }
+
+    /// #2642 (marked guess: 409 Conflict, the issue says "409 or a retriable status"): a deposed leader's rebalance refusal is an expected
+    /// race outcome, the same class of answer as not-leader.
+    @Test
+    void coordinatorSuperseded_answers409() {
+        assertThat(ManagementStatus.statusOf(ConsumerGroupCoordinator.CoordinatorError.SUPERSEDED)).isEqualTo(HttpStatus.CONFLICT);
     }
 
     /// #2944: the leader-side fence refusing a write as a transient conflict is a retryable state conflict, not a server fault; the other

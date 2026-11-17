@@ -75,9 +75,7 @@ public class CheckCommand implements Callable<Integer> {
             checkLint(file, linter, allDiagnostics, lintErrors, warnings, parseErrors);
         }
 
-        LayerCoverage.coverage(filesToProcess, context)
-                     .map(LayerCoverage::render)
-                     .onPresent(System.err::println);
+        LayerCoverage.coverage(filesToProcess, context).map(LayerCoverage::render).onPresent(System.err::println);
         var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), parseErrors.get());
         // Report format issues
         if (!needsFormatting.isEmpty()) {
@@ -140,10 +138,10 @@ public class CheckCommand implements Callable<Integer> {
                   .flatMap(formatter::isFormatted)
                   .onSuccess(isFormatted -> {
                                  if (!isFormatted) {
-                                 needsFormatting.add(file);
-                             } else if (verbose) {
-                                 System.out.println("  ✓ format: " + file.getFileName());
-                             }
+                                     needsFormatting.add(file);
+                                 } else if (verbose) {
+                                     System.out.println("  ✓ format: " + file.getFileName());
+                                 }
                              })
                   .onFailure(cause -> {
                                  errors.incrementAndGet();
@@ -162,16 +160,16 @@ public class CheckCommand implements Callable<Integer> {
                   .onSuccess(diagnostics -> {
                                  allDiagnostics.addAll(diagnostics);
                                  for (var d : diagnostics) {
-                                 switch (d.severity()) {
-            case ERROR -> errors.incrementAndGet();
-            case WARNING -> warnings.incrementAndGet();
-            default -> {}
-        }
-                             }
+                                     switch (d.severity()) {
+                                         case ERROR -> errors.incrementAndGet();
+                                         case WARNING -> warnings.incrementAndGet();
+                                         default -> {}
+                                     }
+                                 }
 
                                  if (verbose && diagnostics.isEmpty()) {
-                                 System.out.println("  ✓ lint: " + file.getFileName());
-                             }
+                                     System.out.println("  ✓ lint: " + file.getFileName());
+                                 }
                              })
                   .onFailure(cause -> {
                                  parseErrors.incrementAndGet();

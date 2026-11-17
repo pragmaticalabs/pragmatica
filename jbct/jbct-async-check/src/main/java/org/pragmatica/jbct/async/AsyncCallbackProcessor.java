@@ -1,7 +1,6 @@
 package org.pragmatica.jbct.async;
 
 import java.util.Set;
-
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.annotation.processing.RoundEnvironment;
@@ -65,10 +64,10 @@ public final class AsyncCallbackProcessor extends AbstractProcessor {
                            ? Diagnostic.Kind.ERROR
                            : Diagnostic.Kind.WARNING;
 
-            JavacTask.instance(env)
-                     .addTaskListener(AsyncCallbackCheck.asyncCallbackCheck(Trees.instance(env), severity));
+            JavacTask.instance(env).addTaskListener(AsyncCallbackCheck.asyncCallbackCheck(Trees.instance(env), severity));
         } catch (RuntimeException | LinkageError e) {
-            env.getMessager().printMessage(Diagnostic.Kind.NOTE, "JBCT-ASYNC-01 is not checked: the compiler is not javac");
+            env.getMessager()
+               .printMessage(Diagnostic.Kind.NOTE, "JBCT-ASYNC-01 is not checked: the compiler is not javac");
         }
     }
 }

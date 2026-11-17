@@ -38,7 +38,7 @@ class CstValueObjectFactoryRuleTest {
             assertFalse(hasRule("""
                     package org.example;
                     public record SeatReleased(String seatId, long version) {
-                        public static final Topic<SeatReleased> TOPIC = Topic.of(SeatReleased.class, "seat-released");
+                        public static final Topic<SeatReleased> TOPIC = Topic.topic(SeatReleased.class, "seat-released");
                     }
                     """));
         }
@@ -49,7 +49,7 @@ class CstValueObjectFactoryRuleTest {
                     package org.example;
                     public record SeatReleased(String seatId, long version) {
                         public static final org.pragmatica.aether.slice.topic.Topic<SeatReleased> TOPIC =
-                            Topic.of(SeatReleased.class, "seat-released");
+                            Topic.topic(SeatReleased.class, "seat-released");
                     }
                     """));
         }
@@ -61,7 +61,7 @@ class CstValueObjectFactoryRuleTest {
             assertTrue(hasRule("""
                     package org.example;
                     public record SeatReleasedPublisher(String seatId, long version) {
-                        public static final Topic<SeatReleased> TOPIC = Topic.of(SeatReleased.class, "seat-released");
+                        public static final Topic<SeatReleased> TOPIC = Topic.topic(SeatReleased.class, "seat-released");
                     }
                     """));
         }
@@ -82,7 +82,7 @@ class CstValueObjectFactoryRuleTest {
                     package org.example;
                     public record SeatEnvelope(String seatId, long version) {
                         record SeatReleased(String seatId) {
-                            static final Topic<SeatReleased> TOPIC = Topic.of(SeatReleased.class, "seat-released");
+                            static final Topic<SeatReleased> TOPIC = Topic.topic(SeatReleased.class, "seat-released");
                         }
                     }
                     """);

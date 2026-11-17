@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.JoinGenerationGuard;
 import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.IdentityFacts;
 import org.pragmatica.consensus.net.NetworkMessage;
@@ -106,6 +107,12 @@ public sealed interface QuicClusterClient {
     /// underlying datagram channel must be closed too — otherwise the kernel-level
     /// socket leaks until JVM exit. Idempotent: a missing entry resolves immediately.
     Promise<Unit> closeDatagramChannel(NodeId peerId);
+    /// [#closeDatagramChannel], but only when `link` is the connection that runs over the tracked datagram channel
+    /// (#3033). The channel is keyed by peer, not by link: an eviction of another link of the pair — the inbound
+    /// loser of a simultaneous dial, closed by the peer — must not close the socket of this end's own dial that is
+    /// still completing, which would hand the attach a dead connection. A link that never ran over a client socket
+    /// (an inbound one), or whose socket a later dial already replaced, closes nothing.
+    Promise<Unit> closeDatagramChannelOf(NodeId peerId, QuicPeerConnection link);
     /// Snapshot the count of currently-tracked datagram channels. Test/diagnostic only.
     int datagramChannelCount();
 
@@ -192,6 +199,11 @@ public sealed interface QuicClusterClient {
 
         @Override
         public Promise<Unit> closeDatagramChannel(NodeId peerId) {
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public Promise<Unit> closeDatagramChannelOf(NodeId peerId, QuicPeerConnection link) {
             return Promise.unitPromise();
         }
 
@@ -308,7 +320,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                               BootTokens bootTokens) {
         this.selfId = selfId;
         this.selfAddress = selfAddress;
-        this.selfLabels = Map.copyOf(selfLabels);
+        this.selfLabels = JoinGenerationGuard.advertised(selfLabels);
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.quicMetrics = quicMetrics;
@@ -630,12 +642,18 @@ final class QuicClusterClientInstance implements QuicClusterClient {
 
     @Override
     public Promise<Unit> closeDatagramChannel(NodeId peerId) {
-        var channel = datagramChannels.remove(peerId);
+        return option(datagramChannels.remove(peerId)).map(QuicClusterClientInstance::closeChannel)
+                     .or(Promise::unitPromise);
+    }
 
-        if (channel == null) {
-            return Promise.unitPromise();
-        }
+    @Override
+    public Promise<Unit> closeDatagramChannelOf(NodeId peerId, QuicPeerConnection link) {
+        return option(link.connection().parent()).filter(carrier -> datagramChannels.remove(peerId, carrier))
+                     .map(QuicClusterClientInstance::closeChannel)
+                     .or(Promise::unitPromise);
+    }
 
+    private static Promise<Unit> closeChannel(Channel channel) {
         return Promise.promise(promise -> channel.close()
                                                  .addListener(_ -> promise.succeed(unit())));
     }
@@ -914,6 +932,8 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             // at bind time) — eviction closes the right channel, and no code path can register
             // a connection under an unverified id.
             var peerConnection = quicPeerConnection(peerId, selfId, generation, quicChannel);
+
+            peerConnection.helloLabels(hello.labels());
             // The handshake stream is the CONTROL lane.
             var _ = peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());
             // #1578: stamp the VERIFIED connection so a lane the acceptor opens finds it (the acceptor

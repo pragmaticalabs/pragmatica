@@ -129,6 +129,14 @@ Cluster Status:
   Healthy: true
 ```
 
+#### warnings
+
+Show the open FSM warnings of the connected core node, with the committed revision it answered at. Refuses (HTTP 503, non-zero exit) when the connected node is a worker, holds no quorum, has committed nothing yet, or has a revision label that is not exact; connect to another core or retry. See `GET /api/v1/warnings` in the Management API reference.
+
+```bash
+aether warnings
+```
+
 #### whoami
 
 Show the authenticated principal, authorization role, and roles attached to the request. Useful for integration-test identity assertions and operator triage — confirms which API key (or anonymous viewer fallback) the management plane resolved for the caller.
@@ -1214,7 +1222,7 @@ Standalone cluster simulator with a REST API for load and chaos testing.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `FORGE_PORT` | Forge REST API port | 8888 |
-| `CLUSTER_SIZE` | Number of simulated nodes | 5 |
+| `CLUSTER_SIZE` | Number of simulated nodes (minimum 3) | 5 |
 | `LOAD_RATE` | Initial requests per second | 1000 |
 
 ### Examples
@@ -2290,6 +2298,27 @@ The clear closes the operation and nothing else: the previous worker and the rep
 reconcile pass recomputes the community from what is there. Exit codes: 0 cleared, 3 the community has no operation, 1 any other refusal (the
 operation is not parked, or the node is not the leader) or failure, 64 a missing or blank `--reason`.
 
+### `aether cluster node-ids reserve`
+
+Reserve node ids `<source>-<role>-<n>` for one source and role (#1715). The core leader advances a committed per-`(source, role)` high-water counter
+and answers only after the advance is committed, so an id this command prints is never issued again: not to another caller, not after a restore, and
+not if you never provision anything with it (the ordinal is then a gap, never a reuse). Wraps `POST /api/v1/cluster/node-ids/reserve`.
+
+```bash
+aether cluster node-ids reserve --source hetzner-eu --role worker --count 3
+# Reserved: hetzner-eu-worker-4, hetzner-eu-worker-5, hetzner-eu-worker-6
+```
+
+| Option | Description |
+|--------|-------------|
+| `--source` | Source name (required) |
+| `--role` | Node role: core, worker or spot (default: core) |
+| `--count` | Number of ids to reserve, 1 to 1000 (required) |
+
+The first reservation for a source and role starts above the ids bootstrap took (the persisted configuration's count) and above every id ever admitted as
+a node of that source and role. A reservation that loses the compare-and-set to a concurrent one retries, and is refused with `409` after three losses,
+with nothing reserved. `--output json` returns the response of the REST endpoint. `cluster apply` does not call this command yet.
+
 ### `aether cluster governors`
 
 Show the per-slice governor assignment across the cluster — which node currently owns the governor role for each slice. Wraps `GET /api/v1/cluster/governors`.
@@ -2683,6 +2712,8 @@ Destroy takes every slice below its `minAvailable` floor by definition (it drain
 
 Apply cluster configuration changes with desired-state reconciliation.
 
+**In rc5, `apply` is scale-only: it changes a role's worker/core count and nothing else. Rollout of other changes (adding, modifying or removing sources or roles) is not available in this release; it moves server-side later.**
+
 A change of a source role's runtime profile name is refused (#1543): rolling it meant stopping a node and starting another in its place under the same id, and a node id never returns. Nodes move onto new software by replacement under a fresh id (`aether cluster upgrade --version X.Y.Z --wait`, or `POST /api/v1/nodes/replace/{id}` for one node). There is no supported way today to change a source role's runtime profile on a running cluster.
 
 ```bash
@@ -2710,7 +2741,7 @@ Recovery: split the file so scale changes go through plain `apply` and everythin
 separately, or wait for the change to be supported.
 
 **Non-scale changes — sources, roles, runtime, source fields, cluster-level fields — are not
-applicable through `apply` in rc4.** `apply` performs scale-only plans via the leader (a fenced
+applicable through `apply` in rc5.** `apply` performs scale-only plans via the leader (a fenced
 desired-count write that the leader's reconciler actuates); a rollout of the other changes needs a
 new cluster. There is no first-time path to a wave rollout: the terraform-style plan and the
 wave-based executor (`ApplyOrchestrator` → `WaveExecutor`, actuating from the operator's machine
@@ -2731,7 +2762,7 @@ is a separate ticket).
 (`No apply state found for cluster '<name>'. Nothing to resume.` / `... Nothing to roll back.`). The ledger is written by the client-side
 wave rollout, which the default `cluster apply` does not yet start (#686), so unless a pre-rc5 CLI left a ledger behind (a schema other than 2 is refused, by file name, and left untouched) both report that message.
 
-**Dormant in rc4 (#686): applies only if a wave rollout runs through `--resume`.** **If a wave rollout fails part-way,** it destroys the VMs of the failing step, best-effort. Its error then lists
+**Dormant in rc5 (#686): applies only if a wave rollout runs through `--resume`.** **If a wave rollout fails part-way,** it destroys the VMs of the failing step, best-effort. Its error then lists
 each VM the rollout created (node id, provider, server id, IP), because the apply records none of them:
 - `destroyed`: gone, nothing to do;
 - `STILL RUNNING AND BILLED` (its destroy failed): remove it with the printed steps, `aether cluster drain <node-id>

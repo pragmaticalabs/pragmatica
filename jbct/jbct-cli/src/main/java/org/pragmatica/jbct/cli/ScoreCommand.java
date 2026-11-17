@@ -26,13 +26,11 @@ import picocli.CommandLine.Parameters;
 public class ScoreCommand implements Callable<Integer> {
     /// Exit code for a usage error, matching picocli's own.
     static final int USAGE_ERROR = 2;
-
     /// Exit code when some collected file could not be read or parsed, so the density cannot speak
     /// for the file set. Shares the value with [#USAGE_ERROR] deliberately: both mean "this run
     /// produced no usable measurement", as distinct from `1`, which means the measurement is sound
     /// and breached.
     static final int COVERAGE_GAP = 2;
-
     /// Output formats the command knows. Anything else is rejected rather than quietly rendered
     /// as a terminal box — `--format badge` used to be real, so silently substituting a different
     /// format for it would hand a CI job the wrong bytes with a zero exit code.
@@ -65,8 +63,8 @@ public class ScoreCommand implements Callable<Integer> {
         }
 
         if (!SUPPORTED_FORMATS.contains(format.toLowerCase(Locale.ROOT))) {
-            System.err.println("Unknown format '" + format + "'; supported formats: "
-                               + String.join(", ", SUPPORTED_FORMATS));
+            System.err.println("Unknown format '" + format
+                              + "'; supported formats: " + String.join(", ", SUPPORTED_FORMATS));
 
             return USAGE_ERROR;
         }
@@ -91,9 +89,7 @@ public class ScoreCommand implements Callable<Integer> {
         var scan = SourceScan.sourceScan(filesToProcess, linter::lint, message -> System.err.println("  ✗ " + message));
         var score = ScoreCalculator.calculate(scan);
 
-        LayerCoverage.coverage(filesToProcess, context)
-                     .map(LayerCoverage::render)
-                     .onPresent(System.err::println);
+        LayerCoverage.coverage(filesToProcess, context).map(LayerCoverage::render).onPresent(System.err::println);
         outputScore(score);
 
         return gateExitCode(score);
@@ -118,8 +114,7 @@ public class ScoreCommand implements Callable<Integer> {
         var coverage = score.coverage();
 
         if (coverage.isPartial()) {
-            coverage.gapReport("score")
-                    .onPresent(System.err::println);
+            coverage.gapReport("score").onPresent(System.err::println);
 
             return COVERAGE_GAP;
         }

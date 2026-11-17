@@ -357,7 +357,7 @@ class SwimDeathPathCoConfirmationTest {
             protocol.start();
             try {
                 await().atMost(Duration.ofMillis(SUSPECT_TIMEOUT_MS))
-                       .until(() -> !forPeer(SwimObservation.FaultyObserved.class, NODE_A).isEmpty());
+                       .until(() -> !forPeer(SwimObservation.DepartedObserved.class, NODE_A).isEmpty());
             } finally {
                 protocol.stop();
             }
@@ -387,7 +387,7 @@ class SwimDeathPathCoConfirmationTest {
             protocol.start();
             try {
                 await().atMost(Duration.ofMillis(SUSPECT_TIMEOUT_MS))
-                       .until(() -> !forPeer(SwimObservation.FaultyObserved.class, NODE_A).isEmpty());
+                       .until(() -> !forPeer(SwimObservation.DepartedObserved.class, NODE_A).isEmpty());
             } finally {
                 protocol.stop();
             }
@@ -451,7 +451,7 @@ class SwimDeathPathCoConfirmationTest {
             protocol.start();
             try {
                 await().atMost(Duration.ofMillis(SUSPECT_TIMEOUT_MS))
-                       .until(() -> !forPeer(SwimObservation.FaultyObserved.class, NODE_A).isEmpty());
+                       .until(() -> !forPeer(SwimObservation.DepartedObserved.class, NODE_A).isEmpty());
             } finally {
                 protocol.stop();
             }

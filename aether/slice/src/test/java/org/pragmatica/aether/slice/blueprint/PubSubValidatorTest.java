@@ -4,6 +4,7 @@
 
 package org.pragmatica.aether.slice.blueprint;
 
+import java.util.Locale;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.topology.SliceTopology;
@@ -128,7 +129,7 @@ class PubSubValidatorTest {
                            .onFailure(cause -> {
                                assertThat(cause).isInstanceOf(ExpanderError.InvalidTopicAddresses.class);
                                assertThat(cause.message()).contains("system:audit-events:1.0.0");
-                               assertThat(cause.message().toLowerCase()).contains("reserved");
+                               assertThat(cause.message().toLowerCase(Locale.ROOT)).contains("reserved");
                            });
         }
 

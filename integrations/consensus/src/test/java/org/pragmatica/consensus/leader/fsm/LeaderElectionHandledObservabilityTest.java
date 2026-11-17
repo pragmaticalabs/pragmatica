@@ -17,6 +17,7 @@ import org.pragmatica.statemachine.FsmTestHarness;
 
 import java.util.List;
 
+import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// Verifies the J4 fix: side-effect-only event arms in `LeaderElectionState` (Dormant `NodeAdded`,
@@ -50,7 +51,7 @@ class LeaderElectionHandledObservabilityTest {
         var h = buildHarness();
         var ctx = ((LeaderElectionState) h.state()).ctx();
         var worker = new NodeId("a-worker");
-        ctx.setCurrentTopology(List.of(SELF, PEER_A, PEER_B, worker));
+        ctx.applyTopology(new ClusterFsmEvent.NodeAdded(ctx.self(), List.of(SELF, PEER_A, PEER_B, worker), seq()));
         ctx.setCurrentLeader(Option.some(SELF));
         ctx.installVoters(List.of(PEER_A, PEER_B));
         assertThat(ctx.expectedCluster()).containsExactly(PEER_A, PEER_B);
@@ -58,7 +59,7 @@ class LeaderElectionHandledObservabilityTest {
         assertThat(ctx.candidatePool()).containsExactly(PEER_A, PEER_B);
         assertThat(ctx.currentLeader().isEmpty()).isTrue();
         assertThat(ctx.isLeader()).isFalse();
-        h.dispatch(new ClusterFsmEvent.NodeAdded(worker, List.of(SELF, PEER_A, worker)));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(worker, List.of(SELF, PEER_A, worker), seq()));
         assertThat(ctx.currentTopology()).containsExactly(PEER_A);
     }
 
@@ -67,7 +68,7 @@ class LeaderElectionHandledObservabilityTest {
         var h = buildHarness();
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Dormant.class);
 
-        h.dispatch(new ClusterFsmEvent.NodeAdded(PEER_A, List.of(SELF, PEER_A)));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(PEER_A, List.of(SELF, PEER_A), seq()));
 
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Dormant.class);
         assertThat(h.handled()).hasSize(1);
@@ -82,7 +83,7 @@ class LeaderElectionHandledObservabilityTest {
     void dormant_nodeGone_recordedAsHandled() {
         var h = buildHarness();
 
-        h.dispatch(new ClusterFsmEvent.NodeGone(PEER_B, List.of(SELF, PEER_A)));
+        h.dispatch(new ClusterFsmEvent.NodeGone(PEER_B, List.of(SELF, PEER_A), seq()));
 
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Dormant.class);
         assertThat(h.handled()).hasSize(1);

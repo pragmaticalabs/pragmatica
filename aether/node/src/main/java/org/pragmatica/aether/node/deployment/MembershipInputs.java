@@ -71,11 +71,13 @@ public final class MembershipInputs {
         seams.afterMembershipInput();
     }
 
-    /// CI-7: membership admitted a worker (B10), or a worker's placement record re-drives its join (B11).
+    /// CI-7: membership admitted a worker (B10), or a worker's placement record re-drives its join (B11). Both routes carry the source label read here,
+    /// before the join is enqueued (#3172).
     @Contract
     public void onWorkerJoin(WorkerJoinDecision decision) {
         target.deliver(new ClusterInput.WorkerJoin(decision.nodeId(),
-                                                   admissions.admission(decision.nodeId())));
+                                                   admissions.admission(decision.nodeId()),
+                                                   seams.memberSource(decision.nodeId())));
         seams.afterMembershipInput();
     }
 

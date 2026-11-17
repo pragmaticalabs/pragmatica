@@ -1,8 +1,10 @@
 package org.pragmatica.cluster.node.rabia;
 
 import org.pragmatica.consensus.net.ClusterFormationConfig;
+import org.pragmatica.consensus.net.JoinGenerationGuard;
 import org.pragmatica.consensus.rabia.ProtocolConfig;
 import org.pragmatica.consensus.topology.TopologyConfig;
+import org.pragmatica.lang.io.TimeSpan;
 
 
 public interface NodeConfig {
@@ -11,6 +13,12 @@ public interface NodeConfig {
 
     default boolean activationGated() {
         return false;
+    }
+
+    /// Bound on waiting for core members to handshake before the wire-generation join guard decides (#2981 step 6).
+    /// Production keeps the default; tests that boot with a member intentionally down shorten it.
+    default TimeSpan joinGenerationWait() {
+        return JoinGenerationGuard.JOIN_GENERATION_WAIT;
     }
 
     default ClusterFormationConfig clusterFormation() {

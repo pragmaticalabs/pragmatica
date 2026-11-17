@@ -5,7 +5,7 @@ package com.example.voslice;
 
 import java.util.UUID;
 
-import org.pragmatica.aether.slice.mapping.ValueMapping;
+import org.pragmatica.lang.vo.ValueMapping;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -25,6 +25,6 @@ public record SeatId(UUID value) {
     }
 
     public static ValueMapping<SeatId, UUID> valueMapping() {
-        return ValueMapping.of(SeatId::value, SeatId::seatId);
+        return ValueMapping.valueMapping(SeatId::value, SeatId::seatId);
     }
 }

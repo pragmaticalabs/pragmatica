@@ -68,7 +68,6 @@ sealed interface DeclSupport permits DeclSupport.unused {
             } else if (c == ',' && depth == 0) {
                 addHeadName(names, current.toString());
                 current.setLength(0);
-
                 continue;
             }
 
@@ -87,8 +86,7 @@ sealed interface DeclSupport permits DeclSupport.unused {
         var dot = name.lastIndexOf('.');
 
         if (dot >= 0) {
-            name = name.substring(dot + 1)
-                       .trim();
+            name = name.substring(dot + 1).trim();
         }
 
         if (!name.isEmpty()) {

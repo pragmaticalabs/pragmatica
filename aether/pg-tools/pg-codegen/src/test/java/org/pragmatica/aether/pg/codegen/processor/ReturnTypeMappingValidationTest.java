@@ -40,7 +40,7 @@ class ReturnTypeMappingValidationTest {
 
             @PgSql
             public interface UnmappedFieldRepo {
-                record Row(long id, String state) {}
+                record Row(long id, String state) { static Row row(long id, String state) { return new Row(id, state); } }
 
                 @Query("SELECT id, status FROM orders")
                 Promise<List<Row>> findAll();
@@ -68,7 +68,7 @@ class ReturnTypeMappingValidationTest {
 
             @PgSql
             public interface AliasedColumnRepo {
-                record Row(long id, String state) {}
+                record Row(long id, String state) { static Row row(long id, String state) { return new Row(id, state); } }
 
                 @Query("SELECT id, status AS state FROM orders")
                 Promise<List<Row>> findAll();
@@ -95,7 +95,7 @@ class ReturnTypeMappingValidationTest {
 
             @PgSql
             public interface KeywordAliasRepo {
-                record Row(long id, long name) {}
+                record Row(long id, long name) { static Row row(long id, long name) { return new Row(id, name); } }
 
                 @Query("SELECT id, COALESCE((SELECT 1), 0) AS name FROM orders")
                 Promise<List<Row>> findAll();
@@ -120,7 +120,7 @@ class ReturnTypeMappingValidationTest {
 
             @PgSql
             public interface SelectStarRepo {
-                record Row(long id, String state) {}
+                record Row(long id, String state) { static Row row(long id, String state) { return new Row(id, state); } }
 
                 @Query("SELECT * FROM orders")
                 Promise<List<Row>> findAll();

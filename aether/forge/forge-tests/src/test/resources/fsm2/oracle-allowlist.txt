@@ -1,0 +1,4 @@
+# Phase-3 design 9.6 (d): the quiescent-point oracle's allow-list, FROZEN before the first F4 run (#2763).
+# A Submit the pure cluster FSM emits from a projected LEGACY quiescent state (Rebuild + the first Reconcile, through its Flush) is a
+# disagreement unless one line here admits it. Format: <spec CHANGE row> <SubmitKind> <regex matched by every "KeyClass:key" it mutates>.
+# Empty at freeze: LEGACY at quiescence is expected to need no FSM2 write. An entry is added only by a ruling naming its CHANGE row.

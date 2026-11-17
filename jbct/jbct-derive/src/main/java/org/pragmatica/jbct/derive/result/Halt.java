@@ -2,6 +2,7 @@ package org.pragmatica.jbct.derive.result;
 
 import java.util.List;
 
+
 /// A halt (SPEC.md §4; ch. 8's five halts): a point where the derivation stops and hands back to
 /// the human. `renegotiationMenu` is populated only for [Kind#CONTRADICTION] — each branch priced
 /// and marked "re-enters the derivation"; it is a skeleton, never a pick.
@@ -25,7 +26,7 @@ public record Halt(Kind kind, String detail, List<String> renegotiationMenu) {
     }
 
     /// A halt with no renegotiation menu (every kind except contradiction).
-    public static Halt of(Kind kind, String detail) {
+    public static Halt halt(Kind kind, String detail) {
         return new Halt(kind, detail, List.of());
     }
 

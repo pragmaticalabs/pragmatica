@@ -19,6 +19,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
+import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.StorageEncryptionConfig;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.SecretsProvider;
@@ -200,6 +201,18 @@ class AetherNodeContentStorageWarnBootTest {
                                            Option<StorageEncryptionConfig> storageEncryption,
                                            ConfigurationProvider configProvider,
                                            Path storageRoot) {
+        return minimalConfig(environment,
+                             storageEncryption,
+                             configProvider,
+                             HermeticStorage.nodeStorageIn(storageRoot, storageEncryption.isPresent()));
+    }
+
+    /// Same fixture over a caller-supplied storage map: for a boot test whose subject is what the node finds ON DISK
+    /// (#2825), so the storage root must be creatable, unlike [HermeticStorage#nodeStorageIn]'s.
+    static AetherNodeConfig minimalConfig(Option<EnvironmentIntegration> environment,
+                                           Option<StorageEncryptionConfig> storageEncryption,
+                                           ConfigurationProvider configProvider,
+                                           Map<String, StorageConfig> storage) {
         var self = NodeId.nodeId("content-storage-warn-boot-test").unwrap();
         var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap());
 
@@ -217,7 +230,7 @@ class AetherNodeContentStorageWarnBootTest {
                                 .configProvider(Option.some(configProvider))
                                 .environment(environment)
                                 .managementHttpProtocol(HttpProtocol.H1)
-                                .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, storageEncryption.isPresent()))
+                                .storageConfig(storage)
                                 .build()
                                 .withStorageEncryption(storageEncryption);
     }

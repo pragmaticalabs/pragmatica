@@ -10,6 +10,7 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -496,7 +497,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
 
     static String deriveApiKeyEnvName(ClusterName clusterName) {
         return "AETHER_" + clusterName.value()
-                                      .toUpperCase()
+                                      .toUpperCase(Locale.ROOT)
                                       .replace('-', '_') + "_API_KEY";
     }
 

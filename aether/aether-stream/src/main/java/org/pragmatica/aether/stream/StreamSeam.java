@@ -4,7 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
-/// The late-bound seams of [StreamPartitionManager] (#2201 A-14, spec 5.1 target, bullet 4): 19 of them, bound by setters in
+/// The late-bound seams of [StreamPartitionManager] (#2201 A-14, spec 5.1 target, bullet 4): 20 of them, bound by setters in
 /// `StreamAssembly` (the owner-epoch source and the committed epoch starts through the production factory), not in `AetherNode`.
 /// Each defaults to a value that lets a unit, Forge or legacy manager run without the cluster wiring; production binds every
 /// one. [StreamPartitionManager#unboundSeams] lists the ones still at their default.
@@ -23,6 +23,8 @@ public enum StreamSeam {
     OPERATOR_WARNINGS(false),
     /// The committed ownership records a validated consumer read is checked against; the default checks nothing.
     OWNERSHIP_RECORDS(true),
+    /// This node's lease (#2981 step 2); the default is [OwnerLease#UNWIRED], never valid, so the owner checks fail closed.
+    OWNER_LEASE(true),
     TIERED_READER(false),
     /// Where each committed epoch began (#1971); the default knows none and doubts every copy from 0 (conservative). Production
     /// passes it to the factory.

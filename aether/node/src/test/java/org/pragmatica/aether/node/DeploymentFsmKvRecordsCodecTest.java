@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
@@ -32,6 +33,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
+import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
@@ -90,6 +92,9 @@ class DeploymentFsmKvRecordsCodecTest {
         pins.put(VALUE + "DepartureState", 2157);
         pins.put(VALUE + "DepartureCause", 2158);
         pins.put(VALUE + "SliceObservedState", 2159);
+        // #2834: the committed open set of the cluster FSM's leader-local warnings (wire-tag-ranges.txt 2902..2903 fix2834)
+        pins.put(KEY + "FsmWarningKey", 2902);
+        pins.put(VALUE + "FsmWarningValue", 2903);
 
         return Map.copyOf(pins);
     }
@@ -247,6 +252,48 @@ class DeploymentFsmKvRecordsCodecTest {
                                              new ProcessIncarnation(0L, 0L),
                                              Option.some(DepartureCause.STALE),
                                              1L));
+        }
+
+        private static FsmWarningValue row(Map<String, String> members, boolean open, String message, long revision) {
+            return FsmWarningValue.fsmWarningValue(members, open, message, revision, OTHER_NODE, PROCESS, 3L);
+        }
+
+        /// #2834: an open warning with no members (a single-instance subject) and one whose members are the held nodes with their hold
+        /// signature. The members are held sorted, so two nodes holding the same open set encode the same bytes.
+        @Test
+        void fsmWarning_roundTripsWithAndWithoutMembers() {
+            roundTrip(FsmWarningKey.fsmWarningKey("invalid-placement", ARTIFACT.asString()), row(Map.of(), true, "opened", 0L));
+
+            var members = new LinkedHashMap<String, String>();
+
+            members.put(OTHER_NODE.id(), "v2:orders");
+            members.put(NODE.id(), "v1:orders");
+            var held = row(members, true, "held", 0L);
+
+            assertThat(held.members().keySet()).as("held sorted by node id").containsExactly(NODE.id(), OTHER_NODE.id());
+            roundTrip(FsmWarningKey.fsmWarningKey("schema-hold", ARTIFACT.asString()), held);
+        }
+
+        /// #3274: the `open` and `message` components survive the codec, an open and a closed row. Red when a decoder drops or swaps either.
+        @Test
+        void fsmWarning_roundTripsAnOpenAndAClosedRow() {
+            roundTrip(FsmWarningKey.fsmWarningKey("retry-exhausted-unsettled", ARTIFACT.asString()), row(Map.of(), false, "closed", 0L));
+            roundTrip(FsmWarningKey.fsmWarningKey("schema-hold", ARTIFACT.asString()), row(Map.of(NODE.id(), "v1:orders"), true, "held", 0L));
+        }
+
+        /// #3274: the `revision` component survives the codec. Red when a decoder drops it: every other round trip here carries revision 0.
+        @Test
+        void fsmWarning_roundTripsANonZeroRevision() {
+            roundTrip(FsmWarningKey.fsmWarningKey("invalid-placement", ARTIFACT.asString()), row(Map.of(NODE.id(), "v1:orders"), false, "closed", 7L));
+        }
+
+        /// #3274: the writer stamp (`writerNode`, `writerProcess`, `writerIncarnation`) survives the codec. Red when a decoder drops or swaps a
+        /// component: rule O tells a node's own rows from an earlier self's and from another node's by it.
+        @Test
+        void fsmWarning_roundTripsTheWriterStamp() {
+            var decoded = FsmWarningValue.fsmWarningValue(Map.of(), true, "opened", 2L, NODE, new ProcessIncarnation(5L, 6L), 9L);
+
+            roundTrip(FsmWarningKey.fsmWarningKey("invalid-placement", ARTIFACT.asString()), decoded);
         }
 
         /// Writes the command, reads it back, then writes the decoded command again: the value must come back equal

@@ -226,12 +226,18 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     // spec's proposed table, the rest stay WARNING. CAUSE-06 is unimplemented and outside the
     // freeze (WARNING-at-introduction when it lands). CAUSE-01 absorbs the retired JBCT-SEAL-02.
     Map.entry("JBCT-CAUSE-01", DiagnosticSeverity.ERROR),
-    Map.entry("JBCT-CAUSE-02", DiagnosticSeverity.ERROR),
-    Map.entry("JBCT-CAUSE-03", DiagnosticSeverity.WARNING),
-    Map.entry("JBCT-CAUSE-04", DiagnosticSeverity.ERROR),
-    Map.entry("JBCT-CAUSE-05", DiagnosticSeverity.WARNING),
-    Map.entry("JBCT-CAUSE-07", DiagnosticSeverity.WARNING),
-    Map.entry("JBCT-CAUSE-08", DiagnosticSeverity.WARNING),
+                                                                      Map.entry("JBCT-CAUSE-02",
+                                                                                DiagnosticSeverity.ERROR),
+                                                                      Map.entry("JBCT-CAUSE-03",
+                                                                                DiagnosticSeverity.WARNING),
+                                                                      Map.entry("JBCT-CAUSE-04",
+                                                                                DiagnosticSeverity.ERROR),
+                                                                      Map.entry("JBCT-CAUSE-05",
+                                                                                DiagnosticSeverity.WARNING),
+                                                                      Map.entry("JBCT-CAUSE-07",
+                                                                                DiagnosticSeverity.WARNING),
+                                                                      Map.entry("JBCT-CAUSE-08",
+                                                                                DiagnosticSeverity.WARNING),
 
     // File-type classifier + structural rules (#453). All provisional WARNING pending a corpus
     // calibration gate (design severity to be fixed after the aether corpus run); SIDE-01 ships at
@@ -268,19 +274,20 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     // hits: 460 orchestration-verb-on-LEAF one-liners are legitimate naming, the noise the FP doc
     // predicted); census-on-demand like SHAPE-02.
     Map.entry("JBCT-SHAPE-03", DiagnosticSeverity.INFO)),
-                                                        // JBCT-SHAPE-02 ships DEFAULT-DISABLED: after the phase-2 preamble reach
-                                                        // the aether corpus census returned 3832 UNCLASSIFIED methods (down from
-                                                        // 5336; the residue is genuinely imperative code — loops, multi-branch
-                                                        // side effects — a corpus fact, not a classifier gap), so leaving it on
-                                                        // would spam every `jbct:check` run and the <5% promotion gate is not
-                                                        // reachable on this corpus. It stays a registered rule (severity +
-                                                        // fixture + category invariants hold) and is run on demand — enable it in
-                                                        // config for a shape census. JBCT-SHAPE-03 is likewise DEFAULT-DISABLED
-                                                        // (622 corpus hits, mostly orchestration-verb-on-LEAF one-liners — a
-                                                        // census signal, not an enforceable rule on this corpus). JBCT-SHAPE-01
-                                                        // (MIXED) stays enabled: it is corpus-zero and silent, the real-time
-                                                        // single-pattern signal worth having.
-                                                        Set.of("JBCT-SHAPE-02", "JBCT-SHAPE-03"),
+
+    // JBCT-SHAPE-02 ships DEFAULT-DISABLED: after the phase-2 preamble reach
+    // the aether corpus census returned 3832 UNCLASSIFIED methods (down from
+    // 5336; the residue is genuinely imperative code — loops, multi-branch
+    // side effects — a corpus fact, not a classifier gap), so leaving it on
+    // would spam every `jbct:check` run and the <5% promotion gate is not
+    // reachable on this corpus. It stays a registered rule (severity +
+    // fixture + category invariants hold) and is run on demand — enable it in
+    // config for a shape census. JBCT-SHAPE-03 is likewise DEFAULT-DISABLED
+    // (622 corpus hits, mostly orchestration-verb-on-LEAF one-liners — a
+    // census signal, not an enforceable rule on this corpus). JBCT-SHAPE-01
+    // (MIXED) stays enabled: it is corpus-zero and silent, the real-time
+    // single-pattern signal worth having.
+    Set.of("JBCT-SHAPE-02", "JBCT-SHAPE-03"),
                                                         false);
 
     /// Factory method for default config.

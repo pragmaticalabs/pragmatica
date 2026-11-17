@@ -61,6 +61,9 @@ import org.pragmatica.aether.slice.StreamAccess.StreamMetadata;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
+import org.pragmatica.aether.slice.kvstore.ObservedSliceListener;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
@@ -142,7 +145,7 @@ import org.slf4j.LoggerFactory;
 /// Quorum events arrive as rc1's renamed {@link ClusterStateNotification} (`ACTIVE` / `PASSIVE`),
 /// not the PR's `QuorumStateNotification` (`ESTABLISHED` / `DISAPPEARED`).
 @SuppressWarnings("JBCT-RET-01")
-public final class ClusterEventAggregator {
+public final class ClusterEventAggregator implements ObservedSliceListener {
     private static final Logger LOG = LoggerFactory.getLogger(ClusterEventAggregator.class);
     private static final IntSupplier UNKNOWN_CLUSTER_SIZE = () -> - 1;
     /// Default owner-check used by the legacy factory overloads (tests / call sites that don't gate):
@@ -1964,10 +1967,33 @@ public final class ClusterEventAggregator {
         switch (state) {
             case LOAD -> handleDeploymentStarted(trackingKey, artifact, nodeId);
             case ACTIVE -> handleDeploymentCompleted(trackingKey, artifact, nodeId);
-            case FAILED -> handleDeploymentFailed(trackingKey, artifact, nodeId, value);
+            case FAILED -> handleDeploymentFailed(trackingKey, artifact, nodeId, value.failureReason());
             default -> {}
         }
     }
+
+    /// FSM2 (deployment state machine spec 1.6.1): the deployment events from the observed rows the state feed shows, which are current and
+    /// never the UNLOADED tombstone. The node's first observed write of a chain is LOADING (there is no observed LOAD), so LOADING starts the
+    /// deployment; ACTIVE completes it and FAILED fails it.
+    @Override
+    @Contract
+    public void onObservedSlice(SliceObservedKey key, SliceObservedValue row) {
+        var artifact = key.artifact().asString();
+        var nodeId = key.nodeId().id();
+        var trackingKey = artifact + ":" + nodeId;
+
+        switch (row.state()) {
+            case LOADING -> handleDeploymentStarted(trackingKey, artifact, nodeId);
+            case ACTIVE -> handleDeploymentCompleted(trackingKey, artifact, nodeId);
+            case FAILED -> handleDeploymentFailed(trackingKey, artifact, nodeId, row.failureReason());
+            default -> {}
+        }
+    }
+
+    /// FSM2: a row gone raises no event, as a LEGACY `NodeArtifactKey` remove raises none.
+    @Override
+    @Contract
+    public void onObservedSliceGone(SliceObservedKey key) {}
 
     @Contract
     private void handleDeploymentStarted(String trackingKey, String artifact, String nodeId) {
@@ -1992,10 +2018,13 @@ public final class ClusterEventAggregator {
     }
 
     @Contract
-    private void handleDeploymentFailed(String trackingKey, String artifact, String nodeId, NodeArtifactValue value) {
+    private void handleDeploymentFailed(String trackingKey,
+                                        String artifact,
+                                        String nodeId,
+                                        Option<String> failureReason) {
         var durationMs = computeAndRemoveDuration(trackingKey);
         var durationSuffix = durationMs.map(ms -> " after " + formatDuration(ms)).or("");
-        var reason = value.failureReason().or("unknown");
+        var reason = failureReason.or("unknown");
 
         emitCommitted(new DeploymentFailed(hlcClock.now(),
                                            Severity.WARNING,

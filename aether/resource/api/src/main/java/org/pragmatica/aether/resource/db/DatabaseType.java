@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db;
 
+import java.util.Locale;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -81,7 +83,7 @@ public enum DatabaseType {
                      .flatMap(DatabaseType::lookupByName);
     }
     private static Result<DatabaseType> lookupByName(String name) {
-        var normalized = name.trim().toLowerCase();
+        var normalized = name.trim().toLowerCase(Locale.ROOT);
 
         for (var type : values()) {
             if (type.name.equals(normalized) || type.name().equalsIgnoreCase(normalized)) {
@@ -112,7 +114,7 @@ public enum DatabaseType {
                        .orElse(() -> jdbcUrl.flatMap(DatabaseType::fromJdbcUrl));
     }
     private static Option<DatabaseType> matchByProtocol(String url) {
-        var urlLower = url.toLowerCase();
+        var urlLower = url.toLowerCase(Locale.ROOT);
 
         for (var type : values()) {
             if (urlLower.contains(":" + type.jdbcProtocol + ":")) {
@@ -123,7 +125,7 @@ public enum DatabaseType {
         return none();
     }
     private static Option<DatabaseType> matchByScheme(String url) {
-        var schemePart = url.substring(0, url.indexOf("://")).toLowerCase();
+        var schemePart = url.substring(0, url.indexOf("://")).toLowerCase(Locale.ROOT);
 
         for (var type : values()) {
             if (type.name.equals(schemePart) || type.jdbcProtocol.equals(schemePart)) {

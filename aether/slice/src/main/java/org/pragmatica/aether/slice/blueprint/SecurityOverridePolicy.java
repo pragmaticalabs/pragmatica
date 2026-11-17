@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
+import java.util.Locale;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
 
@@ -20,7 +22,7 @@ public enum SecurityOverridePolicy {
     /// The policy a config file names, or empty for a token that names none. Unlike [#fromString], an
     /// unknown token is not mapped to a default: the config parser refuses it (#1455).
     public static Option<SecurityOverridePolicy> securityOverridePolicy(String raw) {
-        return switch (raw.toLowerCase()
+        return switch (raw.toLowerCase(Locale.ROOT)
                           .strip()) {
             case "strengthen_only" -> Option.some(STRENGTHEN_ONLY);
             case "full" -> Option.some(FULL);
@@ -29,7 +31,7 @@ public enum SecurityOverridePolicy {
         };
     }
     public static SecurityOverridePolicy fromString(String raw) {
-        return switch (raw.toLowerCase()
+        return switch (raw.toLowerCase(Locale.ROOT)
                           .strip()) {
             case "strengthen_only" -> STRENGTHEN_ONLY;
             case "full" -> FULL;

@@ -6,6 +6,7 @@ package org.pragmatica.aether.environment;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Locale;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -40,7 +41,7 @@ public interface ClusterSecretSource {
     /// `AETHER_CLUSTER_SECRET` -> `cluster-secret`; the stem of every path a credential's file gets.
     static String slug(String plainVar) {
         return plainVar.substring("AETHER_".length())
-                       .toLowerCase()
+                       .toLowerCase(Locale.ROOT)
                        .replace('_', '-');
     }
 

@@ -56,7 +56,9 @@
     </modules>
 
     <properties>
-        <jbct.skip>true</jbct.skip>
+        <!-- #3029: was true. The jbct modules declare no jbct-maven-plugin execution (reactor cycle), so a lifecycle build is
+             unchanged; the CI gate (`jbct-maven-plugin:check`) now checks them. Rule pins live in each module's jbct.toml. -->
+        <jbct.skip>false</jbct.skip>
         <java.version>25</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>

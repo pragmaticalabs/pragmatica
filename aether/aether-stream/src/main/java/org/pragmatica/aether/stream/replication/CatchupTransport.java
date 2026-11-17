@@ -26,6 +26,13 @@ public interface CatchupTransport {
         return requestCatchup(target, request);
     }
 
+    /// ONE page of the source's log from `request.fromOffset()`, never the whole suffix: a read that only needs the page start (#3080,
+    /// the activation gate learning where a responder's committed lineage ends) must not cost the source's full tail. A transport that
+    /// does not page answers exactly as [#requestCatchup(NodeId, ReplicationMessage.CatchupRequest)].
+    default Promise<CatchupResponse> requestPage(NodeId target, ReplicationMessage.CatchupRequest request) {
+        return requestCatchup(target, request);
+    }
+
     CatchupTransport NOOP = (_, request) -> Promise.success(catchupResponse(request.replicaId(),
                                                                             request.streamName(),
                                                                             request.partition(),

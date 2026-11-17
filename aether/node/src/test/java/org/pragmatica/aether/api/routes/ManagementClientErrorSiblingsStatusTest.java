@@ -175,7 +175,7 @@ class ManagementClientErrorSiblingsStatusTest {
             .thenReturn(Option.none());
 
         var routes = ClusterConfigRoutes.clusterConfigRoutes(() -> node(Map.of("kvStore", store, "isLeader", true)));
-        var body = new ManagementApiResponses.ApplyConfigRequest(OPERATOR_TOML, 0L);
+        var body = new ManagementApiResponses.ApplyConfigRequest(OPERATOR_TOML, 0L, Option.none());
 
         assertThat(statusOf(routes.routes(), ManagementRoute.CLUSTER_CONFIG_APPLY, List.of(), body, Map.of()))
             .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
@@ -196,7 +196,7 @@ class ManagementClientErrorSiblingsStatusTest {
                            .getTyped(org.mockito.ArgumentMatchers.<AetherKey> any(), org.mockito.ArgumentMatchers.<Class<AetherValue>> any());
 
         var routes = ClusterConfigRoutes.clusterConfigRoutes(() -> node(Map.of("kvStore", store, "isLeader", false, "self", new NodeId("core"))));
-        var body = new ManagementApiResponses.ApplyConfigRequest(OPERATOR_TOML, 0L);
+        var body = new ManagementApiResponses.ApplyConfigRequest(OPERATOR_TOML, 0L, Option.none());
 
         assertThat(statusOf(routes.routes(), ManagementRoute.CLUSTER_CONFIG_APPLY, List.of(), body, Map.of()))
             .isEqualTo(HttpStatus.CONFLICT);
@@ -217,7 +217,7 @@ class ManagementClientErrorSiblingsStatusTest {
                            .getTyped(org.mockito.ArgumentMatchers.<AetherKey> any(), org.mockito.ArgumentMatchers.<Class<AetherValue>> any());
 
         var routes = ClusterConfigRoutes.clusterConfigRoutes(() -> node(Map.of("kvStore", store, "isLeader", true, "self", new NodeId("core-2"))));
-        var body = new ManagementApiResponses.ApplyConfigRequest(OPERATOR_TOML, 0L);
+        var body = new ManagementApiResponses.ApplyConfigRequest(OPERATOR_TOML, 0L, Option.none());
 
         assertThat(statusOf(routes.routes(), ManagementRoute.CLUSTER_CONFIG_APPLY, List.of(), body, Map.of()))
             .isEqualTo(HttpStatus.CONFLICT);

@@ -1,0 +1,2 @@
+### Fixed (2026-11-11 — #3057: dispatcher stop-boot test control assumed a thread right after start())
+- **`AetherNodeKvDispatcherFailureStopBootTest` no longer assumes a delivery thread right after `start()`** (#3057). The thread starts on the store's first append (`NotificationDispatcher#ensureStarted`), which under load may not have happened yet; the test now appends one batch and awaits the thread with a deadline. Test-only, classified TEST. [verified: `DispatcherLazyStartTest` pins no thread before the first append, one after]
