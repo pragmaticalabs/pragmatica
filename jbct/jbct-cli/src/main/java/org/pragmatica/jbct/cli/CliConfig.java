@@ -17,17 +17,15 @@ import org.pragmatica.lang.Option;
 public sealed interface CliConfig {
     int CONFIG_ERROR_EXIT = 2;
 
-    /// Load the layered configuration, printing the refusal to `err` when it fails.
-    static Option<JbctConfig> load(Option<Path> explicitConfigPath, PrintStream err) {
-        return ConfigLoader.load(explicitConfigPath,
-                                 Option.none())
+    /// Load the configuration that applies to a checked path, printing the refusal to `err` when it fails.
+    ///
+    /// The `jbct.toml` chain starts at the path's module directory ([ConfigLoader#loadForSourceRoot]), never at the
+    /// working directory. A command given several paths passes its first: one run holds one configuration until
+    /// the lint entry points resolve per source root (P2c).
+    static Option<JbctConfig> load(Option<Path> explicitConfigPath, Path checkedPath, PrintStream err) {
+        return ConfigLoader.loadForSourceRoot(explicitConfigPath, checkedPath)
                            .onFailure(cause -> err.println("Error: " + cause.message()))
                            .option();
-    }
-
-    /// Load the layered configuration, printing the refusal to `System.err` when it fails.
-    static Option<JbctConfig> load(Option<Path> explicitConfigPath) {
-        return load(explicitConfigPath, System.err);
     }
 
     record unused() implements CliConfig {}

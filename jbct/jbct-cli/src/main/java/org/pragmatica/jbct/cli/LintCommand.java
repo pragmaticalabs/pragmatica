@@ -49,7 +49,7 @@ public class LintCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         // Load configuration
-        var loadedConfig = CliConfig.load(Option.option(configPath));
+        var loadedConfig = CliConfig.load(Option.option(configPath), paths.getFirst(), System.err);
 
         if (loadedConfig.isEmpty()) {
             return CliConfig.CONFIG_ERROR_EXIT;

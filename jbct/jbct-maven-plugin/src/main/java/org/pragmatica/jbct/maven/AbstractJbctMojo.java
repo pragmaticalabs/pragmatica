@@ -41,7 +41,7 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
     @Contract
     protected JbctConfig loadConfig() throws MojoExecutionException {
         var projectDir = project.getBasedir().toPath();
-        var loaded = ConfigLoader.load(Option.none(), Option.option(projectDir));
+        var loaded = ConfigLoader.loadForSourceRoot(Option.none(), projectDir);
         var refusal = loaded.fold(cause -> Option.some(cause.message()),
                                   _ -> Option.<String> none());
 
