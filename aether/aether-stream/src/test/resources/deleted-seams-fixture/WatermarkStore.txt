@@ -1,0 +1,1 @@
+Fixture for DeletedSeamsTripwireTest: this line names WatermarkStore once.

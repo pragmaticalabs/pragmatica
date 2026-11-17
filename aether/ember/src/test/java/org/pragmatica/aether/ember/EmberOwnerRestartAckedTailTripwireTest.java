@@ -41,7 +41,7 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 /// Streams overhaul tripwire, step 2 (#2201), restart visibility: B-04/B-17 - after the owner's ring is rebuilt, its acked
 /// tail is invisible until the replicas acknowledge it again, because acknowledgement rows are not persisted.
 ///
-/// Per 1b-core: the production `ReplicaRegistry` writes through `WatermarkStore.NOOP`, and a ring rebuild bumps the owner
+/// Per 1b-core: the production `ReplicaRegistry` persists no acknowledgement rows, and a ring rebuild bumps the owner
 /// epoch, so every ack row from an earlier epoch is discounted (`confirmedByNode` reads it as -1). `restoreVisible` then
 /// gives the owner `min(durable, replicatedThrough)`, which is below the acked tail. 1b-core REFUTED "until the next publish
 /// is acked": replicas do re-ack a quiet partition, within about one backfill tick. So the finding is a BOUNDED stall, and the

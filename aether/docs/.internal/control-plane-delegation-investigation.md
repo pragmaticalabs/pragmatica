@@ -117,7 +117,7 @@ Some components interact heavily and should be delegated as a unit:
 
 **Recommendation:** Delegate at group granularity (5 groups), not individual components. Avoids splitting tightly-coupled components and reduces assignment coordination overhead.
 
-**Note (v0.25.0):** Storage group components already use dormant/active lifecycle and persistence abstractions (WatermarkStore, TombstoneStore, ReplicaAssignmentStore). These are injection points for KV-Store wiring — delegation will be mechanical.
+**Note (v0.25.0):** Storage group components already use dormant/active lifecycle and a persistence abstraction (TombstoneStore; the replica watermark and assignment stores were removed unwired, #3333). These are injection points for KV-Store wiring — delegation will be mechanical.
 
 ---
 
@@ -204,7 +204,7 @@ All new leader-activated components should use the Dormant/Active sealed interfa
 **New components already following this pattern (v0.25.0):**
 - `DemotionManager` — dormant/active lifecycle, demote() no-ops when dormant
 - `StorageGarbageCollector` — dormant/active lifecycle, collectGarbage() no-ops when dormant
-- `ReplicaRegistry` — persistence abstractions (WatermarkStore, ReplicaAssignmentStore) for KV-Store reconstruction
+- `ReplicaRegistry` — no persistence abstraction (the watermark and assignment stores it once carried were removed unwired, #3333)
 - `TombstoneRegistry` — TombstoneStore abstraction for KV-Store persistence
 - `SegmentIndex` — rebuildFromRefs() for reconstruction from storage metadata
 
@@ -233,19 +233,10 @@ Any in-memory state held by leader-only components must be reconstructible from 
 
 New components use `@FunctionalInterface` persistence abstractions with NOOP defaults, wired to KV-Store in the node module:
 
-```java
-// Pattern: functional interface with NOOP default
-@FunctionalInterface
-public interface WatermarkStore {
-    void persistWatermark(String streamName, int partition, NodeId nodeId, long confirmedOffset);
-    WatermarkStore NOOP = (_, _, _, _) -> {};
-}
-```
+(The pattern's code example, a watermark store with a `NOOP` constant, was removed with that interface, #3333.)
 
 | Abstraction | Component | Purpose |
 |-------------|-----------|---------|
-| `WatermarkStore` | ReplicaRegistry | Persist replica confirmed offsets on every ack |
-| `ReplicaAssignmentStore` | ReplicaRegistry | Persist replica-to-partition assignments |
 | `TombstoneStore` | TombstoneRegistry | Persist GC tombstones for grace period tracking |
 
 These abstractions make the components KV-Store-ready without coupling them to the KV-Store implementation. Node module provides the actual KV-Store-backed implementations at wiring time.

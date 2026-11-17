@@ -70,7 +70,7 @@ Streams are modelled as partitioned, append-only logs, each partition with one i
 
 **Durable log.** On a node with a writable WAL directory, each partition also has a `PartitionWal`. An owner publish is not acknowledged until its record is fsynced there (§3.1, §5). A node whose WAL directory is unwritable refuses to boot unless `aether.allowNonDurableStreams=true` / `AETHER_ALLOW_NON_DURABLE_STREAMS=true` is set. The refusal is `AetherNode.verifyWalBootable` → `decideWalAvailability`, called from the production entrypoint (`Main`) only. Forge and embedded nodes skip it and degrade via `resolveStreamWalDir` with a WARN. Without a WAL, publishes ack with no fsync `[mechanism: writeWalFrame returns a LoggedAppend whose barrier is already resolved when walFor is empty, so awaitDurable passes the offset through]`.
 
-**Cold tier.** Evicted events are serialised into a sealed segment by `SegmentSealer` and handed to a `SegmentSink`. The node wires `StorageSegmentSink` through its two-argument factory: `CompressionCodec.NONE` and no encryptor (re-verified). `PgSegmentSink` exists but has no production caller.
+**Cold tier.** Evicted events are serialised into a sealed segment by `SegmentSealer` and handed to a `SegmentSink`. The node wires `StorageSegmentSink` through its two-argument factory: `CompressionCodec.NONE` and no encryptor (re-verified). There is no Postgres-backed sink.
 
 **Reads.** `TieredStreamReader` serves hot reads from the ring and falls back to sealed segments below the ring tail.
 
@@ -200,7 +200,7 @@ Retention is driven by `RetentionPolicy`: `ANY` evicts when any configured limit
 
 ### 6.2 Cold: SegmentSink implementations
 
-*Carried over; not re-verified except as noted.* `StorageSegmentSink` can compress and encrypt before `putRef`, though the node's instance does neither (re-verified, §2); per-segment metadata lets `SegmentReader` invert the transformations. `PgSegmentSink` persists segments in `aether_stream_segments` but has no production caller at `ccba0dba5`.
+*Carried over; not re-verified except as noted.* `StorageSegmentSink` can compress and encrypt before `putRef`, though the node's instance does neither (re-verified, §2); per-segment metadata lets `SegmentReader` invert the transformations. a Postgres-backed sink that once persisted segments in `aether_stream_segments` had no production caller at `ccba0dba5` and was removed (#3333).
 
 ### 6.3 Segment sealing runs partly on the evicting thread (re-verified)
 
