@@ -264,7 +264,12 @@ public final class ReplicaRegistry {
                                  long bootToken) {
         var key = partitionKey(streamName, partition);
 
-        option(replicas.get(key)).onPresent(nodeMap -> advanceRow(nodeMap, nodeId, confirmedOffset, state, epoch, bootToken));
+        option(replicas.get(key)).onPresent(nodeMap -> advanceRow(nodeMap,
+                                                                  nodeId,
+                                                                  confirmedOffset,
+                                                                  state,
+                                                                  epoch,
+                                                                  bootToken));
     }
 
     /// Whether an ack of process `bootToken` comes from the process the row was confirmed by (#1697): tokens are compared by
