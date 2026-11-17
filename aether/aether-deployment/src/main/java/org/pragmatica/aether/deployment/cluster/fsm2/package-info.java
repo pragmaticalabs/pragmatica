@@ -110,10 +110,19 @@
 ///
 /// Persists == MODE \in {"pre3085", "code"}
 ///
-/// \* A committed FsmWarningKey row: open or tombstone, and its unpublished opener / recovery markers (#3175). Nil = no row.
-/// Val == [open : BOOLEAN, op : BOOLEAN, rc : BOOLEAN]
+/// \* A committed FsmWarningKey row: open or tombstone, its unpublished opener / recovery markers (#3175), and its revision
+/// \* (FsmWarningValue.revision: every write sets it to the mirrored row's + 1, Warnings.put). Nil = no row (revision 0).
+/// \* Each accepted WARNINGS commit raises a mutated row's revision by one, so rv <= ncommit (TypeOK): the revision is bounded
+/// \* by the number of commits, which the model's existing constants (MaxCond, MaxFault, MaxTerm) bound; no constant of its own.
+/// Row(m) == [open : BOOLEAN, op : BOOLEAN, rc : BOOLEAN, rv : 0..m]
 ///
-/// Nil == [open |-> FALSE, op |-> FALSE, rc |-> FALSE]
+/// Nil == [open |-> FALSE, op |-> FALSE, rc |-> FALSE, rv |-> 0]
+///
+/// \* A row's content without its revision (FsmWarningValue.sameContent, used by Warnings.same for the difference), and a
+/// \* content with a revision.
+/// Cnt(v) == [open |-> v.open, op |-> v.op, rc |-> v.rc]
+///
+/// Rev(d, r) == [open |-> d.open, op |-> d.op, rc |-> d.rc, rv |-> r]
 ///
 /// NoRows == [s \in Subjects |-> Nil]
 ///
@@ -168,12 +177,12 @@
 ///
 /// Des(w, hd) == [s \in Subjects |-> [open |-> s \in w, op |-> HasMark(hd, s, TRUE), rc |-> HasMark(hd, s, FALSE)]]
 ///
-/// Diff(w, r, hd) == {s \in Subjects : r[s] # Des(w, hd)[s]}
+/// Diff(w, r, hd) == {s \in Subjects : Cnt(r[s]) # Des(w, hd)[s]}
 ///
 /// \* A2834's "outside the window": the leader's drain is done and (if the code persists) its open set committed, markers cleared.
 /// Quiet(L) == \/ fsm[L] = "Dormant"
 ///             \/ /\ ~flushQ[L] /\ ~dirty[L] /\ ~wInfl[L] /\ WTraffic = {} /\ held[L] = <<>>
-///                /\ (Persists => kv = Des(warned[L], <<>>))
+///                /\ (Persists => \A s \in Subjects : Cnt(kv[s]) = Des(warned[L], <<>>)[s])
 ///
 /// \* Under A2834 only the committed, elected, non-suspended leader emits family warnings.
 /// WarnOK(n) == ~A2834 \/ (n = kvLeader /\ n = elected /\ ~Suspended(n))
@@ -301,11 +310,15 @@
 ///
 /// \* The consensus applier: a LeaderTransaction commits iff the committed leader is the tx's leader value (the fence;
 /// \* FsmWarningValue is LeaderAuthorized, Warnings.java) and every mutated row equals the value the tx expects (CAS,
-/// \* Warnings.mutation; mutant "nocas" skips the row comparison). A refusal reports the rows' current values (seen).
+/// \* Warnings.mutation; KVStore.validMutation compares the whole record, revision included; mutant "nocas" skips the row
+/// \* comparison, mutant "norevision" compares the content only and admits an ABA commit). A refusal reports the rows' current
+/// \* values (seen).
 /// KvApply(tx) ==
 ///   /\ tx \in net
 ///   /\ LET fenceOk == tx.lv = Current \/ ~FENCE
-///          casOk == IF tx.kind = "W" THEN MUT = "nocas" \/ \A s \in DOMAIN tx.wrep : kv[s] = tx.wexp[s]
+///          casOk == IF tx.kind = "W" THEN \/ MUT = "nocas"
+///                                          \/ (MUT = "norevision" /\ \A s \in DOMAIN tx.wrep : Cnt(kv[s]) = Cnt(tx.wexp[s]))
+///                                          \/ (MUT # "norevision" /\ \A s \in DOMAIN tx.wrep : kv[s] = tx.wexp[s])
 ///                   ELSE kvDesired = tx.exp
 ///          ok == fenceOk /\ casOk
 ///          okW == ok /\ tx.kind = "W"
@@ -396,8 +409,8 @@
 /// Spec == Init /\ [][Next]_vars /\ Fairness
 ///
 /// TypeOK ==
-///   /\ kv \in [Subjects -> Val] /\ shown \subseteq Subjects /\ cond \subseteq Subjects
-///   /\ \A n \in Nodes : /\ warned[n] \subseteq Subjects /\ rows[n] \in [Subjects -> Val]
+///   /\ kv \in [Subjects -> Row(ncommit)] /\ shown \subseteq Subjects /\ cond \subseteq Subjects
+///   /\ \A n \in Nodes : /\ warned[n] \subseteq Subjects /\ rows[n] \in [Subjects -> Row(ncommit)]
 ///                       /\ \A i \in 1..Len(held[n]) : held[n][i].s \in Subjects
 ///                       /\ lnd[n] \in Nat
 ///
@@ -1089,7 +1102,7 @@
 /// CONSTANT LATE = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
-/// PROPERTY WarningsClose
+/// PROPERTY CompleteWhenSettled
 /// ```
 ///
 /// ```tlacfg Fsm2Leader:mut_noruleo_agree
@@ -1097,6 +1110,70 @@
 /// CONSTANT A2834 = FALSE
 /// CONSTANT FENCE = TRUE
 /// CONSTANT MUT = "noruleo"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// INVARIANT OpenSetAgreement
+/// ```
+///
+/// ```tlacfg Fsm2Leader:mut_noruleE_notify
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "noruleE"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY CompleteWhenSettled
+/// ```
+///
+/// ```tlacfg Fsm2Leader:mut_emitonput_notify
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "emitonput"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// INVARIANT NoDoubleEmit
+/// ```
+///
+/// ```tlacfg Fsm2Leader:mut_nomirror_agree
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "nomirror"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// INVARIANT OpenSetAgreement
+/// ```
+///
+/// ```tlacfg Fsm2Leader:mut_norevision_agree
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "norevision"
 /// CONSTANT RESUME = FALSE
 /// CONSTANT MaxTerm = 2
 /// CONSTANT MaxCond = 3

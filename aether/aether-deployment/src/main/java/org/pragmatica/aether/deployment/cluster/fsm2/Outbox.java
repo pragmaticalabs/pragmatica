@@ -174,6 +174,7 @@ public sealed interface Outbox {
     /// \* Outbox.java flush. Suspended: nothing submitted, intents dropped, Warnings.suspended clears dirty.
     /// \* Else Warnings.draft (Warnings.java:213): one WARNINGS tx with the difference, unless one is in flight:
     /// \* each mutated row's expected value is the mirror's, its replacement the desired row with the held warnings' markers
+    /// \* and the mirror's revision + 1 (Warnings.put)
     /// \* (Warnings.difference, desired, marked; #3175); the tx covers every warning held so far (covering); then the goal
     /// \* draft; Outbox.java submitOne -> Submit effect -> one apply per step (ClusterFsmInterpreter.java).
     /// Flush(n) ==
@@ -188,7 +189,8 @@ public sealed interface Outbox {
     ///               doW == draftW /\ D # {}
     ///               doG == gIntent[n]
     ///               wtx == [kind |-> "W", node |-> n, inc |-> inc[n], lv |-> view[n],
-    ///                       wexp |-> [s \in D |-> rows[n][s]], wrep |-> [s \in D |-> Des(warned[n], held[n])[s]],
+    ///                       wexp |-> [s \in D |-> rows[n][s]],
+    ///                       wrep |-> [s \in D |-> Rev(Des(warned[n], held[n])[s], rows[n][s].rv + 1)],
     ///                       val |-> 0, exp |-> 0, cov |-> Len(held[n])]
     ///               gtx == [kind |-> "G", node |-> n, inc |-> inc[n], lv |-> view[n],
     ///                       wexp |-> EmptyF, wrep |-> EmptyF, val |-> target, exp |-> kvDesired, cov |-> 0]
