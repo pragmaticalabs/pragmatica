@@ -213,9 +213,7 @@ public sealed interface RootResolver permits RootResolver.unused {
 
     record Collected(Path argument, List<Path> files) {
         static Collected collected(Path argument, List<Path> files) {
-            return new Collected(argument,
-                                 files.stream().map(file -> file.toAbsolutePath()
-                                                                .normalize()).toList());
+            return new Collected(argument, files);
         }
     }
 
@@ -263,25 +261,34 @@ public sealed interface RootResolver permits RootResolver.unused {
     /// directory still has a line in the summary).
     private static List<Path> rootPaths(Request request, List<Path> directories, Map<Path, List<Path>> owned) {
         return Stream.concat(owned.keySet().stream(),
-                             directories.stream()
-                                        .map(directory -> directory.toAbsolutePath()
-                                                                   .normalize())
-                                        .filter(request.declaredRoots()::contains))
+                             directories.stream().filter(request.declaredRoots()::contains))
                      .distinct()
                      .sorted(Comparator.comparing(Path::toString))
                      .toList();
     }
 
     private static Path ownerOf(Request request, List<Path> directories, Path file) {
+        var argument = argumentOf(directories, file);
+
         return Option.from(Stream.concat(request.declaredRoots().stream().filter(file::startsWith),
-                                         layoutRoot(file).stream())
-                                 .max(Comparator.comparingInt(Path::getNameCount))).or(() -> fallbackRoot(directories,
-                                                                                                          file));
+                                         layoutRoot(file,
+                                                    argument.or(() -> ConfigLoader.moduleDirectory(file))).stream())
+                                 .max(Comparator.comparingInt(Path::getNameCount))).or(() -> argument.or(() -> file.getParent()));
     }
 
-    /// The deepest `src/<kind>/java` ancestor of a file: the standard layout's source root.
-    private static Option<Path> layoutRoot(Path file) {
-        return Option.from(IntStream.range(2,
+    /// The deepest directory argument that contains the file.
+    private static Option<Path> argumentOf(List<Path> directories, Path file) {
+        return Option.from(directories.stream()
+                                      .filter(file::startsWith)
+                                      .max(Comparator.comparingInt(Path::getNameCount)));
+    }
+
+    /// The deepest `src/<kind>/java` ancestor of a file below `base` (the directory argument that reached the file,
+    /// else its module directory): the standard layout's source root. `base` itself may be the layout's `src`; the
+    /// segments above `base` are never read,
+    /// so a checkout under `~/src/main/java/work` does not make that ancestor everyone's root.
+    private static Option<Path> layoutRoot(Path file, Path base) {
+        return Option.from(IntStream.range(base.getNameCount() + 1,
                                            file.getNameCount() - 1)
                                     .filter(index -> isLayoutMarker(file, index))
                                     .boxed()
@@ -295,14 +302,6 @@ public sealed interface RootResolver permits RootResolver.unused {
                    .equals("java") && file.getName(index - 2)
                                           .toString()
                                           .equals("src");
-    }
-
-    private static Path fallbackRoot(List<Path> directories, Path file) {
-        return Option.from(directories.stream()
-                                      .map(directory -> directory.toAbsolutePath()
-                                                                 .normalize())
-                                      .filter(file::startsWith)
-                                      .max(Comparator.comparingInt(Path::getNameCount))).or(() -> file.getParent());
     }
 
     private static Result<ResolvedRoot> resolvedRoot(Request request, Path root, List<Path> files) {

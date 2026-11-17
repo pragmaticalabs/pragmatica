@@ -3,10 +3,13 @@ package org.pragmatica.jbct.lint.cst;
 import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.pragmatica.jbct.config.ConfigLoader;
@@ -19,6 +22,7 @@ import org.pragmatica.jbct.lint.cst.RootResolver.ResolvedRoot;
 import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.shared.SourceFile;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -43,11 +47,11 @@ import static org.pragmatica.lang.Result.success;
 /// **Thread Safety:** [#lint] may be called concurrently (the per-root counters are atomic and the linters are
 /// thread-safe); [#finish] should follow the last [#lint].
 public final class LintRun {
-    /// A source root and the lint context resolved for it.
+    /// A source root and the lint context resolved for it. The path is taken as given: paths are normalised in one
+    /// place, the [RootResolver] request, and a run is only ever handed paths that came from it.
     public record SourceRoot(Path path, LintContext context) {
         public static SourceRoot sourceRoot(Path path, LintContext context) {
-            return new SourceRoot(path.toAbsolutePath().normalize(),
-                                  context);
+            return new SourceRoot(path, context);
         }
     }
 
@@ -61,10 +65,16 @@ public final class LintRun {
                              int files,
                              int examined,
                              int formatted,
+                             int notParsed,
                              int skipped,
                              int errors,
                              int warnings,
-                             boolean fails) {
+                             boolean fails,
+                             List<String> notParsedFiles) {
+        public RootCounts {
+            notParsedFiles = List.copyOf(notParsedFiles);
+        }
+
         public static RootCounts rootCounts(Path root,
                                             JbctMode mode,
                                             ModeSource modeSource,
@@ -73,10 +83,12 @@ public final class LintRun {
                                             int files,
                                             int examined,
                                             int formatted,
+                                            int notParsed,
                                             int skipped,
                                             int errors,
                                             int warnings,
-                                            boolean fails) {
+                                            boolean fails,
+                                            List<String> notParsedFiles) {
             return new RootCounts(root,
                                   mode,
                                   modeSource,
@@ -85,10 +97,36 @@ public final class LintRun {
                                   files,
                                   examined,
                                   formatted,
+                                  notParsed,
                                   skipped,
                                   errors,
                                   warnings,
-                                  fails);
+                                  fails,
+                                  notParsedFiles);
+        }
+
+        /// Why this root linted nothing, in words; empty when it linted a file.
+        Option<String> whyNotLinted() {
+            return examined > 0
+                   ? Option.none()
+                   : Option.some(root + " (" + reasonFor(!CstLinter.rulesFor(mode).isEmpty()) + ")");
+        }
+
+        /// Why this root formatted nothing, in words; empty when it formatted a file.
+        Option<String> whyNotFormatted() {
+            return formatted > 0
+                   ? Option.none()
+                   : Option.some(root + " (" + reasonFor(mode != JbctMode.DISABLED) + ")");
+        }
+
+        private String reasonFor(boolean modeAllows) {
+            return notParsed > 0
+                   ? notParsed + " file(s) not parsed"
+                   : modeAllows
+                     ? files == 0
+                       ? "no Java files"
+                       : "no file was asked for"
+                     : "mode " + mode.token() + " skips it";
         }
 
         /// How many of this root's findings count against it, in the failure message's words.
@@ -129,6 +167,74 @@ public final class LintRun {
                         .allMatch(root -> root.examined() == 0);
         }
 
+        /// The outcome lines of a lint activity: how many files were linted and how many did not parse, or why nothing
+        /// was linted, per root. A front end prints these; it never reads a mode to word them.
+        public List<String> lintLines() {
+            return activityLines("linted",
+                                 roots.stream().mapToInt(RootCounts::examined).sum(),
+                                 roots.stream().map(RootCounts::whyNotLinted));
+        }
+
+        /// The outcome lines of a format activity (`format`, `process`).
+        public List<String> formatLines() {
+            return activityLines("formatted",
+                                 roots.stream().mapToInt(RootCounts::formatted).sum(),
+                                 roots.stream().map(RootCounts::whyNotFormatted));
+        }
+
+        /// The outcome lines of a format-check activity (`format --check`, `check`'s format half).
+        public List<String> formatCheckLines() {
+            return activityLines("format-checked",
+                                 roots.stream().mapToInt(RootCounts::formatted).sum(),
+                                 roots.stream().map(RootCounts::whyNotFormatted));
+        }
+
+        /// The outcome lines of a score activity: a root that runs no rule is named as not scored, and nothing scored
+        /// at all says why per root.
+        public List<String> scoreLines() {
+            var unscored = roots.stream()
+                                .filter(root -> root.examined() == 0)
+                                .map(root -> "Not scored: " + root.whyNotLinted()
+                                                                  .or(root.root().toString()))
+                                .toList();
+
+            return Stream.concat(unscored.stream(),
+                                 activityLines("scored",
+                                               roots.stream().mapToInt(RootCounts::examined).sum(),
+                                               roots.stream().map(RootCounts::whyNotLinted)).stream())
+                         .toList();
+        }
+
+        /// The files that failed to parse, as `path: failure`, in root order.
+        public List<String> notParsedFiles() {
+            return roots.stream()
+                        .flatMap(root -> root.notParsedFiles()
+                                             .stream())
+                        .toList();
+        }
+
+        private List<String> activityLines(String verb, int done, Stream<Option<String>> reasons) {
+            return done > 0
+                   ? List.of(done + " file(s) " + verb + notParsedPart())
+                   : List.of("Nothing was " + verb + ": " + reasonList(reasons));
+        }
+
+        private String notParsedPart() {
+            var notParsed = roots.stream().mapToInt(RootCounts::notParsed).sum();
+
+            return notParsed > 0
+                   ? ", " + notParsed + " file(s) not parsed"
+                   : "";
+        }
+
+        private static String reasonList(Stream<Option<String>> reasons) {
+            var joined = reasons.flatMap(reason -> reason.stream()).collect(Collectors.joining("; "));
+
+            return joined.isEmpty()
+                   ? "no source root"
+                   : joined;
+        }
+
         private static Option<String> failureOf(List<RootCounts> roots) {
             var failing = roots.stream().filter(RootCounts::fails).map(RootCounts::describe).toList();
 
@@ -157,13 +263,10 @@ public final class LintRun {
     /// A run over the given roots, with directories the caller declares as test roots: a root that is one of them or
     /// lies under one is a test root, besides any the `src/test` predicate finds.
     public static LintRun lintRun(List<SourceRoot> roots, Set<Path> declaredTestRoots) {
-        var declared = declaredTestRoots.stream().map(directory -> directory.toAbsolutePath()
-                                                                            .normalize()).toList();
-
         return new LintRun(ordered(roots.stream()
                                         .map(root -> Group.group(root,
                                                                  isTestRoot(root.path(),
-                                                                            declared),
+                                                                            declaredTestRoots),
                                                                  Option.none()))));
     }
 
@@ -216,6 +319,16 @@ public final class LintRun {
                : route(file.path()).map(group -> group.lintParsed(tree, file));
     }
 
+    /// The files the run may score: those of the roots whose mode runs rules, in root order. A front end scores these
+    /// and nothing else; it reads no mode.
+    public List<Path> scorable() {
+        return groups.stream()
+                     .filter(Group::mayLint)
+                     .flatMap(group -> group.filesOf()
+                                            .stream())
+                     .toList();
+    }
+
     /// Close the run: the run diagnostics and the per-root summary. Refused the second time.
     public Result<RunReport> finish() {
         return finished.compareAndSet(false, true)
@@ -240,14 +353,12 @@ public final class LintRun {
     }
 
     private Result<Group> route(Path file) {
-        var path = file.toAbsolutePath().normalize();
-
         return Option.from(groups.stream()
-                                 .filter(group -> group.holds(path))
+                                 .filter(group -> group.holds(file))
                                  .max(Comparator.comparingInt(group -> group.path()
                                                                             .getNameCount())))
                      .toResult(LintRunError.OutsideSourceRoots.outsideSourceRoots(file))
-                     .map(group -> group.counted(path));
+                     .map(group -> group.counted(file));
     }
 
     /// The run rules each root's mode leaves on, evaluated once every file has been seen.
@@ -264,7 +375,7 @@ public final class LintRun {
                      .toList();
     }
 
-    private static boolean isTestRoot(Path root, List<Path> declared) {
+    private static boolean isTestRoot(Path root, Set<Path> declared) {
         return declared.stream()
                        .anyMatch(root::startsWith) || ConfigLoader.isTestRoot(root);
     }
@@ -282,6 +393,37 @@ public final class LintRun {
         }
     }
 
+    /// What was done to one file, recorded when it is done. A file is linted, formatted, both, or skipped by mode; a
+    /// file whose lint failed to parse is `NOT_PARSED` and nothing else. Combining two outcomes keeps what was done:
+    /// the activities of one file add up, a skip never hides work, and a parse failure is never taken back.
+    private enum Outcome {
+        SKIPPED_BY_MODE(false, false),
+        LINTED(true, false),
+        FORMATTED(false, true),
+        LINTED_AND_FORMATTED(true, true),
+        NOT_PARSED(false, false);
+        private final boolean linted;
+        private final boolean formatted;
+        Outcome(boolean linted, boolean formatted) {
+            this.linted = linted;
+            this.formatted = formatted;
+        }
+        Outcome and(Outcome other) {
+            return this == NOT_PARSED || other == NOT_PARSED
+                   ? NOT_PARSED
+                   : of(linted || other.linted, formatted || other.formatted);
+        }
+        private static Outcome of(boolean linted, boolean formatted) {
+            return linted
+                   ? formatted
+                     ? LINTED_AND_FORMATTED
+                     : LINTED
+                   : formatted
+                     ? FORMATTED
+                     : SKIPPED_BY_MODE;
+        }
+    }
+
     private record Group(Path path,
                          LintContext context,
                          boolean testRoot,
@@ -289,9 +431,8 @@ public final class LintRun {
                          boolean lintsFiles,
                          List<RunRule> runRules,
                          AtomicInteger files,
-                         Set<Path> seen,
-                         Set<Path> examined,
-                         Set<Path> formatted,
+                         Map<Path, Outcome> outcomes,
+                         Map<Path, String> notParsed,
                          AtomicInteger errors,
                          AtomicInteger warnings,
                          Option<Detail> detail) {
@@ -305,9 +446,8 @@ public final class LintRun {
                              !rules.isEmpty(),
                              runRulesIn(rules),
                              new AtomicInteger(),
-                             ConcurrentHashMap.newKeySet(),
-                             ConcurrentHashMap.newKeySet(),
-                             ConcurrentHashMap.newKeySet(),
+                             new ConcurrentHashMap<>(),
+                             new ConcurrentHashMap<>(),
                              new AtomicInteger(),
                              new AtomicInteger(),
                              detail);
@@ -330,44 +470,77 @@ public final class LintRun {
 
         Group counted(Path file) {
             files.incrementAndGet();
-            seen.add(file);
 
             return this;
+        }
+
+        /// Whether this group's rules may run on its files: the answer to "which files may be scored".
+        boolean mayLint() {
+            return lintsFiles;
+        }
+
+        List<Path> filesOf() {
+            return detail.map(known -> known.root()
+                                            .files())
+                         .or(List.of());
         }
 
         Result<List<Diagnostic>> lint(SourceFile file) {
             return lintsFiles
                    ? linter.lint(file)
-                           .map(found -> examinedWith(file.path(),
-                                                      found))
-                   : success(List.of());
+                           .onFailure(cause -> failedToParse(file.path(),
+                                                             cause))
+                           .map(found -> lintedWith(file.path(),
+                                                    found))
+                   : success(skippedBy(file.path()));
         }
 
         Result<List<Diagnostic>> lintFile(Path file) {
             return lintsFiles
-                   ? SourceFile.sourceFile(file).flatMap(source -> lint(source))
-                   : success(List.of());
+                   ? SourceFile.sourceFile(file)
+                               .onFailure(cause -> failedToParse(file, cause))
+                               .flatMap(source -> lint(source))
+                   : success(skippedBy(file));
         }
 
         List<Diagnostic> lintParsed(Cursor tree, SourceFile file) {
             return lintsFiles
-                   ? examinedWith(file.path(), linter.lintParsed(tree, file))
-                   : List.of();
+                   ? lintedWith(file.path(), linter.lintParsed(tree, file))
+                   : skippedBy(file.path());
         }
 
         boolean claimFormat(Path file) {
-            return context.mode() != JbctMode.DISABLED && formattedFile(file);
+            var formats = context.mode() != JbctMode.DISABLED;
+
+            record(file,
+                   formats
+                   ? Outcome.FORMATTED
+                   : Outcome.SKIPPED_BY_MODE);
+
+            return formats;
         }
 
-        private boolean formattedFile(Path file) {
-            formatted.add(file.toAbsolutePath().normalize());
-
-            return true;
+        private Outcome record(Path file, Outcome outcome) {
+            return outcomes.merge(file, outcome, Outcome::and);
         }
 
-        /// Record that a file was examined by rules and count its findings against this root.
-        private List<Diagnostic> examinedWith(Path file, List<Diagnostic> found) {
-            examined.add(file.toAbsolutePath().normalize());
+        /// A lint that could not read or parse the file is recorded with its failure, and the failure still travels to
+        /// the caller: this records it, it does not absorb it.
+        private Outcome failedToParse(Path file, Cause cause) {
+            notParsed.put(file, cause.message());
+
+            return record(file, Outcome.NOT_PARSED);
+        }
+
+        private List<Diagnostic> skippedBy(Path file) {
+            record(file, Outcome.SKIPPED_BY_MODE);
+
+            return List.of();
+        }
+
+        /// Record that a file was linted and count its findings against this root.
+        private List<Diagnostic> lintedWith(Path file, List<Diagnostic> found) {
+            record(file, Outcome.LINTED);
 
             return tallied(found);
         }
@@ -394,10 +567,28 @@ public final class LintRun {
             return Stream.empty();
         }
 
+        /// The tally of one recorded outcome kind.
+        private int tally(Predicate<Outcome> kind) {
+            return (int) outcomes.values()
+                                 .stream()
+                                 .filter(kind)
+                                 .count();
+        }
+
+        int linted() {
+            return tally(outcome -> outcome.linted);
+        }
+
+        int formatted() {
+            return tally(outcome -> outcome.formatted);
+        }
+
+        int notParsedCount() {
+            return tally(outcome -> outcome == Outcome.NOT_PARSED);
+        }
+
         int skipped() {
-            return (int) seen.stream()
-                             .filter(file -> !examined.contains(file) && !formatted.contains(file))
-                             .count();
+            return tally(outcome -> outcome == Outcome.SKIPPED_BY_MODE);
         }
 
         Option<RootCounts> counts() {
@@ -410,13 +601,23 @@ public final class LintRun {
                                          known.root().modeSource(),
                                          context.basePackage(),
                                          testRoot,
-                                         seen.size(),
-                                         examined.size(),
-                                         formatted.size(),
+                                         outcomes.size(),
+                                         linted(),
+                                         formatted(),
+                                         notParsedCount(),
                                          skipped(),
                                          errors.get(),
                                          warnings.get(),
-                                         errors.get() > 0 || warnings.get() > 0 && known.failsOnWarning());
+                                         errors.get() > 0 || warnings.get() > 0 && known.failsOnWarning(),
+                                         notParsedFiles());
+        }
+
+        private List<String> notParsedFiles() {
+            return notParsed.entrySet()
+                            .stream()
+                            .sorted(Map.Entry.comparingByKey())
+                            .map(entry -> entry.getKey() + ": " + entry.getValue())
+                            .toList();
         }
 
         String summaryLine() {
@@ -442,14 +643,22 @@ public final class LintRun {
                  + " root=" + path + context.basePackage()
                                             .map(base -> " basePackage=" + base)
                                             .or("")
-                 + ": " + examined.size()
-                 + " examined by rules, " + formatted.size()
-                 + " formatted or format-checked, " + skipped()
+                 + ": " + linted()
+                 + " examined by rules, " + formatted()
+                 + " formatted or format-checked, " + notParsedPart() + skipped()
                  + " skipped by mode" + (testRoot
-                                         ? ", " + seen.size() + " test-root files"
+                                         ? ", " + outcomes.size() + " test-root files"
                                          : "")
                  + "; test-root rule: " + known.testRootRule() + noteText().map(text -> "; " + text)
                                                                          .or("");
+        }
+
+        private String notParsedPart() {
+            var count = notParsedCount();
+
+            return count > 0
+                   ? count + " not parsed, "
+                   : "";
         }
 
         private String testPart() {
