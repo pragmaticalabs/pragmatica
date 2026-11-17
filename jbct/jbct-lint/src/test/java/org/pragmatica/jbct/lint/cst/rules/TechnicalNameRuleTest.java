@@ -195,6 +195,14 @@ class TechnicalNameRuleTest {
     }
 
     @Test
+    void add_ofAMultiTokenWord_flagsThePackageSegment() {
+        var context = withWords(TechnicalWords.technicalWords(List.of("PostgreSQL"), List.of()));
+
+        assertTrue(hasPackage("package org.example.postgresql;\nclass Seat {}\n", context));
+        assertFalse(hasPackage("package org.example.postgresql;\nclass Seat {}\n"));
+    }
+
+    @Test
     void remove_narrowsTheList_forPackageSegments() {
         var context = withWords(TechnicalWords.technicalWords(List.of(), List.of("domain", "Client")));
 
