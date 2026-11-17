@@ -44,8 +44,8 @@ class GapCommunityTest {
 
     private static MbWorld world(Map<String, CommunityPlacement> policies, Map<NodeId, String> sources) {
         return MbWorld.world(CORE_1, CORE_2, CORE_3)
-                      .seams(seams -> seams.withCommunityPolicies(policies)
-                                           .withMemberSource(sources))
+                      .placements(policies)
+                      .seams(seams -> seams.withMemberSource(sources))
                       .activate();
     }
 

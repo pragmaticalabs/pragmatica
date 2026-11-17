@@ -82,8 +82,7 @@ class V2174bPinsTest {
     // -- F10 (h, l2): a directive in flight --------------------------------------------------------------------------------------
     private static MbWorld oneWorker(NodeId worker) {
         return MbWorld.world(CORE_1, CORE_2, CORE_3)
-                      .seams(seams -> seams.withCommunityPolicies(Map.of())
-                                           .withMemberSource(Map.of(worker, "east")))
+                      .seams(seams -> seams.withMemberSource(Map.of(worker, "east")))
                       .activate();
     }
 

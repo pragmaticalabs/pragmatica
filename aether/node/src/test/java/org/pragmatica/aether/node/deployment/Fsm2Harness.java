@@ -326,7 +326,6 @@ final class Fsm2Harness implements AutoCloseable {
                                                                    () -> Option.some(Set.of(SELF, PEER)),
                                                                    Set::of,
                                                                    this::memberSources,
-                                                                   Map::of,
                                                                    Set::of,
                                                                    () -> Set.of(SELF, PEER),
                                                                    bootTokens::tokenOf),

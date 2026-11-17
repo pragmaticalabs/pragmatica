@@ -1761,7 +1761,7 @@ public sealed interface AetherValue {
         }
     }
 
-    /// The deployment engine a cluster runs (phase-3 design 8.2). `LEGACY` is the default of every node; `FSM2` is the rewrite.
+    /// The deployment engine a cluster runs (phase-3 design 8.2). `FSM2` is the default of every node; `LEGACY` is the engine it replaces (removed in F7).
     @Codec
     enum DeploymentEngine {
         LEGACY,

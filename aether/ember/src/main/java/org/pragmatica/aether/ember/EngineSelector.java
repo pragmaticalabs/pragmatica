@@ -17,24 +17,25 @@ import org.pragmatica.lang.utils.Causes;
 
 /// The global deployment-engine selector of the harness (FSM replacement plan F1 item 7): the system property
 /// [#PROPERTY] (`-Daether.deployment.engine=legacy|fsm2`) picks the engine every [EmberCluster] constructs its nodes
-/// with, so one switch runs the Ember corpus, the forge tests and Forge itself on FSM2. Absent means LEGACY, the
-/// production default. Harness-scoped: a node read from TOML has no engine key until the flip (plan D.3), so nothing
-/// here reaches a production node.
+/// with, so one switch runs the Ember corpus, the forge tests and Forge itself on either engine. Absent means FSM2, the
+/// production default since the flip (FSM replacement plan F6, #2767); `legacy` selects LEGACY until it is deleted (F7).
+/// Harness-scoped: a node read from TOML has no engine key (plan D.3) and takes `AetherNodeConfig`'s default, FSM2;
+/// nothing here reaches a production node.
 ///
-/// A value that names no engine is a failure, never LEGACY: a misspelt `fsm2` that ran LEGACY would make an FSM2 run
-/// report green while exercising the old engine. [EmberCluster] refuses to start on it.
+/// A value that names no engine is a failure, never the default: a misspelt `legacy` that ran FSM2 would make a LEGACY run
+/// report green while exercising the other engine. [EmberCluster] refuses to start on it.
 public sealed interface EngineSelector {
     String PROPERTY = "aether.deployment.engine";
 
     Fn1<Cause, String> UNKNOWN_ENGINE = Causes.forOneValue("-D" + PROPERTY
                                                           + "=%s names no deployment engine; use legacy or fsm2");
 
-    /// The engine the property selects: absent or blank -> LEGACY; `legacy` / `fsm2` in any case; anything else fails.
+    /// The engine the property selects: absent or blank -> FSM2; `legacy` / `fsm2` in any case; anything else fails.
     static Result<DeploymentEngine> engine(Option<String> raw) {
         return raw.filter(Verify.Is::notBlank)
                   .map(String::trim)
                   .map(EngineSelector::named)
-                  .or(Result.success(DeploymentEngine.LEGACY));
+                  .or(Result.success(DeploymentEngine.FSM2));
     }
 
     /// [#engine] over this JVM's system property.
