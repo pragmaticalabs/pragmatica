@@ -71,12 +71,13 @@ class FalseDeadWorkerRejoinTest {
         var worker = cluster.getNode(id.id()).unwrap();
 
         // Fence before removal (#3326, mutant e1: `CoreAbsenceDetector.evaluate` never fences): the worker's own core-absence detector
-        // reports `fenced` while the cores still hold its directive. The exit code cannot tell the fence from the QUORUM_LOSS drain
+        // reports `fenced` while no core holds it Dead yet. The directive is no witness here: the fence's own drain retires it through the
+        // surviving QUIC links within the poll. The exit code cannot tell the fence from the QUORUM_LOSS drain
         // that follows a removal, so the detector's snapshot (terminal once set) is the observation.
         await().alias("the worker's core-absence fence fired")
                .atMost(BUDGET.duration())
                .until(() -> worker.coreAbsenceSnapshot().map(CoreAbsenceSnapshot::fenced).or(false));
-        assertThat(directiveCommitted(id)).as("the worker fenced before the cores acted on its removal").isTrue();
+        assertThat(cores(id)).as("the worker fenced before any core declared it Dead").noneMatch(node -> isDead(node, id));
         awaitDirectiveRemoved(id);
         // The removal also arrived only after the whole fence window had elapsed, while the window is the seam value.
         assertThat(Duration.ofNanos(System.nanoTime() - cutAt)).as("the cores removed the worker only after its fence window elapsed")
