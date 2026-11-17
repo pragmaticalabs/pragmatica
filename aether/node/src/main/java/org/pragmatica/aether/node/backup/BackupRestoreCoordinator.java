@@ -702,7 +702,7 @@ public final class BackupRestoreCoordinator {
     }
 
     /// Phase-3 design 8.2 (W-34), FSM replacement plan 3.2 delta (a): a backup's marker replaces any other. A backup that carries no
-    /// marker (rc4 and earlier) restores into the running engine, never into "marker absent": the local marker stays when a leader without
+    /// engine marker restores into the running engine, never into "marker absent": the local marker stays when a leader without
     /// `[backup]` minted one while this restore was `IN_PROGRESS` (the incarnation is excluded from the chunks), and otherwise this node mints
     /// the marker of the engine it runs, in the same batch. Removing it instead would leave an FSM2 cluster reading "incarnation present,
     /// marker absent", i.e. LEGACY, and every node refusing the mismatch. No mutation when they already agree, so a finish whose marker

@@ -55,7 +55,7 @@ import org.slf4j.LoggerFactory;
 /// parks the **latest** action of each name until the guard opens, and drops it if the node is refused, so a misconfigured newcomer that wins an
 /// election writes nothing before it exits. An FSM2 node opens only once it reads an FSM2 marker.
 ///
-/// **Not carried here.** The restore half (#1533; FSM replacement plan 3.2 delta (a): a pre-phase-3 backup restores into the running
+/// **Not carried here.** The restore half (#1533; FSM replacement plan 3.2 delta (a): a backup without an engine marker restores into the running
 /// engine's marker, never into "marker absent") is the restore's finish
 /// (`BackupRestoreCoordinator`, W-34). The worker arms are deferred (report 1.2).
 public final class EngineMarkerGuard {
@@ -446,7 +446,7 @@ public final class EngineMarkerGuard {
         return "Deployment engine mismatch: this node is configured for " + configured
              + "; the cluster's committed state says " + committed()
              + ". Recovery: a node's engine is not an operator setting, so restarting it changes nothing. A cluster formed by an earlier build (marker absent,"
-             + " incarnation present) cannot be upgraded in place: form a new cluster on this build and restore a backup into it. If the committed"
+             + " incarnation present) cannot be upgraded in place: form a new cluster on this build and start it with `restore = \"fresh\"`; a backup written by an earlier build does not restore into this one (#3310). If the committed"
              + " marker is the wrong one for this cluster (a misconfigured genesis), the cluster needs re-genesis (wipe and re-form).";
     }
 

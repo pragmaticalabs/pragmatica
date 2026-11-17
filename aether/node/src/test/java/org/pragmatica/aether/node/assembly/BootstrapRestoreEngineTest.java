@@ -52,9 +52,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /// #2767 kill test for the mutant "`ClusterBootstrapAssembly.bootstrapRegistrars` hands the `BackupRestoreCoordinator` a fixed engine
-/// instead of `config.deploymentEngine()`": the restore of a backup that carries no engine marker (rc4 and earlier) must end with a marker
+/// instead of `config.deploymentEngine()`": the restore of a backup that carries no engine marker must end with a marker
 /// of the engine the NODE IS CONFIGURED for. The test goes through the real registrar wiring (the coordinator is built by the assembly, not
-/// by the test), restores a markerless backup from a real git remote into a store holding no marker, and reads the marker the restore left.
+/// by the test), restores a markerless backup (a synthetic fixture; it makes no claim about any release) from a real git remote into a store holding no marker, and reads the marker the restore left.
 /// Both engines are asserted, so the engine cannot be a constant. The coordinator's own rule is pinned by `BackupRestoreCoordinatorTest`.
 class BootstrapRestoreEngineTest {
     private static final NodeId SELF = NodeId.nodeId("restore-1").unwrap();

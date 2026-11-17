@@ -653,8 +653,8 @@ class BackupRestoreCoordinatorTest {
             restoresMarkerlessBackupInto(DeploymentEngine.LEGACY);
         }
 
-        /// An rc4-shaped backup (no engine marker, an IN_PROGRESS deployment outcome) restored into an FSM2 node `[instrument: a synthetic
-        /// rc4-shaped fixture built from the two traits the rules handle, not bytes produced by rc4 code]`. The marker is the node's FSM2 one,
+        /// A backup shaped like an rc4 one (no engine marker, an IN_PROGRESS deployment outcome) restored into an FSM2 node `[instrument: a synthetic
+        /// fixture built from the two traits the rules handle, not bytes produced by rc4 code; a real rc4 backup stops earlier, at decode, #3310]`. The marker is the node's FSM2 one,
         /// and the IN_PROGRESS outcome is withheld by the restore normalisation (it names an apply that died with the old cluster), so no
         /// outcome reaches the FSM2 leader's Rebuild from the restore. Red when the finish leaves the marker absent or restores the outcome.
         @Test
