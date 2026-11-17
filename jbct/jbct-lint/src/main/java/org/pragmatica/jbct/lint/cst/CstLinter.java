@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.LintContext;
@@ -28,9 +29,9 @@ public class CstLinter {
     private final List<CstLintRule> rules;
     private final Java25Parser parser;
 
-    private CstLinter(LintContext context, List<LintRule> registry) {
+    private CstLinter(LintContext context) {
         this.context = context;
-        this.rules = fileRules(registry);
+        this.rules = fileRules(rulesFor(context.mode()));
         this.parser = new Java25Parser();
     }
 
@@ -43,12 +44,12 @@ public class CstLinter {
 
     /// Create linter with default rules.
     public static CstLinter cstLinter() {
-        return new CstLinter(LintContext.defaultContext(), defaultRules());
+        return new CstLinter(LintContext.defaultContext());
     }
 
     /// Create linter with custom context.
     public static CstLinter cstLinter(LintContext context) {
-        return new CstLinter(context, defaultRules());
+        return new CstLinter(context);
     }
 
     /// Lint a source file.
@@ -104,6 +105,23 @@ public class CstLinter {
                                                                                      diagnostic.ruleId(),
                                                                                      diagnostic.line()))
                : diagnostics;
+    }
+
+    /// The rules that run in a mode, in registration order: `business` runs every rule, `infrastructure` the rules whose
+    /// `modes()` contain it, `format-only` and `disabled` none. The one place a mode selects rules.
+    public static List<LintRule> rulesFor(JbctMode mode) {
+        return defaultRules().stream()
+                           .filter(rule -> runsIn(rule, mode))
+                           .toList();
+    }
+
+    private static boolean runsIn(LintRule rule, JbctMode mode) {
+        return switch (mode) {
+            case BUSINESS -> true;
+            case INFRASTRUCTURE -> rule.modes()
+                                       .contains(JbctMode.INFRASTRUCTURE);
+            case FORMAT_ONLY, DISABLED -> false;
+        };
     }
 
     /// Rule IDs emitted by the default rule set, in registration order.
