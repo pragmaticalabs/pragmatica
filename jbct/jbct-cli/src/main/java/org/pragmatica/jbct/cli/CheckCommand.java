@@ -1,19 +1,16 @@
 package org.pragmatica.jbct.cli;
 
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
-import java.util.function.Function;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiFunction;
 
-import org.pragmatica.jbct.format.JbctFormatter;
-import org.pragmatica.jbct.lint.Diagnostic;
-import org.pragmatica.jbct.lint.cst.LintRun;
 import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
-import org.pragmatica.jbct.shared.AnalysisCoverage;
-import org.pragmatica.jbct.shared.SourceFile;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
+import org.pragmatica.jbct.lint.cst.RunOutcome.RunResult;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Surface;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
@@ -37,8 +34,11 @@ public class CheckCommand implements Callable<Integer> {
     @picocli.CommandLine.Option(names = {"--mode"}, description = "JBCT mode for this run, overriding jbct.toml and --config: business, infrastructure, format-only or disabled")
     String mode;
 
-    /// The one place the resolved plan is handed to the run; tests replace it to observe or adjust it (#2525).
-    Function<RootPlan, LintRun> runFactory = LintRun::lintRun;
+    /// The exit status when the plan holds no file: unchanged from before the run printed its own lines.
+    static final int NOTHING_COLLECTED_EXIT = 0;
+
+    /// The one place the resolved plan and the invocation reach the run; a test replaces it to capture the result the command received (#2525).
+    BiFunction<RootPlan, Invocation, Result<RunResult>> runSeam = CliRoots.PERFORM;
 
     @Override
     public Integer call() {
@@ -48,124 +48,8 @@ public class CheckCommand implements Callable<Integer> {
             return CliConfig.CONFIG_ERROR_EXIT;
         }
 
-        var plan = planned.unwrap();
-        var run = runFactory.apply(plan);
-        var jobs = CliRoots.jobs(plan);
+        var performed = runSeam.apply(planned.unwrap(), Invocation.check(Surface.CLI));
 
-        if (jobs.isEmpty()) {
-            System.out.println("No Java files found.");
-
-            return 0;
-        }
-
-        if (verbose) {
-            System.out.println("Checking " + jobs.size() + " Java file(s)...");
-        }
-
-        var needsFormatting = new ArrayList<Path>();
-        var formatErrors = new AtomicInteger(0);
-        var allDiagnostics = new ArrayList<Diagnostic>();
-
-        for (var job : jobs) {
-            checkFile(job, run, needsFormatting, formatErrors, allDiagnostics);
-        }
-
-        var finished = run.finish().onFailure(cause -> System.err.println("Error: " + cause.message())).option();
-
-        if (finished.isEmpty()) {
-            return CliConfig.CONFIG_ERROR_EXIT;
-        }
-
-        var report = finished.unwrap();
-
-        allDiagnostics.addAll(report.diagnostics());
-        CliRoots.layerCoverage(plan, report, System.err);
-        var notParsed = CliRoots.notParsed(report);
-        var coverage = AnalysisCoverage.analysisCoverage(CliRoots.examined(report) + notParsed, notParsed);
-
-        if (!needsFormatting.isEmpty()) {
-            System.out.println();
-            System.out.println("Files not properly formatted:");
-            for (var file : needsFormatting) {
-                System.out.println("  " + file);
-            }
-        }
-
-        if (!allDiagnostics.isEmpty()) {
-            System.out.println();
-            for (var d : allDiagnostics) {
-                System.out.print(d.toHumanReadable());
-            }
-        }
-
-        report.summary().forEach(System.out::println);
-        // The counts are meaningless without what the run did to the files: the run's own outcome lines say how many
-        // files were format-checked and linted, and which were not parsed or skipped by mode (#977).
-        System.out.println();
-        coverage.gapReport("check").onPresent(System.out::println);
-        report.formatCheckLines().forEach(System.out::println);
-        report.lintLines().forEach(System.out::println);
-        System.out.println("Findings: " + needsFormatting.size()
-                          + " format issue(s), " + CliRoots.errors(report)
-                          + " lint error(s), " + CliRoots.warnings(report)
-                          + " warning(s)");
-        report.failure().onPresent(System.out::println);
-        if (formatErrors.get() > 0 || coverage.isPartial()) {
-            return 2;
-        }
-
-        return ! needsFormatting.isEmpty() || report.fails()
-               ? 1
-               : 0;
-    }
-
-    private void checkFile(CliRoots.FileJob job,
-                           LintRun run,
-                           List<Path> needsFormatting,
-                           AtomicInteger formatErrors,
-                           List<Diagnostic> allDiagnostics) {
-        run.claimFormat(job.file())
-           .onSuccess(claimed -> {
-                          if (claimed) {
-                              checkFormat(job.file(),
-                                          job.formatter(),
-                                          needsFormatting,
-                                          formatErrors);
-                          }
-                      })
-           .onFailure(cause -> {
-                          formatErrors.incrementAndGet();
-                          System.err.println("  ✗ format error: " + job.file() + ": " + cause.message());
-                      });
-        checkLint(job.file(), run, allDiagnostics);
-    }
-
-    private void checkFormat(Path file, JbctFormatter formatter, List<Path> needsFormatting, AtomicInteger errors) {
-        SourceFile.sourceFile(file)
-                  .flatMap(formatter::isFormatted)
-                  .onSuccess(isFormatted -> {
-                                 if (!isFormatted) {
-                                     needsFormatting.add(file);
-                                 } else if (verbose) {
-                                     System.out.println("  ✓ format: " + file.getFileName());
-                                 }
-                             })
-                  .onFailure(cause -> {
-                                 errors.incrementAndGet();
-                                 System.err.println("  ✗ format error: " + file + ": " + cause.message());
-                             });
-    }
-
-    private void checkLint(Path file, LintRun run, List<Diagnostic> allDiagnostics) {
-        run.lintFile(file)
-           .onSuccess(diagnostics -> {
-                          allDiagnostics.addAll(diagnostics);
-                          if (verbose && diagnostics.isEmpty()) {
-                              System.out.println("  ✓ lint: " + file.getFileName());
-                          }
-                      })
-           .onFailure(cause -> {
-               System.err.println("  ✗ parse error: " + file + ": " + cause.message());
-           });
+        return CliRoots.finish(performed, verbose, NOTHING_COLLECTED_EXIT);
     }
 }

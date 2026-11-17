@@ -107,9 +107,22 @@ class JbctModeFixtureTest {
     private int run(Object command, String... args) {
         out.reset();
         err.reset();
+        captured = new CapturedRun();
+        if (command instanceof FormatCommand format) {
+            format.runSeam = captured;
+        } else if (command instanceof CheckCommand check) {
+            check.runSeam = captured;
+        }
 
         return new CommandLine(command).execute(args);
     }
+
+    /// What `format` or `check` printed is the report it received (never a second run over the tree): stdout is its lines and findings in order.
+    private void assertPrintedTheReceivedReport() {
+        assertThat(out.toString()).isEqualTo(captured.expectedStdout(false));
+    }
+
+    private CapturedRun captured = new CapturedRun();
 
     private String text() {
         return out + "\n" + err;
@@ -133,7 +146,8 @@ class JbctModeFixtureTest {
         assertThat(run(new LintCommand(), root.toString())).isEqualTo(1);
         assertThat(text()).contains(ARCH_02, RET_03).contains("mode=business (from ", ") root=" + root(root), "; test-root rule: ");
         assertThat(run(new CheckCommand(), root.toString())).isEqualTo(1);
-        assertThat(text()).contains(ARCH_02, RET_03, NEEDS_FORMAT, price(root, "biz").toString())
+        assertPrintedTheReceivedReport();
+        assertThat(text()).contains(ARCH_02, RET_03, price(root, "biz").toString())
                           .contains("mode=business (from ", ") root=" + root(root), "; test-root rule: ");
     }
 
@@ -142,6 +156,7 @@ class JbctModeFixtureTest {
         var root = module("biz", JbctMode.BUSINESS);
 
         assertThat(run(new FormatCommand(), "--check", root.toString())).isEqualTo(1);
+        assertPrintedTheReceivedReport();
         assertThat(text()).contains(price(root, "biz").toString());
         assertThat(run(new FormatCommand(), root.toString())).isZero();
         assertThat(statementIndent(price(root, "biz"))).isEqualTo(8);
@@ -160,7 +175,8 @@ class JbctModeFixtureTest {
         assertThat(text()).contains(RET_03).doesNotContain(ARCH_02)
                           .contains("mode=infrastructure (from ", ") root=" + root(root), "; test-root rule: ").contains("structure checks off");
         assertThat(run(new CheckCommand(), root.toString())).isEqualTo(1);
-        assertThat(text()).contains(RET_03, NEEDS_FORMAT, price(root, "infra").toString()).doesNotContain(ARCH_02)
+        assertPrintedTheReceivedReport();
+        assertThat(text()).contains(RET_03, price(root, "infra").toString()).doesNotContain(ARCH_02)
                           .contains("mode=infrastructure (from ", ") root=" + root(root), "; test-root rule: ").contains("structure checks off");
     }
 
@@ -187,7 +203,8 @@ class JbctModeFixtureTest {
         var root = module("fmt", JbctMode.FORMAT_ONLY);
 
         assertThat(run(new CheckCommand(), root.toString())).isEqualTo(1);
-        assertThat(text()).contains(NEEDS_FORMAT, price(root, "fmt").toString()).doesNotContain("JBCT-")
+        assertPrintedTheReceivedReport();
+        assertThat(text()).contains(price(root, "fmt").toString()).doesNotContain("JBCT-")
                           .contains("mode=format-only (from ", ") root=" + root(root), "; test-root rule: ").contains("format only, no rule run");
     }
 
@@ -220,9 +237,9 @@ class JbctModeFixtureTest {
         assertThat(run(new LintCommand(), root.toString())).isZero();
         assertThat(text()).doesNotContain("JBCT-").contains("mode=disabled (from ", ") root=" + root(root), "; test-root rule: ").contains("skipped, no format, no rule run");
         assertThat(run(new CheckCommand(), root.toString())).isZero();
-        assertThat(text()).doesNotContain("JBCT-").doesNotContain(NEEDS_FORMAT)
-                          .contains("mode=disabled (from ", ") root=" + root(root), "; test-root rule: ").contains("skipped, no format, no rule run")
-                          .contains("Nothing was format-checked: " + root(root) + " (mode disabled skips it)");
+        assertPrintedTheReceivedReport();
+        assertThat(text()).doesNotContain("JBCT-").doesNotContain(price(root, "off").toString());
+        assertThat(captured.stdoutLines(false)).anyMatch(line -> line.contains(root(root)));
     }
 
     @Test
@@ -231,9 +248,12 @@ class JbctModeFixtureTest {
         var before = Files.readString(price(root, "off"));
 
         assertThat(run(new FormatCommand(), "--check", root.toString())).isZero();
-        assertThat(text()).doesNotContain(price(root, "off").toString()).contains("Nothing was format-checked: " + root(root) + " (mode disabled skips it)");
+        assertPrintedTheReceivedReport();
+        assertThat(text()).doesNotContain(price(root, "off").toString());
+        assertThat(captured.stdoutLines(false)).anyMatch(line -> line.contains(root(root)));
         assertThat(run(new FormatCommand(), root.toString())).isZero();
-        assertThat(text()).contains("Nothing was formatted: " + root(root) + " (mode disabled skips it)");
+        assertPrintedTheReceivedReport();
+        assertThat(captured.stdoutLines(false)).anyMatch(line -> line.contains(root(root)));
         assertThat(Files.readString(price(root, "off"))).isEqualTo(before);
     }
 
@@ -257,7 +277,8 @@ class JbctModeFixtureTest {
         assertThat(run(new FormatCommand(), "--check", off.toString(), fmt.toString())).isEqualTo(1);
         assertThat(text()).contains(price(fmt, "fmt").toString()).doesNotContain(price(off, "off").toString());
         assertThat(run(new CheckCommand(), off.toString(), fmt.toString())).isEqualTo(1);
-        assertThat(text()).contains(NEEDS_FORMAT, price(fmt, "fmt").toString()).doesNotContain(price(off, "off").toString())
+        assertPrintedTheReceivedReport();
+        assertThat(text()).contains(price(fmt, "fmt").toString()).doesNotContain(price(off, "off").toString())
                           .doesNotContain("JBCT-");
         assertThat(run(new FormatCommand(), off.toString(), fmt.toString())).isZero();
         assertThat(Files.readString(price(off, "off"))).isEqualTo(before);
@@ -272,7 +293,9 @@ class JbctModeFixtureTest {
         var before = Files.readString(price(root, "biz"));
 
         assertThat(run(new CheckCommand(), "--mode", "disabled", root.toString())).isZero();
-        assertThat(text()).doesNotContain("JBCT-").doesNotContain(NEEDS_FORMAT).contains("mode=disabled (from --mode) root=" + root(root), "Nothing was linted: " + root(root) + " (mode disabled skips it)");
+        assertPrintedTheReceivedReport();
+        assertThat(text()).doesNotContain("JBCT-").doesNotContain(price(root, "biz").toString());
+        assertThat(captured.stdoutLines(false)).anyMatch(line -> line.contains(root(root)));
         assertThat(run(new FormatCommand(), "--mode", "disabled", root.toString())).isZero();
         assertThat(Files.readString(price(root, "biz"))).isEqualTo(before);
     }

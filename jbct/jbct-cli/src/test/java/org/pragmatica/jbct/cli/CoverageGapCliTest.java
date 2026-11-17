@@ -11,6 +11,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Kind;
 import picocli.CommandLine;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -140,37 +141,42 @@ class CoverageGapCliTest {
 
     @Nested
     class FormatCheck {
+        private final CapturedRun captured = new CapturedRun();
+
         private int formatCheck() {
             out.reset();
             err.reset();
 
-            return new CommandLine(new FormatCommand()).execute("--check", sources.toString());
+            var command = new FormatCommand();
+
+            command.runSeam = captured;
+
+            return new CommandLine(command).execute("--check", sources.toString());
         }
 
         @Test
-        void formatCheck_neverClaimsACleanSweep_whenAFileCannotBeParsed() throws IOException {
+        void formatCheck_printsTheReceivedIncompleteReportAndExitsTwo_whenAFileCannotBeParsed() throws IOException {
             write("Pure.java", CLEAN);
             write("Ell.java", UNPARSEABLE);
 
             var exitCode = formatCheck();
 
-            assertThat(stdout()).doesNotContain("properly formatted");
-            assertThat(stdout()).contains("Parse errors: 1")
-                                .contains("COVERAGE GAP");
+            assertThat(captured.result().verdict().kind()).isEqualTo(Kind.INCOMPLETE);
+            assertThat(stdout()).isEqualTo(captured.expectedStdout(false));
+            assertThat(err.toString(UTF_8).lines()).containsAll(captured.expectedStderrLines());
             assertThat(exitCode).isEqualTo(2);
         }
 
-        /// Positive control for the forbidden sentence above: this is the state that earns it, and it
-        /// is printed byte-identically to before.
+        /// Positive control for the test above: the clean tree earns a CLEAN verdict and exit 0 from the same command.
         @Test
-        void formatCheck_announcesACleanSweep_whenEverythingWasAnalysedAndFormatted() throws IOException {
+        void formatCheck_printsTheReceivedCleanReportAndExitsZero_whenEverythingWasAnalysedAndFormatted() throws IOException {
             write("Pure.java", CLEAN);
 
             var exitCode = formatCheck();
 
-            assertThat(stdout()).contains("1 file(s) format-checked")
-                                .doesNotContain("properly formatted")
-                                .doesNotContain("COVERAGE GAP");
+            assertThat(captured.result().verdict().kind()).isEqualTo(Kind.CLEAN);
+            assertThat(captured.stdoutLines(false)).isNotEmpty();
+            assertThat(stdout()).isEqualTo(captured.expectedStdout(false));
             assertThat(exitCode).isZero();
         }
     }

@@ -159,14 +159,21 @@ class CliPerRootLintTest {
 
     @Test
     void check_twoPathsInTwoModules_eachFileGetsItsOwnModulesRulesAndSummaryLines() {
-        var exit = execute(new CheckCommand(), business.toString(), infrastructure.toString());
+        var captured = new CapturedRun();
+        var command = new CheckCommand();
+
+        command.runSeam = captured;
+
+        var exit = execute(command, business.toString(), infrastructure.toString());
         var text = out.toString();
 
         assertThat(exit).isEqualTo(1);
         assertThat(count(text, ARCH_02)).isEqualTo(1);
         assertThat(count(text, RET_03)).isEqualTo(2);
-        assertThat(text).contains("mode=business (from ", ") root=" + rootOf(business) + " basePackage=org.acme.biz: 1 examined by rules, 1 formatted or format-checked")
-                        .contains("mode=infrastructure (from ", ") root=" + rootOf(infrastructure) + " basePackage=org.acme.infra: 1 examined by rules, 1 formatted or format-checked");
+        assertThat(text).isEqualTo(captured.expectedStdout(false));
+        assertThat(captured.stdoutLines(false)).anyMatch(line -> line.contains("root=" + rootOf(business)))
+                                               .anyMatch(line -> line.contains("root=" + rootOf(infrastructure)));
+        assertThat(captured.result().examined()).isEqualTo(2);
     }
 
     @Test

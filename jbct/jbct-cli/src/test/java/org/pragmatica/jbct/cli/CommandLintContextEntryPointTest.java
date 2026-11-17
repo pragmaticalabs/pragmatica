@@ -12,6 +12,9 @@ import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.LintRun;
 import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
+import org.pragmatica.jbct.lint.cst.RunOutcome.RunResult;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.AfterEach;
@@ -89,7 +92,7 @@ class CommandLintContextEntryPointTest {
             case CHECK -> {
                 var check = new CheckCommand();
 
-                check.runFactory = recorder;
+                check.runSeam = (plan, invocation) -> recordAndPerform(recorded, plan, invocation);
                 new CommandLine(check).execute(args);
             }
             case LINT -> {
@@ -107,6 +110,12 @@ class CommandLintContextEntryPointTest {
         }
 
         return recorded;
+    }
+
+    private static Result<RunResult> recordAndPerform(List<LintContext> recorded, RootPlan plan, Invocation invocation) {
+        plan.roots().forEach(root -> recorded.add(root.context()));
+
+        return CliRoots.PERFORM.apply(plan, invocation);
     }
 
     private static LintRun recordAndRun(List<LintContext> recorded, RootPlan plan) {

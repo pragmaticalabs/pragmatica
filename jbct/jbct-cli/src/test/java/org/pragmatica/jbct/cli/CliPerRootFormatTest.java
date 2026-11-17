@@ -12,6 +12,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.jbct.lint.cst.RunOutcome.FormatOutcome;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Kind;
+import org.pragmatica.jbct.lint.cst.RunOutcome.WouldChange;
 import picocli.CommandLine;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -43,6 +46,7 @@ class CliPerRootFormatTest {
     private PrintStream savedErr;
     private Path narrow;
     private Path wide;
+    private CapturedRun captured = new CapturedRun();
 
     @BeforeEach
     void fixture() throws Exception {
@@ -101,8 +105,37 @@ class CliPerRootFormatTest {
     private int execute(Object command, String... args) {
         out.reset();
         err.reset();
+        captured = new CapturedRun();
+        seam(command);
 
         return new CommandLine(command).execute(args);
+    }
+
+    private void seam(Object command) {
+        if (command instanceof FormatCommand format) {
+            format.runSeam = captured;
+        } else if (command instanceof CheckCommand check) {
+            check.runSeam = captured;
+        }
+    }
+
+    /// The format outcome the run recorded for the file of `name` under `sourceRoot`.
+    private FormatOutcome formatOf(Path sourceRoot, String name) {
+        var file = fileOf(sourceRoot, name);
+        return captured.result()
+                       .files()
+                       .stream()
+                       .filter(result -> result.file().equals(file))
+                       .findFirst()
+                       .orElseThrow()
+                       .format();
+    }
+
+    /// What the command printed is the report it received: stdout is its lines and findings in order, stderr holds its ERROR lines.
+    private void assertPrintedTheReceivedReport() {
+        assertThat(captured.performs()).isEqualTo(1);
+        assertThat(out.toString()).isEqualTo(captured.expectedStdout(false));
+        assertThat(err.toString().lines()).containsAll(captured.expectedStderrLines());
     }
 
     /// Puts the module `name` in `mode` through its own `jbct.toml`, keeping its `indentSize`, the way a user would.
@@ -136,8 +169,9 @@ class CliPerRootFormatTest {
         var exit = execute(new FormatCommand(), "--check", narrow.toString(), wide.toString());
 
         assertThat(exit).isZero();
-        assertThat(out.toString()).contains("2 file(s) format-checked")
-                                  .doesNotContain("properly formatted");
+        assertThat(captured.result().verdict().kind()).isEqualTo(Kind.CLEAN);
+        assertThat(captured.result().collected()).isEqualTo(2);
+        assertPrintedTheReceivedReport();
     }
 
     @Test
@@ -148,8 +182,9 @@ class CliPerRootFormatTest {
         var exit = execute(new FormatCommand(), "--check", narrow.toString(), wide.toString());
 
         assertThat(exit).isEqualTo(1);
-        assertThat(out.toString()).contains("needs formatting: " + fileOf(wide, "wide"))
-                                  .doesNotContain("needs formatting: " + fileOf(narrow, "narrow"));
+        assertPrintedTheReceivedReport();
+        assertThat(out.toString()).contains(fileOf(wide, "wide").toString())
+                                  .doesNotContain(fileOf(narrow, "narrow").toString());
     }
 
     @Test
@@ -158,22 +193,25 @@ class CliPerRootFormatTest {
         Files.writeString(fileOf(wide, "wide"), UNFORMATTED.formatted("wide", "wide"));
 
         var exit = execute(new CheckCommand(), narrow.toString(), wide.toString());
-        var report = out.toString();
-        var formatSection = report.substring(report.indexOf("Files not properly formatted:"),
-                                             report.indexOf("Files not properly formatted:") + 400);
 
         assertThat(exit).isEqualTo(1);
-        assertThat(formatSection).contains(fileOf(wide, "wide").toString())
-                                 .doesNotContain(fileOf(narrow, "narrow").toString());
-        assertThat(report).contains("1 format issue(s)");
+        assertThat(captured.result().verdict().kind()).isEqualTo(Kind.FINDINGS);
+        assertPrintedTheReceivedReport();
+        assertThat(formatOf(wide, "wide")).isInstanceOf(WouldChange.class);
+        assertThat(formatOf(narrow, "narrow")).isNotInstanceOf(WouldChange.class);
     }
 
     @Test
     void check_afterPerRootFormat_hasNoFormatFinding() {
         execute(new FormatCommand(), narrow.toString(), wide.toString());
-        execute(new CheckCommand(), narrow.toString(), wide.toString());
 
-        assertThat(out.toString()).contains("0 format issue(s)");
+        var exit = execute(new CheckCommand(), narrow.toString(), wide.toString());
+
+        assertThat(exit).isZero();
+        assertThat(captured.result().verdict().kind()).isEqualTo(Kind.CLEAN);
+        assertPrintedTheReceivedReport();
+        assertThat(formatOf(narrow, "narrow")).isNotInstanceOf(WouldChange.class);
+        assertThat(formatOf(wide, "wide")).isNotInstanceOf(WouldChange.class);
     }
 
     @Test
@@ -185,10 +223,9 @@ class CliPerRootFormatTest {
         assertThat(exit).isZero();
         assertThat(read(fileOf(wide, "wide"))).isEqualTo(before);
         assertThat(indentOfStatement(fileOf(narrow, "narrow"))).isEqualTo(4);
-        assertThat(out.toString()).contains("mode=disabled")
-                                  .contains("skipped, no format, no rule run")
-                                  .contains("1 file(s) formatted");
-        assertThat(count(out.toString(), "mode=disabled")).isEqualTo(1);
+        assertPrintedTheReceivedReport();
+        assertThat(captured.stdoutLines(false)).anyMatch(line -> line.contains(rootOf(wide)));
+        assertThat(count(out.toString(), rootOf(wide))).isEqualTo(count(captured.expectedStdout(false), rootOf(wide)));
     }
 
     @Test
@@ -197,7 +234,8 @@ class CliPerRootFormatTest {
         var exit = execute(new FormatCommand(), "--check", narrow.toString(), wide.toString());
 
         assertThat(exit).isEqualTo(1);
-        assertThat(out.toString()).contains("needs formatting: " + fileOf(narrow, "narrow"))
+        assertPrintedTheReceivedReport();
+        assertThat(out.toString()).contains(fileOf(narrow, "narrow").toString())
                                   .doesNotContain(fileOf(wide, "wide").toString());
     }
 
@@ -206,10 +244,9 @@ class CliPerRootFormatTest {
         setMode("wide", JbctMode.DISABLED);
         execute(new CheckCommand(), narrow.toString(), wide.toString());
 
-        assertThat(out.toString()).doesNotContain("needs formatting: " + fileOf(wide, "wide"));
-        assertThat(out.toString()).contains("1 format issue(s)");
-        assertThat(out.toString()).contains("mode=disabled")
-                                  .contains("1 file(s) format-checked");
+        assertPrintedTheReceivedReport();
+        assertThat(out.toString()).doesNotContain(fileOf(wide, "wide").toString());
+        assertThat(captured.stdoutLines(false)).anyMatch(line -> line.contains(rootOf(wide)));
     }
 
     @Test
@@ -228,6 +265,10 @@ class CliPerRootFormatTest {
         assertThat(execute(new FormatCommand(), wide.toString())).isZero();
         assertThat(indentOfStatement(fileOf(wide, "wide"))).isEqualTo(16);
         assertThat(execute(new FormatCommand(), "--check", wide.toString())).isZero();
+    }
+
+    private static String rootOf(Path sourceRoot) {
+        return sourceRoot.toAbsolutePath().normalize().toString();
     }
 
     private static int count(String text, String needle) {

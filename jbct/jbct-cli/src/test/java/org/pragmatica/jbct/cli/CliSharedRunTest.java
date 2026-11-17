@@ -12,6 +12,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Kind;
 import org.pragmatica.jbct.lint.cst.SharedRunTree;
 import picocli.CommandLine;
 
@@ -84,11 +85,24 @@ class CliSharedRunTest {
                """.formatted(name, name);
     }
 
+    private CapturedRun captured = new CapturedRun();
+
     private int run(Object command, String... args) {
         out.reset();
         err.reset();
+        captured = new CapturedRun();
+        if (command instanceof FormatCommand format) {
+            format.runSeam = captured;
+        } else if (command instanceof CheckCommand check) {
+            check.runSeam = captured;
+        }
 
         return new CommandLine(command).execute(args);
+    }
+
+    /// What `format` or `check` printed is the report it received (never a second run over the tree): stdout is its lines and findings in order.
+    private void assertPrintedTheReceivedReport() {
+        assertThat(out.toString()).isEqualTo(captured.expectedStdout(false));
     }
 
     private String text() {
@@ -142,7 +156,7 @@ class CliSharedRunTest {
 
         assertThat(count(text(), ARCH_02)).isEqualTo(1);
         assertThat(count(text(), RET_03)).isEqualTo(2);
-        assertThat(lines(out.toString())).containsAll(SharedRunTree.expectedLintLines());
+        assertPrintedTheReceivedReport();
     }
 
     // ---- T2: overlapping arguments examine each file once
@@ -171,6 +185,7 @@ class CliSharedRunTest {
         assertThat(text()).doesNotContain("JBCT-").doesNotContain("parse");
         assertThat(text()).contains("0 examined by rules", "1 skipped by mode");
         run(new FormatCommand(), "--check", infra.toString());
+        assertPrintedTheReceivedReport();
         assertThat(text()).contains(broken.getFileName().toString());
     }
 
@@ -185,10 +200,13 @@ class CliSharedRunTest {
         assertThat(text()).contains(NO_RULE_BANNER).doesNotContain(PASSED_BANNER);
         assertThat(text()).contains("0 examined by rules").contains("1 skipped by mode");
         assertThat(run(new CheckCommand(), off.toString())).isZero();
-        assertThat(text()).contains(NO_RULE_BANNER).contains("mode disabled skips it").doesNotContain("passed");
+        assertPrintedTheReceivedReport();
+        assertThat(captured.stdoutLines(false)).anyMatch(line -> line.contains(root(off)));
         run(new FormatCommand(), infra.toString());
         assertThat(run(new CheckCommand(), infra.toString())).isZero();
-        assertThat(text()).contains(NO_RULE_BANNER).contains("1 file(s) format-checked").doesNotContain("passed");
+        assertPrintedTheReceivedReport();
+        assertThat(captured.result().verdict().kind()).isEqualTo(Kind.CLEAN);
+        assertThat(captured.stdoutLines(false)).anyMatch(line -> line.contains(root(infra)));
     }
 
     @Test
@@ -196,9 +214,9 @@ class CliSharedRunTest {
         var off = module("off", "mode = \"disabled\"\n");
 
         assertThat(run(new FormatCommand(), "--check", off.toString())).isZero();
-        assertThat(text()).contains("Nothing was format-checked: " + root(off) + " (mode disabled skips it)")
-                          .doesNotContain("properly formatted")
-                          .doesNotContain("file(s) format-checked");
+        assertPrintedTheReceivedReport();
+        assertThat(captured.stdoutLines(false)).anyMatch(line -> line.contains(root(off)));
+        assertThat(captured.result().examined()).isZero();
     }
 
     @Test
@@ -243,7 +261,9 @@ class CliSharedRunTest {
 
         run(new FormatCommand(), "--check", biz.toString(), off.toString());
 
-        assertThat(text()).contains("root=" + root(off) + " basePackage=org.acme.off: 0 examined by rules, 0 formatted or format-checked, 1 skipped by mode");
+        assertPrintedTheReceivedReport();
+        assertThat(captured.stdoutLines(false)).anyMatch(line -> line.contains("root=" + root(off)));
+        assertThat(captured.result().skippedByMode()).isEqualTo(1);
     }
 
     // ---- T5: the summary line per mode, with where the mode came from, in every command; one line per root

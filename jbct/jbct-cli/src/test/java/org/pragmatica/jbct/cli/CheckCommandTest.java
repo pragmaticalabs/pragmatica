@@ -10,6 +10,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Kind;
 import picocli.CommandLine;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -69,42 +70,51 @@ class CheckCommandTest {
         Files.writeString(sources.resolve(name), content);
     }
 
+    private final CapturedRun captured = new CapturedRun();
+
     private int check() {
         out.reset();
         err.reset();
 
-        return new CommandLine(new CheckCommand()).execute(sources.toString());
+        var command = new CheckCommand();
+
+        command.runSeam = captured;
+
+        return new CommandLine(command).execute(sources.toString());
+    }
+
+    /// What the command printed is the report it received: stdout is its lines and findings in order, stderr holds its ERROR lines.
+    private void assertPrintedTheReceivedReport() {
+        assertThat(out.toString(UTF_8)).isEqualTo(captured.expectedStdout(false));
+        assertThat(err.toString(UTF_8).lines()).containsAll(captured.expectedStderrLines());
     }
 
     @Test
-    void check_reportsTheAnalysedDenominator_whenAFileCannotBeParsed() throws IOException {
+    void check_printsTheReceivedReportAndExitsTwo_whenAFileCannotBeParsed() throws IOException {
         write("Pure.java", CLEAN);
         write("Ell.java", UNPARSEABLE);
 
         var exitCode = check();
 
-        assertThat(err.toString(UTF_8)).contains("Parse failed:");
-        assertThat(out.toString(UTF_8)).doesNotContain("passed")
-                                       .doesNotContain("2 file(s) linted");
-        assertThat(out.toString(UTF_8)).contains("1 file(s) linted, 1 file(s) not parsed")
-                                       .contains("COVERAGE GAP");
+        assertThat(captured.performs()).isEqualTo(1);
+        assertThat(captured.result().verdict().kind()).isEqualTo(Kind.INCOMPLETE);
+        assertThat(captured.result().verdict().failure().isPresent()).isTrue();
+        assertPrintedTheReceivedReport();
         assertThat(exitCode).isEqualTo(2);
     }
 
-    /// Positive control for both `doesNotContain` assertions above: this is the state that earns the
-    /// pass line, and it prints the complete-coverage summary byte-identically to how it always has,
-    /// bar the coverage clause this fix adds.
+    /// Positive control for the test above: a clean tree gives a CLEAN verdict and the command prints that report and exits 0.
     @Test
-    void check_announcesAPass_whenEverythingWasAnalysedAndClean() throws IOException {
+    void check_printsTheReceivedReportAndExitsZero_whenEverythingWasAnalysedAndClean() throws IOException {
         write("Pure.java", CLEAN);
 
         var exitCode = check();
 
-        assertThat(out.toString(UTF_8)).contains("0 format issue(s), 0 lint error(s), 0 warning(s)")
-                                       .contains("1 file(s) format-checked")
-                                       .contains("1 file(s) linted")
-                                       .doesNotContain("passed")
-                                       .doesNotContain("UNPARSEABLE");
+        assertThat(captured.performs()).isEqualTo(1);
+        assertThat(captured.result().verdict().kind()).isEqualTo(Kind.CLEAN);
+        assertThat(captured.result().findings()).isEmpty();
+        assertThat(captured.stdoutLines(false)).isNotEmpty();
+        assertPrintedTheReceivedReport();
         assertThat(exitCode).isZero();
     }
 }
