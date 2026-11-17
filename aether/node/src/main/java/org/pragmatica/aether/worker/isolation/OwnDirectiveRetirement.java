@@ -6,7 +6,6 @@ package org.pragmatica.aether.worker.isolation;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
-import java.util.function.Supplier;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
@@ -14,7 +13,6 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.utility.warning.OperatorWarnings;
 
@@ -33,20 +31,17 @@ import static org.pragmatica.utility.warning.OperatorWarningCode.OWN_DIRECTIVE_R
 /// (`AetherNode.EXIT_DRAINED`), and it raises one [OWN_DIRECTIVE_RETIRED] operator warning naming this node.
 ///
 /// ## The condition
-/// The halt fires on a `ValueRemove` of `ActivationDirectiveKey(self)` when ALL of these hold:
+/// The halt is decided from the delivered change alone (#3330): the store is not read. It fires on a `ValueRemove` of
+/// `ActivationDirectiveKey(self)` when ALL of these hold:
 /// - this node is a configured worker, and it was DIRECTED: it saw a `ValuePut` of its own key with role `WORKER`.
 ///   A node never directed has no directive to lose, so a removal before the first directive does nothing.
-/// - no replacement is committed: the store, read when the removal is handled, holds no directive for this node. The
-///   store is read at handle time, so it may already hold a directive committed AFTER the removal; then the worker
-///   does not halt. No production writer creates that sequence: the store refuses a transaction that removes and puts
-///   the same key (mutation keys must be distinct, `KVStore.handleLeaderTransaction`), and no writer removes a live
-///   worker's directive and then creates another for it. A removal is a retirement; the worker returns only by a
-///   fresh `WorkerJoin` that is then assigned.
 /// - this node is not already draining. A planned departure (a commanded drain) also ends in the retirement of the
 ///   directive. That drain already ends the process, so the removal neither halts it again nor raises a warning.
 ///
-/// A directive rewrite is a `ValuePut`, never a `ValueRemove`, so it cannot fire the halt. A worker learns its KV
-/// state from projection installs, and each install is delivered as a diff against the last delivered view: a key
+/// A directive committed after the removal does not cancel the halt, whether or not the store already holds it when
+/// the removal is handled: a worker changes community only by retirement and a fresh `WorkerJoin`, never by a move in
+/// place. A directive rewrite is a `ValuePut`, never a `ValueRemove`, so it cannot fire the halt. A worker learns its
+/// KV state from projection installs, and each install is delivered as a diff against the last delivered view: a key
 /// that changed value becomes a put, and only a key absent from the new projection becomes a remove. A removal of
 /// another node's directive is ignored.
 ///
@@ -63,7 +58,6 @@ public final class OwnDirectiveRetirement {
 
     private final NodeId self;
     private final boolean configuredWorker;
-    private final Supplier<Option<ActivationDirectiveValue>> committedDirective;
     private final BooleanSupplier draining;
     private final Runnable halt;
     private final OperatorWarningSink operatorWarningSink;
@@ -72,29 +66,25 @@ public final class OwnDirectiveRetirement {
 
     private OwnDirectiveRetirement(NodeId self,
                                    boolean configuredWorker,
-                                   Supplier<Option<ActivationDirectiveValue>> committedDirective,
                                    BooleanSupplier draining,
                                    Runnable halt,
                                    OperatorWarningSink operatorWarningSink) {
         this.self = self;
         this.configuredWorker = configuredWorker;
-        this.committedDirective = committedDirective;
         this.draining = draining;
         this.halt = halt;
         this.operatorWarningSink = operatorWarningSink;
     }
 
-    /// `committedDirective` reads this node's directive from the store; `draining` tells whether a drain already runs;
+    /// `draining` tells whether a drain already runs;
     /// `halt` starts the node's local drain, whose completion runs the drained exit.
     public static OwnDirectiveRetirement ownDirectiveRetirement(NodeId self,
                                                                 boolean configuredWorker,
-                                                                Supplier<Option<ActivationDirectiveValue>> committedDirective,
                                                                 BooleanSupplier draining,
                                                                 Runnable halt,
                                                                 OperatorWarningSink operatorWarningSink) {
         return new OwnDirectiveRetirement(self,
                                           configuredWorker,
-                                          committedDirective,
                                           draining,
                                           halt,
                                           operatorWarningSink);
@@ -113,7 +103,7 @@ public final class OwnDirectiveRetirement {
     /// Halts the node once, when the removal meets the condition in the class header.
     @Contract
     public void onRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> remove) {
-        if (isUnreplacedOwnRemoval(remove.cause().key()) && halted.compareAndSet(false, true)) {
+        if (isOwnRemovalToHalt(remove.cause().key()) && halted.compareAndSet(false, true)) {
             haltNode();
         }
     }
@@ -123,11 +113,9 @@ public final class OwnDirectiveRetirement {
         return halted.get();
     }
 
-    private boolean isUnreplacedOwnRemoval(ActivationDirectiveKey key) {
+    private boolean isOwnRemovalToHalt(ActivationDirectiveKey key) {
         return directed.get()
                && isOwn(key)
-               && committedDirective.get()
-                                    .isEmpty()
                && !draining.getAsBoolean();
     }
 
@@ -141,8 +129,8 @@ public final class OwnDirectiveRetirement {
                                operatorWarningSink,
                                OWN_DIRECTIVE_RETIRED,
                                self.id(),
-                               "OWN DIRECTIVE RETIRED: the core removed this worker's activation directive ({}) with no "
-                              + "replacement, so it no longer counts this process as a member. Halting through the local "
+                               "OWN DIRECTIVE RETIRED: the core removed this worker's activation directive ({}), so it "
+                              + "no longer counts this process as a member. Halting through the local "
                               + "drain; the node can return only through a fresh WorkerJoin.",
                                self.id());
         halt.run();
