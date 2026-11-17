@@ -534,6 +534,29 @@ class QuicConsensusBackpressureTest {
             }
         }
 
+        /// #3313 ruling: backpressure is a state of a live stream. Writes refused because the stream is gone open no
+        /// episode: no entry WARN, no summary, nothing left in the map (the drop metrics count them).
+        @Test
+        void refusedWritesOnAClosedStream_openNoEpisode() {
+            var closed = closedChannel();
+            var network = network();
+
+            try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+                for (int i = 0; i < WRITES; i++) {
+                    network.writeIfWritableForTest(closed, payload(), PEER, StreamType.METRICS);
+                    network.writeIfWritableForTest(closed, payload(), PEER, StreamType.DHT);
+                }
+
+                assertThat(entryWarns(capture)).as("%d refused writes on a closed stream: no entry WARN", 2 * WRITES)
+                                               .isEmpty();
+                assertThat(capture.messages(Level.INFO)).as("no episode, so no summary")
+                                                        .filteredOn(message -> message.contains("cleared"))
+                                                        .isEmpty();
+                assertThat(network.openBackpressureEpisodesForTests()).as("no episode is kept for a closed stream")
+                                                                      .isZero();
+            }
+        }
+
         /// A departed peer's open episode is closed with its summary and its entry dropped: worker NodeIds are new per
         /// incarnation, so a kept entry would grow the map without bound under churn. The proof the entry is gone is
         /// that the next backpressured write opens a NEW episode.
@@ -827,6 +850,15 @@ class QuicConsensusBackpressureTest {
             when(blocked.isWritable()).thenReturn(false);
 
             return blocked;
+        }
+
+        /// Gone: inactive and unwritable, as a closed QUIC stream reports.
+        private static QuicStreamChannel closedChannel() {
+            var closed = mock(QuicStreamChannel.class);
+            when(closed.isActive()).thenReturn(false);
+            when(closed.isWritable()).thenReturn(false);
+
+            return closed;
         }
 
         private static void blockWrites(QuicClusterNetwork network, QuicStreamChannel blocked, int writes) {

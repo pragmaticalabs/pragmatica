@@ -2987,7 +2987,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// counted before it, and attributes the episode to `ch`, the stream this write found unwritable. True when this
     /// write opened the episode, i.e. its entry WARN was just logged. A held frame is counted under its backlog's lock
     /// ([#countHeld]); a refused write is counted through [#countRefusedWrite].
+    ///
+    /// #3313: backpressure is a state of a LIVE stream. A write that finds its stream gone (closed, inactive) neither
+    /// opens nor counts an episode: its refusal is already counted by the drop metrics, and an episode opened there would
+    /// be ended by the closer at once (its "gone" arm), logging an entry WARN and a summary per write. The "gone" arm
+    /// stays for episodes that were open when the stream died. A stream dying between this read and the count opens one
+    /// episode that the caller's closer run ends at once: one pair of lines per death, not per write.
     private boolean countBackpressuredWrite(NodeId peerId, StreamType streamType, QuicStreamChannel ch) {
+        return ch.isActive() && countOnLiveStream(peerId, streamType, ch);
+    }
+
+    private boolean countOnLiveStream(NodeId peerId, StreamType streamType, QuicStreamChannel ch) {
         var writes = backpressureEpisodes.compute(new BackpressureLane(peerId, streamType),
                                                   (lane, open) -> counted(lane,
                                                                           option(open),
