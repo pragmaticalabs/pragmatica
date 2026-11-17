@@ -36,9 +36,9 @@ public sealed interface Lifecycle {
     /// \* The snapshot's leader value is the committed one (m.leader = snapshot.leader()), so a node elected before its
     /// \* LeaderKey commits activates suspended.
     /// \* code, pre3085: rows from the snapshot (Indexer), Warnings.inherit (Warnings.java:444) seeds the family
-    /// \* sets with the open rows and marks dirty. code (#3175): inherit first replays every row's markers
-    /// \* (Warnings.java:486); the replayed warnings are raised before `from` (Lifecycle.rebuild), so they reach
-    /// \* the sink in this step, not held. Mutant "noreplay": no replay. pre2834: Lifecycle.rebuild has no inherit; family
+    /// \* sets with the open rows and marks dirty (#3274: inherit is rule O over the snapshot). The marker replay (`rp`) is a #3175
+    /// \* leftover: no mode sets a marker, so it publishes nothing, and mutant "noreplay" changes no state a code-mode property
+    /// \* reads (its row is removed). Mutant "noinherit": family sets start empty. pre2834: Lifecycle.rebuild has no inherit; family
     /// \* sets start empty.
     /// Activate(n) ==
     ///   /\ fsm[n] = "Dormant" /\ (elected = n \/ MUT = "twoleaders")   \* the mutant names the node itself as leader, whatever is committed
@@ -149,7 +149,7 @@ public sealed interface Lifecycle {
     ///
     /// ```tla Fsm2Leader:SeeLeader
     /// \* CI-16 LeaderChange input: Lifecycle.java:164 onLeader (a resume requests a reconcile; Tick models
-    /// \* it). The step ends in Warnings.noteRaised, so a resumed node publishes its held warnings (Warnings.java:168).
+    /// \* it). The step ends in Apply; nothing is held in any mode, so a resume publishes nothing (#3274: no publish step).
     /// \* Log order: the node has taken the notification of every row committed before the LeaderKey (rows = kv).
     /// SeeLeader(n) ==
     ///   /\ fsm[n] = "Active" /\ view[n] # Current

@@ -35,19 +35,22 @@
 /// (* Bounds, not proofs: TLC explores every state within a config's constants (nodes, terms, condition changes,   *)
 /// (* faults) and says nothing about larger ones, or about what the model abstracts.                               *)
 /// (*                                                                                                              *)
-/// (* MODE selects the code version modelled:                                                                      *)
-/// (*   "code"    the code: a family warning is held (ClusterModel.warningsHeld) and published only once the       *)
-/// (*             WARNINGS row carrying it commits (#3085, Warnings.noteRaised / publish); the write that carries a *)
-/// (*             held warning commits it as an unpublished marker in its row, and a successor replays the markers  *)
-/// (*             it inherits (Warnings.inherit) or receives while suspended (Warnings.onPut); nothing is published *)
-/// (*             while the node's leader value names another node (Warnings.ledByAnother) (#3175, fixes #3160).   *)
-/// (*   "pre3085" the code before #3085: the Warn effect is published in the raising step, before the row commits. *)
-/// (*   "pre2834" the code before #2834: Rebuild has no inherit, a successor's family sets start empty.            *)
-/// (* LATE selects the #3203 ordering: TRUE (the code) lets a deposed node whose view still names itself (it has   *)
-/// (* not yet taken the LeaderKey notification) publish from a late settlement; FALSE excludes exactly that        *)
-/// (* publish, which is the code under the ordering where the LeaderKey notification arrives first (ledByAnother). *)
-/// (* Abstractions: one subject per family; a row is [open, op, rc]: open or tombstone, and whether it carries an  *)
-/// (* unpublished opener / recovery marker (FsmWarningValue.opener / recovery; the message text is abstracted);    *)
+/// (* MODE selects the code version modelled:                                                                        *)
+/// (* "code" the code (#3274, PR #3278): the committed WARNINGS rows are the only warning state. A node's read (GET  *)
+/// (* /api/v1/warnings) answers its mirror of the committed rows (Read, Warnings.warningRows); the notification      *)
+/// (* stream is `notes`, emitted by rule E at the writer's accepted settlement (Settle, Warnings.notified); rule O   *)
+/// (* joins another writer's open row to the family set (OnPut) and inherit is rule O over the snapshot (Activate).  *)
+/// (* Nothing is held: Hold is empty in every mode, so `held` and `lnd` stay empty and the publish branch of Apply   *)
+/// (* never runs.                                                                                                    *)
+/// (* "pre3085" the code before #3085: the Warn effect is published in the raising step, before the row commits      *)
+/// (* (`shown`).                                                                                                     *)
+/// (* "pre2834" the code before #2834: Rebuild has no inherit, a successor's family sets start empty.                *)
+/// (* LATE is dead at this spec: it is read only by the publish branch of Apply, which never runs (nothing is held), *)
+/// (* so LATE = TRUE and LATE = FALSE reach the same states (code_inv and code_nolate_agree: the same distinct       *)
+/// (* count). The configs still set it; the LATE = TRUE duplicates of the code_nolate_* rows are removed             *)
+/// (* (models.tsv).                                                                                                  *)
+/// (* Abstractions: one subject per family; a row is [open, op, rc, rv]: open or tombstone, two marker fields of the *)
+/// (* #3175 model that no mode sets any more (always FALSE), and the revision; the message text is abstracted;     *)
 /// (* Nil is "no row". Activate and Rebuild are one step; the leader value is <<node, term>> and the fence compares *)
 /// (* it with the committed one (Outbox LeaderTransaction); consensus election (Elect, CI-1) and the LeaderKey     *)
 /// (* commit (CommitLeader, CI-16) are separate steps, so a successor activates suspended; the desired-row mirror  *)
@@ -57,8 +60,8 @@
 /// (* notifications are a whole-set sync (OnPut), and a node takes the LeaderKey notification only once its mirror *)
 /// (* caught up with KV (log order: every row committed before the LeaderKey precedes it); a row committed after   *)
 /// (* it may reach a node early, an over-approximation. Not modelled: a recovery that Rebuild raises for a subject *)
-/// (* that left the model (published at once, not held), the warning a Rebuild raises after inherit (held in the  *)
-/// (* code), a second election while a LeaderKey commit is pending, and members of multi-member rows (see M9).     *)
+/// (* that left the model, the warning a Rebuild raises after inherit, a second election while a LeaderKey commit  *)
+/// (* is pending, and members of multi-member rows (see M9).                                                       *)
 /// (* The environment actions (Crash, Elect, CommitLeader, KvApply, KvFail, LoseSettle, CondOn, CondOff,          *)
 /// (* SetTarget, NodeApply) are consensus and fault injection, not this package's code; they are part of the       *)
 /// (* skeleton. CommitLeader is weakly fair (a LeaderKey commit follows an election); the others are not fair.     *)
@@ -67,10 +70,12 @@
 /// (* one level (l) (the goal rows: none, one desired/observed pair); at most MaxTerm - 1 leader changes (MaxTerm 2  *)
 /// (* or 3 per row: one or two changes, each an Elect followed by its CommitLeader); at most MaxCond = 3 condition  *)
 /// (* or target changes; at most MaxFault faults (1, or 2 in the goal rows: crashes, lost settlements, failed      *)
-/// (* writes); RESUME = FALSE in every pass row (the RESUME = TRUE rows are reachable only via #3253, the guard that *)
-/// (* parks Activate over Deactivate); and the LATE value the row names (code_nolate_*: LATE = FALSE excludes the  *)
-/// (* #3203 ordering, so the code_* rows with LATE = TRUE are its stated residual). Nothing is claimed beyond those *)
-/// (* bounds. The leader fence itself is the applier's (KvApply compares the full leader value) and is assumed;     *)
+/// (* writes); RESUME = FALSE in every pass row but codeA_resume_* (RESUME = TRUE: a node regains leadership while *)
+/// (* still Active, reachable only via #3253, the guard that parked Activate over Deactivate, fixed by #3260; those *)
+/// (* rows pass, and the mutant readwarned is red on them). Nothing is claimed beyond those bounds. These are the   *)
+/// (* configs as written; a row whose `small` column in tools/tla/models.tsv lowers a constant holds, as recorded  *)
+/// (* there, at the lowered bound only.                                                                           *)
+/// (* The leader fence itself is the applier's (KvApply compares the full leader value) and is assumed;     *)
 /// (* what this model checks is that the package's write path (Outbox flush, settlement, resubmission) never       *)
 /// (* produces an accepted write for a node other than the committed leader (AcceptedOnlyForLeader), and what each  *)
 /// (* property below states, nothing else. A witness-stale refusal (the refusal names this node under a newer       *)
@@ -102,7 +107,7 @@
 ///           RESUME,     \* TRUE: a node may regain leadership while still Active (its CI-1 Deactivate missed or coalesced),
 ///                       \* so it resumes on CI-16 with its old model; FALSE: it is Dormant before it is elected again
 ///           GOALS,      \* TRUE: model the desired/observed pair (target may change); FALSE: target fixed, no goal writes
-///           LATE        \* TRUE: the code; FALSE: no publish by a node whose view still names itself after the LeaderKey moved (#3203)
+///           LATE        \* dead at this spec (header): read only by the publish of held warnings, and nothing is held
 ///
 /// None == "none"
 ///
@@ -110,7 +115,7 @@
 ///
 /// Persists == MODE \in {"pre3085", "code"}
 ///
-/// \* A committed FsmWarningKey row: open or tombstone, its unpublished opener / recovery markers (#3175), and its revision
+/// \* A committed FsmWarningKey row: open or tombstone, two #3175 marker fields no mode sets (always FALSE), and its revision
 /// \* (FsmWarningValue.revision: every write sets it to the mirrored row's + 1, Warnings.put). Nil = no row (revision 0).
 /// \* Each accepted WARNINGS commit raises a mutated row's revision by one, so rv <= ncommit (TypeOK): the revision is bounded
 /// \* by the number of commits, which the model's existing constants (MaxCond, MaxFault, MaxTerm) bound; no constant of its own.
@@ -136,15 +141,15 @@
 ///
 /// VARIABLES term, kvLeader,          \* committed leader value (LeaderKey; the fence's reference)
 ///           elected, lkPend,         \* consensus leader (CI-1 Activate/Deactivate); its LeaderKey commit is pending
-///           kv,                      \* committed FsmWarningKey rows (the persisted open set and its markers)
+///           kv,                      \* committed FsmWarningKey rows (the persisted open set)
 ///           kvDesired, target, observed, \* one desired/observed pair and its blueprint target
 ///           cond,                    \* environment: which warning conditions currently hold
 ///           shown,                   \* operator-visible open warnings (cluster event log)
 ///           fsm, inc, view,          \* per node: Dormant/Active, incarnation, m.leader
 ///           warned, rows, dirty,     \* family sets, warningRows mirror, warningsDirty
 ///           flushQ, wInfl, gInfl, gIntent, fired,
-///           held,                    \* per node: the family warnings raised or closed, in order, held until their WARNINGS row commits (#3085)
-///           lnd,                     \* per node: warningsLanded, the held prefix the accepted WARNINGS write carried, not yet published
+///           held,                    \* per node: held warnings of the #3085/#3175 publish; always <<>> (Hold: nothing is held, #3274)
+///           lnd,                     \* per node: the landed prefix of `held`; always 0
 ///           net, settles,            \* transactions in the engine; settlements in transit
 ///           condBudget, faultBudget,
 ///           redo,                    \* per node: transactions resubmitted unchanged after a witness-stale refusal (Outbox.routeRefusal)
@@ -171,8 +176,8 @@
 ///
 /// WTraffic == {x \in net \cup settles : x.kind = "W"}
 ///
-/// \* Warnings.java desired / marked: the committed set the node describes, each row marked with its unpublished held
-/// \* warnings, a tombstone for a closed key with a held warning (#3175). Diff: the keys Warnings.difference writes.
+/// \* Warnings.java desired: the committed set the node describes (the marks are from the #3175 model; with `held` empty they
+/// \* are FALSE). Diff: the keys Warnings.difference writes.
 /// HasMark(hd, s, up) == \E i \in 1..Len(hd) : hd[i].s = s /\ hd[i].up = up
 ///
 /// Des(w, hd) == [s \in Subjects |-> [open |-> s \in w, op |-> HasMark(hd, s, TRUE), rc |-> HasMark(hd, s, FALSE)]]
@@ -207,12 +212,10 @@
 /// ReplaySeq(P, r) == IF P = {} THEN <<>>
 ///                    ELSE LET x == CHOOSE y \in P : TRUE IN RowSeq(x, r[x]) \o ReplaySeq(P \ {x}, r)
 ///
-/// \* The end of a step, Warnings.java noteRaised: a family Warn marks dirty and joins the held list (hd); then publish:
-/// \* nothing while the held list is empty or the node's leader value v names another node (ledByAnother; LATE = FALSE also
-/// \* while the committed leader moved and v still names the node), else every held warning when nothing is in flight and
-/// \* the committed open rows equal the family sets (settled), else the prefix the accepted write carried (ld, warningsLanded);
-/// \* what is published leaves the markers, so the set is dirty again; then clean (dirty, nothing in flight, empty
-/// \* difference). Outbox.java requestFlush (hasIntents incl. Warnings.pending). Wired by ClusterFsm.java.
+/// \* The end of a step: a family Warn marks dirty (fw); the publish of held warnings (skip, cnt) is the #3085/#3175 mechanism and
+/// \* never runs, because the held list hd is always empty (Hold), so `skip` holds and LATE is never read in effect; then clean
+/// \* (dirty, nothing in flight, empty difference). Outbox.java requestFlush (hasIntents incl. Warnings.pending). Wired by
+/// \* ClusterFsm.java.
 /// Apply(n, w, r, d, f, g, gi, fw, q, sh, hd, ld, v) ==
 ///   LET d1 == (Persists /\ fw) \/ d
 ///       skip == hd = <<>> \/ LedBy(v, n) \/ (~LATE /\ kvLeader # n)
@@ -231,8 +234,8 @@
 ///      /\ lnd' = [lnd EXCEPT ![n] = IF skip THEN ld ELSE 0]
 ///      /\ shown' = Pubd(sh, SubSeq(hd, 1, cnt))
 ///
-/// \* Warn effects reach the sink inside the raising step (ClusterFsmInterpreter.java) before #3085; "code" holds them
-/// \* (Warnings.noteRaised, `held`) until their row commits, so the raising step publishes nothing.
+/// \* Warn effects reach the sink inside the raising step (ClusterFsmInterpreter.java) before #3085; "code" (#3274) publishes
+/// \* nothing at the raise: its notifications are rule E's, at the accepted settlement (Settle).
 /// Pub(adds, rems) == IF MODE = "code" THEN shown ELSE (shown \ rems) \cup adds
 ///
 /// \* #3274: no mode holds a warning any more (the merged code publishes by rule E, Settle / Warnings.accepted); the held list
@@ -430,20 +433,9 @@
 /// AtMostOneLiveLeader == \A a, b \in Nodes : (a # b /\ fsm[a] = "Active" /\ fsm[b] = "Active" /\ ~Suspended(a) /\ ~Suspended(b))
 ///                                              => view[a][2] # view[b][2]
 ///
-/// \* #3085 safety half (Warnings.java "never published without a committed row"): in a persisting mode, a step of the committed leader
-/// \* (witness = Current) that publishes a raise names only subjects whose row is committed open after the step. Stated for the
-/// \* committed leader because a deposed node's accepted-but-late settlement can publish a row its successor has since removed: that is
-/// \* the #3203 window (LATE, code_close), not this safety property. And for a step after which the node's mirror equals the
-/// \* committed set: with the KV notification not yet applied (a lost settlement, Expire) the publish test compares the family sets with
-/// \* a stale mirror (Warnings.publish, settled), a window the model reaches and this property does not claim away (code_inv trace: n2
-/// \* removes e, its settlement is lost, e is raised again and equals the stale mirror {e}). That window is pinned on its own by
-/// \* PublishedIsCommittedAnyMirror (code_lag_inv).
-/// PublishedIsCommitted == [][Persists => \A n \in Nodes : (n = kvLeader /\ view[n] = Current /\ rows'[n] = kv' /\ held'[n] # held[n])
-///                                                        => (shown' \ shown) \subseteq OpenOf(kv')]_vars
-///
-/// \* The mirror-lag window, stated: PublishedIsCommitted without the condition that the node's mirror equals the committed set.
-/// PublishedIsCommittedAnyMirror == [][Persists => \A n \in Nodes : (n = kvLeader /\ view[n] = Current /\ held'[n] # held[n])
-///                                                                 => (shown' \ shown) \subseteq OpenOf(kv')]_vars
+/// \* (#3085's PublishedIsCommitted and its mirror-lag variant are removed: both constrained the publish of held warnings, and
+/// \* nothing is held in any mode since #3274, so neither checked a step. NoPhantom states the code's "no notification without a
+/// \* committed transition"; the read is OpenSetAgreement's.)
 ///
 /// \* A refused WARNINGS write whose refusal names this node under the witness it submitted with (Warnings.unlanded, via
 /// \* Outbox.rederive) leaves the node with a re-draft driver (dirty, or a queued flush) or nothing left to write. Pins the line that
@@ -527,7 +519,6 @@
 /// PROPERTY AcceptedOnlyForLeader
 /// PROPERTY NoSubmitWhileSuspended
 /// INVARIANT AtMostOneLiveLeader
-/// PROPERTY PublishedIsCommitted
 /// PROPERTY RefusedWRedrafts
 /// ```
 ///
@@ -645,7 +636,6 @@
 /// PROPERTY AcceptedOnlyForLeader
 /// PROPERTY NoSubmitWhileSuspended
 /// INVARIANT AtMostOneLiveLeader
-/// PROPERTY PublishedIsCommitted
 /// PROPERTY RefusedWRedrafts
 /// INVARIANT OpenSetAgreement
 /// ```
@@ -810,7 +800,6 @@
 /// PROPERTY AcceptedOnlyForLeader
 /// PROPERTY NoSubmitWhileSuspended
 /// INVARIANT AtMostOneLiveLeader
-/// PROPERTY PublishedIsCommitted
 /// PROPERTY RefusedWRedrafts
 /// INVARIANT OpenSetAgreement
 /// ```
@@ -1201,22 +1190,6 @@
 /// INVARIANT OpenSetAgreement
 /// ```
 ///
-/// ```tlacfg Fsm2Leader:code_lag_inv
-/// CONSTANT MODE = "code"
-/// CONSTANT A2834 = FALSE
-/// CONSTANT FENCE = TRUE
-/// CONSTANT MUT = "none"
-/// CONSTANT RESUME = FALSE
-/// CONSTANT MaxTerm = 2
-/// CONSTANT MaxCond = 3
-/// CONSTANT MaxFault = 1
-/// CONSTANT GOALS = FALSE
-/// CONSTANT LATE = TRUE
-/// CONSTANT Subjects = {e, l}
-/// CONSTANT EventFam = {e}
-/// PROPERTY PublishedIsCommittedAnyMirror
-/// ```
-///
 /// ```tlacfg Fsm2Leader:pre3085A_close
 /// CONSTANT MODE = "pre3085"
 /// CONSTANT A2834 = TRUE
@@ -1279,6 +1252,5 @@
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// INVARIANT OpenSetAgreement
-/// PROPERTY PublishedIsCommitted
 /// ```
 package org.pragmatica.aether.deployment.cluster.fsm2;

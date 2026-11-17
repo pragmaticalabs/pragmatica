@@ -173,9 +173,8 @@ public sealed interface Outbox {
     /// ```tla Fsm2Leader:Flush
     /// \* Outbox.java flush. Suspended: nothing submitted, intents dropped, Warnings.suspended clears dirty.
     /// \* Else Warnings.draft (Warnings.java:213): one WARNINGS tx with the difference, unless one is in flight:
-    /// \* each mutated row's expected value is the mirror's, its replacement the desired row with the held warnings' markers
-    /// \* and the mirror's revision + 1 (Warnings.put)
-    /// \* (Warnings.difference, desired, marked; #3175); the tx covers every warning held so far (covering); then the goal
+    /// \* each mutated row's expected value is the mirror's, its replacement the desired row and the mirror's revision + 1
+    /// \* (Warnings.difference, desired, put; the marker fields stay FALSE: nothing is held); then the goal
     /// \* draft; Outbox.java submitOne -> Submit effect -> one apply per step (ClusterFsmInterpreter.java).
     /// Flush(n) ==
     ///   /\ fsm[n] = "Active" /\ flushQ[n]
@@ -581,10 +580,9 @@ public sealed interface Outbox {
     /// ```tla Fsm2Leader:Settle
     /// \* WriteSettled of this incarnation: Outbox.java. W accepted (code): rule E notifies from the committed pair, a deposed
     /// \* writer included (Warnings.accepted / notified; mutant "nodeposed": a writer that is not the committed leader emits
-    /// \* nothing; mutant "noruleE": no notification at all), and the mirror takes the mutations; pre-#3274 modes: the held prefix the
-    /// \* tx carried lands (Warnings.accepted, committed: Warnings.java:253), published at the end of the step
-    /// \* unless the node's leader value names another node (Warnings.java:168, ledByAnother: then it stays
-    /// \* landed and held); refused: the refusal's values re-index the mirror, m.leader := refusal leader, unlanded marks
+    /// \* nothing; mutant "noruleE": no notification at all), and the mirror takes the mutations; the landed prefix (ld) is the
+    /// \* tx's covered count, always 0 (nothing is held in any mode); refused: the refusal's values re-index the mirror,
+    /// \* m.leader := refusal leader, unlanded marks
     /// \* dirty (Outbox.java; Warnings.java); failed: re-drafted by the next reconcile.
     /// Settle(s) ==
     ///   /\ s \in settles /\ fsm[s.node] = "Active" /\ s.inc = inc[s.node]
