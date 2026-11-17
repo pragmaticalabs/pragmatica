@@ -17,8 +17,9 @@
   episode leaves that episode open with one WARN; the peer's other episodes are still settled. The "cleared" line is
   logged before the episode leaves the map. The episode key is the frame's own lane (a DHT frame held on the CONSENSUS
   stream ends the DHT episode).
-  [mechanism: `QuicClusterNetwork#settleUnderMonitor` runs under the peer's episode monitor, which `countHeld`,
-  `releaseHeld` and `countRefusedWrite` hold for every change it reads; `QuicLaneDataHandler.channelWritabilityChanged`
+  [mechanism: `QuicClusterNetwork#settleUnderMonitor` runs under the peer's episode monitor, which `countHeld` and
+  `countRefusedWrite` hold for every episode count; "a frame of the lane is held" is read from `LaneBacklog#heldOf`,
+  a per-lane slot each backlog changes with its queue; `QuicLaneDataHandler.channelWritabilityChanged`
   and `channelInactive` call it through the settler `PeerOpenedLaneRouter#dataHandler` hands every lane handler]
 - Pinned by `QuicLaneBacklogTest` (a last frame written or given up, abandoned on a writable, unwritable and closed
   stream, DHT on its own lane, a drain racing the opening, frames held on an old stream, a refused write whose stream

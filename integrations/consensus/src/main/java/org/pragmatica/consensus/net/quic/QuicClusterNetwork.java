@@ -58,7 +58,6 @@ import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.concurrent.CancellableTask;
@@ -173,25 +172,24 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// 4.5 minutes, the log volume landing exactly when the cluster is overloaded (CI run 41243342645).
     ///
     /// #3313 invariant: the episode of (peer, lane) is open exactly while (a) a frame of that (peer, lane) is held in ANY
-    /// backlog of that peer ([#heldFrames]), or (b) the lane's latest counted write found a stream unwritable that is
-    /// still active and still unwritable. Only [#settleUnderMonitor] ends an episode, with one INFO summary, once both
-    /// are false. The episode has no stream identity: it remembers only the stream of its latest counted write, to
-    /// evaluate (b). A departed peer's episodes end too (its REMOVED phase makes (b) false): worker NodeIds are new per
-    /// incarnation, so an entry kept for a gone peer would grow the map without bound over a long uptime.
+    /// backlog of that peer, or (b) the lane's latest counted write found a stream unwritable that is still active and
+    /// still unwritable; or until the peer departed (REMOVED, or its channel closed). (a) is not stored here: it is read
+    /// from the backlogs' own per-lane slots ([#holdsFrameOf], [LaneBacklog#heldOf]), which change with the queue
+    /// before any callback sees the frame (a DHT frame can be held on the CONSENSUS stream, and a reconnect leaves
+    /// frames held on the old stream's backlog). Only [#settleUnderMonitor] ends an episode, with one INFO summary, once
+    /// (a) and (b) are false. The episode has no stream identity: it remembers only the stream of its latest counted
+    /// write, to evaluate (b). A departed peer's episodes end too: worker NodeIds are new per incarnation, so an entry
+    /// kept for a gone peer would grow the map without bound over a long uptime.
     ///
     /// Read and written with plain `get`/`put`/`remove`, never `compute`, and only under the peer's episode monitor
     /// ([#episodeMonitor]): its lines are logged under that monitor, never under a map bin lock.
     private final Map<BackpressureLane, BackpressureEpisode> backpressureEpisodes = new ConcurrentHashMap<>();
-    /// #3313 condition (a): how many frames of each (peer, lane) are held in ANY backlog of that peer (a DHT frame can
-    /// be held on the CONSENSUS stream, and a reconnect leaves frames held on the old stream's backlog). Counted in when
-    /// a frame is held ([#countHeld]) and out when it leaves, written or given up ([#releaseHeld]), only under the peer's
-    /// episode monitor; an entry that reaches zero is removed.
-    private final Map<BackpressureLane, Integer> heldFrames = new ConcurrentHashMap<>();
 
     /// #3313: the per-peer exclusion every episode change and every evaluation runs under, a fixed set of monitors
     /// striped by peer (a lock per peer would need its own lifecycle, and peer NodeIds are new per incarnation). Lock
-    /// order: a backlog's lock ([LaneBacklog], held by [#countHeld] and [#releaseHeld], which run as its callbacks), then
-    /// the monitor. Nothing under a monitor takes a backlog lock or another monitor, so the order has no reverse.
+    /// order: a backlog's lock ([LaneBacklog], held by [#countHeld], [#writeHeld] and [#giveUpHeld], which run as its
+    /// callbacks), then the monitor. Nothing under a monitor takes a backlog lock ([LaneBacklog#heldOf] is lock-free) or
+    /// another monitor, so the order has no reverse.
     private static final int EPISODE_MONITOR_STRIPES = 64;
 
     private final Object[] episodeMonitors = Stream.generate(Object::new).limit(EPISODE_MONITOR_STRIPES).toArray();
@@ -1161,7 +1159,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         peer.authoritativeRemove(System.nanoTime()).onPresent(this::closeDroppedConnection);
         // After REMOVED, not before: a write racing this departure is ended by the closer, whichever runs second (T-e).
         // A refused write runs it after counting (countRefusedWrite, T-f) and finds the peer REMOVED; a held frame's
-        // drain gives it up on REMOVED and runs it then (releaseHeld, #3313). The loss-WARN gates follow the same order
+        // drain gives it up on REMOVED and runs it then (giveUpHeld, #3313 T-a). The loss-WARN gates follow the same order
         // (see admitLossWarn): a refusal or retry give-up after the departure leaves no entry.
         settlePeerGone(nodeId);
         forgetLossWarnGates(nodeId);
@@ -2842,7 +2840,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return new WriteOutcome.Sent(peerId);
         }
 
-        var fresh = new LaneBacklog<HeldFrame>(peerId, QuicClusterNetwork::laneIndexOf);
+        var fresh = new LaneBacklog<HeldFrame>(peerId, QuicClusterNetwork::slotOf);
         var backlog = option(laneBacklogs.putIfAbsent(ch, fresh)).or(fresh);
 
         return hold(backlog, ch, HeldFrame.heldFrame(bytes, peerId, streamType, resendVia), true);
@@ -2852,17 +2850,47 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// leaves it frame by frame under the same lock, can never count a frame out before it was counted in.
     /// `unwritable`: this frame found the stream unwritable, so it counts toward the (peer, lane) backpressure episode
     /// (#2580). A frame held only because frames are held ahead of it on a writable stream does not: its entry WARN would
-    /// say `isWritable=false` about a writable stream. #3313: the frame is counted into its lane's held count, and the
-    /// episode, under the same lock, so a drain cannot write the frame, and settle its lane, before either exists.
+    /// say `isWritable=false` about a writable stream. #3313: the backlog counts the frame into its lane's slot, and
+    /// the callback counts the episode, under the same lock, so a drain cannot write the frame, and settle its lane,
+    /// before either exists.
+    ///
+    /// #3313 C6: the evaluation reads (a) from the backlogs tagged with the episode's peer ([#holdsFrameOf]), so a
+    /// backlog holds frames of its own peer only. A stream belongs to one connection and a connection to one peer, so a
+    /// frame of another peer cannot reach here; one that does is refused ([#refuseForeignFrame]), never held where its
+    /// episode would not see it.
     private WriteOutcome hold(LaneBacklog<HeldFrame> backlog,
                               QuicStreamChannel ch,
                               HeldFrame frame,
                               boolean unwritable) {
+        return backlog.peer()
+                      .equals(frame.peerId())
+               ? admitHeld(backlog, ch, frame, unwritable)
+               : refuseForeignFrame(backlog, frame);
+    }
+
+    private WriteOutcome admitHeld(LaneBacklog<HeldFrame> backlog,
+                                   QuicStreamChannel ch,
+                                   HeldFrame frame,
+                                   boolean unwritable) {
         return switch (backlog.admit(frame, held -> countHeld(held, ch, unwritable))) {
             case HELD_FIRST -> holdAndDrain(backlog, ch, frame);
             case HELD_BEHIND -> new WriteOutcome.Sent(frame.peerId());
             case RETIRED -> retiredBacklogRewrite(backlog, ch, frame);
         };
+    }
+
+    /// #3313 C6: a frame whose peer is not its stream's backlog's peer is a defect of the stream lookup. It fails loudly
+    /// where assertions are enabled (tests); otherwise it is counted lost as a failed write (D4) and logged, and the
+    /// layer above's retransmit owns it, as for any failed write: holding it would let its episode end while it is held.
+    private WriteOutcome refuseForeignFrame(LaneBacklog<HeldFrame> backlog, HeldFrame frame) {
+        assert false : "a frame to " + frame.peerId() + " reached the backlog of " + backlog.peer();
+        quicMetrics.onDroppedAfterSent(frame.lane(), DropSite.WRITE_FAILED, 1);
+        log.error("{} frame to {} refused: its stream's backlog belongs to peer {}",
+                  frame.lane(),
+                  frame.peerId(),
+                  backlog.peer());
+
+        return new WriteOutcome.Sent(frame.peerId());
     }
 
     private WriteOutcome retiredBacklogRewrite(LaneBacklog<HeldFrame> backlog, QuicStreamChannel ch, HeldFrame frame) {
@@ -2877,25 +2905,54 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return new WriteOutcome.Sent(frame.peerId());
     }
 
-    /// Runs under the backlog lock, from [LaneBacklog#admit]; counts under the peer's episode monitor inside it.
+    /// Runs under the backlog lock, from [LaneBacklog#admit], after the backlog counted the frame into its lane's slot.
+    /// The pressure count (#3293) is taken first; everything after it (the test hook, the episode count under the peer's
+    /// monitor, the retry metric, the debug line) is one lift, so nothing this callback runs can throw out of `admit`:
+    /// a throw there would skip [#hold]'s drain start and strand a HELD_FIRST frame with no drainer (#3313 C1).
+    /// Recovery FER (degrade forward): a fault costs that frame's episode count, metric or line, never its drain; the
+    /// frame is still in its lane's slot, so the episode model's facts are untouched, and the fault is logged best effort.
     @Contract
     private void countHeld(HeldFrame frame, QuicStreamChannel ch, boolean unwritable) {
         beginRetry(frame.lane());
+        Result.lift(() -> countHeldAfterRetry(frame, ch, unwritable)).onFailure(cause -> warnHeldCountFault(frame, cause));
+    }
+
+    @Contract
+    private void countHeldAfterRetry(HeldFrame frame, QuicStreamChannel ch, boolean unwritable) {
         if (unwritable) {
             beforeHeldEpisodeCount.accept(frame.lane());
-        }
-
-        synchronized (episodeMonitor(frame.peerId())) {
-            heldFrames.merge(heldLaneOf(frame), 1, Integer::sum);
-            if (unwritable) {
-                var _ = countBackpressuredWrite(frame.peerId(), frame.lane(), ch);
-            }
+            countHeldEpisode(frame, ch);
         }
 
         quicMetrics.onBackpressureRetry();
         log.debug("{} channel to {} not writable or frames held ahead — holding in send order (not dropping)",
                   frame.lane(),
                   frame.peerId());
+    }
+
+    /// A held frame that found its stream unwritable counts toward its lane's episode. No evaluation follows: (a) is
+    /// true at this moment (the frame is in its lane's slot), so the frame's own exit is the trigger (T-a).
+    @Contract
+    private void countHeldEpisode(HeldFrame frame, QuicStreamChannel ch) {
+        synchronized (episodeMonitor(frame.peerId())) {
+            var _ = countBackpressuredWrite(frame.peerId(), frame.lane(), ch);
+        }
+    }
+
+    @Contract
+    private void warnHeldCountFault(HeldFrame frame, Cause cause) {
+        bestEffort(() -> log.warn("Counting a held {} frame to {} failed; the frame stays held and drains: {}",
+                                  frame.lane(),
+                                  frame.peerId(),
+                                  cause.message()));
+    }
+
+    /// #3313: a log line or a metric is best effort and cannot change the episode model's facts, whatever it throws
+    /// (memo3314 §5: "lines are best effort"). Recovery FER (degrade forward): the line or the metric is lost and the
+    /// caller's next step still runs; the loss is not logged, since the logger is what may have failed.
+    @Contract
+    private static void bestEffort(Runnable step) {
+        var _ = Result.lift(step::run);
     }
 
     /// One pass of a stream's drain: on the holding caller's thread for the first held frame, then once per retry
@@ -2924,12 +2981,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                         QuicStreamChannel ch,
                                         NodeId peerId,
                                         Cause fault) {
-        log.warn("Drain pass for peer {} failed — abandoning the backlog, held frames counted lost: {}",
-                 peerId,
-                 fault.message());
+        // #3313: abandon first, then the line, best effort: a throwing logger must not strand the backlog undrained.
         abandonBacklog(backlog,
                        ch,
                        Causes.cause("drain pass to " + peerId + " failed: " + fault.message()));
+        bestEffort(() -> log.warn("Drain pass for peer {} failed — backlog abandoned, held frames counted lost: {}",
+                                  peerId,
+                                  fault.message()));
     }
 
     @Contract
@@ -2950,11 +3008,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var budget = heldFrameBudgetNanos();
         var expired = Causes.cause("frame to " + peerId + " held longer than its retry budget");
         var retired = backlog.drain(frame -> now - frame.heldAtNanos() >= budget,
-                                    frame -> giveUpHeld(frame, expired),
+                                    frame -> giveUpHeld(backlog, frame, expired),
                                     () -> ch.isActive() && ch.isWritable(),
-                                    frame -> writeHeld(ch, frame));
+                                    frame -> writeHeld(backlog, ch, frame));
         // #3313 T-a: no closer run here. Every frame left this pass through writeHeld or giveUpHeld, each of which settles
-        // the peer's episodes after its frame left the held count (releaseHeld); retiring removes no frame, so a run
+        // the peer's episodes once its frame left its lane's slot and emptied it; retiring removes no frame, so a run
         // here could end nothing those runs did not.
         if (retired) {
             laneBacklogs.remove(ch, backlog);
@@ -2969,35 +3027,53 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                        .nanos();
     }
 
-    /// #3313 T-b: each abandoned frame settles the peer's episodes as it leaves ([#giveUpHeld]), so no closer run
-    /// follows the abandon: it would find nothing the last frame's run did not.
+    /// #3313 T-a: each abandoned frame settles the peer's episodes as it leaves ([#giveUpHeld]), so no closer run
+    /// follows the abandon: it would find nothing the last frame's run did not. [LaneBacklog#discardAll] takes every
+    /// frame out before the first callback, so every slot reads zero when the callbacks run.
     @Contract
     private void abandonBacklog(LaneBacklog<HeldFrame> backlog, QuicStreamChannel ch, Cause cause) {
-        backlog.discardAll(frame -> giveUpHeld(frame, cause));
+        backlog.discardAll(frame -> giveUpHeld(backlog, frame, cause));
         laneBacklogs.remove(ch, backlog);
     }
 
     /// D3: a held frame, already reported `Sent`, is given up: it leaves the pressure count of its OWN lane (a DHT frame
     /// can share the CONSENSUS stream) and is counted lost, one per frame. The pressure count is released LAST: it is the
     /// observable that "the give-up finished" (#3293), so the count, the WARN and the episode settle (#3313: the frame
-    /// has left the backlog and its lane's held count) must already be done when it reaches zero.
+    /// has already left the backlog and its lane's slot) must already be done when it reaches zero. The metric and the
+    /// WARN are best effort ([#bestEffort]): whatever they throw, the settle and the release still run.
     @Contract
-    private void giveUpHeld(HeldFrame frame, Cause cause) {
-        quicMetrics.onDroppedAfterSent(frame.lane(), DropSite.RETRY_GAVE_UP, 1);
-        warnRetryGaveUp(frame.peerId(), frame.lane(), cause);
-        releaseHeld(frame);
+    private void giveUpHeld(LaneBacklog<HeldFrame> backlog, HeldFrame frame, Cause cause) {
+        bestEffort(() -> countGivenUp(frame, cause));
+        settleIfLaneEmptied(backlog, frame);
         endRetry(frame.lane());
     }
 
-    /// A held frame leaves the backlog through the stream: it leaves its lane's held count and settles the peer's
+    @Contract
+    private void countGivenUp(HeldFrame frame, Cause cause) {
+        quicMetrics.onDroppedAfterSent(frame.lane(), DropSite.RETRY_GAVE_UP, 1);
+        warnRetryGaveUp(frame.peerId(), frame.lane(), cause);
+    }
+
+    /// A held frame leaves the backlog through the stream: it has already left its lane's slot; it settles the peer's
     /// backpressure episodes (#3313 T-a: its lane's ends here if no frame of the lane is held in any backlog and (b) is
     /// false), leaves its own lane's pressure count, and keeps the #1578 resend-once its direct write would have had
     /// (`resendVia`).
     @Contract
-    private void writeHeld(QuicStreamChannel ch, HeldFrame frame) {
-        releaseHeld(frame);
+    private void writeHeld(LaneBacklog<HeldFrame> backlog, QuicStreamChannel ch, HeldFrame frame) {
+        settleIfLaneEmptied(backlog, frame);
         endRetry(frame.lane());
         writeFrame(ch, frame.bytes(), frame.peerId(), frame.lane(), frame.resendVia());
+    }
+
+    /// #3313 T-a: a held frame left `backlog` (written, given up or abandoned). Runs the closer only when that frame
+    /// emptied its OWN lane's slot in this backlog: while the slot is above zero, (a) is true and the lane's next frame
+    /// to leave runs it. Not a stored decision: the slot is read at this instant. Cannot throw ([#settle]), so the
+    /// caller's pressure-count release always follows.
+    @Contract
+    private void settleIfLaneEmptied(LaneBacklog<HeldFrame> backlog, HeldFrame frame) {
+        if (backlog.heldOf(laneIndexOf(frame.lane())) == 0) {
+            settle(frame.peerId());
+        }
     }
 
     /// Runs inside a drain pass, under the backlog lock, after the frame left the held queue. A throw escaping here
@@ -3050,7 +3126,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
         backpressureEpisodes.put(lane, counted);
         var writes = counted.writes().get();
 
-        log.debug("Backpressure on peer {} lane {}: write {} of this episode", peerId, streamType, writes);
+        bestEffort(() -> log.debug("Backpressure on peer {} lane {}: write {} of this episode",
+                                   peerId,
+                                   streamType,
+                                   writes));
 
         return writes == 1;
     }
@@ -3070,42 +3149,23 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
     }
 
+    /// The entry WARN is best effort (#3313 C2): whatever it throws, the episode record is still built and counted.
     private BackpressureEpisode openBackpressureEpisode(BackpressureLane lane, QuicStreamChannel ch) {
-        log.warn("Backpressure on peer {} lane {} (isWritable=false): entered; further writes are counted until it clears",
-                 lane.peerId(),
-                 lane.streamType());
+        bestEffort(() -> log.warn("Backpressure on peer {} lane {} (isWritable=false): entered; further writes are counted until it clears",
+                                  lane.peerId(),
+                                  lane.streamType()));
 
         return BackpressureEpisode.backpressureEpisode(System.nanoTime(), new AtomicLong(), ch);
     }
 
-    /// #3313 T-a, T-b: a held frame left its backlog (written, given up by the drain, or abandoned). It leaves its lane's
-    /// held count and the peer's episodes are settled, under the peer's monitor. Runs as a callback of the backlog's drain
-    /// or abandon, so under the backlog's lock: the lock order of [#episodeMonitors].
-    @Contract
-    private void releaseHeld(HeldFrame frame) {
-        synchronized (episodeMonitor(frame.peerId())) {
-            var _ = heldFrames.computeIfPresent(heldLaneOf(frame), QuicClusterNetwork::oneFewer);
-
-            settleUnderMonitor(frame.peerId(), false);
-        }
-    }
-
-    /// Runs inside `computeIfPresent`: returning `null` removes the entry, the JDK's contract for the remapping function.
-    @NullReturn
-    private static Integer oneFewer(BackpressureLane lane, Integer held) {
-        return held > 1
-               ? held - 1
-               : null;
-    }
-
-    private static BackpressureLane heldLaneOf(HeldFrame frame) {
-        return new BackpressureLane(frame.peerId(), frame.lane());
-    }
-
     /// The slot of a held frame in its [LaneBacklog]: its OWN lane (a DHT frame can be held on the CONSENSUS stream).
-    private static int laneIndexOf(HeldFrame frame) {
-        return frame.lane()
-                    .ordinal();
+    private static int slotOf(HeldFrame frame) {
+        return laneIndexOf(frame.lane());
+    }
+
+    /// The [LaneBacklog#heldOf] slot of a lane.
+    private static int laneIndexOf(StreamType lane) {
+        return lane.ordinal();
     }
 
     private Object episodeMonitor(NodeId peerId) {
@@ -3132,34 +3192,36 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// #3313 — the one closer. Runs under `peerId`'s episode monitor. Re-evaluates every open episode of the peer and
-    /// ends each for which (a) no frame of its (peer, lane) is held in any backlog and (b) the stream of its latest
-    /// counted write is not both active and unwritable (a REMOVED or gone peer makes (b) false without reading the stream), each
-    /// with one INFO summary. Run by exactly six triggers: a held frame leaving in a drain pass (T-a) or by abandon (T-b),
-    /// both through [#releaseHeld]; a lane stream's writability event (T-c) and inactive event (T-d), both through
-    /// [#onLaneStreamEvent]; the peer's channel close or departure (T-e, [#settlePeerGone]); and a refused write after it counted
-    /// (T-f, [#countRefusedWrite]). A successful write is not one: a writable stream delivers its writability event.
+    /// ends each for which (b) the stream of its latest counted write is not both active and unwritable (a REMOVED or
+    /// gone peer makes (b) false without reading the stream) and (a) no frame of its (peer, lane) is held in any backlog
+    /// of the peer ([#holdsFrameOf]), each with one INFO summary. (b) is read first, so (a) is read only for an episode
+    /// whose stream no longer refuses. Run by exactly five triggers: a held frame leaving its backlog, written, given up
+    /// or abandoned, when it emptied its lane's slot there (T-a, [#settleIfLaneEmptied]); a lane stream's writability
+    /// event (T-c) and inactive event (T-d), both through [#onLaneStreamEvent]; the peer's channel close or departure
+    /// (T-e, [#settlePeerGone]); and a refused write after it counted (T-f, [#countRefusedWrite]). A successful write is
+    /// not one: a writable stream delivers its writability event.
     ///
-    /// Mutual exclusion with opening: every count and every held-count change of the peer runs under the same monitor,
-    /// so nothing joins or leaves while this reads them, and the writability of the stream is read inside the same
-    /// critical section as the count it is judged against.
+    /// Mutual exclusion with opening: every count of the peer runs under the same monitor, so no count joins while this
+    /// reads, and the writability of the stream is read inside the same critical section as the count it is judged
+    /// against. (a) is read lock-free from the backlogs' slots, which change with their queues, before any callback
+    /// sees the frame: nothing under the monitor takes a backlog lock. An evaluation that reads a slot just before a
+    /// concurrent admit can end the episode; a frame that found its stream unwritable then reopens it (one cleared and
+    /// one entered line), a frame held only behind others on a writable stream does not (as before #3313).
     ///
     /// The summary is logged under the monitor and before `remove`: the open-count read ([#openBackpressureEpisodesForTests],
-    /// the map's size) sees the entry until `remove` returns, so "no open episode" implies "its line is logged". No line
-    /// is logged under a map bin lock: the map is never written through `compute`.
+    /// the map's size) sees the entry until `remove` returns. The summary is best effort: a throwing logger loses the
+    /// line, never the `remove`. No line is logged under a map bin lock: the map is never written through `compute`.
     ///
-    /// A throw while evaluating or ending ONE episode (its stream's writability check, the log) is contained to that
-    /// episode, recovery FER (degrade forward): one WARN, that episode stays open for the closer's next run, and the
-    /// peer's other episodes are still settled.
+    /// A throw while evaluating ONE episode (its stream's writability check) is contained to that episode, recovery FER
+    /// (degrade forward): one best-effort WARN, that episode stays open for the closer's next trigger, and the peer's
+    /// other episodes are still settled. Nothing here throws to the caller, so a T-a caller's pressure-count release
+    /// always follows (#3293).
     @Contract
     private void settleUnderMonitor(NodeId peerId, boolean peerGone) {
         var removed = peerGone || isPeerRemoved(peerId);
 
-        backpressureEpisodes.keySet()
-                            .stream()
-                            .filter(lane -> lane.peerId()
-                                                .equals(peerId))
-                            .toList()
-                            .forEach(lane -> settleLane(lane, removed));
+        Stream.of(StreamType.values()).forEach(streamType -> settleLane(new BackpressureLane(peerId, streamType),
+                                                                        removed));
     }
 
     @Contract
@@ -3174,7 +3236,20 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private boolean isSettled(BackpressureLane lane, BackpressureEpisode open, boolean removed) {
-        return ! heldFrames.containsKey(lane) && (removed || !isActiveAndUnwritable(open.latestUnwritable()));
+        return (removed || !isActiveAndUnwritable(open.latestUnwritable())) && !holdsFrameOf(lane);
+    }
+
+    /// Condition (a): some backlog of the lane's peer holds a frame of the lane. One lock-free slot read per live
+    /// backlog ([#laneBacklogs] is keyed by stream, not by peer). A backlog is published before its first frame joins it
+    /// and removed only once empty, so the weakly consistent iteration finds every backlog that holds a frame, except
+    /// one published after the iteration started, whose frame's own count keeps or reopens the episode.
+    private boolean holdsFrameOf(BackpressureLane lane) {
+        var slot = laneIndexOf(lane.streamType());
+
+        return laneBacklogs.values()
+                           .stream()
+                           .anyMatch(backlog -> backlog.peer()
+                                                       .equals(lane.peerId()) && backlog.heldOf(slot) > 0);
     }
 
     private static boolean isActiveAndUnwritable(QuicStreamChannel stream) {
@@ -3182,11 +3257,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private Unit endEpisode(BackpressureLane lane, BackpressureEpisode open) {
-        log.info("Backpressure on peer {} lane {} cleared: {} write(s) found it unwritable over {} ms",
-                 lane.peerId(),
-                 lane.streamType(),
-                 open.writes().get(),
-                 TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - open.startedNanos()));
+        bestEffort(() -> log.info("Backpressure on peer {} lane {} cleared: {} write(s) found it unwritable over {} ms",
+                                  lane.peerId(),
+                                  lane.streamType(),
+                                  open.writes().get(),
+                                  TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - open.startedNanos())));
         var _ = backpressureEpisodes.remove(lane);
 
         return unit();
@@ -3194,10 +3269,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     @Contract
     private void warnLeftOpen(BackpressureLane lane, Cause cause) {
-        log.warn("Backpressure on peer {} lane {} left open: ending it failed: {}",
-                 lane.peerId(),
-                 lane.streamType(),
-                 cause.message());
+        bestEffort(() -> log.warn("Backpressure on peer {} lane {} left open: ending it failed: {}",
+                                  lane.peerId(),
+                                  lane.streamType(),
+                                  cause.message()));
     }
 
     /// #3313 T-c and T-d — a lane stream's writability event and its inactive event, wired at every handler construction
@@ -3542,8 +3617,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // rebound → `activeConnection()` empty or `current != closed` → no-op. No eviction
         // loop, no double-close (`evictStaleConnection` guards its own `.close()` on `isActive()`).
         if (state.activeConnection().map(current -> current == closed).or(false)) {
-            log.info("QUIC channel to {} closed — evicting (event-driven) so the reconciler re-dials", peerId);
             settlePeerGone(peerId);
+            log.info("QUIC channel to {} closed — evicting (event-driven) so the reconciler re-dials", peerId);
             evictStaleConnection(peerId, closed);
         }
     }

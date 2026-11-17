@@ -146,15 +146,16 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
     /// #1578 — the stream ended outright (reset, or the connection closed): the lane must not keep
     /// resolving to it. #3313 T-d: the stream's backpressure episodes are settled too. netty-quic fires no writability
     /// event when a stream closes, so without this an episode opened by a write the stream refused would outlive a
-    /// stream that died while its connection lives.
+    /// stream that died while its connection lives. The settle runs first, so a throw out of `streamEnded` cannot skip
+    /// it (#3313).
     @Override
     @Contract
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-        streamEnded(ctx);
         if (ctx.channel() instanceof QuicStreamChannel stream) {
             settler.settleEpisodes(peerId, stream);
         }
 
+        streamEnded(ctx);
         super.channelInactive(ctx);
     }
 
