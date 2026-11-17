@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 import io.netty.handler.codec.quic.QuicStreamChannel;
@@ -174,9 +175,10 @@ class EmberConsensusLaneHoldTest {
             var releasedAt = System.nanoTime();
 
             inboundLanes.forEach(lane -> lane.config().setAutoRead(true));
-            // Traffic after the release gives the held peer something to react to. It is not what closes the episodes: an
-            // episode ends at the first write that finds the lane writable, or, when its held frames were given up, at the
-            // drain pass that finds the stream writable again (#3313), whichever comes first.
+            // Traffic after the release gives the held peer something to react to. It is not what closes the episodes: one
+            // closer ends them (#3313), run when a held frame leaves the backlog (written, given up, abandoned), at a direct
+            // write, at the stream's writability event, and when the stream or its peer goes. An episode ends at the first
+            // such run that finds no frame of its lane held and the stream writable or gone.
             for (var sender : senders) {
                 put(sender, "kick-" + sender.self().id(), "after-release");
             }
@@ -218,17 +220,20 @@ class EmberConsensusLaneHoldTest {
             assertThat(gaveUp).as("held frames older than the frame budget are counted as RETRY_GAVE_UP").isPositive();
             awaitTrue("no backlog and no retry in flight after the release",
                       () -> senders.stream().allMatch(sender -> backlogCount(sender) == 0 && network(sender).consensusRetriesInFlight() == 0));
-            // A CONSENSUS episode on an open stream ends with its backlog: a held frame's write ends it, and a backlog whose
-            // frames were all given up keeps draining until the stream is writable, then ends it before it is removed
-            // (#3313). So the books balance without later traffic, and the test sends nothing after the kicks above. The
-            // wait covers a flap after this read (its frame is held, so its backlog ends it the same way) and a stream that
-            // closed with frames held, whose episode the lane's next write or the peer's departure ends. Each evaluation
-            // reads ONE snapshot.
+            // A CONSENSUS episode on an open stream is ended by the closer (#3313): a held frame's write ends it, and an
+            // episode whose frames were all given up while the stream took no writes is ended by the stream's writability
+            // event when it turns writable. So the books balance without later traffic, and the test sends nothing after
+            // the kicks above. The wait covers a flap after this read (its frame's exit, or the writability event, ends it
+            // the same way) and a stream that closed with frames held, whose episode the drain's abandon or the peer's
+            // departure ends. Each evaluation reads ONE snapshot; on a timeout the failure names both counts and the
+            // episodes each sender still holds open.
             var booksAtEmpty = List.copyOf(arrivals);
             System.out.printf("LANE-HOLD-BOOKS at empty backlogs: entered=%d cleared=%d%n",
                               enteredFor(booksAtEmpty, heldId).size(),
                               clearedFor(booksAtEmpty, heldId).size());
-            awaitTrue("every episode that entered also cleared (none lost)", () -> balanced(List.copyOf(arrivals), heldId));
+            awaitTrue(() -> unbalancedBooks(List.copyOf(arrivals), heldId, senders),
+                      60_000L,
+                      () -> balanced(List.copyOf(arrivals), heldId));
             // (3) THE #3194 ASSERTION.
             var releaseNanos = releasedAt;
 
@@ -308,6 +313,14 @@ class EmberConsensusLaneHoldTest {
         return enteredFor(snapshot, peer).size() == clearedFor(snapshot, peer).size();
     }
 
+    /// The failure message of the books wait: both counts from one snapshot, and each sender's still-open (peer, lane)
+    /// episodes.
+    private static String unbalancedBooks(List<Arrival> snapshot, NodeId peer, List<AetherNode> senders) {
+        return "every episode that entered also cleared (none lost): entered=" + enteredFor(snapshot, peer).size()
+               + " cleared=" + clearedFor(snapshot, peer).size()
+               + " still open " + senders.stream().map(sender -> sender.self() + "=" + openEpisodes(sender)).toList();
+    }
+
     /// At least one episode per sender and, summing each episode capped at the marker-to-release span, the hold on every sender.
     private static boolean coversHold(List<Arrival> episodes, int senders, long spanMs, long holdMs) {
         var covered = episodes.stream().mapToLong(a -> Math.min(spanMs, durationMs(a))).sum();
@@ -363,6 +376,16 @@ class EmberConsensusLaneHoldTest {
         }
     }
 
+    /// `node`'s open backpressure episodes, as (peer, lane) pairs.
+    @SuppressWarnings({"unchecked", "JBCT-EX-01"})
+    private static String openEpisodes(AetherNode node) {
+        try {
+            return ((Map<?, ?>) field(QuicClusterNetwork.class, "backpressureEpisodes").get(network(node))).keySet().toString();
+        } catch (IllegalAccessException e) {
+            throw new AssertionError(e);
+        }
+    }
+
     private static long gaveUp(AetherNode node) {
         return network(node).quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP);
     }
@@ -403,11 +426,16 @@ class EmberConsensusLaneHoldTest {
     }
 
     private static void awaitTrue(String what, long budgetMs, BooleanSupplier condition) {
+        awaitTrue(() -> what, budgetMs, condition);
+    }
+
+    /// `what` is read only on a timeout, so it can report the state the wait gave up on.
+    private static void awaitTrue(Supplier<String> what, long budgetMs, BooleanSupplier condition) {
         var deadline = System.currentTimeMillis() + budgetMs;
 
         while (!condition.getAsBoolean()) {
             if (System.currentTimeMillis() > deadline) {
-                throw new AssertionError("timed out waiting: " + what);
+                throw new AssertionError("timed out waiting: " + what.get());
             }
             pause(250L);
         }
