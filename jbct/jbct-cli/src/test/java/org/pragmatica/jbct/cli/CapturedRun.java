@@ -62,6 +62,14 @@ final class CapturedRun implements BiFunction<RootPlan, Invocation, Result<RunRe
                      .toList();
     }
 
+    /// Every line and finding the machine-format and score commands print to stderr, in order: lines (DETAIL hidden) around the findings when asked.
+    List<String> stderrLinesOfAll() {
+        return Stream.concat(result().before().stream(), result().after().stream())
+                     .filter(line -> line.level() != Level.DETAIL)
+                     .map(Line::text)
+                     .toList();
+    }
+
     private static String textOf(List<Line> lines, boolean verbose) {
         return lines.stream()
                     .filter(line -> toStdout(line, verbose))

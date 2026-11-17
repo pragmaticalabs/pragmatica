@@ -4,13 +4,8 @@ import java.io.PrintStream;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.function.BiFunction;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
-import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.lint.cst.LintRun;
-import org.pragmatica.jbct.lint.cst.LintRun.RootCounts;
-import org.pragmatica.jbct.lint.cst.LintRun.RunReport;
 import org.pragmatica.jbct.lint.cst.RootResolver;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Level;
@@ -18,9 +13,7 @@ import org.pragmatica.jbct.lint.cst.RunOutcome.Line;
 import org.pragmatica.jbct.lint.cst.RunOutcome.RunResult;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Verdict;
 import org.pragmatica.jbct.lint.cst.RootResolver.ModeOverride;
-import org.pragmatica.jbct.lint.cst.RootResolver.ResolvedRoot;
 import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
-import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -56,86 +49,6 @@ public sealed interface CliRoots {
                            .option();
     }
 
-    /// One file with the formatter built from its own root's `[format]` settings.
-    record FileJob(Path file, JbctFormatter formatter) {
-        public static FileJob fileJob(Path file, JbctFormatter formatter) {
-            return new FileJob(file, formatter);
-        }
-    }
-
-    /// The plan's files in root order, each with its own root's formatter.
-    static List<FileJob> jobs(RootPlan plan) {
-        return plan.roots()
-                   .stream()
-                   .flatMap(CliRoots::jobsOf)
-                   .toList();
-    }
-
-    private static Stream<FileJob> jobsOf(ResolvedRoot root) {
-        var formatter = JbctFormatter.jbctFormatter(root.config().formatter());
-
-        return root.files()
-                   .stream()
-                   .map(file -> FileJob.fileJob(file, formatter));
-    }
-
-    /// The layer-coverage line of each root the run examined by rules; a root no rule ran in has no layers to cover.
-    static void layerCoverage(RootPlan plan, RunReport report, PrintStream err) {
-        var examined = report.roots()
-                             .stream()
-                             .filter(root -> root.examined() > 0)
-                             .map(RootCounts::root)
-                             .collect(Collectors.toSet());
-
-        plan.roots()
-            .stream()
-            .filter(root -> examined.contains(root.path()))
-            .forEach(root -> LayerCoverage.coverage(root.files(),
-                                                    root.context())
-                                          .map(LayerCoverage::render)
-                                          .onPresent(err::println));
-    }
-
-    /// Files examined by rules, summed over the run's roots.
-    static int examined(RunReport report) {
-        return report.roots()
-                     .stream()
-                     .mapToInt(root -> root.examined())
-                     .sum();
-    }
-
-    /// Files formatted or format-checked, summed over the run's roots.
-    static int formatted(RunReport report) {
-        return report.roots()
-                     .stream()
-                     .mapToInt(root -> root.formatted())
-                     .sum();
-    }
-
-    /// Files the run could not read or parse, summed over the run's roots.
-    static int notParsed(RunReport report) {
-        return report.roots()
-                     .stream()
-                     .mapToInt(root -> root.notParsed())
-                     .sum();
-    }
-
-    /// Errors the run's roots counted.
-    static int errors(RunReport report) {
-        return report.roots()
-                     .stream()
-                     .mapToInt(root -> root.errors())
-                     .sum();
-    }
-
-    /// Warnings the run's roots counted.
-    static int warnings(RunReport report) {
-        return report.roots()
-                     .stream()
-                     .mapToInt(root -> root.warnings())
-                     .sum();
-    }
-
     /// The run as a function of the resolved plan and the invocation; a front end holds one so a test can capture the result
     /// the front end itself received.
     /// The seam every command starts with: the plan's own run performs the invocation.
@@ -148,7 +61,7 @@ public sealed interface CliRoots {
         return performed.fold(CliRoots::refused, result -> printed(result, verbose, nothingCollectedExit));
     }
 
-    private static int refused(Cause cause) {
+    static int refused(Cause cause) {
         System.err.println("Error: " + cause.message());
 
         return CliConfig.CONFIG_ERROR_EXIT;
@@ -170,6 +83,33 @@ public sealed interface CliRoots {
               .forEach(CliRoots::printFinding);
         result.after()
               .forEach(line -> printLine(line, verbose));
+    }
+
+    /// The run's lines (not its findings) to stderr, for a command whose stdout document carries the findings.
+    @Contract
+    static void printLinesToStderr(RunResult result, boolean verbose) {
+        result.before()
+              .forEach(line -> printLineTo(System.err, line, verbose));
+        result.after()
+              .forEach(line -> printLineTo(System.err, line, verbose));
+    }
+
+    /// Every line and finding of the run to stderr, for a command whose stdout carries a document of its own.
+    @Contract
+    static void printToStderr(RunResult result, boolean verbose) {
+        result.before()
+              .forEach(line -> printLineTo(System.err, line, verbose));
+        result.findings()
+              .forEach(finding -> System.err.print(finding.toHumanReadable()));
+        result.after()
+              .forEach(line -> printLineTo(System.err, line, verbose));
+    }
+
+    @Contract
+    private static void printLineTo(PrintStream stream, Line line, boolean verbose) {
+        if (verbose || line.level() != Level.DETAIL) {
+            stream.println(line.text());
+        }
     }
 
     @Contract

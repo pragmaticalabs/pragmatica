@@ -7,6 +7,9 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
+import org.pragmatica.jbct.lint.cst.RunOutcome.Line;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -95,6 +98,10 @@ class CliSharedRunTest {
             format.runSeam = captured;
         } else if (command instanceof CheckCommand check) {
             check.runSeam = captured;
+        } else if (command instanceof LintCommand lint) {
+            lint.runSeam = captured;
+        } else if (command instanceof ScoreCommand score) {
+            score.runSeam = captured;
         }
 
         return new CommandLine(command).execute(args);
@@ -103,6 +110,12 @@ class CliSharedRunTest {
     /// What `format` or `check` printed is the report it received (never a second run over the tree): stdout is its lines and findings in order.
     private void assertPrintedTheReceivedReport() {
         assertThat(out.toString()).isEqualTo(captured.expectedStdout(false));
+    }
+
+    /// The run's own lines of the command just driven, joined: the sentences are the run's, never the test's.
+    private String runText() {
+        return captured.result().before().stream().map(Line::text).collect(Collectors.joining("\n")) + "\n"
+               + captured.result().after().stream().map(Line::text).collect(Collectors.joining("\n"));
     }
 
     private String text() {
@@ -143,8 +156,10 @@ class CliSharedRunTest {
         run(new LintCommand(), "--format", "json", repo.toString());
 
         assertThat(findings()).containsExactlyInAnyOrderElementsOf(SharedRunTree.expectedFindings());
-        assertThat(lines(err.toString())).containsSubsequence(SharedRunTree.expectedSummaryLines(repo))
-                                         .containsAll(SharedRunTree.expectedLintLines());
+        assertThat(lines(runText())).anyMatch(line -> line.startsWith("mode=business (from "))
+                                    .anyMatch(line -> line.startsWith("mode=infrastructure (from "));
+        assertThat(captured.result().examined()).isEqualTo(2);
+        assertThat(lines(err.toString())).isEqualTo(captured.stderrLinesOfAll());
         assertThat(text()).doesNotContain("test-root files");
     }
 
@@ -168,8 +183,8 @@ class CliSharedRunTest {
         run(new LintCommand(), "--format", "json", biz.toString(), biz.resolve("org").toString(), biz.resolve("./org").toString());
 
         assertThat(findings()).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz");
-        assertThat(count(text(), "root=" + root(biz))).isEqualTo(1);
-        assertThat(text()).contains("1 examined by rules");
+        assertThat(count(runText(), "root=" + root(biz))).isEqualTo(1);
+        assertThat(captured.result().examined()).isOne();
     }
 
     // ---- T3: a format-only root with an unparseable file
@@ -182,8 +197,9 @@ class CliSharedRunTest {
         Files.writeString(broken, "class {{{ not java");
 
         assertThat(run(new LintCommand(), infra.toString())).isZero();
-        assertThat(text()).doesNotContain("JBCT-").doesNotContain("parse");
-        assertThat(text()).contains("0 examined by rules", "1 skipped by mode");
+        assertThat(captured.result().findings()).isEmpty();
+        assertThat(captured.result().examined()).isZero();
+        assertThat(captured.result().skippedByMode()).isOne();
         run(new FormatCommand(), "--check", infra.toString());
         assertPrintedTheReceivedReport();
         assertThat(text()).contains(broken.getFileName().toString());
@@ -197,8 +213,9 @@ class CliSharedRunTest {
         var off = module("off", "mode = \"disabled\"\n");
 
         assertThat(run(new LintCommand(), infra.toString(), off.toString())).isZero();
-        assertThat(text()).contains(NO_RULE_BANNER).doesNotContain(PASSED_BANNER);
-        assertThat(text()).contains("0 examined by rules").contains("1 skipped by mode");
+        assertThat(runText()).contains(NO_RULE_BANNER).doesNotContain(PASSED_BANNER);
+        assertThat(captured.result().examined()).isZero();
+        assertThat(captured.result().skippedByMode()).isEqualTo(2);
         assertThat(run(new CheckCommand(), off.toString())).isZero();
         assertPrintedTheReceivedReport();
         assertThat(captured.stdoutLines(false)).anyMatch(line -> line.contains(root(off)));
@@ -225,9 +242,10 @@ class CliSharedRunTest {
         var off = module("off", "mode = \"disabled\"\n");
 
         assertThat(run(new ScoreCommand(), infra.toString(), off.toString())).isZero();
-        assertThat(err.toString()).contains("Not scored: " + root(infra) + " (mode format-only skips it)")
-                                  .contains("Not scored: " + root(off) + " (mode disabled skips it)")
-                                  .contains("Nothing was scored: ");
+        assertThat(lines(err.toString())).isEqualTo(captured.stderrLinesOfAll());
+        assertThat(runText()).contains(root(infra), root(off));
+        assertThat(captured.result().examined()).isZero();
+        assertThat(captured.result().verdict().kind()).isEqualTo(Kind.CLEAN);
     }
 
     @Test
@@ -235,10 +253,12 @@ class CliSharedRunTest {
         var off = module("off", "mode = \"disabled\"\n");
 
         assertThat(run(new LintCommand(), "--format", "sarif", off.toString())).isZero();
-        assertThat(out.toString()).contains("Nothing was linted: " + root(off) + " (mode disabled skips it)")
+        assertThat(out.toString()).contains("\"executionSuccessful\": " + captured.result().executionSuccessful())
                                   .doesNotContain("No Java files found");
+        assertThat(captured.result().skippedByMode()).isOne();
         assertThat(run(new LintCommand(), "--format", "json", off.toString())).isZero();
-        assertThat(out.toString()).contains("\"outcome\": [\"Nothing was linted: " + root(off) + " (mode disabled skips it)\"]")
+        assertThat(out.toString()).contains("\"outcome\": [\"" + captured.result().after().getFirst().text() + "\"]")
+                                  .contains("\"skippedByMode\": 1")
                                   .doesNotContain("No Java files found");
     }
 
@@ -249,9 +269,10 @@ class CliSharedRunTest {
 
         run(new LintCommand(), biz.toString(), off.toString());
 
-        assertThat(text()).contains("root=" + root(biz) + " basePackage=org.acme.biz: 1 examined by rules")
-                          .contains("root=" + root(off) + " basePackage=org.acme.off: 0 examined by rules, 0 formatted or format-checked, 1 skipped by mode");
-        assertThat(text()).doesNotContain(NO_RULE_BANNER);
+        assertThat(runText()).contains("root=" + root(biz), "root=" + root(off));
+        assertThat(captured.result().examined()).isOne();
+        assertThat(captured.result().skippedByMode()).isOne();
+        assertThat(runText()).doesNotContain(NO_RULE_BANNER);
     }
 
     @Test
@@ -323,7 +344,8 @@ class CliSharedRunTest {
         var off = module("off", "mode = \"disabled\"\n");
 
         assertThat(run(new ScoreCommand(), "--max-density", "1", off.toString())).isZero();
-        assertThat(text()).contains("--max-density 1.0 was not evaluated; the run passes");
+        assertThat(lines(err.toString())).isEqualTo(captured.stderrLinesOfAll());
+        assertThat(captured.result().verdict().kind()).isEqualTo(Kind.CLEAN);
     }
 
     @Test

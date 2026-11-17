@@ -90,9 +90,17 @@ class CliPerRootLintTest {
                """.formatted(name, type);
     }
 
+    private CapturedRun run = new CapturedRun();
+
     private int execute(Object command, String... args) {
         out.reset();
         err.reset();
+        run = new CapturedRun();
+        if (command instanceof LintCommand lint) {
+            lint.runSeam = run;
+        } else if (command instanceof ScoreCommand score) {
+            score.runSeam = run;
+        }
 
         return new CommandLine(command).execute(args);
     }
@@ -135,8 +143,10 @@ class CliPerRootLintTest {
     void lint_printsOneSummaryLinePerRootWithItsMode() {
         execute(new LintCommand(), business.toString(), infrastructure.toString());
 
-        assertThat(out.toString()).contains("mode=business (from ", ") root=" + rootOf(business) + " basePackage=org.acme.biz: 1 examined by rules, 0 formatted or format-checked, 0 skipped by mode;")
-                                  .contains("mode=infrastructure (from ", ") root=" + rootOf(infrastructure) + " basePackage=org.acme.infra: 1 examined by rules, 0 formatted or format-checked, 0 skipped by mode;", "structure checks off");
+        assertThat(out.toString()).isEqualTo(run.expectedStdout(false));
+        assertThat(run.stdoutLines(false)).anyMatch(line -> line.contains("root=" + rootOf(business)) && line.contains("mode=business"))
+                                          .anyMatch(line -> line.contains("root=" + rootOf(infrastructure)) && line.contains("mode=infrastructure"));
+        assertThat(run.result().examined()).isEqualTo(2);
     }
 
     @Test
@@ -154,7 +164,9 @@ class CliPerRootLintTest {
         execute(new LintCommand(), "--format", "json", business.toString(), infrastructure.toString());
 
         assertThat(findings(out.toString())).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz");
-        assertThat(err.toString()).contains("mode=format-only (from ", ") root=" + rootOf(infrastructure) + " basePackage=org.acme.infra: 0 examined by rules, 0 formatted or format-checked, 1 skipped by mode;", "format only, no rule run");
+        assertThat(err.toString()).contains(rootOf(infrastructure).toString());
+        assertThat(run.result().examined()).isOne();
+        assertThat(run.result().skippedByMode()).isOne();
     }
 
     @Test
@@ -181,9 +193,10 @@ class CliPerRootLintTest {
         setMode("infra", JbctMode.FORMAT_ONLY);
         var exit = execute(new ScoreCommand(), business.toString(), infrastructure.toString());
 
-        assertThat(err.toString()).contains("Not scored: " + rootOf(infrastructure) + " (mode format-only skips it)")
-                                  .contains("1 file(s) scored");
-        assertThat(err.toString()).doesNotContain("Not scored: " + rootOf(business));
+        assertThat(err.toString()).contains(rootOf(infrastructure).toString());
+        assertThat(run.result().examined()).isOne();
+        assertThat(run.result().skippedByMode()).isOne();
+        assertThat(run.result().score().isPresent()).isTrue();
         assertThat(out.toString()).isNotBlank();
         assertThat(exit).isZero();
     }
@@ -193,8 +206,8 @@ class CliPerRootLintTest {
         setMode("biz", JbctMode.DISABLED);
         var exit = execute(new ScoreCommand(), business.toString());
 
-        assertThat(err.toString()).contains("Not scored: " + rootOf(business) + " (mode disabled skips it)")
-                                  .contains("Nothing was scored: " + rootOf(business) + " (mode disabled skips it)");
+        assertThat(err.toString()).contains(run.result().after().getFirst().text());
+        assertThat(run.result().examined()).isZero();
         assertThat(out.toString()).isBlank();
         assertThat(exit).isZero();
     }

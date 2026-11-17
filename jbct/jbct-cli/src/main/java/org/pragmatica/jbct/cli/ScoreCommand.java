@@ -4,17 +4,19 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Callable;
-import java.util.function.Function;
+import java.util.function.BiFunction;
 
-import org.pragmatica.jbct.lint.cst.LintRun;
-import org.pragmatica.jbct.lint.cst.LintRun.RunReport;
 import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
+import org.pragmatica.jbct.lint.cst.RunOutcome.DensityLimit;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
+import org.pragmatica.jbct.lint.cst.RunOutcome.RunResult;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Surface;
 import org.pragmatica.jbct.score.DensityGate;
-import org.pragmatica.jbct.score.ScoreCalculator;
 import org.pragmatica.jbct.score.ScoreReport;
 import org.pragmatica.jbct.score.ScoreResult;
-import org.pragmatica.jbct.score.SourceScan;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
@@ -25,11 +27,6 @@ import picocli.CommandLine.Parameters;
 public class ScoreCommand implements Callable<Integer> {
     /// Exit code for a usage error, matching picocli's own.
     static final int USAGE_ERROR = 2;
-    /// Exit code when some collected file could not be read or parsed, so the density cannot speak
-    /// for the file set. Shares the value with [#USAGE_ERROR] deliberately: both mean "this run
-    /// produced no usable measurement", as distinct from `1`, which means the measurement is sound
-    /// and breached.
-    static final int COVERAGE_GAP = 2;
     /// Output formats the command knows. Anything else is rejected rather than quietly rendered
     /// as a terminal box — `--format badge` used to be real, so silently substituting a different
     /// format for it would hand a CI job the wrong bytes with a zero exit code.
@@ -56,8 +53,14 @@ public class ScoreCommand implements Callable<Integer> {
     @picocli.CommandLine.Option(names = {"--mode"}, description = "JBCT mode for this run, overriding jbct.toml and --config: business, infrastructure, format-only or disabled")
     String mode;
 
-    /// The one place the resolved plan is handed to the run; tests replace it to observe or adjust it (#2525).
-    Function<RootPlan, LintRun> runFactory = LintRun::lintRun;
+    /// The exit status when the plan holds no file: unchanged ("No Java files found" exits 1, not 2).
+    static final int NOTHING_COLLECTED_EXIT = 1;
+
+    /// The flag the density limit came from, named in the run's sentences.
+    static final String MAX_DENSITY_FLAG = "--max-density";
+
+    /// The one place the resolved plan and the invocation reach the run; a test replaces it to capture the result the command received (#2525).
+    BiFunction<RootPlan, Invocation, Result<RunResult>> runSeam = CliRoots.PERFORM;
 
     @Override
     public Integer call() {
@@ -80,105 +83,25 @@ public class ScoreCommand implements Callable<Integer> {
             return CliConfig.CONFIG_ERROR_EXIT;
         }
 
-        var plan = planned.unwrap();
-        var run = runFactory.apply(plan);
-        var filesToProcess = run.scorable();
+        var limit = Option.option(maxDensity).map(max -> DensityLimit.densityLimit(max, MAX_DENSITY_FLAG));
 
-        if (plan.files().isEmpty()) {
-            return noFiles();
-        }
-
-        plan.files().stream().filter(file -> !filesToProcess.contains(file)).forEach(file -> routeUnscored(file, run));
-        if (filesToProcess.isEmpty()) {
-            return nothingScored(run);
-        }
-
-        var scan = SourceScan.sourceScan(filesToProcess, run::lint, message -> System.err.println("  ✗ " + message));
-        var score = ScoreCalculator.calculate(scan);
-        var report = run.finish().onFailure(cause -> System.err.println("Error: " + cause.message())).option();
-
-        if (report.isEmpty()) {
-            return CliConfig.CONFIG_ERROR_EXIT;
-        }
-
-        var finished = report.unwrap();
-
-        finished.summary().forEach(System.err::println);
-        finished.scoreLines().forEach(System.err::println);
-        finished.diagnostics().forEach(diagnostic -> System.err.print(diagnostic.toHumanReadable()));
-        CliRoots.layerCoverage(plan, finished, System.err);
-        outputScore(score);
-
-        return gateExitCode(score);
+        return runSeam.apply(planned.unwrap(), Invocation.score(Surface.CLI, limit))
+                      .fold(CliRoots::refused, this::printed);
     }
 
-    private static int noFiles() {
-        System.err.println("No Java files found");
+    /// stdout carries only the score document; the run's own lines and findings go to stderr.
+    private int printed(RunResult result) {
+        CliRoots.printToStderr(result, false);
+        result.score().onPresent(this::outputScore);
 
-        return 1;
+        return CliRoots.exitCode(result.verdict(), NOTHING_COLLECTED_EXIT);
     }
 
-    /// Nothing was scorable: the run's lines say why per root, and a requested `--max-density` gate says it was not evaluated.
-    private int nothingScored(LintRun run) {
-        run.finish()
-           .onFailure(cause -> System.err.println("Error: " + cause.message()))
-           .onSuccess(report -> printNothingScored(report));
-        if (maxDensity != null) {
-            System.err.println("--max-density " + maxDensity + " was not evaluated; the run passes.");
-        }
-
-        return 0;
-    }
-
-    private static void printNothingScored(RunReport report) {
-        report.summary().forEach(System.err::println);
-        report.scoreLines().forEach(System.err::println);
-        report.diagnostics().forEach(diagnostic -> System.err.print(diagnostic.toHumanReadable()));
-    }
-
-    /// A file the run did not offer for scoring is still routed through the run, which records it as skipped by mode.
-    private static void routeUnscored(Path file, LintRun run) {
-        run.lintFile(file).onFailure(cause -> System.err.println("Error: " + cause.message()));
-    }
-
-    /// Exit codes match `jbct lint`: `2` when the tool could not read what it was pointed at, `1`
-    /// for a real breach, `0` clean.
-    ///
-    /// A coverage gap outranks the density check and fails even with no `--max-density`, because the
-    /// number this command exists to report is a ratio over the files it managed to read. Measured
-    /// over 1 of 2 files it is not the project's density, and the command used to return **exit 0**
-    /// beside a header saying `1 files` under an announcement of two — a gate reporting clean over a
-    /// file it never opened (#977).
-    private int gateExitCode(ScoreResult score) {
-        var coverage = score.coverage();
-
-        if (coverage.isPartial()) {
-            coverage.gapReport("score").onPresent(System.err::println);
-
-            return COVERAGE_GAP;
-        }
-
-        if (maxDensity != null && DensityGate.exceeds(score.totalDensityPerKloc(), maxDensity)) {
-            System.err.println("\n" + DensityGate.breachMessage(score.totalDensityPerKloc(), maxDensity));
-
-            return 1;
-        }
-
-        return 0;
-    }
-
+    @Contract
     private void outputScore(ScoreResult score) {
         switch (format.toLowerCase(Locale.ROOT)) {
-            case "json" -> outputJson(score);
-            default -> outputTerminal(score);
+            case "json" -> ScoreReport.jsonLines(score).forEach(System.out::println);
+            default -> ScoreReport.terminalLines(score).forEach(System.out::println);
         }
-    }
-
-    private void outputTerminal(ScoreResult score) {
-        ScoreReport.terminalLines(score).forEach(System.out::println);
-    }
-
-    private void outputJson(ScoreResult score) {
-        ScoreReport.jsonLines(score).forEach(System.out::println);
     }
 }

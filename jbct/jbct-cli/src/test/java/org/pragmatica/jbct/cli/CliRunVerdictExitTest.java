@@ -115,6 +115,22 @@ class CliRunVerdictExitTest {
         return new CommandLine(command).execute(withPath(flags));
     }
 
+    private int lint(BiFunction<RootPlan, Invocation, Result<RunResult>> seam, String... flags) {
+        var command = new LintCommand();
+
+        command.runSeam = seam;
+
+        return new CommandLine(command).execute(withPath(flags));
+    }
+
+    private int score(BiFunction<RootPlan, Invocation, Result<RunResult>> seam, String... flags) {
+        var command = new ScoreCommand();
+
+        command.runSeam = seam;
+
+        return new CommandLine(command).execute(withPath(flags));
+    }
+
     private String[] withPath(String... flags) {
         var args = new ArrayList<>(List.of(flags));
 
@@ -139,6 +155,42 @@ class CliRunVerdictExitTest {
     @EnumSource(Kind.class)
     void check_mapsEveryVerdictKindToItsExitStatus(Kind kind) {
         assertThat(check(withVerdict(kind))).isEqualTo(expectedExit(kind));
+    }
+
+    /// `lint` exits 2 when it collected nothing (#1100: a coverage gap, never a pass).
+    private static int expectedLintExit(Kind kind) {
+        return kind == Kind.NOTHING_COLLECTED
+               ? 2
+               : expectedExit(kind);
+    }
+
+    /// `score` has always exited 1 for "No Java files found".
+    private static int expectedScoreExit(Kind kind) {
+        return kind == Kind.NOTHING_COLLECTED
+               ? 1
+               : expectedExit(kind);
+    }
+
+    @ParameterizedTest
+    @EnumSource(Kind.class)
+    void lint_mapsEveryVerdictKindToItsExitStatus(Kind kind) {
+        assertThat(lint(withVerdict(kind))).isEqualTo(expectedLintExit(kind));
+        assertThat(lint(withVerdict(kind), "--format", "json")).isEqualTo(expectedLintExit(kind));
+        assertThat(lint(withVerdict(kind), "--format", "sarif")).isEqualTo(expectedLintExit(kind));
+    }
+
+    @ParameterizedTest
+    @EnumSource(Kind.class)
+    void score_mapsEveryVerdictKindToItsExitStatus(Kind kind) {
+        assertThat(score(withVerdict(kind))).isEqualTo(expectedScoreExit(kind));
+    }
+
+    @Test
+    void lint_machineFormat_keepsStdoutForTheDocument_andPrintsTheRunsLinesToStderr() {
+        lint(withVerdict(Kind.CLEAN), "--format", "json");
+
+        assertThat(err.toString(UTF_8).lines()).containsExactly("before-info", "before-error", "after-warn");
+        assertThat(out.toString(UTF_8)).startsWith("{").doesNotContain("before-info");
     }
 
     @Test

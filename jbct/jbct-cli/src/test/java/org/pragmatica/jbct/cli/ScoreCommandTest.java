@@ -15,6 +15,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Kind;
 import picocli.CommandLine;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -75,11 +76,19 @@ class ScoreCommandTest {
         System.setErr(originalErr);
     }
 
+    private CapturedRun captured = new CapturedRun();
+
     private int run(String... args) {
         out.reset();
         err.reset();
 
-        return new CommandLine(new ScoreCommand()).execute(args);
+        captured = new CapturedRun();
+
+        var command = new ScoreCommand();
+
+        command.runSeam = captured;
+
+        return new CommandLine(command).execute(args);
     }
 
     private String stdout() {
@@ -263,7 +272,8 @@ class ScoreCommandTest {
         var exitCode = run("--max-density", threshold(maximum), sources.toString());
 
         assertThat(exitCode).isOne();
-        assertThat(stderr()).contains("exceeds maximum " + threshold(maximum) + ScoreReport.DENSITY_UNIT);
+        assertThat(captured.result().verdict().kind()).isEqualTo(Kind.FINDINGS);
+        assertThat(stderr()).contains(captured.stderrLinesOfAll());
     }
 
     @Test
@@ -271,7 +281,8 @@ class ScoreCommandTest {
         var exitCode = run("--max-density", "0", sources.toString());
 
         assertThat(exitCode).isOne();
-        assertThat(stderr()).contains("exceeds maximum");
+        assertThat(captured.result().verdict().kind()).isEqualTo(Kind.FINDINGS);
+        assertThat(stderr()).contains(captured.stderrLinesOfAll());
     }
 
     /// The removed gate meant the opposite of the new one, so it must be rejected rather than

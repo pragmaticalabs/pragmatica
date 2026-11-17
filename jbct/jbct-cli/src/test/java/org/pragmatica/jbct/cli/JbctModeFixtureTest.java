@@ -112,6 +112,8 @@ class JbctModeFixtureTest {
             format.runSeam = captured;
         } else if (command instanceof CheckCommand check) {
             check.runSeam = captured;
+        } else if (command instanceof ScoreCommand score) {
+            score.runSeam = captured;
         }
 
         return new CommandLine(command).execute(args);
@@ -224,7 +226,9 @@ class JbctModeFixtureTest {
         var root = module("fmt", JbctMode.FORMAT_ONLY);
 
         assertThat(run(new ScoreCommand(), root.toString())).isZero();
-        assertThat(err.toString()).contains("Not scored: " + root(root) + " (mode format-only skips it)");
+        assertThat(err.toString()).contains(captured.result().after().getFirst().text());
+        assertThat(err.toString()).contains(root(root));
+        assertThat(captured.result().examined()).isZero();
         assertThat(out.toString()).isBlank();
     }
 
@@ -262,7 +266,9 @@ class JbctModeFixtureTest {
         var root = module("off", JbctMode.DISABLED);
 
         assertThat(run(new ScoreCommand(), root.toString())).isZero();
-        assertThat(err.toString()).contains("Not scored: " + root(root) + " (mode disabled skips it)");
+        assertThat(err.toString()).contains(captured.result().after().getFirst().text());
+        assertThat(err.toString()).contains(root(root));
+        assertThat(captured.result().examined()).isZero();
         assertThat(out.toString()).isBlank();
     }
 

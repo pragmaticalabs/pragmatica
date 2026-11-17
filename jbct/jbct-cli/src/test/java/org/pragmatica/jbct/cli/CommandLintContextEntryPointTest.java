@@ -6,11 +6,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.function.Function;
 
 import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.lint.LintContext;
-import org.pragmatica.jbct.lint.cst.LintRun;
 import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
 import org.pragmatica.jbct.lint.cst.RunOutcome.RunResult;
@@ -86,8 +84,6 @@ class CommandLintContextEntryPointTest {
     /// Run the named command through `CommandLine.execute`; returns every context the command handed to the run, one per source root.
     private List<LintContext> handedOver(String command, String... args) {
         var recorded = new ArrayList<LintContext>();
-        Function<RootPlan, LintRun> recorder = plan -> recordAndRun(recorded, plan);
-
         switch (command) {
             case CHECK -> {
                 var check = new CheckCommand();
@@ -98,13 +94,13 @@ class CommandLintContextEntryPointTest {
             case LINT -> {
                 var lint = new LintCommand();
 
-                lint.runFactory = recorder;
+                lint.runSeam = (plan, invocation) -> recordAndPerform(recorded, plan, invocation);
                 new CommandLine(lint).execute(args);
             }
             default -> {
                 var score = new ScoreCommand();
 
-                score.runFactory = recorder;
+                score.runSeam = (plan, invocation) -> recordAndPerform(recorded, plan, invocation);
                 new CommandLine(score).execute(args);
             }
         }
@@ -116,12 +112,6 @@ class CommandLintContextEntryPointTest {
         plan.roots().forEach(root -> recorded.add(root.context()));
 
         return CliRoots.PERFORM.apply(plan, invocation);
-    }
-
-    private static LintRun recordAndRun(List<LintContext> recorded, RootPlan plan) {
-        plan.roots().forEach(root -> recorded.add(root.context()));
-
-        return LintRun.lintRun(plan);
     }
 
     private LintContext single(String command, String... args) {
