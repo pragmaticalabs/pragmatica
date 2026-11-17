@@ -52,7 +52,7 @@
 /// (* it with the committed one (Outbox LeaderTransaction); consensus election (Elect, CI-1) and the LeaderKey     *)
 /// (* commit (CommitLeader, CI-16) are separate steps, so a successor activates suspended; the desired-row mirror  *)
 /// (* is read straight from KV; "shown" is the operator-visible open set (ClusterEventAggregator.onRecovery). KV  *)
-/// (* notifications are a whole-set sync (Notify), and a node takes the LeaderKey notification only once its mirror *)
+/// (* notifications are a whole-set sync (OnPut), and a node takes the LeaderKey notification only once its mirror *)
 /// (* caught up with KV (log order: every row committed before the LeaderKey precedes it); a row committed after   *)
 /// (* it may reach a node early, an over-approximation. Not modelled: a recovery that Rebuild raises for a subject *)
 /// (* that left the model (published at once, not held), the warning a Rebuild raises after inherit (held in the  *)
@@ -218,7 +218,13 @@
 /// \* (Warnings.noteRaised, `held`) until their row commits, so the raising step publishes nothing.
 /// Pub(adds, rems) == IF MODE = "code" THEN shown ELSE (shown \ rems) \cup adds
 ///
-/// Hold(n, adds, rems) == IF MODE = "code" THEN held[n] \o SeqOf(adds, TRUE) \o SeqOf(rems, FALSE) ELSE <<>>
+/// \* #3274: no mode holds a warning any more (the merged code publishes by rule E, Settle / Warnings.accepted); the held list
+/// \* stays empty, so the marker fields of every row stay FALSE.
+/// Hold(n, adds, rems) == <<>>
+///
+/// \* Rule E (Warnings.notified): per mutated subject, from the committed (expected, replacement) pair: the opener when the
+/// \* replacement is open and the expected is not, the recovery when the expected is open and the replacement closed.
+/// RuleE(sh, exp, rep) == (sh \ {x \in DOMAIN rep : exp[x].open /\ ~rep[x].open}) \cup {x \in DOMAIN rep : rep[x].open /\ ~exp[x].open}
 ///
 /// Discard(n) ==   \* the model is dropped (ClusterFsm.java deactivated; a crash loses the process)
 ///   /\ fsm' = [fsm EXCEPT ![n] = "Dormant"]
@@ -342,7 +348,7 @@
 /// ```tla Fsm2Leader:tail
 /// Next ==
 ///   \/ \E n \in Nodes : Activate(n) \/ Deactivate(n) \/ Crash(n) \/ Elect(n) \/ SeeLeader(n)
-///                       \/ Tick(n) \/ Flush(n) \/ Expire(n) \/ Notify(n) \/ \E e \in EventFam : EventFire(n, e)
+///                       \/ Tick(n) \/ Flush(n) \/ Expire(n) \/ OnPut(n) \/ \E e \in EventFam : EventFire(n, e)
 ///   \/ CommitLeader
 ///   \/ \E tx \in net : KvApply(tx) \/ KvFail(tx)
 ///   \/ \E s \in settles : Settle(s) \/ DropSettle(s) \/ LoseSettle(s)
@@ -354,7 +360,7 @@
 /// \* EventFire is fair: a successor retries while the fault persists (committed retry counts, Failures.java).
 /// Fairness ==
 ///   /\ \A n \in Nodes : /\ WF_vars(Activate(n)) /\ WF_vars(Deactivate(n)) /\ WF_vars(SeeLeader(n))
-///                       /\ WF_vars(Tick(n)) /\ WF_vars(Flush(n)) /\ WF_vars(Expire(n)) /\ WF_vars(Notify(n))
+///                       /\ WF_vars(Tick(n)) /\ WF_vars(Flush(n)) /\ WF_vars(Expire(n)) /\ WF_vars(OnPut(n))
 ///                       /\ \A e \in EventFam : WF_vars(EventFire(n, e))
 ///   /\ WF_vars(CommitLeader)
 ///   /\ WF_vars(\E tx \in net : KvApply(tx))

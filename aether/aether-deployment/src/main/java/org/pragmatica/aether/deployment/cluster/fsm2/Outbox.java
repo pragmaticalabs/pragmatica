@@ -577,7 +577,8 @@ public sealed interface Outbox {
     // Rebuild) is dropped and counted. Guarantee: nothing is applied twice and the loss is visible. Mechanism: the `settled_unknown` metric;
     // the submission's pending entries were already released and its intent is re-derived level-triggered from the mirror.
     /// ```tla Fsm2Leader:Settle
-    /// \* WriteSettled of this incarnation: Outbox.java. W accepted: mirror takes the mutations and the held prefix the
+    /// \* WriteSettled of this incarnation: Outbox.java. W accepted (code): rule E publishes from the committed pair, a deposed
+    /// \* writer included (Warnings.accepted / notified), and the mirror takes the mutations; pre-#3274 modes: the held prefix the
     /// \* tx carried lands (Warnings.accepted, committed: Warnings.java:253), published at the end of the step
     /// \* unless the node's leader value names another node (Warnings.java:168, ledByAnother: then it stays
     /// \* landed and held); refused: the refusal's values re-index the mirror, m.leader := refusal leader, unlanded marks
@@ -599,7 +600,8 @@ public sealed interface Outbox {
     ///         /\ view' = [view EXCEPT ![n] = v]
     ///         /\ redo' = [redo EXCEPT ![n] = IF stale THEN redo[n] \cup {s.tx} ELSE redo[n]]
     ///         /\ Apply(n, warned[n], r, d, IF isW THEN stale ELSE wInfl[n], IF isW THEN gInfl[n] ELSE stale,
-    ///                  gIntent[n], FALSE, flushQ[n] \/ stale, shown, held[n], ld, v)
+    ///                  gIntent[n], FALSE, flushQ[n] \/ stale,
+    ///                  IF isW /\ s.out = "acc" /\ MODE = "code" THEN RuleE(shown, s.tx.wexp, s.wrep) ELSE shown, held[n], ld, v)
     ///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, fired, net,
     ///                  condBudget, faultBudget>>
     /// ```
