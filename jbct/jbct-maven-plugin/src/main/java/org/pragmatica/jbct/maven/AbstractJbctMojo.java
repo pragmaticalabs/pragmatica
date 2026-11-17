@@ -14,6 +14,7 @@ import org.pragmatica.jbct.shared.FileCollector;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
+import org.apache.maven.execution.MavenSession;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.Parameter;
@@ -22,8 +23,16 @@ import org.apache.maven.project.MavenProject;
 
 /// Base class for JBCT Maven mojos with common configuration parameters.
 public abstract class AbstractJbctMojo extends AbstractMojo {
+    private static final String MODE_PROPERTY = "jbct.mode";
+
     @Parameter(defaultValue = "${project}", readonly = true, required = true)
     protected MavenProject project;
+
+    /// Read only for the mode override (C7): `jbct.mode` is deliberately NOT a `@Parameter(property = ...)`, because
+    /// Maven resolves such a property from the pom's `<properties>` and from system properties as well, and only a
+    /// command-line user property may override `jbct.toml`.
+    @Parameter(defaultValue = "${session}", readonly = true)
+    protected MavenSession session;
 
     @Parameter(property = "jbct.sourceDirectory", defaultValue = "${project.build.sourceDirectory}")
     protected File sourceDirectory;
@@ -41,7 +50,10 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
     @Contract
     protected JbctConfig loadConfig() throws MojoExecutionException {
         var projectDir = project.getBasedir().toPath();
-        var loaded = ConfigLoader.load(Option.none(), Option.option(projectDir));
+        var explicitMode = explicitMode();
+        var loaded = ConfigLoader.loadForSourceRoot(Option.none(),
+                                                    projectDir)
+                                 .flatMap(config -> config.overrideMode(explicitMode));
         var refusal = loaded.fold(cause -> Option.some(cause.message()),
                                   _ -> Option.<String> none());
 
@@ -50,6 +62,33 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
         }
 
         return loaded.unwrap();
+    }
+
+    /// The mode given on the invocation (C7): the session's user property `jbct.mode`, which a command-line `-D` and a
+    /// `-D` line of `.mvn/maven.config` both populate. A `<jbct.mode>` in the pom's `<properties>`, and a `jbct.mode`
+    /// JVM system property (`MAVEN_OPTS`), override nothing: each is ignored with a warning naming `jbct.toml`.
+    private Option<String> explicitMode() {
+        var userMode = Option.option(session)
+                             .map(MavenSession::getUserProperties)
+                             .flatMap(properties -> Option.option(properties.getProperty(MODE_PROPERTY)));
+
+        warnIgnoredModeSource("<" + MODE_PROPERTY + "> in the pom's <properties>",
+                              Option.option(project.getProperties()).flatMap(properties -> Option.option(properties.getProperty(MODE_PROPERTY))));
+        warnIgnoredModeSource("The " + MODE_PROPERTY + " system property",
+                              userMode.isPresent()
+                              ? Option.<String> none()
+                              : Option.option(System.getProperty(MODE_PROPERTY)));
+
+        return userMode;
+    }
+
+    @Contract
+    private void warnIgnoredModeSource(String source, Option<String> value) {
+        value.onPresent(raw -> getLog().warn(source
+                                            + " (" + raw
+                                            + ") does not set the JBCT mode and is ignored:"
+                                            + " set [lint] mode in jbct.toml, or pass -D" + MODE_PROPERTY
+                                            + " on the command line to override it for this run."));
     }
 
     /// Create lint context from configuration.

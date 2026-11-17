@@ -2,6 +2,11 @@ package org.pragmatica.jbct.lint;
 
 import java.util.List;
 
+import org.pragmatica.config.toml.TomlParser;
+import org.pragmatica.jbct.config.JbctConfig;
+import org.pragmatica.jbct.config.JbctMode;
+import org.pragmatica.lang.Option;
+
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -91,6 +96,41 @@ class LintContextTest {
             assertThat(context.shouldLint("infrastructure")).isFalse();
             assertThat(context.shouldLint("com.example.infrastructure")).isFalse();
             assertThat(context.shouldLint("com.example.infrastructure.db")).isTrue();
+        }
+    }
+
+    @Nested
+    class FromConfigFactory {
+        private static final String TOML = "[lint]\nmode = \"infrastructure\"\n[project]\nbasePackage = \"org.acme.billing\"\n";
+
+        private LintContext context() {
+            return TomlParser.parse(TOML).flatMap(JbctConfig::fromToml).map(LintContext::fromConfig).unwrap();
+        }
+
+        @Test
+        void fromConfig_carriesTheConfiguredMode() {
+            assertThat(context().mode()).isEqualTo(JbctMode.INFRASTRUCTURE);
+        }
+
+        @Test
+        void fromConfig_carriesTheConfiguredBasePackage() {
+            assertThat(context().basePackage()).isEqualTo(Option.some("org.acme.billing"));
+        }
+
+        @Test
+        void withFileName_keepsModeAndBasePackage() {
+            var renamed = context().withFileName("Orders.java");
+
+            assertThat(renamed.mode()).isEqualTo(JbctMode.INFRASTRUCTURE);
+            assertThat(renamed.basePackage()).isEqualTo(Option.some("org.acme.billing"));
+        }
+
+        @Test
+        void fromConfig_withoutProjectKeys_isBusinessWithNoBasePackage() {
+            var defaults = LintContext.fromConfig(JbctConfig.DEFAULT);
+
+            assertThat(defaults.mode()).isEqualTo(JbctMode.BUSINESS);
+            assertThat(defaults.basePackage()).isEqualTo(Option.none());
         }
     }
 }

@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Callable;
+import java.util.function.Function;
 
 import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.lint.JbctLinter;
@@ -54,6 +55,12 @@ public class ScoreCommand implements Callable<Integer> {
     @picocli.CommandLine.Option(names = {"--config"}, description = "Path to configuration file")
     Path configPath;
 
+    @picocli.CommandLine.Option(names = {"--mode"}, description = "JBCT mode for this run, overriding jbct.toml and --config: business or infrastructure")
+    String mode;
+
+    /// The one place the resolved context is handed to the linter; tests replace it to observe the context (#2525).
+    Function<LintContext, JbctLinter> linterFactory = JbctLinter::jbctLinter;
+
     @Override
     public Integer call() {
         if (baseline != null) {
@@ -69,7 +76,7 @@ public class ScoreCommand implements Callable<Integer> {
             return USAGE_ERROR;
         }
 
-        var loadedConfig = CliConfig.load(Option.option(configPath));
+        var loadedConfig = CliConfig.load(Option.option(configPath), Option.option(mode), paths.getFirst(), System.err);
 
         if (loadedConfig.isEmpty()) {
             return CliConfig.CONFIG_ERROR_EXIT;
@@ -77,7 +84,7 @@ public class ScoreCommand implements Callable<Integer> {
 
         var config = loadedConfig.unwrap();
         var context = createContext(config);
-        var linter = JbctLinter.jbctLinter(context);
+        var linter = linterFactory.apply(context);
         var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
 
         if (filesToProcess.isEmpty()) {
@@ -95,11 +102,8 @@ public class ScoreCommand implements Callable<Integer> {
         return gateExitCode(score);
     }
 
-    private LintContext createContext(JbctConfig jbctConfig) {
-        return LintContext.defaultContext()
-                          .withConfig(jbctConfig.lint())
-                          .withExcludePackages(jbctConfig.excludePackages())
-                          .withLayers(jbctConfig.layers());
+    LintContext createContext(JbctConfig jbctConfig) {
+        return CliConfig.lintContext(jbctConfig, false);
     }
 
     /// Exit codes match `jbct lint`: `2` when the tool could not read what it was pointed at, `1`

@@ -8,18 +8,24 @@ import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.jbct.format.FormatterConfig;
 import org.pragmatica.jbct.lint.LintConfig;
 import org.pragmatica.jbct.lint.layer.LayerConfig;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 
 /// Unified configuration for JBCT tools.
 /// Combines formatter and linter configuration with project settings.
+///
+/// `mode` is `[lint] mode` ([JbctMode], default `business`); `basePackage` is `[project] basePackage`, the project
+/// root package the structure rules measure from, absent unless written (#2525).
 public record JbctConfig(FormatterConfig formatter,
                          LintConfig lint,
                          FilesConfig files,
                          BlueprintConfig blueprint,
                          List<String> sourceDirectories,
                          List<String> excludePackages,
-                         LayerConfig layers) {
+                         LayerConfig layers,
+                         JbctMode mode,
+                         Option<String> basePackage) {
     public JbctConfig {
         sourceDirectories = List.copyOf(sourceDirectories);
         excludePackages = List.copyOf(excludePackages);
@@ -35,7 +41,9 @@ public record JbctConfig(FormatterConfig formatter,
                                                         BlueprintConfig.DEFAULT,
                                                         List.of("src/main/java"),
                                                         List.of(),
-                                                        LayerConfig.DEFAULT);
+                                                        LayerConfig.DEFAULT,
+                                                        JbctMode.DEFAULT,
+                                                        Option.none());
 
     /// Factory method for creating JbctConfig.
     public static JbctConfig jbctConfig(FormatterConfig formatter,
@@ -44,8 +52,40 @@ public record JbctConfig(FormatterConfig formatter,
                                         BlueprintConfig blueprint,
                                         List<String> sourceDirectories,
                                         List<String> excludePackages,
-                                        LayerConfig layers) {
-        return new JbctConfig(formatter, lint, files, blueprint, sourceDirectories, excludePackages, layers);
+                                        LayerConfig layers,
+                                        JbctMode mode,
+                                        Option<String> basePackage) {
+        return new JbctConfig(formatter,
+                              lint,
+                              files,
+                              blueprint,
+                              sourceDirectories,
+                              excludePackages,
+                              layers,
+                              mode,
+                              basePackage);
+    }
+
+    /// This configuration with its mode replaced by an explicit invocation value (`--mode`, `-Djbct.mode`; C7).
+    ///
+    /// An absent value leaves the configuration as loaded. The value is parsed by [JbctMode#jbctMode], so an unknown
+    /// token and a mode that is not yet honoured are refused, naming the token.
+    public Result<JbctConfig> overrideMode(Option<String> explicitMode) {
+        return explicitMode.map(JbctMode::jbctMode)
+                           .map(parsed -> parsed.map(this::withMode))
+                           .or(Result.success(this));
+    }
+
+    private JbctConfig withMode(JbctMode newMode) {
+        return jbctConfig(formatter,
+                          lint,
+                          files,
+                          blueprint,
+                          sourceDirectories,
+                          excludePackages,
+                          layers,
+                          newMode,
+                          basePackage);
     }
 
     /// Create config from parsed TOML document, applying built-in defaults to every absent key.
@@ -77,6 +117,7 @@ public record JbctConfig(FormatterConfig formatter,
         sb.append("\n");
         // Lint section
         sb.append("[lint]\n");
+        sb.append("mode = \"").append(mode.token()).append("\"\n");
         sb.append("failOnWarning = ").append(lint.failOnWarning()).append("\n");
         sb.append("excludePackages = [");
         sb.append(excludePackages.stream().map(s -> "\"" + s + "\"").collect(Collectors.joining(", ")));
@@ -98,6 +139,9 @@ public record JbctConfig(FormatterConfig formatter,
         sb.append("\n");
         // Project section
         sb.append("[project]\n");
+        basePackage.onPresent(name -> sb.append("basePackage = \"")
+                                        .append(name)
+                                        .append("\"\n"));
         sb.append("sourceDirectories = [");
         sb.append(sourceDirectories.stream().map(s -> "\"" + s + "\"").collect(Collectors.joining(", ")));
         sb.append("]\n");

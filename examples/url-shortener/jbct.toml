@@ -3,4 +3,8 @@ maxLineLength = 120
 indentSize = 4
 
 [lint]
+mode = "business"
 failOnWarning = false
+
+[project]
+basePackage = "org.pragmatica.aether.example.urlshortener"
