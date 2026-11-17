@@ -2888,26 +2888,46 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// #2087: the owner's visible position moved: tell the replicas. Runs on the ring's serial notifier -- never under
     /// the append lock, never on a publisher's thread -- and the notifier coalesces advances, so a burst of acks is one
-    /// message per drain, not one per ack. A node that is not this partition's owner announces nothing.
-    ///
-    /// #2981 step 2 (design §2.2 check 3, F-1a-6): nor does an owner whose lease is not valid now (confirmation factor 1 and a
-    /// manager with both lease seams unwired excepted): its local `committed` event is visibility too and pauses with it. The tick
-    /// ([#repeatVisible]) announces again once a renewal lands.
-    ///
-    /// #3307 (F-a3): nor does an owner whose ownership has not activated: the gate is [#ownerRoleHolds], the predicate that lets it
-    /// advance visible as owner. A replica that heard a mark from a not-yet-activated owner would read itself caught up
-    /// ([#behindCommittedOwner]) and serve its own stale copy for as long as activation stays blocked; hearing nothing, it forwards.
+    /// message per drain, not one per ack. Whether anything is sent is [#announceMark]'s gate alone.
     @Contract
     private void announceVisible(String streamName, int partition, long visible) {
+        announceMark(streamName, partition, visible);
+    }
+
+    /// #3307 (F-a3, F-c1): the ONE place an owner's mark leaves this node; every announcement -- a visible position, the
+    /// empty log's `-1` -- passes through here, and nothing else in this class sends one. A node that is not this partition's
+    /// owner announces nothing. Nor does an owner for which [#ownerRoleHolds] does not hold, the predicate that lets it
+    /// advance visible as owner:
+    ///
+    /// - #2981 step 2 (design §2.2 check 3, F-1a-6): a lease that is not valid now (confirmation factor 1 and a manager with
+    ///   both lease seams unwired excepted); its local `committed` event is visibility too and pauses with it. The tick
+    ///   ([#repeatVisible]) announces again once a renewal lands.
+    /// - an ownership that has not activated. A replica that heard a mark of ANY value from a not-yet-activated owner -- the
+    ///   empty log's `-1` included, which replaces a lagging replica's mark under the new epoch ([#newerMark]) -- would read
+    ///   itself caught up ([#behindCommittedOwner]) and serve its own stale copy for as long as activation stays blocked;
+    ///   hearing nothing, it forwards. A never-written partition's `-1` is only delayed: its owner activates with no demand
+    ///   through the committed-record hook (`OwnerActivation.onCommittedOwnership`, #2682).
+    ///
+    /// A `-1` commits nothing, so the partition log is told nothing for it.
+    @Contract
+    private void announceMark(String streamName, int partition, long mark) {
         if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER && ownerRoleHolds(streamName,
                                                                                                  partition,
                                                                                                  confirmationFactorFor(streamName))) {
-            partitionLogEvents.committed(streamName, partition, visible);
-            replicationManager.announceCommitted(streamName,
-                                                 partition,
-                                                 visible,
-                                                 ownerEpochSource.currentOwnerEpoch(streamName, partition));
+            sendMark(streamName, partition, mark);
         }
+    }
+
+    @Contract
+    private void sendMark(String streamName, int partition, long mark) {
+        if (mark >= 0) {
+            partitionLogEvents.committed(streamName, partition, mark);
+        }
+
+        replicationManager.announceCommitted(streamName,
+                                             partition,
+                                             mark,
+                                             ownerEpochSource.currentOwnerEpoch(streamName, partition));
     }
 
     /// #2087: repeat the visible position of every partition this node owns, on the owner's tick. A replica that missed
@@ -2937,15 +2957,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// PR-2f S2 (know `e10cf838c9`): an owner whose log holds nothing reports `-1` to its replicas, so they stop forwarding
     /// reads of a never-written partition after one tick ([#behindCommittedOwner]). Only an EMPTY log: an owner holding records
     /// below its visible position may be waiting for its activation to raise it from the marker, and a `-1` from it would
-    /// tell its replicas that nothing is acknowledged. Nothing is committed, so the partition log is told nothing.
+    /// tell its replicas that nothing is acknowledged. Nothing is committed, so the partition log is told nothing. #3307
+    /// (F-c1): and only from an ACTIVATED owner, [#announceMark]'s gate; a never-written partition's owner activates with no
+    /// demand (`OwnerActivation.onCommittedOwnership`), so its replicas stop forwarding one tick after that activation.
     @Contract
     private void announceEmptyLog(String streamName, int partition) {
-        if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
-            replicationManager.announceCommitted(streamName,
-                                                 partition,
-                                                 - 1L,
-                                                 ownerEpochSource.currentOwnerEpoch(streamName, partition));
-        }
+        announceMark(streamName, partition, -1L);
     }
 
     /// PR-2f (I-05): on the OWNER, write its visible position to the partition log's acked marker -- a no-op unless visible
