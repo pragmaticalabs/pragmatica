@@ -66,6 +66,28 @@ public record JbctConfig(FormatterConfig formatter,
                               basePackage);
     }
 
+    /// This configuration with its mode replaced by an explicit invocation value (`--mode`, `-Djbct.mode`; C7).
+    ///
+    /// An absent value leaves the configuration as loaded. The value is parsed by [JbctMode#jbctMode], so an unknown
+    /// token and a mode that is not yet honoured are refused, naming the token.
+    public Result<JbctConfig> overrideMode(Option<String> explicitMode) {
+        return explicitMode.map(JbctMode::jbctMode)
+                           .map(parsed -> parsed.map(this::withMode))
+                           .or(Result.success(this));
+    }
+
+    private JbctConfig withMode(JbctMode newMode) {
+        return jbctConfig(formatter,
+                          lint,
+                          files,
+                          blueprint,
+                          sourceDirectories,
+                          excludePackages,
+                          layers,
+                          newMode,
+                          basePackage);
+    }
+
     /// Create config from parsed TOML document, applying built-in defaults to every absent key.
     ///
     /// This materialises a *single* document in isolation. Layered loading goes through

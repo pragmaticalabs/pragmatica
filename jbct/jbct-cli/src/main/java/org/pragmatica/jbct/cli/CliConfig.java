@@ -23,7 +23,18 @@ public sealed interface CliConfig {
     /// working directory. A command given several paths passes its first: one run holds one configuration until
     /// the lint entry points resolve per source root (P2c).
     static Option<JbctConfig> load(Option<Path> explicitConfigPath, Path checkedPath, PrintStream err) {
+        return load(explicitConfigPath, Option.none(), checkedPath, err);
+    }
+
+    /// Load the configuration for a checked path with the command's `--mode` folded last (C7): after the `jbct.toml`
+    /// chain and after `--config`, so it wins over both. An unknown value, or one not yet supported, is refused the
+    /// same way a bad config layer is.
+    static Option<JbctConfig> load(Option<Path> explicitConfigPath,
+                                   Option<String> explicitMode,
+                                   Path checkedPath,
+                                   PrintStream err) {
         return ConfigLoader.loadForSourceRoot(explicitConfigPath, checkedPath)
+                           .flatMap(config -> config.overrideMode(explicitMode))
                            .onFailure(cause -> err.println("Error: " + cause.message()))
                            .option();
     }

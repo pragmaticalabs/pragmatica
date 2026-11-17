@@ -127,6 +127,59 @@ class JbctModeConfigTest {
               .onSuccess(merged -> assertThat(merged.materialize().mode()).isEqualTo(JbctMode.BUSINESS));
     }
 
+    @Test
+    void overrideMode_replacesTheConfiguredMode_inBothDirections() {
+        config("[lint]\nmode = \"business\"\n").flatMap(config -> config.overrideMode(Option.some("infrastructure")))
+              .onFailure(JbctModeConfigTest::fail)
+              .onSuccess(config -> assertThat(config.mode()).isEqualTo(JbctMode.INFRASTRUCTURE));
+        config("[lint]\nmode = \"infrastructure\"\n").flatMap(config -> config.overrideMode(Option.some("business")))
+              .onFailure(JbctModeConfigTest::fail)
+              .onSuccess(config -> assertThat(config.mode()).isEqualTo(JbctMode.BUSINESS));
+    }
+
+    @Test
+    void overrideMode_leavesTheConfiguredMode_whenNoOverrideIsGiven() {
+        config("[lint]\nmode = \"infrastructure\"\n").flatMap(config -> config.overrideMode(Option.none()))
+              .onFailure(JbctModeConfigTest::fail)
+              .onSuccess(config -> assertThat(config.mode()).isEqualTo(JbctMode.INFRASTRUCTURE));
+    }
+
+    @Test
+    void overrideMode_changesOnlyTheMode() {
+        config("[lint]\nmode = \"business\"\nfailOnWarning = true\n[project]\nbasePackage = \"org.example\"\n")
+        .flatMap(config -> config.overrideMode(Option.some("infrastructure")))
+        .onFailure(JbctModeConfigTest::fail)
+        .onSuccess(config -> assertOnlyModeChanged(config));
+    }
+
+    @Test
+    void overrideMode_refusesUnknownValueNamingItAndTheAllowedOnes() {
+        JbctConfig.DEFAULT.overrideMode(Option.some("strict"))
+                          .onSuccess(config -> Assertions.fail("accepted an unknown mode"))
+                          .onFailure(cause -> assertThat(cause).isInstanceOf(ConfigError.ModeUnknown.class))
+                          .onFailure(cause -> assertThat(cause.message()).contains("strict", JbctMode.ALLOWED));
+    }
+
+    @Test
+    void overrideMode_refusesFormatOnlyAsNotYetSupported() {
+        JbctConfig.DEFAULT.overrideMode(Option.some("format-only"))
+                          .onSuccess(config -> Assertions.fail("accepted format-only"))
+                          .onFailure(cause -> assertNotYetSupported(cause, JbctMode.FORMAT_ONLY));
+    }
+
+    @Test
+    void overrideMode_refusesDisabledAsNotYetSupported() {
+        JbctConfig.DEFAULT.overrideMode(Option.some("disabled"))
+                          .onSuccess(config -> Assertions.fail("accepted disabled"))
+                          .onFailure(cause -> assertNotYetSupported(cause, JbctMode.DISABLED));
+    }
+
+    private static void assertOnlyModeChanged(JbctConfig config) {
+        assertThat(config.mode()).isEqualTo(JbctMode.INFRASTRUCTURE);
+        assertThat(config.lint().failOnWarning()).isTrue();
+        assertThat(config.basePackage()).isEqualTo(Option.some("org.example"));
+    }
+
     private static void assertNotYetSupported(Cause cause, JbctMode mode) {
         assertThat(cause).isInstanceOf(ConfigError.ModeNotYetSupported.class);
         assertThat(((ConfigError.ModeNotYetSupported) cause).mode()).isEqualTo(mode);

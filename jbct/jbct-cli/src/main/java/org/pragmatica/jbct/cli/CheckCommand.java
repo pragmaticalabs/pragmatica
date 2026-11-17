@@ -37,10 +37,13 @@ public class CheckCommand implements Callable<Integer> {
     @picocli.CommandLine.Option(names = {"--config"}, description = "Path to configuration file")
     Path configPath;
 
+    @picocli.CommandLine.Option(names = {"--mode"}, description = "JBCT mode for this run, overriding jbct.toml and --config: business or infrastructure")
+    String mode;
+
     @Override
     public Integer call() {
         // Load configuration
-        var loadedConfig = CliConfig.load(Option.option(configPath), paths.getFirst(), System.err);
+        var loadedConfig = CliConfig.load(Option.option(configPath), Option.option(mode), paths.getFirst(), System.err);
 
         if (loadedConfig.isEmpty()) {
             return CliConfig.CONFIG_ERROR_EXIT;
