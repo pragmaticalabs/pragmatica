@@ -66,9 +66,15 @@ class UnreachableClusterExitTest {
 
     @AfterEach
     void stopScripted() throws IOException {
-        heldPort.close();
-        if (scripted != null) {
-            scripted.stop(0);
+        try {
+            if (heldPort != null) {
+                heldPort.close();
+            }
+        } finally {
+            // a failing close must not leave the scripted server running; a null heldPort means setup failed
+            if (scripted != null) {
+                scripted.stop(0);
+            }
         }
     }
 
