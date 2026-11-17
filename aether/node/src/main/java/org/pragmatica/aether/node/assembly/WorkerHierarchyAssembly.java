@@ -1029,14 +1029,22 @@ public sealed interface WorkerHierarchyAssembly {
                                            java.util.function.BooleanSupplier ready,
                                            Logger log) {
         synchronized (governorAnnouncerHolder) {
-            var previous = Option.option(governorAnnouncerHolder.get());
+            // #3330: a worker runtime, once started, is the process's only one. A put naming the community it runs in is a
+            // repeated activation; a put naming another community cannot reach a live worker (its own directive is removed
+            // first, and that removal halts it or a running drain ends it; a worker changes community only by retirement and
+            // a fresh WorkerJoin).
+            var running = Option.option(governorAnnouncerHolder.get());
 
-            if (previous.filter(announcer -> announcer.communityId()
-                                                      .equals(communityId)).isPresent()) {
+            if (running.isPresent()) {
+                running.filter(announcer -> !announcer.communityId()
+                                                      .equals(communityId))
+                       .onPresent(announcer -> log.warn("Worker {} ignores a directive for community {}: it runs in {}, and a worker changes community only by retirement and a fresh join",
+                                                        selfId.id(),
+                                                        communityId,
+                                                        announcer.communityId()));
                 return;
             }
 
-            previous.onPresent(GovernorAnnouncer::stop);
             switchableCluster.switchTo(forwardingClusterNode);
             log.info("Worker {} switched to forwarding mode", selfId.id());
             var workerTcpAddress = resolveSelfTcpAddress(config);
