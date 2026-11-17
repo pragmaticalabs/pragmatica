@@ -3,6 +3,7 @@ maxLineLength = 120
 indentSize = 4
 
 [lint]
+mode = "infrastructure"
 failOnWarning = false
 
 [files]
