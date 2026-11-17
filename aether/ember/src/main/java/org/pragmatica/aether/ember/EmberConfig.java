@@ -6,6 +6,7 @@ package org.pragmatica.aether.ember;
 
 import java.nio.file.Path;
 
+import org.pragmatica.aether.config.ClusterSizeGate;
 import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
@@ -50,6 +51,10 @@ public record EmberConfig(int nodes,
     /// not a goal, so this follows local ergonomics. 5 satisfies the supported minimum; do not raise
     /// it to 7 for consistency with the production default.
     public static final int DEFAULT_NODES = 5;
+    /// #3299 — the smallest cluster Ember and Forge accept: the production floor of [ClusterSizeGate]
+    /// (#782), not a figure of their own. A one-node cluster logs `GUARD[empty-topology]` and never elects
+    /// a leader, mints a genesis or deploys anything, yet reports ready; it is refused here instead.
+    public static final int MINIMUM_NODES = ClusterSizeGate.MINIMUM_SUPPORTED_CLUSTER_SIZE;
     /// Single source of truth stays [EmberCluster#DEFAULT_BASE_PORT]; mirrored here so config
     /// callers need not reach into the cluster class for a default.
     public static final int DEFAULT_BASE_PORT = EmberCluster.DEFAULT_BASE_PORT;
@@ -185,8 +190,8 @@ public record EmberConfig(int nodes,
                                                   int lbPort,
                                                   int coreMax,
                                                   int startTimeoutSeconds) {
-        if (nodes < 1) {
-            return EmberConfigError.invalidValue("nodes", nodes, "must be at least 1").result();
+        if (nodes < MINIMUM_NODES) {
+            return tooFewNodes(nodes).result();
         }
 
         if (nodes > 100) {
@@ -338,6 +343,18 @@ public record EmberConfig(int nodes,
                                      .toAbsolutePath()
                                      .toString())
                       .or(path);
+    }
+
+    /// The one refusal of a cluster below [#MINIMUM_NODES], shared by the configuration path and
+    /// [EmberCluster#start()] so every entry point reports the same typed cause and wording.
+    public static Cause tooFewNodes(int nodes) {
+        return EmberConfigError.invalidValue("nodes", nodes, tooFewNodesReason());
+    }
+
+    private static String tooFewNodesReason() {
+        return "must be at least " + MINIMUM_NODES
+             + ": a cluster is at least " + MINIMUM_NODES
+             + " nodes, a smaller one never elects a leader (#3299)";
     }
 
     public sealed interface EmberConfigError extends Cause {

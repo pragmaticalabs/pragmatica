@@ -32,10 +32,11 @@ class V2174b2Test {
         return w;
     }
 
-    /// Red when: the leader changes (deposed, then this node leads again) and the still-unmatched node's episode carries over, so no
-    /// WARN reports it under the new leadership until the next tick.
+    /// Red when: the leader changes (deposed, then this node leads again) and the still-unmatched node's committed open row is not carried over
+    /// (rule O: the row is inherited as held), so the condition is announced a second time under the new leadership (rule E: one opener per
+    /// closed-to-open transition).
     @Test
-    void joinUnmatched_leaderChange_startsANewEpisode() {
+    void joinUnmatched_leaderChange_inheritsTheOpenRow_andDoesNotAnnounceAgain() {
         var w = unmatchedWorld();
 
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2)));
@@ -50,6 +51,6 @@ class V2174b2Test {
         w.h.seed(new SliceTargetKey(ORDERS.base()), SliceTargetValue.sliceTargetValue(ORDERS.version(), 2, 1));
         w.h.drain();
         assertThat(w.h.model().pendingJoins.containsKey(CORE_2)).as("precondition: still unmatched and pending").isTrue();
-        assertThat(w.h.warns("join-unmatched")).as("the leader changed: a new episode, one more WARN").hasSize(2);
+        assertThat(w.h.warns("join-unmatched")).as("the leader changed: the open row is inherited, no second opener").hasSize(1);
     }
 }

@@ -1051,6 +1051,9 @@ public sealed interface StreamAssembly {
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
         // #2981 step 2 (design §2.2 check 3): the owner visibility check reads the activation without starting one.
         streamPartitionManager.ownerActivated(ownerActivation::isActivated);
+        // #3307: the owner raises visible from its trusted acked marker when the activation completes, not at the first
+        // read, write or snapshot that happens to reach it.
+        ownerActivation.activationListener(streamPartitionManager::onOwnerActivated);
         // #1730 phase 2: the gate's relaxation for a divergent peer respects the candidate's durable sealed floor, and a peer it
         // leaves out loses the row this registry kept for it from an earlier tenure.
         ownerActivation.sealedFloor(streamSegmentIndex::lastSealedOffset);
