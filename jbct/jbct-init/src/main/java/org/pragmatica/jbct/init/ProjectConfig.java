@@ -12,10 +12,14 @@ import org.pragmatica.lang.utils.Causes;
 
 
 /// Shared project configuration reader.
-/// Reads basePackage from jbct.toml (preferred) or derives from pom.xml (fallback).
+/// Reads basePackage from jbct.toml (preferred) or derives from pom.xml (fallback). When a jbct.toml exists without
+/// the key, the derived value is written into it (#2525): the key the `add-*` commands resolve is then the one the
+/// lint reads. An existing value is never touched; a project without a jbct.toml gets none.
 public record ProjectConfig(String basePackage, String groupId, String artifactId) {
     private static final Pattern TOML_BASE_PACKAGE = Pattern.compile("^\\s*basePackage\\s*=\\s*\"([^\"]+)\"",
                                                                      Pattern.MULTILINE);
+
+    private static final Pattern PROJECT_TABLE = Pattern.compile("^\\[project\\][ \\t]*\\R", Pattern.MULTILINE);
 
     /// Read project configuration from the given directory.
     public static Result<ProjectConfig> projectConfig(Path projectDir) {
@@ -24,23 +28,44 @@ public record ProjectConfig(String basePackage, String groupId, String artifactI
 
     private static Result<ProjectConfig> resolveBasePackage(Path projectDir, PomProperties pom) {
         var jbctToml = projectDir.resolve("jbct.toml");
-
-        if (Files.exists(jbctToml)) {
-            try {
-                var content = Files.readString(jbctToml);
-                var matcher = TOML_BASE_PACKAGE.matcher(content);
-
-                if (matcher.find()) {
-                    return Result.success(new ProjectConfig(matcher.group(1), pom.groupId(), pom.artifactId()));
-                }
-            } catch (IOException _) {
-            // Fall through to derivation
-            }
-        }
-
         var derived = pom.groupId() + "." + pom.artifactId().replace("-", "");
 
-        return Result.success(new ProjectConfig(derived, pom.groupId(), pom.artifactId()));
+        if (!Files.exists(jbctToml)) {
+            return Result.success(new ProjectConfig(derived, pom.groupId(), pom.artifactId()));
+        }
+
+        try {
+            var content = Files.readString(jbctToml);
+            var matcher = TOML_BASE_PACKAGE.matcher(content);
+
+            if (matcher.find()) {
+                return Result.success(new ProjectConfig(matcher.group(1), pom.groupId(), pom.artifactId()));
+            }
+
+            Files.writeString(jbctToml, withBasePackage(content, derived));
+
+            return Result.success(new ProjectConfig(derived, pom.groupId(), pom.artifactId()));
+        } catch (IOException e) {
+            return Causes.cause("Failed to update jbct.toml: " + e.getMessage()).result();
+        }
+    }
+
+    /// The toml text with `basePackage` added: under its existing `[project]` table, else in a new one at the end.
+    /// A second `[project]` table would be a duplicate table, which TOML refuses.
+    private static String withBasePackage(String content, String basePackage) {
+        var entry = "basePackage = \"" + basePackage + "\"\n";
+        var table = PROJECT_TABLE.matcher(content);
+
+        if (table.find()) {
+            return content.substring(0, table.end()) + entry + content.substring(table.end());
+        }
+
+        var head = content.stripTrailing();
+        var separator = head.isEmpty()
+                        ? ""
+                        : "\n\n";
+
+        return head + separator + "[project]\n" + entry;
     }
 
     private static Result<PomProperties> readPomProperties(Path projectDir) {
