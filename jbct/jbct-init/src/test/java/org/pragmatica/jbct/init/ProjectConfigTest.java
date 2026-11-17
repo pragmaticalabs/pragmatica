@@ -2,6 +2,7 @@ package org.pragmatica.jbct.init;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.jbct.config.ConfigLoader;
@@ -9,6 +10,7 @@ import org.pragmatica.lang.Option;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.lang.utils.Causes.cause;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /// #2525: the `add-*` commands resolve `basePackage` through `ProjectConfig`; when the project's `jbct.toml` lacks the
@@ -34,6 +36,7 @@ class ProjectConfigTest {
         assertThat(config.basePackage()).isEqualTo("com.example.myslice");
         assertThat(toml(dir)).isEqualTo(
             "[format]\nmaxLineLength = 120\n\n[project]\nbasePackage = \"com.example.myslice\"\nsourceDirectories = [\"src/main/java\"]\n");
+        assertThat(listing(dir)).containsExactly("jbct.toml", "pom.xml");
     }
 
     @Test
@@ -43,6 +46,7 @@ class ProjectConfigTest {
         ProjectConfig.projectConfig(dir).unwrap();
 
         assertThat(toml(dir)).isEqualTo("[format]\nmaxLineLength = 120\n\n[project]\nbasePackage = \"com.example.myslice\"\n");
+        assertThat(listing(dir)).containsExactly("jbct.toml", "pom.xml");
     }
 
     @Test
@@ -66,6 +70,7 @@ class ProjectConfigTest {
 
         assertThat(config.basePackage()).isEqualTo("org.other.name");
         assertThat(toml(dir)).isEqualTo(original);
+        assertThat(listing(dir)).containsExactly("jbct.toml", "pom.xml");
     }
 
     @Test
@@ -76,6 +81,7 @@ class ProjectConfigTest {
 
         assertThat(config.basePackage()).isEqualTo("com.example.myslice");
         assertThat(dir.resolve("jbct.toml")).doesNotExist();
+        assertThat(listing(dir)).containsExactly("pom.xml");
     }
 
     @Test
@@ -101,7 +107,7 @@ class ProjectConfigTest {
               .onFailure(cause -> assertThat(cause.message()).contains("com.my-co.myslice")
                                                              .contains("set it by hand"));
         assertThat(toml(dir)).isEqualTo(original);
-        assertThat(dir.resolve("jbct.toml.tmp")).doesNotExist();
+        assertThat(listing(dir)).containsExactly("jbct.toml", "pom.xml");
     }
 
     @Test
@@ -114,7 +120,7 @@ class ProjectConfigTest {
 
         assertThat(result.isFailure()).isTrue();
         assertThat(toml(dir)).isEqualTo(original);
-        assertThat(dir.resolve("jbct.toml.tmp")).doesNotExist();
+        assertThat(listing(dir)).containsExactly("jbct.toml", "pom.xml");
     }
 
     @Test
@@ -129,7 +135,7 @@ class ProjectConfigTest {
         assertThat(result.isFailure()).isTrue();
         result.onFailure(cause -> assertThat(cause.message()).contains("Cannot write basePackage"));
         assertThat(toml(dir)).isEqualTo(original);
-        assertThat(dir.resolve("jbct.toml.tmp")).doesNotExist();
+        assertThat(listing(dir)).containsExactly("jbct.toml", "pom.xml");
     }
 
     @Test
@@ -156,6 +162,29 @@ class ProjectConfigTest {
         result.onSuccess(_ -> fail("a failed write must not be reported as success"))
               .onFailure(cause -> assertThat(cause.message()).contains("Cannot write basePackage"));
         assertThat(toml(dir)).isEqualTo(original);
+        assertThat(listing(dir)).containsExactly("jbct.toml", "jbct.toml.tmp", "pom.xml");
+    }
+
+    @Test
+    void projectConfig_moveFails_failsWithTheCause_leavesTheFileByteIdenticalAndNoTempFile() throws Exception {
+        var original = "[format]\nmaxLineLength = 120\n";
+        var dir = project(original);
+        var before = Files.readAllBytes(dir.resolve("jbct.toml"));
+
+        var result = ProjectConfig.projectConfig(dir, (_, _) -> cause("disk gone").result());
+
+        assertThat(result.isFailure()).isTrue();
+        result.onSuccess(_ -> fail("a failed move must not be reported as success"))
+              .onFailure(cause -> assertThat(cause.message()).contains("Cannot write basePackage")
+                                                             .contains("disk gone"));
+        assertThat(Files.readAllBytes(dir.resolve("jbct.toml"))).isEqualTo(before);
+        assertThat(listing(dir)).containsExactly("jbct.toml", "pom.xml");
+    }
+
+    private static List<String> listing(Path dir) throws Exception {
+        try (var entries = Files.list(dir)) {
+            return entries.map(entry -> entry.getFileName().toString()).sorted().toList();
+        }
     }
 
     private static Option<String> loadedBasePackage(Path dir) {

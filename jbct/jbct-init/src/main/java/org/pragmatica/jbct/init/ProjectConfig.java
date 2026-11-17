@@ -3,6 +3,7 @@ package org.pragmatica.jbct.init;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.function.BiFunction;
 import java.util.regex.Pattern;
 
 import org.pragmatica.jbct.config.ConfigLoader;
@@ -34,27 +35,39 @@ public record ProjectConfig(String basePackage, String groupId, String artifactI
 
     /// Read project configuration from the given directory.
     public static Result<ProjectConfig> projectConfig(Path projectDir) {
-        return readPomProperties(projectDir).flatMap(pom -> resolveBasePackage(projectDir, pom));
+        return projectConfig(projectDir, FileOps::moveAtomic);
     }
 
-    private static Result<ProjectConfig> resolveBasePackage(Path projectDir, PomProperties pom) {
+    /// The mover publishes the temp file over `jbct.toml`; production is [FileOps#moveAtomic], tests replace it to fail the move.
+    static Result<ProjectConfig> projectConfig(Path projectDir, BiFunction<Path, Path, Result<Path>> mover) {
+        return readPomProperties(projectDir).flatMap(pom -> resolveBasePackage(projectDir, pom, mover));
+    }
+
+    private static Result<ProjectConfig> resolveBasePackage(Path projectDir,
+                                                            PomProperties pom,
+                                                            BiFunction<Path, Path, Result<Path>> mover) {
         var derived = pom.groupId() + "." + pom.artifactId().replace("-", "");
 
         return ConfigLoader.loadForSourceRoot(none(),
                                               projectDir)
-                           .flatMap(chain -> chainValueOr(chain, projectDir, derived))
+                           .flatMap(chain -> chainValueOr(chain, projectDir, derived, mover))
                            .map(name -> new ProjectConfig(name,
                                                           pom.groupId(),
                                                           pom.artifactId()));
     }
 
-    private static Result<String> chainValueOr(JbctConfig chain, Path projectDir, String derived) {
+    private static Result<String> chainValueOr(JbctConfig chain,
+                                               Path projectDir,
+                                               String derived,
+                                               BiFunction<Path, Path, Result<Path>> mover) {
         return chain.basePackage()
-                    .fold(() -> deriveInto(projectDir, derived),
+                    .fold(() -> deriveInto(projectDir, derived, mover),
                           Result::success);
     }
 
-    private static Result<String> deriveInto(Path projectDir, String derived) {
+    private static Result<String> deriveInto(Path projectDir,
+                                             String derived,
+                                             BiFunction<Path, Path, Result<Path>> mover) {
         var jbctToml = projectDir.resolve(ConfigLoader.PROJECT_CONFIG_NAME);
 
         return FileOps.isRegularFile(jbctToml)
@@ -62,7 +75,8 @@ public record ProjectConfig(String basePackage, String groupId, String artifactI
                         .flatMap(content -> writeThroughLoader(projectDir,
                                                                jbctToml,
                                                                withBasePackage(content, derived),
-                                                               derived))
+                                                               derived,
+                                                               mover))
                         .map(_ -> derived)
                : success(derived);
     }
@@ -70,12 +84,16 @@ public record ProjectConfig(String basePackage, String groupId, String artifactI
     /// Temp file, load it, then atomic move; the original is only ever replaced by a file the loader read the derived
     /// value from. A failed attempt removes its temp file (BER: the inverse of the one thing it created). A failed
     /// removal is absorbed: the temp name is outside the loader's discovery and the next attempt overwrites it.
-    private static Result<Path> writeThroughLoader(Path projectDir, Path jbctToml, String text, String derived) {
+    private static Result<Path> writeThroughLoader(Path projectDir,
+                                                   Path jbctToml,
+                                                   String text,
+                                                   String derived,
+                                                   BiFunction<Path, Path, Result<Path>> mover) {
         var temp = projectDir.resolve(TEMP_NAME);
 
         return FileOps.writeString(temp, text)
                       .flatMap(_ -> loadedBack(projectDir, temp, derived))
-                      .flatMap(_ -> FileOps.moveAtomic(temp, jbctToml))
+                      .flatMap(_ -> mover.apply(temp, jbctToml))
                       .onFailure(_ -> FileOps.deleteIfExists(temp))
                       .mapError(cause -> refused(jbctToml, derived, cause));
     }

@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Callable;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.pragmatica.jbct.config.JbctConfig;
@@ -43,6 +44,9 @@ public class LintCommand implements Callable<Integer> {
     @picocli.CommandLine.Option(names = {"--mode"}, description = "JBCT mode for this run, overriding jbct.toml and --config: business or infrastructure")
     String mode;
 
+    /// The one place the resolved context is handed to the linter; tests replace it to observe the context (#2525).
+    Function<LintContext, JbctLinter> linterFactory = JbctLinter::jbctLinter;
+
     public enum OutputFormat {
         text,
         json,
@@ -60,7 +64,7 @@ public class LintCommand implements Callable<Integer> {
 
         var config = loadedConfig.unwrap();
         var context = createContext(config);
-        var linter = JbctLinter.jbctLinter(context);
+        var linter = linterFactory.apply(context);
         var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
         // #1100: a run that examined nothing is a coverage gap, never a pass, so it exits 2 like any other gap.
         if (filesToProcess.isEmpty()) {
