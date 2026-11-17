@@ -747,10 +747,9 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             // the peer connection by reading this attribute.
             quicChannel.attr(PeerOpenedLaneRouter.PEER_CONNECTION).set(peerConnection);
             // Replace the preamble/Hello handler with the shared data handler (CONTROL lane).
-            ctx.pipeline()
-               .replace(this,
-                        "data-handler",
-                        laneRouter.dataHandler(hello.sender(), StreamType.CONTROL));
+            ctx.pipeline().replace(this,
+                                   "data-handler",
+                                   laneRouter.dataHandler(hello.sender(), StreamType.CONTROL));
             log.info("QUIC Hello handshake complete with peer {} (address={})", hello.sender(), hello.address());
             connectionHandler.onPeerConnected(peerConnection, hello.address(), hello.labels());
         }

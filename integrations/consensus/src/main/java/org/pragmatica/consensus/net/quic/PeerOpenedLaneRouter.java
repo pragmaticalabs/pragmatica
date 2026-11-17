@@ -116,10 +116,7 @@ record PeerOpenedLaneRouter(Deserializer deserializer,
                           QuicPeerConnection peerConnection) {
         var _ = peerConnection.registerStream(lane, (QuicStreamChannel) ctx.channel());
 
-        ctx.pipeline()
-           .replace(preambleHandler,
-                    "data-handler",
-                    dataHandler(peerConnection.peerId(), lane));
+        ctx.pipeline().replace(preambleHandler, "data-handler", dataHandler(peerConnection.peerId(), lane));
         log.debug("Attached peer-opened {} lane stream from peer {}", lane, peerConnection.peerId());
 
         return unit();

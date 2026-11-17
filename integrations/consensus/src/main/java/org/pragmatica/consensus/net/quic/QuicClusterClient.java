@@ -972,10 +972,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             // the live channel instead of failing "No stream available" (symmetry with the acceptor).
             peerConnection.laneOpener((lane, onResult) -> openLaneStream(peerConnection, peerId, lane, onResult));
             // Swap the CONTROL stream's Hello handler for the shared data handler (CONTROL lane).
-            ctx.pipeline()
-               .replace(this,
-                        "data-handler",
-                        laneRouter.dataHandler(peerId, StreamType.CONTROL));
+            ctx.pipeline().replace(this, "data-handler", laneRouter.dataHandler(peerId, StreamType.CONTROL));
             log.info("QUIC Hello handshake complete with peer {} — opening data lanes", peerId);
             openDataLanes(peerConnection, peerId);
         }
