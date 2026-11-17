@@ -3,6 +3,7 @@ package org.pragmatica.jbct.lint.cst.rules;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.pragmatica.jbct.config.JbctMode;
@@ -19,7 +20,10 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// JBCT-NAM-06: a type name carries a technology or pattern word.
 ///
 /// A name says what the code does for the business, never which technology or pattern implements it: a step is
-/// `LoadSeat`, and the technology shows only in parameter types. The word list is [org.pragmatica.jbct.lint.TechnicalWords]
+/// `LoadSeat`, and the technology shows only in parameter types.
+///
+/// Matching: a word matches when it equals one whole camel-case token of the type name, ignoring case; the diagnostic
+/// names each matched token and the word it equals. The word list is [org.pragmatica.jbct.lint.TechnicalWords]
 /// (`LintConfig#technicalWords()`, adjusted by `[lint.naming] add / remove`); a type name is split at its camel-case
 /// boundaries and flagged when any part is a word, so `JooqSeatRepository` is flagged for `Jooq` and `Repository`
 /// while `Restaurant` is not flagged for `Rest`. Every class, interface, record and enum declaration is judged,
@@ -72,15 +76,22 @@ public class CstTechnicalTypeNameRule implements CstLintRule {
                              .toList();
     }
 
+    private String matches(List<String> flagged) {
+        return flagged.stream()
+                      .map(token -> "token '" + token + "' matches word '" + token.toLowerCase(Locale.ROOT) + "'")
+                      .collect(Collectors.joining(", "));
+    }
+
     private Diagnostic createDiagnostic(Cursor decl, String name, List<String> flagged, LintContext ctx) {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
                                      startLine(decl),
                                      startColumn(decl),
-                                     "Type '" + name + "' names a technology or pattern: " + String.join(", ", flagged),
+                                     "Type '" + name + "' names a technology or pattern: " + matches(flagged),
                                      "A name says what the code does for the business, not which technology or pattern "
-                                    + "implements it. Rename the type after its business operation or noun; the "
+                                    + "implements it. A word matches one whole camel-case token of the name, ignoring "
+                                    + "case. Rename the type after its business operation or noun; the "
                                     + "technology shows in parameter types. Configure the list with "
                                     + "[lint.naming] add / remove.");
     }

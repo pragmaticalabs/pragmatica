@@ -65,7 +65,9 @@ class TechnicalNameRuleTest {
         assertEquals(1, diagnostics.size());
         assertEquals(3, diagnostics.getFirst().line());
         assertEquals(DiagnosticSeverity.INFO, diagnostics.getFirst().severity());
-        assertTrue(diagnostics.getFirst().message().contains("Jooq, Repository"), diagnostics.getFirst().message());
+        assertTrue(diagnostics.getFirst().message().contains("token 'Jooq' matches word 'jooq', token 'Repository' matches word 'repository'"),
+                   diagnostics.getFirst().message());
+        assertTrue(diagnostics.getFirst().details().contains("whole camel-case token"), diagnostics.getFirst().details());
     }
 
     @Test
@@ -150,7 +152,9 @@ class TechnicalNameRuleTest {
         assertEquals(1, diagnostics.size());
         assertEquals(2, diagnostics.getFirst().line());
         assertEquals(DiagnosticSeverity.INFO, diagnostics.getFirst().severity());
-        assertTrue(diagnostics.getFirst().message().contains("usecase, adapter"), diagnostics.getFirst().message());
+        assertTrue(diagnostics.getFirst().message().contains("segment 'usecase' matches word 'usecase', segment 'adapter' matches word 'adapter'"),
+                   diagnostics.getFirst().message());
+        assertTrue(diagnostics.getFirst().details().contains("whole segment"), diagnostics.getFirst().details());
     }
 
     @Test
