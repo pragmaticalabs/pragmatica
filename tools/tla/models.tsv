@@ -60,6 +60,8 @@ RabiaEpoch	integrations/consensus/src/main/java	noretainmaj	fail	Progress	-	D6 t
 RabiaEpoch	integrations/consensus/src/main/java	noprefix	fail	GovernedVote	-	in-order commit assumption removed: a ballot carries an epoch that does not govern its slot
 RabiaEpoch	integrations/consensus/src/main/java	codesync_gov	fail	GovernedVote	-	the code without prefix, LIVE and COLD responses: a COLD answer carries the phase without the roster, so a lagging replica casts a ballot at an epoch that does not govern its slot (acceptsBallot does not count it)
 RabiaEpoch	integrations/consensus/src/main/java	codesync_agree	fail	Agreement	-	#3213: a configuration-less (COLD) sync installs a later phase at epoch 0, and two lagging replicas re-decide a slot at epoch 0 that the new roster decided at epoch 1
+RabiaEpoch	integrations/consensus/src/main/java	codesync_gov_nocoldconfig	fail	GovernedVote	-	#3213 mutant ("coldconfig" dropped, the pre-#3216 COLD answer): the phase arrives without the roster (unrun)
+RabiaEpoch	integrations/consensus/src/main/java	codesync_agree_nocoldconfig	fail	Agreement	-	#3213 mutant ("coldconfig" dropped): two lagging replicas re-decide at epoch 0 a slot the new roster decided at epoch 1 (unrun)
 RabiaEpoch	integrations/consensus/src/main/java	nocrashstop	fail	Agreement	-	crash-stop assumption removed (relay without vote evidence): two values committed
 RabiaEpoch	integrations/consensus/src/main/java	noexactepoch_noprefix	fail	Agreement	-	D6 exact-epoch counting dropped under sync adoption: two values committed
 RabiaEpoch	integrations/consensus/src/main/java	paper_d6_np	fail	Agreement	-	D6 paper rule under sync adoption: two values committed (the paper rule is unsafe against sync adoption)
@@ -89,6 +91,8 @@ RabiaAdopt	integrations/consensus/src/main/java	rjT_allfixes_savefail	fail	Agree
 RabiaAdopt	integrations/consensus/src/main/java	rjT_noselfvouch_savefail	fail	Agreement	-	#3211 with a failing save on pause, D4 self-vouch dropped
 RabiaAdopt	integrations/consensus/src/main/java	rjT_paperD4	pass	-	-	token-memory rejoin, D4 paper rule (vacuous for rejoin)
 RabiaAdopt	integrations/consensus/src/main/java	rjT_paperD5	pass	-	-	token-memory rejoin, D5 paper rule (vacuous for rejoin)
+RabiaAdopt	integrations/consensus/src/main/java	rjT_nosyncresume	fail	Agreement	-	#3211 mutant ("syncresume" dropped, the pre-#3217 code): a voter paused from Syncing resumes straight to active and decides a slot again (unrun)
+RabiaAdopt	integrations/consensus/src/main/java	rjT_nosyncresume_savefail	fail	Agreement	-	#3211 mutant with a failing save on pause (unrun)
 RabiaAdopt	integrations/consensus/src/main/java	ctl_rjTAmnesiac	pass	-	-	control: under token memory a rejoined amnesiac never adopts
 RabiaAdopt	integrations/consensus/src/main/java	ctl_rjTAmnesiac1	pass	-	-	control: as ctl_rjTAmnesiac, 1 responder
 RabiaAdopt	integrations/consensus/src/main/java	ctl_rjTAmnesiac1_selfvouch	pass	-	-	control: as ctl_rjTAmnesiac1 with self-vouch

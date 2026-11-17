@@ -1620,11 +1620,16 @@ public class RabiaEngine<C extends Command> {
     /// \* From Active, Observing or Syncing (the guard above; the model's "syncing" also stands for Observing, since
     /// \* Install leaves a node outside the adopted roster in "syncing"). saveState may fail (ok = FALSE): onFailure
     /// \* only logs, the pause stands and the durable state stays as it was.
+    /// \* act is Paused.activated. With "syncresume" (#3211) a pause from Syncing is Paused(false) ("pausedsync") and
+    /// \* persists nothing. A "syncing" voter of its own roster is Syncing; one outside it may be Syncing or Observing
+    /// \* (activated), so both arms. Without "syncresume" (the pre-#3217 mutant) every pause is Paused() and saves.
     /// Pause(n, ok) ==
     ///   /\ st[n] \in {"active", "syncing"} /\ pauses < MaxPause
     ///   /\ ok \in IF SaveFails THEN BOOLEAN ELSE {TRUE}
-    ///   /\ st' = [st EXCEPT ![n] = "paused"]
-    ///   /\ saved' = IF ok THEN [saved EXCEPT ![n] = log[n]] ELSE saved
+    ///   /\ \E act \in IF st[n] = "active" \/ "syncresume" \notin Fixed THEN {TRUE}
+    ///                  ELSE IF n \in Roster(log[n]) THEN {FALSE} ELSE BOOLEAN :
+    ///        /\ st' = [st EXCEPT ![n] = IF act THEN "paused" ELSE "pausedsync"]
+    ///        /\ saved' = IF act /\ ok THEN [saved EXCEPT ![n] = log[n]] ELSE saved
     ///   /\ voted' = IF KeepBallots THEN voted ELSE [voted EXCEPT ![n] = Empty]
     ///   /\ pauses' = pauses + 1
     ///   /\ UNCHANGED <<log, marker, admit, known, reinc, ballots, chosen, crashes, restarts>>
@@ -1681,11 +1686,12 @@ public class RabiaEngine<C extends Command> {
     /// participation record (#3211, #2287).
     ///
     /// ```tla RabiaAdopt:Resume
-    /// \* enterServing: straight to Idle (a voter of its own roster) or Observing (the model's "syncing"), with no
-    /// \* sync round (direct). A gap left after drainBufferedDecisions starts synchronization (~direct).
+    /// \* Paused(true): enterServing, straight to Idle (a voter of its own roster) or Observing (the model's "syncing"),
+    /// \* with no sync round (direct). A gap left after drainBufferedDecisions starts synchronization (~direct).
+    /// \* Paused(false) ("pausedsync", #3211): doClusterConnected, a fresh sync round whatever direct is.
     /// Resume(n, direct) ==
-    ///   /\ st[n] = "paused"
-    ///   /\ st' = [st EXCEPT ![n] = IF direct /\ n \in Roster(log[n]) THEN "active" ELSE "syncing"]
+    ///   /\ st[n] \in {"paused", "pausedsync"}
+    ///   /\ st' = [st EXCEPT ![n] = IF st[n] = "paused" /\ direct /\ n \in Roster(log[n]) THEN "active" ELSE "syncing"]
     ///   /\ UNCHANGED <<log, saved, marker, admit, known, reinc, voted, ballots, chosen, crashes, restarts, pauses>>
     /// ```
     private void resumeFromPause() {
@@ -3492,8 +3498,11 @@ public class RabiaEngine<C extends Command> {
     /// \*   LIVE (handleSyncRequest: an active, observing or paused responder): currentPhase and voters are read in
     /// \*        one handler, so slot and roster are coupled; eligible when the claimed roster contains the sender and
     /// \*        is newer or equal (eligibleSyncResponse, comparableConfiguration).
-    /// \*   COLD (a Stopped or Syncing responder): its persisted state withoutConfiguration, so the phase arrives
-    /// \*        with no roster; eligible only when voterEpoch() == 0 and the sender is a voter here.
+    /// \*   COLD (a Stopped or Syncing responder): with "coldconfig" (#3213, coldAnswerState) its persisted state keeps the
+    /// \*        configuration it was saved under, so it is eligible as a LIVE one is, and a newer epoch is refused
+    /// \*        (newerEpochCandidates takes LIVE responses only): only the same epoch and roster adopt, and never learn.
+    /// \*        Without it (the pre-#3216 mutant) withoutConfiguration: the phase arrives with no roster, eligible only
+    /// \*        when voterEpoch() == 0 and the sender is a voter here.
     /// \* Over-approximations: one response stands for the response quorum; a COLD responder's persisted phase is
     /// \* taken as its current slot (persisted <= current), and the model does not stop it while it answers.
     /// \* JumpShape = "free" replaces this with the decoupled FreeJump and FreeLearn of the skeleton.
@@ -3504,7 +3513,8 @@ public class RabiaEngine<C extends Command> {
     ///     /\ \E p \in Nodes \ {n}, cold \in ColdShapes :
     ///         LET advance == slot[p] > slot[n]
     ///             learn   == ~cold /\ epoch[p] > epoch[n]
-    ///         IN /\ IF cold THEN epoch[n] = 0 /\ p \in roster[n]
+    ///         IN /\ IF cold THEN IF Fix("coldconfig") THEN p \in roster[p] /\ epoch[p] = epoch[n] /\ roster[p] = roster[n]
+    ///                                                ELSE epoch[n] = 0 /\ p \in roster[n]
     ///                       ELSE /\ p \in roster[p]
     ///                            /\ (epoch[p] > epoch[n] \/ (epoch[p] = epoch[n] /\ roster[p] = roster[n]))
     ///            /\ advance \/ learn
@@ -4320,14 +4330,14 @@ public class RabiaEngine<C extends Command> {
     /// authorized (A-04): a ballot must not start a sync round, and so a path to serving, on an engine that was never
     /// allowed to activate. A Paused engine still resyncs (ruling a20d1dbca5).
     /// ```tla RabiaAdopt:Resync
-    /// \* D10. triggerResync re-enters Syncing through doClusterConnected: from Active/Observing, or from Paused (ruling
+    /// \* D10. triggerResync re-enters Syncing through doClusterConnected: from Active/Observing, or from Paused of either kind (ruling
     /// \* a20d1dbca5); a Syncing engine is a no-op. Nothing is reset: phases, applied log and durable state stay (phases.clear()
     /// \* runs only in shutdownAndReset). Callers: a far-future Propose or Decision (timer = FALSE: any live peer ahead, from
     /// \* Active or Paused) and decisionGapExpired (timer = TRUE: not Paused, a Decision buffered past the missing slot, so the
     /// \* peer is two or more slots ahead). The distance bound MAX_PHASE_AHEAD and the delay are abstracted away.
     /// Resync(n, timer) ==
     ///   /\ ResyncOn
-    ///   /\ st[n] \in IF timer THEN {"active"} ELSE {"active", "paused"}
+    ///   /\ st[n] \in IF timer THEN {"active"} ELSE {"active", "paused", "pausedsync"}
     ///   /\ \E p \in Ids \ {n} : st[p] # "down" /\ Len(log[p]) >= Len(log[n]) + (IF timer THEN 2 ELSE 1)
     ///   /\ st' = [st EXCEPT ![n] = "syncing"]
     ///   /\ UNCHANGED <<log, saved, marker, admit, known, reinc, voted, ballots, chosen, crashes, restarts, pauses>>

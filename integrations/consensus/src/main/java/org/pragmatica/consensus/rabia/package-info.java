@@ -232,6 +232,8 @@
 /// \*   "exactepoch" acceptsBallot counts a ballot only at epoch == voterEpoch() (known-bad: epoch <= current)
 /// \*   "relayepoch" handleDecision refuses a current-slot Decision whose epoch != voterEpoch()
 /// \*   "retainmaj"  ReconfigurationCommand.retainsTargetMajority in admission and in appliesTo (liveness guard)
+/// \*   "coldconfig" (#3213) a COLD answer carries the configuration its responder persisted (coldAnswerState); dropped,
+/// \*                it carries none (withoutConfiguration, the pre-#3216 code)
 /// \* Assume (code-relied environment; every cfg assigns it):
 /// \*   "prefix"     a replica enters slot s+1 only by committing slot s (code comment at handleDecision: "the epoch
 /// \*                governing a slot is a function of the applied prefix"). Removed: Jump (JumpShape "code":
@@ -243,7 +245,7 @@
 ///
 /// CONSTANTS Fixed, Assume, Paper, Roster0, TargetSet, Batches, MaxSlot, MaxRequests, RequestEpochs, MaxJump, MaxForge, Slow, JumpShape, ColdShapes
 ///
-/// KnownFixes  == {"exactepoch", "relayepoch", "retainmaj"}
+/// KnownFixes  == {"exactepoch", "relayepoch", "retainmaj", "coldconfig"}
 /// KnownAssume == {"prefix", "crashstop"}
 /// KnownPaper  == {"norelay", "anyepoch", "nopreferred"}
 /// ASSUME Fixed \subseteq KnownFixes /\ Assume \subseteq KnownAssume /\ Paper \subseteq KnownPaper
@@ -445,6 +447,8 @@
 /// \*   "selfvouch"    (D4)  self counts toward n/2 only with durable history (floor > ZERO) or marker NEVER; else n/2+1
 /// \*   "oneconfig"    (D5)  newer-epoch adoption needs >= 1 LIVE responder and all live responders claim ONE configuration;
 /// \*                        a same-epoch response with a different roster is ineligible
+/// \*   "syncresume"  (#3211) a voter paused while Syncing ("pausedsync": not activated) saves nothing and resumes into a
+/// \*                        sync round; dropped, it saves on pause and resumes straight to active (the pre-#3217 code)
 /// \* Paper (paper-faithful / naive rule replacing ours, other fixes kept):
 /// \*   "D3"  crash-recovery with no fence: a restarted replica rejoins directly with its durable state
 /// \*   "D4"  adopt from ANY single response (no live/self/observer distinction)
@@ -463,7 +467,7 @@
 ///
 /// CONSTANTS Fixed, Paper, KeepBallots, FaultyResp, SameEpochAdopt, Probe, MaxCrash, MaxRestart, MaxPause, Rejoin, SaveFails, ResyncOn
 ///
-/// ASSUME Fixed \subseteq {"amnesiafence", "selfvouch", "oneconfig"}
+/// ASSUME Fixed \subseteq {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 /// ASSUME Paper \subseteq {"D3", "D4", "D5", "D5q"}
 /// ASSUME Rejoin \in {"none", "wiped", "any", "tokens"}
 ///
@@ -489,7 +493,7 @@
 /// vars == <<st, log, saved, marker, admit, known, reinc, voted, ballots, chosen, crashes, restarts, pauses, reached>>
 ///
 /// TypeOK ==
-///   /\ st \in [Ids -> {"down", "active", "paused", "syncing"}]
+///   /\ st \in [Ids -> {"down", "active", "paused", "pausedsync", "syncing"}]
 ///   /\ log \in [Ids -> AllLogs] /\ saved \in [Ids -> AllLogs]
 ///   /\ marker \in [Ids -> {"never", "participated", "unknown"}]
 ///   /\ admit \in [Ids -> SUBSET Ids] /\ known \in [Ids -> SUBSET Ids] /\ reinc \in [Ids -> BOOLEAN]
@@ -889,7 +893,7 @@
 /// \* RabiaEpoch config code: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop", "prefix"}
 ///     Paper = {}
 ///     Roster0 = {"A", "B", "C"}
@@ -915,7 +919,7 @@
 /// \* RabiaEpoch config live: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION LiveSpec
 /// CONSTANTS
-///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop", "prefix"}
 ///     Paper = {}
 ///     Roster0 = {"A", "B", "C"}
@@ -939,7 +943,7 @@
 /// \* RabiaEpoch config nocrashstop: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"prefix"}
 ///     Paper = {}
 ///     Roster0 = {"A", "B", "C"}
@@ -962,7 +966,7 @@
 /// \* RabiaEpoch config noexactepoch: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"relayepoch", "retainmaj"}
+///     Fixed = {"relayepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop", "prefix"}
 ///     Paper = {}
 ///     Roster0 = {"A", "B", "C"}
@@ -988,7 +992,7 @@
 /// \* RabiaEpoch config noexactepoch_noprefix: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"relayepoch", "retainmaj"}
+///     Fixed = {"relayepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop"}
 ///     Paper = {}
 ///     Roster0 = {"A", "B", "C"}
@@ -1012,7 +1016,7 @@
 /// \* RabiaEpoch config noprefix: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop"}
 ///     Paper = {}
 ///     Roster0 = {"A", "B", "C"}
@@ -1035,7 +1039,7 @@
 /// \* RabiaEpoch config noprefixsafe: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop"}
 ///     Paper = {}
 ///     Roster0 = {"A", "B", "C"}
@@ -1061,7 +1065,7 @@
 /// \* the code without prefix, LIVE responses only: applyRestoredState carries slot and roster together
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop"}
 ///     Paper = {}
 ///     Roster0 = {"A", "B", "C"}
@@ -1082,7 +1086,31 @@
 ///
 /// ```tlacfg RabiaEpoch:codesync_gov
 /// \* RabiaEpoch config codesync_gov: the expected verdict is its row in tools/tla/models.tsv
-/// \* the code without prefix, LIVE and COLD responses (a COLD response carries the phase without the roster)
+/// \* the code without prefix, LIVE and COLD responses (a COLD response carries its persisted configuration, #3216)
+/// SPECIFICATION Spec
+/// CONSTANTS
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj", "coldconfig"}
+///     Assume = {"crashstop"}
+///     Paper = {}
+///     Roster0 = {"A", "B", "C"}
+///     TargetSet = {{"A", "B", "D"}, {"A", "C", "D"}}
+///     Batches = {"b1", "b2"}
+///     MaxSlot = 2
+///     MaxRequests = 2
+///     RequestEpochs = {0, 1}
+///     MaxJump = 2
+///     MaxForge = 1
+///     Slow = {}
+///     JumpShape = "code"
+///     ColdShapes = {FALSE, TRUE}
+/// INVARIANTS
+///     TypeOK
+///     GovernedVote
+/// ```
+///
+/// ```tlacfg RabiaEpoch:codesync_gov_nocoldconfig
+/// \* RabiaEpoch config codesync_gov_nocoldconfig: the expected verdict is its row in tools/tla/models.tsv
+/// \* mutant: codesync_gov with "coldconfig" dropped (#3213, the pre-#3216 configuration-less COLD answer)
 /// SPECIFICATION Spec
 /// CONSTANTS
 ///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
@@ -1109,6 +1137,30 @@
 /// \* as codesync_gov, checking Agreement
 /// SPECIFICATION Spec
 /// CONSTANTS
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj", "coldconfig"}
+///     Assume = {"crashstop"}
+///     Paper = {}
+///     Roster0 = {"A", "B", "C"}
+///     TargetSet = {{"A", "B", "D"}, {"A", "C", "D"}}
+///     Batches = {"b1", "b2"}
+///     MaxSlot = 2
+///     MaxRequests = 2
+///     RequestEpochs = {0, 1}
+///     MaxJump = 2
+///     MaxForge = 1
+///     Slow = {}
+///     JumpShape = "code"
+///     ColdShapes = {FALSE, TRUE}
+/// INVARIANTS
+///     TypeOK
+///     Agreement
+/// ```
+///
+/// ```tlacfg RabiaEpoch:codesync_agree_nocoldconfig
+/// \* RabiaEpoch config codesync_agree_nocoldconfig: the expected verdict is its row in tools/tla/models.tsv
+/// \* mutant: codesync_agree with "coldconfig" dropped (#3213)
+/// SPECIFICATION Spec
+/// CONSTANTS
 ///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
 ///     Assume = {"crashstop"}
 ///     Paper = {}
@@ -1133,7 +1185,7 @@
 /// \* D2 relay epoch check AND D6 exact-epoch counting dropped under sync adoption
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"retainmaj"}
+///     Fixed = {"retainmaj", "coldconfig"}
 ///     Assume = {"crashstop"}
 ///     Paper = {}
 ///     Roster0 = {"A", "B", "C"}
@@ -1158,7 +1210,7 @@
 /// \* negative control for NoOldEpochTally: exact-epoch counting dropped under sync adoption
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"relayepoch", "retainmaj"}
+///     Fixed = {"relayepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop"}
 ///     Paper = {}
 ///     Roster0 = {"A", "B", "C"}
@@ -1182,7 +1234,7 @@
 /// \* negative control for OneRosterPerEpoch: exact-epoch counting dropped under sync adoption
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"relayepoch", "retainmaj"}
+///     Fixed = {"relayepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop"}
 ///     Paper = {}
 ///     Roster0 = {"A", "B", "C"}
@@ -1209,7 +1261,7 @@
 /// \* collects a majority of epoch-0 ballots in slot 2.
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop"}
 ///     Paper = {}
 ///     Roster0 = {"A", "B", "C"}
@@ -1233,7 +1285,7 @@
 /// \* negative control for OneRosterPerEpoch: crash-stop assumption removed
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"prefix"}
 ///     Paper = {}
 ///     Roster0 = {"A", "B", "C"}
@@ -1256,7 +1308,7 @@
 /// \* RabiaEpoch config norelayepoch: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"exactepoch", "retainmaj"}
+///     Fixed = {"exactepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop", "prefix"}
 ///     Paper = {}
 ///     Roster0 = {"A", "B", "C"}
@@ -1282,7 +1334,7 @@
 /// \* RabiaEpoch config norelayepoch_noprefix: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"exactepoch", "retainmaj"}
+///     Fixed = {"exactepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop"}
 ///     Paper = {}
 ///     Roster0 = {"A", "B", "C"}
@@ -1307,7 +1359,7 @@
 /// \* RabiaEpoch config noretainmaj: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION LiveSpec
 /// CONSTANTS
-///     Fixed = {"exactepoch", "relayepoch"}
+///     Fixed = {"exactepoch", "relayepoch", "coldconfig"}
 ///     Assume = {"crashstop", "prefix"}
 ///     Paper = {}
 ///     Roster0 = {"A", "B", "C"}
@@ -1331,7 +1383,7 @@
 /// \* RabiaEpoch config paper_d12: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop", "prefix"}
 ///     Paper = {"nopreferred"}
 ///     Roster0 = {"A", "B", "C"}
@@ -1355,7 +1407,7 @@
 /// \* RabiaEpoch config paper_d12_np: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop"}
 ///     Paper = {"nopreferred"}
 ///     Roster0 = {"A", "B", "C"}
@@ -1379,7 +1431,7 @@
 /// \* RabiaEpoch config paper_d2: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop", "prefix"}
 ///     Paper = {"norelay"}
 ///     Roster0 = {"A", "B", "C"}
@@ -1403,7 +1455,7 @@
 /// \* RabiaEpoch config paper_d2_np: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop"}
 ///     Paper = {"norelay"}
 ///     Roster0 = {"A", "B", "C"}
@@ -1427,7 +1479,7 @@
 /// \* RabiaEpoch config paper_d6: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop", "prefix"}
 ///     Paper = {"anyepoch"}
 ///     Roster0 = {"A", "B", "C"}
@@ -1451,7 +1503,7 @@
 /// \* RabiaEpoch config paper_d6_np: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///     Fixed = {"exactepoch", "relayepoch", "retainmaj"}
+///     Fixed = {"exactepoch", "relayepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop"}
 ///     Paper = {"anyepoch"}
 ///     Roster0 = {"A", "B", "C"}
@@ -1475,7 +1527,7 @@
 /// \* RabiaAdopt config allfixes: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1496,7 +1548,7 @@
 /// \* D10: allfixes with Resync enabled (far-future ballot or expired gap timer re-enters Syncing)
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1517,7 +1569,7 @@
 /// \* D10 with D4 self-vouch dropped: a resynced voter adopts on n/2 responders
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "oneconfig"}
+///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1538,7 +1590,7 @@
 /// \* D10 with ballot memory lost on adoption (KeepBallots FALSE): a resynced voter may vote a slot twice
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = FALSE
 ///   FaultyResp = FALSE
@@ -1559,7 +1611,7 @@
 /// \* instrument for Resync: no crash, restart or pause, so a founding node reaches Syncing only through Resync
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1579,7 +1631,7 @@
 /// \* positive control for ctl_resync: the same bounds with Resync disabled hold NoSyncingVoter
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1599,7 +1651,7 @@
 /// \* the code with a failing saveState on Pause (R3)
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1619,7 +1671,7 @@
 /// \* RabiaAdopt config allfixesD5: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1639,7 +1691,7 @@
 /// \* RabiaAdopt config allfixesD5q: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D5q"}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1659,7 +1711,7 @@
 /// \* RabiaAdopt config ballotloss: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = FALSE
 ///   FaultyResp = FALSE
@@ -1679,7 +1731,7 @@
 /// \* RabiaAdopt config ballotlossD5: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = FALSE
 ///   FaultyResp = FALSE
@@ -1700,7 +1752,7 @@
 /// \* D5 one-configuration check dropped, ballots lost on pause, newer-epoch path only (ballotlossD5 is the green base)
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch"}
+///   Fixed = {"amnesiafence", "selfvouch", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = FALSE
 ///   FaultyResp = FALSE
@@ -1721,7 +1773,7 @@
 /// \* D4 self-vouch dropped, ballots lost on pause, newer-epoch path only (ballotlossD5 is the green base)
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "oneconfig"}
+///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = FALSE
 ///   FaultyResp = FALSE
@@ -1741,7 +1793,7 @@
 /// \* RabiaAdopt config ctl_reachClaimed2: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch"}
+///   Fixed = {"amnesiafence", "selfvouch", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1760,7 +1812,7 @@
 /// \* RabiaAdopt config ctl_reachClaimed2_nofence: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"selfvouch"}
+///   Fixed = {"selfvouch", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1779,7 +1831,7 @@
 /// \* RabiaAdopt config ctl_reachLive1NoVouch: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "oneconfig"}
+///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1798,7 +1850,7 @@
 /// \* RabiaAdopt config ctl_reachLive2NoVouch: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1817,7 +1869,7 @@
 /// \* RabiaAdopt config ctl_reachNewerLag: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1836,7 +1888,7 @@
 /// \* RabiaAdopt config ctl_reachNewerNonLive: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D5"}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1855,7 +1907,7 @@
 /// \* RabiaAdopt config ctl_reachX2: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1874,7 +1926,7 @@
 /// \* RabiaAdopt config ctl_rjAmnesiac: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1893,7 +1945,7 @@
 /// \* RabiaAdopt config ctl_rjAmnesiac1: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "oneconfig"}
+///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1912,7 +1964,7 @@
 /// \* RabiaAdopt config ctl_rjStale: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1931,7 +1983,7 @@
 /// \* RabiaAdopt config ctl_rjStale1: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1950,7 +2002,7 @@
 /// \* RabiaAdopt config ctl_rjTAmnesiac: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1969,7 +2021,7 @@
 /// \* RabiaAdopt config ctl_rjTAmnesiac1: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "oneconfig"}
+///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -1988,7 +2040,7 @@
 /// \* RabiaAdopt config ctl_rjTAmnesiac1_selfvouch: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2007,7 +2059,7 @@
 /// \* RabiaAdopt config ctl_rjTAny: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2026,7 +2078,7 @@
 /// \* RabiaAdopt config ctl_rjTClaimed2: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2045,7 +2097,7 @@
 /// \* RabiaAdopt config ctl_rjTWiped: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2064,7 +2116,7 @@
 /// \* RabiaAdopt config faultyresp: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = TRUE
@@ -2085,7 +2137,7 @@
 /// \* negative control for Held: a responder answering with an arbitrary log hands over a value nobody chose
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = TRUE
@@ -2104,7 +2156,7 @@
 /// \* RabiaAdopt config faultyrespD5: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = TRUE
@@ -2124,7 +2176,7 @@
 /// \* RabiaAdopt config faultyrespD5q: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D5q"}
 ///   KeepBallots = TRUE
 ///   FaultyResp = TRUE
@@ -2144,7 +2196,7 @@
 /// \* RabiaAdopt config noamnesiafence: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"selfvouch", "oneconfig"}
+///   Fixed = {"selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2164,7 +2216,7 @@
 /// \* RabiaAdopt config noamnesiafenceD5: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"selfvouch", "oneconfig"}
+///   Fixed = {"selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2184,7 +2236,7 @@
 /// \* RabiaAdopt config nooneconfig: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch"}
+///   Fixed = {"amnesiafence", "selfvouch", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2204,7 +2256,7 @@
 /// \* RabiaAdopt config nooneconfigD5: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch"}
+///   Fixed = {"amnesiafence", "selfvouch", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2224,7 +2276,7 @@
 /// \* RabiaAdopt config noselfvouch: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "oneconfig"}
+///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2245,7 +2297,7 @@
 /// \* D4 self-vouch dropped, with a failing saveState on Pause
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "oneconfig"}
+///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2265,7 +2317,7 @@
 /// \* RabiaAdopt config paperD3: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"selfvouch", "oneconfig"}
+///   Fixed = {"selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D3"}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2285,7 +2337,7 @@
 /// \* RabiaAdopt config paperD4: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D4"}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2305,7 +2357,7 @@
 /// \* RabiaAdopt config paperD5: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D5"}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2325,7 +2377,7 @@
 /// \* RabiaAdopt config paperD5iso: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D5"}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2345,7 +2397,7 @@
 /// \* RabiaAdopt config rjA_allfixes: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2365,7 +2417,7 @@
 /// \* RabiaAdopt config rjA_noamnesiafence: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"selfvouch", "oneconfig"}
+///   Fixed = {"selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2385,7 +2437,7 @@
 /// \* RabiaAdopt config rjA_nooneconfig: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch"}
+///   Fixed = {"amnesiafence", "selfvouch", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2405,7 +2457,7 @@
 /// \* RabiaAdopt config rjA_noselfvouch: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "oneconfig"}
+///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2425,7 +2477,7 @@
 /// \* RabiaAdopt config rjA_paperD4: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D4"}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2445,7 +2497,7 @@
 /// \* RabiaAdopt config rjA_paperD5: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D5"}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2463,6 +2515,27 @@
 ///
 /// ```tlacfg RabiaAdopt:rjT_allfixes
 /// \* RabiaAdopt config rjT_allfixes: the expected verdict is its row in tools/tla/models.tsv
+/// SPECIFICATION Spec
+/// CONSTANTS
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
+///   Paper = {}
+///   KeepBallots = TRUE
+///   FaultyResp = FALSE
+///   SameEpochAdopt = TRUE
+///   Probe = "none"
+///   MaxCrash = 2
+///   MaxRestart = 2
+///   MaxPause = 1
+///   Rejoin = "tokens"
+///   SaveFails = FALSE
+///   ResyncOn = FALSE
+/// INVARIANTS TypeOK Agreement Held
+/// PROPERTIES DurableDecision
+/// ```
+///
+/// ```tlacfg RabiaAdopt:rjT_nosyncresume
+/// \* RabiaAdopt config rjT_nosyncresume: the expected verdict is its row in tools/tla/models.tsv
+/// \* mutant: rjT_allfixes with "syncresume" dropped (#3211, the pre-#3217 pause and resume)
 /// SPECIFICATION Spec
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
@@ -2486,6 +2559,27 @@
 /// \* token-memory rejoin, all fixes, failing saveState on Pause
 /// SPECIFICATION Spec
 /// CONSTANTS
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
+///   Paper = {}
+///   KeepBallots = TRUE
+///   FaultyResp = FALSE
+///   SameEpochAdopt = TRUE
+///   Probe = "none"
+///   MaxCrash = 2
+///   MaxRestart = 2
+///   MaxPause = 1
+///   Rejoin = "tokens"
+///   SaveFails = TRUE
+///   ResyncOn = FALSE
+/// INVARIANTS TypeOK Agreement Held
+/// PROPERTIES DurableDecision
+/// ```
+///
+/// ```tlacfg RabiaAdopt:rjT_nosyncresume_savefail
+/// \* RabiaAdopt config rjT_nosyncresume_savefail: the expected verdict is its row in tools/tla/models.tsv
+/// \* mutant: rjT_allfixes_savefail with "syncresume" dropped (#3211)
+/// SPECIFICATION Spec
+/// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
@@ -2506,7 +2600,7 @@
 /// \* RabiaAdopt config rjT_noamnesiafence: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"selfvouch", "oneconfig"}
+///   Fixed = {"selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2526,7 +2620,7 @@
 /// \* RabiaAdopt config rjT_nooneconfig: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch"}
+///   Fixed = {"amnesiafence", "selfvouch", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2546,7 +2640,7 @@
 /// \* RabiaAdopt config rjT_noselfvouch: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "oneconfig"}
+///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2567,7 +2661,7 @@
 /// \* token-memory rejoin, D4 self-vouch dropped, failing saveState on Pause
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "oneconfig"}
+///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2587,7 +2681,7 @@
 /// \* RabiaAdopt config rjT_paperD4: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D4"}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2607,7 +2701,7 @@
 /// \* RabiaAdopt config rjT_paperD5: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D5"}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2627,7 +2721,7 @@
 /// \* RabiaAdopt config rjW_allfixes: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2647,7 +2741,7 @@
 /// \* RabiaAdopt config rjW_noamnesiafence: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"selfvouch", "oneconfig"}
+///   Fixed = {"selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2667,7 +2761,7 @@
 /// \* RabiaAdopt config rjW_nooneconfig: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch"}
+///   Fixed = {"amnesiafence", "selfvouch", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2687,7 +2781,7 @@
 /// \* RabiaAdopt config rjW_noselfvouch: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "oneconfig"}
+///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2707,7 +2801,7 @@
 /// \* RabiaAdopt config rjW_paperD4: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D4"}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
@@ -2727,7 +2821,7 @@
 /// \* RabiaAdopt config rjW_paperD5: the expected verdict is its row in tools/tla/models.tsv
 /// SPECIFICATION Spec
 /// CONSTANTS
-///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D5"}
 ///   KeepBallots = TRUE
 ///   FaultyResp = FALSE
