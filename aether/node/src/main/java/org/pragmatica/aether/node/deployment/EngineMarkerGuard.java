@@ -446,7 +446,7 @@ public final class EngineMarkerGuard {
         return "Deployment engine mismatch: this node is configured for " + configured
              + "; the cluster's committed state says " + committed()
              + ". Recovery: a node's engine is not an operator setting, so restarting it changes nothing. A cluster formed by an earlier build (marker absent,"
-             + " incarnation present) cannot be upgraded in place: form a new cluster on this build and start it with `restore = \"fresh\"`; a backup written by an earlier build does not restore into this one (#3310). If the committed"
+             + " incarnation present) cannot be upgraded in place: form a new cluster on this build and start it with `restore = \"fresh\"`; backups taken from that cluster do not restore into this build (#3310). If the committed"
              + " marker is the wrong one for this cluster (a misconfigured genesis), the cluster needs re-genesis (wipe and re-form).";
     }
 
