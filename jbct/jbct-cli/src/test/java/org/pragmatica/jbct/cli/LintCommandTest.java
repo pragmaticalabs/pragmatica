@@ -123,8 +123,9 @@ class LintCommandTest {
         // The forbidden values: the inflated denominator, and any claim of a pass.
         assertThat(stdout()).doesNotContain("All 2 file(s)")
                             .doesNotContain("passed JBCT compliance check")
-                            .doesNotContain("Checked 2 file(s)");
-        assertThat(stdout()).contains("1 of 2 file(s), 1 UNPARSEABLE")
+                            .doesNotContain("2 file(s) linted");
+        assertThat(stdout()).contains("1 file(s) linted, 1 file(s) not parsed")
+                            .contains("Parse errors: 1")
                             .contains("COVERAGE GAP")
                             .contains("not evidence about those file(s)");
         assertThat(exitCode).isEqualTo(2);
@@ -138,7 +139,10 @@ class LintCommandTest {
 
         var exitCode = lint();
 
-        assertThat(stdout()).contains("✓ All 1 file(s) passed JBCT compliance check.")
+        assertThat(stdout()).contains("1 file(s) linted")
+                            .contains("0 error(s), 0 warning(s), 0 info(s)")
+                            .doesNotContain("passed JBCT compliance check")
+                            .doesNotContain("not parsed")
                             .doesNotContain("UNPARSEABLE")
                             .doesNotContain("COVERAGE GAP");
         assertThat(exitCode).isZero();
@@ -154,8 +158,8 @@ class LintCommandTest {
         var exitCode = lint();
 
         assertThat(stderr()).contains("Parse failed:");
-        assertThat(stdout()).doesNotContain("Checked 2 file(s)");
-        assertThat(stdout()).contains("Checked 1 of 2 file(s), 1 UNPARSEABLE:")
+        assertThat(stdout()).doesNotContain("2 file(s) linted");
+        assertThat(stdout()).contains("1 file(s) linted, 1 file(s) not parsed")
                             .contains("2 error(s)");
         assertThat(exitCode).isEqualTo(2);
     }
@@ -172,7 +176,9 @@ class LintCommandTest {
         assertThat(stderr()).contains("Parse failed:");
         assertThat(stdout()).doesNotContain("All 1 file(s)")
                             .doesNotContain("passed JBCT compliance check");
-        assertThat(stdout()).contains("0 of 1 file(s), 1 UNPARSEABLE");
+        assertThat(stdout()).contains("Nothing was linted:")
+                            .contains("1 file(s) not parsed")
+                            .contains("Parse errors: 1");
         assertThat(exitCode).isEqualTo(2);
     }
 
@@ -185,7 +191,8 @@ class LintCommandTest {
 
         var exitCode = lint();
 
-        assertThat(stdout()).contains("Checked 1 file(s): 2 error(s)")
+        assertThat(stdout()).contains("1 file(s) linted")
+                            .contains("2 error(s)")
                             .doesNotContain("UNPARSEABLE");
         assertThat(exitCode).isOne();
     }
@@ -200,7 +207,8 @@ class LintCommandTest {
 
         var exitCode = lint();
 
-        assertThat(stdout()).contains("Checked 2 file(s): 2 error(s), 0 warning(s), 0 info(s)");
+        assertThat(stdout()).contains("2 file(s) linted")
+                            .contains("2 error(s), 0 warning(s), 0 info(s)");
         assertThat(exitCode).isOne();
     }
 }

@@ -154,8 +154,8 @@ class CoverageGapCliTest {
 
             var exitCode = formatCheck();
 
-            assertThat(stdout()).doesNotContain("All files are properly formatted.");
-            assertThat(stdout()).contains("1 of 2 file(s), 1 UNPARSEABLE")
+            assertThat(stdout()).doesNotContain("properly formatted");
+            assertThat(stdout()).contains("Parse errors: 1")
                                 .contains("COVERAGE GAP");
             assertThat(exitCode).isEqualTo(2);
         }
@@ -168,8 +168,9 @@ class CoverageGapCliTest {
 
             var exitCode = formatCheck();
 
-            assertThat(stdout()).contains("All files are properly formatted.")
-                                .doesNotContain("UNPARSEABLE");
+            assertThat(stdout()).contains("1 file(s) format-checked")
+                                .doesNotContain("properly formatted")
+                                .doesNotContain("COVERAGE GAP");
             assertThat(exitCode).isZero();
         }
     }

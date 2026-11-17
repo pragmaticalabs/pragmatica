@@ -77,6 +77,13 @@
 
         <!-- Testing -->
         <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-lint</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
         </dependency>

@@ -8,6 +8,7 @@ import java.util.concurrent.Callable;
 import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.shared.AnalysisCoverage;
 import org.pragmatica.jbct.lint.cst.LintRun;
+import org.pragmatica.jbct.lint.cst.LintRun.RunReport;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
 
@@ -53,7 +54,6 @@ public class FormatCommand implements Callable<Integer> {
             return 0;
         }
 
-        CliRoots.announceDisabled(plan, System.err);
         var run = LintRun.lintRun(plan);
 
         if (verbose) {
@@ -77,7 +77,7 @@ public class FormatCommand implements Callable<Integer> {
         var report = finished.unwrap();
         // Print summary
         report.summary().forEach(System.out::println);
-        printSummary(counters[0], counters[1], counters[2], needsFormatting, CliRoots.checked(report));
+        printSummary(counters[0], counters[1], counters[2], needsFormatting, report);
         // Return appropriate exit code
         if (counters[2]> 0) {
             return 2;
@@ -183,45 +183,32 @@ public class FormatCommand implements Callable<Integer> {
                                          });
     }
 
-    /// The run's summary, which may never claim a clean sweep over files it could not read.
+    /// The run's outcome, which may never claim a clean sweep over files it could not read.
     ///
-    /// `--check` printed `All files are properly formatted.` whenever nothing NEEDED formatting —
-    /// evaluated before the exit-code logic and blind to the unreadable tally, so a file the
-    /// formatter could not parse produced that sentence beside a non-zero exit (#977). The exit code
-    /// was honest and the line was not, and this workspace's standing rule is to quote the summary
-    /// line as evidence rather than the exit status, which is exactly the consumption path the line
-    /// misled.
-    private void printSummary(int formatted, int unchanged, int errors, List<Path> needsFormatting, int collected) {
-        var coverage = AnalysisCoverage.analysisCoverage(collected, errors);
+    /// `--check` printed `All files are properly formatted.` whenever nothing NEEDED formatting, blind to the unreadable
+    /// tally and to the number of files the run formatted at all (#977). No sentence of that kind is worded here: the
+    /// run's own lines say how many files were format-checked or formatted, and a run that did nothing says why.
+    private void printSummary(int formatted, int unchanged, int errors, List<Path> needsFormatting, RunReport report) {
+        var coverage = AnalysisCoverage.analysisCoverage(CliRoots.formatted(report), errors);
 
         System.out.println();
         coverage.gapReport("format").onPresent(System.out::println);
         if (checkOnly) {
-            printCheckSummary(needsFormatting, coverage);
+            printCheckSummary(needsFormatting, report);
         } else if (dryRun) {
             System.out.println("Dry run: " + needsFormatting.size() + " file(s) would be formatted.");
+            report.formatCheckLines().forEach(System.out::println);
         } else {
             System.out.println("Formatted: " + formatted + ", Unchanged: " + unchanged + ", Errors: " + errors);
+            report.formatLines().forEach(System.out::println);
         }
     }
 
-    /// The ✓ sentence is reachable only when every collected file was actually read; otherwise the
-    /// line states the coverage the verdict was reached over.
-    private void printCheckSummary(List<Path> needsFormatting, AnalysisCoverage coverage) {
-        if (coverage.isPartial()) {
-            System.out.println("✗ Checked " + coverage.render()
-                              + ": " + needsFormatting.size()
-                              + " file(s) need formatting");
-
-            return;
+    private void printCheckSummary(List<Path> needsFormatting, RunReport report) {
+        if (!needsFormatting.isEmpty()) {
+            System.out.println(needsFormatting.size() + " file(s) need formatting.");
         }
 
-        if (needsFormatting.isEmpty()) {
-            System.out.println("All files are properly formatted.");
-
-            return;
-        }
-
-        System.out.println(needsFormatting.size() + " file(s) need formatting.");
+        report.formatCheckLines().forEach(System.out::println);
     }
 }

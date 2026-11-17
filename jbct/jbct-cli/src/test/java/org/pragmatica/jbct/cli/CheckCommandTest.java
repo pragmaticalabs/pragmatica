@@ -84,9 +84,9 @@ class CheckCommandTest {
         var exitCode = check();
 
         assertThat(err.toString(UTF_8)).contains("Parse failed:");
-        assertThat(out.toString(UTF_8)).doesNotContain("Check results: ")
-                                       .doesNotContain("✓ All checks passed.");
-        assertThat(out.toString(UTF_8)).contains("Check results (checked 1 of 2 file(s), 1 UNPARSEABLE):")
+        assertThat(out.toString(UTF_8)).doesNotContain("passed")
+                                       .doesNotContain("2 file(s) linted");
+        assertThat(out.toString(UTF_8)).contains("1 file(s) linted, 1 file(s) not parsed")
                                        .contains("COVERAGE GAP");
         assertThat(exitCode).isEqualTo(2);
     }
@@ -100,8 +100,10 @@ class CheckCommandTest {
 
         var exitCode = check();
 
-        assertThat(out.toString(UTF_8)).contains("Check results (checked 1 file(s)): 0 format issue(s), 0 lint error(s), 0 warning(s)")
-                                       .contains("✓ All checks passed.")
+        assertThat(out.toString(UTF_8)).contains("0 format issue(s), 0 lint error(s), 0 warning(s)")
+                                       .contains("1 file(s) format-checked")
+                                       .contains("1 file(s) linted")
+                                       .doesNotContain("passed")
                                        .doesNotContain("UNPARSEABLE");
         assertThat(exitCode).isZero();
     }

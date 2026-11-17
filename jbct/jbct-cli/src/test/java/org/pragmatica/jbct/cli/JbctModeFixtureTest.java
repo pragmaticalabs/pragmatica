@@ -207,7 +207,7 @@ class JbctModeFixtureTest {
         var root = module("fmt", JbctMode.FORMAT_ONLY);
 
         assertThat(run(new ScoreCommand(), root.toString())).isZero();
-        assertThat(err.toString()).contains("Not scored: mode=format-only root=" + root(root));
+        assertThat(err.toString()).contains("Not scored: " + root(root) + " (mode format-only skips it)");
         assertThat(out.toString()).isBlank();
     }
 
@@ -222,7 +222,7 @@ class JbctModeFixtureTest {
         assertThat(run(new CheckCommand(), root.toString())).isZero();
         assertThat(text()).doesNotContain("JBCT-").doesNotContain(NEEDS_FORMAT)
                           .contains("mode=disabled (from ", ") root=" + root(root), "; test-root rule: ").contains("skipped, no format, no rule run")
-                          .contains("Not formatted: mode=disabled root=" + root(root));
+                          .contains("Nothing was format-checked: " + root(root) + " (mode disabled skips it)");
     }
 
     @Test
@@ -231,9 +231,9 @@ class JbctModeFixtureTest {
         var before = Files.readString(price(root, "off"));
 
         assertThat(run(new FormatCommand(), "--check", root.toString())).isZero();
-        assertThat(text()).doesNotContain(price(root, "off").toString()).contains("Not formatted: mode=disabled root=" + root(root));
+        assertThat(text()).doesNotContain(price(root, "off").toString()).contains("Nothing was format-checked: " + root(root) + " (mode disabled skips it)");
         assertThat(run(new FormatCommand(), root.toString())).isZero();
-        assertThat(text()).contains("Not formatted: mode=disabled root=" + root(root));
+        assertThat(text()).contains("Nothing was formatted: " + root(root) + " (mode disabled skips it)");
         assertThat(Files.readString(price(root, "off"))).isEqualTo(before);
     }
 
@@ -242,7 +242,7 @@ class JbctModeFixtureTest {
         var root = module("off", JbctMode.DISABLED);
 
         assertThat(run(new ScoreCommand(), root.toString())).isZero();
-        assertThat(err.toString()).contains("Not scored: mode=disabled root=" + root(root));
+        assertThat(err.toString()).contains("Not scored: " + root(root) + " (mode disabled skips it)");
         assertThat(out.toString()).isBlank();
     }
 
@@ -272,7 +272,7 @@ class JbctModeFixtureTest {
         var before = Files.readString(price(root, "biz"));
 
         assertThat(run(new CheckCommand(), "--mode", "disabled", root.toString())).isZero();
-        assertThat(text()).doesNotContain("JBCT-").doesNotContain(NEEDS_FORMAT).contains("mode=disabled root=" + root(root));
+        assertThat(text()).doesNotContain("JBCT-").doesNotContain(NEEDS_FORMAT).contains("mode=disabled (from --mode) root=" + root(root), "Nothing was linted: " + root(root) + " (mode disabled skips it)");
         assertThat(run(new FormatCommand(), "--mode", "disabled", root.toString())).isZero();
         assertThat(Files.readString(price(root, "biz"))).isEqualTo(before);
     }

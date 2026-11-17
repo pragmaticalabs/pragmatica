@@ -10,7 +10,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.cst.LintRun;
-import org.pragmatica.jbct.lint.cst.LintRun.RunReport;
 import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
 import org.pragmatica.jbct.shared.AnalysisCoverage;
 import org.pragmatica.jbct.shared.SourceFile;
@@ -63,14 +62,12 @@ public class CheckCommand implements Callable<Integer> {
             System.out.println("Checking " + jobs.size() + " Java file(s)...");
         }
 
-        CliRoots.announceDisabled(plan, System.err);
         var needsFormatting = new ArrayList<Path>();
         var formatErrors = new AtomicInteger(0);
         var allDiagnostics = new ArrayList<Diagnostic>();
-        var parseErrors = new AtomicInteger(0);
 
         for (var job : jobs) {
-            checkFile(job, run, needsFormatting, formatErrors, allDiagnostics, parseErrors);
+            checkFile(job, run, needsFormatting, formatErrors, allDiagnostics);
         }
 
         var finished = run.finish().onFailure(cause -> System.err.println("Error: " + cause.message())).option();
@@ -82,8 +79,9 @@ public class CheckCommand implements Callable<Integer> {
         var report = finished.unwrap();
 
         allDiagnostics.addAll(report.diagnostics());
-        CliRoots.layerCoverage(plan, System.err);
-        var coverage = AnalysisCoverage.analysisCoverage(CliRoots.checked(report), parseErrors.get());
+        CliRoots.layerCoverage(plan, report, System.err);
+        var notParsed = CliRoots.notParsed(report);
+        var coverage = AnalysisCoverage.analysisCoverage(CliRoots.examined(report) + notParsed, notParsed);
 
         if (!needsFormatting.isEmpty()) {
             System.out.println();
@@ -101,13 +99,13 @@ public class CheckCommand implements Callable<Integer> {
         }
 
         report.summary().forEach(System.out::println);
-        // Summary. The counts are meaningless without the denominator they were taken over: a file
-        // that could not be read or parsed contributes zero of everything, so an unqualified
-        // `0 lint error(s)` reads as clean when it means unexamined (#977).
+        // The counts are meaningless without what the run did to the files: the run's own outcome lines say how many
+        // files were format-checked and linted, and which were not parsed or skipped by mode (#977).
         System.out.println();
         coverage.gapReport("check").onPresent(System.out::println);
-        System.out.println("Check results (checked " + coverage.render()
-                          + "): " + needsFormatting.size()
+        report.formatCheckLines().forEach(System.out::println);
+        report.lintLines().forEach(System.out::println);
+        System.out.println("Findings: " + needsFormatting.size()
                           + " format issue(s), " + CliRoots.errors(report)
                           + " lint error(s), " + CliRoots.warnings(report)
                           + " warning(s)");
@@ -116,32 +114,16 @@ public class CheckCommand implements Callable<Integer> {
             return 2;
         }
 
-        if (!needsFormatting.isEmpty() || report.fails()) {
-            return 1;
-        }
-
-        System.out.println(verdict(report, coverage));
-
-        return 0;
-    }
-
-    /// The pass line, worded by what ran: a run in which no root ran a rule never claims a lint pass.
-    private static String verdict(RunReport report, AnalysisCoverage coverage) {
-        if (coverage.collected() == 0) {
-            return "Nothing was checked: every source root is skipped by its mode. This is not a pass.";
-        }
-
-        return report.ranNoRule()
-               ? "✓ Format checks passed; no JBCT rule ran in any source root, so nothing was linted."
-               : "✓ All checks passed.";
+        return !needsFormatting.isEmpty() || report.fails()
+               ? 1
+               : 0;
     }
 
     private void checkFile(CliRoots.FileJob job,
                            LintRun run,
                            List<Path> needsFormatting,
                            AtomicInteger formatErrors,
-                           List<Diagnostic> allDiagnostics,
-                           AtomicInteger parseErrors) {
+                           List<Diagnostic> allDiagnostics) {
         run.claimFormat(job.file())
            .onSuccess(claimed -> {
                           if (claimed) {
@@ -155,7 +137,7 @@ public class CheckCommand implements Callable<Integer> {
                           formatErrors.incrementAndGet();
                           System.err.println("  ✗ format error: " + job.file() + ": " + cause.message());
                       });
-        checkLint(job.file(), run, allDiagnostics, parseErrors);
+        checkLint(job.file(), run, allDiagnostics);
     }
 
     private void checkFormat(Path file, JbctFormatter formatter, List<Path> needsFormatting, AtomicInteger errors) {
@@ -174,7 +156,7 @@ public class CheckCommand implements Callable<Integer> {
                              });
     }
 
-    private void checkLint(Path file, LintRun run, List<Diagnostic> allDiagnostics, AtomicInteger parseErrors) {
+    private void checkLint(Path file, LintRun run, List<Diagnostic> allDiagnostics) {
         run.lintFile(file)
            .onSuccess(diagnostics -> {
                           allDiagnostics.addAll(diagnostics);
@@ -183,7 +165,6 @@ public class CheckCommand implements Callable<Integer> {
                           }
                       })
            .onFailure(cause -> {
-                          parseErrors.incrementAndGet();
                           System.err.println("  ✗ parse error: " + file + ": " + cause.message());
                       });
     }

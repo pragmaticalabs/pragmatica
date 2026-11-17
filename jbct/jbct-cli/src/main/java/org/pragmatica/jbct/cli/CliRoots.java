@@ -3,10 +3,11 @@ package org.pragmatica.jbct.cli;
 import java.io.PrintStream;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.format.JbctFormatter;
+import org.pragmatica.jbct.lint.cst.LintRun.RootCounts;
 import org.pragmatica.jbct.lint.cst.LintRun.RunReport;
 import org.pragmatica.jbct.lint.cst.RootResolver;
 import org.pragmatica.jbct.lint.cst.RootResolver.ModeOverride;
@@ -67,38 +68,21 @@ public sealed interface CliRoots {
                    .map(file -> FileJob.fileJob(file, formatter));
     }
 
-    /// Announce each `disabled` root once: formatting runs in every mode except `disabled` (§2.3 "Modes").
-    static void announceDisabled(RootPlan plan, PrintStream err) {
+    /// The layer-coverage line of each root the run examined by rules; a root no rule ran in has no layers to cover.
+    static void layerCoverage(RootPlan plan, RunReport report, PrintStream err) {
+        var examined = report.roots()
+                             .stream()
+                             .filter(root -> root.examined() > 0)
+                             .map(RootCounts::root)
+                             .collect(Collectors.toSet());
+
         plan.roots()
             .stream()
-            .filter(root -> root.mode() == JbctMode.DISABLED)
-            .forEach(root -> err.println("Not formatted: mode=disabled root=" + root.path().toAbsolutePath().normalize()));
-    }
-
-    /// Whether the root's mode runs at least one rule (`business`, `infrastructure`).
-    static boolean runsRules(ResolvedRoot root) {
-        return root.mode() == JbctMode.BUSINESS || root.mode() == JbctMode.INFRASTRUCTURE;
-    }
-
-    /// The layer-coverage line of each root that ran rules over files; a root that runs no rule has no layers to cover.
-    static void layerCoverage(RootPlan plan, PrintStream err) {
-        plan.roots()
-            .stream()
-            .filter(CliRoots::runsRules)
-            .filter(root -> !root.files()
-                                 .isEmpty())
+            .filter(root -> examined.contains(root.path()))
             .forEach(root -> LayerCoverage.coverage(root.files(),
                                                     root.context())
                                           .map(LayerCoverage::render)
                                           .onPresent(err::println));
-    }
-
-    /// Files a root did not skip, summed over the run: the denominator of "checked" in `lint`, `check` and `format`.
-    static int checked(RunReport report) {
-        return report.roots()
-                     .stream()
-                     .mapToInt(root -> root.files() - root.skipped())
-                     .sum();
     }
 
     /// Files examined by rules, summed over the run's roots.
@@ -106,6 +90,22 @@ public sealed interface CliRoots {
         return report.roots()
                      .stream()
                      .mapToInt(root -> root.examined())
+                     .sum();
+    }
+
+    /// Files formatted or format-checked, summed over the run's roots.
+    static int formatted(RunReport report) {
+        return report.roots()
+                     .stream()
+                     .mapToInt(root -> root.formatted())
+                     .sum();
+    }
+
+    /// Files the run could not read or parse, summed over the run's roots.
+    static int notParsed(RunReport report) {
+        return report.roots()
+                     .stream()
+                     .mapToInt(root -> root.notParsed())
                      .sum();
     }
 

@@ -174,8 +174,9 @@ class CliPerRootLintTest {
         setMode("infra", JbctMode.FORMAT_ONLY);
         var exit = execute(new ScoreCommand(), business.toString(), infrastructure.toString());
 
-        assertThat(err.toString()).contains("Not scored: mode=format-only root=" + rootOf(infrastructure));
-        assertThat(err.toString()).doesNotContain("Not scored: mode=business");
+        assertThat(err.toString()).contains("Not scored: " + rootOf(infrastructure) + " (mode format-only skips it)")
+                                  .contains("1 file(s) scored");
+        assertThat(err.toString()).doesNotContain("Not scored: " + rootOf(business));
         assertThat(out.toString()).isNotBlank();
         assertThat(exit).isZero();
     }
@@ -185,7 +186,8 @@ class CliPerRootLintTest {
         setMode("biz", JbctMode.DISABLED);
         var exit = execute(new ScoreCommand(), business.toString());
 
-        assertThat(err.toString()).contains("Not scored: mode=disabled root=" + rootOf(business));
+        assertThat(err.toString()).contains("Not scored: " + rootOf(business) + " (mode disabled skips it)")
+                                  .contains("Nothing was scored: " + rootOf(business) + " (mode disabled skips it)");
         assertThat(out.toString()).isBlank();
         assertThat(exit).isZero();
     }

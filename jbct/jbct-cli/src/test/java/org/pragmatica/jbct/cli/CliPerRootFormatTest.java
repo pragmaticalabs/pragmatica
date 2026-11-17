@@ -136,7 +136,8 @@ class CliPerRootFormatTest {
         var exit = execute(new FormatCommand(), "--check", narrow.toString(), wide.toString());
 
         assertThat(exit).isZero();
-        assertThat(out.toString()).contains("All files are properly formatted.");
+        assertThat(out.toString()).contains("2 file(s) format-checked")
+                                  .doesNotContain("properly formatted");
     }
 
     @Test
@@ -184,8 +185,10 @@ class CliPerRootFormatTest {
         assertThat(exit).isZero();
         assertThat(read(fileOf(wide, "wide"))).isEqualTo(before);
         assertThat(indentOfStatement(fileOf(narrow, "narrow"))).isEqualTo(4);
-        assertThat(err.toString()).contains("Not formatted: mode=disabled root=" + wide.toAbsolutePath().normalize());
-        assertThat(count(err.toString(), "mode=disabled")).isEqualTo(1);
+        assertThat(out.toString()).contains("mode=disabled")
+                                  .contains("skipped, no format, no rule run")
+                                  .contains("1 file(s) formatted");
+        assertThat(count(out.toString(), "mode=disabled")).isEqualTo(1);
     }
 
     @Test
@@ -205,7 +208,8 @@ class CliPerRootFormatTest {
 
         assertThat(out.toString()).doesNotContain("needs formatting: " + fileOf(wide, "wide"));
         assertThat(out.toString()).contains("1 format issue(s)");
-        assertThat(err.toString()).contains("Not formatted: mode=disabled root=" + wide.toAbsolutePath().normalize());
+        assertThat(out.toString()).contains("mode=disabled")
+                                  .contains("1 file(s) format-checked");
     }
 
     @Test

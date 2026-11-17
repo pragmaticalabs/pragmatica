@@ -95,8 +95,8 @@ class LintCommandMachineFormatTest {
         assertThat(doc.isObject()).as("stdout must parse as the one result document and nothing more: " + out).isTrue();
         assertThat(doc.path("diagnostics").size()).isPositive();
         assertThat(err.toString(UTF_8)).as("the summary is operator-facing and belongs on stderr")
-                  .contains("Checked 1 file(s)");
-        assertThat(out.toString(UTF_8)).doesNotContain("Checked");
+                  .contains("1 file(s) linted");
+        assertThat(out.toString(UTF_8)).doesNotContain("info(s)");
     }
 
     @Test
@@ -109,7 +109,7 @@ class LintCommandMachineFormatTest {
                   .isTrue();
         assertThat(parsedStdout().path("diagnostics").size()).isZero();
         assertThat(jsonIsClean(parsedStdout())).as("a complete clean run IS a clean scan: " + out).isTrue();
-        assertThat(err.toString(UTF_8)).contains("passed JBCT compliance check");
+        assertThat(err.toString(UTF_8)).contains("1 file(s) linted");
     }
 
     @Test
@@ -120,7 +120,7 @@ class LintCommandMachineFormatTest {
 
         assertThat(doc.path("version").asText()).isEqualTo("2.1.0");
         assertThat(doc.path("runs").get(0).path("results").size()).isPositive();
-        assertThat(err.toString(UTF_8)).contains("Checked 1 file(s)");
+        assertThat(err.toString(UTF_8)).contains("1 file(s) linted");
     }
 
     @Test
@@ -220,6 +220,6 @@ class LintCommandMachineFormatTest {
     void text_summaryStaysOnStdout() throws IOException {
         write("Warny.java", VIOLATING);
         lint();
-        assertThat(out.toString(UTF_8)).contains("Checked 1 file(s)");
+        assertThat(out.toString(UTF_8)).contains("1 file(s) linted");
     }
 }

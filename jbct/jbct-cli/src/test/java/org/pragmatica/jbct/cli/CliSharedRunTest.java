@@ -12,20 +12,21 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.jbct.lint.cst.SharedRunTree;
 import picocli.CommandLine;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #2525 P2c: what the shared resolver and run decide (roots, modes, counts, summary, verdict) is what every jbct command
-/// prints, tested through `CommandLine.execute`. The fixture builder is private to this module: `jbct-maven-plugin`
-/// tests cannot depend on `jbct-cli` test sources (no test-jar is published), so the plugin lane replicates it.
+/// prints, tested through `CommandLine.execute`. T1 builds its tree with `SharedRunTree` and expects its text, which
+/// `jbct-maven-plugin`'s `MojoSharedRunTest` uses too (test-jar of `jbct-lint`): one tree, one expected text, two front ends.
 class CliSharedRunTest {
     private static final String USER_HOME_PROPERTY = "user.home";
     private static final String ARCH_02 = "JBCT-ARCH-02";
     private static final String RET_03 = "JBCT-RET-03";
     private static final String PASSED_BANNER = "passed JBCT compliance check";
-    private static final String NO_RULE_BANNER = "No JBCT rule ran in any source root";
+    private static final String NO_RULE_BANNER = "Nothing was linted: ";
     private static final Pattern JSON_FINDING = Pattern.compile("\"ruleId\": \"([^\"]+)\",\\s+\"severity\": \"[^\"]+\",\\s+\"file\": \"([^\"]+)\"");
 
     @TempDir
@@ -98,6 +99,10 @@ class CliSharedRunTest {
         return path.toAbsolutePath().normalize().toString();
     }
 
+    private static List<String> lines(String text) {
+        return text.lines().toList();
+    }
+
     private static int count(String text, String needle) {
         return text.split(Pattern.quote(needle), -1).length - 1;
     }
@@ -118,25 +123,26 @@ class CliSharedRunTest {
     // ---- T1: one directory argument holding a business and an infrastructure module
 
     @Test
-    void t1_oneDirectoryArgument_giveseachModuleItsOwnMode() throws Exception {
-        module("biz", "mode = \"business\"\n");
-        module("infra", "mode = \"infrastructure\"\n");
+    void t1_oneDirectoryArgument_giveseachModuleItsOwnMode_andPrintsTheSharedText() throws Exception {
+        SharedRunTree.build(repo);
 
         run(new LintCommand(), "--format", "json", repo.toString());
 
-        assertThat(findings()).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz", RET_03 + "@infra");
-        assertThat(err.toString()).contains("mode=business (from ", "mode=infrastructure (from ");
+        assertThat(findings()).containsExactlyInAnyOrderElementsOf(SharedRunTree.expectedFindings());
+        assertThat(lines(err.toString())).containsSubsequence(SharedRunTree.expectedSummaryLines(repo))
+                                         .containsAll(SharedRunTree.expectedLintLines());
+        assertThat(text()).doesNotContain("test-root files");
     }
 
     @Test
     void t1_oneDirectoryArgument_check_giveseachModuleItsOwnMode() throws Exception {
-        module("biz", "mode = \"business\"\n");
-        module("infra", "mode = \"infrastructure\"\n");
+        SharedRunTree.build(repo);
 
         run(new CheckCommand(), repo.toString());
 
         assertThat(count(text(), ARCH_02)).isEqualTo(1);
         assertThat(count(text(), RET_03)).isEqualTo(2);
+        assertThat(lines(out.toString())).containsAll(SharedRunTree.expectedLintLines());
     }
 
     // ---- T2: overlapping arguments examine each file once
@@ -179,10 +185,43 @@ class CliSharedRunTest {
         assertThat(text()).contains(NO_RULE_BANNER).doesNotContain(PASSED_BANNER);
         assertThat(text()).contains("0 examined by rules").contains("1 skipped by mode");
         assertThat(run(new CheckCommand(), off.toString())).isZero();
-        assertThat(text()).contains("Nothing was checked").contains("not a pass").doesNotContain("All checks passed");
+        assertThat(text()).contains(NO_RULE_BANNER).contains("mode disabled skips it").doesNotContain("passed");
         run(new FormatCommand(), infra.toString());
         assertThat(run(new CheckCommand(), infra.toString())).isZero();
-        assertThat(text()).contains("no JBCT rule ran in any source root, so nothing was linted").doesNotContain("All checks passed");
+        assertThat(text()).contains(NO_RULE_BANNER).contains("1 file(s) format-checked").doesNotContain("passed");
+    }
+
+    @Test
+    void t4_formatCheck_everyRootDisabled_printsTheRunsLine_andNoPassSentence() throws Exception {
+        var off = module("off", "mode = \"disabled\"\n");
+
+        assertThat(run(new FormatCommand(), "--check", off.toString())).isZero();
+        assertThat(text()).contains("Nothing was format-checked: " + root(off) + " (mode disabled skips it)")
+                          .doesNotContain("properly formatted")
+                          .doesNotContain("file(s) format-checked");
+    }
+
+    @Test
+    void t4_score_everyRootUnscored_printsTheRunsLines() throws Exception {
+        var infra = module("infra", "mode = \"format-only\"\n");
+        var off = module("off", "mode = \"disabled\"\n");
+
+        assertThat(run(new ScoreCommand(), infra.toString(), off.toString())).isZero();
+        assertThat(err.toString()).contains("Not scored: " + root(infra) + " (mode format-only skips it)")
+                                  .contains("Not scored: " + root(off) + " (mode disabled skips it)")
+                                  .contains("Nothing was scored: ");
+    }
+
+    @Test
+    void t4_machineFormats_allSkippedByMode_saySkippedByMode_notNoJavaFilesFound() throws Exception {
+        var off = module("off", "mode = \"disabled\"\n");
+
+        assertThat(run(new LintCommand(), "--format", "sarif", off.toString())).isZero();
+        assertThat(out.toString()).contains("Nothing was linted: " + root(off) + " (mode disabled skips it)")
+                                  .doesNotContain("No Java files found");
+        assertThat(run(new LintCommand(), "--format", "json", off.toString())).isZero();
+        assertThat(out.toString()).contains("\"outcome\": [\"Nothing was linted: " + root(off) + " (mode disabled skips it)\"]")
+                                  .doesNotContain("No Java files found");
     }
 
     @Test
