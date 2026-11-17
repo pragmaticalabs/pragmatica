@@ -37,7 +37,7 @@ public sealed interface Reconcile {
     ///          gi == gIntent[n] \/ (GOALS /\ kvDesired # target /\ ~gInfl[n])
     ///      IN /\ Apply(n, w, rows[n], Persists \/ dirty[n], wInfl[n], gInfl[n], gi, raises \cup closes # {}, flushQ[n],
     ///                    Pub(raises, closes), Hold(n, raises, closes), lnd[n], view[n])
-    ///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, net,
+    ///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, net,
     ///                  settles, condBudget, faultBudget, redo>>
     /// ```
     static ClusterModel run(ClusterModel m, Ctx ctx) {

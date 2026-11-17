@@ -198,7 +198,7 @@ public sealed interface Outbox {
     ///              /\ redo' = [redo EXCEPT ![n] = {}]
     ///              /\ Apply(n, warned[n], rows[n], IF draftW THEN FALSE ELSE dirty[n], wInfl[n] \/ doW,
     ///                       gInfl[n] \/ doG, FALSE, FALSE, FALSE, shown, held[n], lnd[n], view[n])
-    ///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, view, fired,
+    ///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, view, fired,
     ///                  settles, condBudget, faultBudget>>
     /// ```
     static ClusterModel flush(ClusterModel m, Ctx ctx, boolean suspended) {
@@ -542,7 +542,7 @@ public sealed interface Outbox {
     ///      IN /\ eW \/ eG
     ///         /\ Apply(n, warned[n], rows[n], dirty[n] \/ eW, wInfl[n] /\ ~eW, gInfl[n] /\ ~eG, gIntent[n], FALSE,
     ///                  flushQ[n], shown, held[n], lnd[n], view[n])
-    ///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, net,
+    ///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, net,
     ///                  settles, condBudget, faultBudget, redo>>
     /// ```
     static ClusterModel expire(ClusterModel m, Ctx ctx) {
@@ -577,9 +577,9 @@ public sealed interface Outbox {
     // Rebuild) is dropped and counted. Guarantee: nothing is applied twice and the loss is visible. Mechanism: the `settled_unknown` metric;
     // the submission's pending entries were already released and its intent is re-derived level-triggered from the mirror.
     /// ```tla Fsm2Leader:Settle
-    /// \* WriteSettled of this incarnation: Outbox.java. W accepted (code): rule E publishes from the committed pair, a deposed
+    /// \* WriteSettled of this incarnation: Outbox.java. W accepted (code): rule E notifies from the committed pair, a deposed
     /// \* writer included (Warnings.accepted / notified; mutant "nodeposed": a writer that is not the committed leader emits
-    /// \* nothing), and the mirror takes the mutations; pre-#3274 modes: the held prefix the
+    /// \* nothing; mutant "noruleE": no notification at all), and the mirror takes the mutations; pre-#3274 modes: the held prefix the
     /// \* tx carried lands (Warnings.accepted, committed: Warnings.java:253), published at the end of the step
     /// \* unless the node's leader value names another node (Warnings.java:168, ledByAnother: then it stays
     /// \* landed and held); refused: the refusal's values re-index the mirror, m.leader := refusal leader, unlanded marks
@@ -600,10 +600,12 @@ public sealed interface Outbox {
     ///      IN /\ settles' = settles \ {s}
     ///         /\ view' = [view EXCEPT ![n] = v]
     ///         /\ redo' = [redo EXCEPT ![n] = IF stale THEN redo[n] \cup {s.tx} ELSE redo[n]]
+    ///         /\ notes' = IF isW /\ s.out = "acc" /\ MODE = "code" /\ MUT # "noruleE" /\ (MUT # "nodeposed" \/ kvLeader = n)
+    ///                    THEN Emit(notes, s.c, s.tx.wexp, s.wrep) ELSE notes
     ///         /\ Apply(n, warned[n], r, d, IF isW THEN stale ELSE wInfl[n], IF isW THEN gInfl[n] ELSE stale,
     ///                  gIntent[n], FALSE, flushQ[n] \/ stale,
-    ///                  IF isW /\ s.out = "acc" /\ MODE = "code" /\ (MUT # "nodeposed" \/ kvLeader = n) THEN RuleE(shown, s.tx.wexp, s.wrep) ELSE shown, held[n], ld, v)
-    ///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, fired, net,
+    ///                  shown, held[n], ld, v)
+    ///   /\ UNCHANGED <<trans, ncommit, pend, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, fired, net,
     ///                  condBudget, faultBudget>>
     /// ```
     ///
@@ -612,7 +614,7 @@ public sealed interface Outbox {
     /// DropSettle(s) ==
     ///   /\ s \in settles /\ (fsm[s.node] = "Dormant" \/ s.inc # inc[s.node])
     ///   /\ settles' = settles \ {s}
-    ///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, fsm, inc, view,
+    ///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, fsm, inc, view,
     ///                  warned, rows, dirty, flushQ, wInfl, gInfl, gIntent, fired, net, condBudget, faultBudget, held, lnd,
     ///                  redo>>
     /// ```

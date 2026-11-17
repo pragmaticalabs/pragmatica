@@ -58,8 +58,9 @@ public sealed interface Lifecycle {
     ///         /\ held' = [held EXCEPT ![n] = <<>>]
     ///         /\ lnd' = [lnd EXCEPT ![n] = 0]
     ///         /\ redo' = [redo EXCEPT ![n] = {}]
+    ///         /\ pend' = [pend EXCEPT ![n] = FALSE]   \* the snapshot is the committed set: no put is pending
     ///         /\ shown' = IF rp THEN Pubd(shown, ReplaySeq(Subjects, kv)) ELSE shown
-    ///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, net, settles, condBudget,
+    ///   /\ UNCHANGED <<notes, trans, ncommit, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, net, settles, condBudget,
     ///                  faultBudget>>
     /// ```
     static ClusterModel rebuild(Ctx ctx, long incarnation, Snapshot snapshot) {
@@ -156,7 +157,7 @@ public sealed interface Lifecycle {
     ///   /\ view' = [view EXCEPT ![n] = Current]
     ///   /\ Apply(n, warned[n], rows[n], dirty[n], wInfl[n], gInfl[n], gIntent[n], FALSE, flushQ[n], shown, held[n], lnd[n],
     ///            Current)
-    ///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, fired, net,
+    ///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, fired, net,
     ///                  settles, condBudget, faultBudget, redo>>
     /// ```
     static ClusterModel onLeader(ClusterModel m, Ctx ctx, LeaderValue value) {

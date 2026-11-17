@@ -51,7 +51,9 @@
 /// (* Nil is "no row". Activate and Rebuild are one step; the leader value is <<node, term>> and the fence compares *)
 /// (* it with the committed one (Outbox LeaderTransaction); consensus election (Elect, CI-1) and the LeaderKey     *)
 /// (* commit (CommitLeader, CI-16) are separate steps, so a successor activates suspended; the desired-row mirror  *)
-/// (* is read straight from KV; "shown" is the operator-visible open set (ClusterEventAggregator.onRecovery). KV  *)
+/// (* is read straight from KV; "shown" is the pre-#3274 published set (ClusterEventAggregator.onRecovery); in    *)
+/// (* "code" (#3274) the operator reads the committed rows through a node's mirror (Read) and the notification      *)
+/// (* stream is `notes`, emitted by rule E only (Settle), safety-checked, complete only for a handled settlement. KV *)
 /// (* notifications are a whole-set sync (OnPut), and a node takes the LeaderKey notification only once its mirror *)
 /// (* caught up with KV (log order: every row committed before the LeaderKey precedes it); a row committed after   *)
 /// (* it may reach a node early, an over-approximation. Not modelled: a recovery that Rebuild raises for a subject *)
@@ -136,11 +138,17 @@
 ///           lnd,                     \* per node: warningsLanded, the held prefix the accepted WARNINGS write carried, not yet published
 ///           net, settles,            \* transactions in the engine; settlements in transit
 ///           condBudget, faultBudget,
-///           redo                     \* per node: transactions resubmitted unchanged after a witness-stale refusal (Outbox.routeRefusal)
+///           redo,                    \* per node: transactions resubmitted unchanged after a witness-stale refusal (Outbox.routeRefusal)
+///           notes,                   \* #3274 notification stream: [c, s, up, dup], one per emission (dup: the transition was already notified)
+///           trans,                   \* history: every committed open/closed transition [c |-> commit number, s, up]
+///           ncommit,                 \* history: accepted WARNINGS commits so far (names a commit)
+///           pend                     \* per node: a committed WARNINGS put has not yet reached the node (Indexer -> onPut)
+///
+/// nvars == <<notes, trans, ncommit, pend>>
 ///
 /// vars == <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, fsm, inc, view,
 ///           warned, rows, dirty, flushQ, wInfl, gInfl, gIntent, fired, held, lnd, net, settles,
-///           condBudget, faultBudget, redo>>
+///           condBudget, faultBudget, redo, notes, trans, ncommit, pend>>
 ///
 /// Current == <<kvLeader, term>>
 ///
@@ -223,8 +231,17 @@
 /// Hold(n, adds, rems) == <<>>
 ///
 /// \* Rule E (Warnings.notified): per mutated subject, from the committed (expected, replacement) pair: the opener when the
-/// \* replacement is open and the expected is not, the recovery when the expected is open and the replacement closed.
-/// RuleE(sh, exp, rep) == (sh \ {x \in DOMAIN rep : exp[x].open /\ ~rep[x].open}) \cup {x \in DOMAIN rep : rep[x].open /\ ~exp[x].open}
+/// \* replacement is open and the expected is not, the recovery when the expected is open and the replacement closed; each
+/// \* names commit c. Emit adds one notification per transition, marked dup when that transition was already notified.
+/// Note(N, c, x, up) == [c |-> c, s |-> x, up |-> up, dup |-> \E y \in N : y.c = c /\ y.s = x]
+///
+/// Emit(N, c, exp, rep) == N \cup {Note(N, c, x, rep[x].open) : x \in {y \in DOMAIN rep : exp[y].open # rep[y].open}}
+///
+/// \* The READ (GET /api/v1/warnings, Warnings.java warningRows): what node n answers is the open rows of its mirror.
+/// Read(n) == OpenOf(rows[n])
+///
+/// \* The newest committed transition of subject x (mutant "emitonput" names it from the put).
+/// Last(x) == CHOOSE t \in trans : t.s = x /\ \A u \in trans : u.s = x => u.c <= t.c
 ///
 /// Discard(n) ==   \* the model is dropped (ClusterFsm.java deactivated; a crash loses the process)
 ///   /\ fsm' = [fsm EXCEPT ![n] = "Dormant"]
@@ -239,6 +256,7 @@
 ///   /\ held' = [held EXCEPT ![n] = <<>>]
 ///   /\ lnd' = [lnd EXCEPT ![n] = 0]
 ///   /\ redo' = [redo EXCEPT ![n] = {}]
+///   /\ pend' = [pend EXCEPT ![n] = FALSE]
 ///
 /// Init ==
 ///   /\ term = 1 /\ kvLeader = (CHOOSE n \in Nodes : TRUE) /\ elected = kvLeader /\ lkPend = FALSE
@@ -252,6 +270,7 @@
 ///   /\ gIntent = [n \in Nodes |-> FALSE] /\ fired = [n \in Nodes |-> {}] /\ held = [n \in Nodes |-> <<>>]
 ///   /\ lnd = [n \in Nodes |-> 0] /\ redo = [n \in Nodes |-> {}]
 ///   /\ net = {} /\ settles = {}
+///   /\ notes = {} /\ trans = {} /\ ncommit = 0 /\ pend = [n \in Nodes |-> FALSE]
 ///   /\ condBudget = MaxCond /\ faultBudget = MaxFault
 ///
 /// \* Environment: the leader process dies at any point between effects.
@@ -260,7 +279,7 @@
 ///   /\ A2834 => (n # kvLeader \/ Quiet(n))
 ///   /\ faultBudget' = faultBudget - 1
 ///   /\ Discard(n)
-///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, inc, view, net,
+///   /\ UNCHANGED <<notes, trans, ncommit, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, inc, view, net,
 ///                  settles, condBudget>>
 ///
 /// \* Environment: consensus elects a leader (possibly the same node again); CI-1 Activate / Deactivate follow it. The
@@ -270,14 +289,14 @@
 ///   /\ A2834 => Quiet(kvLeader)
 ///   /\ RESUME \/ m = elected \/ fsm[m] = "Dormant"
 ///   /\ elected' = m /\ lkPend' = TRUE
-///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty,
+///   /\ UNCHANGED <<nvars, term, kvLeader, kv, kvDesired, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty,
 ///                  flushQ, wInfl, gInfl, gIntent, fired, net, settles, condBudget, faultBudget, held, lnd, redo>>
 ///
 /// \* Environment: the LeaderKey commit of the elected leader; the committed leader value (the fence's reference) moves.
 /// CommitLeader ==
 ///   /\ lkPend
 ///   /\ term' = term + 1 /\ kvLeader' = elected /\ lkPend' = FALSE
-///   /\ UNCHANGED <<elected, kv, kvDesired, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty, flushQ,
+///   /\ UNCHANGED <<nvars, elected, kv, kvDesired, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty, flushQ,
 ///                  wInfl, gInfl, gIntent, fired, net, settles, condBudget, faultBudget, held, lnd, redo>>
 ///
 /// \* The consensus applier: a LeaderTransaction commits iff the committed leader is the tx's leader value (the fence;
@@ -289,14 +308,21 @@
 ///          casOk == IF tx.kind = "W" THEN MUT = "nocas" \/ \A s \in DOMAIN tx.wrep : kv[s] = tx.wexp[s]
 ///                   ELSE kvDesired = tx.exp
 ///          ok == fenceOk /\ casOk
+///          okW == ok /\ tx.kind = "W"
+///          c == IF okW THEN ncommit + 1 ELSE 0
 ///          st == [kind |-> tx.kind, node |-> tx.node, inc |-> tx.inc, out |-> IF ok THEN "acc" ELSE "ref",
 ///                 wrep |-> tx.wrep, seen |-> [s \in DOMAIN tx.wrep |-> kv[s]], lv |-> Current,
-///                 cov |-> IF tx.kind = "W" THEN tx.cov ELSE 0, tx |-> tx]
+///                 cov |-> IF tx.kind = "W" THEN tx.cov ELSE 0, tx |-> tx, c |-> c]
 ///      IN /\ net' = net \ {tx}
+///         /\ ncommit' = IF okW THEN c ELSE ncommit
+///         /\ trans' = IF okW THEN trans \cup {[c |-> c, s |-> x, up |-> tx.wrep[x].open] :
+///                                              x \in {y \in DOMAIN tx.wrep : kv[y].open # tx.wrep[y].open}}
+///                     ELSE trans
+///         /\ pend' = IF okW THEN [m \in Nodes |-> pend[m] \/ fsm[m] = "Active"] ELSE pend
 ///         /\ settles' = settles \cup {st}
 ///         /\ kv' = IF ok /\ tx.kind = "W" THEN Overlay(kv, tx.wrep) ELSE kv
 ///         /\ kvDesired' = IF ok /\ tx.kind = "G" THEN tx.val ELSE kvDesired
-///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty,
+///   /\ UNCHANGED <<notes, term, kvLeader, elected, lkPend, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty,
 ///                  flushQ, wInfl, gInfl, gIntent, fired, held, lnd, condBudget, faultBudget, redo>>
 ///
 /// \* Environment: a definite failure (Settlement.Failed), nothing committed.
@@ -305,8 +331,8 @@
 ///   /\ faultBudget' = faultBudget - 1
 ///   /\ net' = net \ {tx}
 ///   /\ settles' = settles \cup {[kind |-> tx.kind, node |-> tx.node, inc |-> tx.inc, out |-> "fail",
-///                                wrep |-> tx.wrep, seen |-> EmptyF, lv |-> Current, cov |-> 0, tx |-> tx]}
-///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, fsm, inc, view,
+///                                wrep |-> tx.wrep, seen |-> EmptyF, lv |-> Current, cov |-> 0, tx |-> tx, c |-> 0]}
+///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, fsm, inc, view,
 ///                  warned, rows, dirty, flushQ, wInfl, gInfl, gIntent, fired, condBudget, held, lnd, redo>>
 ///
 /// \* Environment: the settlement never reaches the FSM (expiry handles it, #2143).
@@ -314,13 +340,13 @@
 ///   /\ s \in settles /\ faultBudget > 0
 ///   /\ faultBudget' = faultBudget - 1
 ///   /\ settles' = settles \ {s}
-///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, fsm, inc, view,
+///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, fsm, inc, view,
 ///                  warned, rows, dirty, flushQ, wInfl, gInfl, gIntent, fired, net, condBudget, held, lnd, redo>>
 ///
 /// CondOn(s) ==
 ///   /\ condBudget > 0 /\ s \notin cond
 ///   /\ cond' = cond \cup {s} /\ condBudget' = condBudget - 1
-///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, shown, fsm, inc, view, warned,
+///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, shown, fsm, inc, view, warned,
 ///                  rows, dirty, flushQ, wInfl, gInfl, gIntent, fired, net, settles, faultBudget, held, lnd, redo>>
 ///
 /// \* An event-only condition that ends starts a new episode: its retry cycle restarts, so it can exhaust (fire) again
@@ -329,19 +355,19 @@
 ///   /\ condBudget > 0 /\ s \in cond
 ///   /\ cond' = cond \ {s} /\ condBudget' = condBudget - 1
 ///   /\ fired' = [n \in Nodes |-> fired[n] \ {s}]
-///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, shown, fsm, inc, view, warned,
+///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, shown, fsm, inc, view, warned,
 ///                  rows, dirty, flushQ, wInfl, gInfl, gIntent, net, settles, faultBudget, held, lnd, redo>>
 ///
 /// SetTarget ==
 ///   /\ GOALS /\ condBudget > 0
 ///   /\ target' = 1 - target /\ condBudget' = condBudget - 1
-///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, observed, cond, shown, fsm, inc, view, warned,
+///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, observed, cond, shown, fsm, inc, view, warned,
 ///                  rows, dirty, flushQ, wInfl, gInfl, gIntent, fired, net, settles, faultBudget, held, lnd, redo>>
 ///
 /// \* The node FSM converges its observed row to the committed desired row.
 /// NodeApply ==
 ///   /\ observed # kvDesired /\ observed' = kvDesired
-///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, cond, shown, fsm, inc, view, warned, rows,
+///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, target, cond, shown, fsm, inc, view, warned, rows,
 ///                  dirty, flushQ, wInfl, gInfl, gIntent, fired, net, settles, condBudget, faultBudget, held, lnd, redo>>
 /// ```
 ///
@@ -422,16 +448,45 @@
 ///                                                        \* orphan W tx of the node's previous incarnation can commit after Activate, the mirror lags)
 ///   /\ \A m \in Nodes \ {L} : fsm[m] = "Dormant"
 ///
-/// OpenSetAgreement == Settled(kvLeader) => shown = warned[kvLeader]
+/// \* #3274 promise (warnpub-redesign.md, events row and accepted losses): the operator-facing truth is the READ of the committed
+/// \* rows, not the notification stream. MODE "code" states the read and notification properties below; the pre-#3274 modes keep
+/// \* their own promise, the published set `shown` (which the "code" mode never changes).
+/// \* Quiescent: Settled without its mirror clause, which is replaced by "no committed put is still on its way to the node" (pend),
+/// \* so a mirror that does not follow a put it has taken is visible (mutant "nomirror").
+/// Quiescent(L) ==
+///   /\ fsm[L] = "Active" /\ view[L] = Current /\ ~flushQ[L] /\ ~dirty[L] /\ ~wInfl[L] /\ WTraffic = {} /\ ~pend[L]
+///   /\ \A m \in Nodes \ {L} : fsm[m] = "Dormant"
 ///
-/// \* Liveness. Every warning whose condition ended is eventually closed (#2834 / #3085 operator consequence).
-/// WarningsClose == \A s \in Subjects : (s \in shown /\ s \notin cond) ~> (s \notin shown \/ s \in cond)
+/// \* code: once the sole leader is quiescent, its read is the committed open set. pre-#3274: what was published is its open set.
+/// OpenSetAgreement == IF MODE = "code" THEN Quiescent(kvLeader) => Read(kvLeader) = OpenOf(kv)
+///                     ELSE Settled(kvLeader) => shown = warned[kvLeader]
 ///
-/// \* Every holding condition is eventually shown (the dual: a stale inherited set must not suppress a raise).
-/// WarningsShow == \A s \in Subjects : (s \in cond) ~> (s \in shown \/ s \notin cond)
+/// \* Liveness. Every warning whose condition ended is eventually closed (#2834 / #3085 operator consequence). code: the committed row.
+/// WarningsClose == IF MODE = "code" THEN \A s \in Subjects : (kv[s].open /\ s \notin cond) ~> (~kv[s].open \/ s \in cond)
+///                  ELSE \A s \in Subjects : (s \in shown /\ s \notin cond) ~> (s \notin shown \/ s \in cond)
 ///
-/// \* Every raised warning is eventually persisted or cleared.
-/// PersistedOrCleared == \A s \in Subjects : (s \in shown) ~> (kv[s].open \/ s \notin shown)
+/// \* Every holding condition is eventually shown (the dual: a stale inherited set must not suppress a raise). code: a condition that
+/// \* stays on is eventually an open committed row, independent of any settlement.
+/// WarningsShow == IF MODE = "code" THEN \A s \in Subjects : (s \in cond) ~> (kv[s].open \/ s \notin cond)
+///                 ELSE \A s \in Subjects : (s \in cond) ~> (s \in shown \/ s \notin cond)
+///
+/// \* Every raised warning is eventually persisted or cleared. code: no node's read keeps answering a row that is not committed open.
+/// PersistedOrCleared == IF MODE = "code" THEN \A n \in Nodes, s \in Subjects : (s \in Read(n)) ~> (kv[s].open \/ s \notin Read(n))
+///                       ELSE \A s \in Subjects : (s \in shown) ~> (kv[s].open \/ s \notin shown)
+///
+/// \* Notifications, safety only (#3274: no completeness under a lost settlement, a deposed writer or a rebuild; those are the
+/// \* design's accepted losses). Every notification names a committed transition.
+/// NoPhantom == \A x \in notes : [c |-> x.c, s |-> x.s, up |-> x.up] \in trans
+///
+/// \* At most one notification per committed transition.
+/// NoDoubleEmit == \A x \in notes : ~x.dup
+///
+/// \* A transition whose writer handled its accepted settlement was notified (Settle, not DropSettle or LoseSettle: the node is
+/// \* Active in the settlement's incarnation and no fault was spent).
+/// CompleteWhenSettled ==
+///   [][\A s \in settles \ settles' :
+///        (s.kind = "W" /\ s.out = "acc" /\ fsm[s.node] = "Active" /\ s.inc = inc[s.node] /\ faultBudget' = faultBudget)
+///            => \A t \in trans : t.c = s.c => \E x \in notes' : x.c = t.c /\ x.s = t.s /\ x.up = t.up]_vars
 ///
 /// \* Desired/observed converge after the last leader change.
 /// Converges == <>[](kvDesired = target /\ observed = target)
@@ -1001,6 +1056,24 @@
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY PersistedOrCleared
+/// ```
+///
+/// ```tlacfg Fsm2Leader:code_nolate_notify
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// INVARIANT NoPhantom
+/// INVARIANT NoDoubleEmit
+/// PROPERTY CompleteWhenSettled
 /// ```
 ///
 /// ```tlacfg Fsm2Leader:mut_nodeposed_close
