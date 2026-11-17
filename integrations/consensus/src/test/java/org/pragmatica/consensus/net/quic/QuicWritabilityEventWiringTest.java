@@ -44,8 +44,10 @@ import io.netty.handler.codec.quic.QuicStreamChannel;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.awaitTrue;
+import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.clientSsl;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.connected;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.infoOf;
+import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.serverSsl;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.startedNetwork;
 
 /// #3313 T6 — the lane streams' writability event reaches the backpressure-episode closer at every production
@@ -166,6 +168,39 @@ class QuicWritabilityEventWiringTest {
 
         assertDelivers(laneOf(dialing, acceptorAt, StreamType.CONSENSUS), eventsAtDialer, "network's client lane");
         assertDelivers(laneOf(accepting, dialerAt, StreamType.CONSENSUS), eventsAtAcceptor, "network's server lane");
+    }
+
+    /// #3313 E6: a certificate rotation rebuilds the server and the client (`rebuildAndStart`); both rebuilt ends get the
+    /// network's closer too. The rotated node then accepts one link (rebuilt server) and dials another (rebuilt client);
+    /// the event on the lane stream of each reaches the rotated node's closer.
+    @Test
+    void network_handsItsCloserToTheServerAndTheClientItRebuildsOnCertificateRotation() {
+        var dialerAt = new NodeId("aaa-rotate");
+        var rotatedAt = new NodeId("mmm-rotate");
+        var acceptorAt = new NodeId("zzz-rotate");
+        var dialing = startedNetwork(new TripwireTopology(dialerAt, false, TimeSpan.timeSpan(30).seconds()),
+                                     MessageRouter.mutable(),
+                                     networks);
+        var rotated = startedNetwork(new TripwireTopology(rotatedAt, false, TimeSpan.timeSpan(30).seconds()),
+                                     MessageRouter.mutable(),
+                                     networks);
+        var accepting = startedNetwork(new TripwireTopology(acceptorAt, false, TimeSpan.timeSpan(30).seconds()),
+                                       MessageRouter.mutable(),
+                                       networks);
+        var eventsAtRotated = ConcurrentHashMap.<QuicStreamChannel>newKeySet();
+
+        rotated.rotateCertificate(serverSsl("rotated-server"), clientSsl("rotated-client"))
+               .await(AWAIT)
+               .onFailure(cause -> fail("control: the rotation itself must succeed: " + cause.message()));
+        rotated.writabilityEventObserverForTests(eventsAtRotated::add);
+        dialing.dialForTests(infoOf(rotatedAt, rotated), false);
+        rotated.dialForTests(infoOf(acceptorAt, accepting), false);
+        awaitTrue(() -> connected(rotated, dialerAt) && connected(rotated, acceptorAt),
+                  AWAIT,
+                  "the rotated node CONNECTED to the node it accepted and to the node it dialed");
+
+        assertDelivers(laneOf(rotated, dialerAt, StreamType.CONSENSUS), eventsAtRotated, "rebuilt server's lane");
+        assertDelivers(laneOf(rotated, acceptorAt, StreamType.CONSENSUS), eventsAtRotated, "rebuilt client's lane");
     }
 
     private static QuicStreamChannel laneOf(QuicClusterNetwork network, NodeId peer, StreamType lane) {

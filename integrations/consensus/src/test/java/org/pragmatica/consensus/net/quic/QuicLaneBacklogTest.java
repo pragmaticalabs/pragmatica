@@ -23,6 +23,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.concurrent.locks.LockSupport;
 
@@ -71,6 +72,12 @@ class QuicLaneBacklogTest {
         /// Armed: the next writability check turns the stream writable, then throws once, so the pass that faults is the
         /// first to see the stream writable whichever drain tick it is.
         final AtomicBoolean faultThenWritable = new AtomicBoolean(false);
+        /// Armed: the next writability check still reads unwritable and turns the stream writable behind it, with no
+        /// writability event, as a stream that drains between a write's refusal and its count.
+        final AtomicBoolean writableAfterNextCheck = new AtomicBoolean(false);
+        /// The stream also reads writable while this holds, with no writability event (a stream that drained behind a
+        /// read, at a point the test names).
+        final AtomicReference<BooleanSupplier> writableOnceThis = new AtomicReference<>(() -> false);
         final List<Integer> written = new CopyOnWriteArrayList<>();
         /// Every thread that read the stream's liveness: a drain pass reads it before it takes the backlog lock.
         final Set<Thread> livenessReaders = ConcurrentHashMap.newKeySet();
@@ -99,7 +106,13 @@ class QuicLaneBacklogTest {
                 throw new IllegalStateException("fault inside the drain pass, stream now writable");
             }
 
-            return writable.get();
+            if (writableAfterNextCheck.compareAndSet(true, false)) {
+                writable.set(true);
+
+                return false;
+            }
+
+            return writable.get() || writableOnceThis.get().getAsBoolean();
         }
 
         private ChannelFuture record(ByteBuf frame, ChannelFuture future, int throwOnFrame) {
@@ -498,6 +511,32 @@ class QuicLaneBacklogTest {
         }
     }
 
+    /// T-a, last frame given up (#3313): the frame expires on an unwritable stream, and the stream reads writable from the
+    /// moment the give-up is counted lost (the give-up counts the loss before it settles), firing no event. The give-up's
+    /// closer run finds no frame held and the stream writable, so the episode ends. Nothing else can end it: the frame is
+    /// not written, the backlog retires with it (no later pass), and no writability event, close or later write follows.
+    @Test
+    void episode_lastHeldFrameGivenUp_endsTheEpisode_withNoEventOrLaterWrite() {
+        var network = LossAccountingFixtures.network(5, TimeSpan.timeSpan(10).millis());
+        var lane = new Lane(succeeded(), -1);
+
+        try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+            lane.writableOnceThis.set(() -> network.quicMetrics()
+                                                   .droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP) > 0L);
+            holdFrames(network, lane, StreamType.CONSENSUS, 1);
+            assertThat(network.openBackpressureEpisodesForTests()).as("the held frame opened an episode").isEqualTo(1);
+
+            awaitWithin("the held frame is given up",
+                        AWAIT,
+                        () -> network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP) == 1L);
+            awaitWithin("the backlog entry goes", AWAIT, () -> network.laneBacklogCountForTests() == 0);
+
+            assertThat(lane.written).as("control: the frame was given up, not written").isEmpty();
+            assertThat(network.openBackpressureEpisodesForTests()).as("the give-up's closer run ended the episode").isZero();
+            assertThat(cleared(capture)).as("one cleared line for the one episode").hasSize(1);
+        }
+    }
+
     /// A drain fault abandons the backlog while the stream is open and writable: the abandon removes the last held frame
     /// on a writable stream, so it ends the episode itself.
     @Test
@@ -689,7 +728,63 @@ class QuicLaneBacklogTest {
         }
     }
 
-    // --- item 21: held AND direct writes are counted as sent ---
+    /// A19 (#3313): a throw while evaluating ONE episode is contained to it. Two refused writes open two episodes of the
+    /// peer (KV and FORWARD, two streams; refusals hold nothing, so no drain runs the closer); both streams turn writable
+    /// and one closer run happens, in which the KV stream's writability check throws. The FORWARD episode is still
+    /// ended, whichever of the two the run reaches first; the KV episode stays open with exactly one WARN.
+    @Test
+    void episode_writabilityCheckThrowsForOneEpisode_thePeersOtherEpisodeIsStillEnded_oneWarn() {
+        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var throwing = new Lane(succeeded(), -1);
+        var other = new Lane(succeeded(), -1);
+
+        try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+            holdFrames(network, throwing, StreamType.KV, 1);
+            holdFrames(network, other, StreamType.FORWARD, 2);
+            assertThat(network.openBackpressureEpisodesForTests()).as("the two refused writes opened two episodes")
+                                                                  .isEqualTo(2);
+            assertThat(network.laneBacklogCountForTests()).as("a refused write holds nothing").isZero();
+
+            throwing.writable.set(true);
+            other.writable.set(true);
+            throwing.faultOnNextWritableCheck.set(true);
+            network.onLaneStreamEvent(PEER, other.ch);
+
+            assertThat(throwing.faultOnNextWritableCheck).as("the KV episode's writability check threw").isFalse();
+            assertThat(network.openBackpressureEpisodesForTests()).as("only the episode whose check threw stays open")
+                                                                  .isEqualTo(1);
+            assertThat(cleared(capture)).as("one cleared line, for the FORWARD episode").hasSize(1);
+            assertThat(cleared(capture).getFirst()).as("the cleared episode is the FORWARD one").contains("FORWARD");
+            assertThat(leftOpenWarnings(capture)).as("exactly one WARN, for the KV episode").hasSize(1);
+        }
+    }
+
+    /// T-f (#3313): the stream turns writable between a write's refusal and its count, and fires no event. The refused
+    /// write counts, opening the episode, then runs the closer under the same monitor: it reads the stream writable and
+    /// ends the episode. Nothing else can: a refusal holds no frame (no drain), no writability event and no close
+    /// follow, and no later write is made.
+    @Test
+    void episode_streamTurnsWritableBetweenTheRefusalAndItsCount_theRefusedWriteEndsIt() {
+        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var lane = new Lane(succeeded(), -1);
+
+        try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+            lane.writableAfterNextCheck.set(true);
+            holdFrames(network, lane, StreamType.KV, 1);
+
+            assertThat(lane.writableAfterNextCheck).as("control: the refusal read the stream unwritable").isFalse();
+            assertThat(lane.written).as("control: the write was refused, not written").isEmpty();
+            assertThat(network.laneBacklogCountForTests()).as("a refused write holds nothing").isZero();
+            assertThat(capture.messages(Level.WARN)
+                              .stream()
+                              .filter(message -> message.contains("entered"))
+                              .toList()).as("the refused write opened an episode").hasSize(1);
+            assertThat(network.openBackpressureEpisodesForTests()).as("the refused write's own closer run ended it")
+                                                                  .isZero();
+            assertThat(cleared(capture)).as("one cleared line for the one episode").hasSize(1);
+        }
+    }
+
 
     @Test
     void sentCounters_directWrite_countsOneMessageAndItsBytes() {
