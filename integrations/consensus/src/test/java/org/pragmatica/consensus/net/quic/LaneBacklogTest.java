@@ -30,7 +30,7 @@ class LaneBacklogTest {
 
     @Test
     void admit_firstHeldFrameOwnsTheDrain_laterOnesJoinBehind_andTheDrainWritesHeadFirst() {
-        var backlog = new LaneBacklog<Integer>();
+        var backlog = LaneBacklog.<Integer, Integer>laneBacklog(frame -> frame);
         var counted = new ArrayList<Integer>();
         var written = new ArrayList<Integer>();
 
@@ -38,7 +38,7 @@ class LaneBacklogTest {
         assertThat(backlog.admit(2, counted::add)).isEqualTo(Admission.HELD_BEHIND);
         assertThat(backlog.admit(3, counted::add)).isEqualTo(Admission.HELD_BEHIND);
 
-        var retired = backlog.drain(_ -> false, _ -> {}, () -> true, written::add);
+        var retired = backlog.drain(_ -> false, _ -> {}, () -> true, written::add, _ -> {});
 
         assertThat(counted).as("every held frame is accounted when held").containsExactly(1, 2, 3);
         assertThat(written).as("held frames are written head first").containsExactly(1, 2, 3);
@@ -50,13 +50,13 @@ class LaneBacklogTest {
     /// to it after its owner dropped it cannot hold a frame that nobody will ever drain.
     @Test
     void discardAll_passesEveryFrameToDiscard_andRetiresTheBacklog() {
-        var backlog = new LaneBacklog<Integer>();
+        var backlog = LaneBacklog.<Integer, Integer>laneBacklog(frame -> frame);
         var discarded = new ArrayList<Integer>();
         var counted = new AtomicInteger();
 
         backlog.admit(1, _ -> counted.incrementAndGet());
         backlog.admit(2, _ -> counted.incrementAndGet());
-        backlog.discardAll(discarded::add);
+        backlog.discardAll(discarded::add, () -> false, _ -> {});
 
         assertThat(discarded).containsExactly(1, 2);
         assertThat(backlog.admit(3, _ -> counted.incrementAndGet())).as("an orphaned backlog must refuse the frame")
@@ -69,7 +69,7 @@ class LaneBacklogTest {
     /// discard stops at the first frame that has not expired.
     @Test
     void drain_writesWhatTheStreamTakes_thenDiscardsOnlyTheExpiredHead() {
-        var backlog = new LaneBacklog<Integer>();
+        var backlog = LaneBacklog.<Integer, Integer>laneBacklog(frame -> frame);
         var written = new ArrayList<Integer>();
         var discarded = new ArrayList<Integer>();
         var room = new AtomicInteger(1);
@@ -79,12 +79,80 @@ class LaneBacklogTest {
         var retired = backlog.drain(frame -> frame <= 3,
                                     discarded::add,
                                     () -> room.get() > 0,
-                                    frame -> takeOne(written, room, frame));
+                                    frame -> takeOne(written, room, frame),
+                                    _ -> {});
 
         assertThat(written).as("an expired frame the stream can take is written, not discarded").containsExactly(1);
         assertThat(discarded).as("expired head frames, oldest first").containsExactly(2, 3);
         assertThat(backlog.size()).as("an unexpired frame stays held").isEqualTo(1);
         assertThat(retired).isFalse();
+    }
+
+    // --- #3313: a discarded frame's key is owed a writable stream ---
+
+    /// Frames discarded while the stream is unwritable leave their keys owed: the backlog does not retire, a frame sent
+    /// meanwhile joins behind the running drainer, and the pass that finds the stream writable settles each owed key
+    /// once, except the key a later written frame already settled, and retires.
+    @Test
+    void drain_discardsOnAnUnwritableStream_owesTheKeysUntilAPassFindsItWritable() {
+        var backlog = LaneBacklog.<Integer, String>laneBacklog(frame -> frame % 2 == 0
+                                                                        ? "even"
+                                                                        : "odd");
+        var writable = new AtomicInteger(0);
+        var written = new ArrayList<Integer>();
+        var settled = new ArrayList<String>();
+
+        List.of(1, 2).forEach(frame -> backlog.admit(frame, _ -> {}));
+
+        var first = backlog.drain(_ -> true, _ -> {}, () -> writable.get() > 0, written::add, settled::add);
+
+        assertThat(first).as("keys owed on an unwritable stream: not retired").isFalse();
+        assertThat(settled).isEmpty();
+        assertThat(backlog.admit(4, _ -> {})).as("the drainer still runs: a new frame joins behind it")
+                                             .isEqualTo(Admission.HELD_BEHIND);
+
+        writable.set(1);
+
+        var second = backlog.drain(_ -> false, _ -> {}, () -> writable.get() > 0, written::add, settled::add);
+
+        assertThat(written).containsExactly(4);
+        assertThat(settled).as("the written even frame settled its own key; the odd key is settled here")
+                           .containsExactly("odd");
+        assertThat(second).isTrue();
+        assertThat(backlog.admit(5, _ -> {})).isEqualTo(Admission.RETIRED);
+    }
+
+    @Test
+    void drain_streamTurnsWritableMidPass_settlesTheOwedKeysAndRetiresInThatPass() {
+        var backlog = LaneBacklog.<Integer, Integer>laneBacklog(frame -> frame);
+        var checks = new AtomicInteger();
+        var settled = new ArrayList<Integer>();
+
+        backlog.admit(1, _ -> {});
+
+        // unwritable for the write loop, writable for the retirement check: the stream turned writable mid-pass
+        var retired = backlog.drain(_ -> true, _ -> {}, () -> checks.incrementAndGet() > 1, _ -> {}, settled::add);
+
+        assertThat(retired).isTrue();
+        assertThat(settled).containsExactly(1);
+    }
+
+    @Test
+    void discardAll_onAWritableStream_settlesEveryOwedKey_onAnUnwritableOne_dropsThem() {
+        var settledWritable = new ArrayList<Integer>();
+        var settledUnwritable = new ArrayList<Integer>();
+        var writableBacklog = LaneBacklog.<Integer, Integer>laneBacklog(frame -> frame);
+        var unwritableBacklog = LaneBacklog.<Integer, Integer>laneBacklog(frame -> frame);
+
+        List.of(1, 2).forEach(frame -> writableBacklog.admit(frame, _ -> {}));
+        List.of(1, 2).forEach(frame -> unwritableBacklog.admit(frame, _ -> {}));
+
+        writableBacklog.discardAll(_ -> {}, () -> true, settledWritable::add);
+        unwritableBacklog.discardAll(_ -> {}, () -> false, settledUnwritable::add);
+
+        assertThat(settledWritable).containsExactly(1, 2);
+        assertThat(settledUnwritable).isEmpty();
+        assertThat(unwritableBacklog.admit(3, _ -> {})).isEqualTo(Admission.RETIRED);
     }
 
     private static void takeOne(List<Integer> written, AtomicInteger room, Integer frame) {

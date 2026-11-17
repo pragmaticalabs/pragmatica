@@ -16,8 +16,11 @@
 package org.pragmatica.consensus.net.quic;
 
 import java.util.ArrayDeque;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Predicate;
 
 import org.pragmatica.lang.Contract;
@@ -38,11 +41,20 @@ import org.pragmatica.lang.Contract;
 /// queued by off-loop callers: no order holds between its frames and those. Not across streams: frames held on a stream
 /// are written to that stream or discarded with it, never moved to a replacement stream (reconnect, lane supersede).
 ///
-/// A backlog is retired once the last held frame is written or discarded; an [#admit] that finds a retired backlog
-/// reports [Admission#RETIRED] and the caller starts from a fresh one. Not a general queue: one stream, one drainer
-/// (the caller that got [Admission#HELD_FIRST]); a caller ON the stream's event loop, which writes inline without
-/// admitting, is not a drainer and is excluded from that rule.
-final class LaneBacklog<F> {
+/// A backlog is retired once no frame is held and no discarded frame is still owed a writable stream; an [#admit] that
+/// finds a retired backlog reports [Admission#RETIRED] and the caller starts from a fresh one. Not a general queue: one
+/// stream, one drainer (the caller that got [Admission#HELD_FIRST]); a caller ON the stream's event loop, which writes
+/// inline without admitting, is not a drainer and is excluded from that rule.
+///
+/// #3313 — owed keys. A discarded frame was never written, so whatever its holding started (the owner's backpressure
+/// episode of the frame's lane, `K`) can only end when the stream is next seen writable, and no event reports that for
+/// a stream with nothing left to write. So the backlog keeps the key of every frame [#drain] discards, and does not
+/// retire while it owes one and the stream is unwritable: the drainer keeps passing, and the pass that finds the stream
+/// writable settles every owed key and retires. A frame of an owed lane that is written later settles that key itself
+/// (its write ends what its holding started), so the key is dropped then. [#discardAll] settles at once if the stream
+/// is writable at that moment and otherwise drops the keys: it ends the backlog's drainer, so nothing would settle
+/// them later (the owner's next write on the lane does, as for any write).
+final class LaneBacklog<F, K> {
     /// What [#admit] did with a frame.
     enum Admission {
         /// The frame is the first held one: the caller owns starting the drain.
@@ -54,7 +66,18 @@ final class LaneBacklog<F> {
     }
 
     private final ArrayDeque<F> held = new ArrayDeque<>();
+    private final Set<K> owed = new LinkedHashSet<>();
+    private final Function<F, K> keyOf;
     private boolean retired;
+
+    private LaneBacklog(Function<F, K> keyOf) {
+        this.keyOf = keyOf;
+    }
+
+    /// A backlog whose discarded frames owe `keyOf(frame)` a writable stream (see the class doc).
+    static <F, K> LaneBacklog<F, K> laneBacklog(Function<F, K> keyOf) {
+        return new LaneBacklog<>(keyOf);
+    }
 
     /// Holds `frame` behind the frames already held and runs `onHeld` for it under the lock, so a drain can never
     /// account for a frame before its holding was accounted.
@@ -64,7 +87,8 @@ final class LaneBacklog<F> {
             return Admission.RETIRED;
         }
 
-        var first = held.isEmpty();
+        // A backlog that owes a key has a drainer still passing: the frame joins behind it, never starts a second one.
+        var first = held.isEmpty() && owed.isEmpty();
 
         held.addLast(frame);
         onHeld.accept(frame);
@@ -76,29 +100,63 @@ final class LaneBacklog<F> {
 
     /// One drain pass: writes held frames, head first, while the stream stays writable, then discards the head frames
     /// `expired` accepts (oldest first, so the head's age bounds the backlog; a frame the stream can take is written,
-    /// never discarded). Retires the backlog when none is left and reports whether it did.
+    /// never discarded), keeping each discarded frame's key as owed. Retires the backlog when no frame is left and it
+    /// owes no key or the stream is writable, passing every owed key to `settle` first, and reports whether it did.
     @Contract
-    synchronized boolean drain(Predicate<F> expired, Consumer<F> discard, BooleanSupplier writable, Consumer<F> write) {
+    synchronized boolean drain(Predicate<F> expired,
+                               Consumer<F> discard,
+                               BooleanSupplier writable,
+                               Consumer<F> write,
+                               Consumer<K> settle) {
         while (!held.isEmpty() && writable.getAsBoolean()) {
-            write.accept(held.pollFirst());
+            writeHeld(held.pollFirst(), write);
         }
 
         while (!held.isEmpty() && expired.test(held.peekFirst())) {
-            discard.accept(held.pollFirst());
+            discardOwing(held.pollFirst(), discard);
         }
 
-        retired = held.isEmpty();
+        retired = held.isEmpty() && (owed.isEmpty() || writable.getAsBoolean());
+
+        if (retired) {
+            settleOwed(settle);
+        }
 
         return retired;
     }
 
     /// Gives up on every held frame, passing each to `discard`, and retires the backlog, so a writer still holding a
-    /// reference to it after its owner dropped it gets [Admission#RETIRED] and cannot hold a frame nobody drains.
+    /// reference to it after its owner dropped it gets [Admission#RETIRED] and cannot hold a frame nobody drains. The
+    /// owed keys, these frames' included, are settled if the stream is `writable` now and dropped otherwise (class doc).
     @Contract
-    synchronized void discardAll(Consumer<F> discard) {
-        held.forEach(discard);
+    synchronized void discardAll(Consumer<F> discard, BooleanSupplier writable, Consumer<K> settle) {
+        held.forEach(frame -> discardOwing(frame, discard));
         held.clear();
         retired = true;
+
+        if (writable.getAsBoolean()) {
+            settleOwed(settle);
+        }
+
+        owed.clear();
+    }
+
+    @Contract
+    private void writeHeld(F frame, Consumer<F> write) {
+        owed.remove(keyOf.apply(frame));
+        write.accept(frame);
+    }
+
+    @Contract
+    private void discardOwing(F frame, Consumer<F> discard) {
+        owed.add(keyOf.apply(frame));
+        discard.accept(frame);
+    }
+
+    @Contract
+    private void settleOwed(Consumer<K> settle) {
+        owed.forEach(settle);
+        owed.clear();
     }
 
     synchronized int size() {

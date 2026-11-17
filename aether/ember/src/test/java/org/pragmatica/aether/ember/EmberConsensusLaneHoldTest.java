@@ -174,15 +174,16 @@ class EmberConsensusLaneHoldTest {
             var releasedAt = System.nanoTime();
 
             inboundLanes.forEach(lane -> lane.config().setAutoRead(true));
-            // Traffic after the release closes the episodes (the summary is written by the first write that finds the lane
-            // writable) and gives the held peer something to react to.
+            // Traffic after the release gives the held peer something to react to. It is not what closes the episodes: an
+            // episode ends at the first write that finds the lane writable, or, when its held frames were given up, at the
+            // drain pass that finds the stream writable again (#3313), whichever comes first.
             for (var sender : senders) {
                 put(sender, "kick-" + sender.self().id(), "after-release");
             }
             var releasedAtMs = (releasedAt - heldSince) / 1_000_000L;
 
             // The lane flaps while the flow-control window fills (many short episodes); the hold episodes are the ones that
-            // span the marker phase. Their summary is written by the first write after the release.
+            // span the marker phase. Their summary is written once the lane is writable after the release (see above).
             var holdMs = (releasedAt - markersAt) / 1_000_000L - SLACK_MS;
 
             var spanMs = (releasedAt - markersAt) / 1_000_000L;
@@ -217,8 +218,16 @@ class EmberConsensusLaneHoldTest {
             assertThat(gaveUp).as("held frames older than the frame budget are counted as RETRY_GAVE_UP").isPositive();
             awaitTrue("no backlog and no retry in flight after the release",
                       () -> senders.stream().allMatch(sender -> backlogCount(sender) == 0 && network(sender).consensusRetriesInFlight() == 0));
-            // An episode opened by a post-release flap is closed by the next write that finds the lane writable, which the
-            // catch-up traffic supplies: wait for the books to balance, each evaluation reading ONE snapshot.
+            // A CONSENSUS episode on an open stream ends with its backlog: a held frame's write ends it, and a backlog whose
+            // frames were all given up keeps draining until the stream is writable, then ends it before it is removed
+            // (#3313). So the books balance without later traffic, and the test sends nothing after the kicks above. The
+            // wait covers a flap after this read (its frame is held, so its backlog ends it the same way) and a stream that
+            // closed with frames held, whose episode the lane's next write or the peer's departure ends. Each evaluation
+            // reads ONE snapshot.
+            var booksAtEmpty = List.copyOf(arrivals);
+            System.out.printf("LANE-HOLD-BOOKS at empty backlogs: entered=%d cleared=%d%n",
+                              enteredFor(booksAtEmpty, heldId).size(),
+                              clearedFor(booksAtEmpty, heldId).size());
             awaitTrue("every episode that entered also cleared (none lost)", () -> balanced(List.copyOf(arrivals), heldId));
             // (3) THE #3194 ASSERTION.
             var releaseNanos = releasedAt;

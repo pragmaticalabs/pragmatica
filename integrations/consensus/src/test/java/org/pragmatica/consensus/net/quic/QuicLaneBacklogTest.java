@@ -377,6 +377,7 @@ class QuicLaneBacklogTest {
     }
 
     // --- item 18 (expiry path): a backlog whose every frame expired is retired and removed ---
+    // #3313: retired once the stream is writable again; until then it owes the expired frames' episode a writable stream.
 
     @Test
     void drain_everyHeldFrameExpires_entryGoes_andEachFrameIsCountedLostOnce() {
@@ -384,6 +385,14 @@ class QuicLaneBacklogTest {
         var lane = new Lane(succeeded(), -1);
 
         holdFrames(network, lane, StreamType.CONSENSUS, 1, 2, 3);
+
+        awaitWithin("every held frame expires",
+                    AWAIT,
+                    () -> network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP) == 3L);
+        assertThat(network.laneBacklogCountForTests()).as("unwritable: the entry stays while it owes the episode").isEqualTo(1);
+        assertThat(network.heldFrameCountForTests(lane.ch)).as("but holds no frame").isZero();
+
+        lane.writable.set(true);
 
         awaitWithin("the expired backlog's entry is removed", AWAIT, () -> network.laneBacklogCountForTests() == 0);
 
