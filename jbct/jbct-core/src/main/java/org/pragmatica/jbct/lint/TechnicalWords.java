@@ -34,6 +34,7 @@ public record TechnicalWords(Set<String> typeWords, Set<String> packageWords) {
                                                               "http",
                                                               "rest",
                                                               "kafka");
+
     private static final List<String> PACKAGE_ONLY_DEFAULTS = List.of("internal",
                                                                       "utils",
                                                                       "common",
@@ -57,8 +58,7 @@ public record TechnicalWords(Set<String> typeWords, Set<String> packageWords) {
     /// The built-in lists extended by `add` and then narrowed by `remove` (remove wins over add and over the defaults).
     public static TechnicalWords technicalWords(List<String> add, List<String> remove) {
         return new TechnicalWords(adjusted(TYPE_DEFAULTS.stream(), add, remove),
-                                  adjusted(Stream.concat(TYPE_DEFAULTS.stream(),
-                                                         PACKAGE_ONLY_DEFAULTS.stream()),
+                                  adjusted(Stream.concat(TYPE_DEFAULTS.stream(), PACKAGE_ONLY_DEFAULTS.stream()),
                                            add,
                                            remove));
     }

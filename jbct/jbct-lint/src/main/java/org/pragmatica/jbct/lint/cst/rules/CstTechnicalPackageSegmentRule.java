@@ -48,15 +48,13 @@ public class CstTechnicalPackageSegmentRule implements CstLintRule {
 
         return ctx.shouldLint(packageName)
                ? findFirst(root, RuleKind.PACKAGE_DECL).stream()
-                                                       .flatMap(decl -> diagnostic(decl, packageName, ctx))
+                          .flatMap(decl -> diagnostic(decl, packageName, ctx))
                : Stream.empty();
     }
 
     private Stream<Diagnostic> diagnostic(Cursor decl, String packageName, LintContext ctx) {
         var flagged = flaggedSegments(packageName,
-                                      ctx.config()
-                                         .technicalWords()
-                                         .packageWords());
+                                      ctx.config().technicalWords().packageWords());
 
         return flagged.isEmpty()
                ? Stream.empty()
@@ -75,8 +73,8 @@ public class CstTechnicalPackageSegmentRule implements CstLintRule {
                                      ctx.fileName(),
                                      startLine(decl),
                                      startColumn(decl),
-                                     "Package '" + packageName + "' names a technology, pattern or layer: "
-                                     + String.join(", ", flagged),
+                                     "Package '" + packageName
+                                    + "' names a technology, pattern or layer: " + String.join(", ", flagged),
                                      "A package is named after the business capability it holds, not the technology "
                                     + "or layer that implements it. Rename the segment after the capability. "
                                     + "Configure the list with [lint.naming] add / remove.");

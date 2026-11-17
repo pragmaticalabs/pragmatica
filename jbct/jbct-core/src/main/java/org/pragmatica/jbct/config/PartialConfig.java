@@ -215,7 +215,8 @@ record PartialConfig(PartialFormatter formatter,
             return LintConfig.lintConfig(materializedSeverities(),
                                          materializedDisabledRules(),
                                          failOnWarning.or(LintConfig.DEFAULT.failOnWarning()),
-                                         TechnicalWords.technicalWords(namingAdd.or(List.of()), namingRemove.or(List.of())));
+                                         TechnicalWords.technicalWords(namingAdd.or(List.of()),
+                                                                       namingRemove.or(List.of())));
         }
 
         /// A word list holding anything but letters-and-digits words is recorded on the document and refused by
@@ -224,13 +225,15 @@ record PartialConfig(PartialFormatter formatter,
             return toml.getStringList(NAMING, key)
                        .flatMap(words -> allNamingWords(words)
                                          ? some(words)
-                                         : toml.getParsed(NAMING, key, NAMING_WORDS_EXPECTED, _ -> none()));
+                                         : toml.getParsed(NAMING,
+                                                          key,
+                                                          NAMING_WORDS_EXPECTED,
+                                                          _ -> none()));
         }
 
         private static boolean allNamingWords(List<String> words) {
             return words.stream()
-                        .allMatch(word -> NAMING_WORD.matcher(word)
-                                                     .matches());
+                        .allMatch(word -> NAMING_WORD.matcher(word).matches());
         }
 
         /// A key under `[lint.naming]` other than `add` and `remove` is a typo that would otherwise change nothing:
@@ -239,7 +242,10 @@ record PartialConfig(PartialFormatter formatter,
             toml.keys(NAMING)
                 .stream()
                 .filter(key -> !NAMING_KEYS.contains(key))
-                .forEach(key -> toml.getParsed(NAMING, key, NAMING_KEYS_EXPECTED, _ -> none()));
+                .forEach(key -> toml.getParsed(NAMING,
+                                               key,
+                                               NAMING_KEYS_EXPECTED,
+                                               _ -> none()));
 
             return layer;
         }

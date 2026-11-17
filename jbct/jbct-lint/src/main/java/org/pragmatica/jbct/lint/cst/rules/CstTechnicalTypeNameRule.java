@@ -47,9 +47,7 @@ public class CstTechnicalTypeNameRule implements CstLintRule {
             return Stream.empty();
         }
 
-        var words = ctx.config()
-                       .technicalWords()
-                       .typeWords();
+        var words = ctx.config().technicalWords().typeWords();
 
         return Stream.of(findAllClasses(root),
                          findAllInterfaces(root),
