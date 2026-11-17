@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// JBCT-NAM-06 (technology or pattern word in a type name) and JBCT-NAM-07 (in a package segment), #2529.
 class TechnicalNameRuleTest {
     private static final String TYPE_RULE = "JBCT-NAM-06";
+    private static final String PACKAGE_RULE = "JBCT-NAM-07";
 
     // ---- part 1: JBCT-NAM-06, type names ----
 
@@ -106,6 +107,100 @@ class TechnicalNameRuleTest {
 
         assertFalse(hasType("package org.example;\nclass SeatService {}\n", infrastructure));
         assertTrue(new CstTechnicalTypeNameRule().modes().equals(Set.of(JbctMode.BUSINESS)));
+    }
+
+    // ---- part 2: JBCT-NAM-07, package segments ----
+
+    @ParameterizedTest(name = "package segment {0} is flagged")
+    @ValueSource(strings = {"repository", "dao", "controller", "adapter", "gateway", "client", "impl", "service", "manager",
+                            "helper", "util", "jooq", "jpa", "jdbc", "postgres", "http", "rest", "kafka", "internal", "utils",
+                            "common", "persistence", "usecase", "domain", "application", "infra", "integration",
+                            "bootstrap", "config"})
+    void packageSegment_isFlagged_forEveryDefaultWord(String word) {
+        assertTrue(hasPackage("package org.example." + word + ".seats;\nclass Seat {}\n"), "inner " + word);
+        assertTrue(hasPackage("package org.example.seats." + word + ";\nclass Seat {}\n"), "last " + word);
+    }
+
+    @ParameterizedTest(name = "package {0} is clean")
+    @ValueSource(strings = {"org.example", "org.example.seats", "org.example.restaurant", "org.example.services",
+                            "org.example.domainmodel", "org.example.seat.booking"})
+    void packageSegment_isClean_whenNoSegmentIsAWord(String name) {
+        assertFalse(hasPackage("package " + name + ";\nclass Seat {}\n"));
+    }
+
+    @Test
+    void packageSegment_isMatchedCaseInsensitively_andOnWholeSegmentsOnly() {
+        assertTrue(hasPackage("package org.example.Usecase.seats;\nclass Seat {}\n"));
+        assertFalse(hasPackage("package org.example.usecases;\nclass Seat {}\n"));
+    }
+
+    @Test
+    void packageSegment_reportsOnePerFileOnThePackageLine_listingEverySegmentAtInfo() {
+        var diagnostics = lint("// header\npackage org.example.usecase.adapter;\n\nclass Seat {}\nclass Booking {}\n",
+                               LintContext.defaultContext(),
+                               PACKAGE_RULE);
+
+        assertEquals(1, diagnostics.size());
+        assertEquals(2, diagnostics.getFirst().line());
+        assertEquals(DiagnosticSeverity.INFO, diagnostics.getFirst().severity());
+        assertTrue(diagnostics.getFirst().message().contains("usecase, adapter"), diagnostics.getFirst().message());
+    }
+
+    @Test
+    void packageSegment_isSilent_withoutPackageDeclaration() {
+        assertFalse(hasPackage("class Seat {}\n"));
+    }
+
+    @Test
+    void add_extendsTheList_forPackageSegments() {
+        var context = withWords(TechnicalWords.technicalWords(List.of("Saga"), List.of()));
+
+        assertTrue(hasPackage("package org.example.saga;\nclass Seat {}\n", context));
+        assertFalse(hasPackage("package org.example.saga;\nclass Seat {}\n"));
+    }
+
+    @Test
+    void remove_narrowsTheList_forPackageSegments() {
+        var context = withWords(TechnicalWords.technicalWords(List.of(), List.of("domain", "Client")));
+
+        assertFalse(hasPackage("package org.example.domain;\nclass Seat {}\n", context));
+        assertFalse(hasPackage("package org.example.client;\nclass Seat {}\n", context));
+        assertTrue(hasPackage("package org.example.usecase;\nclass Seat {}\n", context));
+        assertTrue(hasPackage("package org.example.domain;\nclass Seat {}\n"));
+    }
+
+    @Test
+    void packageSegment_isSuppressed_byExcludedPackageAndByRuleOff() {
+        var excluded = LintContext.defaultContext()
+                                  .withExcludePackages(List.of("org.example.usecase.**"));
+        var off = LintContext.defaultContext();
+        var disabled = off.withConfig(off.config().withDisabledRule(PACKAGE_RULE));
+        var source = "package org.example.usecase.seats;\nclass Seat {}\n";
+
+        assertTrue(hasPackage(source));
+        assertFalse(hasPackage(source, excluded));
+        assertTrue(CstLinter.cstLinter(disabled)
+                            .lint(SourceFile.sourceFile(Path.of("Test.java"), source))
+                            .or(List.of())
+                            .stream()
+                            .noneMatch(diagnostic -> diagnostic.ruleId().equals(PACKAGE_RULE)));
+    }
+
+    @Test
+    void packageSegment_isSilent_outsideBusinessMode() {
+        var infrastructure = LintContext.defaultContext()
+                                        .withProject(JbctMode.INFRASTRUCTURE, Option.none());
+
+        assertFalse(hasPackage("package org.example.usecase;\nclass Seat {}\n", infrastructure));
+        assertEquals(Set.of(JbctMode.BUSINESS), new CstTechnicalPackageSegmentRule().modes());
+    }
+
+    private static boolean hasPackage(String source) {
+        return hasPackage(source, LintContext.defaultContext());
+    }
+
+    private static boolean hasPackage(String source, LintContext context) {
+        return !lint(source, context, PACKAGE_RULE).isEmpty();
     }
 
     private static LintContext withWords(TechnicalWords words) {

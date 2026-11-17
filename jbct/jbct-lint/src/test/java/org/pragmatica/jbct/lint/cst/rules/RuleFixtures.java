@@ -1075,6 +1075,17 @@ final class RuleFixtures {
                 class LoadSeat {}
                 """),
 
+        // JBCT-NAM-07: a technology, pattern or layer word in a package segment, reported on the package line.
+        fixture("JBCT-NAM-07", 1,
+                """
+                package org.example.usecase.seats;
+                class Foo {}
+                """,
+                """
+                package org.example.seats;
+                class Foo {}
+                """),
+
         // JBCT-MUT-01: reassignment of a method parameter.
         fixture("JBCT-MUT-01", 4,
                 """

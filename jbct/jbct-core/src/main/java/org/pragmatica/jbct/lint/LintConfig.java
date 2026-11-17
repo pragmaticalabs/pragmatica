@@ -286,7 +286,10 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
 
     // Technology or pattern word in a type name (#2529). INFO until a corpus run calibrates the word list; Q16 keeps
     // the naming rules at INFO.
-    Map.entry("JBCT-NAM-06", DiagnosticSeverity.INFO)),
+    Map.entry("JBCT-NAM-06", DiagnosticSeverity.INFO),
+
+    // Technology, pattern or layer word in a package segment (#2529)
+    Map.entry("JBCT-NAM-07", DiagnosticSeverity.INFO)),
 
     // JBCT-SHAPE-02 ships DEFAULT-DISABLED: after the phase-2 preamble reach
     // the aether corpus census returned 3832 UNCLASSIFIED methods (down from
