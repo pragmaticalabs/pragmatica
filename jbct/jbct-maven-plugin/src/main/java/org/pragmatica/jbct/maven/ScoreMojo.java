@@ -1,6 +1,5 @@
 package org.pragmatica.jbct.maven;
 
-import org.pragmatica.jbct.lint.JbctLinter;
 import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.score.DensityGate;
 import org.pragmatica.jbct.score.ScoreCalculator;
@@ -48,24 +47,41 @@ public class ScoreMojo extends AbstractJbctMojo {
             throw new MojoExecutionException(DensityGate.REMOVED_BASELINE_MESSAGE);
         }
 
-        var jbctConfig = loadConfig();
-        var context = createLintContext(jbctConfig);
-        var linter = JbctLinter.jbctLinter(context);
-        var filesToProcess = collectJavaFiles(jbctConfig.files(), includeTests);
+        var roots = resolveRoots(includeTests);
+        var scoredRoots = roots.stream().filter(ModuleRoot::scored).toList();
+
+        if (allFiles(roots).isEmpty()) {
+            reportNothingToCheck("score", includeTests);
+
+            return;
+        }
+
+        roots.stream().filter(root -> !root.scored()).forEach(root -> getLog().info(notScored(root)));
+        var run = lintRunOf(roots);
+        var filesToProcess = allFiles(scoredRoots);
 
         if (filesToProcess.isEmpty()) {
-            reportNothingToCheck("score", includeTests);
+            // Nothing is scored: a maxDensity gate passes without measuring, and this line says so.
+            finishRun(run);
+            getLog().info("Nothing scored: no root of this module runs a JBCT rule, so maxDensity was not checked.");
 
             return;
         }
 
         getLog().info("Measuring " + filesToProcess.size() + " Java file(s)");
         var scan = SourceScan.sourceScan(filesToProcess,
-                                         linter::lint,
+                                         run::lint,
                                          message -> getLog().error("Parse error in " + message));
         var score = ScoreCalculator.calculate(scan);
 
-        LayerCoverage.coverage(filesToProcess, context).map(LayerCoverage::render).onPresent(getLog()::info);
+        finishRun(run);
+        scoredRoots.stream()
+                   .filter(root -> !root.files()
+                                        .isEmpty())
+                   .forEach(root -> LayerCoverage.coverage(root.files(),
+                                                           root.context())
+                                                 .map(LayerCoverage::render)
+                                                 .onPresent(getLog()::info));
         outputScore(score);
         var coverage = score.coverage();
         // A coverage gap outranks the density check and fails even with no maxDensity set: the goal
@@ -82,6 +98,14 @@ public class ScoreMojo extends AbstractJbctMojo {
         if (maxDensity != null && DensityGate.exceeds(score.totalDensityPerKloc(), maxDensity)) {
             throw new MojoFailureException(DensityGate.breachMessage(score.totalDensityPerKloc(), maxDensity));
         }
+    }
+
+    /// `format-only` and `disabled` roots run no rule, so there is nothing to measure: the root is announced, never scored.
+    private static String notScored(ModuleRoot root) {
+        return "Not scored: mode=" + root.mode()
+                                         .token()
+             + " root=" + root.path()
+             + " runs no JBCT rule, so it has no violation density.";
     }
 
     private void outputScore(ScoreResult score) {

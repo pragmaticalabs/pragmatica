@@ -12,6 +12,7 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.LintRun.RunReport;
 import org.pragmatica.jbct.lint.cst.LintRun.SourceRoot;
+import org.pragmatica.jbct.parser.Java25Parser;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -89,6 +90,27 @@ class LintRunTest {
 
         assertEquals(Set.of(ARCH_02, RET_03), reported(run.lint(file(business, "Pricing.java"))));
         assertEquals(Set.of(RET_03), reported(run.lint(file(infrastructure, "Pricing.java"))));
+    }
+
+    @Test
+    void lintParsed_usesTheRulesOfTheFilesRoot_andRefusesAfterFinish() throws IOException {
+        var business = directory("biz/src/main/java");
+        var infrastructure = directory("infra/src/main/java");
+        var formatOnly = directory("fmt/src/main/java");
+        var run = LintRun.lintRun(List.of(root(business, JbctMode.BUSINESS),
+                                          root(infrastructure, JbctMode.INFRASTRUCTURE),
+                                          root(formatOnly, JbctMode.FORMAT_ONLY)));
+
+        assertEquals(Set.of(ARCH_02, RET_03), reported(parsedLint(run, file(business, "Pricing.java"))));
+        assertEquals(Set.of(RET_03), reported(parsedLint(run, file(infrastructure, "Pricing.java"))));
+        assertEquals(Set.of(), reported(parsedLint(run, file(formatOnly, "Pricing.java"))));
+        assertTrue(run.finish().isSuccess());
+        assertEquals(LintRunError.General.RUN_FINISHED, failureOf(parsedLint(run, file(business, "Late.java"))));
+    }
+
+    private static Result<List<Diagnostic>> parsedLint(LintRun run, SourceFile file) {
+        return new Java25Parser().parse(file.content())
+                                 .flatMap(tree -> run.lintParsed(tree, file));
     }
 
     @Test

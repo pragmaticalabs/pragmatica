@@ -6,7 +6,8 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.jbct.lint.Diagnostic;
-import org.pragmatica.jbct.lint.JbctLinter;
+import org.pragmatica.jbct.lint.DiagnosticSeverity;
+import org.pragmatica.jbct.lint.cst.LintRun;
 import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.shared.AnalysisCoverage;
 import org.pragmatica.jbct.shared.SourceFile;
@@ -37,10 +38,8 @@ public class LintMojo extends AbstractJbctMojo {
             return;
         }
 
-        var jbctConfig = loadConfig();
-        var context = createLintContext(jbctConfig);
-        var linter = JbctLinter.jbctLinter(context);
-        var filesToProcess = collectJavaFiles(jbctConfig.files(), includeTests);
+        var roots = resolveRoots(includeTests);
+        var filesToProcess = allFiles(roots);
 
         if (filesToProcess.isEmpty()) {
             reportNothingToCheck("lint", includeTests);
@@ -48,18 +47,48 @@ public class LintMojo extends AbstractJbctMojo {
             return;
         }
 
+        var run = lintRunOf(roots);
+
         getLog().info("Linting " + filesToProcess.size() + " Java file(s)");
         var allDiagnostics = new ArrayList<Diagnostic>();
         var errors = new AtomicInteger(0);
         var warnings = new AtomicInteger(0);
         var infos = new AtomicInteger(0);
         var parseErrors = new AtomicInteger(0);
+        // Warnings count toward failure per root: a warning fails the run when its own root sets failOnWarning.
+        var failingWarnings = new AtomicInteger(0);
 
-        for (var file : filesToProcess) {
-            processFile(file, linter, allDiagnostics, errors, warnings, infos, parseErrors);
+        for (var root : roots) {
+            for (var file : root.files()) {
+                var before = allDiagnostics.size();
+
+                processFile(file, run, allDiagnostics, errors, warnings, infos, parseErrors);
+                if (root.config().lint().failOnWarning()) {
+                    failingWarnings.addAndGet(warningsIn(allDiagnostics.subList(before, allDiagnostics.size())));
+                }
+            }
         }
 
-        LayerCoverage.coverage(filesToProcess, context).map(LayerCoverage::render).onPresent(getLog()::info);
+        var report = finishRun(run);
+        var anyFailOnWarning = roots.stream().anyMatch(root -> root.config()
+                                                                   .lint()
+                                                                   .failOnWarning());
+
+        for (var d : report.diagnostics()) {
+            allDiagnostics.add(d);
+            tally(d, errors, warnings, infos);
+            if (anyFailOnWarning && d.severity() == DiagnosticSeverity.WARNING) {
+                failingWarnings.incrementAndGet();
+            }
+        }
+
+        roots.stream()
+             .filter(root -> !root.files()
+                                  .isEmpty())
+             .forEach(root -> LayerCoverage.coverage(root.files(),
+                                                     root.context())
+                                           .map(LayerCoverage::render)
+                                           .onPresent(getLog()::info));
         var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), parseErrors.get());
         // Print diagnostics
         for (var d : allDiagnostics) {
@@ -90,8 +119,8 @@ public class LintMojo extends AbstractJbctMojo {
             failures.add(errors.get() + " lint error(s)");
         }
 
-        if (jbctConfig.lint().failOnWarning() && warnings.get() > 0) {
-            failures.add(warnings.get() + " warning(s) (failOnWarning is enabled)");
+        if (failingWarnings.get() > 0) {
+            failures.add(failingWarnings.get() + " warning(s) (failOnWarning is enabled)");
         }
 
         if (!failures.isEmpty()) {
@@ -100,28 +129,30 @@ public class LintMojo extends AbstractJbctMojo {
     }
 
     private void processFile(Path file,
-                             JbctLinter linter,
+                             LintRun run,
                              List<Diagnostic> allDiagnostics,
                              AtomicInteger errors,
                              AtomicInteger warnings,
                              AtomicInteger infos,
                              AtomicInteger parseErrors) {
         SourceFile.sourceFile(file)
-                  .flatMap(linter::lint)
+                  .flatMap(run::lint)
                   .onSuccess(diagnostics -> {
                                  allDiagnostics.addAll(diagnostics);
-                                 for (var d : diagnostics) {
-                                     switch (d.severity()) {
-                                         case ERROR -> errors.incrementAndGet();
-                                         case WARNING -> warnings.incrementAndGet();
-                                         case INFO -> infos.incrementAndGet();
-                                     }
-                                 }
+                                 diagnostics.forEach(d -> tally(d, errors, warnings, infos));
                              })
                   .onFailure(cause -> {
                                  parseErrors.incrementAndGet();
                                  getLog().error("Parse error in " + file + ": " + cause.message());
                              });
+    }
+
+    private static void tally(Diagnostic d, AtomicInteger errors, AtomicInteger warnings, AtomicInteger infos) {
+        switch (d.severity()) {
+            case ERROR -> errors.incrementAndGet();
+            case WARNING -> warnings.incrementAndGet();
+            case INFO -> infos.incrementAndGet();
+        }
     }
 
     private String formatDiagnostic(Diagnostic d) {

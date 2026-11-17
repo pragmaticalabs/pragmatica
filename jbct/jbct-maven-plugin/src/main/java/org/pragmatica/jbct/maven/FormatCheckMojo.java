@@ -35,9 +35,8 @@ public class FormatCheckMojo extends AbstractJbctMojo {
             return;
         }
 
-        var config = loadConfig();
-        var formatter = JbctFormatter.jbctFormatter(config.formatter());
-        var filesToProcess = collectJavaFiles(config.files(), includeTests);
+        var roots = resolveRoots(includeTests);
+        var filesToProcess = allFiles(roots);
 
         if (filesToProcess.isEmpty()) {
             reportNothingToCheck("format check", includeTests);
@@ -49,8 +48,8 @@ public class FormatCheckMojo extends AbstractJbctMojo {
         var needsFormatting = new ArrayList<Path>();
         var errors = new AtomicInteger(0);
 
-        for (var file : filesToProcess) {
-            checkFile(file, formatter, needsFormatting, errors);
+        for (var job : formatJobs(roots)) {
+            checkFile(job.file(), job.formatter(), needsFormatting, errors);
         }
 
         if (!needsFormatting.isEmpty()) {

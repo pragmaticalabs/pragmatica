@@ -7,7 +7,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.lint.Diagnostic;
-import org.pragmatica.jbct.lint.JbctLinter;
+import org.pragmatica.jbct.lint.cst.LintRun;
 import org.pragmatica.jbct.parser.Java25Parser;
 import org.pragmatica.jbct.shared.AnalysisCoverage;
 import org.pragmatica.jbct.shared.SourceFile;
@@ -61,20 +61,20 @@ public class ProcessMojo extends AbstractJbctMojo {
             return;
         }
 
-        var jbctConfig = loadConfig();
-        var formatter = JbctFormatter.jbctFormatter(jbctConfig.formatter());
-        var lintContext = createLintContext(jbctConfig);
-        var linter = JbctLinter.jbctLinter(lintContext);
-        var parser = new Java25Parser();
-        var filesToProcess = collectJavaFiles(jbctConfig.files(), includeTests);
+        var roots = resolveRoots(includeTests);
 
-        if (filesToProcess.isEmpty()) {
+        if (allFiles(roots).isEmpty()) {
             reportNothingToCheck("process", includeTests);
 
             return;
         }
 
-        getLog().info("Processing " + filesToProcess.size() + " Java file(s)");
+        var run = lintRunOf(roots);
+        var parser = new Java25Parser();
+        // A `disabled` root is neither formatted nor linted, so its files are not part of what this goal covers.
+        var processedFiles = allFiles(roots.stream().filter(ModuleRoot::formats).toList());
+
+        getLog().info("Processing " + processedFiles.size() + " Java file(s)");
         var formatted = new AtomicInteger(0);
         var unchanged = new AtomicInteger(0);
         var formatErrors = new AtomicInteger(0);
@@ -86,24 +86,41 @@ public class ProcessMojo extends AbstractJbctMojo {
         var lintErrors = new AtomicInteger(0);
         var lintWarnings = new AtomicInteger(0);
         var lintInfos = new AtomicInteger(0);
+        // Warnings count toward failure per root: a warning fails the run when its own root sets failOnWarning.
+        var failingWarnings = new AtomicInteger(0);
 
-        for (var file : filesToProcess) {
-            processFile(file,
-                        parser,
-                        formatter,
-                        linter,
-                        formatted,
-                        unchanged,
-                        formatErrors,
-                        parseErrors,
-                        unreadable,
-                        allDiagnostics,
-                        lintErrors,
-                        lintWarnings,
-                        lintInfos);
+        for (var root : roots) {
+            if (!root.formats()) {
+                getLog().info("Not processed: mode=disabled root=" + root.path());
+                continue;
+            }
+
+            var formatter = JbctFormatter.jbctFormatter(root.config().formatter());
+
+            for (var file : root.files()) {
+                var before = allDiagnostics.size();
+
+                processFile(file,
+                            parser,
+                            formatter,
+                            run,
+                            formatted,
+                            unchanged,
+                            formatErrors,
+                            parseErrors,
+                            unreadable,
+                            allDiagnostics,
+                            lintErrors,
+                            lintWarnings,
+                            lintInfos);
+                if (root.config().lint().failOnWarning()) {
+                    failingWarnings.addAndGet(warningsIn(allDiagnostics.subList(before, allDiagnostics.size())));
+                }
+            }
         }
 
-        var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(),
+        finishRun(run);
+        var coverage = AnalysisCoverage.analysisCoverage(processedFiles.size(),
                                                          parseErrors.get() + unreadable.get());
 
         for (var d : allDiagnostics) {
@@ -143,8 +160,8 @@ public class ProcessMojo extends AbstractJbctMojo {
             failures.add(lintErrors.get() + " lint error(s)");
         }
 
-        if (jbctConfig.lint().failOnWarning() && lintWarnings.get() > 0) {
-            failures.add(lintWarnings.get() + " warning(s) (failOnWarning is enabled)");
+        if (failingWarnings.get() > 0) {
+            failures.add(failingWarnings.get() + " warning(s) (failOnWarning is enabled)");
         }
 
         if (!failures.isEmpty()) {
@@ -155,7 +172,7 @@ public class ProcessMojo extends AbstractJbctMojo {
     private void processFile(Path file,
                              Java25Parser parser,
                              JbctFormatter formatter,
-                             JbctLinter linter,
+                             LintRun run,
                              AtomicInteger formatted,
                              AtomicInteger unchanged,
                              AtomicInteger formatErrors,
@@ -170,7 +187,7 @@ public class ProcessMojo extends AbstractJbctMojo {
                                                         source,
                                                         parser,
                                                         formatter,
-                                                        linter,
+                                                        run,
                                                         formatted,
                                                         unchanged,
                                                         formatErrors,
@@ -189,7 +206,7 @@ public class ProcessMojo extends AbstractJbctMojo {
                                   SourceFile source,
                                   Java25Parser parser,
                                   JbctFormatter formatter,
-                                  JbctLinter linter,
+                                  LintRun run,
                                   AtomicInteger formatted,
                                   AtomicInteger unchanged,
                                   AtomicInteger formatErrors,
@@ -209,7 +226,16 @@ public class ProcessMojo extends AbstractJbctMojo {
 
         var tree = parseResult.unwrap();
         // Lint first so diagnostics reference the as-authored source.
-        var diagnostics = linter.lintParsed(tree, source);
+        var linted = run.lintParsed(tree, source);
+
+        if (linted.isFailure()) {
+            parseErrors.incrementAndGet();
+            linted.onFailure(cause -> getLog().error("Cannot lint " + file + ": " + cause.message()));
+
+            return;
+        }
+
+        var diagnostics = linted.unwrap();
         var lintHasErrors = diagnostics.stream()
                                        .anyMatch(d -> d.severity() == org.pragmatica.jbct.lint.DiagnosticSeverity.ERROR);
 

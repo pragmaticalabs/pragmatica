@@ -7,7 +7,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.lint.Diagnostic;
-import org.pragmatica.jbct.lint.JbctLinter;
+import org.pragmatica.jbct.lint.cst.LintRun;
 import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.shared.AnalysisCoverage;
 import org.pragmatica.jbct.shared.SourceFile;
@@ -38,17 +38,16 @@ public class CheckMojo extends AbstractJbctMojo {
             return;
         }
 
-        var jbctConfig = loadConfig();
-        var formatter = JbctFormatter.jbctFormatter(jbctConfig.formatter());
-        var context = createLintContext(jbctConfig);
-        var linter = JbctLinter.jbctLinter(context);
-        var filesToProcess = collectJavaFiles(jbctConfig.files(), includeTests);
+        var roots = resolveRoots(includeTests);
+        var filesToProcess = allFiles(roots);
 
         if (filesToProcess.isEmpty()) {
             reportNothingToCheck("check", includeTests);
 
             return;
         }
+
+        var run = lintRunOf(roots);
 
         getLog().info("Running JBCT check on " + filesToProcess.size() + " Java file(s)");
         // Format check
@@ -59,13 +58,50 @@ public class CheckMojo extends AbstractJbctMojo {
         var lintErrors = new AtomicInteger(0);
         var warnings = new AtomicInteger(0);
         var parseErrors = new AtomicInteger(0);
+        // Warnings count toward failure per root: a warning fails the run when its own root sets failOnWarning.
+        var failingWarnings = new AtomicInteger(0);
 
-        for (var file : filesToProcess) {
-            checkFormat(file, formatter, needsFormatting, formatErrors);
-            checkLint(file, linter, allDiagnostics, lintErrors, warnings, parseErrors);
+        for (var job : formatJobs(roots)) {
+            checkFormat(job.file(), job.formatter(), needsFormatting, formatErrors);
         }
 
-        LayerCoverage.coverage(filesToProcess, context).map(LayerCoverage::render).onPresent(getLog()::info);
+        for (var root : roots) {
+            for (var file : root.files()) {
+                var before = allDiagnostics.size();
+
+                checkLint(file, run, allDiagnostics, lintErrors, warnings, parseErrors);
+                if (root.config().lint().failOnWarning()) {
+                    failingWarnings.addAndGet(warningsIn(allDiagnostics.subList(before, allDiagnostics.size())));
+                }
+            }
+        }
+
+        var report = finishRun(run);
+        var anyFailOnWarning = roots.stream().anyMatch(root -> root.config()
+                                                                   .lint()
+                                                                   .failOnWarning());
+
+        for (var d : report.diagnostics()) {
+            allDiagnostics.add(d);
+            switch (d.severity()) {
+                case ERROR -> lintErrors.incrementAndGet();
+                case WARNING -> {
+                    warnings.incrementAndGet();
+                    if (anyFailOnWarning) {
+                        failingWarnings.incrementAndGet();
+                    }
+                }
+                default -> {}
+            }
+        }
+
+        roots.stream()
+             .filter(root -> !root.files()
+                                  .isEmpty())
+             .forEach(root -> LayerCoverage.coverage(root.files(),
+                                                     root.context())
+                                           .map(LayerCoverage::render)
+                                           .onPresent(getLog()::info));
         var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), parseErrors.get());
         // Report format issues
         if (!needsFormatting.isEmpty()) {
@@ -123,8 +159,8 @@ public class CheckMojo extends AbstractJbctMojo {
             hasFailures = true;
         }
 
-        if (jbctConfig.lint().failOnWarning() && warnings.get() > 0) {
-            failures.add(warnings.get() + " warning(s) (failOnWarning is enabled)");
+        if (failingWarnings.get() > 0) {
+            failures.add(failingWarnings.get() + " warning(s) (failOnWarning is enabled)");
             hasFailures = true;
         }
 
@@ -150,13 +186,13 @@ public class CheckMojo extends AbstractJbctMojo {
     }
 
     private void checkLint(Path file,
-                           JbctLinter linter,
+                           LintRun run,
                            List<Diagnostic> allDiagnostics,
                            AtomicInteger errors,
                            AtomicInteger warnings,
                            AtomicInteger parseErrors) {
         SourceFile.sourceFile(file)
-                  .flatMap(linter::lint)
+                  .flatMap(run::lint)
                   .onSuccess(diagnostics -> {
                                  allDiagnostics.addAll(diagnostics);
                                  for (var d : diagnostics) {

@@ -32,9 +32,8 @@ public class FormatMojo extends AbstractJbctMojo {
             return;
         }
 
-        var config = loadConfig();
-        var formatter = JbctFormatter.jbctFormatter(config.formatter());
-        var filesToProcess = collectJavaFiles(config.files(), includeTests);
+        var roots = resolveRoots(includeTests);
+        var filesToProcess = allFiles(roots);
 
         if (filesToProcess.isEmpty()) {
             reportNothingToCheck("format", includeTests);
@@ -47,8 +46,8 @@ public class FormatMojo extends AbstractJbctMojo {
         var unchanged = new AtomicInteger(0);
         var errors = new AtomicInteger(0);
 
-        for (var file : filesToProcess) {
-            processFile(file, formatter, formatted, unchanged, errors);
+        for (var job : formatJobs(roots)) {
+            processFile(job.file(), job.formatter(), formatted, unchanged, errors);
         }
 
         getLog().info("Formatted: " + formatted.get() + ", Unchanged: " + unchanged.get() + ", Errors: " + errors.get());

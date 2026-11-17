@@ -4,12 +4,19 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.config.FilesConfig;
 import org.pragmatica.jbct.config.JbctConfig;
+import org.pragmatica.jbct.config.JbctMode;
+import org.pragmatica.jbct.format.JbctFormatter;
+import org.pragmatica.jbct.lint.Diagnostic;
+import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.lint.cst.LintRun;
 import org.pragmatica.jbct.shared.FileCollector;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -49,10 +56,14 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
     /// with a message naming the file and the offending key or line (#1455); the build log shows it.
     @Contract
     protected JbctConfig loadConfig() throws MojoExecutionException {
-        var projectDir = project.getBasedir().toPath();
-        var explicitMode = explicitMode();
+        return loadConfigAt(project.getBasedir().toPath(),
+                            explicitMode());
+    }
+
+    @Contract
+    private JbctConfig loadConfigAt(Path start, Option<String> explicitMode) throws MojoExecutionException {
         var loaded = ConfigLoader.loadForSourceRoot(Option.none(),
-                                                    projectDir)
+                                                    start)
                                  .flatMap(config -> config.overrideMode(explicitMode));
         var refusal = loaded.fold(cause -> Option.some(cause.message()),
                                   _ -> Option.<String> none());
@@ -94,6 +105,181 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
     /// Create lint context from configuration.
     protected LintContext createLintContext(JbctConfig config) {
         return LintContext.fromConfig(config);
+    }
+
+    /// A source root of the module with the configuration, lint context and files resolved for it (#2525, P2c).
+    ///
+    /// The main directory is always a root; the test directory is one when the goal collects tests. A root under the
+    /// module directory carries the module's configuration, the one `loadConfig` reads; a root outside it (a
+    /// `testSourceDirectory` pointing into another module) resolves its own chain, as the CLI does for every argument path.
+    protected record ModuleRoot(Path path, JbctConfig config, LintContext context, List<Path> files) {
+        public static ModuleRoot moduleRoot(Path path, JbctConfig config, LintContext context, List<Path> files) {
+            return new ModuleRoot(path.toAbsolutePath().normalize(),
+                                  config,
+                                  context,
+                                  List.copyOf(files));
+        }
+
+        LintRun.SourceRoot sourceRoot() {
+            return LintRun.SourceRoot.sourceRoot(path, context);
+        }
+
+        JbctMode mode() {
+            return context.mode();
+        }
+
+        /// `business` and `infrastructure` run rules, so they have a violation density; the other two do not.
+        boolean scored() {
+            return mode() == JbctMode.BUSINESS || mode() == JbctMode.INFRASTRUCTURE;
+        }
+
+        boolean formats() {
+            return mode() != JbctMode.DISABLED;
+        }
+
+        boolean lints() {
+            return scored();
+        }
+
+        private ModuleRoot withFiles(List<Path> newFiles) {
+            return moduleRoot(path, config, context, newFiles);
+        }
+
+        private int depth() {
+            return path.getNameCount();
+        }
+    }
+
+    /// One file with the formatter built from its own root's `[format]` settings, and whether its root runs rules.
+    protected record FormatJob(Path file, JbctFormatter formatter) {
+        public static FormatJob formatJob(Path file, JbctFormatter formatter) {
+            return new FormatJob(file, formatter);
+        }
+    }
+
+    /// The source roots of this goal: the main directory, and the test directory when `includeTests` is set, each with
+    /// its own configuration, mode and collected files. A file under two roots stays with the deepest.
+    @Contract
+    protected List<ModuleRoot> resolveRoots(boolean includeTests) throws MojoExecutionException {
+        var explicitMode = explicitMode();
+        var basedir = project.getBasedir().toPath().toAbsolutePath().normalize();
+        var moduleConfig = loadConfigAt(basedir, explicitMode);
+        var roots = new ArrayList<ModuleRoot>();
+
+        for (var directory : Option.option(sourceDirectory).map(File::toPath).stream().toList()) {
+            roots.add(resolveRoot(directory, false, basedir, moduleConfig, explicitMode));
+        }
+
+        if (includeTests) {
+            for (var directory : Option.option(testSourceDirectory).map(File::toPath).stream().toList()) {
+                roots.add(resolveRoot(directory, true, basedir, moduleConfig, explicitMode));
+            }
+        }
+
+        return ownedByDeepest(roots);
+    }
+
+    @Contract
+    private ModuleRoot resolveRoot(Path directory,
+                                   boolean testRoot,
+                                   Path basedir,
+                                   JbctConfig moduleConfig,
+                                   Option<String> explicitMode) throws MojoExecutionException {
+        var config = directory.toAbsolutePath().normalize().startsWith(basedir)
+                     ? moduleConfig
+                     : loadConfigAt(directory, explicitMode);
+        var files = FileCollector.collectFromDirectories(testRoot
+                                                         ? Option.<Path> none()
+                                                         : Option.some(directory),
+                                                         testRoot
+                                                         ? Option.some(directory)
+                                                         : Option.<Path> none(),
+                                                         testRoot,
+                                                         config.files(),
+                                                         msg -> getLog().info(msg));
+
+        return ModuleRoot.moduleRoot(directory, config, createLintContext(config), files);
+    }
+
+    private static List<ModuleRoot> ownedByDeepest(List<ModuleRoot> roots) {
+        return roots.stream()
+                    .map(root -> root.withFiles(filesNotHeldDeeper(root, roots)))
+                    .toList();
+    }
+
+    private static List<Path> filesNotHeldDeeper(ModuleRoot root, List<ModuleRoot> roots) {
+        var deeper = roots.stream().filter(other -> other.depth() > root.depth()).toList();
+
+        return root.files()
+                   .stream()
+                   .filter(file -> deeper.stream()
+                                         .noneMatch(other -> file.toAbsolutePath()
+                                                                 .normalize()
+                                                                 .startsWith(other.path())))
+                   .toList();
+    }
+
+    /// The warnings among these diagnostics.
+    protected static int warningsIn(List<Diagnostic> diagnostics) {
+        return (int) diagnostics.stream()
+                                .filter(d -> d.severity() == DiagnosticSeverity.WARNING)
+                                .count();
+    }
+
+    /// Finish the run and log its per-root summary, one line per source root with its mode.
+    @Contract
+    protected LintRun.RunReport finishRun(LintRun run) throws MojoExecutionException {
+        var report = run.finish();
+        var refusal = report.fold(cause -> Option.some(cause.message()),
+                                  _ -> Option.<String> none());
+
+        if (refusal.isPresent()) {
+            throw new MojoExecutionException(refusal.unwrap());
+        }
+
+        report.unwrap().summary().forEach(getLog()::info);
+
+        return report.unwrap();
+    }
+
+    /// Every collected file of the goal, in root order.
+    protected static List<Path> allFiles(List<ModuleRoot> roots) {
+        return roots.stream()
+                    .flatMap(root -> root.files()
+                                         .stream())
+                    .toList();
+    }
+
+    /// One lint run over these roots, with `testSourceDirectory` declared as a test root (P2c).
+    protected LintRun lintRunOf(List<ModuleRoot> roots) {
+        return LintRun.lintRun(roots.stream().map(ModuleRoot::sourceRoot).toList(),
+                               Option.option(testSourceDirectory)
+                                     .map(File::toPath)
+                                     .map(directory -> Set.of(directory))
+                                     .or(Set.<Path> of()));
+    }
+
+    /// The files a format goal touches, each with the formatter of its own root; a `disabled` root contributes none and
+    /// is announced once. `business`, `infrastructure` and `format-only` roots all format (§2.3 "Modes").
+    protected List<FormatJob> formatJobs(List<ModuleRoot> roots) {
+        return roots.stream()
+                    .flatMap(root -> formatJobsOf(root).stream())
+                    .toList();
+    }
+
+    private List<FormatJob> formatJobsOf(ModuleRoot root) {
+        if (!root.formats()) {
+            getLog().info("Not formatted: mode=disabled root=" + root.path());
+
+            return List.of();
+        }
+
+        var formatter = JbctFormatter.jbctFormatter(root.config().formatter());
+
+        return root.files()
+                   .stream()
+                   .map(file -> FormatJob.formatJob(file, formatter))
+                   .toList();
     }
 
     /// Collect Java files from source directories, applying file filters.

@@ -11,6 +11,7 @@ import java.util.stream.Stream;
 import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -92,6 +93,14 @@ public final class LintRun {
         return finished.get()
                ? LintRunError.General.RUN_FINISHED.result()
                : route(file).flatMap(group -> group.lint(file));
+    }
+
+    /// Lint one file the caller has already parsed (`process` formats and lints on one CST), with the rules of its
+    /// source root.
+    public Result<List<Diagnostic>> lintParsed(Cursor tree, SourceFile file) {
+        return finished.get()
+               ? LintRunError.General.RUN_FINISHED.result()
+               : route(file).map(group -> group.lintParsed(tree, file));
     }
 
     /// Close the run: the run diagnostics and the per-root summary. Refused the second time.
@@ -177,6 +186,12 @@ public final class LintRun {
             return lintsFiles
                    ? linter.lint(file)
                    : success(List.of());
+        }
+
+        List<Diagnostic> lintParsed(Cursor tree, SourceFile file) {
+            return lintsFiles
+                   ? linter.lintParsed(tree, file)
+                   : List.of();
         }
 
         String summaryLine() {
