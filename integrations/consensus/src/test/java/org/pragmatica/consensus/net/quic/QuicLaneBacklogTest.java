@@ -624,6 +624,41 @@ class QuicLaneBacklogTest {
         }
     }
 
+    /// C2 (#3313): the lane's episode is judged per (peer, lane), across every backlog of the peer. CONSENSUS frames are
+    /// held on an old stream A (unwritable, live: a reconnect replaced it); a CONSENSUS write then finds the new stream B
+    /// unwritable and is counted there, so B is the stream of the lane's latest counted write. B turns writable and its
+    /// drain writes its frame, which runs the closer: the frames still held on A keep the episode open, with no "cleared"
+    /// line. Only when A's frames are written does the episode end, with one line.
+    @Test
+    void episode_framesHeldOnAnOldStream_keepTheLanesEpisodeOpen_acrossACountedWriteOnTheNewOne() throws Exception {
+        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var old = new Lane(succeeded(), -1);
+        var replacement = new Lane(succeeded(), -1);
+
+        try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+            holdFrames(network, old, StreamType.CONSENSUS, 1, 2);
+            holdFrames(network, replacement, StreamType.CONSENSUS, 3);
+            assertThat(network.openBackpressureEpisodesForTests()).as("one episode for the (peer, lane)").isEqualTo(1);
+
+            replacement.writable.set(true);
+            awaitWithin("the new stream's drain wrote its frame", AWAIT, () -> replacement.written.size() == 1);
+            awaitWithin("the new stream's backlog retired", AWAIT, () -> network.laneBacklogCountForTests() == 1);
+            fireWritabilityEvent(network, replacement.ch);
+
+            assertThat(network.openBackpressureEpisodesForTests()).as("frames of the lane are still held on the old stream")
+                                                                  .isEqualTo(1);
+            assertThat(cleared(capture)).as("no cleared line while the old stream holds frames of the lane").isEmpty();
+
+            old.writable.set(true);
+            awaitWithin("the old stream's drain wrote its frames", AWAIT, () -> old.written.size() == 2);
+
+            awaitWithin("the episode ends once no backlog holds a frame of the lane",
+                        AWAIT,
+                        () -> network.openBackpressureEpisodesForTests() == 0);
+            assertThat(cleared(capture)).as("one cleared line for the one episode").hasSize(1);
+        }
+    }
+
     /// M15 (#3313): the closer's writability check throws. Nothing is ended on a throw: the episode stays open and one
     /// WARN says so; the closer's next run (the stream's writability event) ends it. A refused KV write opens the
     /// episode, so no drain runs the closer behind the test's back.
