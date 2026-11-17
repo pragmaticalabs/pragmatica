@@ -278,6 +278,27 @@ class StreamPartitionManagerAckedMarkerTest {
         assertThat(visible()).as("the regained lease raised visible from the still-pending marker").isEqualTo(4L);
     }
 
+    /// #3307, NT-111 (ii) at the activation trigger: a marker of a foreign epoch (one the history does not attribute 4 to, the
+    /// fixture of [#unattributedMarker_isNeverTrusted]) is not raised by the activation alone, with no admission (the wired
+    /// gate fails the test if one runs), and the lease-regained edge after it -- the trigger that raises a marker the
+    /// activation left pending (the two tests above) -- does not raise it either, whether the activation took the marker or
+    /// left it pending. Mutation: the trust check always passing raises visible to 4 at the activation (red).
+    @Test
+    void foreignEpochMarker_isNotRaisedAtActivation_norLaterByTheLeaseRegainedEdge() throws IOException {
+        restartWithMarkerAt4();
+        manager.close();
+        manager = null;
+        Files.writeString(walFile(walDir).resolveSibling(PARTITION + ".acked"), validMarkerLine("999", 4L));
+        restartOn(walDir);
+        var activation = activationWiredTo(manager);
+
+        assertThat(activation.activate(STREAM, PARTITION).await().isSuccess()).as("control: the activation completes").isTrue();
+        assertThat(visible()).as("an epoch the history does not attribute 4 to is not raised at activation").isEqualTo(-1L);
+        manager.onLeaseRegained();
+        assertThat(visible()).as("nor by the lease-regained edge after it").isEqualTo(-1L);
+        assertThat(durable()).as("control: the tail is durable").isEqualTo(9L);
+    }
+
     /// NT-111 (ii), same rank: a key of the marker's own epoch rank but another incarnation passes the lineage check and
     /// fails attribution alone -- the history attributes 4 to the key it recorded, not to this one.
     @Test
