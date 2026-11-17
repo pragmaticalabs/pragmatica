@@ -37,6 +37,7 @@ import org.apache.logging.log4j.core.appender.AppenderLoggingException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.net.quic.QuicTransportMetrics.DropSite;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.StreamType;
@@ -834,6 +835,34 @@ class QuicLaneBacklogTest {
                               .toList()).as("the refused write opened an episode").hasSize(1);
             assertThat(network.openBackpressureEpisodesForTests()).as("the refused write's own closer run ended it")
                                                                   .isZero();
+            assertThat(cleared(capture)).as("one cleared line for the one episode").hasSize(1);
+        }
+    }
+
+    /// S1 (#3313 T-f), the pre-encode refusal in `writeToStream`: a fast-fail frame is refused before its encode because
+    /// its stream reads unwritable, and the stream turns writable between that read and the count. The refusal's own
+    /// closer run reads writability after the count and ends the episode. Nothing is held, no writability event follows,
+    /// no later write is made and nothing closes: a count with no closer leaves the episode open for good.
+    @Test
+    void episode_streamTurnsWritableBetweenThePreEncodeRefusalAndItsCount_theRefusedSendEndsIt() {
+        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var lane = new Lane(succeeded(), -1);
+        var connection = LossAccountingFixtures.connection(PEER, QuicPeerConnection.LaneOpener.noop());
+
+        connection.registerStream(StreamType.KV, lane.ch);
+
+        try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+            lane.writableAfterNextCheck.set(true);
+            var outcome = network.writeToStreamForTests(PEER,
+                                                        LaneProbe.laneProbe(LossAccountingFixtures.SELF, StreamType.KV, "m"),
+                                                        connection);
+
+            assertThat(outcome).as("control: refused before the encode").isInstanceOf(WriteOutcome.BackpressureRefused.class);
+            assertThat(lane.writableAfterNextCheck).as("control: the refusal read the stream unwritable").isFalse();
+            assertThat(lane.written).as("control: nothing was written").isEmpty();
+            assertThat(network.laneBacklogCountForTests()).as("a refused write holds nothing").isZero();
+            assertThat(entered(capture)).as("the refused write opened an episode").hasSize(1);
+            assertThat(network.openBackpressureEpisodesForTests()).as("the refusal's own closer run ended it").isZero();
             assertThat(cleared(capture)).as("one cleared line for the one episode").hasSize(1);
         }
     }
