@@ -176,9 +176,10 @@ class EmberConsensusLaneHoldTest {
 
             inboundLanes.forEach(lane -> lane.config().setAutoRead(true));
             // Traffic after the release gives the held peer something to react to. It is not what closes the episodes: one
-            // closer ends them (#3313), run when a held frame leaves the backlog (written, given up, abandoned), at a direct
-            // write, at the stream's writability event, and when the stream or its peer goes. An episode ends at the first
-            // such run that finds no frame of its lane held and the stream writable or gone.
+            // closer ends them (#3313), run when a held frame leaves the backlog (written, given up, abandoned), at the lane
+            // stream's writability event and its inactive event, after a refused write is counted, and when the peer's
+            // connection closes or the peer departs; a successful write does not run it. An episode ends at the first such
+            // run that finds no frame of its (peer, lane) held in any backlog and its latest unwritable stream writable or gone.
             for (var sender : senders) {
                 put(sender, "kick-" + sender.self().id(), "after-release");
             }
