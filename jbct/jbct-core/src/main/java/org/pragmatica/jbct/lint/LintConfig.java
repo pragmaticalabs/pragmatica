@@ -9,7 +9,8 @@ import java.util.Set;
 /// Configuration for the JBCT linter.
 public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
                          Set<String> disabledRules,
-                         boolean failOnWarning) {
+                         boolean failOnWarning,
+                         TechnicalWords technicalWords) {
     public LintConfig {
         ruleSeverities = Map.copyOf(ruleSeverities);
         disabledRules = Set.copyOf(disabledRules);
@@ -19,7 +20,15 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     public static LintConfig lintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
                                         Set<String> disabledRules,
                                         boolean failOnWarning) {
-        return new LintConfig(ruleSeverities, disabledRules, failOnWarning);
+        return lintConfig(ruleSeverities, disabledRules, failOnWarning, TechnicalWords.DEFAULT);
+    }
+
+    /// Factory method for creating LintConfig with the word lists of the naming rules (#2529).
+    public static LintConfig lintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
+                                        Set<String> disabledRules,
+                                        boolean failOnWarning,
+                                        TechnicalWords technicalWords) {
+        return new LintConfig(ruleSeverities, disabledRules, failOnWarning, technicalWords);
     }
 
     /// Default lint configuration.
@@ -301,7 +310,7 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
 
         newSeverities.put(ruleId, severity);
 
-        return lintConfig(Map.copyOf(newSeverities), disabledRules, failOnWarning);
+        return lintConfig(Map.copyOf(newSeverities), disabledRules, failOnWarning, technicalWords);
     }
 
     /// Builder-style method to disable a rule.
@@ -310,11 +319,16 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
 
         newDisabled.add(ruleId);
 
-        return lintConfig(ruleSeverities, Set.copyOf(newDisabled), failOnWarning);
+        return lintConfig(ruleSeverities, Set.copyOf(newDisabled), failOnWarning, technicalWords);
     }
 
     /// Builder-style method to set fail on warning.
     public LintConfig withFailOnWarning(boolean failOnWarning) {
-        return lintConfig(ruleSeverities, disabledRules, failOnWarning);
+        return lintConfig(ruleSeverities, disabledRules, failOnWarning, technicalWords);
+    }
+
+    /// Builder-style method to set the word lists of the naming rules.
+    public LintConfig withTechnicalWords(TechnicalWords technicalWords) {
+        return lintConfig(ruleSeverities, disabledRules, failOnWarning, technicalWords);
     }
 }

@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import javax.lang.model.SourceVersion;
@@ -12,6 +13,7 @@ import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.jbct.format.FormatterConfig;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.LintConfig;
+import org.pragmatica.jbct.lint.TechnicalWords;
 import org.pragmatica.jbct.lint.layer.LayerConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -176,25 +178,70 @@ record PartialConfig(PartialFormatter formatter,
     /// disabled set, because only a single value per rule can be folded unambiguously: a nearer
     /// layer writing `JBCT-STY-01 = "error"` must both raise the severity and lift an inherited
     /// `"off"`.
-    record PartialLint(Option<Boolean> failOnWarning, Map<String, RuleSetting> rules) {
-        static final PartialLint EMPTY = new PartialLint(none(), Map.of());
+    ///
+    /// `[lint.naming] add / remove` (#2529) are two more per-key lists: each folds nearest-wins like every other list
+    /// key, so a parent layer's `add` and a child layer's `remove` both reach the resolved word lists.
+    record PartialLint(Option<Boolean> failOnWarning,
+                       Map<String, RuleSetting> rules,
+                       Option<List<String>> namingAdd,
+                       Option<List<String>> namingRemove) {
+        static final PartialLint EMPTY = new PartialLint(none(), Map.of(), none(), none());
+        private static final String NAMING = "lint.naming";
+        private static final Set<String> NAMING_KEYS = Set.of("add", "remove");
+        private static final String NAMING_KEYS_EXPECTED = "one of the keys: add, remove";
+        private static final String NAMING_WORDS_EXPECTED = "an array of words made of letters and digits, e.g. [\"Saga\"]";
+        private static final Pattern NAMING_WORD = Pattern.compile("[A-Za-z][A-Za-z0-9]*");
 
         PartialLint {
             rules = Map.copyOf(rules);
         }
 
         static PartialLint partialLint(TomlDocument toml) {
-            return new PartialLint(toml.getBoolean("lint", "failOnWarning"), ruleSettings(toml));
+            return refusingUnknownNamingKeys(toml,
+                                             new PartialLint(toml.getBoolean("lint", "failOnWarning"),
+                                                             ruleSettings(toml),
+                                                             namingWords(toml, "add"),
+                                                             namingWords(toml, "remove")));
         }
 
         PartialLint mergeWith(PartialLint nearer) {
-            return new PartialLint(nearer.failOnWarning.orElse(failOnWarning), mergedRules(nearer.rules));
+            return new PartialLint(nearer.failOnWarning.orElse(failOnWarning),
+                                   mergedRules(nearer.rules),
+                                   nearer.namingAdd.orElse(namingAdd),
+                                   nearer.namingRemove.orElse(namingRemove));
         }
 
         LintConfig materialize() {
             return LintConfig.lintConfig(materializedSeverities(),
                                          materializedDisabledRules(),
-                                         failOnWarning.or(LintConfig.DEFAULT.failOnWarning()));
+                                         failOnWarning.or(LintConfig.DEFAULT.failOnWarning()),
+                                         TechnicalWords.technicalWords(namingAdd.or(List.of()), namingRemove.or(List.of())));
+        }
+
+        /// A word list holding anything but letters-and-digits words is recorded on the document and refused by
+        /// [PartialConfig#partialConfig] naming the key and the value; a wrong TOML type is recorded by the typed read.
+        private static Option<List<String>> namingWords(TomlDocument toml, String key) {
+            return toml.getStringList(NAMING, key)
+                       .flatMap(words -> allNamingWords(words)
+                                         ? some(words)
+                                         : toml.getParsed(NAMING, key, NAMING_WORDS_EXPECTED, _ -> none()));
+        }
+
+        private static boolean allNamingWords(List<String> words) {
+            return words.stream()
+                        .allMatch(word -> NAMING_WORD.matcher(word)
+                                                     .matches());
+        }
+
+        /// A key under `[lint.naming]` other than `add` and `remove` is a typo that would otherwise change nothing:
+        /// the read is recorded so the load refuses it naming the key, the value and the allowed keys.
+        private static PartialLint refusingUnknownNamingKeys(TomlDocument toml, PartialLint layer) {
+            toml.keys(NAMING)
+                .stream()
+                .filter(key -> !NAMING_KEYS.contains(key))
+                .forEach(key -> toml.getParsed(NAMING, key, NAMING_KEYS_EXPECTED, _ -> none()));
+
+            return layer;
         }
 
         /// A severity token no rule setting accepts (`JBCT-STY-01 = "eror"`) is recorded on the document and
