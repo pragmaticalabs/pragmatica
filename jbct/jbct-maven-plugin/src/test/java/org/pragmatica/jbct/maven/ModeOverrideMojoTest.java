@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Properties;
 
 import org.pragmatica.jbct.config.JbctMode;
+import org.pragmatica.lang.Option;
 
 import org.apache.maven.execution.DefaultMavenExecutionRequest;
 import org.apache.maven.execution.DefaultMavenExecutionResult;
@@ -155,5 +156,24 @@ class ModeOverrideMojoTest {
                                                                                            .hasMessageContaining("\"format-only\" is not yet supported");
         assertThatThrownBy(() -> probe(with("disabled"), new Properties()).loadConfig()).isInstanceOf(MojoExecutionException.class)
                                                                                          .hasMessageContaining("\"disabled\" is not yet supported");
+    }
+
+    @Test
+    void createLintContext_carriesTheTomlModeAndBasePackage() throws Exception {
+        Files.writeString(module.resolve("jbct.toml"),
+                          "[lint]\nmode = \"infrastructure\"\n[project]\nbasePackage = \"org.acme.billing\"\n");
+
+        var probe = probe(new Properties(), new Properties());
+        var context = probe.createLintContext(probe.loadConfig());
+
+        assertThat(context.mode()).isEqualTo(JbctMode.INFRASTRUCTURE);
+        assertThat(context.basePackage()).isEqualTo(Option.some("org.acme.billing"));
+    }
+
+    @Test
+    void createLintContext_carriesTheUserPropertyModeOverride() throws Exception {
+        var probe = probe(with("business"), new Properties());
+
+        assertThat(probe.createLintContext(probe.loadConfig()).mode()).isEqualTo(JbctMode.BUSINESS);
     }
 }

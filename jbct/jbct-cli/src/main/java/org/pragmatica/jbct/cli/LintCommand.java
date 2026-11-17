@@ -107,17 +107,8 @@ public class LintCommand implements Callable<Integer> {
         return 0;
     }
 
-    private LintContext createContext(JbctConfig jbctConfig) {
-        var lintConfig = jbctConfig.lint();
-
-        if (failOnWarning) {
-            lintConfig = lintConfig.withFailOnWarning(true);
-        }
-
-        return LintContext.defaultContext()
-                          .withConfig(lintConfig)
-                          .withExcludePackages(jbctConfig.excludePackages())
-                          .withLayers(jbctConfig.layers());
+    LintContext createContext(JbctConfig jbctConfig) {
+        return CliConfig.lintContext(jbctConfig, failOnWarning);
     }
 
     /// A collected file the linter could not read or parse, with the reason.

@@ -98,11 +98,8 @@ public class ScoreCommand implements Callable<Integer> {
         return gateExitCode(score);
     }
 
-    private LintContext createContext(JbctConfig jbctConfig) {
-        return LintContext.defaultContext()
-                          .withConfig(jbctConfig.lint())
-                          .withExcludePackages(jbctConfig.excludePackages())
-                          .withLayers(jbctConfig.layers());
+    LintContext createContext(JbctConfig jbctConfig) {
+        return CliConfig.lintContext(jbctConfig, false);
     }
 
     /// Exit codes match `jbct lint`: `2` when the tool could not read what it was pointed at, `1`

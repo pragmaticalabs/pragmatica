@@ -123,17 +123,8 @@ public class CheckCommand implements Callable<Integer> {
         return 0;
     }
 
-    private LintContext createContext(JbctConfig jbctConfig) {
-        var lintConfig = jbctConfig.lint();
-
-        if (failOnWarning) {
-            lintConfig = lintConfig.withFailOnWarning(true);
-        }
-
-        return LintContext.defaultContext()
-                          .withConfig(lintConfig)
-                          .withExcludePackages(jbctConfig.excludePackages())
-                          .withLayers(jbctConfig.layers());
+    LintContext createContext(JbctConfig jbctConfig) {
+        return CliConfig.lintContext(jbctConfig, failOnWarning);
     }
 
     private void checkFormat(Path file, JbctFormatter formatter, List<Path> needsFormatting, AtomicInteger errors) {

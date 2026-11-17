@@ -5,6 +5,7 @@ import java.nio.file.Path;
 
 import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.config.JbctConfig;
+import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.lang.Option;
 
 
@@ -37,6 +38,16 @@ public sealed interface CliConfig {
                            .flatMap(config -> config.overrideMode(explicitMode))
                            .onFailure(cause -> err.println("Error: " + cause.message()))
                            .option();
+    }
+
+    /// The lint context of a loaded configuration: [LintContext#fromConfig], the one factory the CLI commands and the
+    /// Maven mojos share, so `[lint] mode`, `--mode` and `[project] basePackage` reach every rule's context (#2525).
+    /// `failOnWarning` only tightens the loaded lint settings; it never loosens them.
+    static LintContext lintContext(JbctConfig config, boolean failOnWarning) {
+        return LintContext.fromConfig(config)
+                          .withConfig(failOnWarning
+                                      ? config.lint().withFailOnWarning(true)
+                                      : config.lint());
     }
 
     record unused() implements CliConfig {}
