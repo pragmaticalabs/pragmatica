@@ -560,6 +560,67 @@ class QuicConsensusBackpressureTest {
             }
         }
 
+        /// #3313 T-d (C1/E1): a refused fast-fail write opens an episode on a live, unwritable stream; the stream then dies
+        /// while its connection lives (a reset: no connection close, no departure), and netty-quic fires no writability
+        /// event for a closed stream. Its inactive event, delivered through a production-built data handler, is the only
+        /// event here, and it ends the episode with no write.
+        @Test
+        void refusedFastFailEpisode_endsWhenItsStreamDiesWhileTheConnectionLives() throws Exception {
+            var liveNow = new AtomicBoolean(true);
+            var lane = dyingChannel(liveNow);
+            var network = network();
+
+            try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+                assertThat(network.writeIfWritableForTest(lane, payload(), PEER, StreamType.METRICS))
+                    .isInstanceOf(WriteOutcome.BackpressureRefused.class);
+                assertThat(network.openBackpressureEpisodesForTests()).as("the refusal opened the episode").isEqualTo(1);
+
+                liveNow.set(false);
+                assertThat(network.openBackpressureEpisodesForTests()).as("the stream died, but nothing ran the closer yet")
+                                                                      .isEqualTo(1);
+
+                LossAccountingFixtures.fireStreamInactive(network, lane);
+
+                assertThat(network.openBackpressureEpisodesForTests()).as("the dead stream's inactive event ended the episode")
+                                                                      .isZero();
+                assertSummaryOf(capture, 1);
+                verify(lane, never()).writeAndFlush(any());
+            }
+        }
+
+        /// #3313 (C1/E1): the case the base pinned and round 1 dropped, a lane whose stream is replaced after a reconnect.
+        /// The episode opened on the old stream must end when that stream dies, with no write anywhere: the lane now
+        /// resolves to a new, writable stream that nobody writes to. The new stream's writability event does not end it
+        /// while the old stream is still live and unwritable; the old stream's inactive event does.
+        @Test
+        void refusedEpisodeOnAReplacedLaneStream_endsWhenTheOldStreamDies_withoutAnyWrite() throws Exception {
+            var oldLive = new AtomicBoolean(true);
+            var old = dyingChannel(oldLive);
+            var replacement = switchableChannel(new AtomicBoolean(true));
+            var network = network();
+
+            try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+                assertThat(network.writeIfWritableForTest(old, payload(), PEER, StreamType.METRICS))
+                    .isInstanceOf(WriteOutcome.BackpressureRefused.class);
+                assertThat(network.openBackpressureEpisodesForTests()).as("the refusal on the old stream opened the episode")
+                                                                      .isEqualTo(1);
+
+                LossAccountingFixtures.fireWritabilityEvent(network, replacement);
+                assertThat(network.openBackpressureEpisodesForTests())
+                    .as("the old stream is still live and unwritable: the replacement's event leaves the episode open")
+                    .isEqualTo(1);
+
+                oldLive.set(false);
+                LossAccountingFixtures.fireStreamInactive(network, old);
+
+                assertThat(network.openBackpressureEpisodesForTests()).as("the replaced stream's death ended the episode")
+                                                                      .isZero();
+                assertSummaryOf(capture, 1);
+                verify(old, never()).writeAndFlush(any());
+                verify(replacement, never()).writeAndFlush(any());
+            }
+        }
+
         /// #3313 ruling: backpressure is a state of a live stream. Writes refused because the stream is gone open no
         /// episode: no entry WARN, no summary, nothing left in the map (the drop metrics count them).
         @Test
@@ -856,6 +917,15 @@ class QuicConsensusBackpressureTest {
             when(ch.writeAndFlush(any())).thenReturn(future);
             when(ch.isActive()).thenReturn(true);
             when(ch.isWritable()).thenAnswer(_ -> writableNow.get());
+
+            return ch;
+        }
+
+        /// One unwritable stream whose liveness the test switches: it dies while its connection lives.
+        private static QuicStreamChannel dyingChannel(AtomicBoolean liveNow) {
+            var ch = mock(QuicStreamChannel.class);
+            when(ch.isActive()).thenAnswer(_ -> liveNow.get());
+            when(ch.isWritable()).thenReturn(false);
 
             return ch;
         }
