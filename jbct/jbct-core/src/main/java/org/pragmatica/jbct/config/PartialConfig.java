@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -41,7 +42,12 @@ record PartialConfig(PartialFormatter formatter,
                      PartialBlueprint blueprint,
                      Option<List<String>> sourceDirectories,
                      Option<List<String>> excludePackages,
-                     PartialLayers layers) {
+                     PartialLayers layers,
+                     Option<JbctMode> mode,
+                     Option<String> basePackage) {
+    private static final Pattern PACKAGE_NAME = Pattern.compile("\\p{javaJavaIdentifierStart}\\p{javaJavaIdentifierPart}*(\\.\\p{javaJavaIdentifierStart}\\p{javaJavaIdentifierPart}*)*");
+    private static final String BASE_PACKAGE_EXPECTED = "a Java package name, e.g. \"com.example.orders\"";
+
     /// A layer that sets nothing — the identity of [#mergeWith].
     static final PartialConfig EMPTY = new PartialConfig(PartialFormatter.EMPTY,
                                                          PartialLint.EMPTY,
@@ -49,13 +55,18 @@ record PartialConfig(PartialFormatter formatter,
                                                          PartialBlueprint.EMPTY,
                                                          none(),
                                                          none(),
-                                                         PartialLayers.EMPTY);
+                                                         PartialLayers.EMPTY,
+                                                         none(),
+                                                         none());
 
     /// Parse a single layer from a TOML document.
     ///
     /// A key present with the wrong TOML type (`maxLineLength = "120"`) is refused naming section, key
     /// and value (#1455): the typed reads below answer an empty `Option` for it, which this layer
     /// would otherwise capture as "key not set" and let a lower layer or the built-in default win.
+    ///
+    /// An unknown `[lint] mode` is refused the same way, naming the allowed tokens; a known mode that no entry point
+    /// honours yet is refused as [ConfigError.ModeNotYetSupported] (#2525).
     static Result<PartialConfig> partialConfig(TomlDocument toml) {
         var layer = new PartialConfig(PartialFormatter.partialFormatter(toml),
                                       PartialLint.partialLint(toml),
@@ -63,10 +74,39 @@ record PartialConfig(PartialFormatter formatter,
                                       PartialBlueprint.partialBlueprint(toml),
                                       toml.getStringList("project", "sourceDirectories"),
                                       toml.getStringList("lint", "excludePackages"),
-                                      PartialLayers.partialLayers(toml));
+                                      PartialLayers.partialLayers(toml),
+                                      toml.getParsed("lint", "mode", JbctMode.ALLOWED, JbctMode::fromToken),
+                                      toml.getParsed("project", "basePackage", BASE_PACKAGE_EXPECTED, PartialConfig::basePackage));
 
         return toml.requireNoTypeMismatches()
-                   .map(_ -> layer);
+                   .flatMap(_ -> layer.requireSupportedMode());
+    }
+
+    /// The explicit mode override (`--mode`, `-Djbct.mode`) as a layer of its own, folded after every file layer.
+    static PartialConfig modeOverride(JbctMode mode) {
+        return new PartialConfig(PartialFormatter.EMPTY,
+                                 PartialLint.EMPTY,
+                                 PartialFiles.EMPTY,
+                                 PartialBlueprint.EMPTY,
+                                 none(),
+                                 none(),
+                                 PartialLayers.EMPTY,
+                                 some(mode),
+                                 none());
+    }
+
+    /// `[project] basePackage` text: a dotted Java package name, else [Option#none()] (recorded as a mismatch).
+    private static Option<String> basePackage(String raw) {
+        return PACKAGE_NAME.matcher(raw)
+                           .matches()
+               ? some(raw)
+               : none();
+    }
+
+    private Result<PartialConfig> requireSupportedMode() {
+        return mode.map(JbctMode::requireSupported)
+                   .map(supported -> supported.map(_ -> this))
+                   .or(Result.success(this));
     }
 
     /// Fold a nearer (higher priority) layer onto this one — every key it sets wins, key by key.
@@ -77,7 +117,9 @@ record PartialConfig(PartialFormatter formatter,
                                  blueprint.mergeWith(nearer.blueprint),
                                  nearer.sourceDirectories.orElse(sourceDirectories),
                                  nearer.excludePackages.orElse(excludePackages),
-                                 layers.mergeWith(nearer.layers));
+                                 layers.mergeWith(nearer.layers),
+                                 nearer.mode.orElse(mode),
+                                 nearer.basePackage.orElse(basePackage));
     }
 
     /// Apply the built-in defaults to every key still absent after folding.
@@ -88,7 +130,9 @@ record PartialConfig(PartialFormatter formatter,
                                      blueprint.materialize(),
                                      sourceDirectories.or(JbctConfig.DEFAULT.sourceDirectories()),
                                      excludePackages.or(JbctConfig.DEFAULT.excludePackages()),
-                                     layers.materialize());
+                                     layers.materialize(),
+                                     mode.or(JbctConfig.DEFAULT.mode()),
+                                     basePackage);
     }
 
     /// `[format]` section of one layer.

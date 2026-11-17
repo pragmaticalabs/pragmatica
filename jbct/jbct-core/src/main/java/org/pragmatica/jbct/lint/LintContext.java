@@ -3,9 +3,12 @@ package org.pragmatica.jbct.lint;
 import java.util.List;
 import java.util.regex.Pattern;
 
+import org.pragmatica.jbct.config.JbctConfig;
+import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.lint.layer.LayerClassifier;
 import org.pragmatica.jbct.lint.layer.LayerConfig;
 import org.pragmatica.jbct.shared.PackageGlob;
+import org.pragmatica.lang.Option;
 
 
 /// Context for lint analysis providing configuration.
@@ -13,10 +16,15 @@ import org.pragmatica.jbct.shared.PackageGlob;
 /// `excludePackages` entries are [PackageGlob] globs: `*` matches one package segment, `**` matches
 /// zero or more, so `com.example.generated.**` excludes `com.example.generated` itself along with
 /// everything beneath it.
+///
+/// `mode` and `basePackage` are the source root's `[lint] mode` and `[project] basePackage` (#2525); the rules read
+/// them once they declare the modes they run in.
 public record LintContext(List<Pattern> excludedPackagePatterns,
                           LintConfig config,
                           String fileName,
-                          LayerClassifier layers) {
+                          LayerClassifier layers,
+                          JbctMode mode,
+                          Option<String> basePackage) {
     public LintContext {
         excludedPackagePatterns = List.copyOf(excludedPackagePatterns);
     }
@@ -46,41 +54,62 @@ public record LintContext(List<Pattern> excludedPackagePatterns,
 
     /// Factory method with default configuration.
     public static LintContext defaultContext() {
-        return new LintContext(List.of(), LintConfig.defaultConfig(), "Unknown.java", LayerClassifier.conventionsOnly());
+        return new LintContext(List.of(),
+                               LintConfig.defaultConfig(),
+                               "Unknown.java",
+                               LayerClassifier.conventionsOnly(),
+                               JbctMode.DEFAULT,
+                               Option.none());
     }
 
     /// Factory method with custom excluded package patterns.
     public static LintContext lintContext(List<String> excludePackages) {
         var patterns = excludePackages.stream().map(PackageGlob::compile).toList();
 
-        return new LintContext(patterns, LintConfig.defaultConfig(), "Unknown.java", LayerClassifier.conventionsOnly());
+        return new LintContext(patterns,
+                               LintConfig.defaultConfig(),
+                               "Unknown.java",
+                               LayerClassifier.conventionsOnly(),
+                               JbctMode.DEFAULT,
+                               Option.none());
     }
 
     /// Builder-style method to set config.
     public LintContext withConfig(LintConfig config) {
-        return new LintContext(excludedPackagePatterns, config, fileName, layers);
+        return new LintContext(excludedPackagePatterns, config, fileName, layers, mode, basePackage);
     }
 
     /// Builder-style method to set file name.
     public LintContext withFileName(String fileName) {
-        return new LintContext(excludedPackagePatterns, config, fileName, layers);
+        return new LintContext(excludedPackagePatterns, config, fileName, layers, mode, basePackage);
     }
 
     /// Builder-style method to set excluded package patterns from glob strings.
     public LintContext withExcludePackages(List<String> patterns) {
         var compiledPatterns = patterns.stream().map(PackageGlob::compile).toList();
 
-        return new LintContext(compiledPatterns, config, fileName, layers);
+        return new LintContext(compiledPatterns, config, fileName, layers, mode, basePackage);
     }
 
     /// Builder-style method to set the package-classification engine from layer config.
     public LintContext withLayers(LayerConfig layerConfig) {
-        return new LintContext(excludedPackagePatterns, config, fileName, LayerClassifier.from(layerConfig));
+        return new LintContext(excludedPackagePatterns,
+                               config,
+                               fileName,
+                               LayerClassifier.from(layerConfig),
+                               mode,
+                               basePackage);
+    }
+
+    /// Builder-style method to set the source root's mode and project root package from its configuration.
+    public LintContext withProject(JbctMode mode, Option<String> basePackage) {
+        return new LintContext(excludedPackagePatterns, config, fileName, layers, mode, basePackage);
     }
 
     /// Factory method from JbctConfig.
-    public static LintContext fromConfig(org.pragmatica.jbct.config.JbctConfig jbctConfig) {
+    public static LintContext fromConfig(JbctConfig jbctConfig) {
         return lintContext(jbctConfig.excludePackages()).withConfig(jbctConfig.lint())
-                          .withLayers(jbctConfig.layers());
+                          .withLayers(jbctConfig.layers())
+                          .withProject(jbctConfig.mode(), jbctConfig.basePackage());
     }
 }

@@ -99,7 +99,8 @@ public class ScoreCommand implements Callable<Integer> {
         return LintContext.defaultContext()
                           .withConfig(jbctConfig.lint())
                           .withExcludePackages(jbctConfig.excludePackages())
-                          .withLayers(jbctConfig.layers());
+                          .withLayers(jbctConfig.layers())
+                          .withProject(jbctConfig.mode(), jbctConfig.basePackage());
     }
 
     /// Exit codes match `jbct lint`: `2` when the tool could not read what it was pointed at, `1`
