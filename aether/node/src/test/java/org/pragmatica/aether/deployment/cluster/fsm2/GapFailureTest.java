@@ -10,7 +10,6 @@ import java.util.Map;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
@@ -89,7 +88,7 @@ class GapFailureTest {
         SlFixtures.seedJudgment(h,
                                 ORDERS,
                                 new ArtifactJudgmentValue(false, Map.of(CORE_1, 5), Map.of(), Set.of()));
-        h.seed(FsmWarningKey.fsmWarningKey("retry-exhausted-unsettled", ORDERS.asString()), FsmWarningValue.fsmWarningValue(Map.of()));
+        h.seed(FsmWarningKey.fsmWarningKey("retry-exhausted-unsettled", ORDERS.asString()), Fixtures.otherNodesRow(Map.of(), true, "retry exhausted"));
         h.activate();
         node(h, CORE_1, 11L).fails(ORDERS, false);
         h.drain();

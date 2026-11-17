@@ -210,7 +210,7 @@ public sealed interface Outbox {
             return Warnings.suspended(m);
         }
 
-        Warnings.draft(m);
+        Warnings.draft(m, ctx);
         var drafts = materialize(m, ctx);
 
         clearIntents(m);
@@ -638,7 +638,7 @@ public sealed interface Outbox {
 
     private static ClusterModel accepted(ClusterModel m, Ctx ctx, Submitted submission) {
         for (var draft : submission.drafts()) {
-            Warnings.accepted(m, draft);
+            Warnings.accepted(m, ctx, draft);
             draft.onAccepted().forEach(ctx::route);
             ctx.metric("aether_deployment_fsm_submissions_total",
                        Map.of("fsm",

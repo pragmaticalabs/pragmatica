@@ -134,20 +134,16 @@ public sealed interface Slices {
                : m;
     }
 
-    /// WARN once per distinct hold signature (the dedup of #760, NT/B-041).
+    /// WARN once per distinct hold signature (the dedup of #760, NT/B-041): #3274, `Warnings.raise` opens when the pair's held
+    /// signature differs, and rule E announces the new signature.
     private static ClusterModel held(ClusterModel m, Ctx ctx, SlicePair pair, String signature) {
-        var changed = !m.holdSignatures.get(pair).map(signature::equals).or(false);
-
-        m.holdSignatures = m.holdSignatures.put(pair, signature);
-        m.heldByArtifact = Idx.add(m.heldByArtifact, pair.artifact(), pair.node());
-        if (changed) {
-            ctx.warn("schema-hold",
-                     pair.artifact().asString(),
-                     "Slice " + pair.artifact()
-                    + " held in LOADED, waiting for schema migrations to complete: " + signature);
-        }
-
-        return m;
+        return Warnings.raise(m,
+                              Warnings.SCHEMA_HOLD,
+                              pair.artifact().asString(),
+                              pair.node().id(),
+                              signature,
+                              "Slice " + pair.artifact()
+                             + " held in LOADED, waiting for schema migrations to complete: " + signature);
     }
 
     /// The observed row of an excluded pair went: its exclusion is cleared now. D.6 rows 18/19: the reason is subject-gone; the recovery is
@@ -168,33 +164,23 @@ public sealed interface Slices {
     /// D.6 rows 15/16: a held pair that leaves the hold other than by its release (it failed, or its instance is gone) leaves the hold,
     /// the reason being `why`. A pair with no hold raises nothing.
     static ClusterModel holdGone(ClusterModel m, Ctx ctx, SlicePair pair, String why) {
-        return m.holdSignatures.containsKey(pair)
-               ? unhold(m, ctx, pair, "Slice " + pair.artifact() + " schema hold ended: " + why)
-               : m;
+        return unhold(m, pair, "Slice " + pair.artifact() + " schema hold ended: " + why);
     }
 
     private static ClusterModel releaseHold(ClusterModel m, Ctx ctx, SlicePair pair) {
-        m.holdSignatures.get(pair)
-                        .onPresent(_ -> unhold(m,
-                                               ctx,
-                                               pair,
-                                               "Slice " + pair.artifact() + " schema hold cleared, resuming activation"));
-
-        return m;
+        return unhold(m, pair, "Slice " + pair.artifact() + " schema hold cleared, resuming activation");
     }
 
-    /// D.6 rows 15/16 (CTO ruling on #2831): `schema-hold` has the artifact as its subject, so `schema-hold-cleared` is raised only when the
-    /// LAST held node of the artifact leaves the hold; a pair leaving while another is still held closes nothing.
-    private static ClusterModel unhold(ClusterModel m, Ctx ctx, SlicePair pair, String message) {
-        m.holdSignatures = m.holdSignatures.remove(pair);
-        m.heldByArtifact = Idx.remove(m.heldByArtifact, pair.artifact(), pair.node());
-        if (!m.heldByArtifact.containsKey(pair.artifact())) {
-            ctx.warn(Recoveries.SCHEMA_HOLD_CLEARED,
-                     pair.artifact().asString(),
-                     message);
-        }
-
-        return m;
+    /// D.6 rows 15/16 (CTO ruling on #2831): `schema-hold` has the artifact as its subject, so `schema-hold-cleared` is announced only
+    /// when the LAST held node of the artifact leaves the hold; a pair leaving while another is still held closes nothing (#3274: rule E
+    /// over the row's members, `Warnings.accepted`). Closed evidence for the pair whether or not it was held.
+    private static ClusterModel unhold(ClusterModel m, SlicePair pair, String message) {
+        return Warnings.raise(m,
+                              Recoveries.SCHEMA_HOLD_CLEARED,
+                              pair.artifact().asString(),
+                              pair.node().id(),
+                              Warnings.SINGLE,
+                              message);
     }
 
     /// Every dependency has at least one ACTIVE instance (the active count, R-2.6).

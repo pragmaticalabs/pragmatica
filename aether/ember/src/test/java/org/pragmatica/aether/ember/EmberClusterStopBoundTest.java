@@ -36,7 +36,7 @@ class EmberClusterStopBoundTest {
     @Test
     @Timeout(40)
     void clusterStop_failsNamingTheNode_whenANodeStopNeverResolves() {
-        var cluster = emberCluster(2, PORT, PORT + 100, "sb");
+        var cluster = emberCluster(3, PORT, PORT + 100, "sb");
 
         adopt(cluster, "sb-1", PORT, () -> Promise.success(unit()));
         adopt(cluster, "sb-2", PORT + 1, Promise::<Unit> promise);
@@ -53,7 +53,7 @@ class EmberClusterStopBoundTest {
     @Test
     @Timeout(40)
     void clusterStop_succeeds_whenEveryNodeStopResolves() {
-        var cluster = emberCluster(2, PORT, PORT + 100, "sb");
+        var cluster = emberCluster(3, PORT, PORT + 100, "sb");
 
         adopt(cluster, "sb-1", PORT, () -> Promise.success(unit()));
         adopt(cluster, "sb-2", PORT + 1, () -> Promise.success(unit()));
@@ -64,7 +64,7 @@ class EmberClusterStopBoundTest {
     @Test
     @Timeout(40)
     void selfExit_isReportedOnlyAfterTheStopResolved() {
-        var cluster = emberCluster(1, PORT, PORT + 100, "sb");
+        var cluster = emberCluster(3, PORT, PORT + 100, "sb");
         var stop = Promise.<Unit> promise();
 
         adopt(cluster, "sb-1", PORT, () -> stop);
@@ -79,7 +79,7 @@ class EmberClusterStopBoundTest {
     @Test
     @Timeout(40)
     void selfExit_isNotReported_whenTheStopNeverResolves() {
-        var cluster = emberCluster(1, PORT, PORT + 100, "sb");
+        var cluster = emberCluster(3, PORT, PORT + 100, "sb");
 
         adopt(cluster, "sb-1", PORT, Promise::<Unit> promise);
         cluster.onNodeExit("sb-1", AetherNode.EXIT_IDENTITY_REFUSED);
@@ -92,7 +92,7 @@ class EmberClusterStopBoundTest {
     @Test
     @Timeout(40)
     void selfExit_ofANodeAlreadyOutOfTheRegistry_isReportedAtOnce() {
-        var cluster = emberCluster(1, PORT, PORT + 100, "sb");
+        var cluster = emberCluster(3, PORT, PORT + 100, "sb");
 
         cluster.onNodeExit("sb-1", AetherNode.EXIT_DRAINED);
 
@@ -103,7 +103,7 @@ class EmberClusterStopBoundTest {
     @Test
     @Timeout(40)
     void clusterStop_failsNamingTheNode_whenARemovedNodesStopIsStillInFlight() {
-        var cluster = emberCluster(2, PORT, PORT + 100, "sb");
+        var cluster = emberCluster(3, PORT, PORT + 100, "sb");
 
         adopt(cluster, "sb-1", PORT, () -> Promise.success(unit()));
         adopt(cluster, "sb-2", PORT + 1, Promise::<Unit> promise);
@@ -120,7 +120,7 @@ class EmberClusterStopBoundTest {
     @Test
     @Timeout(40)
     void retriedClusterStop_stillFailsNamingTheLeakedNode_whileItsStopIsPending() {
-        var cluster = emberCluster(1, PORT, PORT + 100, "sb");
+        var cluster = emberCluster(3, PORT, PORT + 100, "sb");
 
         adopt(cluster, "sb-1", PORT, Promise::<Unit> promise);
 
@@ -135,7 +135,7 @@ class EmberClusterStopBoundTest {
     @Test
     @Timeout(40)
     void secondSelfExit_whileTheStopIsPending_isNotReportedUntilItResolves() {
-        var cluster = emberCluster(1, PORT, PORT + 100, "sb");
+        var cluster = emberCluster(3, PORT, PORT + 100, "sb");
         var stop = Promise.<Unit> promise();
 
         adopt(cluster, "sb-1", PORT, () -> stop);
@@ -152,7 +152,7 @@ class EmberClusterStopBoundTest {
     @Test
     @Timeout(40)
     void selfExit_isReported_whenTheStopResolvesAfterItsBound() {
-        var cluster = emberCluster(1, PORT, PORT + 100, "sb");
+        var cluster = emberCluster(3, PORT, PORT + 100, "sb");
         var stop = Promise.<Unit> promise();
 
         adopt(cluster, "sb-1", PORT, () -> stop);
@@ -171,7 +171,7 @@ class EmberClusterStopBoundTest {
     @Test
     @Timeout(40)
     void killNode_succeeds_whenTheStopNeverResolves() {
-        var cluster = emberCluster(1, PORT, PORT + 100, "sb");
+        var cluster = emberCluster(3, PORT, PORT + 100, "sb");
 
         adopt(cluster, "sb-1", PORT, Promise::<Unit> promise);
 
@@ -181,7 +181,7 @@ class EmberClusterStopBoundTest {
     @Test
     @Timeout(40)
     void selfExit_whoseStopExpires_logsAWarningNamingTheNode() {
-        var cluster = emberCluster(1, PORT, PORT + 100, "sb");
+        var cluster = emberCluster(3, PORT, PORT + 100, "sb");
         var capture = StreamTripwireSupport.captureLogs();
 
         try {
