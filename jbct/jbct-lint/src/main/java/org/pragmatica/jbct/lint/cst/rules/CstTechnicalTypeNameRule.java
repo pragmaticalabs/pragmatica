@@ -81,15 +81,20 @@ public class CstTechnicalTypeNameRule implements CstLintRule {
         return tokens.isEmpty()
                ? List.of()
                : Stream.concat(run == 0
-                               ? Stream.<List<String>>empty()
+                               ? Stream.<List<String>> empty()
                                : Stream.of(tokens.subList(0, run)),
-                               flaggedRuns(tokens.subList(Math.max(run, 1), tokens.size()), words).stream())
+                               flaggedRuns(tokens.subList(Math.max(run, 1),
+                                                          tokens.size()),
+                                           words).stream())
                        .toList();
     }
 
     private int longestRun(List<String> tokens, Set<String> words) {
-        return IntStream.rangeClosed(1, tokens.size())
-                        .filter(length -> words.contains(String.join("", tokens.subList(0, length)).toLowerCase(Locale.ROOT)))
+        return IntStream.rangeClosed(1,
+                                     tokens.size())
+                        .filter(length -> words.contains(String.join("",
+                                                                     tokens.subList(0, length))
+                                                               .toLowerCase(Locale.ROOT)))
                         .max()
                         .orElse(0);
     }
@@ -103,7 +108,11 @@ public class CstTechnicalTypeNameRule implements CstLintRule {
     private String match(List<String> run) {
         var joined = String.join("", run);
 
-        return (run.size() == 1 ? "token '" : "tokens '") + joined + "' matches word '" + joined.toLowerCase(Locale.ROOT) + "'";
+        return (run.size() == 1
+                ? "token '"
+                : "tokens '") + joined
+             + "' matches word '" + joined.toLowerCase(Locale.ROOT)
+             + "'";
     }
 
     private Diagnostic createDiagnostic(Cursor decl, String name, List<List<String>> flagged, LintContext ctx) {
