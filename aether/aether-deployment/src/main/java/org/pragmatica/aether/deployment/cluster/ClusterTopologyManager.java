@@ -125,7 +125,6 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// Put — bounded by consensus latency, not zero; a node behind on apply answers the previous
     /// value until then. Absent key means enabled (the pre-#685 default).
     boolean isAutoHealEnabled();
-
     /// Spec §8.4 — whether `subject` may NOT act on its own now because the operator disabled auto-heal: a worker source/role, a
     /// community, or the core surplus ([#coreSubject], #3324). Held while the subject's committed scaling value equals the one recorded
     /// at disable time; a hold is raised once as an operator warning and announced as resumed when it ends. Abstract, not defaulted: an

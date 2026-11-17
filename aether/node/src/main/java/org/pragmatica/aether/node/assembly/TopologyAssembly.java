@@ -852,9 +852,9 @@ public sealed interface TopologyAssembly {
         }
 
         var victims = excludedCoreNodes(cluster, membership, store, replacements, ready).stream()
-                                                                                       .filter(node -> deployments.byNode(node)
-                                                                                                                  .isEmpty())
-                                                                                       .toList();
+                                       .filter(node -> deployments.byNode(node)
+                                                                  .isEmpty())
+                                       .toList();
 
         return drainSurplusCores(victims,
                                  () -> topology.scalingHeld(ClusterTopologyManager.coreSubject()),
