@@ -14,8 +14,7 @@ import org.pragmatica.lang.Result;
 /// same strings by the CLI `--mode` and the Maven user property `-Djbct.mode`. Unset, a root is [#BUSINESS].
 ///
 /// `business` runs every rule, `infrastructure` the code-level rules only, `format-only` no rule but keeps formatting,
-/// `disabled` neither. Until the lint and format entry points honour the last two, a load that names them is refused
-/// as not yet supported ([#requireSupported()]), so no build accepts a mode it does not honour.
+/// `disabled` neither. An unrecognised token is refused with [ConfigError.ModeUnknown], which lists all four.
 public enum JbctMode {
     BUSINESS("business"),
     INFRASTRUCTURE("infrastructure"),
@@ -42,19 +41,8 @@ public enum JbctMode {
 
         return Option.from(Stream.of(values()).filter(mode -> mode.token.equals(normalized)).findFirst());
     }
-    /// Parse an explicit override (`--mode`, `-Djbct.mode`): an unknown token is [ConfigError.ModeUnknown], a known
-    /// one that is not yet honoured is [ConfigError.ModeNotYetSupported].
+    /// Parse an explicit override (`--mode`, `-Djbct.mode`): an unknown token is [ConfigError.ModeUnknown].
     public static Result<JbctMode> jbctMode(String raw) {
-        return fromToken(raw).toResult(ConfigError.ModeUnknown.modeUnknown(raw))
-                        .flatMap(JbctMode::requireSupported);
-    }
-    /// This mode when the entry points honour it; `format-only` and `disabled` are refused until they do.
-    public Result<JbctMode> requireSupported() {
-        return isSupported()
-               ? Result.success(this)
-               : ConfigError.ModeNotYetSupported.modeNotYetSupported(this).result();
-    }
-    private boolean isSupported() {
-        return this == BUSINESS || this == INFRASTRUCTURE;
+        return fromToken(raw).toResult(ConfigError.ModeUnknown.modeUnknown(raw));
     }
 }

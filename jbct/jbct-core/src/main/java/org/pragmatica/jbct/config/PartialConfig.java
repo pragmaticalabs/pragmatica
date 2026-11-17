@@ -64,8 +64,7 @@ record PartialConfig(PartialFormatter formatter,
     /// and value (#1455): the typed reads below answer an empty `Option` for it, which this layer
     /// would otherwise capture as "key not set" and let a lower layer or the built-in default win.
     ///
-    /// An unknown `[lint] mode` is refused the same way, naming the allowed tokens; a known mode that no entry point
-    /// honours yet is refused as [ConfigError.ModeNotYetSupported] (#2525).
+    /// An unknown `[lint] mode` is refused the same way, naming the allowed tokens (#2525).
     static Result<PartialConfig> partialConfig(TomlDocument toml) {
         var layer = new PartialConfig(PartialFormatter.partialFormatter(toml),
                                       PartialLint.partialLint(toml),
@@ -78,7 +77,7 @@ record PartialConfig(PartialFormatter formatter,
                                       basePackage(toml));
 
         return toml.requireNoTypeMismatches()
-                   .flatMap(_ -> layer.requireSupportedMode());
+                   .map(_ -> layer);
     }
 
     /// The explicit mode override (`--mode`, `-Djbct.mode`) as a layer of its own, folded after every file layer.
@@ -107,12 +106,6 @@ record PartialConfig(PartialFormatter formatter,
         return isString && SourceVersion.isName(raw)
                ? some(raw)
                : none();
-    }
-
-    private Result<PartialConfig> requireSupportedMode() {
-        return mode.map(JbctMode::requireSupported)
-                   .map(supported -> supported.map(_ -> this))
-                   .or(Result.success(this));
     }
 
     /// Fold a nearer (higher priority) layer onto this one — every key it sets wins, key by key.

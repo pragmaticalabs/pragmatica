@@ -6,10 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.regex.Pattern;
 
-import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.config.JbctMode;
-import org.pragmatica.jbct.lint.LintContext;
-import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -108,28 +105,11 @@ class CliPerRootFormatTest {
         return new CommandLine(command).execute(args);
     }
 
-    private static LintContext inMode(LintContext context, String module, JbctMode mode) {
-        return context.basePackage().equals(Option.some("org.acme." + module))
-               ? context.withProject(mode, context.basePackage())
-               : context;
-    }
+    /// Puts the module `name` in `mode` through its own `jbct.toml`, keeping its `indentSize`, the way a user would.
+    private void setMode(String name, JbctMode mode) throws Exception {
+        var toml = tempDir.resolve("repo").resolve(name).resolve("jbct.toml");
 
-    private static FormatCommand formatIn(String module, JbctMode target) {
-        return new FormatCommand() {
-            @Override
-            LintContext createContext(JbctConfig config) {
-                return inMode(super.createContext(config), module, target);
-            }
-        };
-    }
-
-    private static CheckCommand checkIn(String module, JbctMode target) {
-        return new CheckCommand() {
-            @Override
-            LintContext createContext(JbctConfig config) {
-                return inMode(super.createContext(config), module, target);
-            }
-        };
+        Files.writeString(toml, Files.readString(toml) + "[lint]\nmode = \"" + mode.token() + "\"\n");
     }
 
     @Test
@@ -197,8 +177,9 @@ class CliPerRootFormatTest {
 
     @Test
     void format_disabledRoot_isLeftByteIdenticalAndAnnounced() throws Exception {
+        setMode("wide", JbctMode.DISABLED);
         var before = read(fileOf(wide, "wide"));
-        var exit = execute(formatIn("wide", JbctMode.DISABLED), narrow.toString(), wide.toString());
+        var exit = execute(new FormatCommand(), narrow.toString(), wide.toString());
 
         assertThat(exit).isZero();
         assertThat(read(fileOf(wide, "wide"))).isEqualTo(before);
@@ -208,8 +189,9 @@ class CliPerRootFormatTest {
     }
 
     @Test
-    void formatCheck_disabledRoot_hasNoFinding() {
-        var exit = execute(formatIn("wide", JbctMode.DISABLED), "--check", narrow.toString(), wide.toString());
+    void formatCheck_disabledRoot_hasNoFinding() throws Exception {
+        setMode("wide", JbctMode.DISABLED);
+        var exit = execute(new FormatCommand(), "--check", narrow.toString(), wide.toString());
 
         assertThat(exit).isEqualTo(1);
         assertThat(out.toString()).contains("needs formatting: " + fileOf(narrow, "narrow"))
@@ -217,8 +199,9 @@ class CliPerRootFormatTest {
     }
 
     @Test
-    void check_disabledRoot_hasNoFormatFindingAndIsAnnounced() {
-        execute(checkIn("wide", JbctMode.DISABLED), narrow.toString(), wide.toString());
+    void check_disabledRoot_hasNoFormatFindingAndIsAnnounced() throws Exception {
+        setMode("wide", JbctMode.DISABLED);
+        execute(new CheckCommand(), narrow.toString(), wide.toString());
 
         assertThat(out.toString()).doesNotContain("needs formatting: " + fileOf(wide, "wide"));
         assertThat(out.toString()).contains("1 format issue(s)");
@@ -227,7 +210,8 @@ class CliPerRootFormatTest {
 
     @Test
     void format_formatOnlyRoot_isFormattedWithItsOwnSettings() throws Exception {
-        var exit = execute(formatIn("wide", JbctMode.FORMAT_ONLY), narrow.toString(), wide.toString());
+        setMode("wide", JbctMode.FORMAT_ONLY);
+        var exit = execute(new FormatCommand(), narrow.toString(), wide.toString());
 
         assertThat(exit).isZero();
         assertThat(indentOfStatement(fileOf(wide, "wide"))).isEqualTo(16);

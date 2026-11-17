@@ -26,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// #2525, C7: only a session user property (`-Djbct.mode`, or a `-D` line of `.mvn/maven.config`) overrides `jbct.toml`.
 /// A pom `<jbct.mode>` and a `jbct.mode` system property (`MAVEN_OPTS`) override nothing and each warns, naming
-/// `jbct.toml`. `format-only` and `disabled` stay refused as not yet supported.
+/// `jbct.toml`. All four modes are accepted; an unknown value is refused naming it.
 class ModeOverrideMojoTest {
     private static final String USER_HOME = "user.home";
     private static final String MODE = "jbct.mode";
@@ -151,11 +151,18 @@ class ModeOverrideMojoTest {
     }
 
     @Test
-    void loadConfig_refusesFormatOnlyAndDisabledAsNotYetSupported() {
-        assertThatThrownBy(() -> probe(with("format-only"), new Properties()).loadConfig()).isInstanceOf(MojoExecutionException.class)
-                                                                                           .hasMessageContaining("\"format-only\" is not yet supported");
-        assertThatThrownBy(() -> probe(with("disabled"), new Properties()).loadConfig()).isInstanceOf(MojoExecutionException.class)
-                                                                                         .hasMessageContaining("\"disabled\" is not yet supported");
+    void createLintContext_acceptsFormatOnlyAndDisabledUserPropertyValues() throws Exception {
+        var formatOnly = probe(with("format-only"), new Properties());
+        var disabled = probe(with("disabled"), new Properties());
+
+        assertThat(formatOnly.createLintContext(formatOnly.loadConfig()).mode()).isEqualTo(JbctMode.FORMAT_ONLY);
+        assertThat(disabled.createLintContext(disabled.loadConfig()).mode()).isEqualTo(JbctMode.DISABLED);
+    }
+
+    @Test
+    void loadConfig_refusalOfAnUnknownValue_listsAllFourModes() {
+        assertThatThrownBy(() -> probe(with("strict"), new Properties()).loadConfig())
+            .hasMessageContaining("business", "infrastructure", "format-only", "disabled");
     }
 
     @Test

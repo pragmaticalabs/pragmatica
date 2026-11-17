@@ -27,15 +27,15 @@ class JbctModeConfigTest {
     }
 
     @Test
-    void partialConfig_refusesFormatOnlyAsNotYetSupported() {
-        layer("[lint]\nmode = \"format-only\"\n").onSuccess(layer -> Assertions.fail("must refuse, captured " + layer))
-             .onFailure(cause -> assertNotYetSupported(cause, JbctMode.FORMAT_ONLY));
+    void partialConfig_acceptsFormatOnlyMode() {
+        layer("[lint]\nmode = \"format-only\"\n").onFailure(JbctModeConfigTest::fail)
+             .onSuccess(layer -> assertThat(layer.mode()).isEqualTo(Option.some(JbctMode.FORMAT_ONLY)));
     }
 
     @Test
-    void partialConfig_refusesDisabledAsNotYetSupported() {
-        layer("[lint]\nmode = \"disabled\"\n").onSuccess(layer -> Assertions.fail("must refuse, captured " + layer))
-             .onFailure(cause -> assertNotYetSupported(cause, JbctMode.DISABLED));
+    void partialConfig_acceptsDisabledMode() {
+        layer("[lint]\nmode = \"disabled\"\n").onFailure(JbctModeConfigTest::fail)
+             .onSuccess(layer -> assertThat(layer.mode()).isEqualTo(Option.some(JbctMode.DISABLED)));
     }
 
     @Test
@@ -45,15 +45,11 @@ class JbctModeConfigTest {
     }
 
     @Test
-    void jbctMode_refusesTheSameTwoAndAcceptsTheOtherTwo() {
+    void jbctMode_acceptsAllFourAndRefusesAnUnknownToken() {
         assertThat(JbctMode.jbctMode("business").unwrap()).isEqualTo(JbctMode.BUSINESS);
         assertThat(JbctMode.jbctMode("infrastructure").unwrap()).isEqualTo(JbctMode.INFRASTRUCTURE);
-        JbctMode.jbctMode("format-only")
-                .onSuccess(mode -> Assertions.fail("accepted " + mode))
-                .onFailure(cause -> assertNotYetSupported(cause, JbctMode.FORMAT_ONLY));
-        JbctMode.jbctMode("disabled")
-                .onSuccess(mode -> Assertions.fail("accepted " + mode))
-                .onFailure(cause -> assertNotYetSupported(cause, JbctMode.DISABLED));
+        assertThat(JbctMode.jbctMode("format-only").unwrap()).isEqualTo(JbctMode.FORMAT_ONLY);
+        assertThat(JbctMode.jbctMode("disabled").unwrap()).isEqualTo(JbctMode.DISABLED);
         JbctMode.jbctMode("nope")
                 .onSuccess(mode -> Assertions.fail("accepted " + mode))
                 .onFailure(cause -> assertThat(cause).isInstanceOf(ConfigError.ModeUnknown.class));
@@ -199,29 +195,21 @@ class JbctModeConfigTest {
     }
 
     @Test
-    void overrideMode_refusesFormatOnlyAsNotYetSupported() {
-        JbctConfig.DEFAULT.overrideMode(Option.some("format-only"))
-                          .onSuccess(config -> Assertions.fail("accepted format-only"))
-                          .onFailure(cause -> assertNotYetSupported(cause, JbctMode.FORMAT_ONLY));
+    void overrideMode_acceptsFormatOnly() {
+        JbctConfig.DEFAULT.overrideMode(Option.some("format-only")).onFailure(JbctModeConfigTest::fail)
+                          .onSuccess(config -> assertThat(config.mode()).isEqualTo(JbctMode.FORMAT_ONLY));
     }
 
     @Test
-    void overrideMode_refusesDisabledAsNotYetSupported() {
-        JbctConfig.DEFAULT.overrideMode(Option.some("disabled"))
-                          .onSuccess(config -> Assertions.fail("accepted disabled"))
-                          .onFailure(cause -> assertNotYetSupported(cause, JbctMode.DISABLED));
+    void overrideMode_acceptsDisabled() {
+        JbctConfig.DEFAULT.overrideMode(Option.some("disabled")).onFailure(JbctModeConfigTest::fail)
+                          .onSuccess(config -> assertThat(config.mode()).isEqualTo(JbctMode.DISABLED));
     }
 
     private static void assertOnlyModeChanged(JbctConfig config) {
         assertThat(config.mode()).isEqualTo(JbctMode.INFRASTRUCTURE);
         assertThat(config.lint().failOnWarning()).isTrue();
         assertThat(config.basePackage()).isEqualTo(Option.some("org.example"));
-    }
-
-    private static void assertNotYetSupported(Cause cause, JbctMode mode) {
-        assertThat(cause).isInstanceOf(ConfigError.ModeNotYetSupported.class);
-        assertThat(((ConfigError.ModeNotYetSupported) cause).mode()).isEqualTo(mode);
-        assertThat(cause.message()).contains("not yet supported", mode.token());
     }
 
     private static Result<PartialConfig> merged(String farther, String nearer) {

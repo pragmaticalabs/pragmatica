@@ -8,10 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
-import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.config.JbctMode;
-import org.pragmatica.jbct.lint.LintContext;
-import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -113,12 +110,10 @@ class CliPerRootLintTest {
         return found;
     }
 
-    /// The context for the module whose `basePackage` is `org.acme.<module>`, put in `mode`; the config parser still
-    /// refuses `format-only` and `disabled` (until the last P2c lane), so a test reaches them by overriding the context.
-    private static LintContext inMode(LintContext context, String module, JbctMode mode) {
-        return context.basePackage().equals(Option.some("org.acme." + module))
-               ? context.withProject(mode, context.basePackage())
-               : context;
+    /// Puts the module `name` in `mode` through its own `jbct.toml`, the way a user would.
+    private void setMode(String name, JbctMode mode) throws Exception {
+        Files.writeString(tempDir.resolve("repo").resolve(name).resolve("jbct.toml"),
+                          "[lint]\nmode = \"" + mode.token() + "\"\n[project]\nbasePackage = \"org.acme." + name + "\"\n");
     }
 
     @Test
@@ -153,15 +148,10 @@ class CliPerRootLintTest {
     }
 
     @Test
-    void lint_formatOnlyRootBesideBusinessRoot_runsNoRuleForIt() {
-        var lint = new LintCommand() {
-            @Override
-            LintContext createContext(JbctConfig config) {
-                return inMode(super.createContext(config), "infra", JbctMode.FORMAT_ONLY);
-            }
-        };
+    void lint_formatOnlyRootBesideBusinessRoot_runsNoRuleForIt() throws Exception {
+        setMode("infra", JbctMode.FORMAT_ONLY);
 
-        execute(lint, "--format", "json", business.toString(), infrastructure.toString());
+        execute(new LintCommand(), "--format", "json", business.toString(), infrastructure.toString());
 
         assertThat(findings(out.toString())).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz");
         assertThat(err.toString()).contains("mode=format-only root=" + rootOf(infrastructure) + " 1 files: format only");
@@ -180,14 +170,9 @@ class CliPerRootLintTest {
     }
 
     @Test
-    void score_formatOnlyRootBesideBusinessRoot_announcesNotScoredAndScoresTheOther() {
-        var score = new ScoreCommand() {
-            @Override
-            LintContext createContext(JbctConfig config) {
-                return inMode(super.createContext(config), "infra", JbctMode.FORMAT_ONLY);
-            }
-        };
-        var exit = execute(score, business.toString(), infrastructure.toString());
+    void score_formatOnlyRootBesideBusinessRoot_announcesNotScoredAndScoresTheOther() throws Exception {
+        setMode("infra", JbctMode.FORMAT_ONLY);
+        var exit = execute(new ScoreCommand(), business.toString(), infrastructure.toString());
 
         assertThat(err.toString()).contains("Not scored: mode=format-only root=" + rootOf(infrastructure));
         assertThat(err.toString()).doesNotContain("Not scored: mode=business");
@@ -196,14 +181,9 @@ class CliPerRootLintTest {
     }
 
     @Test
-    void score_everyRootDisabled_announcesNotScoredAndExitsClean() {
-        var score = new ScoreCommand() {
-            @Override
-            LintContext createContext(JbctConfig config) {
-                return inMode(super.createContext(config), "biz", JbctMode.DISABLED);
-            }
-        };
-        var exit = execute(score, business.toString());
+    void score_everyRootDisabled_announcesNotScoredAndExitsClean() throws Exception {
+        setMode("biz", JbctMode.DISABLED);
+        var exit = execute(new ScoreCommand(), business.toString());
 
         assertThat(err.toString()).contains("Not scored: mode=disabled root=" + rootOf(business));
         assertThat(out.toString()).isBlank();

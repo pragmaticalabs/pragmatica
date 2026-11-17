@@ -4,16 +4,12 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.regex.Pattern;
 
-import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.config.JbctMode;
-import org.pragmatica.jbct.lint.LintContext;
 
 import org.apache.maven.execution.DefaultMavenExecutionRequest;
 import org.apache.maven.execution.DefaultMavenExecutionResult;
@@ -34,8 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// (infrastructure, indentSize 2) and `side` (business, indentSize 8), differ in everything a root can differ in; the
 /// goal runs over `main`'s main root and, when tests are included, over a `testSourceDirectory` that is `side`'s test root.
 ///
-/// The config parser refuses `format-only` and `disabled` until the last P2c lane, so those two modes reach the goals
-/// through the `createLintContext` seam, keyed on the root's base package.
+/// Every mode, `format-only` and `disabled` included, reaches the goals through the module's own `jbct.toml`.
 class MojoPerRootTest {
     private static final String USER_HOME = "user.home";
     private static final String MODE = "jbct.mode";
@@ -67,7 +62,6 @@ class MojoPerRootTest {
 
     private static final String ARCH_02 = "[JBCT-ARCH-02]";
     private static final String RET_03 = "[JBCT-RET-03]";
-    private static final Map<String, JbctMode> MODES = new HashMap<>();
 
     @TempDir
     Path tempDir;
@@ -85,7 +79,6 @@ class MojoPerRootTest {
         System.setProperty(USER_HOME,
                            tempDir.resolve("home").toString());
         System.clearProperty(MODE);
-        MODES.clear();
         var repo = Files.createDirectories(tempDir.resolve("repo"));
 
         Files.createDirectories(repo.resolve(".git"));
@@ -99,7 +92,6 @@ class MojoPerRootTest {
     void restore() {
         System.setProperty(USER_HOME, savedUserHome);
         System.clearProperty(MODE);
-        MODES.clear();
     }
 
     private static Path module(Path repo, String name, String mode, int indent) throws Exception {
@@ -140,53 +132,9 @@ class MojoPerRootTest {
                     .orElseThrow();
     }
 
-    private static LintContext seamed(LintContext context) {
-        var target = MODES.getOrDefault(context.basePackage().or(""),
-                                        context.mode());
-
-        return context.withProject(target, context.basePackage());
-    }
-
-    private static final class SeamLint extends LintMojo {
-        @Override
-        protected LintContext createLintContext(JbctConfig config) {
-            return seamed(super.createLintContext(config));
-        }
-    }
-
-    private static final class SeamCheck extends CheckMojo {
-        @Override
-        protected LintContext createLintContext(JbctConfig config) {
-            return seamed(super.createLintContext(config));
-        }
-    }
-
-    private static final class SeamScore extends ScoreMojo {
-        @Override
-        protected LintContext createLintContext(JbctConfig config) {
-            return seamed(super.createLintContext(config));
-        }
-    }
-
-    private static final class SeamProcess extends ProcessMojo {
-        @Override
-        protected LintContext createLintContext(JbctConfig config) {
-            return seamed(super.createLintContext(config));
-        }
-    }
-
-    private static final class SeamFormat extends FormatMojo {
-        @Override
-        protected LintContext createLintContext(JbctConfig config) {
-            return seamed(super.createLintContext(config));
-        }
-    }
-
-    private static final class SeamFormatCheck extends FormatCheckMojo {
-        @Override
-        protected LintContext createLintContext(JbctConfig config) {
-            return seamed(super.createLintContext(config));
-        }
+    /// Puts the module `name` in `mode` through its own `jbct.toml`, the way a user would.
+    private void setMode(String name, JbctMode mode) throws Exception {
+        module(module.getParent(), name, mode.token(), name.equals("main") ? 2 : 8);
     }
 
     private <M extends AbstractJbctMojo> M wire(M mojo,
@@ -222,52 +170,52 @@ class MojoPerRootTest {
         return mojo;
     }
 
-    private SeamLint lint(boolean includeTests, Path testDirectory) {
-        var mojo = wire(new SeamLint(), mainRoot, testDirectory, new Properties());
+    private LintMojo lint(boolean includeTests, Path testDirectory) {
+        var mojo = wire(new LintMojo(), mainRoot, testDirectory, new Properties());
 
         mojo.includeTests = includeTests;
 
         return mojo;
     }
 
-    private SeamLint lint(boolean includeTests) {
+    private LintMojo lint(boolean includeTests) {
         return lint(includeTests, sideTestRoot);
     }
 
-    private SeamCheck check() {
-        var mojo = wire(new SeamCheck(), mainRoot, sideTestRoot, new Properties());
+    private CheckMojo check() {
+        var mojo = wire(new CheckMojo(), mainRoot, sideTestRoot, new Properties());
 
         mojo.includeTests = true;
 
         return mojo;
     }
 
-    private SeamScore score() {
-        var mojo = wire(new SeamScore(), mainRoot, sideTestRoot, new Properties());
+    private ScoreMojo score() {
+        var mojo = wire(new ScoreMojo(), mainRoot, sideTestRoot, new Properties());
 
         mojo.includeTests = true;
 
         return mojo;
     }
 
-    private SeamProcess process() {
-        var mojo = wire(new SeamProcess(), mainRoot, sideTestRoot, new Properties());
+    private ProcessMojo process() {
+        var mojo = wire(new ProcessMojo(), mainRoot, sideTestRoot, new Properties());
 
         mojo.includeTests = true;
 
         return mojo;
     }
 
-    private SeamFormat format() {
-        var mojo = wire(new SeamFormat(), mainRoot, sideTestRoot, new Properties());
+    private FormatMojo format() {
+        var mojo = wire(new FormatMojo(), mainRoot, sideTestRoot, new Properties());
 
         mojo.includeTests = true;
 
         return mojo;
     }
 
-    private SeamFormatCheck formatCheck() {
-        var mojo = wire(new SeamFormatCheck(), mainRoot, sideTestRoot, new Properties());
+    private FormatCheckMojo formatCheck() {
+        var mojo = wire(new FormatCheckMojo(), mainRoot, sideTestRoot, new Properties());
 
         mojo.includeTests = true;
 
@@ -353,7 +301,7 @@ class MojoPerRootTest {
         var properties = new Properties();
 
         properties.setProperty(MODE, "infrastructure");
-        var mojo = wire(new SeamLint(), mainRoot, sideTestRoot, properties);
+        var mojo = wire(new LintMojo(), mainRoot, sideTestRoot, properties);
 
         mojo.includeTests = true;
         attempt(mojo);
@@ -362,13 +310,13 @@ class MojoPerRootTest {
     }
 
     @Test
-    void lint_refusalInTheTestRootsToml_failsTheGoalNamingTheMode() throws Exception {
-        Files.writeString(sideModule.resolve("jbct.toml"), "[lint]\nmode = \"format-only\"\n");
+    void lint_unknownModeInTheTestRootsToml_failsTheGoalNamingTheValue() throws Exception {
+        Files.writeString(sideModule.resolve("jbct.toml"), "[lint]\nmode = \"strict\"\n");
         var outcome = attempt(lint(true));
 
         assertThat(outcome).isPresent();
         assertThat(outcome.get()).isInstanceOf(MojoExecutionException.class);
-        assertThat(outcome.get().getMessage()).contains("format-only");
+        assertThat(outcome.get().getMessage()).contains("strict");
     }
 
     @Test
@@ -382,8 +330,8 @@ class MojoPerRootTest {
     }
 
     @Test
-    void lint_formatOnlyTestRoot_runsNoRuleThereAndKeepsTheMainRoot() {
-        MODES.put("org.acme.side", JbctMode.FORMAT_ONLY);
+    void lint_formatOnlyTestRoot_runsNoRuleThereAndKeepsTheMainRoot() throws Exception {
+        setMode("side", JbctMode.FORMAT_ONLY);
         attempt(lint(true));
         assertThat(anyContains(linesWith(RET_03), sideFinding())).isFalse();
         assertThat(anyContains(linesWith(RET_03), mainFinding())).isTrue();
@@ -391,8 +339,8 @@ class MojoPerRootTest {
     }
 
     @Test
-    void lint_disabledTestRoot_isNotLinted() {
-        MODES.put("org.acme.side", JbctMode.DISABLED);
+    void lint_disabledTestRoot_isNotLinted() throws Exception {
+        setMode("side", JbctMode.DISABLED);
         attempt(lint(true));
         assertThat(anyContains(linesWith(RET_03), sideFinding())).isFalse();
         assertThat(anyContains(linesWith(RET_03), mainFinding())).isTrue();
@@ -400,8 +348,8 @@ class MojoPerRootTest {
     }
 
     @Test
-    void score_formatOnlyRoot_isAnnouncedNotScored_andScoringContinuesOnTheOther() {
-        MODES.put("org.acme.side", JbctMode.FORMAT_ONLY);
+    void score_formatOnlyRoot_isAnnouncedNotScored_andScoringContinuesOnTheOther() throws Exception {
+        setMode("side", JbctMode.FORMAT_ONLY);
         var text = everything(attempt(score()));
 
         assertThat(text).contains("Not scored: mode=format-only root=" + sideTestRoot).contains("Measuring");
@@ -409,9 +357,9 @@ class MojoPerRootTest {
     }
 
     @Test
-    void score_everyRootWithoutRules_scoresNothingAndSaysSo() {
-        MODES.put("org.acme.side", JbctMode.FORMAT_ONLY);
-        MODES.put("org.acme.main", JbctMode.DISABLED);
+    void score_everyRootWithoutRules_scoresNothingAndSaysSo() throws Exception {
+        setMode("side", JbctMode.FORMAT_ONLY);
+        setMode("main", JbctMode.DISABLED);
         var text = everything(attempt(score()));
 
         assertThat(text).contains("Nothing scored").doesNotContain("Measuring");
@@ -450,7 +398,7 @@ class MojoPerRootTest {
 
     @Test
     void format_disabledRoot_isLeftByteIdenticalAndAnnouncedOnce() throws Exception {
-        MODES.put("org.acme.side", JbctMode.DISABLED);
+        setMode("side", JbctMode.DISABLED);
         var before = Files.readString(priceOf(sideTestRoot, "side"));
         var outcome = attempt(format());
         var text = everything(outcome);
@@ -464,7 +412,7 @@ class MojoPerRootTest {
 
     @Test
     void format_formatOnlyRoot_isFormattedWithItsOwnSettings() throws Exception {
-        MODES.put("org.acme.side", JbctMode.FORMAT_ONLY);
+        setMode("side", JbctMode.FORMAT_ONLY);
         var outcome = attempt(format());
 
         assertThat(outcome).isEmpty();
@@ -473,14 +421,14 @@ class MojoPerRootTest {
     }
 
     @Test
-    void formatCheck_disabledRoot_hasNoFinding_formatOnlyRootKeepsIt() {
-        MODES.put("org.acme.side", JbctMode.DISABLED);
+    void formatCheck_disabledRoot_hasNoFinding_formatOnlyRootKeepsIt() throws Exception {
+        setMode("side", JbctMode.DISABLED);
         var disabled = attempt(formatCheck());
 
         assertThat(disabled).isPresent();
         assertThat(disabled.get().getMessage()).contains(priceOf(mainRoot, "main").toString())
                   .doesNotContain(priceOf(sideTestRoot, "side").toString());
-        MODES.put("org.acme.side", JbctMode.FORMAT_ONLY);
+        setMode("side", JbctMode.FORMAT_ONLY);
         var formatOnly = attempt(formatCheck());
 
         assertThat(formatOnly).isPresent();
@@ -488,8 +436,8 @@ class MojoPerRootTest {
     }
 
     @Test
-    void check_disabledRoot_hasNoFormatFindingAndNoRule() {
-        MODES.put("org.acme.side", JbctMode.DISABLED);
+    void check_disabledRoot_hasNoFormatFindingAndNoRule() throws Exception {
+        setMode("side", JbctMode.DISABLED);
         var text = everything(attempt(check()));
 
         assertThat(text).doesNotContain(priceOf(sideTestRoot, "side").toString());
@@ -498,8 +446,8 @@ class MojoPerRootTest {
     }
 
     @Test
-    void check_formatOnlyRoot_keepsTheFormatFindingAndRunsNoRule() {
-        MODES.put("org.acme.side", JbctMode.FORMAT_ONLY);
+    void check_formatOnlyRoot_keepsTheFormatFindingAndRunsNoRule() throws Exception {
+        setMode("side", JbctMode.FORMAT_ONLY);
         var text = everything(attempt(check()));
 
         assertThat(text).contains(priceOf(sideTestRoot, "side").toString());
@@ -509,7 +457,7 @@ class MojoPerRootTest {
 
     @Test
     void process_formatOnlyRoot_formatsButRunsNoRule() throws Exception {
-        MODES.put("org.acme.side", JbctMode.FORMAT_ONLY);
+        setMode("side", JbctMode.FORMAT_ONLY);
         attempt(process());
         assertThat(indentOfStatement(priceOf(sideTestRoot, "side"))).isEqualTo(16);
         assertThat(anyContains(linesWith(RET_03), sideFinding())).isFalse();
@@ -518,7 +466,7 @@ class MojoPerRootTest {
 
     @Test
     void process_disabledRoot_isNeitherFormattedNorLinted() throws Exception {
-        MODES.put("org.acme.side", JbctMode.DISABLED);
+        setMode("side", JbctMode.DISABLED);
         var before = Files.readString(priceOf(sideTestRoot, "side"));
         var text = everything(attempt(process()));
 

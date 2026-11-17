@@ -18,7 +18,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #2525, C7: `--mode` on `lint`, `check`, `score` and `format` overrides the mode `jbct.toml` resolves, and
-/// `--config` too: it folds last. `format-only` and `disabled` stay refused as not yet supported (P2c lifts that).
+/// `--config` too: it folds last. All four modes are accepted; an unknown value is refused.
 class CliModeOverrideTest {
     private static final String USER_HOME_PROPERTY = "user.home";
 
@@ -91,13 +91,13 @@ class CliModeOverrideTest {
     }
 
     @Test
-    void load_refusesFormatOnlyAndDisabledAsNotYetSupported() {
+    void load_acceptsFormatOnlyAndDisabled() {
         var formatOnly = CliConfig.load(Option.none(), Option.some("format-only"), sourceRoot, errStream());
         var disabled = CliConfig.load(Option.none(), Option.some("disabled"), sourceRoot, errStream());
 
-        assertThat(formatOnly.isEmpty()).isTrue();
-        assertThat(disabled.isEmpty()).isTrue();
-        assertThat(err.toString(UTF_8)).contains("\"format-only\" is not yet supported", "\"disabled\" is not yet supported");
+        assertThat(formatOnly.unwrap().mode()).isEqualTo(JbctMode.FORMAT_ONLY);
+        assertThat(disabled.unwrap().mode()).isEqualTo(JbctMode.DISABLED);
+        assertThat(err.toString(UTF_8)).isEmpty();
     }
 
     @Test
@@ -125,16 +125,16 @@ class CliModeOverrideTest {
     }
 
     @Test
-    void lint_exitsWithConfigErrorStatus_whenModeIsRefused() {
+    void lint_exitsWithConfigErrorStatus_whenModeIsUnknown() {
         var originalErr = System.err;
 
         System.setErr(errStream());
 
         try {
-            var exit = new CommandLine(new LintCommand()).execute("--mode", "disabled", sourceRoot.toString());
+            var exit = new CommandLine(new LintCommand()).execute("--mode", "strict", sourceRoot.toString());
 
             assertThat(exit).isEqualTo(CliConfig.CONFIG_ERROR_EXIT);
-            assertThat(err.toString(UTF_8)).contains("\"disabled\" is not yet supported");
+            assertThat(err.toString(UTF_8)).contains("strict", JbctMode.ALLOWED);
         } finally {
             System.setErr(originalErr);
         }

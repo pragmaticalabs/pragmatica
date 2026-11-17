@@ -28,8 +28,8 @@ public sealed interface CliConfig {
     }
 
     /// Load the configuration for a checked path with the command's `--mode` folded last (C7): after the `jbct.toml`
-    /// chain and after `--config`, so it wins over both. An unknown value, or one not yet supported, is refused the
-    /// same way a bad config layer is.
+    /// chain and after `--config`, so it wins over both. An unknown value is refused the same
+    /// way a bad config layer is.
     static Option<JbctConfig> load(Option<Path> explicitConfigPath,
                                    Option<String> explicitMode,
                                    Path checkedPath,
