@@ -171,7 +171,7 @@ public final class ClusterFsm {
     /// Deactivate(n) ==
     ///   /\ fsm[n] = "Active" /\ elected # n
     ///   /\ Discard(n)
-    ///   /\ UNCHANGED <<notes, trans, ncommit, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, inc, view, net,
+    ///   /\ UNCHANGED <<notes, trans, ncommit, kvW, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, inc, view, net,
     ///                  settles, condBudget, faultBudget>>
     /// ```
     private static ClusterState deactivated(ClusterModel model, Ctx ctx) {

@@ -190,9 +190,12 @@ public sealed interface Outbox {
     ///               wtx == [kind |-> "W", node |-> n, inc |-> inc[n], lv |-> view[n],
     ///                       wexp |-> [s \in D |-> rows[n][s]],
     ///                       wrep |-> [s \in D |-> Rev(Des(warned[n], held[n])[s], rows[n][s].rv + 1)],
-    ///                       val |-> 0, exp |-> 0, cov |-> Len(held[n])]
+    ///                       val |-> 0, exp |-> 0, cov |-> Len(held[n]),
+    ///                       \* history (NoBlindTombstone): the committed-open rows this draft tombstones although this
+    ///                       \* incarnation never closed them on an observed condition-off
+    ///                       blind |-> {s \in D : rows[n][s].open /\ ~Des(warned[n], held[n])[s].open /\ s \notin closedOff[n]}]
     ///               gtx == [kind |-> "G", node |-> n, inc |-> inc[n], lv |-> view[n],
-    ///                       wexp |-> EmptyF, wrep |-> EmptyF, val |-> target, exp |-> kvDesired, cov |-> 0]
+    ///                       wexp |-> EmptyF, wrep |-> EmptyF, val |-> target, exp |-> kvDesired, cov |-> 0, blind |-> {}]
     ///               \* Outbox.direct drafts of a witness-stale refusal go out unchanged, under the witness the node holds now
     ///               resub == {[t EXCEPT !.lv = view[n]] : t \in redo[n]}
     ///           IN /\ net' = net \cup (IF doW THEN {wtx} ELSE {}) \cup (IF doG THEN {gtx} ELSE {}) \cup resub
@@ -605,7 +608,7 @@ public sealed interface Outbox {
     ///         /\ Apply(n, warned[n], r, d, IF isW THEN stale ELSE wInfl[n], IF isW THEN gInfl[n] ELSE stale,
     ///                  gIntent[n], FALSE, flushQ[n] \/ stale,
     ///                  shown, held[n], ld, v)
-    ///   /\ UNCHANGED <<trans, ncommit, pend, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, fired, net,
+    ///   /\ UNCHANGED <<trans, ncommit, kvW, pend, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, fired, net,
     ///                  condBudget, faultBudget>>
     /// ```
     ///
@@ -614,7 +617,7 @@ public sealed interface Outbox {
     /// DropSettle(s) ==
     ///   /\ s \in settles /\ (fsm[s.node] = "Dormant" \/ s.inc # inc[s.node])
     ///   /\ settles' = settles \ {s}
-    ///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, fsm, inc, view,
+    ///   /\ UNCHANGED <<nvars, closedOff, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, fsm, inc, view,
     ///                  warned, rows, dirty, flushQ, wInfl, gInfl, gIntent, fired, net, condBudget, faultBudget, held, lnd,
     ///                  redo>>
     /// ```

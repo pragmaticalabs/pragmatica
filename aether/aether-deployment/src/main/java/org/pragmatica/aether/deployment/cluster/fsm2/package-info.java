@@ -72,7 +72,7 @@
 /// (* or target changes; at most MaxFault faults (1, or 2 in the goal rows: crashes, lost settlements, failed      *)
 /// (* writes); RESUME = FALSE in every pass row but codeA_resume_* (RESUME = TRUE: a node regains leadership while *)
 /// (* still Active, reachable only via #3253, the guard that parked Activate over Deactivate, fixed by #3260; those *)
-/// (* rows pass, and the mutant readwarned is red on them). Nothing is claimed beyond those bounds. These are the   *)
+/// (* rows pass, and the mutant noruleo is red on them).    Nothing is claimed beyond those bounds. These are the   *)
 /// (* configs as written; a row whose `small` column in tools/tla/models.tsv lowers a constant holds, as recorded  *)
 /// (* there, at the lowered bound only.                                                                           *)
 /// (* The leader fence itself is the applier's (KvApply compares the full leader value) and is assumed;     *)
@@ -156,13 +156,17 @@
 ///           notes,                   \* #3274 notification stream: [c, s, up, dup], one per emission (dup: the transition was already notified)
 ///           trans,                   \* history: every committed open/closed transition [c |-> commit number, s, up]
 ///           ncommit,                 \* history: accepted WARNINGS commits so far (names a commit)
-///           pend                     \* per node: a committed WARNINGS put has not yet reached the node (Indexer -> onPut)
+///           pend,                    \* per node: a committed WARNINGS put has not yet reached the node (Indexer -> onPut)
+///           closedOff,               \* history, per node: subjects this incarnation closed on an observed condition-off (Tick),
+///                                    \* not raised or joined since (NoBlindTombstone)
+///           kvW                      \* per committed row: its writer stamp <<node, incarnation>> (FsmWarningValue writerNode /
+///                                    \* writerProcess; the model's incarnation stands for the process), read by rule O (OnPut)
 ///
-/// nvars == <<notes, trans, ncommit, pend>>
+/// nvars == <<notes, trans, ncommit, pend, kvW>>
 ///
 /// vars == <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, fsm, inc, view,
 ///           warned, rows, dirty, flushQ, wInfl, gInfl, gIntent, fired, held, lnd, net, settles,
-///           condBudget, faultBudget, redo, notes, trans, ncommit, pend>>
+///           condBudget, faultBudget, redo, notes, trans, ncommit, pend, closedOff, kvW>>
 ///
 /// Current == <<kvLeader, term>>
 ///
@@ -224,6 +228,8 @@
 ///       d2 == d1 \/ cnt > 0
 ///       d3 == IF d2 /\ ~f /\ Diff(w, r, hd2) = {} THEN FALSE ELSE d2
 ///   IN /\ warned' = [warned EXCEPT ![n] = w]
+///      \* the family set shrinks only at a Tick close (an observed condition-off); a subject that joins it again leaves the history
+///      /\ closedOff' = [closedOff EXCEPT ![n] = (closedOff[n] \cup (warned[n] \ w)) \ w]
 ///      /\ rows' = [rows EXCEPT ![n] = r]
 ///      /\ dirty' = [dirty EXCEPT ![n] = d3]
 ///      /\ wInfl' = [wInfl EXCEPT ![n] = f]
@@ -269,6 +275,7 @@
 ///   /\ lnd' = [lnd EXCEPT ![n] = 0]
 ///   /\ redo' = [redo EXCEPT ![n] = {}]
 ///   /\ pend' = [pend EXCEPT ![n] = FALSE]
+///   /\ closedOff' = [closedOff EXCEPT ![n] = {}]
 ///
 /// Init ==
 ///   /\ term = 1 /\ kvLeader = (CHOOSE n \in Nodes : TRUE) /\ elected = kvLeader /\ lkPend = FALSE
@@ -282,7 +289,8 @@
 ///   /\ gIntent = [n \in Nodes |-> FALSE] /\ fired = [n \in Nodes |-> {}] /\ held = [n \in Nodes |-> <<>>]
 ///   /\ lnd = [n \in Nodes |-> 0] /\ redo = [n \in Nodes |-> {}]
 ///   /\ net = {} /\ settles = {}
-///   /\ notes = {} /\ trans = {} /\ ncommit = 0 /\ pend = [n \in Nodes |-> FALSE]
+///   /\ notes = {} /\ trans = {} /\ ncommit = 0 /\ pend = [n \in Nodes |-> FALSE] /\ closedOff = [n \in Nodes |-> {}]
+///   /\ kvW = [s \in Subjects |-> <<None, 0>>]
 ///   /\ condBudget = MaxCond /\ faultBudget = MaxFault
 ///
 /// \* Environment: the leader process dies at any point between effects.
@@ -291,7 +299,7 @@
 ///   /\ A2834 => (n # kvLeader \/ Quiet(n))
 ///   /\ faultBudget' = faultBudget - 1
 ///   /\ Discard(n)
-///   /\ UNCHANGED <<notes, trans, ncommit, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, inc, view, net,
+///   /\ UNCHANGED <<notes, trans, ncommit, kvW, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, inc, view, net,
 ///                  settles, condBudget>>
 ///
 /// \* Environment: consensus elects a leader (possibly the same node again); CI-1 Activate / Deactivate follow it. The
@@ -301,14 +309,14 @@
 ///   /\ A2834 => Quiet(kvLeader)
 ///   /\ RESUME \/ m = elected \/ fsm[m] = "Dormant"
 ///   /\ elected' = m /\ lkPend' = TRUE
-///   /\ UNCHANGED <<nvars, term, kvLeader, kv, kvDesired, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty,
+///   /\ UNCHANGED <<nvars, closedOff, term, kvLeader, kv, kvDesired, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty,
 ///                  flushQ, wInfl, gInfl, gIntent, fired, net, settles, condBudget, faultBudget, held, lnd, redo>>
 ///
 /// \* Environment: the LeaderKey commit of the elected leader; the committed leader value (the fence's reference) moves.
 /// CommitLeader ==
 ///   /\ lkPend
 ///   /\ term' = term + 1 /\ kvLeader' = elected /\ lkPend' = FALSE
-///   /\ UNCHANGED <<nvars, elected, kv, kvDesired, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty, flushQ,
+///   /\ UNCHANGED <<nvars, closedOff, elected, kv, kvDesired, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty, flushQ,
 ///                  wInfl, gInfl, gIntent, fired, net, settles, condBudget, faultBudget, held, lnd, redo>>
 ///
 /// \* The consensus applier: a LeaderTransaction commits iff the committed leader is the tx's leader value (the fence;
@@ -335,10 +343,11 @@
 ///                                              x \in {y \in DOMAIN tx.wrep : kv[y].open # tx.wrep[y].open}}
 ///                     ELSE trans
 ///         /\ pend' = IF okW THEN [m \in Nodes |-> pend[m] \/ fsm[m] = "Active"] ELSE pend
+///         /\ kvW' = IF okW THEN [x \in Subjects |-> IF x \in DOMAIN tx.wrep THEN <<tx.node, tx.inc>> ELSE kvW[x]] ELSE kvW
 ///         /\ settles' = settles \cup {st}
 ///         /\ kv' = IF ok /\ tx.kind = "W" THEN Overlay(kv, tx.wrep) ELSE kv
 ///         /\ kvDesired' = IF ok /\ tx.kind = "G" THEN tx.val ELSE kvDesired
-///   /\ UNCHANGED <<notes, term, kvLeader, elected, lkPend, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty,
+///   /\ UNCHANGED <<notes, closedOff, term, kvLeader, elected, lkPend, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty,
 ///                  flushQ, wInfl, gInfl, gIntent, fired, held, lnd, condBudget, faultBudget, redo>>
 ///
 /// \* Environment: a definite failure (Settlement.Failed), nothing committed.
@@ -348,7 +357,7 @@
 ///   /\ net' = net \ {tx}
 ///   /\ settles' = settles \cup {[kind |-> tx.kind, node |-> tx.node, inc |-> tx.inc, out |-> "fail",
 ///                                wrep |-> tx.wrep, seen |-> EmptyF, lv |-> Current, cov |-> 0, tx |-> tx, c |-> 0]}
-///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, fsm, inc, view,
+///   /\ UNCHANGED <<nvars, closedOff, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, fsm, inc, view,
 ///                  warned, rows, dirty, flushQ, wInfl, gInfl, gIntent, fired, condBudget, held, lnd, redo>>
 ///
 /// \* Environment: the settlement never reaches the FSM (expiry handles it, #2143).
@@ -356,13 +365,13 @@
 ///   /\ s \in settles /\ faultBudget > 0
 ///   /\ faultBudget' = faultBudget - 1
 ///   /\ settles' = settles \ {s}
-///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, fsm, inc, view,
+///   /\ UNCHANGED <<nvars, closedOff, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, fsm, inc, view,
 ///                  warned, rows, dirty, flushQ, wInfl, gInfl, gIntent, fired, net, condBudget, held, lnd, redo>>
 ///
 /// CondOn(s) ==
 ///   /\ condBudget > 0 /\ s \notin cond
 ///   /\ cond' = cond \cup {s} /\ condBudget' = condBudget - 1
-///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, shown, fsm, inc, view, warned,
+///   /\ UNCHANGED <<nvars, closedOff, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, shown, fsm, inc, view, warned,
 ///                  rows, dirty, flushQ, wInfl, gInfl, gIntent, fired, net, settles, faultBudget, held, lnd, redo>>
 ///
 /// \* An event-only condition that ends starts a new episode: its retry cycle restarts, so it can exhaust (fire) again
@@ -371,19 +380,19 @@
 ///   /\ condBudget > 0 /\ s \in cond
 ///   /\ cond' = cond \ {s} /\ condBudget' = condBudget - 1
 ///   /\ fired' = [n \in Nodes |-> fired[n] \ {s}]
-///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, shown, fsm, inc, view, warned,
+///   /\ UNCHANGED <<nvars, closedOff, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, shown, fsm, inc, view, warned,
 ///                  rows, dirty, flushQ, wInfl, gInfl, gIntent, net, settles, faultBudget, held, lnd, redo>>
 ///
 /// SetTarget ==
 ///   /\ GOALS /\ condBudget > 0
 ///   /\ target' = 1 - target /\ condBudget' = condBudget - 1
-///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, observed, cond, shown, fsm, inc, view, warned,
+///   /\ UNCHANGED <<nvars, closedOff, term, kvLeader, elected, lkPend, kv, kvDesired, observed, cond, shown, fsm, inc, view, warned,
 ///                  rows, dirty, flushQ, wInfl, gInfl, gIntent, fired, net, settles, faultBudget, held, lnd, redo>>
 ///
 /// \* The node FSM converges its observed row to the committed desired row.
 /// NodeApply ==
 ///   /\ observed # kvDesired /\ observed' = kvDesired
-///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, target, cond, shown, fsm, inc, view, warned, rows,
+///   /\ UNCHANGED <<nvars, closedOff, term, kvLeader, elected, lkPend, kv, kvDesired, target, cond, shown, fsm, inc, view, warned, rows,
 ///                  dirty, flushQ, wInfl, gInfl, gIntent, fired, net, settles, condBudget, faultBudget, held, lnd, redo>>
 /// ```
 ///
@@ -415,6 +424,7 @@
 ///   /\ kv \in [Subjects -> Row(ncommit)] /\ shown \subseteq Subjects /\ cond \subseteq Subjects
 ///   /\ \A n \in Nodes : /\ warned[n] \subseteq Subjects /\ rows[n] \in [Subjects -> Row(ncommit)]
 ///                       /\ \A i \in 1..Len(held[n]) : held[n][i].s \in Subjects
+///                       /\ closedOff[n] \subseteq Subjects
 ///                       /\ lnd[n] \in Nat
 ///
 /// \* Only the committed leader's writes are accepted: an accepted settlement names the node that is the committed leader when the
@@ -444,6 +454,13 @@
 ///                          (s.kind = "W" /\ s.out = "ref" /\ fsm[s.node] = "Active" /\ s.inc = inc[s.node]
 ///                           /\ s.lv = s.tx.lv /\ Persists /\ ~wInfl'[s.node])
 ///                              => (dirty'[s.node] \/ flushQ'[s.node] \/ Diff(warned'[s.node], rows'[s.node], held'[s.node]) = {})]_vars
+///
+/// \* Rule O and inherit, over the desired set: an accepted WARNINGS write never tombstones a committed open row whose condition
+/// \* still holds, unless its writer closed that subject on an observed condition-off (the subject left the family set at a Tick
+/// \* and did not rejoin; `blind` is fixed at the draft, so a resubmission keeps it). A successor that did not inherit an open
+/// \* row (mutant "noinherit") or did not join another writer's open row (mutant "noruleo") drafts the tombstone blind. The
+/// \* condition is read at the commit, so a close whose condition came back before the commit is not counted (closedOff).
+/// NoBlindTombstone == [][\A s \in settles' \ settles : (s.kind = "W" /\ s.out = "acc") => s.tx.blind \cap cond = {}]_vars
 ///
 /// \* Boundary invariant named from Warnings.java ("the family sets are the desired open set; warningRows mirrors the
 /// \* committed one"): once the sole active leader is settled, what the operator sees is exactly its open set.
@@ -520,70 +537,7 @@
 /// PROPERTY NoSubmitWhileSuspended
 /// INVARIANT AtMostOneLiveLeader
 /// PROPERTY RefusedWRedrafts
-/// ```
-///
-/// ```tlacfg Fsm2Leader:code_persist
-/// CONSTANT MODE = "code"
-/// CONSTANT A2834 = FALSE
-/// CONSTANT FENCE = TRUE
-/// CONSTANT MUT = "none"
-/// CONSTANT RESUME = FALSE
-/// CONSTANT MaxTerm = 2
-/// CONSTANT MaxCond = 3
-/// CONSTANT MaxFault = 1
-/// CONSTANT GOALS = FALSE
-/// CONSTANT LATE = TRUE
-/// CONSTANT Subjects = {e, l}
-/// CONSTANT EventFam = {e}
-/// PROPERTY PersistedOrCleared
-/// ```
-///
-/// ```tlacfg Fsm2Leader:code_close
-/// CONSTANT MODE = "code"
-/// CONSTANT A2834 = FALSE
-/// CONSTANT FENCE = TRUE
-/// CONSTANT MUT = "none"
-/// CONSTANT RESUME = FALSE
-/// CONSTANT MaxTerm = 2
-/// CONSTANT MaxCond = 3
-/// CONSTANT MaxFault = 1
-/// CONSTANT GOALS = FALSE
-/// CONSTANT LATE = TRUE
-/// CONSTANT Subjects = {e, l}
-/// CONSTANT EventFam = {e}
-/// PROPERTY WarningsClose
-/// ```
-///
-/// ```tlacfg Fsm2Leader:code_show
-/// CONSTANT MODE = "code"
-/// CONSTANT A2834 = FALSE
-/// CONSTANT FENCE = TRUE
-/// CONSTANT MUT = "none"
-/// CONSTANT RESUME = FALSE
-/// CONSTANT MaxTerm = 2
-/// CONSTANT MaxCond = 3
-/// CONSTANT MaxFault = 1
-/// CONSTANT GOALS = FALSE
-/// CONSTANT LATE = TRUE
-/// CONSTANT Subjects = {e, l}
-/// CONSTANT EventFam = {e}
-/// PROPERTY WarningsShow
-/// ```
-///
-/// ```tlacfg Fsm2Leader:code_agree
-/// CONSTANT MODE = "code"
-/// CONSTANT A2834 = FALSE
-/// CONSTANT FENCE = TRUE
-/// CONSTANT MUT = "none"
-/// CONSTANT RESUME = FALSE
-/// CONSTANT MaxTerm = 2
-/// CONSTANT MaxCond = 3
-/// CONSTANT MaxFault = 1
-/// CONSTANT GOALS = FALSE
-/// CONSTANT LATE = TRUE
-/// CONSTANT Subjects = {e, l}
-/// CONSTANT EventFam = {e}
-/// INVARIANT OpenSetAgreement
+/// PROPERTY NoBlindTombstone
 /// ```
 ///
 /// ```tlacfg Fsm2Leader:code_goals
@@ -637,6 +591,7 @@
 /// PROPERTY NoSubmitWhileSuspended
 /// INVARIANT AtMostOneLiveLeader
 /// PROPERTY RefusedWRedrafts
+/// PROPERTY NoBlindTombstone
 /// INVARIANT OpenSetAgreement
 /// ```
 ///
@@ -801,7 +756,24 @@
 /// PROPERTY NoSubmitWhileSuspended
 /// INVARIANT AtMostOneLiveLeader
 /// PROPERTY RefusedWRedrafts
+/// PROPERTY NoBlindTombstone
 /// INVARIANT OpenSetAgreement
+/// ```
+///
+/// ```tlacfg Fsm2Leader:mut_noruleo_resume
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = TRUE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "noruleo"
+/// CONSTANT RESUME = TRUE
+/// CONSTANT MaxTerm = 3
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = TRUE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY NoBlindTombstone
 /// ```
 ///
 /// ```tlacfg Fsm2Leader:codeA_resume_close
@@ -932,7 +904,7 @@
 /// PROPERTY AcceptedOnlyForLeader
 /// ```
 ///
-/// ```tlacfg Fsm2Leader:mut_noinherit_agree
+/// ```tlacfg Fsm2Leader:mut_noinherit_blind
 /// CONSTANT MODE = "code"
 /// CONSTANT A2834 = TRUE
 /// CONSTANT FENCE = TRUE
@@ -945,23 +917,7 @@
 /// CONSTANT LATE = TRUE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
-/// INVARIANT OpenSetAgreement
-/// ```
-///
-/// ```tlacfg Fsm2Leader:mut_noinherit_close
-/// CONSTANT MODE = "code"
-/// CONSTANT A2834 = TRUE
-/// CONSTANT FENCE = TRUE
-/// CONSTANT MUT = "noinherit"
-/// CONSTANT RESUME = FALSE
-/// CONSTANT MaxTerm = 3
-/// CONSTANT MaxCond = 3
-/// CONSTANT MaxFault = 1
-/// CONSTANT GOALS = FALSE
-/// CONSTANT LATE = TRUE
-/// CONSTANT Subjects = {e, l}
-/// CONSTANT EventFam = {e}
-/// PROPERTY WarningsClose
+/// PROPERTY NoBlindTombstone
 /// ```
 ///
 /// ```tlacfg Fsm2Leader:mut_noremove_show
@@ -1094,7 +1050,7 @@
 /// PROPERTY CompleteWhenSettled
 /// ```
 ///
-/// ```tlacfg Fsm2Leader:mut_noruleo_agree
+/// ```tlacfg Fsm2Leader:mut_noruleo_blind
 /// CONSTANT MODE = "code"
 /// CONSTANT A2834 = FALSE
 /// CONSTANT FENCE = TRUE
@@ -1107,7 +1063,7 @@
 /// CONSTANT LATE = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
-/// INVARIANT OpenSetAgreement
+/// PROPERTY NoBlindTombstone
 /// ```
 ///
 /// ```tlacfg Fsm2Leader:mut_noruleE_notify
@@ -1220,22 +1176,6 @@
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// INVARIANT OpenSetAgreement
-/// ```
-///
-/// ```tlacfg Fsm2Leader:mut_noreplay_show
-/// CONSTANT MODE = "code"
-/// CONSTANT A2834 = FALSE
-/// CONSTANT FENCE = TRUE
-/// CONSTANT MUT = "noreplay"
-/// CONSTANT RESUME = FALSE
-/// CONSTANT MaxTerm = 2
-/// CONSTANT MaxCond = 3
-/// CONSTANT MaxFault = 1
-/// CONSTANT GOALS = FALSE
-/// CONSTANT LATE = FALSE
-/// CONSTANT Subjects = {e, l}
-/// CONSTANT EventFam = {e}
-/// PROPERTY WarningsShow
 /// ```
 ///
 /// ```tlacfg Fsm2Leader:mut_nocas_agree
