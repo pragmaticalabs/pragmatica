@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 import java.util.zip.CRC32;
@@ -241,8 +242,8 @@ class StreamPartitionManagerAckedMarkerTest {
 
     /// #3307: an activation that completes under a lapsed lease cannot raise ([#ownerRoleHolds] fails), so it leaves the marker
     /// pending instead of taking it; the lease-regained edge restores it, still with no admission. Mutation: dropping the
-    /// restore from `onLeaseRegained` leaves visible at -1 (red); dropping the owner-path guard takes the marker under the
-    /// lapse and loses it (red).
+    /// restore from `onLeaseRegained` leaves visible at -1 (red). The owner-path guard in `restoreAckedMarker` is an early
+    /// exit since the raise itself decides the take (see the next test).
     @Test
     void ownerActivation_underALapsedLease_leavesTheMarkerPending_untilTheLeaseIsRegained() {
         restartWithMarkerAt4();
@@ -254,6 +255,27 @@ class StreamPartitionManagerAckedMarkerTest {
         leaseValid.set(true);
         manager.onLeaseRegained();
         assertThat(visible()).as("the regained lease restored the pending marker").isEqualTo(4L);
+    }
+
+    /// #3307: the role holds at the restore's check, and the lease lapses before the raise (the seam answers valid for its
+    /// first read only, so the raise's own [StreamPartitionManager] role read finds it lapsed). The raise is refused, so the
+    /// marker is not taken: visible stays at -1, and the lease-regained edge -- with no admission, write or peer ack, the
+    /// only other ways visible could rise -- raises it to the marker, which it can only do from a marker still pending.
+    /// Mutation: taking the marker before the raise (or ignoring the raise's verdict in `settleMarker`) consumes it at the
+    /// refused raise, and visible stays at -1 after the regained lease (red).
+    @Test
+    void ownerActivation_leaseLapsingBetweenTheCheckAndTheRaise_keepsTheMarkerPending_untilTheLeaseIsRegained() {
+        restartWithMarkerAt4();
+        var activation = activationWiredTo(manager);
+        var leaseReads = new AtomicInteger();
+
+        manager.ownerLease(() -> leaseReads.incrementAndGet() == 1);
+        assertThat(activation.activate(STREAM, PARTITION).await().isSuccess()).as("control: the activation completes").isTrue();
+        assertThat(leaseReads.get()).as("control: the check read a valid lease and the raise re-read it").isEqualTo(2);
+        assertThat(visible()).as("no raise once the lease lapsed before it").isEqualTo(-1L);
+        manager.ownerLease(leaseValid::get);
+        manager.onLeaseRegained();
+        assertThat(visible()).as("the regained lease raised visible from the still-pending marker").isEqualTo(4L);
     }
 
     /// NT-111 (ii), same rank: a key of the marker's own epoch rank but another incarnation passes the lineage check and

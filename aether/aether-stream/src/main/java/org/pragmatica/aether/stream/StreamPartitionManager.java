@@ -979,8 +979,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// ([#ADMIT_OWNER], no activation event); with the gate wired the activation takes the marker first and an admission
     /// finds nothing. While the role is not OWNER, or no record is committed, or the record names another node, or the owner
     /// path does not hold ([#ownerRoleHolds]: a lapsed lease, no activation), the marker stays pending and is not read; once
-    /// those hold it is taken -- whatever the verdict -- and raises visible only if [#trustedMarker]. After that the check is
-    /// one volatile read per trigger.
+    /// those hold it is read and judged ([#settleMarker]). After it is taken the check is one volatile read per trigger.
     @Contract
     private void restoreAckedMarker(String streamName, int partition) {
         walFor(streamName, partition).filter(AppendLog::hasAckedRestore)
@@ -999,17 +998,34 @@ public final class StreamPartitionManager implements AutoCloseable {
                                      .isEmpty();
     }
 
+    /// While the restore is pending, [AppendLog#ackedMarker] is the marker [AppendLog#takeAckedRestore] would return, so it is
+    /// read here without taking it.
     @Contract
     private void restoreTrustedMarker(String streamName, int partition, AppendLog wal) {
-        wal.takeAckedRestore().onPresent(marker -> restoreMarker(streamName, partition, wal, marker));
+        wal.ackedMarker().onPresent(marker -> settleMarker(streamName, partition, wal, marker));
+    }
+
+    /// #3307: the marker is taken only by a verdict that is final -- not trusted, or trusted and the raise HAPPENED
+    /// ([#raiseToMarker] reports the same [#ownerRoleHolds] read that drove the advance). A raise refused because the lease
+    /// lapsed after the caller's check, or because the ring did not resolve, leaves the marker pending, and the next trigger
+    /// ([#onLeaseRegained], an activation, an admission) retries it. Concurrent triggers may both raise (`advanceVisible` is
+    /// monotonic); one take wins, so the verdict is logged once per ring incarnation.
+    @Contract
+    private void settleMarker(String streamName, int partition, AppendLog wal, AppendLog.AckedMark marker) {
+        var trusted = trustedMarker(streamName, partition, wal, marker);
+
+        if (!trusted || raiseToMarker(streamName, partition, marker)) {
+            wal.takeAckedRestore().onPresent(_ -> logMarkerVerdict(streamName, partition, marker, trusted));
+        }
     }
 
     /// The marker is taken once per ring incarnation, so its verdict is logged once: an operator reading a restart that
     /// still waits for replica re-acks can tell a distrusted marker from a missing one.
     @Contract
-    private void restoreMarker(String streamName, int partition, AppendLog wal, AppendLog.AckedMark marker) {
-        var trusted = trustedMarker(streamName, partition, wal, marker);
-
+    private static void logMarkerVerdict(String streamName,
+                                         int partition,
+                                         AppendLog.AckedMark marker,
+                                         boolean trusted) {
         log.info("Stream {} partition {}: acked marker at offset {} (epoch {}) {}",
                  streamName,
                  partition,
@@ -1018,9 +1034,6 @@ public final class StreamPartitionManager implements AutoCloseable {
                  trusted
                  ? "trusted on the owner path: visible raised to it"
                  : "not trusted on the owner path: visible waits for replica re-acks");
-        if (trusted) {
-            raiseToMarker(streamName, partition, marker);
-        }
     }
 
     /// The trust predicate (I-05): the log's epoch history attributes the marker's offset to the marker's epoch, and the
@@ -1059,15 +1072,17 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// Bounded by durable as every raise of visible is. The open-time clamp already bounds the marker by the recovered head,
-    /// which a replayed ring holds durably, so the bound is a guard here rather than a cut.
-    @Contract
-    private void raiseToMarker(String streamName, int partition, AppendLog.AckedMark marker) {
-        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> ownerAdvance(streamName,
-                                                                                     partition,
-                                                                                     confirmationFactorFor(streamName),
-                                                                                     ring,
-                                                                                     Math.min(ring.durableOffset(),
-                                                                                              marker.offset())));
+    /// which a replayed ring holds durably, so the bound is a guard here rather than a cut. True only when the raise happened:
+    /// the ring resolved and [#ownerAdvance] applied the owner bound. Design-out (#3307): a ring that does not resolve is
+    /// absorbed as `false`, which keeps the marker pending for the next trigger rather than dropping it.
+    private boolean raiseToMarker(String streamName, int partition, AppendLog.AckedMark marker) {
+        return resolvePartitionBuffer(streamName, partition).map(ring -> ownerAdvance(streamName,
+                                                                                      partition,
+                                                                                      confirmationFactorFor(streamName),
+                                                                                      ring,
+                                                                                      Math.min(ring.durableOffset(),
+                                                                                               marker.offset())))
+                                     .or(false);
     }
 
     /// A client-facing local read (#1555). On the placement OWNER it passes the owner promotion gate first, so a
@@ -3148,17 +3163,22 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// nothing else in this class calls `advanceVisible` except it and the REPLICA arm [#exposeReplicaCommitted] (pinned by a
     /// structural test). It advances to `bound` while [#ownerRoleHolds]; otherwise only to the replica bound, `min(durable,
     /// committed mark)`, and never past `bound`: what a replica would show, which the owner that announced the mark put under
-    /// its own lease. A lapse therefore pauses owner visibility; a renewal edge re-derives it ([#onLeaseRegained]).
-    @Contract
-    private void ownerAdvance(String streamName,
-                              int partition,
-                              int confirmationFactor,
-                              OffHeapRingBuffer ring,
-                              long bound) {
-        ring.advanceVisible(ownerRoleHolds(streamName, partition, confirmationFactor)
+    /// its own lease. A lapse therefore pauses owner visibility; a renewal edge re-derives it ([#onLeaseRegained]). Returns
+    /// whether the owner bound applied -- the one [#ownerRoleHolds] read that chose the advance -- so the marker restore
+    /// takes the marker only on a raise that happened (#3307, [#settleMarker]); every other caller ignores it.
+    private boolean ownerAdvance(String streamName,
+                                 int partition,
+                                 int confirmationFactor,
+                                 OffHeapRingBuffer ring,
+                                 long bound) {
+        var holds = ownerRoleHolds(streamName, partition, confirmationFactor);
+
+        ring.advanceVisible(holds
                             ? bound
                             : Math.min(bound,
                                        Math.min(ring.durableOffset(), committedMarkThrough(streamName, partition))));
+
+        return holds;
     }
 
     /// Whether this node may act on the owner path of `(streamName, partition)` now: the lease is read FIRST (it reads the
