@@ -87,6 +87,7 @@ public class CstTechnicalPackageSegmentRule implements CstLintRule {
                                      "A package is named after the business capability it holds, not the technology "
                                     + "or layer that implements it. A word matches one whole segment of the package, "
                                     + "ignoring case. Rename the segment after the capability. "
-                                    + "Configure the list with [lint.naming] add / remove.");
+                                    + "No annotation suppresses a package segment: keep one by listing it in "
+                                    + "[lint.naming] remove in the module's jbct.toml.");
     }
 }

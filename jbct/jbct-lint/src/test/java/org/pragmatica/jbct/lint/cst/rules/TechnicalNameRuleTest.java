@@ -181,6 +181,18 @@ class TechnicalNameRuleTest {
     }
 
     @Test
+    void remove_ofOneSegmentWord_silencesThatSegmentOnly_andTheMessageNamesTheExit() {
+        var context = withWords(TechnicalWords.technicalWords(List.of(), List.of("usecase")));
+        var diagnostics = lint("package org.example.usecase.domain;\nclass Seat {}\n", context, PACKAGE_RULE);
+
+        assertEquals(1, diagnostics.size());
+        assertTrue(diagnostics.getFirst().message().contains("segment 'domain'"), diagnostics.getFirst().message());
+        assertFalse(diagnostics.getFirst().message().contains("segment 'usecase'"), diagnostics.getFirst().message());
+        assertFalse(hasPackage("package org.example.usecase;\nclass Seat {}\n", context));
+        assertTrue(diagnostics.getFirst().details().contains("[lint.naming] remove"), diagnostics.getFirst().details());
+    }
+
+    @Test
     void packageSegment_isSuppressed_byExcludedPackageAndByRuleOff() {
         var excluded = LintContext.defaultContext()
                                   .withExcludePackages(List.of("org.example.usecase.**"));
