@@ -2842,7 +2842,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return new WriteOutcome.Sent(peerId);
         }
 
-        var fresh = new LaneBacklog<HeldFrame>();
+        var fresh = new LaneBacklog<HeldFrame>(peerId, QuicClusterNetwork::laneIndexOf);
         var backlog = option(laneBacklogs.putIfAbsent(ch, fresh)).or(fresh);
 
         return hold(backlog, ch, HeldFrame.heldFrame(bytes, peerId, streamType, resendVia), true);
@@ -3100,6 +3100,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private static BackpressureLane heldLaneOf(HeldFrame frame) {
         return new BackpressureLane(frame.peerId(), frame.lane());
+    }
+
+    /// The slot of a held frame in its [LaneBacklog]: its OWN lane (a DHT frame can be held on the CONSENSUS stream).
+    private static int laneIndexOf(HeldFrame frame) {
+        return frame.lane()
+                    .ordinal();
     }
 
     private Object episodeMonitor(NodeId peerId) {

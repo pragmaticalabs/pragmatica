@@ -16,11 +16,17 @@
 package org.pragmatica.consensus.net.quic;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
+import java.util.function.ToIntFunction;
 
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Result;
+import org.pragmatica.messaging.StreamType;
 
 
 /// #3168 — the frames of ONE lane stream that backpressure held back, kept in send order.
@@ -42,6 +48,15 @@ import org.pragmatica.lang.Contract;
 /// reports [Admission#RETIRED] and the caller starts from a fresh one. Not a general queue: one stream, one drainer
 /// (the caller that got [Admission#HELD_FIRST]); a caller ON the stream's event loop, which writes inline without
 /// admitting, is not a drainer and is excluded from that rule.
+///
+/// #3313 slot contract: the backlog belongs to one peer ([#peer]) and keeps how many of its held frames belong to each
+/// lane, one slot per [StreamType] ([#heldOf]). A frame enters and leaves the queue only through the two private
+/// primitives [#put] and [#take], each of which changes the queue and the frame's slot together, with nothing that can
+/// throw between the two changes (the lane index is computed before the queue change). Every callback ([#admit]'s
+/// `onHeld`, [#drain]'s `write` and `discard`, [#discardAll]'s `discard`) runs after the slot already agrees with the
+/// queue, so no callback, whatever it throws, can leave a slot wrong. Slots are read lock-free (an
+/// [AtomicIntegerArray]): a reader holding another lock, such as the transport's episode monitor, never waits for this
+/// backlog's lock. Each read is linearizable; reads of two slots, or of a slot and the queue, are not one snapshot.
 final class LaneBacklog<F> {
     /// What [#admit] did with a frame.
     enum Admission {
@@ -54,7 +69,26 @@ final class LaneBacklog<F> {
     }
 
     private final ArrayDeque<F> held = new ArrayDeque<>();
+    private final AtomicIntegerArray heldPerLane = new AtomicIntegerArray(StreamType.values().length);
+    private final NodeId peer;
+    private final ToIntFunction<F> laneIndex;
     private boolean retired;
+
+    /// `laneIndex`: the [StreamType#ordinal] of a frame's OWN lane (a DHT frame can be held on the CONSENSUS stream).
+    LaneBacklog(NodeId peer, ToIntFunction<F> laneIndex) {
+        this.peer = peer;
+        this.laneIndex = laneIndex;
+    }
+
+    /// The peer every frame of this backlog is sent to.
+    NodeId peer() {
+        return peer;
+    }
+
+    /// How many held frames belong to the lane with ordinal `laneIndex`. Lock-free; see the slot contract above.
+    int heldOf(int laneIndex) {
+        return heldPerLane.get(laneIndex);
+    }
 
     /// Holds `frame` behind the frames already held and runs `onHeld` for it under the lock, so a drain can never
     /// account for a frame before its holding was accounted.
@@ -66,7 +100,7 @@ final class LaneBacklog<F> {
 
         var first = held.isEmpty();
 
-        held.addLast(frame);
+        put(frame);
         onHeld.accept(frame);
 
         return first
@@ -80,11 +114,11 @@ final class LaneBacklog<F> {
     @Contract
     synchronized boolean drain(Predicate<F> expired, Consumer<F> discard, BooleanSupplier writable, Consumer<F> write) {
         while (!held.isEmpty() && writable.getAsBoolean()) {
-            write.accept(held.pollFirst());
+            write.accept(take());
         }
 
         while (!held.isEmpty() && expired.test(held.peekFirst())) {
-            discard.accept(held.pollFirst());
+            discard.accept(take());
         }
 
         retired = held.isEmpty();
@@ -94,13 +128,47 @@ final class LaneBacklog<F> {
 
     /// Gives up on every held frame, head first, passing each to `discard`, and retires the backlog, so a writer still
     /// holding a reference to it after its owner dropped it gets [Admission#RETIRED] and cannot hold a frame nobody
-    /// drains. Each frame has left the backlog when `discard` sees it, as in [#drain].
+    /// drains. #3313: every frame is taken out first, and only then is each passed to `discard`, in take order (#3168:
+    /// head first), so every slot is zero before any callback runs.
+    ///
+    /// A `discard` that throws is contained to its own frame, recovery FER (degrade forward): every other taken frame is
+    /// still passed to `discard`, so none is left counted nowhere. The failing frame's own accounting is what its
+    /// callback finished before the throw; the transport's callback lifts its own metric and log, so a throw reaching
+    /// here is a defect of the callback, and this containment is defence in depth that keeps it to one frame.
     @Contract
     synchronized void discardAll(Consumer<F> discard) {
         retired = true;
+        var taken = new ArrayList<F>(held.size());
+
         while (!held.isEmpty()) {
-            discard.accept(held.pollFirst());
+            taken.add(take());
         }
+
+        taken.forEach(frame -> discardOne(discard, frame));
+    }
+
+    @Contract
+    private static <F> void discardOne(Consumer<F> discard, F frame) {
+        var _ = Result.lift(() -> discard.accept(frame));
+    }
+
+    /// The one way a frame enters the queue: the queue and the frame's slot change together.
+    private void put(F frame) {
+        var lane = laneIndex.applyAsInt(frame);
+
+        held.addLast(frame);
+        heldPerLane.incrementAndGet(lane);
+    }
+
+    /// The one way a frame leaves the queue (callers check it is not empty): the queue and the frame's slot change
+    /// together, before the frame is handed to any callback.
+    private F take() {
+        var lane = laneIndex.applyAsInt(held.getFirst());
+        var frame = held.removeFirst();
+
+        heldPerLane.decrementAndGet(lane);
+
+        return frame;
     }
 
     synchronized int size() {
