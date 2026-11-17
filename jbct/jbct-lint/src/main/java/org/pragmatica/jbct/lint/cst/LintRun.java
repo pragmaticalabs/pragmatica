@@ -23,6 +23,7 @@ import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.lint.cst.RootResolver.ModeSource;
 import org.pragmatica.jbct.lint.cst.RootResolver.ResolvedRoot;
 import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Command;
 import org.pragmatica.jbct.lint.cst.RunOutcome.FileResult;
 import org.pragmatica.jbct.lint.cst.RunOutcome.FormatAction;
 import org.pragmatica.jbct.lint.cst.RunOutcome.FormatOutcome;
@@ -36,6 +37,7 @@ import org.pragmatica.jbct.lint.cst.RunOutcome.RootResult;
 import org.pragmatica.jbct.lint.cst.RunOutcome.RunResult;
 import org.pragmatica.jbct.lint.cst.RunOutcome.SkippedByMode;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Tally;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Totals;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Unchanged;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Level;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Line;
@@ -45,6 +47,7 @@ import org.pragmatica.jbct.lint.cst.RunOutcome.WouldChange;
 import org.pragmatica.jbct.lint.cst.RunOutcome.WriteFailed;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.Java25Parser;
+import org.pragmatica.jbct.score.ScoreResult;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -333,10 +336,30 @@ public final class LintRun {
         var files = fileResults(activities);
         var roots = groups.stream().flatMap(group -> group.rootResult(activities, files)
                                                           .stream()).toList();
-        var verdict = verdict(invocation, activities, files, roots);
-        var lines = RunLines.runLines(invocation, files, roots, verdict, layerLines(files), uncollectedTestFiles).lines();
+        var score = RunScore.scoreOf(invocation, files);
+        var verdict = verdict(invocation, activities, files, roots, score);
+        var lines = RunLines.runLines(invocation, files, roots, verdict, layerLines(files), uncollectedTestFiles, score)
+                            .lines();
 
-        return RunResult.runResult(files, roots, findings(activities, files), verdict, lines.before(), lines.after());
+        return RunResult.runResult(files,
+                                   roots,
+                                   findings(activities, files),
+                                   verdict,
+                                   lines.before(),
+                                   lines.after(),
+                                   totals(activities, files),
+                                   score);
+    }
+
+    /// The run totals: one tally per asked activity over every file of the run, and the files handed over.
+    private static Totals totals(Activities activities, List<FileResult> files) {
+        return Totals.totals(files.size(),
+                             activities.lint()
+                             ? Option.some(tallyOf(files.stream().map(FileResult::lint).toList(), Linted.class))
+                             : Option.none(),
+                             activities.format() == FormatAction.NONE
+                             ? Option.none()
+                             : Option.some(tallyOf(files.stream().map(FileResult::format).toList(), Rewritten.class)));
     }
 
     /// The layer-coverage line of each root that linted a file, from the packages `perform` read.
@@ -391,13 +414,17 @@ public final class LintRun {
     }
 
     /// NOTHING_COLLECTED when the plan holds no file; INCOMPLETE when a file was not read, not parsed or not written;
-    /// FINDINGS when a root fails or, under a format check (not a dry run), a file would change; CLEAN otherwise.
+    /// FINDINGS when a root fails (a score is failed by its density gate alone) or, under a format check (not a dry
+    /// run), a file would change; CLEAN otherwise.
     private static Verdict verdict(Invocation invocation,
                                    Activities activities,
                                    List<FileResult> files,
-                                   List<RootResult> roots) {
+                                   List<RootResult> roots,
+                                   Option<ScoreResult> score) {
         var incomplete = files.stream().filter(LintRun::unfinished).count();
-        var failing = roots.stream().anyMatch(RootResult::fails);
+        var failing = invocation.command() == Command.SCORE
+                      ? RunScore.breachOf(score, invocation.maxDensity()).isPresent()
+                      : roots.stream().anyMatch(RootResult::fails);
         var wouldChange = activities.format() == FormatAction.CHECK
                           ? files.stream().filter(file -> file.format() instanceof WouldChange).count()
                           : 0;
@@ -405,10 +432,10 @@ public final class LintRun {
         return files.isEmpty()
                ? Verdict.nothingCollected()
                : incomplete > 0
-                 ? Verdict.incomplete(RunLines.failureOf(invocation, files, roots))
+                 ? Verdict.incomplete(RunLines.failureOf(invocation, files, roots, score))
                  : !failing && wouldChange == 0
                    ? Verdict.clean()
-                   : Verdict.findings(RunLines.failureOf(invocation, files, roots));
+                   : Verdict.findings(RunLines.failureOf(invocation, files, roots, score));
     }
 
     private static boolean unfinished(FileResult file) {

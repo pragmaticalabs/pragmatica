@@ -6,7 +6,10 @@ import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 import org.pragmatica.jbct.config.JbctMode;
+import org.pragmatica.jbct.lint.Diagnostic;
+import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.cst.RootResolver.ModeSource;
+import org.pragmatica.jbct.lint.cst.RunOutcome.DensityLimit;
 import org.pragmatica.jbct.lint.cst.RunOutcome.FileResult;
 import org.pragmatica.jbct.lint.cst.RunOutcome.FormatAction;
 import org.pragmatica.jbct.lint.cst.RunOutcome.FormatOutcome;
@@ -19,6 +22,9 @@ import org.pragmatica.jbct.lint.cst.RunOutcome.RootResult;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Surface;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Tally;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Verdict;
+import org.pragmatica.jbct.score.DensityGate;
+import org.pragmatica.jbct.score.ScoreCalculator;
+import org.pragmatica.jbct.score.SourceScan;
 import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
@@ -32,8 +38,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// only here; they are the release tip's wording (`ec9744dd0`), except the lines the redesign memo marks as new or
 /// changed (T1, T14, T15, T18 from tallies, T19, T22, T26), which hold the memo's text.
 ///
-/// Not covered, because the lines are not built yet (step 2c): the score rows (`Measuring N Java file(s)`, `Not scored:`,
-/// the density line and the score failure text). The root line (T1) is dropped from the lists compared as a whole and
+/// Score lines (`Measuring N Java file(s)`, `Not scored:`, the not-evaluated density line and the score failure text) are
+/// pinned in the `score_` tests. The root line (T1) is dropped from the lists compared as a whole and
 /// is pinned by its own tests.
 class RunLinesTest {
     private static final Path ROOT = Path.of("src/main/java");
@@ -483,6 +489,120 @@ class RunLinesTest {
                      run(Invocation.formatCheck(Surface.MAVEN), CLEAN, files).after());
     }
 
+    // ---------------------------------------------------------------- score lines (T6, T15, T16, T17)
+
+    @Test
+    void score_maven_headerCountsTheFilesWhoseModeRunsRules_andOmitsItAtZero() {
+        var invocation = Invocation.score(Surface.MAVEN, Option.none());
+        var files = List.of(file(ROOT, A, linted(), none()), file(TEST_ROOT, T, skipped(), none()));
+
+        assertEquals(List.of(line(Level.INFO, "Measuring 1 Java file(s)")),
+                     bodyBefore(scoreRun(invocation, files)));
+        assertEquals(List.of(),
+                     bodyBefore(scoreRun(invocation, List.of(file(TEST_ROOT, T, skipped(), none())))));
+    }
+
+    @Test
+    void score_rootLine_namesTheLintClauseScored() {
+        var invocation = Invocation.score(Surface.CLI, Option.none());
+        var lines = scoreRun(invocation, List.of(file(ROOT, A, linted(), none())));
+
+        assertEquals(line(Level.INFO,
+                          "mode=business (default) root=src/main/java: 1 files; lint: 1 scored; test-root rule: production root"),
+                     rootLineOf(lines));
+    }
+
+    @Test
+    void score_aRootThatScoredNothingWhileAnotherScored_isNamedWithItsReason() {
+        var invocation = Invocation.score(Surface.CLI, Option.none());
+        var files = List.of(file(ROOT, A, linted(), none()), file(TEST_ROOT, T, skipped(), none()));
+        var lines = RunLines.runLines(invocation,
+                                      files,
+                                      List.of(rootOf(invocation, ROOT, JbctMode.BUSINESS, files, 0, 0, 0, false),
+                                              rootOf(invocation, TEST_ROOT, JbctMode.DISABLED, files, 0, 0, 0, false)),
+                                      CLEAN,
+                                      List.of(),
+                                      0)
+                            .lines();
+
+        assertEquals(List.of(line(Level.WARN, "Not scored: src/test/java (mode disabled skips it)")), lines.after());
+    }
+
+    @Test
+    void score_nothingScored_saysNothingWasScoredWithTheReasonPerRoot_andNeverNotScored() {
+        var invocation = Invocation.score(Surface.CLI, Option.none());
+        var files = List.of(file(TEST_ROOT, T, skipped(), none()));
+        var lines = RunLines.runLines(invocation,
+                                      files,
+                                      List.of(rootOf(invocation, TEST_ROOT, JbctMode.DISABLED, files, 0, 0, 0, false)),
+                                      CLEAN,
+                                      List.of(),
+                                      0)
+                            .lines();
+
+        assertEquals(List.of(line(Level.WARN, "Nothing was scored: src/test/java (mode disabled skips it)")),
+                     lines.after());
+    }
+
+    @Test
+    void score_nothingScoredWithALimit_reportsItNotEvaluated_andNoLineSaysPasses() {
+        var limit = Option.some(DensityLimit.densityLimit(5.0, "--max-density"));
+        var invocation = Invocation.score(Surface.CLI, limit);
+        var lines = scoreRun(invocation, List.of(skippedFile(invocation, A)));
+        var all = Stream.concat(lines.before().stream(), lines.after().stream()).map(Line::text).toList();
+
+        assertTrue(all.contains("--max-density 5.0 was not evaluated: nothing was scored"), all.toString());
+        assertTrue(all.stream().noneMatch(text -> text.contains("passes")), all.toString());
+    }
+
+    @Test
+    void score_mavenLimitFlag_isTheGoalsProperty() {
+        var limit = Option.some(DensityLimit.densityLimit(2.5, "jbct.score.maxDensity"));
+        var invocation = Invocation.score(Surface.MAVEN, limit);
+        var lines = scoreRun(invocation, List.of(skippedFile(invocation, A)));
+
+        assertTrue(lines.after().contains(line(Level.INFO, "jbct.score.maxDensity 2.5 was not evaluated: nothing was scored")));
+    }
+
+    @Test
+    void score_aScoredRunWithALimit_printsNoNotEvaluatedLine() {
+        var limit = Option.some(DensityLimit.densityLimit(5.0, "--max-density"));
+        var invocation = Invocation.score(Surface.CLI, limit);
+        var score = Option.some(ScoreCalculator.calculate(new SourceScan(List.of(), 100, 1)));
+        var files = List.of(file(ROOT, A, linted(), none()));
+        var lines = RunLines.runLines(invocation,
+                                      files,
+                                      List.of(rootOf(invocation, ROOT, JbctMode.BUSINESS, files, 0, 0, 0, false)),
+                                      CLEAN,
+                                      List.of(),
+                                      0,
+                                      score)
+                            .lines();
+
+        assertEquals(List.of(), lines.after());
+    }
+
+    @Test
+    void score_failureText_gapOutranksTheBreach_andABreachIsTheGatesMessage() {
+        var limit = Option.some(DensityLimit.densityLimit(0.5, "--max-density"));
+        var invocation = Invocation.score(Surface.CLI, limit);
+        var score = Option.some(ScoreCalculator.calculate(new SourceScan(List.of(diagnostic()), 1000, 1)));
+        var scored = List.of(file(ROOT, A, linted(), none()));
+        var gap = List.of(file(ROOT, A, linted(), none()), file(ROOT, B, parseFailed(), none()));
+
+        assertEquals(DensityGate.breachMessage(score.unwrap().totalDensityPerKloc(), 0.5),
+                     RunLines.failureOf(invocation,
+                                        scored,
+                                        List.of(rootOf(invocation, ROOT, JbctMode.BUSINESS, scored, 0, 0, 0, false)),
+                                        score));
+        assertEquals("JBCT score failed: 1 file(s) could not be read or parsed and were NOT analysed,"
+                     + " so the reported density does not cover them",
+                     RunLines.failureOf(invocation,
+                                        gap,
+                                        List.of(rootOf(invocation, ROOT, JbctMode.BUSINESS, gap, 0, 0, 0, false)),
+                                        score));
+    }
+
     // ---------------------------------------------------------------- per-file lines (T20)
 
     @Test
@@ -701,6 +821,14 @@ class RunLinesTest {
                                      warnings,
                                      infos,
                                      fails);
+    }
+
+    private static Diagnostic diagnostic() {
+        return Diagnostic.diagnostic("JBCT-RET-01", DiagnosticSeverity.WARNING, "A.java", 1, 1, "m", "d");
+    }
+
+    private static RunLines.Lines scoreRun(Invocation invocation, List<FileResult> files) {
+        return run(invocation, CLEAN, files);
     }
 
     private static RunLines.Lines run(Invocation invocation, Verdict verdict) {

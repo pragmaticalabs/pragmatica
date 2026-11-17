@@ -26,6 +26,7 @@ import org.pragmatica.jbct.lint.cst.RunOutcome.Verdict;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Withheld;
 import org.pragmatica.jbct.lint.cst.RunOutcome.WouldChange;
 import org.pragmatica.jbct.lint.cst.RunOutcome.WriteFailed;
+import org.pragmatica.jbct.score.ScoreResult;
 import org.pragmatica.jbct.shared.AnalysisCoverage;
 import org.pragmatica.lang.Option;
 
@@ -40,14 +41,17 @@ import static org.pragmatica.jbct.lint.cst.RunOutcome.Line.line;
 /// A pass sentence is printed only when the verdict is CLEAN, a file was handed over and every asked activity of every
 /// file is done: no skip, no failure. An activity attempted on no file says `Nothing was <verb>: <reasons>` instead.
 ///
-/// Score lines (`Measuring`, `Not scored`, the density line) are not built here yet: a score invocation yields the
-/// empty lists and the failure of its roots.
+/// Score is the lint outcome plus the file's line count, so a score invocation reads the lint slot: `Measuring N`
+/// (Maven), the root line with a `scored` clause, `Not scored: <root> (<reason>)` for a root that scored nothing while
+/// another did, `Nothing was scored: ...`, and `<flag> X was not evaluated: nothing was scored` when a density limit was
+/// given and nothing was scored. The score itself is [RunResult#score]; a front end prints it from there.
 record RunLines(Invocation invocation,
                 List<FileResult> files,
                 List<RootResult> roots,
                 Verdict verdict,
                 List<Line> layers,
-                int uncollectedTests) {
+                int uncollectedTests,
+                Option<ScoreResult> score) {
     /// The two ordered lists: the lines before the findings and the lines after them.
     record Lines(List<Line> before, List<Line> after) {
         static Lines lines(List<Line> before, List<Line> after) {
@@ -63,20 +67,35 @@ record RunLines(Invocation invocation,
                              Verdict verdict,
                              List<Line> layers,
                              int uncollectedTests) {
-        return new RunLines(invocation, files, roots, verdict, layers, uncollectedTests);
+        return runLines(invocation, files, roots, verdict, layers, uncollectedTests, Option.none());
+    }
+
+    static RunLines runLines(Invocation invocation,
+                             List<FileResult> files,
+                             List<RootResult> roots,
+                             Verdict verdict,
+                             List<Line> layers,
+                             int uncollectedTests,
+                             Option<ScoreResult> score) {
+        return new RunLines(invocation, files, roots, verdict, layers, uncollectedTests, score);
     }
 
     /// The text a build failure carries for this run: the tip's text for the command, built from the outcomes.
     static String failureOf(Invocation invocation, List<FileResult> files, List<RootResult> roots) {
-        return runLines(invocation, files, roots, Verdict.clean(), List.of(), 0).failure();
+        return failureOf(invocation, files, roots, Option.none());
+    }
+
+    static String failureOf(Invocation invocation,
+                            List<FileResult> files,
+                            List<RootResult> roots,
+                            Option<ScoreResult> score) {
+        return runLines(invocation, files, roots, Verdict.clean(), List.of(), 0, score).failure();
     }
 
     Lines lines() {
-        return invocation.command() == Command.SCORE
-               ? Lines.lines(List.of(), List.of())
-               : files.isEmpty()
-                 ? Lines.lines(nothingCollected(), List.of())
-                 : Lines.lines(before(), after());
+        return files.isEmpty()
+               ? Lines.lines(nothingCollected(), List.of())
+               : Lines.lines(before(), after());
     }
 
     // ---------------------------------------------------------------- nothing collected (T2, T3, T4)
@@ -150,7 +169,7 @@ record RunLines(Invocation invocation,
             case FORMAT -> counted("Formatting ", count(this::formatAttempted));
             case FORMAT_CHECK -> counted("Checking format of ", count(this::formatAttempted));
             case PROCESS -> counted("Processing ", count(this::anyAttempted));
-            case SCORE -> Option.none();
+            case SCORE -> counted("Measuring ", count(this::lintAttempted));
         };
     }
 
@@ -190,7 +209,9 @@ record RunLines(Invocation invocation,
     }
 
     private String lintClause(Tally tally) {
-        return "; lint: " + tally.done() + " linted" + rest(tally);
+        return "; lint: " + tally.done() + (invocation.command() == Command.SCORE
+                                            ? " scored"
+                                            : " linted") + rest(tally);
     }
 
     private String formatClause(Tally tally) {
@@ -382,15 +403,18 @@ record RunLines(Invocation invocation,
 
     /// T14 and T15.
     private List<Line> skipLines() {
-        return Stream.concat(skippedLine().stream(),
-                             nothingDone())
+        return Stream.of(skippedLine().stream(),
+                         notScored(),
+                         nothingDone(),
+                         densityNotEvaluated().stream())
+                     .flatMap(stream -> stream)
                      .toList();
     }
 
     private Option<Line> skippedLine() {
         var skipped = count(this::skippedForAny);
 
-        return skipped > 0 && count(this::anyAttempted) > 0
+        return invocation.command() != Command.SCORE && skipped > 0 && count(this::anyAttempted) > 0
                ? Option.some(line(Level.WARN,
                                   skipped
                                  + " file(s) skipped by mode: " + roots.stream()
@@ -411,13 +435,38 @@ record RunLines(Invocation invocation,
 
     private Stream<Line> nothingDone() {
         return Stream.of(nothingLine(invocation.activities().lint() && count(this::lintAttempted) == 0,
-                                     "linted",
+                                     invocation.command() == Command.SCORE
+                                     ? "scored"
+                                     : "linted",
                                      RootResult::lint),
                          nothingLine(invocation.activities()
                                                .format() != FormatAction.NONE && count(this::formatAttempted) == 0,
                                      formatVerb(),
                                      RootResult::format))
                      .flatMap(Option::stream);
+    }
+
+    /// T16: a root that scored nothing while another root scored, with its reasons.
+    private Stream<Line> notScored() {
+        return invocation.command() == Command.SCORE && count(this::lintAttempted) > 0
+               ? roots.stream()
+                      .filter(root -> root.lint()
+                                          .map(tally -> tally.done() == 0)
+                                          .or(true))
+                      .map(root -> line(Level.WARN,
+                                        "Not scored: " + root.root()
+                                       + " (" + reasons(root, root.lint()) + ")"))
+               : Stream.empty();
+    }
+
+    /// T17: a density limit was given and nothing was scored; the limit is reported as not evaluated, nothing more.
+    private Option<Line> densityNotEvaluated() {
+        return score.isEmpty()
+               ? invocation.maxDensity()
+                           .map(limit -> line(Level.INFO,
+                                              limit.flag() + " " + limit.perKloc()
+                                             + " was not evaluated: nothing was scored"))
+               : Option.none();
     }
 
     private String formatVerb() {
@@ -610,8 +659,16 @@ record RunLines(Invocation invocation,
                             : reasoned("process", gapReason(), failingRoots());
             case FORMAT -> formatFailure();
             case FORMAT_CHECK -> formatCheckFailure();
-            case SCORE -> reasoned("score", gapReason(), failingRoots());
+            case SCORE -> scoreFailure();
         };
+    }
+
+    /// The coverage gap outranks the density check; a breach is the gate's own message; roots do not fail a score.
+    private String scoreFailure() {
+        return overall().isPartial()
+               ? reasoned("score",
+                          gapReason().map(reason -> reason + ", so the reported density does not cover them"))
+               : RunScore.breachOf(score, invocation.maxDensity()).or("JBCT score failed");
     }
 
     private String formatFailure() {

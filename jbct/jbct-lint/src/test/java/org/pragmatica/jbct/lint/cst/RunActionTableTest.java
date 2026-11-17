@@ -13,6 +13,7 @@ import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.lint.cst.RootResolver.Request;
 import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
+import org.pragmatica.jbct.lint.cst.RunOutcome.DensityLimit;
 import org.pragmatica.jbct.lint.cst.RunOutcome.FileResult;
 import org.pragmatica.jbct.lint.cst.RunOutcome.FormatAction;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
@@ -33,7 +34,9 @@ import org.pragmatica.jbct.lint.cst.RunOutcome.WouldChange;
 import org.pragmatica.jbct.lint.cst.RunOutcome.WriteFailed;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.Java25Parser;
+import org.pragmatica.jbct.score.DensityGate;
 import org.pragmatica.jbct.shared.SourceFile;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import org.junit.jupiter.api.AfterEach;
@@ -52,7 +55,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// table's row (R1 done, R2 already formatted, R3 would change, R4 read failure, R5 parse failure, R6 write failure,
 /// R7 withheld, R8 skipped by mode, R9 not asked) and column (L lint, W format write, C format check). Every outcome is
 /// read from [LintRun#perform]'s result and, where the table says something was or was not written, from the disk.
-/// Score cells (S1, S4, S5, S8) belong to step 2c.
+/// Score cells: S1 scored, S4 read failure, S5 parse failure, S8 skipped by mode; the machine-format facts follow them.
 class RunActionTableTest {
     private static final String RET_ERROR = """
         package com.example;
@@ -459,6 +462,189 @@ class RunActionTableTest {
     }
 
     // --- fixtures
+
+    // --- S: score = the lint outcome plus the file's non-blank line count, from the run's own single read
+
+    @Test
+    void row_S1_scoredFileRecordsLintedWithItsLinesAndTheScoreIsBuiltFromTheRunsOwnResults() throws IOException {
+        var module = module("m", BUSINESS);
+        var file = source(module, "Pricing.java", RET_ERROR);
+        var result = perform(plan(module), Invocation.score(Surface.CLI, Option.none()));
+        var outcome = only(result, file);
+        var score = result.score().or(() -> fail("no score"));
+
+        assertInstanceOf(Linted.class, outcome.lint());
+        assertEquals(1, lintTally(result).done());
+        assertTrue(outcome.linesOfCode() > 0);
+        assertEquals(outcome.linesOfCode(), score.linesOfCode());
+        assertEquals(1, score.filesAnalyzed());
+        assertEquals(0, score.filesUnanalyzed());
+        assertEquals(Kind.CLEAN, result.verdict().kind(), "a score without a limit is not failed by its findings");
+        assertTrue(result.before().isEmpty() || result.before().stream().noneMatch(line -> line.text().contains("passes")));
+    }
+
+    @Test
+    void row_S1_densityAboveTheLimitIsFindingsWithTheGatesMessage() throws IOException {
+        var module = module("m", BUSINESS);
+
+        source(module, "Pricing.java", RET_ERROR);
+        var limit = Option.some(DensityLimit.densityLimit(0.0001, "--max-density"));
+        var result = perform(plan(module), Invocation.score(Surface.CLI, limit));
+        var density = result.score().or(() -> fail("no score")).totalDensityPerKloc();
+
+        assertEquals(Kind.FINDINGS, result.verdict().kind());
+        assertEquals(DensityGate.breachMessage(density, 0.0001), result.verdict().failure().or(""));
+    }
+
+    @Test
+    void row_S1_densityWithinTheLimitIsClean() throws IOException {
+        var module = module("m", BUSINESS);
+
+        source(module, "Pricing.java", RET_ERROR);
+        var limit = Option.some(DensityLimit.densityLimit(1.0e9, "--max-density"));
+        var result = perform(plan(module), Invocation.score(Surface.CLI, limit));
+
+        assertEquals(Kind.CLEAN, result.verdict().kind());
+    }
+
+    @Test
+    void row_S4_unreadableFileIsReadFailedCountedUnanalysedAndIncomplete() throws IOException {
+        var module = module("m", BUSINESS);
+        var kept = source(module, "Plain.java", UNFORMATTED);
+        var gone = source(module, "Gone.java", UNFORMATTED);
+        var plan = plan(module);
+
+        Files.delete(gone);
+        var result = perform(plan, Invocation.score(Surface.CLI, Option.none()));
+        var score = result.score().or(() -> fail("no score"));
+
+        assertInstanceOf(ReadFailed.class, only(result, gone).lint());
+        assertInstanceOf(Linted.class, only(result, kept).lint());
+        assertEquals(Tally.tally(1, 0, 0, 0, 0, 1, 0, 0), lintTally(result));
+        assertEquals(1, score.filesAnalyzed());
+        assertEquals(1, score.filesUnanalyzed());
+        assertEquals(only(result, kept).linesOfCode(), score.linesOfCode());
+        assertEquals(Kind.INCOMPLETE, result.verdict().kind());
+    }
+
+    @Test
+    void row_S5_unparseableFileIsParseFailedCountedUnanalysedAndIncompleteWithNothingScored() throws IOException {
+        var module = module("m", BUSINESS);
+        var file = source(module, "Broken.java", BROKEN);
+        var result = perform(plan(module), Invocation.score(Surface.CLI, Option.none()));
+
+        assertInstanceOf(ParseFailed.class, only(result, file).lint());
+        assertEquals(Tally.tally(0, 0, 0, 0, 0, 0, 1, 0), lintTally(result));
+        assertTrue(result.score().isEmpty());
+        assertEquals(Kind.INCOMPLETE, result.verdict().kind());
+    }
+
+    @Test
+    void row_S8_formatOnlyAndDisabledRootsAreNotScoredAndADisabledFileIsNeverOpened() throws IOException {
+        var formatOnly = module("f", FORMAT_ONLY);
+        var disabled = module("d", DISABLED);
+        var business = module("b", BUSINESS);
+        var kept = source(formatOnly, "Plain.java", UNFORMATTED);
+        var unreadable = source(disabled, "Gone.java", UNFORMATTED);
+        var scored = source(business, "Plain.java", UNFORMATTED);
+        var plan = plan(formatOnly, disabled, business);
+
+        Files.delete(unreadable);
+        var result = perform(plan, Invocation.score(Surface.MAVEN, Option.none()));
+
+        assertEquals(SkippedByMode.skippedByMode(JbctMode.FORMAT_ONLY), only(result, kept).lint());
+        assertEquals(SkippedByMode.skippedByMode(JbctMode.DISABLED), only(result, unreadable).lint());
+        assertInstanceOf(Linted.class, only(result, scored).lint());
+        assertEquals(1, result.score().or(() -> fail("no score")).filesAnalyzed());
+        assertTrue(result.before().stream().anyMatch(line -> line.text().equals("Measuring 1 Java file(s)")));
+        assertEquals(2,
+                     result.after().stream().filter(line -> line.text().startsWith("Not scored: ")).count());
+        assertEquals(Kind.CLEAN, result.verdict().kind());
+    }
+
+    @Test
+    void row_S8_nothingScoredWithALimitSaysNotEvaluatedAndNeverSaysPasses() throws IOException {
+        var disabled = module("d", DISABLED);
+
+        source(disabled, "Plain.java", UNFORMATTED);
+        var limit = Option.some(DensityLimit.densityLimit(5.0, "--max-density"));
+        var result = perform(plan(disabled), Invocation.score(Surface.CLI, limit));
+
+        assertTrue(result.score().isEmpty());
+        assertTrue(result.after().stream().anyMatch(line -> line.text().equals("--max-density 5.0 was not evaluated: nothing was scored")));
+        assertTrue(result.before().stream().noneMatch(line -> line.text().contains("passes")));
+        assertTrue(result.after().stream().noneMatch(line -> line.text().contains("passes")));
+        assertEquals(Kind.CLEAN, result.verdict().kind());
+    }
+
+    // --- machine-format facts of the result (renderers copy them)
+
+    @Test
+    void machineFormat_allSkippedRun_isSuccessfulWithANoteAndCountsSkippedNotExamined() throws IOException {
+        var formatOnly = module("f", FORMAT_ONLY);
+
+        source(formatOnly, "Plain.java", UNFORMATTED);
+        var result = perform(plan(formatOnly), Invocation.lint(Surface.CLI));
+
+        assertEquals(1, result.collected());
+        assertEquals(0, result.examined());
+        assertEquals(1, result.skippedByMode());
+        assertTrue(result.executionSuccessful());
+        assertEquals("note", result.notificationLevel());
+    }
+
+    @Test
+    void machineFormat_cleanRun_isSuccessfulWithANoteAndCountsExamined() throws IOException {
+        var module = module("m", BUSINESS);
+
+        source(module, "Plain.java", UNFORMATTED);
+        var result = perform(plan(module), Invocation.lint(Surface.CLI));
+
+        assertEquals(Kind.CLEAN, result.verdict().kind());
+        assertEquals(1, result.collected());
+        assertEquals(1, result.examined());
+        assertEquals(0, result.skippedByMode());
+        assertTrue(result.executionSuccessful());
+        assertEquals("note", result.notificationLevel());
+    }
+
+    @Test
+    void machineFormat_incompleteRun_isNotSuccessfulWithAnError() throws IOException {
+        var module = module("m", BUSINESS);
+
+        source(module, "Broken.java", BROKEN);
+        source(module, "Plain.java", UNFORMATTED);
+        var result = perform(plan(module), Invocation.lint(Surface.CLI));
+
+        assertEquals(Kind.INCOMPLETE, result.verdict().kind());
+        assertEquals(2, result.collected());
+        assertEquals(1, result.examined());
+        assertFalse(result.executionSuccessful());
+        assertEquals("error", result.notificationLevel());
+    }
+
+    @Test
+    void machineFormat_nothingCollectedRun_isNotSuccessfulWithAnError() throws IOException {
+        var module = module("m", BUSINESS);
+        var result = perform(plan(module), Invocation.lint(Surface.CLI));
+
+        assertEquals(Kind.NOTHING_COLLECTED, result.verdict().kind());
+        assertEquals(0, result.collected());
+        assertFalse(result.executionSuccessful());
+        assertEquals("error", result.notificationLevel());
+    }
+
+    @Test
+    void machineFormat_totalsAreOneTallyPerAskedActivity() throws IOException {
+        var module = module("m", BUSINESS);
+
+        source(module, "Plain.java", UNFORMATTED);
+        var lintOnly = perform(plan(module), Invocation.lint(Surface.CLI));
+
+        assertEquals(Tally.tally(1, 0, 0, 0, 0, 0, 0, 0), lintOnly.totals().lint().or(Tally.empty()));
+        assertTrue(lintOnly.totals().format().isEmpty());
+        assertEquals(1, lintOnly.totals().files());
+    }
 
     private static Result<Cursor> counted(Java25Parser parser, AtomicInteger parses, String content) {
         parses.incrementAndGet();

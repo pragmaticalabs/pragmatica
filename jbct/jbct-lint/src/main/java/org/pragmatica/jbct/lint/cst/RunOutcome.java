@@ -6,6 +6,7 @@ import java.util.List;
 import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.cst.RootResolver.ModeSource;
+import org.pragmatica.jbct.score.ScoreResult;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -124,7 +125,7 @@ public sealed interface RunOutcome permits RunOutcome.unused {
                 case FORMAT -> Activities.activities(false, format, false, false);
                 case FORMAT_CHECK -> Activities.activities(false, FormatAction.CHECK, false, false);
                 case PROCESS -> Activities.activities(true, FormatAction.WRITE, false, failBeforeFormat);
-                case SCORE -> Activities.activities(false, FormatAction.NONE, true, false);
+                case SCORE -> Activities.activities(true, FormatAction.NONE, true, false);
             };
         }
 
@@ -306,16 +307,28 @@ public sealed interface RunOutcome permits RunOutcome.unused {
         }
     }
 
+    /// The run totals: the files handed over and one [Tally] per asked activity, each a tally of the recorded outcomes
+    /// of every file (never a sum a front end forms). Under `score` the lint tally is the score tally: `done` counts
+    /// the files scored.
+    record Totals(int files, Option<Tally> lint, Option<Tally> format) {
+        public static Totals totals(int files, Option<Tally> lint, Option<Tally> format) {
+            return new Totals(files, lint, format);
+        }
+    }
+
     /// What a performed run came to: one [FileResult] per distinct file of the plan, one [RootResult] per root, the
     /// findings (file diagnostics in file order, then the run rules'), the verdict, a function of the recorded
-    /// outcomes and the invocation, and the lines the run prints: `before` the findings and `after` them. The score
-    /// comes in a later step.
+    /// outcomes and the invocation, the lines the run prints: `before` the findings and `after` them, the run
+    /// [Totals] and, for a score invocation that scored a file, the [ScoreResult] built from the run's own results.
+    /// The machine-format facts are values here: a renderer copies them and does no arithmetic.
     record RunResult(List<FileResult> files,
                      List<RootResult> roots,
                      List<Diagnostic> findings,
                      Verdict verdict,
                      List<Line> before,
-                     List<Line> after) {
+                     List<Line> after,
+                     Totals totals,
+                     Option<ScoreResult> score) {
         public RunResult {
             files = List.copyOf(files);
             roots = List.copyOf(roots);
@@ -329,8 +342,42 @@ public sealed interface RunOutcome permits RunOutcome.unused {
                                           List<Diagnostic> findings,
                                           Verdict verdict,
                                           List<Line> before,
-                                          List<Line> after) {
-            return new RunResult(files, roots, findings, verdict, before, after);
+                                          List<Line> after,
+                                          Totals totals,
+                                          Option<ScoreResult> score) {
+            return new RunResult(files, roots, findings, verdict, before, after, totals, score);
+        }
+
+        /// The files handed over to the run.
+        public int collected() {
+            return totals.files();
+        }
+
+        /// The files the lint (or score) activity was done on: the lint tally's `done`; zero when it was not asked.
+        public int examined() {
+            return totals.lint()
+                         .map(Tally::done)
+                         .or(0);
+        }
+
+        /// The files the root's mode skipped, from the lint tally when lint (or score) was asked, else the format tally.
+        public int skippedByMode() {
+            return totals.lint()
+                         .orElse(totals::format)
+                         .map(Tally::skippedByMode)
+                         .or(0);
+        }
+
+        /// False exactly when the verdict is INCOMPLETE or NOTHING_COLLECTED.
+        public boolean executionSuccessful() {
+            return verdict.kind() != Kind.INCOMPLETE && verdict.kind() != Kind.NOTHING_COLLECTED;
+        }
+
+        /// The SARIF notification level: `error` when the execution was not successful, `note` when it was.
+        public String notificationLevel() {
+            return executionSuccessful()
+                   ? "note"
+                   : "error";
         }
     }
 
