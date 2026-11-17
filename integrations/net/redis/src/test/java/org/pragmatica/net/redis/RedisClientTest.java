@@ -121,14 +121,11 @@ class RedisClientTest {
 
     @Test
     void unreachableServerFailsClientCreation() throws IOException {
-        server = FakeRedisServer.start(c -> {});
-        var port = server.port();
+        try (var unreachable = UnreachablePort.hold()) {
+            var cfg = RedisConfig.redisConfig("127.0.0.1", unreachable.port()).unwrap();
 
-        server.close();
-
-        var cfg = RedisConfig.redisConfig("127.0.0.1", port).unwrap();
-
-        assertThat(kind(RedisClient.redisClient(cfg).await(WAIT))).isEqualTo("ConnectionFailed");
+            assertThat(kind(RedisClient.redisClient(cfg).await(WAIT))).isEqualTo("ConnectionFailed");
+        }
     }
 
     @Test

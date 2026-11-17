@@ -41,7 +41,11 @@ class RedisClientCloseTest {
     }
 
     private RedisConfig config(int poolSize) {
-        return RedisConfig.redisConfig("127.0.0.1", server.port())
+        return config(poolSize, server.port());
+    }
+
+    private static RedisConfig config(int poolSize, int port) {
+        return RedisConfig.redisConfig("127.0.0.1", port)
                           .flatMap(c -> c.withPool(poolSize, 16))
                           .unwrap();
     }
@@ -68,14 +72,12 @@ class RedisClientCloseTest {
 
     @Test
     void failedStartShutsDownTheEventLoopGroup() throws IOException {
-        server = FakeRedisServer.start(c -> {});
-        var cfg = config(1);
+        try (var unreachable = UnreachablePort.hold()) {
+            newClient(config(1, unreachable.port()));
 
-        server.close();
-        newClient(cfg);
-
-        assertThat(TestKinds.kind(client.open().await(WAIT))).isEqualTo("ConnectionFailed");
-        assertThat(group.terminationFuture().awaitUninterruptibly(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(TestKinds.kind(client.open().await(WAIT))).isEqualTo("ConnectionFailed");
+            assertThat(group.terminationFuture().awaitUninterruptibly(5, TimeUnit.SECONDS)).isTrue();
+        }
     }
 
     @Test
