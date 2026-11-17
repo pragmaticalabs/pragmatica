@@ -26,7 +26,9 @@ class CstLinterModeFilterTest {
                                                             "JBCT-ARCH-02",
                                                             "JBCT-ARCH-03",
                                                             "JBCT-ARCH-04",
-                                                            "JBCT-MIX-01");
+                                                            "JBCT-MIX-01",
+                                                            "JBCT-NAM-06",
+                                                            "JBCT-NAM-07");
     private static final String IO_IN_DOMAIN = """
         package com.example.domain.user;
         import java.io.File;
