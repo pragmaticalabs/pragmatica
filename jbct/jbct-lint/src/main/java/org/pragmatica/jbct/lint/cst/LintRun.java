@@ -19,6 +19,7 @@ import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.lint.cst.RootResolver.ModeSource;
 import org.pragmatica.jbct.lint.cst.RootResolver.ResolvedRoot;
 import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
@@ -36,6 +37,8 @@ import org.pragmatica.jbct.lint.cst.RunOutcome.RunResult;
 import org.pragmatica.jbct.lint.cst.RunOutcome.SkippedByMode;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Tally;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Unchanged;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Level;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Line;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Verdict;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Withheld;
 import org.pragmatica.jbct.lint.cst.RunOutcome.WouldChange;
@@ -259,17 +262,19 @@ public final class LintRun {
         }
     }
 
-    private static final String FORMAT_ONLY_NOTE = "format only, no rule run";
-    private static final String DISABLED_NOTE = "skipped, no format, no rule run";
-    private static final String INFRASTRUCTURE_NOTE = "structure checks off";
+    static final String FORMAT_ONLY_NOTE = "format only, no rule run";
+    static final String DISABLED_NOTE = "skipped, no format, no rule run";
+    static final String INFRASTRUCTURE_NOTE = "structure checks off";
 
     private final List<Group> groups;
     private final Function<String, Result<Cursor>> parser;
     private final AtomicBoolean finished = new AtomicBoolean();
+    private final int uncollectedTestFiles;
 
-    private LintRun(List<Group> groups, Function<String, Result<Cursor>> parser) {
+    private LintRun(List<Group> groups, Function<String, Result<Cursor>> parser, int uncollectedTestFiles) {
         this.groups = groups;
         this.parser = parser;
+        this.uncollectedTestFiles = uncollectedTestFiles;
     }
 
     /// A run over the given roots; test roots are recognised by the `src/test` predicate alone.
@@ -285,7 +290,8 @@ public final class LintRun {
                                                                  isTestRoot(root.path(),
                                                                             declaredTestRoots),
                                                                  Option.none()))),
-                           new Java25Parser()::parse);
+                           new Java25Parser()::parse,
+                           0);
     }
 
     private static List<Group> ordered(Stream<Group> groups) {
@@ -308,7 +314,8 @@ public final class LintRun {
                                                                                       root.context()),
                                                                 root.testRoot(),
                                                                 Option.some(Detail.detail(root, plan))))),
-                           parser);
+                           parser,
+                           plan.uncollectedTestFiles());
     }
 
     /// Perform every per-file action the invocation asks for, once per distinct file of the plan, each in its root's
@@ -317,16 +324,27 @@ public final class LintRun {
     /// [LintRunError.General#RUN_FINISHED]. A run built from a list of roots holds no plan and performs on no file.
     public Result<RunResult> perform(Invocation invocation) {
         return finished.compareAndSet(false, true)
-               ? success(performed(invocation.activities()))
+               ? success(performed(invocation))
                : LintRunError.General.RUN_FINISHED.result();
     }
 
-    private RunResult performed(Activities activities) {
+    private RunResult performed(Invocation invocation) {
+        var activities = invocation.activities();
         var files = fileResults(activities);
         var roots = groups.stream().flatMap(group -> group.rootResult(activities, files)
                                                           .stream()).toList();
+        var verdict = verdict(invocation, activities, files, roots);
+        var lines = RunLines.runLines(invocation, files, roots, verdict, layerLines(files), uncollectedTestFiles).lines();
 
-        return RunResult.runResult(files, roots, findings(activities, files), verdict(activities, files, roots));
+        return RunResult.runResult(files, roots, findings(activities, files), verdict, lines.before(), lines.after());
+    }
+
+    /// The layer-coverage line of each root that linted a file, from the packages `perform` read.
+    private List<Line> layerLines(List<FileResult> files) {
+        return groups.stream()
+                     .flatMap(group -> group.layerLine(files)
+                                            .stream())
+                     .toList();
     }
 
     /// One [FileResult] per distinct path of the plan: a path two roots both hold is acted on once, in the first root
@@ -374,15 +392,12 @@ public final class LintRun {
 
     /// NOTHING_COLLECTED when the plan holds no file; INCOMPLETE when a file was not read, not parsed or not written;
     /// FINDINGS when a root fails or, under a format check (not a dry run), a file would change; CLEAN otherwise.
-    private static Verdict verdict(Activities activities, List<FileResult> files, List<RootResult> roots) {
+    private static Verdict verdict(Invocation invocation,
+                                   Activities activities,
+                                   List<FileResult> files,
+                                   List<RootResult> roots) {
         var incomplete = files.stream().filter(LintRun::unfinished).count();
-        var failing = roots.stream()
-                           .filter(RootResult::fails)
-                           .map(root -> root.root()
-                                       + ": " + root.errors()
-                                       + " error(s), " + root.warnings()
-                                       + " warning(s)")
-                           .toList();
+        var failing = roots.stream().anyMatch(RootResult::fails);
         var wouldChange = activities.format() == FormatAction.CHECK
                           ? files.stream().filter(file -> file.format() instanceof WouldChange).count()
                           : 0;
@@ -390,11 +405,10 @@ public final class LintRun {
         return files.isEmpty()
                ? Verdict.nothingCollected()
                : incomplete > 0
-                 ? Verdict.incomplete("JBCT did not complete: " + incomplete
-                                     + " file(s) not read, not parsed or not written")
-                 : failing.isEmpty() && wouldChange == 0
+                 ? Verdict.incomplete(RunLines.failureOf(invocation, files, roots))
+                 : !failing && wouldChange == 0
                    ? Verdict.clean()
-                   : Verdict.findings(findingsSentence(failing, wouldChange));
+                   : Verdict.findings(RunLines.failureOf(invocation, files, roots));
     }
 
     private static boolean unfinished(FileResult file) {
@@ -407,17 +421,6 @@ public final class LintRun {
 
     private static boolean failed(FormatOutcome outcome) {
         return outcome instanceof ReadFailed || outcome instanceof ParseFailed;
-    }
-
-    private static String findingsSentence(List<String> failing, long wouldChange) {
-        return Stream.of(failing.isEmpty()
-                         ? ""
-                         : "JBCT failed in " + failing.size() + " source root(s): " + String.join("; ", failing),
-                         wouldChange == 0
-                         ? ""
-                         : wouldChange + " file(s) need formatting")
-                     .filter(part -> !part.isEmpty())
-                     .collect(Collectors.joining("; "));
     }
 
     /// The count of recorded outcomes of one activity, slot by slot; `done` counts the activity's own success type.
@@ -721,6 +724,23 @@ public final class LintRun {
                            .toList();
         }
 
+        /// The layer-coverage line of this root, from the packages its linted files declare; none when the root linted
+        /// no file or its layers are not explicitly configured.
+        Option<Line> layerLine(List<FileResult> all) {
+            return Option.some(lintedPackages(all))
+                         .filter(packages -> !packages.isEmpty())
+                         .flatMap(packages -> LayerCoverage.coverageOfPackages(packages, context))
+                         .map(coverage -> Line.line(Level.INFO,
+                                                    coverage.render()));
+        }
+
+        private List<String> lintedPackages(List<FileResult> all) {
+            return mine(all).stream()
+                       .filter(file -> file.lint() instanceof Linted)
+                       .map(FileResult::packageName)
+                       .toList();
+        }
+
         /// What this root of a performed run came to, from the recorded outcomes of its files.
         Option<RootResult> rootResult(Activities activities, List<FileResult> all) {
             return detail.map(known -> rootResultOf(known, activities, mine(all)));
@@ -747,6 +767,7 @@ public final class LintRun {
                                          known.root().modeSource(),
                                          context.basePackage(),
                                          testRoot,
+                                         known.testRootRule(),
                                          files.size(),
                                          activities.lint()
                                          ? Option.some(tallyOf(files.stream().map(FileResult::lint).toList(),

@@ -218,14 +218,21 @@ public sealed interface RunOutcome permits RunOutcome.unused {
     }
 
     /// The recorded outcomes of one file: one per activity, `NotAsked` where the activity was not asked, and the
-    /// non-blank line count the score needs.
-    record FileResult(Path file, Path root, LintOutcome lint, FormatOutcome format, int linesOfCode) {
+    /// non-blank line count the score needs, and the package it declares (`""` when the file was not read or declares
+    /// none) for the layer census.
+    record FileResult(Path file,
+                      Path root,
+                      LintOutcome lint,
+                      FormatOutcome format,
+                      int linesOfCode,
+                      String packageName) {
         public static FileResult fileResult(Path file,
                                             Path root,
                                             LintOutcome lint,
                                             FormatOutcome format,
-                                            int linesOfCode) {
-            return new FileResult(file, root, lint, format, linesOfCode);
+                                            int linesOfCode,
+                                            String packageName) {
+            return new FileResult(file, root, lint, format, linesOfCode, packageName);
         }
     }
 
@@ -262,6 +269,7 @@ public sealed interface RunOutcome permits RunOutcome.unused {
                       ModeSource modeSource,
                       Option<String> basePackage,
                       boolean testRoot,
+                      String testRootRule,
                       int files,
                       Option<Tally> lint,
                       Option<Tally> format,
@@ -274,6 +282,7 @@ public sealed interface RunOutcome permits RunOutcome.unused {
                                             ModeSource modeSource,
                                             Option<String> basePackage,
                                             boolean testRoot,
+                                            String testRootRule,
                                             int files,
                                             Option<Tally> lint,
                                             Option<Tally> format,
@@ -286,6 +295,7 @@ public sealed interface RunOutcome permits RunOutcome.unused {
                                   modeSource,
                                   basePackage,
                                   testRoot,
+                                  testRootRule,
                                   files,
                                   lint,
                                   format,
@@ -297,20 +307,30 @@ public sealed interface RunOutcome permits RunOutcome.unused {
     }
 
     /// What a performed run came to: one [FileResult] per distinct file of the plan, one [RootResult] per root, the
-    /// findings (file diagnostics in file order, then the run rules') and the verdict, a function of the recorded
-    /// outcomes and the invocation. Lines and the score come in later steps.
-    record RunResult(List<FileResult> files, List<RootResult> roots, List<Diagnostic> findings, Verdict verdict) {
+    /// findings (file diagnostics in file order, then the run rules'), the verdict, a function of the recorded
+    /// outcomes and the invocation, and the lines the run prints: `before` the findings and `after` them. The score
+    /// comes in a later step.
+    record RunResult(List<FileResult> files,
+                     List<RootResult> roots,
+                     List<Diagnostic> findings,
+                     Verdict verdict,
+                     List<Line> before,
+                     List<Line> after) {
         public RunResult {
             files = List.copyOf(files);
             roots = List.copyOf(roots);
             findings = List.copyOf(findings);
+            before = List.copyOf(before);
+            after = List.copyOf(after);
         }
 
         public static RunResult runResult(List<FileResult> files,
                                           List<RootResult> roots,
                                           List<Diagnostic> findings,
-                                          Verdict verdict) {
-            return new RunResult(files, roots, findings, verdict);
+                                          Verdict verdict,
+                                          List<Line> before,
+                                          List<Line> after) {
+            return new RunResult(files, roots, findings, verdict, before, after);
         }
     }
 

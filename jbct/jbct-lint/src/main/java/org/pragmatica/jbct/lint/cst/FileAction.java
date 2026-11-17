@@ -8,6 +8,7 @@ import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
+import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.lint.cst.RootResolver.ResolvedRoot;
 import org.pragmatica.jbct.lint.cst.RunOutcome.FileResult;
 import org.pragmatica.jbct.lint.cst.RunOutcome.FormatAction;
@@ -71,7 +72,8 @@ record FileAction(ResolvedRoot root,
                                                        root.path(),
                                                        lint,
                                                        format,
-                                                       0))
+                                                       0,
+                                                       ""))
                      .or(() -> opened(file, lintBefore, formatBefore));
     }
 
@@ -117,7 +119,8 @@ record FileAction(ResolvedRoot root,
                                                                     root.path(),
                                                                     lintBefore.or(readFailed(cause.message())),
                                                                     formatBefore.or(readFailed(cause.message())),
-                                                                    0),
+                                                                    0,
+                                                                    ""),
                                                 source -> parsed(source, lintBefore, formatBefore));
     }
 
@@ -127,7 +130,8 @@ record FileAction(ResolvedRoot root,
                                                root.path(),
                                                lintBefore.or(parseFailed(cause.message())),
                                                formatBefore.or(parseFailed(cause.message())),
-                                               0),
+                                               0,
+                                               LayerCoverage.packageOf(source.content())),
                            tree -> acted(tree, source, lintBefore, formatBefore));
     }
 
@@ -141,7 +145,8 @@ record FileAction(ResolvedRoot root,
                           root.path(),
                           lint,
                           formatBefore.or(() -> formatted(tree, source, lint)),
-                          source.nonBlankLines());
+                          source.nonBlankLines(),
+                          LayerCoverage.packageOf(source.content()));
     }
 
     private FormatOutcome formatted(Cursor tree, SourceFile source, LintOutcome lint) {
