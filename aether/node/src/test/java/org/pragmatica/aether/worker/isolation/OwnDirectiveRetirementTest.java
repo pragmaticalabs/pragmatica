@@ -72,6 +72,23 @@ class OwnDirectiveRetirementTest {
         assertEquals(List.of(), ownWarningCodes());
     }
 
+    /// #3327: a removal followed by a directive committed in a LATER transaction is a retirement then a fresh assignment,
+    /// never a move. The store is read at handle time; when it holds no directive then, the worker halts, and a directive
+    /// that lands right after neither cancels the halt nor re-arms the observer.
+    @Test
+    void onRemove_storeEmptyAtHandleTimeAndDirectiveCommittedRightAfter_stillHaltsOnce() {
+        var observer = observer(true);
+
+        observer.onPut(put(SELF, WORKER_DIRECTIVE));
+        observer.onRemove(remove(SELF));
+        store.set(Option.some(new ActivationDirectiveValue(ActivationDirectiveValue.WORKER, "community-2", "")));
+        observer.onPut(put(SELF, new ActivationDirectiveValue(ActivationDirectiveValue.WORKER, "community-2", "")));
+
+        assertEquals(1, halts.get());
+        assertTrue(observer.halted());
+        assertEquals(List.of(OperatorWarningCode.OWN_DIRECTIVE_RETIRED), ownWarningCodes());
+    }
+
     @Test
     void onPut_rewriteOfOwnDirective_neverHalts_andTheNextRemovalStillDoes() {
         var observer = observer(true);

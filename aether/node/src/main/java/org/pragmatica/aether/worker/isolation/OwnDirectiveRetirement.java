@@ -36,9 +36,12 @@ import static org.pragmatica.utility.warning.OperatorWarningCode.OWN_DIRECTIVE_R
 /// The halt fires on a `ValueRemove` of `ActivationDirectiveKey(self)` when ALL of these hold:
 /// - this node is a configured worker, and it was DIRECTED: it saw a `ValuePut` of its own key with role `WORKER`.
 ///   A node never directed has no directive to lose, so a removal before the first directive does nothing.
-/// - no replacement is committed: the store, read when the removal is handled, holds no directive for this node. A
-///   remove followed by a put of the same key in one transaction leaves a replacement in the store, so it does not
-///   halt.
+/// - no replacement is committed: the store, read when the removal is handled, holds no directive for this node. The
+///   store is read at handle time, so it may already hold a directive committed AFTER the removal; then the worker
+///   does not halt. No production writer creates that sequence: the store refuses a transaction that removes and puts
+///   the same key (mutation keys must be distinct, `KVStore.handleLeaderTransaction`), and no writer removes a live
+///   worker's directive and then creates another for it. A removal is a retirement; the worker returns only by a
+///   fresh `WorkerJoin` that is then assigned.
 /// - this node is not already draining. A planned departure (a commanded drain) also ends in the retirement of the
 ///   directive. That drain already ends the process, so the removal neither halts it again nor raises a warning.
 ///

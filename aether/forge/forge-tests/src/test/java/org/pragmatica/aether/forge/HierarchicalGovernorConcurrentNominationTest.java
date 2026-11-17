@@ -49,9 +49,10 @@ import static org.awaitility.Awaitility.await;
 class HierarchicalGovernorConcurrentNominationTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(120).seconds();
     private static final String COMMUNITY = "concurrent-governors";
+    private static final String NODE_PREFIX = "governor-nomination";
     private static final long REQUEST_BASE = 9_000_000;
 
-    private final EmberCluster cluster = EmberCluster.emberCluster(3, 3880, 3980, 4080, "governor-nomination");
+    private final EmberCluster cluster = EmberCluster.emberCluster(3, 3880, 3980, 4080, NODE_PREFIX);
 
     @AfterEach
     void stop() {
@@ -65,8 +66,6 @@ class HierarchicalGovernorConcurrentNominationTest {
         await().atMost(BUDGET.duration()).until(() -> cluster.currentLeader()
                                                              .isPresent());
         var workers = addWorkers();
-
-        assignCommunity(workers);
         var replies = new ConcurrentHashMap<NodeId, GovernorAuthorityMessage.Response>();
         var history = new ConcurrentLinkedQueue<GovernorAuthorityMessage.Response>();
 
@@ -138,32 +137,16 @@ class HierarchicalGovernorConcurrentNominationTest {
                   .hasSizeLessThanOrEqualTo(1);
     }
 
+    /// SETUP: the workers start in the test community. H11 (#1840) makes a committed community final and a live worker
+    /// has no move (#3327), so the assignment is the FIRST one: the community and both directives are committed, each
+    /// expected absent, BEFORE the workers are admitted (production commitWorkerCommunity returns when a directive
+    /// exists). The harness mints the next ids by incrementing the prefix counter, so the ids are predicted and checked.
     private List<AetherNode> addWorkers() {
-        var result = new ArrayList<AetherNode>();
-
-        for (int index = 0; index < 2; index++) {
-            var id = LifecycleAwait.nodeSettled("admit governor candidate", cluster, cluster.addWorkerNode());
-            var worker = cluster.getNode(id.id()).unwrap();
-
-            await().atMost(BUDGET.duration())
-                 .until(() -> worker.kvStore()
-                                    .getTyped(new AetherKey.ActivationDirectiveKey(id),
-                                              AetherValue.ActivationDirectiveValue.class)
-                                    .isPresent());
-            result.add(worker);
-        }
-
-        return result;
-    }
-
-    private void assignCommunity(List<AetherNode> workers) {
         var node = leader();
+        var predicted = List.of(NodeId.nodeId(NODE_PREFIX + "-4").unwrap(), NodeId.nodeId(NODE_PREFIX + "-5").unwrap());
         var key = new AetherKey.CommunityKey(COMMUNITY);
         var changes = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
 
-        // H11 (#1840): a committed community is final, so the auto-assigned directives are removed and
-        // re-created in the test community; creating where none exists is allowed.
-        removeDirectives(node, workers);
         changes.add(new KVCommand.Mutation<>(key,
                                              Option.none(),
                                              Option.some(new AetherValue.CommunityValue("default",
@@ -172,18 +155,17 @@ class HierarchicalGovernorConcurrentNominationTest {
                                                                                         CommunityState.FORMING,
                                                                                         System.currentTimeMillis(),
                                                                                         Option.none()))));
-        for (var worker : workers) {
-            var directive = new AetherKey.ActivationDirectiveKey(worker.self());
-            changes.add(new KVCommand.Mutation<>(directive,
+        for (var id : predicted) {
+            changes.add(new KVCommand.Mutation<>(new AetherKey.ActivationDirectiveKey(id),
                                                  Option.none(),
                                                  Option.some(new AetherValue.ActivationDirectiveValue("WORKER",
                                                                                                       COMMUNITY,
                                                                                                       ""))));
         }
 
-        var id = UUID.randomUUID().toString();
+        var transactionId = UUID.randomUUID().toString();
         var transaction = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
-                                                                                  id,
+                                                                                  transactionId,
                                                                                   node.kvStore()
                                                                                       .getTyped(LeaderKey.INSTANCE,
                                                                                                 LeaderValue.class)
@@ -193,42 +175,26 @@ class HierarchicalGovernorConcurrentNominationTest {
 
         assertThat(node.<Object> apply(List.of(transaction)).await(BUDGET).unwrap()).anyMatch(value -> value instanceof KVCommand.TransactionResult result
                                                                                                        && result.transactionId()
-                                                                                                                .equals(id)
+                                                                                                                .equals(transactionId)
                                                                                                        && result.accepted());
-        await().atMost(BUDGET.duration())
-             .until(() -> workers.stream()
-                                 .allMatch(worker -> worker.kvStore()
-                                                           .getTyped(new AetherKey.ActivationDirectiveKey(worker.self()),
-                                                                     AetherValue.ActivationDirectiveValue.class)
-                                                           .filter(value -> value.communityId()
-                                                                                 .equals(COMMUNITY))
-                                                           .isPresent()));
-    }
+        var result = new ArrayList<AetherNode>();
 
-    private void removeDirectives(AetherNode node, List<AetherNode> workers) {
-        var removals = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
+        for (var expected : predicted) {
+            var id = LifecycleAwait.nodeSettled("admit governor candidate", cluster, cluster.addWorkerNode());
+            var worker = cluster.getNode(id.id()).unwrap();
 
-        for (var worker : workers) {
-            var directive = new AetherKey.ActivationDirectiveKey(worker.self());
-            var before = node.kvStore().getTyped(directive, AetherValue.ActivationDirectiveValue.class).unwrap();
-
-            removals.add(new KVCommand.Mutation<>(directive, Option.some(before), Option.none()));
+            assertThat(id).isEqualTo(expected);
+            await().atMost(BUDGET.duration())
+                 .until(() -> worker.kvStore()
+                                    .getTyped(new AetherKey.ActivationDirectiveKey(id),
+                                              AetherValue.ActivationDirectiveValue.class)
+                                    .filter(value -> value.communityId()
+                                                          .equals(COMMUNITY))
+                                    .isPresent());
+            result.add(worker);
         }
 
-        var id = UUID.randomUUID().toString();
-        var transaction = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(removals.getFirst().key(),
-                                                                                  id,
-                                                                                  node.kvStore()
-                                                                                      .getTyped(LeaderKey.INSTANCE,
-                                                                                                LeaderValue.class)
-                                                                                      .unwrap(),
-                                                                                  List.of(),
-                                                                                  removals);
-
-        assertThat(node.<Object> apply(List.of(transaction)).await(BUDGET).unwrap()).anyMatch(value -> value instanceof KVCommand.TransactionResult result
-                                                                                                       && result.transactionId()
-                                                                                                                .equals(id)
-                                                                                                       && result.accepted());
+        return result;
     }
 
     private AetherNode leader() {
