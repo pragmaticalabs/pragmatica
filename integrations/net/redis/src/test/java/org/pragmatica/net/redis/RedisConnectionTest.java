@@ -235,11 +235,9 @@ class RedisConnectionTest {
 
     @Test
     void unreachableServerIsConnectionFailed() throws IOException {
-        server = FakeRedisServer.start(c -> {});
-        var port = server.port();
-
-        server.close();
-        assertThat(kind(RedisConnection.redisConnection(config(port)).await(WAIT))).isEqualTo("ConnectionFailed");
+        try (var unreachable = UnreachablePort.hold()) {
+            assertThat(kind(RedisConnection.redisConnection(config(unreachable.port())).await(WAIT))).isEqualTo("ConnectionFailed");
+        }
     }
 
     @Test

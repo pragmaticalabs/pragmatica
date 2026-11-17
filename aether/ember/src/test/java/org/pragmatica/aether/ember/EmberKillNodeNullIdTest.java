@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class EmberKillNodeNullIdTest {
     @Test
     void killNode_refusesNullIdWithCause_insteadOfNpe() {
-        var result = EmberCluster.emberCluster(1).killNode(null, false);
+        var result = EmberCluster.emberCluster(3).killNode(null, false);
 
         assertThat(result.isResolved()).isTrue();
         result.await()

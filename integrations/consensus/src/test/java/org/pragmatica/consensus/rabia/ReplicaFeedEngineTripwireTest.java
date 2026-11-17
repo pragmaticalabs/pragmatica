@@ -59,7 +59,15 @@ class ReplicaFeedEngineTripwireTest {
     private static final class CountingStateMachine extends TestStateMachine {
         final AtomicInteger committedBatches = new AtomicInteger();
         final List<Long> phaseFrontiers = new CopyOnWriteArrayList<>();
+        final List<Long> adoptedFrontiers = new CopyOnWriteArrayList<>();
         volatile boolean failHook;
+
+        @Override
+        public Unit onPhaseAdopted(long nextSlot) {
+            adoptedFrontiers.add(nextSlot);
+
+            return onPhaseCompleted(nextSlot);
+        }
 
         @Override
         public Unit onPhaseCompleted(long nextSlot) {
@@ -322,6 +330,8 @@ class ReplicaFeedEngineTripwireTest {
         await(() -> machine.phaseFrontiers.contains(5L));
 
         assertThat(machine.phaseFrontiers).as("NT-O48 (mutation: drop the applyRestoredState call): the restored phase is reported before any decision").contains(5L);
+        assertThat(machine.adoptedFrontiers).as("#3274 (mutation: publish the restore through onPhaseCompleted): the restore ADOPTS its phase, so a "
+                                                + "store can clear `exact` when the label moves past its content").containsExactly(5L);
     }
 
     /// A throwing hook at a state restore must not wedge the engine either: the restore still completes and the engine becomes active. Mutation:

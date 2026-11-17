@@ -49,6 +49,9 @@ public enum ManagementRoute {
     // #261 (real backfill). Staleness: a forwarded read reflects the replica's CAUGHT_UP watermark,
     // which may trail the owner by the in-flight replication window (sub-second under steady load).
     EVENTS(GET, "/events", List.of(), ANY),
+    // #3274: the open FSM warnings of ONE committed state, read on the answering core and labelled by its revision. LOCAL: core nodes
+    // only, no forwarding; a worker, a core without quorum, and a core whose label is 0 or not exact refuse (WarningsRoutes).
+    WARNINGS(GET, "/warnings", List.of(), LOCAL),
     CERTIFICATES_LIST(GET, "/certificates", List.of(), LOCAL),
     CLUSTER_TOPOLOGY(GET, "/cluster/topology", List.of(), LEADER),
     CLUSTER_GENERATION(GET, "/cluster/generation", List.of(), LEADER),
