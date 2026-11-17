@@ -109,7 +109,8 @@ public final class BackupRestoreCoordinator {
     private final RetryScheduler scheduler;
     private final AtomicBoolean leader = new AtomicBoolean(false);
     private final AtomicBoolean done = new AtomicBoolean(false);
-    private final AtomicBoolean blocked = new AtomicBoolean(false);
+    /// The variant of the last announced `backup-restore-blocked` warning; none when not blocked. A new warning follows a change of cause.
+    private final AtomicReference<Option<Class<?>>> blocked = new AtomicReference<>(Option.none());
     private final AtomicBoolean missingReported = new AtomicBoolean(false);
     private final AtomicReference<ScheduledFuture<?>> pendingRetry = new AtomicReference<>();
     private final AtomicReference<TimeSpan> nextBackoff = new AtomicReference<>(INITIAL_BACKOFF);
@@ -128,14 +129,15 @@ public final class BackupRestoreCoordinator {
         /// works: [SourceUnreadable] ends when the source is readable again, [PinnedUnrestorable] never does.
         sealed interface Blocked extends RestoreError {}
 
-        /// The backup source cannot be read: unreachable, undecodable, or its history unreadable. The next retry resumes once
-        /// the source is readable again.
+        /// A step that talks to the backup source failed (unreachable, ref or commit missing), or, with no restore marker, the head
+        /// does not decode. The next retry proceeds once the source is readable (or holds a new backup).
         record SourceUnreadable(Cause origin, String message) implements Blocked, Cause.Wrapped {
             static final Fn1<SourceUnreadable, Cause> FACTORY = Causes.forOneValue("the backup cannot be read: %s",
                                                                                    SourceUnreadable::new);
         }
 
-        /// The pinned backup commit holds no cluster incarnation. The commit is content-addressed, so no change to the source
+        /// The pinned backup commit, fetched under a committed marker, cannot be read as a restore (its document does not decode, its
+        /// history is unreadable, or it holds no cluster incarnation). The commit is content-addressed, so no change to the source
         /// alters it and every retry fails identically; only a whole-cluster cold start with `restore = "fresh"` exits.
         record PinnedUnrestorable(Cause origin, String message) implements Blocked, Cause.Wrapped {
             static final Fn1<PinnedUnrestorable, Cause> FACTORY = Causes.forOneValue("the backup cannot be restored: %s",
@@ -263,7 +265,7 @@ public final class BackupRestoreCoordinator {
     /// it stops leading, stops, or restarts (a restart is a stop first). The next leader that cannot read the backup raises it again.
     @Contract
     private void recoverRestoreBlocked() {
-        if (blocked.compareAndSet(true, false)) {
+        if (blocked.getAndSet(Option.none()).isPresent()) {
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_UNBLOCKED,
                                                       "this node no longer leads (or is stopping), so its blocked backup restore no longer holds the cluster;"
                                                      + " a leader that still cannot read the backup raises backup-restore-blocked again"));
@@ -406,15 +408,16 @@ public final class BackupRestoreCoordinator {
 
         return repository.prepare()
                          .flatMap(_ -> repository.fetchRestoreRef())
+                         .mapError(RestoreError.SourceUnreadable.FACTORY)
                          .flatMap(ref -> ref.map(present -> loadRef(service, present).map(Option::some))
-                                            .or(() -> success(Option.none())))
-                         .mapError(RestoreError.SourceUnreadable.FACTORY);
+                                            .or(() -> success(Option.none())));
     }
 
     private Result<Loaded> loadRef(KvBackupService service, String ref) {
         return service.repository()
                       .commitOf(ref)
-                      .flatMap(commit -> load(service, commit, ref));
+                      .mapError(RestoreError.SourceUnreadable.FACTORY)
+                      .flatMap(commit -> load(service, commit, ref, false));
     }
 
     /// An interrupted restore's own commit, re-fetched so a new leader holds it too.
@@ -424,18 +427,29 @@ public final class BackupRestoreCoordinator {
         return repository.prepare()
                          .flatMap(_ -> repository.fetchRestoreRef())
                          .flatMap(ref -> ref.toResult(RestoreError.General.BACKUP_VANISHED))
-                         .flatMap(ref -> load(service, commit, ref))
-                         .mapError(RestoreError.SourceUnreadable.FACTORY);
+                         .mapError(RestoreError.SourceUnreadable.FACTORY)
+                         .flatMap(ref -> load(service, commit, ref, true));
     }
 
-    private Result<Loaded> load(KvBackupService service, String commit, String ref) {
+    private Result<Loaded> load(KvBackupService service, String commit, String ref, boolean pinned) {
         return service.repository()
                       .documentAt(commit)
                       .flatMap(service.codec()::decode)
                       .flatMap(document -> service.highestRecorded(ref,
                                                                    document.header().lineageId(),
                                                                    document.header().incarnation())
-                                                  .map(highest -> new Loaded(commit, document, highest)));
+                                                  .map(highest -> new Loaded(commit, document, highest)))
+                      .mapError(contentFailure(pinned));
+    }
+
+    /// The variant follows the step that failed, not the method that raised it. A step that talks to the source (prepare, the ref,
+    /// the commit, a vanished backup) is [RestoreError.SourceUnreadable]: a retry succeeds once the source is fixed. A step that reads
+    /// the content of a fetched commit under a committed marker (`pinned`) is [RestoreError.PinnedUnrestorable]: the commit is
+    /// content-addressed, so every retry fails the same way. With no marker nothing is pinned and a new backup at the source fixes it.
+    private static Fn1<? extends Cause, ? super Cause> contentFailure(boolean pinned) {
+        return pinned
+               ? RestoreError.PinnedUnrestorable.FACTORY
+               : RestoreError.SourceUnreadable.FACTORY;
     }
 
     @Contract
@@ -744,7 +758,7 @@ public final class BackupRestoreCoordinator {
         cancelPendingRetry();
         if (done.compareAndSet(false, true)) {
             RestoreGate.decision(kvStore).onPresent(BackupRestoreCoordinator::logDecision);
-            if (blocked.compareAndSet(true, false)) {
+            if (blocked.getAndSet(Option.none()).isPresent()) {
                 warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_UNBLOCKED,
                                                           "the backup restore is no longer blocked: the backup was read and the restore decision committed"));
             }
@@ -763,7 +777,7 @@ public final class BackupRestoreCoordinator {
 
     @Contract
     private void onFailure(Cause cause) {
-        if (cause instanceof RestoreError.Blocked blockedCause && blocked.compareAndSet(false, true)) {
+        if (cause instanceof RestoreError.Blocked blockedCause && announce(blockedCause)) {
             // Also an OperatorWarning cluster event through the node's sink ([BackupWarning.Sink#operatorWarnings]).
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_BLOCKED,
                                                       cause.message()
@@ -777,7 +791,15 @@ public final class BackupRestoreCoordinator {
         scheduleRetry();
     }
 
-    /// The exits that work depend on the cause of the block. A pinned commit with no cluster incarnation fails identically on
+    /// True when this variant differs from the last announced one: the warning follows the cause, a repeat stays at debug.
+    private boolean announce(RestoreError.Blocked cause) {
+        Option<Class<?>> announced = Option.some(cause.getClass());
+
+        return ! blocked.getAndSet(announced)
+                        .equals(announced);
+    }
+
+    /// The exits that work depend on the cause of the block. A pinned commit that cannot be restored fails identically on
     /// every retry, so only the cold start exits. Otherwise the source is at fault and the exits depend on the fact [#pass]
     /// folds on: no committed marker means the first decision is blocked, where `restore = "fresh"` is read and decides `FRESH`;
     /// a committed `IN_PROGRESS` marker is resumed and `[backup] restore` is never read again (#3300), so a restart with it, on

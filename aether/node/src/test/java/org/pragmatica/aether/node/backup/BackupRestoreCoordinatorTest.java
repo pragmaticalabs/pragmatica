@@ -1009,6 +1009,85 @@ class BackupRestoreCoordinatorTest {
             assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED, Code.BACKUP_RESTORE_UNBLOCKED);
         }
 
+        /// The cause follows the failed step: a pinned commit whose document does not decode fails identically on every retry, so under
+        /// a committed marker the warning says no source fix helps, not that the next retry resumes.
+        @Test
+        void aMarkedRestore_overAPinnedCommitThatDoesNotDecode_advisesTheColdStartOnly() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRaw(remote, "not a backup document\n");
+            markInProgress(remote);
+            var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            worker.advance(0);
+            fireRetries(3);
+
+            assertThat(outcome()).as("CONTROL: the marker stands").isEqualTo(BackupRestoreOutcome.IN_PROGRESS);
+            assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED);
+            assertThat(warnings.getFirst().detail()).contains("cannot be restored whatever the source does", "stop ALL nodes", "cold-start")
+                                                    .doesNotContain("the next retry resumes the restore");
+        }
+
+        /// CONTROL for the marker condition: the same undecodable content as the HEAD, with nothing pinned, is fixed by a new backup at the
+        /// source, so it keeps the source advice.
+        @Test
+        void anUndecodableHead_withNoMarker_keepsTheSourceAdvice() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRaw(remote, "not a backup document\n");
+            var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            worker.advance(0);
+            fireRetries(3);
+
+            assertThat(RestoreGate.decision(kvStore)).as("CONTROL: no marker").isEqualTo(Option.none());
+            assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED);
+            assertThat(warnings.getFirst().detail()).contains("Fix the backup source", "restart with [backup] restore = \"fresh\" to abandon it")
+                                                    .doesNotContain("cannot be restored whatever the source does");
+        }
+
+        /// The warning follows the cause: the source is down first (source advice), then it is back but the pinned commit does not decode
+        /// (a second warning, the unrestorable advice); a repeat of that failure raises nothing more.
+        @Test
+        void theBlockedWarning_isRaisedAgain_whenTheCauseChanges_andNotWhenItRepeats() throws IOException {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRaw(remote, "not a backup document\n");
+            markInProgress(remote);
+            var aside = temp.resolve("remote-aside.git");
+
+            Files.move(Path.of(remote), aside);
+            var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            worker.advance(0);
+            fireRetries(3);
+
+            assertThat(warnings).as("CONTROL: source down, one source warning").hasSize(1);
+            assertThat(warnings.getFirst().detail()).contains("the next retry resumes the restore");
+
+            Files.move(aside, Path.of(remote));
+            fireRetries(4);
+
+            assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED, Code.BACKUP_RESTORE_BLOCKED);
+            assertThat(warnings.get(1).detail()).contains("cannot be restored whatever the source does").doesNotContain("the next retry resumes the restore");
+
+            fireRetries(3);
+
+            assertThat(warnings).as("the same cause repeats: no new warning").hasSize(2);
+        }
+
+        private void markInProgress(String remote) {
+            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
+                                            BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
+                                                                                  LINEAGE,
+                                                                                  3,
+                                                                                  40,
+                                                                                  git(Path.of(remote), "rev-parse", "backup").strip())));
+        }
+
         /// The cold-start exit at the level a test can model it: a full stop leaves an EMPTY store (consensus persistence is in-memory), so
         /// a NEW coordinator over it with `restore = "fresh"` finds no marker, decides `FRESH` and opens the gate, without reading the source.
         /// `[unverified: a real three-node stop and restart is not exercised]`
