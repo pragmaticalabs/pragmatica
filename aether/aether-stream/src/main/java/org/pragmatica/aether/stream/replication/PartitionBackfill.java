@@ -58,8 +58,8 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 /// ## Source selection (#333)
 /// The backfill source is the DETERMINISTIC HRW owner of the partition (computed locally from the
 /// member view — every node agrees), NOT the local registry's `CAUGHT_UP` set. Peer `CAUGHT_UP`/
-/// watermark state is never propagated cross-node (the production {@link ReplicaRegistry} uses
-/// {@link WatermarkStore#NOOP}), so a registry-selected source can report a stale/behind watermark and
+/// watermark state is never propagated cross-node (the production {@link ReplicaRegistry} persists
+/// no peer watermarks), so a registry-selected source can report a stale/behind watermark and
 /// drive a false `CAUGHT_UP`-with-a-hole. The owner holds the complete partition history, so its
 /// reported tail is the true watermark — the same owner-forward principle the read path uses
 /// ({@link org.pragmatica.aether.stream.ForwardingReadRouter}). The one exception (#445) is an EMPTY owner
@@ -584,8 +584,8 @@ public final class PartitionBackfill {
     ///   1. self IS the HRW owner → owner-immediate self-promote at the local watermark (authoritative),
     ///   2. self is a NON-owner and the HRW owner is known → pull catch-up from the DETERMINISTIC HRW
     ///      OWNER (computed locally from the member view), NOT the blind registry `CAUGHT_UP` set. Peer
-    ///      `CAUGHT_UP`/watermark state is never propagated cross-node (the production registry uses
-    ///      {@link WatermarkStore#NOOP}), so a registry-selected source can report a stale/behind
+    ///      `CAUGHT_UP`/watermark state is never propagated cross-node (the production registry persists
+    ///      no peer watermarks), so a registry-selected source can report a stale/behind
     ///      watermark and drive a FALSE `CAUGHT_UP`-with-a-hole, after which every live batch is rejected
     ///      as a gap forever. The owner holds the complete partition history, so its reported tail
     ///      ({@link ReplicationMessage.CatchupResponse#toOffset}) is the TRUE watermark — this mirrors the
@@ -1759,7 +1759,7 @@ public final class PartitionBackfill {
     /// the HRW-elected owner is caught up before it is authoritative.
     ///
     /// When the local registry shows NO survivor ahead the answer may be a FALSE negative (peer watermarks
-    /// are never propagated — {@link WatermarkStore#NOOP} — so a caught-up survivor reads as the `-1`
+    /// are never propagated, so a caught-up survivor reads as the `-1`
     /// registration default). A FRESH HRW owner (empty ring, `localWatermark == -1`) therefore falls back to
     /// {@link #probeThenPromoteOwner}, which probes the blind survivors' REAL tails before it may self-promote.
     private Promise<Long> promoteOwner(String streamName, int partition, List<ReplicaDescriptor> replicas) {
@@ -2278,7 +2278,7 @@ public final class PartitionBackfill {
     /// HIT path passes the survivor's locally-known descriptor; the peer-watermark-blind fallback
     /// ({@link #probeThenPromoteOwner}) passes a survivor whose REAL tail was learned by PROBE (the local
     /// registry reads it as the `-1` registration default because peer watermarks are never propagated —
-    /// production {@link ReplicaRegistry} uses {@link WatermarkStore#NOOP}). Both hold self SYNCING at the
+    /// production {@link ReplicaRegistry} persists no peer watermarks). Both hold self SYNCING at the
     /// local watermark and promote to CAUGHT_UP only once the applied offset reaches the target.
     ///
     /// The survivor here is CONFIRMED strictly ahead (registry-known or probed), so a FAILED catch-up must
@@ -2399,7 +2399,7 @@ public final class PartitionBackfill {
     /// `survivorNode`, so it holds DIRECT EVIDENCE that `survivorNode` is confirmed at least to `survivorTail`
     /// — this is a TRUTHFUL operator-surface update (the owner literally pulled those offsets), NOT a
     /// fabrication. Reflecting it in the owner's registry row for the survivor (otherwise blind — peer
-    /// watermarks are never propagated, {@link WatermarkStore#NOOP}) makes the replicas-view and any
+    /// watermarks are never propagated) makes the replicas-view and any
     /// "a CAUGHT_UP non-owner exists" check see the survivor CAUGHT_UP@survivorTail immediately, without
     /// waiting for the survivor's next live ack or the #333 redrive. Fires ONLY on a successful pull
     /// ({@link Promise#withSuccess}) and only for the survivor actually pulled from, at the tail actually
@@ -2420,8 +2420,8 @@ public final class PartitionBackfill {
     }
 
     /// Peer-watermark-blind fallback (#336): reached when the local-registry {@link #aheadSurvivor} finds NO
-    /// survivor ahead, but the answer may be a FALSE negative — production {@link ReplicaRegistry} uses
-    /// {@link WatermarkStore#NOOP}, so a caught-up survivor's real tail reads as the `-1` registration
+    /// survivor ahead, but the answer may be a FALSE negative — production {@link ReplicaRegistry} persists
+    /// no peer watermarks, so a caught-up survivor's real tail reads as the `-1` registration
     /// default. Without this, a FRESH HRW owner (empty ring, `localWatermark == -1`) would self-promote a
     /// false-ready `CAUGHT_UP@-1` on an empty ring while a survivor holds the whole partition — an effective
     /// RF=1 empty owner. Only survivors whose local watermark is UNKNOWN ({@link #blindPeers}, offset `< 0`)
@@ -2450,8 +2450,8 @@ public final class PartitionBackfill {
                                                              localWatermark));
     }
 
-    /// The non-self survivors whose LOCAL watermark is unknown (registration default `-1`, i.e. blind under
-    /// {@link WatermarkStore#NOOP}) — the only peers worth probing when {@link #aheadSurvivor} found none. A
+    /// The non-self survivors whose LOCAL watermark is unknown (registration default `-1`, i.e. blind: peer watermarks
+    /// are never propagated) — the only peers worth probing when {@link #aheadSurvivor} found none. A
     /// survivor with a known local offset was already weighed by {@link #aheadSurvivor} and is excluded, so
     /// no redundant probe is issued and the local-registry HIT path stays authoritative.
     private List<NodeId> blindPeers(List<ReplicaDescriptor> replicas) {
