@@ -1319,6 +1319,11 @@ class BackupRestoreCoordinatorTest {
 
             var detail = warnings.getFirst().detail();
 
+            if (step == Step.DOCUMENT_UNDECODABLE) {
+                assertThat(detail).as("#3310: the decode step names the incompatible-release cause").contains("is one known cause, a damaged backup is another.");
+            } else {
+                assertThat(detail).as("#3310: only the decode step carries the incompatible-release sentence").doesNotContain("incompatible release", "known cause");
+            }
             assertThat(detail).contains("blocked at step " + step.label())
                               .doesNotContain("whatever the source does", "does not help", "the next retry resumes the restore", "will succeed");
             if (marked) {

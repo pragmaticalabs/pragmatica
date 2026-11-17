@@ -147,6 +147,13 @@ Crossing this release is a flag day for stream consumer cursors: the
 > replacement-based rolling upgrade (`aether cluster upgrade --wait`); cursor regression stays possible until every node
 > runs the new build. Pre-GA there are no users to migrate.
 
+### Upgrade note: rc4 backups are not restorable into rc5 (#3310)
+
+A cluster running rc4 cannot be carried to rc5 by restoring its backup: a backup written by rc4 does not decode in rc5 (the stream
+configuration and auto-heal records changed layout, and rc5 has no legacy decoders; pre-GA, no users to migrate). An rc5 cluster started over
+an rc4 backup under `restore = "auto"` stays in `backup-restore-blocked`; start it with `[backup] restore = "fresh"` instead. See
+[Backups across releases](../operators/runbooks/backup-recovery.md#backups-across-releases).
+
 ### Upgrade note: no rollback past the content-store trusted-ref change (#2263)
 
 **Rolling a node back to a binary from before #2263 is unsupported.** Upgrading is safe: names written before it stay
