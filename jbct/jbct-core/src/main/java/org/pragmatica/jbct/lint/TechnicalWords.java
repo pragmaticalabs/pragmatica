@@ -18,10 +18,6 @@ import org.pragmatica.lang.Option;
 ///
 /// The `[lint.naming]` keys `add` and `remove` adjust both lists with one entry: a word added is flagged in type names
 /// and in package segments, a word removed is no longer flagged in either.
-///
-/// A configured word is accepted only when [#tokens(String)], the tokenizer NAM-06 applies to type names, keeps it as
-/// exactly one token (`PostgreSQL` splits into `Postgre` and `SQL`, so it could never equal a token and is refused):
-/// see [#problem(String)].
 public record TechnicalWords(Set<String> typeWords, Set<String> packageWords) {
     private static final Pattern CAMEL_BOUNDARY = Pattern.compile("(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])");
     private static final Pattern WORD_SHAPE = Pattern.compile("[A-Za-z][A-Za-z0-9]*");
@@ -62,28 +58,18 @@ public record TechnicalWords(Set<String> typeWords, Set<String> packageWords) {
         packageWords = Set.copyOf(packageWords);
     }
 
-    /// The camel-case tokens of a type name: the split JBCT-NAM-06 compares to the words, and the one every configured
-    /// word must survive whole.
+    /// The camel-case tokens of a type name: the split JBCT-NAM-06 compares to the words, singly and in runs of consecutive tokens.
     public static List<String> tokens(String name) {
         return CAMEL_BOUNDARY.splitAsStream(name).toList();
     }
 
     /// Why a configured word cannot be used, empty when it can: a word is made of letters and digits starting with a
-    /// letter and stays exactly one token under [#tokens(String)], otherwise it could never match.
+    /// letter. A word the tokenizer would split (`PostgreSQL`) is accepted: NAM-06 matches it against runs of
+    /// consecutive type-name tokens, NAM-07 against a whole segment.
     public static Option<String> problem(String word) {
         return WORD_SHAPE.matcher(word).matches()
-               ? splitProblem(word)
-               : Option.some("'" + word + "' is not a word made of letters and digits starting with a letter");
-    }
-
-    private static Option<String> splitProblem(String word) {
-        var tokens = tokens(word);
-
-        return tokens.size() == 1
                ? Option.none()
-               : Option.some("'" + word
-                            + "' splits into the tokens " + String.join(", ", tokens)
-                            + " and so can never equal one token of a type name; configure a single-token word");
+               : Option.some("'" + word + "' is not a word made of letters and digits starting with a letter");
     }
 
     /// The built-in word lists.

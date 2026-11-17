@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import org.pragmatica.jbct.config.JbctMode;
@@ -22,8 +23,9 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// A name says what the code does for the business, never which technology or pattern implements it: a step is
 /// `LoadSeat`, and the technology shows only in parameter types.
 ///
-/// Matching: a word matches when it equals one whole camel-case token of the type name, ignoring case; the diagnostic
-/// names each matched token and the word it equals. The word list is [org.pragmatica.jbct.lint.TechnicalWords]
+/// Matching: a word matches when it equals one whole camel-case token of the type name, or a run of consecutive tokens
+/// joined (`PostgreSQL` for `Postgre` + `SQL`), ignoring case; the diagnostic names each matched run and the word it
+/// equals. The word list is [org.pragmatica.jbct.lint.TechnicalWords]
 /// (`LintConfig#technicalWords()`, adjusted by `[lint.naming] add / remove`); a type name is split at its camel-case
 /// boundaries and flagged when any part is a word, so `JooqSeatRepository` is flagged for `Jooq` and `Repository`
 /// while `Restaurant` is not flagged for `Rest`. Every class, interface, record and enum declaration is judged,
@@ -69,20 +71,42 @@ public class CstTechnicalTypeNameRule implements CstLintRule {
                : Stream.of(createDiagnostic(decl, name, flagged, ctx));
     }
 
-    private List<String> flaggedParts(String name, Set<String> words) {
-        return TechnicalWords.tokens(name)
-                             .stream()
-                             .filter(part -> words.contains(part.toLowerCase(Locale.ROOT)))
-                             .toList();
+    private List<List<String>> flaggedParts(String name, Set<String> words) {
+        return flaggedRuns(TechnicalWords.tokens(name), words);
     }
 
-    private String matches(List<String> flagged) {
+    private List<List<String>> flaggedRuns(List<String> tokens, Set<String> words) {
+        var run = longestRun(tokens, words);
+
+        return tokens.isEmpty()
+               ? List.of()
+               : Stream.concat(run == 0
+                               ? Stream.<List<String>>empty()
+                               : Stream.of(tokens.subList(0, run)),
+                               flaggedRuns(tokens.subList(Math.max(run, 1), tokens.size()), words).stream())
+                       .toList();
+    }
+
+    private int longestRun(List<String> tokens, Set<String> words) {
+        return IntStream.rangeClosed(1, tokens.size())
+                        .filter(length -> words.contains(String.join("", tokens.subList(0, length)).toLowerCase(Locale.ROOT)))
+                        .max()
+                        .orElse(0);
+    }
+
+    private String matches(List<List<String>> flagged) {
         return flagged.stream()
-                      .map(token -> "token '" + token + "' matches word '" + token.toLowerCase(Locale.ROOT) + "'")
+                      .map(this::match)
                       .collect(Collectors.joining(", "));
     }
 
-    private Diagnostic createDiagnostic(Cursor decl, String name, List<String> flagged, LintContext ctx) {
+    private String match(List<String> run) {
+        var joined = String.join("", run);
+
+        return (run.size() == 1 ? "token '" : "tokens '") + joined + "' matches word '" + joined.toLowerCase(Locale.ROOT) + "'";
+    }
+
+    private Diagnostic createDiagnostic(Cursor decl, String name, List<List<String>> flagged, LintContext ctx) {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
@@ -90,8 +114,8 @@ public class CstTechnicalTypeNameRule implements CstLintRule {
                                      startColumn(decl),
                                      "Type '" + name + "' names a technology or pattern: " + matches(flagged),
                                      "A name says what the code does for the business, not which technology or pattern "
-                                    + "implements it. A word matches one whole camel-case token of the name, ignoring "
-                                    + "case. Rename the type after its business operation or noun; the "
+                                    + "implements it. A word matches one whole camel-case token of the name, or a run of "
+                                    + "consecutive tokens joined, ignoring case. Rename the type after its business operation or noun; the "
                                     + "technology shows in parameter types. Configure the list with "
                                     + "[lint.naming] add / remove.");
     }

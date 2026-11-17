@@ -90,18 +90,13 @@ class NamingConfigTest {
     }
 
     @Test
-    void multiTokenWord_isRefused_inAddAndInRemove_namingKeyWordAndTokens() {
-        refusal("[lint.naming]\nadd = [\"PostgreSQL\"]\n").contains("lint.naming.add", "PostgreSQL", "Postgre, SQL");
-        refusal("[lint.naming]\nremove = [\"Seat\", \"SeatBook\"]\n").contains("lint.naming.remove", "SeatBook", "Seat, Book");
-    }
+    void multiTokenWord_isAccepted_inAddAndInRemove_andServesBothLists() {
+        var words = config("[lint.naming]\nadd = [\"PostgreSQL\", \"SeatBook\"]\nremove = [\"SeatBook\"]\n").lint()
+                                                                                                           .technicalWords();
 
-    @Test
-    void singleTokenWord_isAccepted_andMatchesATypeNameToken() {
-        var words = config("[lint.naming]\nadd = [\"Postgres\", \"FACADE\"]\n").lint()
-                                                                                   .technicalWords();
-
-        assertThat(words.typeWords()).contains("postgres", "facade");
-        assertThat(TechnicalWords.tokens("PostgresOrderStore")).contains("Postgres");
+        assertThat(words.typeWords()).contains("postgresql").doesNotContain("seatbook");
+        assertThat(words.packageWords()).contains("postgresql").doesNotContain("seatbook");
+        assertThat(TechnicalWords.tokens("PostgreSQLOrderStore")).containsExactly("Postgre", "SQL", "Order", "Store");
     }
 
     @Test

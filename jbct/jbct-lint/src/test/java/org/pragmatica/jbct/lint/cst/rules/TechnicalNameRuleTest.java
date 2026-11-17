@@ -86,6 +86,30 @@ class TechnicalNameRuleTest {
     }
 
     @Test
+    void add_ofAMultiTokenWord_matchesARunOfAdjacentTokens_andReportsTheJoinedText() {
+        var context = withWords(TechnicalWords.technicalWords(List.of("PostgreSQL"), List.of()));
+        var diagnostics = lint("package org.example;\nclass PostgreSQLOrderStore {}\n", context, TYPE_RULE);
+
+        assertEquals(1, diagnostics.size());
+        assertTrue(diagnostics.getFirst().message().contains("tokens 'PostgreSQL' matches word 'postgresql'"),
+                   diagnostics.getFirst().message());
+        assertTrue(hasType("package org.example;\nclass PostgreSQL {}\n", context));
+        assertFalse(lint("package org.example;\nclass PostgresStore {}\n", context, TYPE_RULE).getFirst().message().contains("postgresql"));
+        assertFalse(hasType("package org.example;\nclass PostgreXSQL {}\n", context));
+        assertFalse(hasType("package org.example;\nclass PostgreOrderSQL {}\n", context));
+        assertFalse(hasType("package org.example;\nclass PostgreSQLOrderStore {}\n"));
+    }
+
+    @Test
+    void remove_ofAMultiTokenWord_silencesIt() {
+        var added = TechnicalWords.technicalWords(List.of("PostgreSQL"), List.of());
+        var removed = TechnicalWords.technicalWords(List.of("PostgreSQL"), List.of("postgresql"));
+
+        assertTrue(hasType("package org.example;\nclass PostgreSQLStore {}\n", withWords(added)));
+        assertFalse(hasType("package org.example;\nclass PostgreSQLStore {}\n", withWords(removed)));
+    }
+
+    @Test
     void remove_narrowsTheList_forTypeNames() {
         var context = withWords(TechnicalWords.technicalWords(List.of(), List.of("Service", "client")));
 

@@ -189,7 +189,7 @@ record PartialConfig(PartialFormatter formatter,
         private static final Set<String> NAMING_KEYS = Set.of("add", "remove");
         private static final String NAMING_KEYS_EXPECTED = "one of the keys: add, remove";
 
-        private static final String NAMING_WORDS_EXPECTED = "an array of single-token words made of letters and digits, e.g. [\"Saga\"]";
+        private static final String NAMING_WORDS_EXPECTED = "an array of words made of letters and digits, e.g. [\"Saga\"]";
 
         PartialLint {
             rules = Map.copyOf(rules);
@@ -218,8 +218,7 @@ record PartialConfig(PartialFormatter formatter,
                                                                        namingRemove.or(List.of())));
         }
 
-        /// A word list holding a word [TechnicalWords#problem(String)] refuses (not letters and digits, or split by the
-        /// NAM-06 tokenizer) is recorded on the document and refused by [PartialConfig#partialConfig] naming the key,
+        /// A word list holding a word [TechnicalWords#problem(String)] refuses (not letters and digits) is recorded on the document and refused by [PartialConfig#partialConfig] naming the key,
         /// the value and each such word with its reason; a wrong TOML type is recorded by the typed read.
         private static Option<List<String>> namingWords(TomlDocument toml, String key) {
             return toml.getStringList(NAMING, key)
