@@ -6,7 +6,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-
 import javax.lang.model.SourceVersion;
 
 import org.pragmatica.config.toml.TomlDocument;
@@ -99,14 +98,9 @@ record PartialConfig(PartialFormatter formatter,
     /// or literal. Anything else, a non-string value included (`basePackage = true`), is recorded as a mismatch and
     /// refused with the file, key and value named.
     private static Option<String> basePackage(TomlDocument toml) {
-        var isString = toml.rawValue("project", "basePackage")
-                           .map(String.class::isInstance)
-                           .or(true);
+        var isString = toml.rawValue("project", "basePackage").map(String.class::isInstance).or(true);
 
-        return toml.getParsed("project",
-                              "basePackage",
-                              BASE_PACKAGE_EXPECTED,
-                              raw -> packageName(isString, raw));
+        return toml.getParsed("project", "basePackage", BASE_PACKAGE_EXPECTED, raw -> packageName(isString, raw));
     }
 
     private static Option<String> packageName(boolean isString, String raw) {

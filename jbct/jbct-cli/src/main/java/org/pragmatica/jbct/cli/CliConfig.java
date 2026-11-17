@@ -44,10 +44,10 @@ public sealed interface CliConfig {
     /// Maven mojos share, so `[lint] mode`, `--mode` and `[project] basePackage` reach every rule's context (#2525).
     /// `failOnWarning` only tightens the loaded lint settings; it never loosens them.
     static LintContext lintContext(JbctConfig config, boolean failOnWarning) {
-        return LintContext.fromConfig(config)
-                          .withConfig(failOnWarning
-                                      ? config.lint().withFailOnWarning(true)
-                                      : config.lint());
+        return LintContext.fromConfig(config).withConfig(failOnWarning
+                                                         ? config.lint()
+                                                                 .withFailOnWarning(true)
+                                                         : config.lint());
     }
 
     record unused() implements CliConfig {}
