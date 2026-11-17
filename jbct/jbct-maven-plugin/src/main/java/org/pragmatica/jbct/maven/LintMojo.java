@@ -3,7 +3,6 @@ package org.pragmatica.jbct.maven;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.cst.LintRun;
@@ -45,29 +44,23 @@ public class LintMojo extends AbstractJbctMojo {
 
         var run = LintRun.lintRun(plan);
         var allDiagnostics = new ArrayList<Diagnostic>();
-        var parseErrors = new AtomicInteger(0);
 
         for (var file : plan.files()) {
-            processFile(file, run, allDiagnostics, parseErrors);
+            processFile(file, run, allDiagnostics);
         }
 
         var report = finishRun(run);
 
         allDiagnostics.addAll(report.diagnostics());
-        // `Linting N Java file(s)` counts the files the rules examined, plus the ones they could not read: files
-        // skipped by their root's mode are neither.
-        var linted = examined(report) + parseErrors.get();
-
-        getLog().info("Linting " + linted + " Java file(s)");
-        layerCoverage(plan);
-        var coverage = AnalysisCoverage.analysisCoverage(linted, parseErrors.get());
+        layerCoverage(plan, report);
+        var notParsed = notParsed(report);
+        var coverage = AnalysisCoverage.analysisCoverage(examined(report) + notParsed, notParsed);
         // Print diagnostics
         reportDiagnostics(allDiagnostics);
-        // Print summary. `Linting N Java file(s)` above counts what the rules examined; this line
-        // carries what was ANALYSED, because that is the denominator the counts were taken over (#977).
+        // The run's own outcome lines say how many files were linted and which were not parsed or skipped by mode (#977).
         coverage.gapReport("lint").onPresent(getLog()::error);
-        getLog().info("Lint results (checked " + coverage.render()
-                     + "): " + errorsIn(report)
+        report.lintLines().forEach(getLog()::info);
+        getLog().info("Findings: " + errorsIn(report)
                      + " error(s), " + warningsIn(report)
                      + " warning(s), " + infosIn(allDiagnostics)
                      + " info(s)");
@@ -87,11 +80,10 @@ public class LintMojo extends AbstractJbctMojo {
         }
     }
 
-    private void processFile(Path file, LintRun run, List<Diagnostic> allDiagnostics, AtomicInteger parseErrors) {
+    private void processFile(Path file, LintRun run, List<Diagnostic> allDiagnostics) {
         run.lintFile(file)
            .onSuccess(allDiagnostics::addAll)
            .onFailure(cause -> {
-                          parseErrors.incrementAndGet();
                           getLog().error("Parse error in " + file + ": " + cause.message());
                       });
     }

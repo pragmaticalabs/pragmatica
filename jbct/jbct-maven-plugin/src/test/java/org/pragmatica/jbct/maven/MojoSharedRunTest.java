@@ -19,26 +19,24 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.jbct.lint.cst.SharedRunTree;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #2525 P2c: what the shared resolver and run decide (roots, modes, counts, summary, verdict, failure message) is what
 /// every Maven goal logs and fails with.
 ///
-/// The fixture tree below (module names, files, tomls, the `violating` source) is a COPY of `CliSharedRunTest`'s in
-/// `jbct-cli`: the CLI fixture builder is private to its tests and no test-jar is published, so the two MUST stay
-/// identical. A change to one without the other breaks the claim these two classes make together: the same tree, through
-/// either front end, gives the same roots, modes and counts. Expected values side by side (CLI T1 / Maven T1):
-/// findings `ARCH-02@biz, RET-03@biz, RET-03@infra` / the same; summary `mode=business (from <biz>/jbct.toml)` and
-/// `mode=infrastructure (from <infra>/jbct.toml)` / the same; `check` prints ARCH-02 once and RET-03 twice / the same.
-/// The Maven goals reach one directory holding two modules as `sourceDirectory` plus a declared `testSourceDirectory`
-/// (a Maven run covers a module's main and test directories; the CLI takes both as arguments).
+/// T1 builds its tree with [SharedRunTree] and compares the goals' lines with its shared expected text, the very text
+/// `CliSharedRunTest` compares the CLI's lines with: the same tree, through either front end, gives the same roots, modes,
+/// test-root count and outcome lines. The tree is a directory holding two modules, both MAIN roots; a goal reaches it as its
+/// `sourceDirectory` with no declared test directory (the CLI takes the directory as an argument), so each module's own
+/// `src/main/java` is its root and the test-root rule is the module-relative one in both front ends.
 class MojoSharedRunTest {
     private static final String USER_HOME = "user.home";
     private static final String MODE = "jbct.mode";
     private static final String ARCH_02 = "JBCT-ARCH-02";
     private static final String RET_03 = "JBCT-RET-03";
-    private static final String NO_RULE = "no JBCT rule ran in any source root, so nothing was linted";
+    private static final String NOTHING_LINTED = "Nothing was linted: ";
 
     @TempDir
     Path tempDir;
@@ -101,7 +99,9 @@ class MojoSharedRunTest {
         mojo.project = mavenProject;
         mojo.session = new MavenSession(null, null, request, new DefaultMavenExecutionResult());
         mojo.sourceDirectory = sourceDirectory.toFile();
-        mojo.testSourceDirectory = testDirectory.toFile();
+        mojo.testSourceDirectory = testDirectory == null
+                                   ? null
+                                   : testDirectory.toFile();
         mojo.setLog(new SystemStreamLog() {
             @Override
             public void info(CharSequence content) {
@@ -170,31 +170,28 @@ class MojoSharedRunTest {
         return wire(new LintMojo(), main, test, new Properties());
     }
 
-    // ---- T1 (Maven half): one run over a business and an infrastructure module
+    // ---- T1 (Maven half): one run over a business and an infrastructure module, the shared tree and the shared text
 
     @Test
-    void t1_aBusinessAndAnInfrastructureModule_giveEachRootItsOwnMode_asTheCliDoes() throws Exception {
-        var biz = module("biz", "mode = \"business\"\n");
-        var infra = module("infra", "mode = \"infrastructure\"\n");
+    void t1_aBusinessAndAnInfrastructureModule_giveEachRootItsOwnMode_andLogTheSharedText() throws Exception {
+        SharedRunTree.build(repo);
 
-        run(lint(biz, infra), true);
+        run(wire(new LintMojo(), repo, null, new Properties()), false);
 
-        assertThat(findings()).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz", RET_03 + "@infra");
-        assertThat(logs).anyMatch(line -> line.contains("mode=business (from " + root(biz.getParent().getParent().getParent().resolve("jbct.toml")) + ") root=" + root(biz)));
-        assertThat(logs).anyMatch(line -> line.contains("mode=infrastructure (from " + root(infra.getParent().getParent().getParent().resolve("jbct.toml")) + ") root=" + root(infra)));
-        assertThat(logs).anyMatch(line -> line.contains("root=" + root(biz)) && line.contains("1 examined by rules"));
-        assertThat(logs).anyMatch(line -> line.contains("root=" + root(infra)) && line.contains("1 examined by rules"));
-        assertThat(logs).anyMatch(line -> line.equals("Linting 2 Java file(s)"));
+        assertThat(findings()).containsExactlyInAnyOrderElementsOf(SharedRunTree.expectedFindings());
+        assertThat(logs).containsSubsequence(SharedRunTree.expectedSummaryLines(repo))
+                        .containsAll(SharedRunTree.expectedLintLines());
+        assertThat(String.join("\n", logs)).doesNotContain("test-root files");
     }
 
     @Test
     void t1_check_countsTheSameFindingsAsTheCliCheck() throws Exception {
-        var biz = module("biz", "mode = \"business\"\n");
-        var infra = module("infra", "mode = \"infrastructure\"\n");
-        var text = text(run(wire(new CheckMojo(), biz, infra, new Properties()), true));
+        SharedRunTree.build(repo);
+        var text = text(run(wire(new CheckMojo(), repo, null, new Properties()), false));
 
         assertThat(count(text, ARCH_02)).isEqualTo(1);
         assertThat(count(text, RET_03)).isEqualTo(2);
+        assertThat(logs).containsAll(SharedRunTree.expectedLintLines());
     }
 
     // ---- T2 / F6: identical declared roots are one root, each file once
@@ -219,15 +216,32 @@ class MojoSharedRunTest {
 
         var linted = text(run(lint(infra, off), true));
 
-        assertThat(linted).contains("Linting 0 Java file(s)").contains("0 examined by rules").contains("1 skipped by mode");
+        assertThat(linted).contains(NOTHING_LINTED + root(infra) + " (mode format-only skips it)").contains("0 examined by rules").contains("1 skipped by mode");
         assertThat(linted).contains("root=" + root(off) + " basePackage=org.acme.off: 0 examined by rules, 0 formatted or format-checked, 1 skipped by mode");
         var disabledOnly = text(run(wire(new CheckMojo(), off, off, new Properties()), false));
 
-        assertThat(disabledOnly).contains("Nothing was checked").contains("not a pass").doesNotContain("JBCT check passed.");
+        assertThat(disabledOnly).contains("Nothing was format-checked: " + root(off) + " (mode disabled skips it)")
+                                .contains(NOTHING_LINTED + root(off) + " (mode disabled skips it)")
+                                .doesNotContain("passed");
         run(wire(new FormatMojo(), infra, infra, new Properties()), false);
         var formatOnly = text(run(wire(new CheckMojo(), infra, infra, new Properties()), false));
 
-        assertThat(formatOnly).contains(NO_RULE).doesNotContain("JBCT check passed.");
+        assertThat(formatOnly).contains("1 file(s) format-checked")
+                              .contains(NOTHING_LINTED + root(infra) + " (mode format-only skips it)")
+                              .doesNotContain("passed");
+    }
+
+    /// N3: a root that was only formatted has no lint line of its own to claim: `process` over a format-only root prints
+    /// the formatted count, `Nothing was linted`, and no `file(s) linted` and no `Findings` line.
+    @Test
+    void t4_process_overAFormatOnlyRoot_printsNoLintedLine() throws Exception {
+        var infra = module("infra", "mode = \"format-only\"\n");
+        var text = text(run(wire(new ProcessMojo(), infra, infra, new Properties()), false));
+
+        assertThat(logs).anyMatch(line -> line.equals("1 file(s) formatted"));
+        assertThat(text).contains(NOTHING_LINTED + root(infra) + " (mode format-only skips it)")
+                        .doesNotContain("file(s) linted")
+                        .doesNotContain("Findings:");
     }
 
     @Test
@@ -236,11 +250,11 @@ class MojoSharedRunTest {
         var off = module("off", "mode = \"disabled\"\n");
         var skipped = "root=" + root(off) + " basePackage=org.acme.off: 0 examined by rules, 0 formatted or format-checked, 1 skipped by mode";
 
-        assertThat(text(run(lint(biz, off), true))).contains("Linting 1 Java file(s)").contains(skipped).doesNotContain(NO_RULE);
+        assertThat(text(run(lint(biz, off), true))).contains("1 file(s) linted").contains(skipped).doesNotContain(NOTHING_LINTED);
         assertThat(text(run(wire(new ProcessMojo(), biz, off, new Properties()), true))).contains("Processing 1 Java file(s)").contains(skipped);
-        assertThat(text(run(wire(new FormatMojo(), biz, off, new Properties()), true))).contains("Formatting 1 Java file(s)").contains(skipped);
-        assertThat(text(run(wire(new FormatCheckMojo(), biz, off, new Properties()), true))).contains("Checking format of 1 Java file(s)").contains(skipped);
-        assertThat(text(run(wire(new CheckMojo(), biz, off, new Properties()), true))).contains("Running JBCT check on 1 Java file(s)").contains(skipped);
+        assertThat(text(run(wire(new FormatMojo(), biz, off, new Properties()), true))).contains("1 file(s) formatted").contains(skipped);
+        assertThat(text(run(wire(new FormatCheckMojo(), biz, off, new Properties()), true))).contains("1 file(s) format-checked").contains(skipped);
+        assertThat(text(run(wire(new CheckMojo(), biz, off, new Properties()), true))).contains("Running JBCT check on 1 Java file(s)").contains("1 file(s) format-checked").contains("1 file(s) linted").contains(skipped);
     }
 
     // ---- T5: the summary line per mode with where it came from, in every goal; one line per root

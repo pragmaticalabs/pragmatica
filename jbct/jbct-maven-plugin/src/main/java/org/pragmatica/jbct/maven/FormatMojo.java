@@ -43,7 +43,6 @@ public class FormatMojo extends AbstractJbctMojo {
 
         var run = LintRun.lintRun(plan);
 
-        announceDisabled(plan, "Not formatted");
         var formatted = new AtomicInteger(0);
         var unchanged = new AtomicInteger(0);
         var errors = new AtomicInteger(0);
@@ -51,9 +50,10 @@ public class FormatMojo extends AbstractJbctMojo {
         for (var job : formatJobs(plan)) {
             claimAndProcess(job, run, formatted, unchanged, errors);
         }
-        // `Formatting N Java file(s)` counts the files no root skipped: a `disabled` root's files are not part of it.
-        getLog().info("Formatting " + checked(finishRun(run)) + " Java file(s)");
+        var report = finishRun(run);
+
         getLog().info("Formatted: " + formatted.get() + ", Unchanged: " + unchanged.get() + ", Errors: " + errors.get());
+        report.formatLines().forEach(getLog()::info);
         if (errors.get() > 0) {
             throw new MojoFailureException("Formatting failed for " + errors.get() + " file(s)");
         }

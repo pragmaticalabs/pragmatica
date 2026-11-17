@@ -1,7 +1,7 @@
 package org.pragmatica.jbct.maven;
 
+import java.nio.file.Path;
 import org.pragmatica.jbct.lint.cst.LintRun;
-import org.pragmatica.jbct.lint.cst.RootResolver.ResolvedRoot;
 import org.pragmatica.jbct.score.DensityGate;
 import org.pragmatica.jbct.score.ScoreCalculator;
 import org.pragmatica.jbct.score.ScoreReport;
@@ -58,29 +58,32 @@ public class ScoreMojo extends AbstractJbctMojo {
         }
 
         var run = LintRun.lintRun(plan);
-        var scoredRoots = plan.roots().stream().filter(AbstractJbctMojo::runsRules).toList();
-        var filesToProcess = scoredRoots.stream().flatMap(root -> root.files()
-                                                                      .stream()).toList();
+        var filesToProcess = run.scorable();
 
-        plan.roots().stream().filter(root -> !runsRules(root)).forEach(root -> announceUnscored(root, run));
+        // A file the run did not offer for scoring is still routed through it, which records it as skipped by mode.
+        plan.files().stream()
+            .filter(file -> !filesToProcess.contains(file))
+            .forEach(file -> routeUnscored(file, run));
         if (filesToProcess.isEmpty()) {
             nothingScored(run);
 
             return;
         }
 
-        getLog().info("Measuring " + filesToProcess.size() + " Java file(s)");
         var scan = SourceScan.sourceScan(filesToProcess,
                                          run::lint,
                                          message -> getLog().error("Parse error in " + message));
         var score = ScoreCalculator.calculate(scan);
 
-        reportDiagnostics(finishRun(run).diagnostics());
-        layerCoverage(plan);
+        var report = finishRun(run);
+
+        report.scoreLines().forEach(getLog()::info);
+        reportDiagnostics(report.diagnostics());
+        layerCoverage(plan, report);
         outputScore(score);
         var coverage = score.coverage();
         // A coverage gap outranks the density check and fails even with no maxDensity set: the goal
-        // announced `Measuring N Java file(s)` and then reported a ratio over fewer, returning BUILD
+        // reported a ratio over fewer files than it was asked to read, returning BUILD
         // SUCCESS over files it never read (#977).
         if (coverage.isPartial()) {
             coverage.gapReport("score").onPresent(getLog()::error);
@@ -95,30 +98,21 @@ public class ScoreMojo extends AbstractJbctMojo {
         }
     }
 
-    /// Every root runs no rule: the run is announced, passes, and says so when a `maxDensity` gate was requested and
-    /// therefore not evaluated.
+    /// Nothing was scorable: the run's lines say why per root, and a requested `maxDensity` gate says it was not evaluated.
     @Contract
     private void nothingScored(LintRun run) throws MojoExecutionException {
-        reportDiagnostics(finishRun(run).diagnostics());
-        getLog().info(maxDensity == null
-                      ? "Nothing scored: no source root runs a JBCT rule."
-                      : "Nothing scored: no source root runs a JBCT rule, so maxDensity " + maxDensity
-                       + " was not evaluated; the run passes.");
+        var report = finishRun(run);
+
+        report.scoreLines().forEach(getLog()::info);
+        reportDiagnostics(report.diagnostics());
+        if (maxDensity != null) {
+            getLog().info("maxDensity " + maxDensity + " was not evaluated; the run passes.");
+        }
     }
 
-    /// `format-only` and `disabled` roots run no rule, so there is nothing to measure: the root is announced, never
-    /// scored; its files are still routed through the run, which counts them as skipped by mode.
-    private void announceUnscored(ResolvedRoot root, LintRun run) {
-        getLog().info(notScored(root));
-        root.files().forEach(file -> run.lintFile(file)
-                                        .onFailure(cause -> getLog().error("Error: " + cause.message())));
-    }
-
-    private static String notScored(ResolvedRoot root) {
-        return "Not scored: mode=" + root.mode()
-                                         .token()
-             + " root=" + root.path()
-             + " runs no JBCT rule, so it has no violation density.";
+    private void routeUnscored(Path file, LintRun run) {
+        run.lintFile(file)
+           .onFailure(cause -> getLog().error("Error: " + cause.message()));
     }
 
     private void outputScore(ScoreResult score) {

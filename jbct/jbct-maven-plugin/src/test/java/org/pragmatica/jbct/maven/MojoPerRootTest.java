@@ -352,8 +352,8 @@ class MojoPerRootTest {
         setMode("side", JbctMode.FORMAT_ONLY);
         var text = everything(attempt(score()));
 
-        assertThat(text).contains("Not scored: mode=format-only root=" + sideTestRoot).contains("Measuring");
-        assertThat(text).doesNotContain("Not scored: mode=infrastructure");
+        assertThat(text).contains("Not scored: " + sideTestRoot + " (mode format-only skips it)").contains("file(s) scored");
+        assertThat(text).doesNotContain("Not scored: " + mainRoot);
     }
 
     @Test
@@ -362,7 +362,7 @@ class MojoPerRootTest {
         setMode("main", JbctMode.DISABLED);
         var text = everything(attempt(score()));
 
-        assertThat(text).contains("Nothing scored").doesNotContain("Measuring");
+        assertThat(text).contains("Nothing was scored: ").doesNotContain("file(s) scored");
     }
 
     @Test
@@ -381,7 +381,8 @@ class MojoPerRootTest {
         var outcome = attempt(formatCheck());
 
         assertThat(outcome).isEmpty();
-        assertThat(logs).contains("All files are properly formatted.");
+        assertThat(logs).anyMatch(line -> line.equals("4 file(s) format-checked"))
+                        .noneMatch(line -> line.contains("properly formatted"));
     }
 
     @Test
@@ -406,9 +407,10 @@ class MojoPerRootTest {
         assertThat(outcome).isEmpty();
         assertThat(Files.readString(priceOf(sideTestRoot, "side"))).isEqualTo(before);
         assertThat(indentOfStatement(priceOf(mainRoot, "main"))).isEqualTo(4);
-        assertThat(text).contains("Not formatted: mode=disabled root=" + sideTestRoot);
+        assertThat(logs).anyMatch(line -> line.contains("mode=disabled (from ") && line.contains("root=" + sideTestRoot)
+                                          && line.contains("2 skipped by mode"));
         assertThat(count(text, "mode=disabled (from ")).isEqualTo(1);
-        assertThat(count(text, "Not formatted: mode=disabled")).isEqualTo(1);
+        assertThat(logs).contains("2 file(s) formatted");
     }
 
     @Test
@@ -418,7 +420,7 @@ class MojoPerRootTest {
 
         assertThat(outcome).isEmpty();
         assertThat(indentOfStatement(priceOf(sideTestRoot, "side"))).isEqualTo(16);
-        assertThat(String.join("\n", logs)).doesNotContain("Not formatted");
+        assertThat(String.join("\n", logs)).doesNotContain("Nothing was formatted");
     }
 
     @Test
@@ -443,7 +445,8 @@ class MojoPerRootTest {
 
         assertThat(text).doesNotContain(priceOf(sideTestRoot, "side").toString());
         assertThat(anyContains(linesWith(RET_03), sideFinding())).isFalse();
-        assertThat(text).contains("Not formatted: mode=disabled root=" + sideTestRoot);
+        assertThat(logs).anyMatch(line -> line.contains("mode=disabled (from ") && line.contains("root=" + sideTestRoot)
+                                          && line.contains("2 skipped by mode"));
     }
 
     @Test
@@ -473,6 +476,7 @@ class MojoPerRootTest {
 
         assertThat(Files.readString(priceOf(sideTestRoot, "side"))).isEqualTo(before);
         assertThat(anyContains(linesWith(RET_03), sideFinding())).isFalse();
-        assertThat(text).contains("Not processed: mode=disabled root=" + sideTestRoot);
+        assertThat(logs).anyMatch(line -> line.contains("mode=disabled (from ") && line.contains("root=" + sideTestRoot)
+                                          && line.contains("2 skipped by mode"));
     }
 }

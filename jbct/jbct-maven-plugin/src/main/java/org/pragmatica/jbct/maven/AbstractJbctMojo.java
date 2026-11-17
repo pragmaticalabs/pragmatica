@@ -9,7 +9,6 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
@@ -125,16 +124,11 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
                      .toList();
     }
 
-    /// A root runs rules in `business` and `infrastructure` mode; the other two modes have no violation density.
-    protected static boolean runsRules(ResolvedRoot root) {
-        return root.mode() == JbctMode.BUSINESS || root.mode() == JbctMode.INFRASTRUCTURE;
-    }
-
-    /// Files a root did not skip, summed over the run: the denominator of "checked" in `check`, `format` and `process`.
-    protected static int checked(RunReport report) {
+    /// Files formatted or format-checked, summed over the run's roots.
+    protected static int formatted(RunReport report) {
         return report.roots()
                      .stream()
-                     .mapToInt(root -> root.files() - root.skipped())
+                     .mapToInt(RootCounts::formatted)
                      .sum();
     }
 
@@ -143,6 +137,14 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
         return report.roots()
                      .stream()
                      .mapToInt(RootCounts::examined)
+                     .sum();
+    }
+
+    /// Files the run could not read or parse, summed over the run's roots.
+    protected static int notParsed(RunReport report) {
+        return report.roots()
+                     .stream()
+                     .mapToInt(RootCounts::notParsed)
                      .sum();
     }
 
@@ -193,21 +195,17 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
                    .map(file -> FormatJob.formatJob(file, formatter));
     }
 
-    /// Announce each `disabled` root once: formatting runs in every mode except `disabled` (§2.3 "Modes").
-    protected void announceDisabled(RootPlan plan, String verb) {
-        plan.roots()
-            .stream()
-            .filter(root -> root.mode() == JbctMode.DISABLED)
-            .forEach(root -> getLog().info(verb + ": mode=disabled root=" + root.path()));
-    }
+    /// The layer-coverage line of each root the run examined by rules; a root no rule ran in has no layers to cover.
+    protected void layerCoverage(RootPlan plan, RunReport report) {
+        var examinedRoots = report.roots()
+                                  .stream()
+                                  .filter(root -> root.examined() > 0)
+                                  .map(RootCounts::root)
+                                  .collect(Collectors.toSet());
 
-    /// The layer-coverage line of each root that runs rules over files; a root that runs no rule has no layers to cover.
-    protected void layerCoverage(RootPlan plan) {
         plan.roots()
             .stream()
-            .filter(AbstractJbctMojo::runsRules)
-            .filter(root -> !root.files()
-                                 .isEmpty())
+            .filter(root -> examinedRoots.contains(root.path()))
             .forEach(root -> LayerCoverage.coverage(root.files(),
                                                     root.context())
                                           .map(LayerCoverage::render)

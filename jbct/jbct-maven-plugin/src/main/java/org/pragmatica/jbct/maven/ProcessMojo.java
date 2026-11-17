@@ -73,7 +73,6 @@ public class ProcessMojo extends AbstractJbctMojo {
         var run = LintRun.lintRun(plan);
         var parser = new Java25Parser();
 
-        announceDisabled(plan, "Not processed");
         var formatted = new AtomicInteger(0);
         var unchanged = new AtomicInteger(0);
         var formatErrors = new AtomicInteger(0);
@@ -98,28 +97,28 @@ public class ProcessMojo extends AbstractJbctMojo {
         var report = finishRun(run);
 
         allDiagnostics.addAll(report.diagnostics());
-        // A `disabled` root is neither formatted nor linted: the count is what the run did not skip.
-        var processed = checked(report);
-
-        getLog().info("Processing " + processed + " Java file(s)");
-        var coverage = AnalysisCoverage.analysisCoverage(processed,
-                                                         parseErrors.get() + unreadable.get());
+        getLog().info("Processing " + formatted(report) + " Java file(s)");
+        layerCoverage(plan, report);
+        // A file the run recorded as not parsed, plus the ones this goal could not read or parse before the run saw them
+        // (a format-time failure is not recorded by the run): the run's own lines never claim more than they covered.
+        var notParsedTotal = notParsed(report) + parseErrors.get() + unreadable.get();
+        var coverage = AnalysisCoverage.analysisCoverage(examined(report) + notParsedTotal, notParsedTotal);
 
         reportDiagnostics(allDiagnostics);
-        // `Processing N Java file(s)` above counts the files no root skipped. Both summary lines carry
-        // what was ANALYSED, separately, because a reader quotes ONE line as evidence and each has to
-        // be honest on its own about the denominator its counts were taken over (#977).
+        // The run's own outcome lines say how many files were formatted and linted, and which were skipped by mode or
+        // not parsed: a root that only formatted its files has no lint line of its own to claim (#977).
         coverage.gapReport("process").onPresent(getLog()::error);
-        getLog().info("Format (checked " + coverage.render()
-                     + "): " + formatted.get()
-                     + " formatted, " + unchanged.get()
-                     + " unchanged, " + formatErrors.get()
-                     + " errors");
-        getLog().info("Lint (checked " + coverage.render()
-                     + "): " + errorsIn(report)
-                     + " error(s), " + warningsIn(report)
-                     + " warning(s), " + infosIn(allDiagnostics)
-                     + " info(s)");
+        getLog().info("Formatted: " + formatted.get()
+                     + ", Unchanged: " + unchanged.get()
+                     + ", Errors: " + formatErrors.get());
+        report.formatLines().forEach(getLog()::info);
+        report.lintLines().forEach(getLog()::info);
+        if (examined(report) > 0) {
+            getLog().info("Findings: " + errorsIn(report)
+                         + " error(s), " + warningsIn(report)
+                         + " warning(s), " + infosIn(allDiagnostics)
+                         + " info(s)");
+        }
         if (formatErrors.get() > 0) {
             throw new MojoFailureException("Formatting failed for " + formatErrors.get() + " file(s)");
         }
@@ -219,8 +218,8 @@ public class ProcessMojo extends AbstractJbctMojo {
         // Lint first so diagnostics reference the as-authored source.
         var linted = run.lintParsed(tree, source);
 
+        // The run records a lint failure as not parsed; it is not counted here a second time.
         if (linted.isFailure()) {
-            parseErrors.incrementAndGet();
             linted.onFailure(cause -> getLog().error("Cannot lint " + file + ": " + cause.message()));
 
             return;

@@ -46,17 +46,15 @@ public class FormatCheckMojo extends AbstractJbctMojo {
 
         var run = LintRun.lintRun(plan);
 
-        announceDisabled(plan, "Not formatted");
         var needsFormatting = new ArrayList<Path>();
         var errors = new AtomicInteger(0);
 
         for (var job : formatJobs(plan)) {
             claimAndCheck(job, run, needsFormatting, errors);
         }
-        // `Checking format of N Java file(s)` counts the files no root skipped: a `disabled` root's files are not part of it.
         var report = finishRun(run);
 
-        getLog().info("Checking format of " + checked(report) + " Java file(s)");
+        report.formatCheckLines().forEach(getLog()::info);
         if (!needsFormatting.isEmpty()) {
             var fileList = new StringBuilder();
 
@@ -73,10 +71,6 @@ public class FormatCheckMojo extends AbstractJbctMojo {
         if (errors.get() > 0) {
             throw new MojoFailureException("Format check failed for " + errors.get() + " file(s)");
         }
-
-        getLog().info(checked(report) == 0
-                      ? "Nothing was format-checked: every source root is skipped by its mode. This is not a pass."
-                      : "All files are properly formatted.");
     }
 
     private void claimAndCheck(FormatJob job, LintRun run, List<Path> needsFormatting, AtomicInteger errors) {

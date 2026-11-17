@@ -120,8 +120,7 @@ class UnparseableCoverageReportingTest {
         var log = logOf(mojo);
 
         assertThat(log.errors).anyMatch(line -> line.contains("Parse failed:"));
-        assertThat(log.everything()).noneMatch(line -> line.contains("Lint results (checked 2 file(s))"));
-        assertThat(log.infos).anyMatch(line -> line.contains("Lint results (checked 1 of 2 file(s), 1 UNPARSEABLE)"));
+        assertThat(log.infos).anyMatch(line -> line.equals("1 file(s) linted, 1 file(s) not parsed"));
         assertThat(log.errors).anyMatch(line -> line.contains("COVERAGE GAP"));
         assertThat(thrown).hasMessageContaining("could not be read or parsed and were NOT analysed")
                           .hasMessageNotContaining("found 0 error(s)");
@@ -135,7 +134,8 @@ class UnparseableCoverageReportingTest {
 
         var thrown = execute(mojo);
 
-        assertThat(logOf(mojo).infos).anyMatch(line -> line.contains("Lint results (checked 1 file(s)): 0 error(s)"));
+        assertThat(logOf(mojo).infos).anyMatch(line -> line.equals("1 file(s) linted"))
+                                     .anyMatch(line -> line.contains("Findings: 0 error(s)"));
         assertThat(logOf(mojo).everything()).noneMatch(line -> line.contains("UNPARSEABLE"));
         assertThat(thrown).isNull();
     }
@@ -150,8 +150,7 @@ class UnparseableCoverageReportingTest {
         var log = logOf(mojo);
 
         assertThat(log.errors).anyMatch(line -> line.contains("Parse failed:"));
-        assertThat(log.everything()).noneMatch(line -> line.contains("Check results (checked 2 file(s))"));
-        assertThat(log.infos).anyMatch(line -> line.contains("Check results (checked 1 of 2 file(s), 1 UNPARSEABLE)"));
+        assertThat(log.infos).anyMatch(line -> line.equals("1 file(s) linted, 1 file(s) not parsed"));
         assertThat(thrown).hasMessageContaining("could not be read or parsed and were NOT analysed");
     }
 
@@ -165,7 +164,7 @@ class UnparseableCoverageReportingTest {
         execute(mojo);
 
         assertThat(logOf(mojo).everything()).noneMatch(line -> line.contains("JBCT check passed."));
-        assertThat(logOf(mojo).infos).anyMatch(line -> line.contains("Check results (checked 0 of 1 file(s), 1 UNPARSEABLE)"));
+        assertThat(logOf(mojo).infos).anyMatch(line -> line.startsWith("Nothing was linted: ") && line.contains("1 file(s) not parsed"));
     }
 
     // ---- jbct:process ----------------------------------------------------------------------------
@@ -181,10 +180,9 @@ class UnparseableCoverageReportingTest {
         var log = logOf(mojo);
 
         assertThat(log.errors).anyMatch(line -> line.contains("Parse failed:"));
-        assertThat(log.everything()).noneMatch(line -> line.contains("Lint (checked 2 file(s))"));
-        assertThat(log.everything()).noneMatch(line -> line.contains("Format (checked 2 file(s))"));
-        assertThat(log.infos).anyMatch(line -> line.contains("Lint (checked 1 of 2 file(s), 1 UNPARSEABLE)"));
-        assertThat(log.infos).anyMatch(line -> line.contains("Format (checked 1 of 2 file(s), 1 UNPARSEABLE)"));
+        assertThat(log.errors).anyMatch(line -> line.contains("COVERAGE GAP"));
+        assertThat(log.infos).anyMatch(line -> line.equals("1 file(s) linted"));
+        assertThat(log.infos).anyMatch(line -> line.equals("Formatted: 1, Unchanged: 0, Errors: 0"));
         assertThat(thrown).hasMessageContaining("could not be read or parsed and were NOT analysed")
                           .hasMessageNotContaining("found 0 error(s)");
     }
@@ -226,7 +224,8 @@ class UnparseableCoverageReportingTest {
 
         var thrown = execute(mojo);
 
-        assertThat(logOf(mojo).infos).anyMatch(line -> line.contains("Lint (checked 1 file(s)): 0 error(s)"));
+        assertThat(logOf(mojo).infos).anyMatch(line -> line.equals("1 file(s) linted"))
+                                     .anyMatch(line -> line.equals("Formatted: 1, Unchanged: 0, Errors: 0"));
         assertThat(logOf(mojo).everything()).noneMatch(line -> line.contains("UNPARSEABLE"));
         assertThat(thrown).isNull();
     }

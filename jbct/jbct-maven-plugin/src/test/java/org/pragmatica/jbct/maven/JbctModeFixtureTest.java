@@ -254,7 +254,7 @@ class JbctModeFixtureTest {
     void formatOnly_format_writesTheFile() throws Exception {
         var module = module("fmt", JbctMode.FORMAT_ONLY);
 
-        assertThat(run(wire(new FormatMojo(), module, new Properties()))).doesNotContain("Not formatted");
+        assertThat(run(wire(new FormatMojo(), module, new Properties()))).doesNotContain("Nothing was formatted");
         assertThat(statementIndent(price(module, "fmt"))).isEqualTo(8);
     }
 
@@ -262,7 +262,7 @@ class JbctModeFixtureTest {
     void formatOnly_score_saysNotScored() throws Exception {
         var module = module("fmt", JbctMode.FORMAT_ONLY);
 
-        assertThat(run(wire(new ScoreMojo(), module, new Properties()))).contains("Not scored: mode=format-only root=" + root(module));
+        assertThat(run(wire(new ScoreMojo(), module, new Properties()))).contains("Not scored: " + root(module) + " (mode format-only skips it)");
     }
 
     // ---- disabled: none; nothing is written
@@ -273,12 +273,12 @@ class JbctModeFixtureTest {
         var lint = run(wire(new LintMojo(), module, new Properties()));
 
         assertThat(lint).doesNotContain("[JBCT-")
-                        .contains("mode=disabled (from ", "root=" + root(module), "0 examined by rules, 0 formatted or format-checked, 2 skipped by mode", "skipped, no format, no rule run");
+                        .contains("mode=disabled (from ", "root=" + root(module), "0 examined by rules, 0 formatted or format-checked, 2 skipped by mode");
         var check = run(wire(new CheckMojo(), module, new Properties()));
 
         assertThat(check).doesNotContain("[JBCT-").doesNotContain(price(module, "off").toString())
-                         .contains("mode=disabled (from ", "root=" + root(module), "0 examined by rules, 0 formatted or format-checked, 2 skipped by mode", "skipped, no format, no rule run")
-                         .contains("Not formatted: mode=disabled root=" + root(module));
+                         .contains("mode=disabled (from ", "root=" + root(module), "0 examined by rules, 0 formatted or format-checked, 2 skipped by mode")
+                         .contains("Nothing was format-checked: " + root(module) + " (mode disabled skips it)");
     }
 
     @Test
@@ -287,9 +287,9 @@ class JbctModeFixtureTest {
         var before = Files.readString(price(module, "off"));
 
         assertThat(fails(wire(new FormatCheckMojo(), module, new Properties()))).isFalse();
-        assertThat(run(wire(new FormatMojo(), module, new Properties()))).contains("Not formatted: mode=disabled root=" + root(module));
+        assertThat(run(wire(new FormatMojo(), module, new Properties()))).contains("Nothing was formatted: " + root(module) + " (mode disabled skips it)");
         assertThat(run(wire(new ProcessMojo(), module, new Properties())))
-            .doesNotContain("[JBCT-").contains("Not processed: mode=disabled root=" + root(module));
+            .doesNotContain("[JBCT-").contains("Nothing was formatted: " + root(module) + " (mode disabled skips it)");
         assertThat(Files.readString(price(module, "off"))).isEqualTo(before);
     }
 
@@ -297,7 +297,7 @@ class JbctModeFixtureTest {
     void disabled_score_saysNotScored() throws Exception {
         var module = module("off", JbctMode.DISABLED);
 
-        assertThat(run(wire(new ScoreMojo(), module, new Properties()))).contains("Not scored: mode=disabled root=" + root(module));
+        assertThat(run(wire(new ScoreMojo(), module, new Properties()))).contains("Not scored: " + root(module) + " (mode disabled skips it)");
     }
 
     // ---- override arm
@@ -312,8 +312,8 @@ class JbctModeFixtureTest {
         assertThat(fails(wire(new CheckMojo(), module, properties))).isFalse();
         assertThat(all()).doesNotContain("[JBCT-").doesNotContain(price(module, "biz").toString())
                          .contains("mode=disabled (from -Djbct.mode)", "root=" + root(module));
-        assertThat(run(wire(new FormatMojo(), module, properties))).contains("Not formatted: mode=disabled");
-        assertThat(run(wire(new ProcessMojo(), module, properties))).contains("Not processed: mode=disabled");
+        assertThat(run(wire(new FormatMojo(), module, properties))).contains("Nothing was formatted: " + root(module) + " (mode disabled skips it)");
+        assertThat(run(wire(new ProcessMojo(), module, properties))).contains("Nothing was linted: " + root(module) + " (mode disabled skips it)");
         assertThat(Files.readString(price(module, "biz"))).isEqualTo(before);
     }
 
