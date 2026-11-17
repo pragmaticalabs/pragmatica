@@ -24,8 +24,10 @@
 /// passing config says no violation exists within its constants.
 ///
 /// What the model leaves out, so a pass says nothing about it: the survivor-side rebalance ([DHTRebalancer#onNodeRemoved]),
-/// anti-entropy, joins, deletes and versions (one key, one value), the page windows except as the `Deadline` switch, and the
-/// at-risk events. The two left-out copy paths act in opposite directions:
+/// anti-entropy, joins, deletes and versions (one key, one value), the page windows except as the `Deadline` switch, the
+/// at-risk events except as the `delivered` report, node crashes, and the failures that halt a page with its keys at risk
+/// (a page read that fails, an encode failure, an inventory not enumerated in time: in the abstract each is the `Deadline`
+/// arm, which `abandon` shows red). The two left-out copy paths act in opposite directions:
 /// - The survivor-side rebalance only ADDS copies: the primary replica pushes the key to its co-replicas. It needs a copy on a
 ///   final replica to start from, so it can never undo a NoLastCopyLoss or ReplicaPlacement violation. Leaving out a path that
 ///   only adds copies can only make the model report a loss the system would repair, never hide one; this one cannot even do that.
@@ -34,35 +36,35 @@
 ///   copy that NoLastCopyLoss counts may sit on a node that is not a replica in the final ring, where no read finds it and
 ///   where a purge may later drop it. ReplicaPlacement is the invariant that does not count such a copy.
 ///
-/// The plan is one step, while the code reads the ring three times in [DeparturePushRun] `departureTargets` (a torn read can
-/// lower the replica degree but cannot empty the target set: the delta branch keeps at least one target). A send, its receipt
-/// and its ack are one step: the receiver judges the page against its state at receipt, and the pusher's carried leaving set
-/// and view are the pusher's state at that step. `Deadline = FALSE` assumes every page settles inside its window; halting
-/// with pages unacknowledged is the code's normal deadline path ([DeparturePushRun] `execute` stops at `backstopDeadline`,
+/// The plan is one step, while the code reads the ring several times in [DeparturePushRun] `drainTargets` (three times in
+/// `departureTargets`, once more in `finalPrimaryCandidates`); torn reads are not modelled. A send, its receipt and its ack
+/// are one step: the receiver judges the page against its state at receipt, and the pusher's carried leaving set and view
+/// are the pusher's state at that step. `Deadline = FALSE` assumes every page settles inside its window; halting with pages
+/// unacknowledged is the code's normal deadline path ([DeparturePushRun] `execute` stops at `backstopDeadline`,
 /// `shouldStop`/`pastDeadline` stop pages at `baseDeadline`), so the `code` pass holds only for drains whose pages all settle
 /// in time. `Waves = FALSE` assumes the ping that commands the first drainer names every co-drainer (DhtDeparturePush reads
-/// the drain set at push time); two operator drains issued minutes apart are the `waves` case, which is red.
+/// the drain set at push time); two operator drains issued minutes apart are the `waves` case, which is red. `Flap` says
+/// which stale-entry flaps happen; `code` allows flaps seen by other nodes ("peer").
 ///
-/// Bounds, with the rest of the run record (TLC, `code` config unless named; "distinct" = distinct states). The current figures
-/// are in the `models.tsv` rows and the PR; the 2026-11-14 figures below were taken before `held0`, ReplicaPlacement and
-/// ReplicaDegree were added and before the survivor constraint was dropped from `Init`:
-/// - Exhaustive, TLC reported completion with an empty queue and no violation: N=4 RF=2 MaxDrain=1 MaxStale=1 (5,464,960);
-///   N=4 RF=2 MaxDrain=2 MaxStale=0 (863,800); N=4 RF=3 MaxDrain=1 MaxStale=1 (6,230,502); `live` at N=3 RF=2 (132,546).
-/// - Not proven, stopped after 25 minutes with the queue non-empty and no violation seen: N=4 RF=2 MaxDrain=2 MaxStale=1 (92,952,889
-///   distinct, 10,883,308 queued); N=4 RF=3 MaxDrain=2 MaxStale=1 (104,545,313; 25,390,445 queued); N=5 RF=3 MaxDrain=2 MaxStale=1
-///   (135,641,865; 80,645,238 queued). The constants written in the `common` config are the last of these.
-/// - Red in `code` itself, each with its own config and an open issue: `allnamed` (NoLastCopyLoss at N=3 RF=2: two drainers
-///   and a stale entry name every other node, the drainer finds no target and halts with the last copy, #3208) and `strand`
-///   (ReplicaPlacement at N=4 RF=2 MaxDrain=1: the only copy lands on a node outside the final replica set, #3209).
+/// Bounds: every run record (constants, distinct states, depth, and whether TLC finished with an empty queue) is in this
+/// model's `tools/tla/models.tsv` rows; a run that did not finish is recorded there as bounded, never as a pass.
+///
+/// #3208 and #3209, fixed by #3225, are pinned both ways: `allnamed` and `strand` pass at the code, and `allnamedpre` and
+/// `strandpre` (the final-primary targeting removed) are red; `nonamedself` pins the receiver half of #3208 and
+/// `nodeliverer` the deliverer rule. Two flap shapes remain red at the code, see `Flap`: `allnamedflap` (NoLastCopyLoss,
+/// at-risk raised) and `flap` (ReceiverAgrees).
 ///
 /// What the passing `code` row does NOT exercise (its invariants are vacuous or its paths unreached there):
-/// - TargetsOutsideDrainSet is a tautology without `Waves`: the drain set is constant, `known[d]` equals it at `Command`, and
-///   every target lies outside the exclusion, which contains it. It has content only in `wavesset`.
-/// - `Retarget` never fires in `code` or `live`: targets avoid drainers and stale entries, `pruned` grows only by those, so a
-///   target never leaves the pusher's ring. `claimed` and `rfAt` are exercised only by the fault configs. The code's retarget
-///   path is not verified by the `code` pass.
-/// - The `exhaust` fallback is unreachable at N=4 RF=2 with MaxDrain + MaxStale <= 2 (two ring members always remain outside
-///   the exclusion); it is reached at N=3 RF=2 and N=4 RF=3.
+/// - ReportTruthful without `Deadline` or `Waves`: a deliverer is a node no drainer names, so it never drains, and it stores the
+///   copy in the step that delivers the key. It has content in `report` (pass), `nodeliverer` and `wavesset` (red).
+/// - `Retarget` fires in `code` and `live` since #3225 (TLC action coverage): a page to a named node is retargeted when that
+///   node's DEPARTING edge or flap prunes it from the pusher's ring. Whether a retarget ever delivers the key at once through a
+///   deliverer that had already acked (`deliverIfAcked`) is not measured. With MaxDrain = 1 every `Halt` leads to a state
+///   outside CONSTRAINT `Active`: TLC checks the invariants there but does not count it, so `report` and `code` count the
+///   same distinct states although `Deadline` adds halts (a probe adding NoLastCopyLoss to `report` is red at `Halt`).
+/// - Since #3225 the `exhaust` fallback matters for NoLastCopyLoss only when no named node lies within the first rf nodes of
+///   the walk (otherwise the final-primary candidates give a target): `noexhaust` is red at N=3 RF=3 MaxStale=0, where rf
+///   equals the ring size and a drainer holding an under-replicated key counts the existing replicas as holders.
 /// - `nopruned` cannot turn NoLastCopyLoss red at any bound: with `selfcheck` and `exhaust` the delta branch always has a
 ///   target and, without `Deadline`, a pending page keeps its drainer alive. The `pruned` guard protects replica degree;
 ///   ReplicaDegree is the invariant under which `nopruned` is red.
@@ -82,7 +84,7 @@
 /// \* MaxDrain bounds the co-drainers, MaxStale the stale drain-set entries (named by the leader, never draining; one may
 /// \* flap: enter DEPARTING on an observer and recover). At least one node does not drain: draining every node is a cluster
 /// \* shutdown, not a departure. A stale entry is a live member that never halts, so a drain set that names every other node
-/// \* still leaves a survivor: N=3 RF=2 with two drainers and one stale entry loses the last copy in the code (#3208, `allnamed`).
+/// \* still leaves a survivor: N=3 RF=2 with two drainers and one stale entry lost the last copy before #3225 (#3208, `allnamed`).
 /// \* Waves: drain commands arrive in separate leader pings, so a drainer may plan before a later co-drainer is named.
 /// \* FALSE models the drain DhtDeparturePush documents: every co-drainer is named in the ping that commands the first. Two
 /// \* operator drains issued minutes apart break that assumption (`waves` is red).
@@ -90,6 +92,11 @@
 /// \* (execute's backstopDeadline, shouldStop/pastDeadline at baseDeadline, the grace fork); FALSE assumes every page settles
 /// \* inside its window.
 /// \* HaltFair: Halt is weakly fair. FALSE is the negative control of DrainCompletes (`nohaltfair`).
+/// \* Flap: which stale-entry flaps happen ("none", "peer": seen by other nodes, "self": also by the entry itself). A flap
+/// \* prunes the entry from the observer's ring until it recovers, which may never happen. Pages reach named nodes only since
+/// \* #3225, so two flap shapes matter there: a drainer that sees its only surviving candidate flap retargets the page away
+/// \* ("ring removal is the only retarget") and halts with the copy (`allnamedflap`, red), and an entry that pruned itself is
+/// \* in no walk of its own ring, so it refuses the page even when the pusher names it (`flap`, red).
 /// \* Fixed: the protections the code carries (AllFixes). A config that drops one models the code without it:
 /// \*   drainset  - the leader's drain set exists and reaches nodes (the test's empty-set arm drops it)
 /// \*   codrain   - the push excludes the co-drainers it knows (#1818: DHTRebalancer.leavingSet)
@@ -98,10 +105,16 @@
 /// \*   pruned    - ... and when an excluded node already left the ring (#2684 F3)
 /// \*   view      - the receiver judges placement in the pusher's view without the pusher's leaving set (#1818 L1)
 /// \*   accept    - the receiver accepts a push only from a sender it knows to be departing or that is a current replica
-/// CONSTANTS N, RF, MaxDrain, MaxStale, Waves, Deadline, HaltFair, Fixed
+/// \*   primary   - the push also targets the final replica set's primary candidates: the drain-set-named prefix of the walk
+/// \*               without self, plus the first unnamed node (#3208, #3209: DeparturePushRun.finalPrimaryCandidates)
+/// \*   deliverer - only an applied ack from one of the key's deliverers shows it delivered (DepartureKey.allowDelivery,
+/// \*               Page#settle); without it any applied ack does, as before #3225
+/// \*   namedself - a receiver the pusher names in its leaving set keeps itself in its post-departure view (#3208:
+/// \*               DHTAntiEntropy.leftInDepartureView), so it places the rescue copy instead of refusing it as a stray
+/// CONSTANTS N, RF, MaxDrain, MaxStale, Waves, Deadline, HaltFair, Flap, Fixed
 ///
-/// AllFixes == {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept"}
-/// ASSUME Fixed \subseteq AllFixes
+/// AllFixes == {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer", "namedself"}
+/// ASSUME Fixed \subseteq AllFixes /\ Flap \in {"none", "peer", "self"}
 /// Fix(f) == f \in Fixed
 ///
 /// Nodes == 1..N
@@ -122,9 +135,13 @@
 ///     rfAt,       \* rfAt[d]: the replication factor the push was built with
 ///     pages,      \* registered, unacknowledged departure pages [from, to]
 ///     claimed,    \* claimed[d]: DepartureKey.plannedTargets
-///     strayNack   \* a receiver refused, as a stray, a page from a sender it accepted (history)
+///     strayNack,  \* a receiver refused, as a stray, a page from a sender it accepted (history)
+///     deliverers, \* deliverers[d]: DepartureKey.deliverers (the targets whose ack shows the key delivered)
+///     acked,      \* acked[d]: DepartureKey.acked (the targets that sent d an applied ack)
+///     delivered   \* delivered[d]: DepartureKey.delivered (d's report: the key is delivered; kept after d halts)
 ///
-/// vars == <<drainers, held0, stale, drainSet, known, pruned, flapped, store, phase, leaving, rfAt, pages, claimed, strayNack>>
+/// vars == <<drainers, held0, stale, drainSet, known, pruned, flapped, store, phase, leaving, rfAt, pages, claimed, strayNack,
+///           deliverers, acked, delivered>>
 ///
 /// \* ConsistentHashRing.nodesFor(key, rf[, filter]) as a set: the first rf members of `set` met in ring order.
 /// Walk(set, rf) == LET s == SelectSeq(Order, LAMBDA x : x \in set) IN {s[i] : i \in 1..Min(rf, Len(s))}
@@ -149,14 +166,38 @@
 ///                   /\ (Fix("pruned") => excl \subseteq ring)
 ///     IN IF delta THEN newSet \ (cur \ excl) ELSE newSet
 ///
+/// \* DeparturePushRun.finalPrimaryCandidates walks the whole ring without self (nodesFor(key, nodeCount, not self)).
+/// WalkSeq(d) == SelectSeq(Order, LAMBDA x : x \in Ring(d) /\ x # d)
+/// \* The index of the first node of `w` outside `excl`, or Len(w) + 1 when `excl` holds every node of `w`.
+/// FirstOutside(w, excl) ==
+///     LET idx == {i \in 1..Len(w) : w[i] \notin excl}
+///     IN IF idx = {} THEN Len(w) + 1 ELSE CHOOSE i \in idx : \A j \in idx : i <= j
+/// \* finalPrimaryCandidates: when a named node (one in `excl`) lies within the first rf nodes of the walk, the named prefix
+/// \* of the walk plus the first unnamed node; otherwise none.
+/// Candidates(d, excl, rf) ==
+///     LET w == WalkSeq(d)
+///     IN IF Fix("primary") /\ \E i \in 1..Min(rf, Len(w)) : w[i] \in excl
+///        THEN {w[i] : i \in 1..Min(FirstOutside(w, excl), Len(w))}
+///        ELSE {}
+/// \* DeparturePushRun.drainTargets: the delta targets plus the candidates.
+/// DrainTargets(d, excl, rf) == DepartureTargets(d, excl, rf) \cup Candidates(d, excl, rf)
+/// \* ... and the targets drainTargets passes to allowDelivery: the delta targets when there are no candidates, else the
+/// \* candidates outside `excl` (the first unnamed node, or none).
+/// Deliverers(d, excl, rf) ==
+///     LET c == Candidates(d, excl, rf) IN IF c = {} THEN DepartureTargets(d, excl, rf) ELSE c \ excl
+/// \* DeparturePushRun.classify: sole when the current set holds no survivor beyond the excluded nodes already pruned.
+/// Sole(d, excl, rf) == Cardinality(Walk(Ring(d), rf) \ excl) - Cardinality(excl \ Ring(d)) <= 0
+///
 /// \* DHTAntiEntropy.acceptDeparturePush: the sender is departing in t's view, or a current replica of the key in t's ring.
 /// Accepted(t, d) == ~Fix("accept") \/ Departing(t, d) \/ d \in Cur(t)
 /// \* DHTAntiEntropy.replicaHereAroundDeparture: t is a current replica, or within rf of t's ring restricted to the pusher's
 /// \* view (its ring at the send) without the pusher, its carried leaving set and every node t knows to be departing.
+/// \* A receiver the pusher names keeps itself (DHTAntiEntropy.namedSelf, #3208).
+/// NamedSelf(t, d, c) == Fix("namedself") /\ Fix("view") /\ c = t /\ c \in leaving[d]
 /// PostView(t, d) ==
-///     Walk({c \in Ring(t) : /\ (Fix("view") => c \in Ring(d) /\ c \notin leaving[d])
+///     Walk({c \in Ring(t) : /\ (Fix("view") => c \in Ring(d) /\ (c \notin leaving[d] \/ NamedSelf(t, d, c)))
 ///                           /\ c # d
-///                           /\ ~Departing(t, c)},
+///                           /\ (~Departing(t, c) \/ NamedSelf(t, d, c))},
 ///          RFOf(Ring(t)))
 /// Placed(t, d) == t \in Cur(t) \/ t \in PostView(t, d)
 ///
@@ -175,14 +216,16 @@
 ///     /\ drainSet' = IF Fix("drainset") THEN drainSet \cup {d} ELSE drainSet
 ///     /\ known' = [known EXCEPT ![d] = drainSet']
 ///     /\ phase' = [phase EXCEPT ![d] = "draining"]
-///     /\ UNCHANGED <<drainers, held0, stale, pruned, flapped, store, leaving, rfAt, pages, claimed, strayNack>>
+///     /\ UNCHANGED <<drainers, held0, stale, pruned, flapped, store, leaving, rfAt, pages, claimed, strayNack,
+///                deliverers, acked, delivered>>
 ///
 /// \* A later leader ping reaches n with the current drain set.
 /// LearnDrain(n) ==
 ///     /\ phase[n] # "halted"
 ///     /\ known[n] # drainSet
 ///     /\ known' = [known EXCEPT ![n] = drainSet]
-///     /\ UNCHANGED <<drainers, held0, stale, drainSet, pruned, flapped, store, phase, leaving, rfAt, pages, claimed, strayNack>>
+///     /\ UNCHANGED <<drainers, held0, stale, drainSet, pruned, flapped, store, phase, leaving, rfAt, pages, claimed, strayNack,
+///                deliverers, acked, delivered>>
 ///
 /// Init ==
 ///     /\ drainers \in {D \in SUBSET Nodes : Cardinality(D) \in 1..MaxDrain /\ D # Nodes}
@@ -199,6 +242,9 @@
 ///     /\ pages = {}
 ///     /\ claimed = [n \in Nodes |-> {}]
 ///     /\ strayNack = FALSE
+///     /\ deliverers = [n \in Nodes |-> {}]
+///     /\ acked = [n \in Nodes |-> {}]
+///     /\ delivered = [n \in Nodes |-> FALSE]
 ///
 /// \* Once every drainer has halted no copy can move or vanish (no pages remain, survivors never halt): the run is over. Every
 /// \* config stops exploring there (CONSTRAINT Active in `common`); the state itself is still checked.
@@ -232,8 +278,11 @@
 /// \* gone, so once every drainer has halted the key survives only on a node that stays.
 /// NoLastCopyLoss == \E n \in Nodes : phase[n] # "halted" /\ store[n]
 ///
-/// \* Drain-set membership is consistent with placement: a departure page never targets a node the leader is draining.
-/// TargetsOutsideDrainSet == \A p \in pages : p.to \notin drainSet
+/// \* #3208, #3209: a drainer reports its key delivered only while a node that never drains holds a copy. The code targets
+/// \* drain-set members on purpose (an entry may be stale), so only a deliverer's ack is evidence: a named target may halt
+/// \* with the copy. A key not reported delivered raises the at-risk or incomplete event instead. No node that stays ever
+/// \* drops a copy in this model, so the copy that made the report true is still there.
+/// ReportTruthful == \A d \in drainers : delivered[d] => \E n \in Nodes \ drainers : store[n]
 ///
 /// \* #1818 L1: a receiver that accepts the sender never refuses the page as a stray, so no page is nacked forever.
 /// ReceiverAgrees == ~strayNack
@@ -246,7 +295,8 @@
 ///     (AllHalted /\ \A n \in Nodes \ drainers : ~held0[n]) => \E n \in Walk(Nodes \ drainers, RF) : store[n]
 ///
 /// \* #2684 F3: a key placed exactly on its replica set keeps its degree: once every drainer has halted, as many nodes hold it
-/// \* as the ring outside the drain set can carry (the code never targets a named stale entry, so those do not count).
+/// \* as the ring outside the drain set can carry (a named stale entry receives a copy only as a final-primary candidate,
+/// \* so those do not count).
 /// ReplicaDegree ==
 ///     (AllHalted /\ {n \in Nodes : held0[n]} = Walk(Nodes, RF))
 ///         => Cardinality({n \in Nodes : store[n]}) >= Min(RF, Cardinality(Nodes \ (drainers \cup stale)))
@@ -269,17 +319,20 @@
 /// CONSTANTS Waves = FALSE
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
+///           Flap = "peer"
 ///           Fixed <- AllFixes
 /// INVARIANT NoLastCopyLoss
-/// INVARIANT TargetsOutsideDrainSet
+/// INVARIANT ReportTruthful
 /// INVARIANT ReceiverAgrees
 /// INVARIANT ReplicaDegree
+/// INVARIANT ReplicaPlacement
 /// ```
 ///
 /// ```tlacfg DHTDepartureDrain:live
 /// CONSTANTS Waves = FALSE
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
+///           Flap = "peer"
 ///           Fixed <- AllFixes
 /// PROPERTY DrainCompletes
 /// ```
@@ -288,7 +341,8 @@
 /// CONSTANTS Waves = FALSE
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
-///           Fixed = {"drainset", "codrain", "selfcheck", "pruned", "view", "accept"}
+///           Flap = "self"
+///           Fixed = {"drainset", "codrain", "selfcheck", "pruned", "view", "accept", "primary", "deliverer", "namedself"}
 /// INVARIANT NoLastCopyLoss
 /// ```
 ///
@@ -296,7 +350,8 @@
 /// CONSTANTS Waves = FALSE
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
-///           Fixed = {"drainset", "codrain", "exhaust", "pruned", "view", "accept"}
+///           Flap = "self"
+///           Fixed = {"drainset", "codrain", "exhaust", "pruned", "view", "accept", "primary", "deliverer", "namedself"}
 /// INVARIANT NoLastCopyLoss
 /// ```
 ///
@@ -304,7 +359,8 @@
 /// CONSTANTS Waves = FALSE
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
-///           Fixed = {"drainset", "exhaust", "selfcheck", "pruned", "view", "accept"}
+///           Flap = "self"
+///           Fixed = {"drainset", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer", "namedself"}
 /// INVARIANT NoLastCopyLoss
 /// ```
 ///
@@ -312,7 +368,8 @@
 /// CONSTANTS Waves = FALSE
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
-///           Fixed = {"codrain", "exhaust", "selfcheck", "pruned", "view", "accept"}
+///           Flap = "self"
+///           Fixed = {"codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer", "namedself"}
 /// INVARIANT NoLastCopyLoss
 /// ```
 ///
@@ -320,7 +377,8 @@
 /// CONSTANTS Waves = FALSE
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "accept"}
+///           Flap = "self"
+///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "accept", "primary", "deliverer", "namedself"}
 /// INVARIANT ReceiverAgrees
 /// ```
 ///
@@ -328,7 +386,8 @@
 /// CONSTANTS Waves = FALSE
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "view", "accept"}
+///           Flap = "self"
+///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "view", "accept", "primary", "deliverer", "namedself"}
 /// INVARIANT ReplicaDegree
 /// ```
 ///
@@ -336,7 +395,8 @@
 /// CONSTANTS Waves = FALSE
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
-///           Fixed = {"drainset", "codrain", "view", "accept"}
+///           Flap = "self"
+///           Fixed = {"drainset", "codrain", "view", "accept", "primary", "deliverer", "namedself"}
 /// INVARIANT NoLastCopyLoss
 /// ```
 ///
@@ -344,9 +404,10 @@
 /// CONSTANTS Waves = FALSE
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view"}
+///           Flap = "peer"
+///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "primary", "deliverer", "namedself"}
 /// INVARIANT NoLastCopyLoss
-/// INVARIANT TargetsOutsideDrainSet
+/// INVARIANT ReportTruthful
 /// INVARIANT ReceiverAgrees
 /// ```
 ///
@@ -354,6 +415,7 @@
 /// CONSTANTS Waves = FALSE
 ///           Deadline = TRUE
 ///           HaltFair = TRUE
+///           Flap = "self"
 ///           Fixed <- AllFixes
 /// INVARIANT NoLastCopyLoss
 /// ```
@@ -362,6 +424,7 @@
 /// CONSTANTS Waves = TRUE
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
+///           Flap = "self"
 ///           Fixed <- AllFixes
 /// INVARIANT NoLastCopyLoss
 /// ```
@@ -370,14 +433,16 @@
 /// CONSTANTS Waves = TRUE
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
+///           Flap = "self"
 ///           Fixed <- AllFixes
-/// INVARIANT TargetsOutsideDrainSet
+/// INVARIANT ReportTruthful
 /// ```
 ///
 /// ```tlacfg DHTDepartureDrain:allnamed
 /// CONSTANTS Waves = FALSE
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
+///           Flap = "none"
 ///           Fixed <- AllFixes
 /// INVARIANT NoLastCopyLoss
 /// ```
@@ -386,14 +451,91 @@
 /// CONSTANTS Waves = FALSE
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
+///           Flap = "peer"
 ///           Fixed <- AllFixes
 /// INVARIANT ReplicaPlacement
+/// ```
+///
+/// ```tlacfg DHTDepartureDrain:allnamedpre
+/// CONSTANTS Waves = FALSE
+///           Deadline = FALSE
+///           HaltFair = TRUE
+///           Flap = "none"
+///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "deliverer", "namedself"}
+/// INVARIANT NoLastCopyLoss
+/// ```
+///
+/// ```tlacfg DHTDepartureDrain:strandpre
+/// CONSTANTS Waves = FALSE
+///           Deadline = FALSE
+///           HaltFair = TRUE
+///           Flap = "peer"
+///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "deliverer", "namedself"}
+/// INVARIANT ReplicaPlacement
+/// ```
+///
+/// ```tlacfg DHTDepartureDrain:nonamedself
+/// CONSTANTS Waves = FALSE
+///           Deadline = FALSE
+///           HaltFair = TRUE
+///           Flap = "none"
+///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer"}
+/// INVARIANT ReceiverAgrees
+/// ```
+///
+/// ```tlacfg DHTDepartureDrain:report
+/// CONSTANTS Waves = FALSE
+///           Deadline = TRUE
+///           HaltFair = TRUE
+///           Flap = "peer"
+///           Fixed <- AllFixes
+/// INVARIANT ReportTruthful
+/// ```
+///
+/// ```tlacfg DHTDepartureDrain:nodeliverer
+/// CONSTANTS Waves = FALSE
+///           Deadline = TRUE
+///           HaltFair = TRUE
+///           Flap = "peer"
+///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "namedself"}
+/// INVARIANT ReportTruthful
+/// ```
+///
+/// ```tlacfg DHTDepartureDrain:flapcode
+/// CONSTANTS Waves = FALSE
+///           Deadline = FALSE
+///           HaltFair = TRUE
+///           Flap = "self"
+///           Fixed <- AllFixes
+/// INVARIANT NoLastCopyLoss
+/// INVARIANT ReportTruthful
+/// INVARIANT ReplicaDegree
+/// INVARIANT ReplicaPlacement
+/// ```
+///
+/// ```tlacfg DHTDepartureDrain:flap
+/// CONSTANTS Waves = FALSE
+///           Deadline = FALSE
+///           HaltFair = TRUE
+///           Flap = "self"
+///           Fixed <- AllFixes
+/// INVARIANT ReceiverAgrees
+/// ```
+///
+/// ```tlacfg DHTDepartureDrain:allnamedflap
+/// CONSTANTS Waves = FALSE
+///           Deadline = FALSE
+///           HaltFair = TRUE
+///           Flap = "peer"
+///           Fixed <- AllFixes
+/// INVARIANT NoLastCopyLoss
 /// ```
 ///
 /// ```tlacfg DHTDepartureDrain:nohaltfair
 /// CONSTANTS Waves = FALSE
 ///           Deadline = FALSE
 ///           HaltFair = FALSE
+///           Flap = "self"
 ///           Fixed <- AllFixes
 /// PROPERTY DrainCompletes
 /// ```

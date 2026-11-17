@@ -103,7 +103,8 @@ public final class DHTTopologyListener {
     ///     /\ x \in drainers /\ phase[x] = "halted"
     ///     /\ x \notin pruned[o]
     ///     /\ pruned' = [pruned EXCEPT ![o] = @ \cup {x}]
-    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, flapped, store, phase, leaving, rfAt, pages, claimed, strayNack>>
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, flapped, store, phase, leaving, rfAt, pages, claimed, strayNack,
+    ///                deliverers, acked, delivered>>
     /// ```
     @Contract
     public void onNodeRemoved(MembershipDecision.NodeRemoved event) {
@@ -147,15 +148,16 @@ public final class DHTTopologyListener {
     /// seam cannot reintroduce the per-flap storm.
     /// ```tla DHTDepartureDrain:DepartingEdge
     /// \* `o` sees `x` enter DEPARTING (a drainer once its drain began, or a stale entry flapping once): departing add, ring prune.
-    /// \* `o` may be `x` itself: nothing in the listener skips self.
+    /// \* `o` may be `x` itself: nothing in the listener skips self. Which stale flaps happen is the Flap switch.
     /// DepartingEdge(o, x) ==
     ///     /\ phase[o] # "halted"
     ///     /\ x \notin pruned[o]
     ///     /\ \/ x \in drainers /\ phase[x] \in {"draining", "pushing"}
-    ///        \/ x \in stale /\ x \notin flapped[o]
+    ///        \/ x \in stale /\ x \notin flapped[o] /\ (Flap = "self" \/ (Flap = "peer" /\ o # x))
     ///     /\ pruned' = [pruned EXCEPT ![o] = @ \cup {x}]
     ///     /\ flapped' = IF x \in stale THEN [flapped EXCEPT ![o] = @ \cup {x}] ELSE flapped
-    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, store, phase, leaving, rfAt, pages, claimed, strayNack>>
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, store, phase, leaving, rfAt, pages, claimed, strayNack,
+    ///                deliverers, acked, delivered>>
     /// ```
     @Contract
     public void onNodeDeparting(NodeId departingNodeId) {
@@ -178,7 +180,8 @@ public final class DHTTopologyListener {
     ///     /\ phase[o] # "halted"
     ///     /\ x \in stale /\ x \in pruned[o]
     ///     /\ pruned' = [pruned EXCEPT ![o] = @ \ {x}]
-    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, flapped, store, phase, leaving, rfAt, pages, claimed, strayNack>>
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, flapped, store, phase, leaving, rfAt, pages, claimed, strayNack,
+    ///                deliverers, acked, delivered>>
     /// ```
     @Contract
     public void onNodeRecovered(NodeId recoveredNodeId) {
