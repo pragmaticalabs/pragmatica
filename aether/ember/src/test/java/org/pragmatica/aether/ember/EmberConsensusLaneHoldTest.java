@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
@@ -51,7 +52,9 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///     their durations (each capped at the marker-to-release span) add up to the hold over the held lanes. A lane that turns
 ///     writable for a moment mid-hold splits its episode in two and still passes; the lane flaps while the window fills,
 ///     so shorter episodes also appear. The log line does not name the sender, so per-lane attribution is by count and
-///     summed duration, not by identity. Every `entered` has its `cleared`, read from the same snapshot;
+///     summed duration, not by identity. Every `entered` has its `cleared`, read from the same snapshot; the log capture
+///     opens only while no node has an episode open ([#captureWhenNoEpisodeIsOpen], which names the one window it leaves), so an episode left open by startup
+///     traffic cannot show its `cleared` without its `entered`;
 ///     The physical state is sampled every 100 ms through the hold, per sender (by identity): each sender's lane must be
 ///     unwritable in at least 90% of the samples, so a lane released mid-hold fails by name even when the other absorbs the
 ///     aggregate;
@@ -147,8 +150,7 @@ class EmberConsensusLaneHoldTest {
         var senders = nodes.stream().filter(node -> node != held).toList();
         var arrivals = new CopyOnWriteArrayList<Arrival>();
 
-        try (var capture = LogCapture.capture(LOGGER, Level.INFO, true, event -> arrivals.add(new Arrival(System.nanoTime(),
-                                                                                                          event.getMessage().getFormattedMessage())))) {
+        try (var capture = captureWhenNoEpisodeIsOpen(nodes, arrivals)) {
             var inboundLanes = senders.stream().map(sender -> laneOf(held, sender)).toList();
 
             inboundLanes.forEach(lane -> lane.config().setAutoRead(false));
@@ -372,6 +374,54 @@ class EmberConsensusLaneHoldTest {
     private static int backlogCount(AetherNode node) {
         try {
             return ((ConcurrentHashMap<?, ?>) field(QuicClusterNetwork.class, "laneBacklogs").get(network(node))).size();
+        } catch (IllegalAccessException e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    /// #3313: opens the capture only at a point where no node has a backpressure episode open, so every episode whose
+    /// `cleared` line the capture sees also had its `entered` line seen (an episode open at the attach, left by startup
+    /// traffic, once showed 15 `cleared` against 14 `entered`). Each attempt reads every node's open episodes, attaches,
+    /// and reads them again; it keeps the capture only if both reads found none and the capture has seen no backpressure
+    /// line, else it closes the capture, drops what it saw and tries again on the next poll. Not closed: the network logs
+    /// `entered` just before it stores the episode, so an episode whose line is logged before the attach and whose record
+    /// is stored after the second read passes both reads unseen; that needs the opening thread to stall between two adjacent
+    /// statements for the whole attach.
+    private static LogCapture captureWhenNoEpisodeIsOpen(List<AetherNode> nodes, List<Arrival> arrivals) {
+        var kept = new AtomicReference<LogCapture>();
+
+        awaitTrue(() -> "a log capture opened while no node had a backpressure episode open; still open "
+                        + nodes.stream().map(node -> node.self() + "=" + openEpisodes(node)).toList(),
+                  60_000L,
+                  () -> attachedWithNoEpisodeOpen(nodes, arrivals, kept));
+        return kept.get();
+    }
+
+    private static boolean attachedWithNoEpisodeOpen(List<AetherNode> nodes, List<Arrival> arrivals, AtomicReference<LogCapture> kept) {
+        if (!noEpisodeOpen(nodes)) {
+            return false;
+        }
+        var capture = LogCapture.capture(LOGGER, Level.INFO, true, event -> arrivals.add(new Arrival(System.nanoTime(),
+                                                                                                      event.getMessage().getFormattedMessage())));
+
+        if (noEpisodeOpen(nodes) && arrivals.stream().noneMatch(arrival -> arrival.message().startsWith("Backpressure on peer"))) {
+            kept.set(capture);
+            return true;
+        }
+        capture.close();
+        arrivals.clear();
+        return false;
+    }
+
+    private static boolean noEpisodeOpen(List<AetherNode> nodes) {
+        return nodes.stream().allMatch(node -> openEpisodeCount(node) == 0);
+    }
+
+    /// `node`'s open backpressure episode count (the size of the episode map).
+    @SuppressWarnings("JBCT-EX-01")
+    private static int openEpisodeCount(AetherNode node) {
+        try {
+            return ((Map<?, ?>) field(QuicClusterNetwork.class, "backpressureEpisodes").get(network(node))).size();
         } catch (IllegalAccessException e) {
             throw new AssertionError(e);
         }
