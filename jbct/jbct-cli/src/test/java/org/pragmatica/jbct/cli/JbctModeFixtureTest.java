@@ -131,10 +131,10 @@ class JbctModeFixtureTest {
         var root = module("biz", JbctMode.BUSINESS);
 
         assertThat(run(new LintCommand(), root.toString())).isEqualTo(1);
-        assertThat(text()).contains(ARCH_02, RET_03).contains("mode=business root=" + root(root) + " 2 files");
+        assertThat(text()).contains(ARCH_02, RET_03).contains("mode=business (from ", ") root=" + root(root), "; test-root rule: ");
         assertThat(run(new CheckCommand(), root.toString())).isEqualTo(1);
         assertThat(text()).contains(ARCH_02, RET_03, NEEDS_FORMAT, price(root, "biz").toString())
-                          .contains("mode=business root=" + root(root) + " 2 files");
+                          .contains("mode=business (from ", ") root=" + root(root), "; test-root rule: ");
     }
 
     @Test
@@ -158,10 +158,10 @@ class JbctModeFixtureTest {
 
         assertThat(run(new LintCommand(), root.toString())).isEqualTo(1);
         assertThat(text()).contains(RET_03).doesNotContain(ARCH_02)
-                          .contains("mode=infrastructure root=" + root(root) + " 2 files: structure checks off");
+                          .contains("mode=infrastructure (from ", ") root=" + root(root), "; test-root rule: ").contains("structure checks off");
         assertThat(run(new CheckCommand(), root.toString())).isEqualTo(1);
         assertThat(text()).contains(RET_03, NEEDS_FORMAT, price(root, "infra").toString()).doesNotContain(ARCH_02)
-                          .contains("mode=infrastructure root=" + root(root) + " 2 files: structure checks off");
+                          .contains("mode=infrastructure (from ", ") root=" + root(root), "; test-root rule: ").contains("structure checks off");
     }
 
     @Test
@@ -179,7 +179,7 @@ class JbctModeFixtureTest {
         var root = module("fmt", JbctMode.FORMAT_ONLY);
 
         assertThat(run(new LintCommand(), root.toString())).isZero();
-        assertThat(text()).doesNotContain("JBCT-").contains("mode=format-only root=" + root(root) + " 2 files: format only, no rule run");
+        assertThat(text()).doesNotContain("JBCT-").contains("mode=format-only (from ", ") root=" + root(root), "; test-root rule: ").contains("format only, no rule run");
     }
 
     @Test
@@ -188,7 +188,7 @@ class JbctModeFixtureTest {
 
         assertThat(run(new CheckCommand(), root.toString())).isEqualTo(1);
         assertThat(text()).contains(NEEDS_FORMAT, price(root, "fmt").toString()).doesNotContain("JBCT-")
-                          .contains("mode=format-only root=" + root(root) + " 2 files: format only, no rule run");
+                          .contains("mode=format-only (from ", ") root=" + root(root), "; test-root rule: ").contains("format only, no rule run");
     }
 
     @Test
@@ -218,10 +218,10 @@ class JbctModeFixtureTest {
         var root = module("off", JbctMode.DISABLED);
 
         assertThat(run(new LintCommand(), root.toString())).isZero();
-        assertThat(text()).doesNotContain("JBCT-").contains("mode=disabled root=" + root(root) + " 2 files: skipped, no format, no rule run");
+        assertThat(text()).doesNotContain("JBCT-").contains("mode=disabled (from ", ") root=" + root(root), "; test-root rule: ").contains("skipped, no format, no rule run");
         assertThat(run(new CheckCommand(), root.toString())).isZero();
         assertThat(text()).doesNotContain("JBCT-").doesNotContain(NEEDS_FORMAT)
-                          .contains("mode=disabled root=" + root(root) + " 2 files: skipped, no format, no rule run")
+                          .contains("mode=disabled (from ", ") root=" + root(root), "; test-root rule: ").contains("skipped, no format, no rule run")
                           .contains("Not formatted: mode=disabled root=" + root(root));
     }
 

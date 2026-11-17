@@ -194,9 +194,21 @@ public sealed interface RootResolver permits RootResolver.unused {
     static Result<RootPlan> resolve(Request request) {
         var messages = new ArrayList<String>();
 
-        return Result.allOf(request.paths().stream().map(path -> collected(request, path, messages)).toList()).flatMap(collected -> plan(request,
-                                                                                                                                         collected,
-                                                                                                                                         messages));
+        return knownOverride(request).flatMap(checked -> Result.allOf(checked.paths()
+                                                                             .stream()
+                                                                             .map(path -> collected(checked,
+                                                                                                    path,
+                                                                                                    messages))
+                                                                             .toList()).flatMap(collected -> plan(checked,
+                                                                                                                  collected,
+                                                                                                                  messages)));
+    }
+
+    /// An unknown mode override is refused whatever the tree holds: a tree with no source files has no root to refuse it.
+    private static Result<Request> knownOverride(Request request) {
+        return request.modeOverride()
+                      .map(override -> JbctMode.jbctMode(override.value()).map(_ -> request))
+                      .or(() -> Result.success(request));
     }
 
     record Collected(Path argument, List<Path> files) {

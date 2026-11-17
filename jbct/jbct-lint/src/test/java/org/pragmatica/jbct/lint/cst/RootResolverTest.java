@@ -276,6 +276,16 @@ class RootResolverTest {
     }
 
     @Test
+    void resolve_unknownModeOverride_isRefusedEvenWhenTheTreeHoldsNoSourceFile() throws IOException {
+        var result = RootResolver.resolve(Request.request(List.of(Files.createDirectories(temp.resolve("empty"))))
+                                                 .withModeOverride(Option.some(ModeOverride.modeOverride("bogus", "--mode"))));
+
+        assertTrue(result.fold(cause -> cause, plan -> fail("expected a refusal, got " + plan))
+                         .stream()
+                         .anyMatch(cause -> cause instanceof ConfigError.ModeUnknown));
+    }
+
+    @Test
     void finish_failOnWarning_isDecidedPerRootAndOverriddenByTheFlag() throws IOException {
         var strict = module("strict", INFRASTRUCTURE + "failOnWarning = true\n" + RET_03_AS_WARNING);
         var lenient = module("lenient", INFRASTRUCTURE + RET_03_AS_WARNING);

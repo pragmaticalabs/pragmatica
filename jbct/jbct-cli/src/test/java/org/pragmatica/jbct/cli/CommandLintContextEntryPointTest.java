@@ -11,6 +11,7 @@ import java.util.function.Function;
 import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.LintRun;
+import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
 import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.AfterEach;
@@ -25,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #2525, fix round 2: `check`, `lint` and `score` are tested through the entry point a user runs
 /// (`CommandLine.execute` on the command, in a temp project), and the context they hand to the linter is observed at the one
-/// place it is handed over, the command's `runFactory` (the source roots it gives the run). A test that calls `CliConfig.lintContext` or `createContext`
+/// place it is handed over, the command's `runFactory` (the plan it gives the run). A test that builds a context itself
 /// instead cannot see a command build its own context, or drop `--mode`, inside `call()`.
 class CommandLintContextEntryPointTest {
     private static final String USER_HOME_PROPERTY = "user.home";
@@ -72,13 +73,17 @@ class CommandLintContextEntryPointTest {
         Files.writeString(module.resolve("jbct.toml"),
                           "[lint]\nmode = \"" + mode + "\"\n[project]\nbasePackage = \"" + basePackage + "\"\n");
 
-        return Files.createDirectories(module.resolve("src/main/java"));
+        var source = Files.createDirectories(module.resolve("src/main/java/org/acme/" + name.replace("-", "")));
+
+        Files.writeString(source.resolve("Marker.java"), "package org.acme." + name.replace("-", "") + ";\n\nclass Marker {}\n");
+
+        return module.resolve("src/main/java");
     }
 
     /// Run the named command through `CommandLine.execute`; returns every context the command handed to the run, one per source root.
     private List<LintContext> handedOver(String command, String... args) {
         var recorded = new ArrayList<LintContext>();
-        Function<List<LintRun.SourceRoot>, LintRun> recorder = roots -> recordAndRun(recorded, roots);
+        Function<RootPlan, LintRun> recorder = plan -> recordAndRun(recorded, plan);
 
         switch (command) {
             case CHECK -> {
@@ -104,10 +109,10 @@ class CommandLintContextEntryPointTest {
         return recorded;
     }
 
-    private static LintRun recordAndRun(List<LintContext> recorded, List<LintRun.SourceRoot> roots) {
-        roots.forEach(root -> recorded.add(root.context()));
+    private static LintRun recordAndRun(List<LintContext> recorded, RootPlan plan) {
+        plan.roots().forEach(root -> recorded.add(root.context()));
 
-        return LintRun.lintRun(roots);
+        return LintRun.lintRun(plan);
     }
 
     private LintContext single(String command, String... args) {

@@ -135,8 +135,8 @@ class CliPerRootLintTest {
     void lint_printsOneSummaryLinePerRootWithItsMode() {
         execute(new LintCommand(), business.toString(), infrastructure.toString());
 
-        assertThat(out.toString()).contains("mode=business root=" + rootOf(business) + " 1 files\n")
-                                  .contains("mode=infrastructure root=" + rootOf(infrastructure) + " 1 files: structure checks off");
+        assertThat(out.toString()).contains("mode=business (from ", ") root=" + rootOf(business) + " basePackage=org.acme.biz: 1 examined by rules, 0 formatted or format-checked, 0 skipped by mode;")
+                                  .contains("mode=infrastructure (from ", ") root=" + rootOf(infrastructure) + " basePackage=org.acme.infra: 1 examined by rules, 0 formatted or format-checked, 0 skipped by mode;", "structure checks off");
     }
 
     @Test
@@ -154,7 +154,7 @@ class CliPerRootLintTest {
         execute(new LintCommand(), "--format", "json", business.toString(), infrastructure.toString());
 
         assertThat(findings(out.toString())).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz");
-        assertThat(err.toString()).contains("mode=format-only root=" + rootOf(infrastructure) + " 1 files: format only");
+        assertThat(err.toString()).contains("mode=format-only (from ", ") root=" + rootOf(infrastructure) + " basePackage=org.acme.infra: 0 examined by rules, 0 formatted or format-checked, 1 skipped by mode;", "format only, no rule run");
     }
 
     @Test
@@ -165,8 +165,8 @@ class CliPerRootLintTest {
         assertThat(exit).isEqualTo(1);
         assertThat(count(text, ARCH_02)).isEqualTo(1);
         assertThat(count(text, RET_03)).isEqualTo(2);
-        assertThat(text).contains("mode=business root=" + rootOf(business) + " 1 files")
-                        .contains("mode=infrastructure root=" + rootOf(infrastructure) + " 1 files");
+        assertThat(text).contains("mode=business (from ", ") root=" + rootOf(business) + " basePackage=org.acme.biz: 1 examined by rules, 1 formatted or format-checked")
+                        .contains("mode=infrastructure (from ", ") root=" + rootOf(infrastructure) + " basePackage=org.acme.infra: 1 examined by rules, 1 formatted or format-checked");
     }
 
     @Test

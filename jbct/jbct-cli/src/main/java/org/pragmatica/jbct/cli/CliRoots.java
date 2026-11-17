@@ -2,145 +2,127 @@ package org.pragmatica.jbct.cli;
 
 import java.io.PrintStream;
 import java.nio.file.Path;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.function.Function;
-import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.format.JbctFormatter;
-import org.pragmatica.jbct.lint.LintContext;
-import org.pragmatica.jbct.lint.cst.LintRun;
-import org.pragmatica.jbct.shared.FileCollector;
+import org.pragmatica.jbct.lint.cst.LintRun.RunReport;
+import org.pragmatica.jbct.lint.cst.RootResolver;
+import org.pragmatica.jbct.lint.cst.RootResolver.ModeOverride;
+import org.pragmatica.jbct.lint.cst.RootResolver.ResolvedRoot;
+import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
+import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.lang.Option;
 
 
-/// The source roots of one CLI run, each with the configuration its own module resolves (#2525, P2c).
+/// What the CLI commands collect and print around the shared resolver and run (#2525, P2c).
 ///
-/// Every argument path is a source root: [CliConfig#load] starts its `jbct.toml` chain at that path's module directory,
-/// and the files under the path are collected with that configuration's `files` keys. Two paths in two modules
-/// therefore get two configurations in one run, which `LintRun` keeps apart per root.
+/// The commands hand their path arguments, `--config`, `--mode` and `--fail-on-warning` to [RootResolver] and print what
+/// [org.pragmatica.jbct.lint.cst.LintRun] returns. Which source root a file belongs to, that root's configuration and mode, and every
+/// count and summary line are decided there, never here.
 public sealed interface CliRoots {
-    /// An argument path with its resolved configuration, lint context and the files collected under it.
-    record ResolvedRoot(Path path, JbctConfig config, LintContext context, List<Path> files) {
-        public static ResolvedRoot resolvedRoot(Path path, JbctConfig config, LintContext context, List<Path> files) {
-            return new ResolvedRoot(path, config, context, List.copyOf(files));
-        }
+    /// The `--mode` flag name as the summary line quotes it.
+    String MODE_FLAG = "--mode";
 
-        /// This root as the run's routing entry.
-        public LintRun.SourceRoot sourceRoot() {
-            return LintRun.SourceRoot.sourceRoot(path, context);
-        }
+    /// Resolve the roots of the run from the command's arguments; empty (after printing the refusal and the collector's
+    /// warnings to `err`) when a configuration layer or the mode override cannot be used.
+    static Option<RootPlan> plan(Option<Path> configPath,
+                                 Option<String> mode,
+                                 List<Path> paths,
+                                 boolean failOnWarning,
+                                 PrintStream err) {
+        return RootResolver.resolve(RootResolver.Request.request(paths)
+                                                        .withExplicitConfig(configPath)
+                                                        .withModeOverride(mode.map(value -> ModeOverride.modeOverride(value,
+                                                                                                                      MODE_FLAG)))
+                                                        .withFailOnWarning(failOnWarning))
+                           .onFailure(cause -> cause.stream()
+                                                    .forEach(single -> err.println("Error: " + single.message())))
+                           .onSuccess(plan -> plan.messages()
+                                                  .forEach(err::println))
+                           .option();
+    }
 
-        private ResolvedRoot withFiles(List<Path> newFiles) {
-            return resolvedRoot(path, config, context, newFiles);
-        }
-
-        private int depth() {
-            return path.toAbsolutePath()
-                       .normalize()
-                       .getNameCount();
+    /// One file with the formatter built from its own root's `[format]` settings.
+    record FileJob(Path file, JbctFormatter formatter) {
+        public static FileJob fileJob(Path file, JbctFormatter formatter) {
+            return new FileJob(file, formatter);
         }
     }
 
-    /// Resolve every distinct argument path to a root, in argument order; empty (after printing each refusal to `err`)
-    /// when any path's configuration cannot be used.
-    ///
-    /// A file collected under two overlapping arguments stays with the deepest root, the one `LintRun` routes it to.
-    static Option<List<ResolvedRoot>> resolve(Option<Path> explicitConfigPath,
-                                              Option<String> explicitMode,
-                                              List<Path> paths,
-                                              Function<JbctConfig, LintContext> contextOf,
-                                              PrintStream err) {
-        var loaded = distinct(paths).stream()
-                             .map(path -> resolveRoot(explicitConfigPath, explicitMode, path, contextOf, err))
-                             .toList();
-
-        return loaded.stream()
-                     .anyMatch(Option::isEmpty)
-               ? Option.none()
-               : Option.some(ownedByDeepest(loaded.stream().map(Option::unwrap).toList()));
+    /// The plan's files in root order, each with its own root's formatter.
+    static List<FileJob> jobs(RootPlan plan) {
+        return plan.roots()
+                   .stream()
+                   .flatMap(CliRoots::jobsOf)
+                   .toList();
     }
 
-    /// One file with the formatter of its own source root.
-    record FormatJob(Path file, JbctFormatter formatter) {
-        public static FormatJob formatJob(Path file, JbctFormatter formatter) {
-            return new FormatJob(file, formatter);
-        }
-    }
-
-    /// The files a format run touches, each with the formatter built from its own root's `[format]` settings, in root
-    /// order. A `disabled` root contributes none and is announced once on `err`; `business`, `infrastructure` and
-    /// `format-only` roots all format (§2.3 "Modes": formatting runs in every mode except `disabled`).
-    static List<FormatJob> formatJobs(List<ResolvedRoot> roots, PrintStream err) {
-        return roots.stream()
-                    .flatMap(root -> formatJobsOf(root, err).stream())
-                    .toList();
-    }
-
-    private static List<FormatJob> formatJobsOf(ResolvedRoot root, PrintStream err) {
-        if (root.context().mode() == JbctMode.DISABLED) {
-            err.println("Not formatted: mode=disabled root=" + root.path().toAbsolutePath().normalize());
-
-            return List.of();
-        }
-
+    private static Stream<FileJob> jobsOf(ResolvedRoot root) {
         var formatter = JbctFormatter.jbctFormatter(root.config().formatter());
 
         return root.files()
                    .stream()
-                   .map(file -> FormatJob.formatJob(file, formatter))
-                   .toList();
+                   .map(file -> FileJob.fileJob(file, formatter));
     }
 
-    /// Every collected file of the run, in root order.
-    static List<Path> allFiles(List<ResolvedRoot> roots) {
-        return roots.stream()
-                    .flatMap(root -> root.files()
-                                         .stream())
-                    .toList();
+    /// Announce each `disabled` root once: formatting runs in every mode except `disabled` (§2.3 "Modes").
+    static void announceDisabled(RootPlan plan, PrintStream err) {
+        plan.roots()
+            .stream()
+            .filter(root -> root.mode() == JbctMode.DISABLED)
+            .forEach(root -> err.println("Not formatted: mode=disabled root=" + root.path().toAbsolutePath().normalize()));
     }
 
-    private static Option<ResolvedRoot> resolveRoot(Option<Path> explicitConfigPath,
-                                                    Option<String> explicitMode,
-                                                    Path path,
-                                                    Function<JbctConfig, LintContext> contextOf,
-                                                    PrintStream err) {
-        return CliConfig.load(explicitConfigPath, explicitMode, path, err).map(config -> ResolvedRoot.resolvedRoot(path,
-                                                                                                                   config,
-                                                                                                                   contextOf.apply(config),
-                                                                                                                   FileCollector.collectJavaFiles(List.of(path),
-                                                                                                                                                  config.files(),
-                                                                                                                                                  err::println)));
+    /// Whether the root's mode runs at least one rule (`business`, `infrastructure`).
+    static boolean runsRules(ResolvedRoot root) {
+        return root.mode() == JbctMode.BUSINESS || root.mode() == JbctMode.INFRASTRUCTURE;
     }
 
-    private static List<Path> distinct(List<Path> paths) {
-        return List.copyOf(paths.stream()
-                                .collect(Collectors.toMap(path -> path.toAbsolutePath()
-                                                                      .normalize(),
-                                                          Function.identity(),
-                                                          (first, second) -> first,
-                                                          LinkedHashMap::new))
-                                .values());
+    /// The layer-coverage line of each root that ran rules over files; a root that runs no rule has no layers to cover.
+    static void layerCoverage(RootPlan plan, PrintStream err) {
+        plan.roots()
+            .stream()
+            .filter(CliRoots::runsRules)
+            .filter(root -> !root.files()
+                                 .isEmpty())
+            .forEach(root -> LayerCoverage.coverage(root.files(),
+                                                    root.context())
+                                          .map(LayerCoverage::render)
+                                          .onPresent(err::println));
     }
 
-    private static List<ResolvedRoot> ownedByDeepest(List<ResolvedRoot> roots) {
-        return roots.stream()
-                    .map(root -> root.withFiles(filesNotHeldDeeper(root, roots)))
-                    .toList();
+    /// Files a root did not skip, summed over the run: the denominator of "checked" in `lint`, `check` and `format`.
+    static int checked(RunReport report) {
+        return report.roots()
+                     .stream()
+                     .mapToInt(root -> root.files() - root.skipped())
+                     .sum();
     }
 
-    private static List<Path> filesNotHeldDeeper(ResolvedRoot root, List<ResolvedRoot> roots) {
-        var deeper = new HashSet<Path>();
+    /// Files examined by rules, summed over the run's roots.
+    static int examined(RunReport report) {
+        return report.roots()
+                     .stream()
+                     .mapToInt(root -> root.examined())
+                     .sum();
+    }
 
-        roots.stream().filter(other -> other.depth() > root.depth()).forEach(other -> deeper.addAll(other.files()));
+    /// Errors the run's roots counted.
+    static int errors(RunReport report) {
+        return report.roots()
+                     .stream()
+                     .mapToInt(root -> root.errors())
+                     .sum();
+    }
 
-        return root.files()
-                   .stream()
-                   .filter(file -> !deeper.contains(file))
-                   .toList();
+    /// Warnings the run's roots counted.
+    static int warnings(RunReport report) {
+        return report.roots()
+                     .stream()
+                     .mapToInt(root -> root.warnings())
+                     .sum();
     }
 
     record unused() implements CliRoots {}

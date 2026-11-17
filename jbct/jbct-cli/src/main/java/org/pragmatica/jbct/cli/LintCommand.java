@@ -8,15 +8,12 @@ import java.util.concurrent.Callable;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
-import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.LintRun;
-import org.pragmatica.jbct.lint.layer.LayerCoverage;
+import org.pragmatica.jbct.lint.cst.LintRun.RunReport;
+import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
 import org.pragmatica.jbct.shared.AnalysisCoverage;
-import org.pragmatica.jbct.shared.FileCollector;
-import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
 
 import picocli.CommandLine.Command;
@@ -41,12 +38,11 @@ public class LintCommand implements Callable<Integer> {
     @picocli.CommandLine.Option(names = {"--config"}, description = "Path to configuration file")
     Path configPath;
 
-    @picocli.CommandLine.Option(names = {"--mode"}, description = "JBCT mode for this run, overriding jbct.toml and --config: business or infrastructure")
+    @picocli.CommandLine.Option(names = {"--mode"}, description = "JBCT mode for this run, overriding jbct.toml and --config: business, infrastructure, format-only or disabled")
     String mode;
 
-    /// The one place the resolved source roots, each with its context, are handed to the run; tests replace it to
-    /// observe or adjust them (#2525).
-    Function<List<LintRun.SourceRoot>, LintRun> runFactory = LintRun::lintRun;
+    /// The one place the resolved plan is handed to the run; tests replace it to observe or adjust it (#2525).
+    Function<RootPlan, LintRun> runFactory = LintRun::lintRun;
 
     public enum OutputFormat {
         text,
@@ -56,20 +52,15 @@ public class LintCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
-        // Resolve one configuration per argument path's source root
-        var resolvedRoots = CliRoots.resolve(Option.option(configPath),
-                                             Option.option(mode),
-                                             paths,
-                                             this::createContext,
-                                             System.err);
+        var planned = CliRoots.plan(Option.option(configPath), Option.option(mode), paths, failOnWarning, System.err);
 
-        if (resolvedRoots.isEmpty()) {
+        if (planned.isEmpty()) {
             return CliConfig.CONFIG_ERROR_EXIT;
         }
 
-        var roots = resolvedRoots.unwrap();
-        var run = runFactory.apply(roots.stream().map(CliRoots.ResolvedRoot::sourceRoot).toList());
-        var filesToProcess = CliRoots.allFiles(roots);
+        var plan = planned.unwrap();
+        var run = runFactory.apply(plan);
+        var filesToProcess = plan.files();
         // #1100: a run that examined nothing is a coverage gap, never a pass, so it exits 2 like any other gap.
         if (filesToProcess.isEmpty()) {
             operatorOut().println("No Java files found: nothing was examined. This is a COVERAGE GAP, not a pass.");
@@ -84,32 +75,28 @@ public class LintCommand implements Callable<Integer> {
 
         var allDiagnostics = new ArrayList<Diagnostic>();
         var unanalysed = new ArrayList<Unanalysed>();
-        var counters = new int[4];
-        // 0=errors, 1=warnings, 2=infos, 3=unanalysed (unreadable or unparseable)
+
         for (var file : filesToProcess) {
-            processFile(file, run, allDiagnostics, counters, unanalysed);
+            processFile(file, run, allDiagnostics, unanalysed);
         }
 
-        var report = run.finish().onFailure(cause -> System.err.println("Error: " + cause.message())).option();
+        var finished = run.finish().onFailure(cause -> System.err.println("Error: " + cause.message())).option();
 
-        if (report.isEmpty()) {
+        if (finished.isEmpty()) {
             return CliConfig.CONFIG_ERROR_EXIT;
         }
 
-        report.unwrap().diagnostics().forEach(diagnostic -> record(diagnostic, allDiagnostics, counters));
-        roots.stream()
-             .filter(root -> !root.files()
-                                  .isEmpty())
-             .forEach(root -> LayerCoverage.coverage(root.files(),
-                                                     root.context())
-                                           .map(LayerCoverage::render)
-                                           .onPresent(System.err::println));
-        var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), counters[3]);
-        // Output results
-        printResults(allDiagnostics, filesToProcess.size(), unanalysed);
-        report.unwrap().summary().forEach(operatorOut()::println);
-        // Print summary
-        printSummary(coverage, counters[0], counters[1], counters[2]);
+        var report = finished.unwrap();
+
+        allDiagnostics.addAll(report.diagnostics());
+        CliRoots.layerCoverage(plan, System.err);
+        // The denominator is what the rules examined plus what they could not read: files skipped by mode are neither.
+        var coverage = AnalysisCoverage.analysisCoverage(CliRoots.examined(report) + unanalysed.size(),
+                                                         unanalysed.size());
+
+        printResults(allDiagnostics, coverage.collected(), unanalysed);
+        report.summary().forEach(operatorOut()::println);
+        printSummary(coverage, report, infos(allDiagnostics));
         // Exit code. 2 is reserved for "the tool could not do its job" — a coverage gap — and 1 for
         // rule violations, which the tool CAN speak to. Both used to be 2, which conflated a silent
         // coverage gap with a complete run that found real errors, so a job could not tell "your code
@@ -118,19 +105,9 @@ public class LintCommand implements Callable<Integer> {
             return 2;
         }
 
-        if (counters[0]> 0) {
-            return 1;
-        }
-
-        if (failOnWarning && counters[1]> 0) {
-            return 1;
-        }
-
-        return 0;
-    }
-
-    LintContext createContext(JbctConfig jbctConfig) {
-        return CliConfig.lintContext(jbctConfig, failOnWarning);
+        return report.fails()
+               ? 1
+               : 0;
     }
 
     /// A collected file the linter could not read or parse, with the reason.
@@ -140,34 +117,25 @@ public class LintCommand implements Callable<Integer> {
         }
     }
 
-    private void processFile(Path file,
-                             LintRun run,
-                             List<Diagnostic> allDiagnostics,
-                             int[] counters,
-                             List<Unanalysed> unanalysed) {
-        SourceFile.sourceFile(file)
-                  .flatMap(run::lint)
-                  .onSuccess(diagnostics -> {
-                                 diagnostics.forEach(diagnostic -> record(diagnostic, allDiagnostics, counters));
-                                 if (verbose && diagnostics.isEmpty()) {
-                                     operatorOut().println("  ✓ " + file);
-                                 }
-                             })
-                  .onFailure(cause -> {
-                                 counters[3]++;
-                                 unanalysed.add(Unanalysed.unanalysed(file,
-                                                                      cause.message()));
-                                 System.err.println("  ✗ " + file + ": " + cause.message());
-                             });
+    private void processFile(Path file, LintRun run, List<Diagnostic> allDiagnostics, List<Unanalysed> unanalysed) {
+        run.lintFile(file)
+           .onSuccess(diagnostics -> {
+                          allDiagnostics.addAll(diagnostics);
+                          if (verbose && diagnostics.isEmpty()) {
+                              operatorOut().println("  ✓ " + file);
+                          }
+                      })
+           .onFailure(cause -> {
+                          unanalysed.add(Unanalysed.unanalysed(file,
+                                                               cause.message()));
+                          System.err.println("  ✗ " + file + ": " + cause.message());
+                      });
     }
 
-    private static void record(Diagnostic diagnostic, List<Diagnostic> allDiagnostics, int[] counters) {
-        allDiagnostics.add(diagnostic);
-        switch (diagnostic.severity()) {
-            case ERROR -> counters[0]++;
-            case WARNING -> counters[1]++;
-            case INFO -> counters[2]++;
-        }
+    private static int infos(List<Diagnostic> diagnostics) {
+        return (int) diagnostics.stream()
+                                .filter(diagnostic -> diagnostic.severity() == DiagnosticSeverity.INFO)
+                                .count();
     }
 
     /// #633 — stdout is the document channel for the machine formats: `json`/`sarif` always emit
@@ -339,17 +307,26 @@ public class LintCommand implements Callable<Integer> {
     /// zero findings over a set the linter never analysed is silence, not compliance. The ✓ branch is
     /// therefore reachable only when [AnalysisCoverage#isPartial()] is false, and the counts on the
     /// partial line are prefixed by the coverage clause that says which denominator they belong to.
-    private void printSummary(AnalysisCoverage coverage, int errors, int warnings, int infos) {
+    private void printSummary(AnalysisCoverage coverage, RunReport report, int infos) {
         var out = operatorOut();
+        var errors = CliRoots.errors(report);
+        var warnings = CliRoots.warnings(report);
 
         out.println();
         coverage.gapReport("lint").onPresent(out::println);
+        report.failure().onPresent(out::println);
         if (coverage.isPartial()) {
             out.println("✗ Checked " + coverage.render()
                        + ": " + errors
                        + " error(s), " + warnings
                        + " warning(s), " + infos
                        + " info(s)");
+
+            return;
+        }
+
+        if (report.ranNoRule()) {
+            out.println("No JBCT rule ran in any source root: nothing was examined by rules, so this is not a compliance pass.");
 
             return;
         }

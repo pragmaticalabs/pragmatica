@@ -5,10 +5,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
 
-import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.shared.AnalysisCoverage;
-import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.lint.cst.LintRun;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
 
@@ -34,35 +33,31 @@ public class FormatCommand implements Callable<Integer> {
     @picocli.CommandLine.Option(names = {"--config"}, description = "Path to configuration file")
     Path configPath;
 
-    @picocli.CommandLine.Option(names = {"--mode"}, description = "JBCT mode for this run, overriding jbct.toml and --config: business or infrastructure")
+    @picocli.CommandLine.Option(names = {"--mode"}, description = "JBCT mode for this run, overriding jbct.toml and --config: business, infrastructure, format-only or disabled")
     String mode;
 
     @Override
     public Integer call() {
-        // Resolve one configuration per argument path's source root
-        var resolvedRoots = CliRoots.resolve(Option.option(configPath),
-                                             Option.option(mode),
-                                             paths,
-                                             this::createContext,
-                                             System.err);
+        var planned = CliRoots.plan(Option.option(configPath), Option.option(mode), paths, false, System.err);
 
-        if (resolvedRoots.isEmpty()) {
+        if (planned.isEmpty()) {
             return CliConfig.CONFIG_ERROR_EXIT;
         }
 
-        var roots = resolvedRoots.unwrap();
+        var plan = planned.unwrap();
+        var jobs = CliRoots.jobs(plan);
 
-        if (CliRoots.allFiles(roots).isEmpty()) {
+        if (jobs.isEmpty()) {
             System.out.println("No Java files found.");
 
             return 0;
         }
 
-        var jobs = CliRoots.formatJobs(roots, System.err);
-        var filesToProcess = jobs.stream().map(CliRoots.FormatJob::file).toList();
+        CliRoots.announceDisabled(plan, System.err);
+        var run = LintRun.lintRun(plan);
 
         if (verbose) {
-            System.out.println("Found " + filesToProcess.size() + " Java file(s) to process.");
+            System.out.println("Found " + jobs.size() + " Java file(s) to process.");
         }
 
         var counters = new int[3];
@@ -70,10 +65,19 @@ public class FormatCommand implements Callable<Integer> {
         var needsFormatting = new ArrayList<Path>();
 
         for (var job : jobs) {
-            processFile(job, counters, needsFormatting);
+            claimAndProcess(job, run, counters, needsFormatting);
         }
+
+        var finished = run.finish().onFailure(cause -> System.err.println("Error: " + cause.message())).option();
+
+        if (finished.isEmpty()) {
+            return CliConfig.CONFIG_ERROR_EXIT;
+        }
+
+        var report = finished.unwrap();
         // Print summary
-        printSummary(counters[0], counters[1], counters[2], needsFormatting, filesToProcess.size());
+        report.summary().forEach(System.out::println);
+        printSummary(counters[0], counters[1], counters[2], needsFormatting, CliRoots.checked(report));
         // Return appropriate exit code
         if (counters[2]> 0) {
             return 2;
@@ -86,11 +90,20 @@ public class FormatCommand implements Callable<Integer> {
         return 0;
     }
 
-    LintContext createContext(JbctConfig jbctConfig) {
-        return CliConfig.lintContext(jbctConfig, false);
+    private void claimAndProcess(CliRoots.FileJob job, LintRun run, int[] counters, List<Path> needsFormatting) {
+        run.claimFormat(job.file())
+           .onSuccess(claimed -> {
+               if (claimed) {
+                   processFile(job, counters, needsFormatting);
+               }
+           })
+           .onFailure(cause -> {
+               counters[2]++;
+               System.err.println("  error: " + job.file() + " - " + cause.message());
+           });
     }
 
-    private void processFile(CliRoots.FormatJob job, int[] counters, List<Path> needsFormatting) {
+    private void processFile(CliRoots.FileJob job, int[] counters, List<Path> needsFormatting) {
         var file = job.file();
 
         SourceFile.sourceFile(file)
