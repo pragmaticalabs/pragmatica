@@ -5,6 +5,7 @@ import java.util.List;
 
 import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.lint.Diagnostic;
+import org.pragmatica.jbct.lint.cst.RootResolver.ModeSource;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -250,6 +251,66 @@ public sealed interface RunOutcome permits RunOutcome.unused {
 
         public static Tally empty() {
             return tally(0, 0, 0, 0, 0, 0, 0, 0);
+        }
+    }
+
+    /// What one root of a performed run came to: the mode and where it came from, the number of distinct files the run
+    /// acted on in it, one [Tally] per asked activity (none when the activity was not asked), the lint findings by
+    /// severity, and whether the root fails the run (errors, or warnings under its `failOnWarning`).
+    record RootResult(Path root,
+                      JbctMode mode,
+                      ModeSource modeSource,
+                      Option<String> basePackage,
+                      boolean testRoot,
+                      int files,
+                      Option<Tally> lint,
+                      Option<Tally> format,
+                      int errors,
+                      int warnings,
+                      int infos,
+                      boolean fails) {
+        public static RootResult rootResult(Path root,
+                                            JbctMode mode,
+                                            ModeSource modeSource,
+                                            Option<String> basePackage,
+                                            boolean testRoot,
+                                            int files,
+                                            Option<Tally> lint,
+                                            Option<Tally> format,
+                                            int errors,
+                                            int warnings,
+                                            int infos,
+                                            boolean fails) {
+            return new RootResult(root,
+                                  mode,
+                                  modeSource,
+                                  basePackage,
+                                  testRoot,
+                                  files,
+                                  lint,
+                                  format,
+                                  errors,
+                                  warnings,
+                                  infos,
+                                  fails);
+        }
+    }
+
+    /// What a performed run came to: one [FileResult] per distinct file of the plan, one [RootResult] per root, the
+    /// findings (file diagnostics in file order, then the run rules') and the verdict, a function of the recorded
+    /// outcomes and the invocation. Lines and the score come in later steps.
+    record RunResult(List<FileResult> files, List<RootResult> roots, List<Diagnostic> findings, Verdict verdict) {
+        public RunResult {
+            files = List.copyOf(files);
+            roots = List.copyOf(roots);
+            findings = List.copyOf(findings);
+        }
+
+        public static RunResult runResult(List<FileResult> files,
+                                          List<RootResult> roots,
+                                          List<Diagnostic> findings,
+                                          Verdict verdict) {
+            return new RunResult(files, roots, findings, verdict);
         }
     }
 

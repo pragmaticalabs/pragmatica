@@ -2,12 +2,14 @@ package org.pragmatica.jbct.lint.cst;
 
 import java.nio.file.Path;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -20,7 +22,26 @@ import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.RootResolver.ModeSource;
 import org.pragmatica.jbct.lint.cst.RootResolver.ResolvedRoot;
 import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
+import org.pragmatica.jbct.lint.cst.RunOutcome.FileResult;
+import org.pragmatica.jbct.lint.cst.RunOutcome.FormatAction;
+import org.pragmatica.jbct.lint.cst.RunOutcome.FormatOutcome;
+import org.pragmatica.jbct.lint.cst.RunOutcome.LintOutcome;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Linted;
+import org.pragmatica.jbct.lint.cst.RunOutcome.ParseFailed;
+import org.pragmatica.jbct.lint.cst.RunOutcome.ReadFailed;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Rewritten;
+import org.pragmatica.jbct.lint.cst.RunOutcome.RootResult;
+import org.pragmatica.jbct.lint.cst.RunOutcome.RunResult;
+import org.pragmatica.jbct.lint.cst.RunOutcome.SkippedByMode;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Tally;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Unchanged;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Verdict;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Withheld;
+import org.pragmatica.jbct.lint.cst.RunOutcome.WouldChange;
+import org.pragmatica.jbct.lint.cst.RunOutcome.WriteFailed;
 import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.Java25Parser;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -243,10 +264,12 @@ public final class LintRun {
     private static final String INFRASTRUCTURE_NOTE = "structure checks off";
 
     private final List<Group> groups;
+    private final Function<String, Result<Cursor>> parser;
     private final AtomicBoolean finished = new AtomicBoolean();
 
-    private LintRun(List<Group> groups) {
+    private LintRun(List<Group> groups, Function<String, Result<Cursor>> parser) {
         this.groups = groups;
+        this.parser = parser;
     }
 
     /// A run over the given roots; test roots are recognised by the `src/test` predicate alone.
@@ -261,7 +284,8 @@ public final class LintRun {
                                         .map(root -> Group.group(root,
                                                                  isTestRoot(root.path(),
                                                                             declaredTestRoots),
-                                                                 Option.none()))));
+                                                                 Option.none()))),
+                           new Java25Parser()::parse);
     }
 
     private static List<Group> ordered(Stream<Group> groups) {
@@ -273,12 +297,145 @@ public final class LintRun {
     /// A run over the roots a [RootResolver] decided: each root keeps the config, mode and provenance the resolver
     /// gave it, and [#finish] reports per-root counts and the verdict.
     public static LintRun lintRun(RootPlan plan) {
+        return lintRun(plan, new Java25Parser()::parse);
+    }
+
+    /// A run over a plan with the given parser: the seam through which a test counts the parses of [#perform].
+    static LintRun lintRun(RootPlan plan, Function<String, Result<Cursor>> parser) {
         return new LintRun(ordered(plan.roots()
                                        .stream()
                                        .map(root -> Group.group(SourceRoot.sourceRoot(root.path(),
                                                                                       root.context()),
                                                                 root.testRoot(),
-                                                                Option.some(Detail.detail(root, plan))))));
+                                                                Option.some(Detail.detail(root, plan))))),
+                           parser);
+    }
+
+    /// Perform every per-file action the invocation asks for, once per distinct file of the plan, each in its root's
+    /// mode ([FileAction]), and report the recorded outcomes, one tally per root and asked activity, the findings and
+    /// the verdict. Single-shot like [#finish]: a second call, or one after [#finish], fails with
+    /// [LintRunError.General#RUN_FINISHED]. A run built from a list of roots holds no plan and performs on no file.
+    public Result<RunResult> perform(Invocation invocation) {
+        return finished.compareAndSet(false, true)
+               ? success(performed(invocation.activities()))
+               : LintRunError.General.RUN_FINISHED.result();
+    }
+
+    private RunResult performed(Activities activities) {
+        var files = fileResults(activities);
+        var roots = groups.stream().flatMap(group -> group.rootResult(activities, files)
+                                                          .stream()).toList();
+
+        return RunResult.runResult(files, roots, findings(activities, files), verdict(activities, files, roots));
+    }
+
+    /// One [FileResult] per distinct path of the plan: a path two roots both hold is acted on once, in the first root
+    /// (in path order) that holds it.
+    private List<FileResult> fileResults(Activities activities) {
+        var actions = groups.stream()
+                            .flatMap(group -> group.detail()
+                                                   .stream())
+                            .map(known -> FileAction.fileAction(known.root(),
+                                                                activities,
+                                                                parser))
+                            .toList();
+        var owners = actions.stream()
+                            .flatMap(action -> action.root()
+                                                     .files()
+                                                     .stream()
+                                                     .map(file -> Map.entry(file, action)))
+                            .collect(Collectors.toMap(Map.Entry::getKey,
+                                                      Map.Entry::getValue,
+                                                      (first, _) -> first,
+                                                      LinkedHashMap::new));
+
+        return owners.entrySet()
+                     .stream()
+                     .map(owner -> owner.getValue()
+                                        .perform(owner.getKey()))
+                     .toList();
+    }
+
+    private List<Diagnostic> findings(Activities activities, List<FileResult> files) {
+        return Stream.concat(files.stream().flatMap(LintRun::diagnosticsOf),
+                             activities.lint()
+                             ? groups.stream()
+                                     .flatMap(group -> group.runFindings()
+                                                            .stream())
+                             : Stream.empty())
+                     .toList();
+    }
+
+    private static Stream<Diagnostic> diagnosticsOf(FileResult file) {
+        return file.lint() instanceof Linted(var diagnostics)
+               ? diagnostics.stream()
+               : Stream.empty();
+    }
+
+    /// NOTHING_COLLECTED when the plan holds no file; INCOMPLETE when a file was not read, not parsed or not written;
+    /// FINDINGS when a root fails or, under a format check (not a dry run), a file would change; CLEAN otherwise.
+    private static Verdict verdict(Activities activities, List<FileResult> files, List<RootResult> roots) {
+        var incomplete = files.stream().filter(LintRun::unfinished).count();
+        var failing = roots.stream()
+                           .filter(RootResult::fails)
+                           .map(root -> root.root()
+                                       + ": " + root.errors()
+                                       + " error(s), " + root.warnings()
+                                       + " warning(s)")
+                           .toList();
+        var wouldChange = activities.format() == FormatAction.CHECK
+                          ? files.stream().filter(file -> file.format() instanceof WouldChange).count()
+                          : 0;
+
+        return files.isEmpty()
+               ? Verdict.nothingCollected()
+               : incomplete > 0
+                 ? Verdict.incomplete("JBCT did not complete: " + incomplete
+                                     + " file(s) not read, not parsed or not written")
+                 : failing.isEmpty() && wouldChange == 0
+                   ? Verdict.clean()
+                   : Verdict.findings(findingsSentence(failing, wouldChange));
+    }
+
+    private static boolean unfinished(FileResult file) {
+        return failed(file.lint()) || failed(file.format()) || file.format() instanceof WriteFailed;
+    }
+
+    private static boolean failed(LintOutcome outcome) {
+        return outcome instanceof ReadFailed || outcome instanceof ParseFailed;
+    }
+
+    private static boolean failed(FormatOutcome outcome) {
+        return outcome instanceof ReadFailed || outcome instanceof ParseFailed;
+    }
+
+    private static String findingsSentence(List<String> failing, long wouldChange) {
+        return Stream.of(failing.isEmpty()
+                         ? ""
+                         : "JBCT failed in " + failing.size() + " source root(s): " + String.join("; ", failing),
+                         wouldChange == 0
+                         ? ""
+                         : wouldChange + " file(s) need formatting")
+                     .filter(part -> !part.isEmpty())
+                     .collect(Collectors.joining("; "));
+    }
+
+    /// The count of recorded outcomes of one activity, slot by slot; `done` counts the activity's own success type.
+    private static Tally tallyOf(List<?> outcomes, Class<?> done) {
+        return Tally.tally(count(outcomes, done),
+                           count(outcomes, Unchanged.class),
+                           count(outcomes, WouldChange.class),
+                           count(outcomes, Withheld.class),
+                           count(outcomes, SkippedByMode.class),
+                           count(outcomes, ReadFailed.class),
+                           count(outcomes, ParseFailed.class),
+                           count(outcomes, WriteFailed.class));
+    }
+
+    private static int count(List<?> outcomes, Class<?> kind) {
+        return (int) outcomes.stream()
+                             .filter(kind::isInstance)
+                             .count();
     }
 
     /// Lint one file with the rules of its source root; a root whose mode runs no rule does not parse it.
@@ -554,7 +711,55 @@ public final class LintRun {
 
         /// `RunRule` declares no analysis entry point until the first run rule exists (P7), which adds it here.
         List<Diagnostic> runDiagnostics() {
-            return tallied(runRules.stream().flatMap(Group::evaluate).toList());
+            return tallied(runFindings());
+        }
+
+        /// The run rules' findings, without counting them against the legacy counters.
+        List<Diagnostic> runFindings() {
+            return runRules.stream()
+                           .flatMap(Group::evaluate)
+                           .toList();
+        }
+
+        /// What this root of a performed run came to, from the recorded outcomes of its files.
+        Option<RootResult> rootResult(Activities activities, List<FileResult> all) {
+            return detail.map(known -> rootResultOf(known, activities, mine(all)));
+        }
+
+        private List<FileResult> mine(List<FileResult> all) {
+            return all.stream()
+                      .filter(file -> file.root()
+                                          .equals(path))
+                      .toList();
+        }
+
+        private RootResult rootResultOf(Detail known, Activities activities, List<FileResult> files) {
+            var found = Stream.concat(files.stream().flatMap(LintRun::diagnosticsOf),
+                                      activities.lint()
+                                      ? runFindings().stream()
+                                      : Stream.<Diagnostic> empty())
+                              .toList();
+            var errorCount = severityCount(found, DiagnosticSeverity.ERROR);
+            var warningCount = severityCount(found, DiagnosticSeverity.WARNING);
+
+            return RootResult.rootResult(path,
+                                         context.mode(),
+                                         known.root().modeSource(),
+                                         context.basePackage(),
+                                         testRoot,
+                                         files.size(),
+                                         activities.lint()
+                                         ? Option.some(tallyOf(files.stream().map(FileResult::lint).toList(),
+                                                               Linted.class))
+                                         : Option.none(),
+                                         activities.format() == FormatAction.NONE
+                                         ? Option.none()
+                                         : Option.some(tallyOf(files.stream().map(FileResult::format).toList(),
+                                                               Rewritten.class)),
+                                         errorCount,
+                                         warningCount,
+                                         severityCount(found, DiagnosticSeverity.INFO),
+                                         errorCount > 0 || warningCount > 0 && known.failsOnWarning());
         }
 
         private static Stream<Diagnostic> evaluate(RunRule rule) {
