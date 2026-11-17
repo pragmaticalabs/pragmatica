@@ -282,7 +282,11 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     // zone and composition shape are orthogonal axes. DEFAULT-DISABLED after the corpus gate (622
     // hits: 460 orchestration-verb-on-LEAF one-liners are legitimate naming, the noise the FP doc
     // predicted); census-on-demand like SHAPE-02.
-    Map.entry("JBCT-SHAPE-03", DiagnosticSeverity.INFO)),
+    Map.entry("JBCT-SHAPE-03", DiagnosticSeverity.INFO),
+
+    // Technology or pattern word in a type name (#2529). INFO until a corpus run calibrates the word list; Q16 keeps
+    // the naming rules at INFO.
+    Map.entry("JBCT-NAM-06", DiagnosticSeverity.INFO)),
 
     // JBCT-SHAPE-02 ships DEFAULT-DISABLED: after the phase-2 preamble reach
     // the aether corpus census returned 3832 UNCLASSIFIED methods (down from

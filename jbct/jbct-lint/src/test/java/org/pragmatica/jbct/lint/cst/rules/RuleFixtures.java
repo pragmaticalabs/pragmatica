@@ -1064,6 +1064,17 @@ final class RuleFixtures {
                 }
                 """),
 
+        // JBCT-NAM-06: a technology or pattern word in a type name. Negative: a business name.
+        fixture("JBCT-NAM-06", 2,
+                """
+                package org.example;
+                class JooqSeatRepository {}
+                """,
+                """
+                package org.example;
+                class LoadSeat {}
+                """),
+
         // JBCT-MUT-01: reassignment of a method parameter.
         fixture("JBCT-MUT-01", 4,
                 """

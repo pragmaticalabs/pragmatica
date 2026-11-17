@@ -236,6 +236,9 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-NAM-05", ScoreCategory.STYLE),
 
     // test method naming
+    Map.entry("JBCT-NAM-06", ScoreCategory.STYLE),
+
+    // technology or pattern word in a type name
     Map.entry("JBCT-ZONE-01", ScoreCategory.STYLE),
 
     // zone 2 verbs for steps
