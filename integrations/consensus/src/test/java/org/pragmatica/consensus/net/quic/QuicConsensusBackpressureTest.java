@@ -490,8 +490,8 @@ class QuicConsensusBackpressureTest {
 
         @Test
         void manyBackpressuredWrites_logOneEntryWarn_andTheFirstWritableWriteOneSummary() {
-            var blocked = mock(QuicStreamChannel.class);
-            when(blocked.isWritable()).thenReturn(false);
+            var writableNow = new AtomicBoolean(false);
+            var blocked = switchableChannel(writableNow);
             var network = network();
 
             try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
@@ -502,13 +502,15 @@ class QuicConsensusBackpressureTest {
                 assertThat(entryWarns(capture)).as("%d backpressured writes on one lane: exactly one entry WARN", WRITES)
                                                .hasSize(1);
 
-                network.writeIfWritableForTest(writable(), payload(), PEER, StreamType.METRICS);
+                writableNow.set(true);
+                network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
 
                 assertThat(capture.messages(Level.INFO)).as("the first writable write closes the episode with one summary")
                                                         .filteredOn(message -> message.contains("cleared"))
                                                         .singleElement()
                                                         .satisfies(message -> assertThat(message).contains(WRITES + " write(s)"));
 
+                writableNow.set(false);
                 network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
 
                 assertThat(entryWarns(capture)).as("a backpressure after the summary is a new episode").hasSize(2);
@@ -517,8 +519,7 @@ class QuicConsensusBackpressureTest {
 
         @Test
         void episodes_areKeptPerPeerAndLane() {
-            var blocked = mock(QuicStreamChannel.class);
-            when(blocked.isWritable()).thenReturn(false);
+            var blocked = blockedChannel();
             var network = network();
             var otherPeer = new NodeId("peer-2");
 
@@ -606,10 +607,14 @@ class QuicConsensusBackpressureTest {
         void summary_reportsTheEpisodeDuration() {
             var network = network();
 
+            var writableNow = new AtomicBoolean(false);
+            var lane = switchableChannel(writableNow);
+
             try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
-                blockWrites(network, blockedChannel(), 1);
+                blockWrites(network, lane, 1);
                 parkMillis(60);
-                network.writeIfWritableForTest(writable(), payload(), PEER, StreamType.METRICS);
+                writableNow.set(true);
+                network.writeIfWritableForTest(lane, payload(), PEER, StreamType.METRICS);
 
                 assertThat(capture.messages(Level.INFO)).filteredOn(message -> message.contains("cleared"))
                                                         .singleElement()
@@ -679,8 +684,8 @@ class QuicConsensusBackpressureTest {
         @Test
         void concurrentCloses_neverLoseACountedWrite() {
             var network = network();
-            var blocked = stubOnlyBlockedChannel();
-            var writable = stubOnlyWritable();
+            var writableHere = ThreadLocal.withInitial(() -> false);
+            var stream = stubOnlyPerThreadChannel(writableHere);
             var blockedWrites = new AtomicLong();
             var reported = new AtomicLong();
 
@@ -691,16 +696,13 @@ class QuicConsensusBackpressureTest {
                 race(RACE_WRITERS,
                      _ -> {
                          for (int i = 0; i < COUNT_WRITES; i++) {
-                             network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
+                             network.writeIfWritableForTest(stream, payload(), PEER, StreamType.METRICS);
                              blockedWrites.incrementAndGet();
                          }
                      },
-                     done -> {
-                         while (!done.get()) {
-                             network.writeIfWritableForTest(writable, payload(), PEER, StreamType.METRICS);
-                         }
-                     });
-                network.writeIfWritableForTest(writable, payload(), PEER, StreamType.METRICS);
+                     done -> closeWhileWriting(network, stream, writableHere, done));
+                writableHere.set(true);
+                network.writeIfWritableForTest(stream, payload(), PEER, StreamType.METRICS);
             }
 
             assertThat(reported.get()).as("writes reported by summaries, of %d backpressured", blockedWrites.get())
@@ -773,12 +775,38 @@ class QuicConsensusBackpressureTest {
             }
         }
 
-        private static QuicStreamChannel stubOnlyWritable() {
+        /// #3313: an episode is the level of ONE stream, so the writes that close it go to the stream that counted it;
+        /// this thread sees it writable, the writers keep seeing it unwritable.
+        private static void closeWhileWriting(QuicClusterNetwork network,
+                                              QuicStreamChannel stream,
+                                              ThreadLocal<Boolean> writableHere,
+                                              AtomicBoolean done) {
+            writableHere.set(true);
+            while (!done.get()) {
+                network.writeIfWritableForTest(stream, payload(), PEER, StreamType.METRICS);
+            }
+        }
+
+        /// One live stream whose writability is per calling thread. Records no invocations (racing threads).
+        private static QuicStreamChannel stubOnlyPerThreadChannel(ThreadLocal<Boolean> writableHere) {
             var ch = mock(QuicStreamChannel.class, withSettings().stubOnly());
             var future = mock(ChannelFuture.class, withSettings().stubOnly());
             when(future.addListener(any())).thenReturn(future);
             when(ch.writeAndFlush(any())).thenReturn(future);
-            when(ch.isWritable()).thenReturn(true);
+            when(ch.isActive()).thenReturn(true);
+            when(ch.isWritable()).thenAnswer(_ -> writableHere.get());
+
+            return ch;
+        }
+
+        /// One live stream whose writability the test switches.
+        private static QuicStreamChannel switchableChannel(AtomicBoolean writableNow) {
+            var ch = mock(QuicStreamChannel.class);
+            var future = mock(ChannelFuture.class);
+            when(future.addListener(any())).thenReturn(future);
+            when(ch.writeAndFlush(any())).thenReturn(future);
+            when(ch.isActive()).thenReturn(true);
+            when(ch.isWritable()).thenAnswer(_ -> writableNow.get());
 
             return ch;
         }
@@ -786,13 +814,16 @@ class QuicConsensusBackpressureTest {
         /// Records no invocations: millions of calls from racing threads would otherwise be kept by the mock.
         private static QuicStreamChannel stubOnlyBlockedChannel() {
             var blocked = mock(QuicStreamChannel.class, withSettings().stubOnly());
+            when(blocked.isActive()).thenReturn(true);
             when(blocked.isWritable()).thenReturn(false);
 
             return blocked;
         }
 
+        /// Live but unwritable: backpressure, not a closed stream (#3313: a closed stream ends its episode at once).
         private static QuicStreamChannel blockedChannel() {
             var blocked = mock(QuicStreamChannel.class);
+            when(blocked.isActive()).thenReturn(true);
             when(blocked.isWritable()).thenReturn(false);
 
             return blocked;
@@ -816,16 +847,6 @@ class QuicConsensusBackpressureTest {
                           .stream()
                           .filter(message -> message.startsWith("Backpressure on peer"))
                           .toList();
-        }
-
-        private static QuicStreamChannel writable() {
-            var ch = mock(QuicStreamChannel.class);
-            var future = mock(ChannelFuture.class);
-            when(future.addListener(any())).thenReturn(future);
-            when(ch.writeAndFlush(any())).thenReturn(future);
-            when(ch.isWritable()).thenReturn(true);
-
-            return ch;
         }
     }
 
