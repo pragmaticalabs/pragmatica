@@ -5,21 +5,32 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.regex.Pattern;
 
+import org.pragmatica.jbct.config.ConfigLoader;
+import org.pragmatica.jbct.config.JbctConfig;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
-import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.io.FileOps;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.utils.Causes.cause;
 
 
 /// Shared project configuration reader.
-/// Reads basePackage from jbct.toml (preferred) or derives from pom.xml (fallback). When a jbct.toml exists without
-/// the key, the derived value is written into it (#2525): the key the `add-*` commands resolve is then the one the
-/// lint reads. An existing value is never touched; a project without a jbct.toml gets none.
+/// Reads basePackage from the loader's resolved `jbct.toml` chain (preferred) or derives it from pom.xml (fallback).
+/// When the module has a `jbct.toml` and the chain has no value, the derived one is written into that file (#2525): the
+/// key the `add-*` commands resolve is then the one the lint reads. The write is one path: the edited text goes to a
+/// sibling temp file, the loader loads that file and must read the derived value back, and only then does an atomic
+/// move replace the original. Any failure leaves `jbct.toml` byte-identical and fails the command with the cause. A
+/// value the chain holds is never touched; a project without a `jbct.toml` gets none.
 public record ProjectConfig(String basePackage, String groupId, String artifactId) {
-    private static final Pattern TOML_BASE_PACKAGE = Pattern.compile("^\\s*basePackage\\s*=\\s*\"([^\"]+)\"",
-                                                                     Pattern.MULTILINE);
+    private static final String TEMP_NAME = ConfigLoader.PROJECT_CONFIG_NAME + ".tmp";
 
-    private static final Pattern PROJECT_TABLE = Pattern.compile("^\\[project\\][ \\t]*\\R", Pattern.MULTILINE);
+    private static final Pattern PROJECT_TABLE = Pattern.compile("^\\[project\\][ \\t]*(?:#[^\\r\\n]*)?(?:\\R|\\z)",
+                                                                 Pattern.MULTILINE);
 
     /// Read project configuration from the given directory.
     public static Result<ProjectConfig> projectConfig(Path projectDir) {
@@ -27,39 +38,86 @@ public record ProjectConfig(String basePackage, String groupId, String artifactI
     }
 
     private static Result<ProjectConfig> resolveBasePackage(Path projectDir, PomProperties pom) {
-        var jbctToml = projectDir.resolve("jbct.toml");
         var derived = pom.groupId() + "." + pom.artifactId().replace("-", "");
 
-        if (!Files.exists(jbctToml)) {
-            return Result.success(new ProjectConfig(derived, pom.groupId(), pom.artifactId()));
-        }
-
-        try {
-            var content = Files.readString(jbctToml);
-            var matcher = TOML_BASE_PACKAGE.matcher(content);
-
-            if (matcher.find()) {
-                return Result.success(new ProjectConfig(matcher.group(1), pom.groupId(), pom.artifactId()));
-            }
-
-            Files.writeString(jbctToml, withBasePackage(content, derived));
-
-            return Result.success(new ProjectConfig(derived, pom.groupId(), pom.artifactId()));
-        } catch (IOException e) {
-            return Causes.cause("Failed to update jbct.toml: " + e.getMessage()).result();
-        }
+        return ConfigLoader.loadForSourceRoot(none(),
+                                              projectDir)
+                           .flatMap(chain -> chainValueOr(chain, projectDir, derived))
+                           .map(name -> new ProjectConfig(name,
+                                                          pom.groupId(),
+                                                          pom.artifactId()));
     }
 
-    /// The toml text with `basePackage` added: under its existing `[project]` table, else in a new one at the end.
-    /// A second `[project]` table would be a duplicate table, which TOML refuses.
+    private static Result<String> chainValueOr(JbctConfig chain, Path projectDir, String derived) {
+        return chain.basePackage()
+                    .fold(() -> deriveInto(projectDir, derived),
+                          Result::success);
+    }
+
+    private static Result<String> deriveInto(Path projectDir, String derived) {
+        var jbctToml = projectDir.resolve(ConfigLoader.PROJECT_CONFIG_NAME);
+
+        return FileOps.isRegularFile(jbctToml)
+               ? FileOps.readString(jbctToml)
+                        .flatMap(content -> writeThroughLoader(projectDir,
+                                                               jbctToml,
+                                                               withBasePackage(content, derived),
+                                                               derived))
+                        .map(_ -> derived)
+               : success(derived);
+    }
+
+    /// Temp file, load it, then atomic move; the original is only ever replaced by a file the loader read the derived
+    /// value from. A failed attempt removes its temp file (BER: the inverse of the one thing it created). A failed
+    /// removal is absorbed: the temp name is outside the loader's discovery and the next attempt overwrites it.
+    private static Result<Path> writeThroughLoader(Path projectDir, Path jbctToml, String text, String derived) {
+        var temp = projectDir.resolve(TEMP_NAME);
+
+        return FileOps.writeString(temp, text)
+                      .flatMap(_ -> loadedBack(projectDir, temp, derived))
+                      .flatMap(_ -> FileOps.moveAtomic(temp, jbctToml))
+                      .onFailure(_ -> FileOps.deleteIfExists(temp))
+                      .mapError(cause -> refused(jbctToml, derived, cause));
+    }
+
+    private static Result<String> loadedBack(Path projectDir, Path candidate, String derived) {
+        return ConfigLoader.loadForSourceRoot(some(candidate), projectDir).flatMap(loaded -> readBack(loaded, derived));
+    }
+
+    private static Result<String> readBack(JbctConfig loaded, String derived) {
+        return loaded.basePackage()
+                     .filter(derived::equals)
+                     .toResult(cause("the loader did not read back " + derived));
+    }
+
+    private static Cause refused(Path jbctToml, String derived, Cause cause) {
+        return cause("Cannot write basePackage \"" + derived
+                    + "\" into " + jbctToml
+                    + ": " + cause.message()
+                    + ". The file is unchanged; set it by hand under [project] as basePackage = \"<your.package>\".",
+                     some(cause));
+    }
+
+    /// The toml text with `basePackage` added: under its existing `[project]` table header, else in a new table at the end.
     private static String withBasePackage(String content, String basePackage) {
         var entry = "basePackage = \"" + basePackage + "\"\n";
         var table = PROJECT_TABLE.matcher(content);
 
-        if (table.find()) {
-            return content.substring(0, table.end()) + entry + content.substring(table.end());
-        }
+        return table.find()
+               ? insertAfter(content, table.end(), entry)
+               : appendTable(content, entry);
+    }
 
+    private static String insertAfter(String content, int position, String entry) {
+        var head = content.substring(0, position);
+        var separator = head.endsWith("\n")
+                        ? ""
+                        : "\n";
+
+        return head + separator + entry + content.substring(position);
+    }
+
+    private static String appendTable(String content, String entry) {
         var head = content.stripTrailing();
         var separator = head.isEmpty()
                         ? ""
@@ -72,8 +130,7 @@ public record ProjectConfig(String basePackage, String groupId, String artifactI
         var pomPath = projectDir.resolve("pom.xml");
 
         if (!Files.exists(pomPath)) {
-            return Causes.cause("No pom.xml found in " + projectDir
-                               + ". Run this command from an existing slice project.").result();
+            return cause("No pom.xml found in " + projectDir + ". Run this command from an existing slice project.").result();
         }
 
         try {
@@ -82,7 +139,7 @@ public record ProjectConfig(String basePackage, String groupId, String artifactI
             return extractPomProperty(content, "groupId").flatMap(groupId -> extractPomProperty(content, "artifactId").map(artifactId -> new PomProperties(groupId,
                                                                                                                                                            artifactId)));
         } catch (IOException e) {
-            return Causes.cause("Failed to read pom.xml: " + e.getMessage()).result();
+            return cause("Failed to read pom.xml: " + e.getMessage()).result();
         }
     }
 
@@ -91,10 +148,10 @@ public record ProjectConfig(String basePackage, String groupId, String artifactI
         var matcher = pattern.matcher(pomContent);
 
         if (matcher.find()) {
-            return Result.success(matcher.group(1).trim());
+            return success(matcher.group(1).trim());
         }
 
-        return Causes.cause("Could not find <" + propertyName + "> in pom.xml").result();
+        return cause("Could not find <" + propertyName + "> in pom.xml").result();
     }
 
     /// Resolve a package specification relative to basePackage.
