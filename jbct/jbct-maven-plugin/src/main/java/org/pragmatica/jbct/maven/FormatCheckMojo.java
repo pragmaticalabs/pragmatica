@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.jbct.format.JbctFormatter;
+import org.pragmatica.jbct.lint.cst.LintRun;
 import org.pragmatica.jbct.shared.SourceFile;
 
 import org.apache.maven.plugin.MojoExecutionException;
@@ -35,23 +36,27 @@ public class FormatCheckMojo extends AbstractJbctMojo {
             return;
         }
 
-        var roots = resolveRoots(includeTests);
-        var filesToProcess = allFiles(roots);
+        var plan = resolvePlan(includeTests);
 
-        if (filesToProcess.isEmpty()) {
+        if (plan.files().isEmpty()) {
             reportNothingToCheck("format check", includeTests);
 
             return;
         }
 
-        getLog().info("Checking format of " + filesToProcess.size() + " Java file(s)");
+        var run = LintRun.lintRun(plan);
+
+        announceDisabled(plan, "Not formatted");
         var needsFormatting = new ArrayList<Path>();
         var errors = new AtomicInteger(0);
 
-        for (var job : formatJobs(roots)) {
-            checkFile(job.file(), job.formatter(), needsFormatting, errors);
+        for (var job : formatJobs(plan)) {
+            claimAndCheck(job, run, needsFormatting, errors);
         }
+        // `Checking format of N Java file(s)` counts the files no root skipped: a `disabled` root's files are not part of it.
+        var report = finishRun(run);
 
+        getLog().info("Checking format of " + checked(report) + " Java file(s)");
         if (!needsFormatting.isEmpty()) {
             var fileList = new StringBuilder();
 
@@ -69,7 +74,25 @@ public class FormatCheckMojo extends AbstractJbctMojo {
             throw new MojoFailureException("Format check failed for " + errors.get() + " file(s)");
         }
 
-        getLog().info("All files are properly formatted.");
+        getLog().info(checked(report) == 0
+                      ? "Nothing was format-checked: every source root is skipped by its mode. This is not a pass."
+                      : "All files are properly formatted.");
+    }
+
+    private void claimAndCheck(FormatJob job, LintRun run, List<Path> needsFormatting, AtomicInteger errors) {
+        run.claimFormat(job.file())
+           .onSuccess(claimed -> {
+               if (claimed) {
+                   checkFile(job.file(),
+                             job.formatter(),
+                             needsFormatting,
+                             errors);
+               }
+           })
+           .onFailure(cause -> {
+                          errors.incrementAndGet();
+                          getLog().error("Error checking " + job.file() + ": " + cause.message());
+                      });
     }
 
     private void checkFile(Path file, JbctFormatter formatter, List<Path> needsFormatting, AtomicInteger errors) {

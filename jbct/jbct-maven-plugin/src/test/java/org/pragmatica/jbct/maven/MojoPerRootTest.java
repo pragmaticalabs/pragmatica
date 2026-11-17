@@ -271,8 +271,8 @@ class MojoPerRootTest {
         assertThat(anyContains(arch, mainFinding())).isFalse();
         assertThat(anyContains(ret, sideFinding())).isTrue();
         assertThat(anyContains(ret, mainFinding())).isTrue();
-        assertThat(logs).anyMatch(line -> line.contains("mode=infrastructure root=" + mainRoot));
-        assertThat(logs).anyMatch(line -> line.contains("mode=business root=" + sideTestRoot) && line.contains("test-root files"));
+        assertThat(logs).anyMatch(line -> line.contains("mode=infrastructure (from ") && line.contains("root=" + mainRoot));
+        assertThat(logs).anyMatch(line -> line.contains("mode=business (from ") && line.contains("root=" + sideTestRoot) && line.contains("test-root files"));
     }
 
     @Test
@@ -290,7 +290,7 @@ class MojoPerRootTest {
         var text = everything(outcome);
 
         assertThat(count(text, "mode=")).isEqualTo(1);
-        assertThat(text).contains("mode=infrastructure root=" + mainRoot)
+        assertThat(text).contains("mode=infrastructure (from ", "root=" + mainRoot)
                   .doesNotContain(File.separator + "side" + File.separator);
         assertThat(linesWith(ARCH_02)).isEmpty();
         assertThat(anyContains(linesWith(RET_03), mainFinding())).isTrue();
@@ -305,7 +305,7 @@ class MojoPerRootTest {
 
         mojo.includeTests = true;
         attempt(mojo);
-        assertThat(logs).anyMatch(line -> line.contains("mode=infrastructure root=" + sideTestRoot));
+        assertThat(logs).anyMatch(line -> line.contains("mode=infrastructure (from -Djbct.mode)") && line.contains("root=" + sideTestRoot));
         assertThat(linesWith(ARCH_02)).isEmpty();
     }
 
@@ -335,7 +335,7 @@ class MojoPerRootTest {
         attempt(lint(true));
         assertThat(anyContains(linesWith(RET_03), sideFinding())).isFalse();
         assertThat(anyContains(linesWith(RET_03), mainFinding())).isTrue();
-        assertThat(logs).anyMatch(line -> line.contains("mode=format-only root=" + sideTestRoot));
+        assertThat(logs).anyMatch(line -> line.contains("mode=format-only (from ") && line.contains("root=" + sideTestRoot));
     }
 
     @Test
@@ -344,7 +344,7 @@ class MojoPerRootTest {
         attempt(lint(true));
         assertThat(anyContains(linesWith(RET_03), sideFinding())).isFalse();
         assertThat(anyContains(linesWith(RET_03), mainFinding())).isTrue();
-        assertThat(logs).anyMatch(line -> line.contains("mode=disabled root=" + sideTestRoot));
+        assertThat(logs).anyMatch(line -> line.contains("mode=disabled (from ") && line.contains("root=" + sideTestRoot));
     }
 
     @Test
@@ -407,7 +407,8 @@ class MojoPerRootTest {
         assertThat(Files.readString(priceOf(sideTestRoot, "side"))).isEqualTo(before);
         assertThat(indentOfStatement(priceOf(mainRoot, "main"))).isEqualTo(4);
         assertThat(text).contains("Not formatted: mode=disabled root=" + sideTestRoot);
-        assertThat(count(text, "mode=disabled")).isEqualTo(1);
+        assertThat(count(text, "mode=disabled (from ")).isEqualTo(1);
+        assertThat(count(text, "Not formatted: mode=disabled")).isEqualTo(1);
     }
 
     @Test

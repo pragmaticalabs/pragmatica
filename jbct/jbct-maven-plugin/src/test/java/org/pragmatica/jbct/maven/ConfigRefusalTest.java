@@ -4,6 +4,8 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import org.pragmatica.jbct.config.JbctConfig;
+
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.project.MavenProject;
 
@@ -42,14 +44,20 @@ class ConfigRefusalTest {
         public void execute() {}
     }
 
-    private Probe probeFor(Path projectDir) {
+    private Probe probeFor(Path projectDir) throws Exception {
         var probe = new Probe();
         var mavenProject = new MavenProject();
 
         mavenProject.setFile(new File(projectDir.toFile(), "pom.xml"));
         probe.project = mavenProject;
+        probe.sourceDirectory = Files.createDirectories(projectDir.resolve("src/main/java")).toFile();
 
         return probe;
+    }
+
+    /// The configuration the goal's shared resolver decides for the module's main directory: the live path every goal takes.
+    private static JbctConfig configOf(Probe probe) throws Exception {
+        return probe.resolvePlan(false).roots().getFirst().config();
     }
 
     private Path project(String jbctToml) throws Exception {
@@ -62,28 +70,28 @@ class ConfigRefusalTest {
     }
 
     @Test
-    void loadConfig_failsNamingFileKeyAndValue_whenKeyHasWrongType() throws Exception {
+    void resolvePlan_failsNamingFileKeyAndValue_whenKeyHasWrongType() throws Exception {
         var dir = project("[format]\nmaxLineLength = \"wide\"\n");
 
-        assertThatThrownBy(() -> probeFor(dir).loadConfig()).isInstanceOf(MojoExecutionException.class)
+        assertThatThrownBy(() -> configOf(probeFor(dir))).isInstanceOf(MojoExecutionException.class)
                                                             .hasMessageContaining(dir.resolve("jbct.toml").toString())
                                                             .hasMessageContaining("format.maxLineLength")
                                                             .hasMessageContaining("wide");
     }
 
     @Test
-    void loadConfig_failsNamingFile_whenSyntaxIsInvalid() throws Exception {
+    void resolvePlan_failsNamingFile_whenSyntaxIsInvalid() throws Exception {
         var dir = project("[format\nmaxLineLength = 100\n");
 
-        assertThatThrownBy(() -> probeFor(dir).loadConfig()).isInstanceOf(MojoExecutionException.class)
+        assertThatThrownBy(() -> configOf(probeFor(dir))).isInstanceOf(MojoExecutionException.class)
                                                             .hasMessageContaining(dir.resolve("jbct.toml").toString());
     }
 
     @Test
-    void loadConfig_loads_whenLayerIsWellTyped() throws Exception {
+    void resolvePlan_loads_whenLayerIsWellTyped() throws Exception {
         var dir = project("[format]\nmaxLineLength = 100\n");
 
-        assertThat(probeFor(dir).loadConfig().formatter().maxLineLength()).isEqualTo(100);
+        assertThat(configOf(probeFor(dir)).formatter().maxLineLength()).isEqualTo(100);
     }
 
     @Test
@@ -96,10 +104,10 @@ class ConfigRefusalTest {
     }
 
     @Test
-    void loadConfig_messageHasNoCompositeWrapper() throws Exception {
+    void resolvePlan_messageHasNoCompositeWrapper() throws Exception {
         var dir = project("[format]\nmaxLineLength = \"wide\"\n");
 
-        assertThatThrownBy(() -> probeFor(dir).loadConfig()).hasMessageNotContaining("Composite");
+        assertThatThrownBy(() -> configOf(probeFor(dir))).hasMessageNotContaining("Composite");
     }
 
     /// A slice config the loader refuses fails the goal naming the file and the key, instead of warning and building the

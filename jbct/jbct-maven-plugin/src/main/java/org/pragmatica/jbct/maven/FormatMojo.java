@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.jbct.format.JbctFormatter;
+import org.pragmatica.jbct.lint.cst.LintRun;
 import org.pragmatica.jbct.shared.SourceFile;
 
 import org.apache.maven.plugin.MojoExecutionException;
@@ -32,28 +33,51 @@ public class FormatMojo extends AbstractJbctMojo {
             return;
         }
 
-        var roots = resolveRoots(includeTests);
-        var filesToProcess = allFiles(roots);
+        var plan = resolvePlan(includeTests);
 
-        if (filesToProcess.isEmpty()) {
+        if (plan.files().isEmpty()) {
             reportNothingToCheck("format", includeTests);
 
             return;
         }
 
-        getLog().info("Formatting " + filesToProcess.size() + " Java file(s)");
+        var run = LintRun.lintRun(plan);
+
+        announceDisabled(plan, "Not formatted");
         var formatted = new AtomicInteger(0);
         var unchanged = new AtomicInteger(0);
         var errors = new AtomicInteger(0);
 
-        for (var job : formatJobs(roots)) {
-            processFile(job.file(), job.formatter(), formatted, unchanged, errors);
+        for (var job : formatJobs(plan)) {
+            claimAndProcess(job, run, formatted, unchanged, errors);
         }
-
+        // `Formatting N Java file(s)` counts the files no root skipped: a `disabled` root's files are not part of it.
+        getLog().info("Formatting " + checked(finishRun(run)) + " Java file(s)");
         getLog().info("Formatted: " + formatted.get() + ", Unchanged: " + unchanged.get() + ", Errors: " + errors.get());
         if (errors.get() > 0) {
             throw new MojoFailureException("Formatting failed for " + errors.get() + " file(s)");
         }
+    }
+
+    private void claimAndProcess(FormatJob job,
+                                 LintRun run,
+                                 AtomicInteger formatted,
+                                 AtomicInteger unchanged,
+                                 AtomicInteger errors) {
+        run.claimFormat(job.file())
+           .onSuccess(claimed -> {
+                          if (claimed) {
+                              processFile(job.file(),
+                                          job.formatter(),
+                                          formatted,
+                                          unchanged,
+                                          errors);
+                          }
+                      })
+           .onFailure(cause -> {
+                          errors.incrementAndGet();
+                          getLog().error("Error formatting " + job.file() + ": " + cause.message());
+                      });
     }
 
     private void processFile(Path file,

@@ -8,7 +8,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.cst.LintRun;
-import org.pragmatica.jbct.lint.layer.LayerCoverage;
+import org.pragmatica.jbct.lint.cst.LintRun.RunReport;
 import org.pragmatica.jbct.shared.AnalysisCoverage;
 import org.pragmatica.jbct.shared.SourceFile;
 
@@ -38,71 +38,32 @@ public class CheckMojo extends AbstractJbctMojo {
             return;
         }
 
-        var roots = resolveRoots(includeTests);
-        var filesToProcess = allFiles(roots);
+        var plan = resolvePlan(includeTests);
 
-        if (filesToProcess.isEmpty()) {
+        if (plan.files().isEmpty()) {
             reportNothingToCheck("check", includeTests);
 
             return;
         }
 
-        var run = lintRunOf(roots);
+        var run = LintRun.lintRun(plan);
 
-        getLog().info("Running JBCT check on " + filesToProcess.size() + " Java file(s)");
-        // Format check
+        announceDisabled(plan, "Not formatted");
         var needsFormatting = new ArrayList<Path>();
         var formatErrors = new AtomicInteger(0);
-        // Lint check
         var allDiagnostics = new ArrayList<Diagnostic>();
-        var lintErrors = new AtomicInteger(0);
-        var warnings = new AtomicInteger(0);
         var parseErrors = new AtomicInteger(0);
-        // Warnings count toward failure per root: a warning fails the run when its own root sets failOnWarning.
-        var failingWarnings = new AtomicInteger(0);
 
-        for (var job : formatJobs(roots)) {
-            checkFormat(job.file(), job.formatter(), needsFormatting, formatErrors);
-        }
-
-        for (var root : roots) {
-            for (var file : root.files()) {
-                var before = allDiagnostics.size();
-
-                checkLint(file, run, allDiagnostics, lintErrors, warnings, parseErrors);
-                if (root.config().lint().failOnWarning()) {
-                    failingWarnings.addAndGet(warningsIn(allDiagnostics.subList(before, allDiagnostics.size())));
-                }
-            }
+        for (var job : formatJobs(plan)) {
+            checkFile(job, run, needsFormatting, formatErrors, allDiagnostics, parseErrors);
         }
 
         var report = finishRun(run);
-        var anyFailOnWarning = roots.stream().anyMatch(root -> root.config()
-                                                                   .lint()
-                                                                   .failOnWarning());
 
-        for (var d : report.diagnostics()) {
-            allDiagnostics.add(d);
-            switch (d.severity()) {
-                case ERROR -> lintErrors.incrementAndGet();
-                case WARNING -> {
-                    warnings.incrementAndGet();
-                    if (anyFailOnWarning) {
-                        failingWarnings.incrementAndGet();
-                    }
-                }
-                default -> {}
-            }
-        }
-
-        roots.stream()
-             .filter(root -> !root.files()
-                                  .isEmpty())
-             .forEach(root -> LayerCoverage.coverage(root.files(),
-                                                     root.context())
-                                           .map(LayerCoverage::render)
-                                           .onPresent(getLog()::info));
-        var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), parseErrors.get());
+        allDiagnostics.addAll(report.diagnostics());
+        getLog().info("Running JBCT check on " + checked(report) + " Java file(s)");
+        layerCoverage(plan);
+        var coverage = AnalysisCoverage.analysisCoverage(checked(report), parseErrors.get());
         // Report format issues
         if (!needsFormatting.isEmpty()) {
             getLog().error("Files not properly formatted:");
@@ -111,14 +72,8 @@ public class CheckMojo extends AbstractJbctMojo {
             }
         }
         // Report lint issues
-        for (var d : allDiagnostics) {
-            switch (d.severity()) {
-                case ERROR -> getLog().error(formatDiagnostic(d));
-                case WARNING -> getLog().warn(formatDiagnostic(d));
-                case INFO -> getLog().info(formatDiagnostic(d));
-            }
-        }
-        // Summary. `Running JBCT check on N Java file(s)` above announces what was COLLECTED — this
+        reportDiagnostics(allDiagnostics);
+        // Summary. `Running JBCT check on N Java file(s)` above counts the files no root skipped; this
         // line carries what was ANALYSED, because a file that could not be read or parsed contributes
         // zero of everything, and an unqualified `0 lint error(s)` reads as clean when it means
         // unexamined (#977). This is the line quoted as gate evidence, so it is the line that has to
@@ -126,11 +81,10 @@ public class CheckMojo extends AbstractJbctMojo {
         coverage.gapReport("check").onPresent(getLog()::error);
         getLog().info("Check results (checked " + coverage.render()
                      + "): " + needsFormatting.size()
-                     + " format issue(s), " + lintErrors.get()
-                     + " lint error(s), " + warnings.get()
+                     + " format issue(s), " + errorsIn(report)
+                     + " lint error(s), " + warningsIn(report)
                      + " warning(s)");
-        // Fail build if needed
-        var hasFailures = false;
+        // Fail build if needed; the run names the failing root(s) with their counts (F4).
         var failures = new ArrayList<String>();
 
         if (!needsFormatting.isEmpty()) {
@@ -141,34 +95,55 @@ public class CheckMojo extends AbstractJbctMojo {
             }
 
             failures.add(needsFormatting.size() + " file(s) need formatting:" + fileList);
-            hasFailures = true;
         }
 
         if (formatErrors.get() > 0) {
             failures.add(formatErrors.get() + " format check error(s)");
-            hasFailures = true;
         }
 
         if (coverage.isPartial()) {
             failures.add(coverage.unparseable() + " file(s) could not be read or parsed and were NOT analysed");
-            hasFailures = true;
         }
 
-        if (lintErrors.get() > 0) {
-            failures.add(lintErrors.get() + " lint error(s)");
-            hasFailures = true;
-        }
-
-        if (failingWarnings.get() > 0) {
-            failures.add(failingWarnings.get() + " warning(s) (failOnWarning is enabled)");
-            hasFailures = true;
-        }
-
-        if (hasFailures) {
+        report.failure().onPresent(failures::add);
+        if (!failures.isEmpty()) {
             throw new MojoFailureException("JBCT check failed: " + String.join(", ", failures));
         }
 
-        getLog().info("JBCT check passed.");
+        getLog().info(verdict(report));
+    }
+
+    /// The pass line, worded by what ran: a run in which no root ran a rule never claims a lint pass.
+    private static String verdict(RunReport report) {
+        if (checked(report) == 0) {
+            return "Nothing was checked: every source root is skipped by its mode. This is not a pass.";
+        }
+
+        return report.ranNoRule()
+               ? "JBCT format check passed; no JBCT rule ran in any source root, so nothing was linted."
+               : "JBCT check passed.";
+    }
+
+    private void checkFile(FormatJob job,
+                           LintRun run,
+                           List<Path> needsFormatting,
+                           AtomicInteger formatErrors,
+                           List<Diagnostic> allDiagnostics,
+                           AtomicInteger parseErrors) {
+        run.claimFormat(job.file())
+           .onSuccess(claimed -> {
+                          if (claimed) {
+                              checkFormat(job.file(),
+                                          job.formatter(),
+                                          needsFormatting,
+                                          formatErrors);
+                          }
+                      })
+           .onFailure(cause -> {
+                          formatErrors.incrementAndGet();
+                          getLog().error("Error checking format of " + job.file() + ": " + cause.message());
+                      });
+        checkLint(job.file(), run, allDiagnostics, parseErrors);
     }
 
     private void checkFormat(Path file, JbctFormatter formatter, List<Path> needsFormatting, AtomicInteger errors) {
@@ -185,31 +160,12 @@ public class CheckMojo extends AbstractJbctMojo {
                              });
     }
 
-    private void checkLint(Path file,
-                           LintRun run,
-                           List<Diagnostic> allDiagnostics,
-                           AtomicInteger errors,
-                           AtomicInteger warnings,
-                           AtomicInteger parseErrors) {
-        SourceFile.sourceFile(file)
-                  .flatMap(run::lint)
-                  .onSuccess(diagnostics -> {
-                                 allDiagnostics.addAll(diagnostics);
-                                 for (var d : diagnostics) {
-                                     switch (d.severity()) {
-                                         case ERROR -> errors.incrementAndGet();
-                                         case WARNING -> warnings.incrementAndGet();
-                                         default -> {}
-                                     }
-                                 }
-                             })
-                  .onFailure(cause -> {
-                                 parseErrors.incrementAndGet();
-                                 getLog().error("Parse error in " + file + ": " + cause.message());
-                             });
-    }
-
-    private String formatDiagnostic(Diagnostic d) {
-        return "[" + d.ruleId() + "] " + d.file() + ":" + d.line() + ":" + d.column() + " - " + d.message();
+    private void checkLint(Path file, LintRun run, List<Diagnostic> allDiagnostics, AtomicInteger parseErrors) {
+        run.lintFile(file)
+           .onSuccess(allDiagnostics::addAll)
+           .onFailure(cause -> {
+                          parseErrors.incrementAndGet();
+                          getLog().error("Parse error in " + file + ": " + cause.message());
+                      });
     }
 }

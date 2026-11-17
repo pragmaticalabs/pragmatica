@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.lint.Diagnostic;
+import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.cst.LintRun;
 import org.pragmatica.jbct.parser.Java25Parser;
 import org.pragmatica.jbct.shared.AnalysisCoverage;
@@ -61,20 +62,18 @@ public class ProcessMojo extends AbstractJbctMojo {
             return;
         }
 
-        var roots = resolveRoots(includeTests);
+        var plan = resolvePlan(includeTests);
 
-        if (allFiles(roots).isEmpty()) {
+        if (plan.files().isEmpty()) {
             reportNothingToCheck("process", includeTests);
 
             return;
         }
 
-        var run = lintRunOf(roots);
+        var run = LintRun.lintRun(plan);
         var parser = new Java25Parser();
-        // A `disabled` root is neither formatted nor linted, so its files are not part of what this goal covers.
-        var processedFiles = allFiles(roots.stream().filter(ModuleRoot::formats).toList());
 
-        getLog().info("Processing " + processedFiles.size() + " Java file(s)");
+        announceDisabled(plan, "Not processed");
         var formatted = new AtomicInteger(0);
         var unchanged = new AtomicInteger(0);
         var formatErrors = new AtomicInteger(0);
@@ -83,54 +82,31 @@ public class ProcessMojo extends AbstractJbctMojo {
         // belongs to the coverage gap, not to the format tally it used to inflate (#977).
         var unreadable = new AtomicInteger(0);
         var allDiagnostics = new ArrayList<Diagnostic>();
-        var lintErrors = new AtomicInteger(0);
-        var lintWarnings = new AtomicInteger(0);
-        var lintInfos = new AtomicInteger(0);
-        // Warnings count toward failure per root: a warning fails the run when its own root sets failOnWarning.
-        var failingWarnings = new AtomicInteger(0);
 
-        for (var root : roots) {
-            if (!root.formats()) {
-                getLog().info("Not processed: mode=disabled root=" + root.path());
-                continue;
-            }
-
-            var formatter = JbctFormatter.jbctFormatter(root.config().formatter());
-
-            for (var file : root.files()) {
-                var before = allDiagnostics.size();
-
-                processFile(file,
+        for (var job : formatJobs(plan)) {
+            claimAndProcess(job,
                             parser,
-                            formatter,
                             run,
                             formatted,
                             unchanged,
                             formatErrors,
                             parseErrors,
                             unreadable,
-                            allDiagnostics,
-                            lintErrors,
-                            lintWarnings,
-                            lintInfos);
-                if (root.config().lint().failOnWarning()) {
-                    failingWarnings.addAndGet(warningsIn(allDiagnostics.subList(before, allDiagnostics.size())));
-                }
-            }
+                            allDiagnostics);
         }
 
-        finishRun(run);
-        var coverage = AnalysisCoverage.analysisCoverage(processedFiles.size(),
+        var report = finishRun(run);
+
+        allDiagnostics.addAll(report.diagnostics());
+        // A `disabled` root is neither formatted nor linted: the count is what the run did not skip.
+        var processed = checked(report);
+
+        getLog().info("Processing " + processed + " Java file(s)");
+        var coverage = AnalysisCoverage.analysisCoverage(processed,
                                                          parseErrors.get() + unreadable.get());
 
-        for (var d : allDiagnostics) {
-            switch (d.severity()) {
-                case ERROR -> getLog().error(formatDiagnostic(d));
-                case WARNING -> getLog().warn(formatDiagnostic(d));
-                case INFO -> getLog().info(formatDiagnostic(d));
-            }
-        }
-        // `Processing N Java file(s)` above announces what was COLLECTED. Both summary lines carry
+        reportDiagnostics(allDiagnostics);
+        // `Processing N Java file(s)` above counts the files no root skipped. Both summary lines carry
         // what was ANALYSED, separately, because a reader quotes ONE line as evidence and each has to
         // be honest on its own about the denominator its counts were taken over (#977).
         coverage.gapReport("process").onPresent(getLog()::error);
@@ -140,33 +116,57 @@ public class ProcessMojo extends AbstractJbctMojo {
                      + " unchanged, " + formatErrors.get()
                      + " errors");
         getLog().info("Lint (checked " + coverage.render()
-                     + "): " + lintErrors.get()
-                     + " error(s), " + lintWarnings.get()
-                     + " warning(s), " + lintInfos.get()
+                     + "): " + errorsIn(report)
+                     + " error(s), " + warningsIn(report)
+                     + " warning(s), " + infosIn(allDiagnostics)
                      + " info(s)");
         if (formatErrors.get() > 0) {
             throw new MojoFailureException("Formatting failed for " + formatErrors.get() + " file(s)");
         }
         // Every reason is named: the old message reported the LINT ERROR count for a failure caused by
         // a parse error, so a build stopped by files it could not read said `JBCT lint found 0
-        // error(s)` — true, and the opposite of an explanation.
+        // error(s)` — true, and the opposite of an explanation. The run names the failing root(s) with
+        // their counts (F4).
         var failures = new ArrayList<String>();
 
         if (coverage.isPartial()) {
             failures.add(coverage.unparseable() + " file(s) could not be read or parsed and were NOT analysed");
         }
 
-        if (lintErrors.get() > 0) {
-            failures.add(lintErrors.get() + " lint error(s)");
-        }
-
-        if (failingWarnings.get() > 0) {
-            failures.add(failingWarnings.get() + " warning(s) (failOnWarning is enabled)");
-        }
-
+        report.failure().onPresent(failures::add);
         if (!failures.isEmpty()) {
             throw new MojoFailureException("JBCT process failed: " + String.join(", ", failures));
         }
+    }
+
+    private void claimAndProcess(FormatJob job,
+                                 Java25Parser parser,
+                                 LintRun run,
+                                 AtomicInteger formatted,
+                                 AtomicInteger unchanged,
+                                 AtomicInteger formatErrors,
+                                 AtomicInteger parseErrors,
+                                 AtomicInteger unreadable,
+                                 List<Diagnostic> allDiagnostics) {
+        run.claimFormat(job.file())
+           .onSuccess(claimed -> {
+                          if (claimed) {
+                              processFile(job.file(),
+                                          parser,
+                                          job.formatter(),
+                                          run,
+                                          formatted,
+                                          unchanged,
+                                          formatErrors,
+                                          parseErrors,
+                                          unreadable,
+                                          allDiagnostics);
+                          }
+                      })
+           .onFailure(cause -> {
+                          unreadable.incrementAndGet();
+                          getLog().error("Cannot process " + job.file() + ": " + cause.message());
+                      });
     }
 
     private void processFile(Path file,
@@ -178,10 +178,7 @@ public class ProcessMojo extends AbstractJbctMojo {
                              AtomicInteger formatErrors,
                              AtomicInteger parseErrors,
                              AtomicInteger unreadable,
-                             List<Diagnostic> allDiagnostics,
-                             AtomicInteger lintErrors,
-                             AtomicInteger lintWarnings,
-                             AtomicInteger lintInfos) {
+                             List<Diagnostic> allDiagnostics) {
         SourceFile.sourceFile(file)
                   .onSuccess(source -> handleParsedFile(file,
                                                         source,
@@ -192,10 +189,7 @@ public class ProcessMojo extends AbstractJbctMojo {
                                                         unchanged,
                                                         formatErrors,
                                                         parseErrors,
-                                                        allDiagnostics,
-                                                        lintErrors,
-                                                        lintWarnings,
-                                                        lintInfos))
+                                                        allDiagnostics))
                   .onFailure(cause -> {
                                  unreadable.incrementAndGet();
                                  getLog().error("Error reading " + file + ": " + cause.message());
@@ -211,10 +205,7 @@ public class ProcessMojo extends AbstractJbctMojo {
                                   AtomicInteger unchanged,
                                   AtomicInteger formatErrors,
                                   AtomicInteger parseErrors,
-                                  List<Diagnostic> allDiagnostics,
-                                  AtomicInteger lintErrors,
-                                  AtomicInteger lintWarnings,
-                                  AtomicInteger lintInfos) {
+                                  List<Diagnostic> allDiagnostics) {
         var parseResult = parser.parse(source.content());
 
         if (!parseResult.isSuccess()) {
@@ -236,12 +227,10 @@ public class ProcessMojo extends AbstractJbctMojo {
         }
 
         var diagnostics = linted.unwrap();
-        var lintHasErrors = diagnostics.stream()
-                                       .anyMatch(d -> d.severity() == org.pragmatica.jbct.lint.DiagnosticSeverity.ERROR);
+        var lintHasErrors = diagnostics.stream().anyMatch(d -> d.severity() == DiagnosticSeverity.ERROR);
 
         if (failBeforeFormat && lintHasErrors) {
             allDiagnostics.addAll(diagnostics);
-            tallyDiagnostics(diagnostics, lintErrors, lintWarnings, lintInfos);
 
             return;
         }
@@ -263,23 +252,5 @@ public class ProcessMojo extends AbstractJbctMojo {
         }
 
         allDiagnostics.addAll(diagnostics);
-        tallyDiagnostics(diagnostics, lintErrors, lintWarnings, lintInfos);
-    }
-
-    private static void tallyDiagnostics(List<Diagnostic> diagnostics,
-                                         AtomicInteger errors,
-                                         AtomicInteger warnings,
-                                         AtomicInteger infos) {
-        for (var d : diagnostics) {
-            switch (d.severity()) {
-                case ERROR -> errors.incrementAndGet();
-                case WARNING -> warnings.incrementAndGet();
-                case INFO -> infos.incrementAndGet();
-            }
-        }
-    }
-
-    private String formatDiagnostic(Diagnostic d) {
-        return "[" + d.ruleId() + "] " + d.file() + ":" + d.line() + ":" + d.column() + " - " + d.message();
     }
 }

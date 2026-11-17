@@ -41,7 +41,7 @@ class SourceRootConfigMojoTest {
     }
 
     @Test
-    void loadConfig_readsTheModulesChain_andSkipsTomlsBetweenModuleAndSourceRoot() throws Exception {
+    void resolvePlan_readsTheModulesChain_andSkipsTomlsBetweenModuleAndSourceRoot() throws Exception {
         var repo = Files.createDirectories(tempDir.resolve("repo"));
         var module = Files.createDirectories(repo.resolve("module"));
 
@@ -57,8 +57,9 @@ class SourceRootConfigMojoTest {
 
         mavenProject.setFile(new File(module.toFile(), "pom.xml"));
         probe.project = mavenProject;
+        probe.sourceDirectory = Files.createDirectories(module.resolve("src/main/java")).toFile();
 
-        var config = probe.loadConfig();
+        var config = probe.resolvePlan(false).roots().getFirst().config();
 
         assertThat(config.mode()).isEqualTo(JbctMode.INFRASTRUCTURE);
         assertThat(config.lint().failOnWarning()).isTrue();
