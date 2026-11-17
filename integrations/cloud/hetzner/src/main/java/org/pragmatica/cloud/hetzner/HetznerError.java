@@ -60,6 +60,14 @@ public sealed interface HetznerError extends Cause {
                                                                                                     PaginationFailed::new);
     }
 
+    /// A label selector refused before any request: null, blank, or carrying an empty clause (`a=b,`, `,a=b`, `a=b,,c`).
+    /// An empty `label_selector=` is not "no filter" to the caller who built it, so the client refuses rather than guess;
+    /// the unfiltered list is the no-argument overload. The selector text is not echoed (it can carry names).
+    record InvalidLabelSelector(String message) implements HetznerError {
+        static final InvalidLabelSelector REFUSED = new InvalidLabelSelector("Refusing Hetzner label selector: must be non-blank with no empty clause; "
+                                                                            + "use the no-argument overload for the unfiltered list");
+    }
+
     /// Hetzner error response JSON structure.
     @JsonIgnoreProperties(ignoreUnknown = true)
     record ErrorResponse(@JsonProperty("error") ErrorBody error) {

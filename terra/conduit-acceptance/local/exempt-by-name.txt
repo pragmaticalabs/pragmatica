@@ -1,0 +1,16 @@
+# Error-body assertions the runner does NOT rewrite and drops instead, by name (#3236). One line per case: <file>:<line in the vendored file>  <reason>.
+# The vendored files are hash-pinned (spec/UPSTREAM), so line numbers are stable; the runner fails closed if a listed line is not a
+# `$.errors.token[0]` assertion. Every other `$.errors.<field>[0] == "<msg>"` under an error status is rewritten to
+# `$.detail contains "<field>: <msg>"` (RFC 9457 detail), not dropped.
+errors_articles.hurl:12  framework auth gate answers detail 'Authorization Bearer token required' (says Bearer where Conduit's scheme is Token), not 'token: is missing'
+errors_articles.hurl:29  framework auth gate answers detail 'Authorization Bearer token required' (says Bearer where Conduit's scheme is Token), not 'token: is missing'
+errors_articles.hurl:35  framework auth gate answers detail 'Authorization Bearer token required' (says Bearer where Conduit's scheme is Token), not 'token: is missing'
+errors_articles.hurl:41  framework auth gate answers detail 'Authorization Bearer token required' (says Bearer where Conduit's scheme is Token), not 'token: is missing'
+errors_articles.hurl:47  framework auth gate answers detail 'Authorization Bearer token required' (says Bearer where Conduit's scheme is Token), not 'token: is missing'
+errors_articles.hurl:53  framework auth gate answers detail 'Authorization Bearer token required' (says Bearer where Conduit's scheme is Token), not 'token: is missing'
+errors_auth.hurl:144  framework auth gate answers detail 'Authorization Bearer token required' (says Bearer where Conduit's scheme is Token), not 'token: is missing'
+errors_auth.hurl:155  framework auth gate answers detail 'Authorization Bearer token required' (says Bearer where Conduit's scheme is Token), not 'token: is missing'
+errors_comments.hurl:10  framework auth gate answers detail 'Authorization Bearer token required' (says Bearer where Conduit's scheme is Token), not 'token: is missing'
+errors_comments.hurl:16  framework auth gate answers detail 'Authorization Bearer token required' (says Bearer where Conduit's scheme is Token), not 'token: is missing'
+errors_profiles.hurl:11  framework auth gate answers detail 'Authorization Bearer token required' (says Bearer where Conduit's scheme is Token), not 'token: is missing'
+errors_profiles.hurl:17  framework auth gate answers detail 'Authorization Bearer token required' (says Bearer where Conduit's scheme is Token), not 'token: is missing'

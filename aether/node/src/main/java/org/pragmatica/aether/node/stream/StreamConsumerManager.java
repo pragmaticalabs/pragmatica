@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node.stream;
 
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -13,6 +14,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -263,6 +265,10 @@ public interface StreamConsumerManager {
         /// nodes are alive. Empty means membership has not resolved yet — a transient startup state in
         /// which no assignment is made and no gap is reported.
         List<NodeId> liveMembers();
+        /// The live worker-tier nodes (#2600), from the membership view: members that can host the slice and
+        /// run its consumer, but are not part of the core-only [#liveMembers] view stream ownership is computed
+        /// from. Owners stay on cores; a worker consumes through forwarded reads. Empty when none is live.
+        List<NodeId> liveWorkers();
     }
 
     /// Where a slice is deployed, cluster-wide, as this node currently sees it (#535).
@@ -338,14 +344,17 @@ public interface StreamConsumerManager {
 
     /// #1271: the committed consumer assignment — the ONE authority for which node delivers a
     /// `(group, partition)`. `committed` reads this node's committed-state mirror; `writer` is the
-    /// leader-only [ConsumerAssignmentWriter]; `applier` submits its `Put`s through consensus.
+    /// leader-only [ConsumerAssignmentWriter]; `applier` submits its `Put`s through consensus; `leader` is the same
+    /// leadership the writer is gated by, and gates the #2600 candidate-gap warning the same way.
     record AssignmentAuthority(ConsumerAssignmentWriter.CommittedAssignments committed,
                                ConsumerAssignmentWriter writer,
-                               Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> applier) {
+                               Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> applier,
+                               BooleanSupplier leader) {
         public static AssignmentAuthority assignmentAuthority(ConsumerAssignmentWriter.CommittedAssignments committed,
                                                               ConsumerAssignmentWriter writer,
-                                                              Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> applier) {
-            return new AssignmentAuthority(committed, writer, applier);
+                                                              Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> applier,
+                                                              BooleanSupplier leader) {
+            return new AssignmentAuthority(committed, writer, applier, leader);
         }
     }
 
@@ -456,6 +465,11 @@ public interface StreamConsumerManager {
         private final Map<SubscriptionKey, Epoch> admittedEpochs = new ConcurrentHashMap<>();
         /// #752: keys a pass reported as diverged and has not yet reported as repaired. Written only under `passLock`.
         private final Set<SubscriptionKey> diverged = ConcurrentHashMap.newKeySet();
+        /// #2600: declarations (by identity) this leader reported as ACTIVE on no live candidate and has not yet
+        /// reported as restored. Written only under `passLock`.
+        private final Map<String, ConsumerDeclaration> candidateGaps = new ConcurrentHashMap<>();
+        /// #2600: identities [#reportCandidateGap] evaluated in the current pass. Written only under `passLock`.
+        private final Set<String> gapsEvaluated = new HashSet<>();
         private final Map<String, Diagnosis> diagnoses = new ConcurrentHashMap<>();
         private final AtomicBoolean passRequested = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
@@ -524,6 +538,8 @@ public interface StreamConsumerManager {
         private void runPass() {
             var declarations = allDeclarations();
             var byGroup = declarationsByGroup(declarations);
+
+            gapsEvaluated.clear();
             var collisions = collidingGroups(byGroup);
             var desired = declarations.stream()
                                       .flatMap(declaration -> desiredFor(declaration, collisions).stream())
@@ -532,6 +548,7 @@ public interface StreamConsumerManager {
             forgetVanished();
             retireSuperseded();
             desired.forEach(key -> subscribeIfAbsent(key, byGroup));
+            closeUnevaluatedGaps();
             reportRepaired(desired);
             dropStale(desired);
             restartRewound(byGroup);
@@ -705,6 +722,7 @@ public interface StreamConsumerManager {
             var bridge = invocationHandler.localSlice(declaration.artifact());
 
             recordDiagnosis(declaration, diagnose(declaration, assignments, bridge));
+            reportCandidateGap(declaration, assignments);
             publishAssignments(declaration, assignments);
 
             return bridge.isPresent()
@@ -896,10 +914,13 @@ public interface StreamConsumerManager {
         }
 
         /// Nodes that can actually run this consumer: the artifact is ACTIVE there AND the node is in
-        /// the live member view. `ACTIVE` and not merely "deployed" — a node still LOADING cannot
-        /// invoke, and assigning to it would consume nothing while looking healthy.
+        /// the live member view, core or worker (#2600 — workers are outside the core-only ownership view,
+        /// so the live set is the union of both tiers). `ACTIVE` and not merely "deployed" — a node still
+        /// LOADING cannot invoke, and assigning to it would consume nothing while looking healthy.
         private List<NodeId> candidateNodes(ConsumerDeclaration declaration) {
-            var live = Set.copyOf(ownership.liveMembers());
+            var live = Stream.concat(ownership.liveMembers().stream(),
+                                     ownership.liveWorkers().stream())
+                             .collect(Collectors.toSet());
 
             return placement.placement(declaration.artifact())
                             .entrySet()
@@ -913,9 +934,108 @@ public interface StreamConsumerManager {
         /// True when the slice is deployed SOMEWHERE but has not reached `ACTIVE` on any node yet — a
         /// deployment in flight, not a gap. Distinguishing the two is what keeps a normal deploy from
         /// emitting the same alarm as a slice that is genuinely nowhere.
+        ///
+        /// Deployed somewhere AND ACTIVE nowhere: a slice ACTIVE on nodes that are not live candidates is a gap
+        /// ([#reportCandidateGap]), not a deploy in flight (#2600).
         private boolean deploymentPending(ConsumerDeclaration declaration) {
-            return ! placement.placement(declaration.artifact())
-                              .isEmpty();
+            var states = placement.placement(declaration.artifact());
+
+            return ! states.isEmpty() && !states.containsValue(SliceState.ACTIVE);
+        }
+
+        /// #2600: the slice is ACTIVE on at least one node, yet none of them is a live candidate. Before this check
+        /// that state read as "not consumed YET" for a slice that had been ACTIVE for as long as the run lasted.
+        private List<String> activeWithoutLiveCandidate(ConsumerDeclaration declaration) {
+            return candidateNodes(declaration).isEmpty()
+                   ? placement.placement(declaration.artifact())
+                              .entrySet()
+                              .stream()
+                              .filter(entry -> entry.getValue() == SliceState.ACTIVE)
+                              .map(entry -> entry.getKey()
+                                                 .id())
+                              .sorted()
+                              .toList()
+                   : List.of();
+        }
+
+        /// #2600, level-triggered: every pass re-derives the gap from current state, so a gap that the state no longer
+        /// shows is closed whatever event ended it. Only the leader raises (one warning per declaration cluster-wide,
+        /// as the assignment writer is leader-only); a node that is not the leader closes a gap it had opened. An empty
+        /// assignment list is membership or the stream's config not yet resolved: it neither claims a gap nor closes one
+        /// on the leader.
+        private void reportCandidateGap(ConsumerDeclaration declaration, List<PartitionAssignment> assignments) {
+            var identity = declarationIdentity(declaration);
+
+            gapsEvaluated.add(identity);
+            if (!authority.leader().getAsBoolean()) {
+                closeGap(identity, "leadership moved: this node is no longer the leader that reports it");
+
+                return;
+            }
+
+            if (assignments.isEmpty()) {
+                return;
+            }
+
+            var hosts = activeWithoutLiveCandidate(declaration);
+
+            if (!hosts.isEmpty()) {
+                if (candidateGaps.putIfAbsent(identity, declaration) == null) {
+                    raiseCandidateGap(declaration, identity, hosts);
+                }
+            } else if (!hasActivePlacement(declaration)) {
+                closeGap(identity,
+                         "slice " + declaration.artifact().asString()
+                        + " is no longer deployed ACTIVE anywhere, so there is no gap to report");
+            } else {
+                closeGap(identity,
+                         "a live candidate again: slice " + declaration.artifact().asString()
+                        + " is ACTIVE on a live member, so its partitions are assigned");
+            }
+        }
+
+        private boolean hasActivePlacement(ConsumerDeclaration declaration) {
+            return placement.placement(declaration.artifact())
+                            .containsValue(SliceState.ACTIVE);
+        }
+
+        /// #2600: a gap whose declaration this pass never evaluated (removed, or colliding) is no longer being checked.
+        private void closeUnevaluatedGaps() {
+            candidateGaps.keySet()
+                         .stream()
+                         .filter(identity -> !gapsEvaluated.contains(identity))
+                         .toList()
+                         .forEach(identity -> closeGap(identity,
+                                                       "the declaration is no longer evaluated (removed or colliding), so there is no gap to report"));
+        }
+
+        private void closeGap(String identity, String reason) {
+            Option.option(candidateGaps.remove(identity)).onPresent(declaration -> raiseCandidateRestored(declaration,
+                                                                                                          identity,
+                                                                                                          reason));
+        }
+
+        private void raiseCandidateGap(ConsumerDeclaration declaration, String identity, List<String> hosts) {
+            OperatorWarnings.raise(log,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE,
+                                   identity,
+                                   "Declarative stream consumer of stream {} (group {}) is NOT being consumed: slice {} is ACTIVE on {} but none of them is a live core or worker member in this node's membership view, so no partition can be assigned",
+                                   declaration.streamName(),
+                                   declaration.consumerGroup(),
+                                   declaration.artifact().asString(),
+                                   hosts);
+        }
+
+        private void raiseCandidateRestored(ConsumerDeclaration declaration, String identity, String reason) {
+            OperatorWarnings.raise(log,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED,
+                                   identity,
+                                   "Declarative stream consumer of stream {} (group {}) is no longer reported as having no live candidate: {}",
+                                   declaration.streamName(),
+                                   declaration.consumerGroup(),
+                                   reason);
         }
 
         private static List<Integer> unassignedPartitions(List<PartitionAssignment> assignments) {
@@ -1327,6 +1447,7 @@ public interface StreamConsumerManager {
             synchronized (passLock) {
                 active.keySet().stream().toList().forEach(this::detach);
                 diagnoses.clear();
+                candidateGaps.keySet().stream().toList().forEach(identity -> closeGap(identity, "the manager stopped"));
             }
 
             log.info("Declarative stream consumer manager stopped");

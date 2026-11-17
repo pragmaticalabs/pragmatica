@@ -247,6 +247,12 @@ final class IdentityRestartHarness {
 
         var exited = cluster.getNode(retired).isEmpty();
 
+        // #3174: the registry drops a self-exiting node when its stop BEGINS; its exit code is reported once the stop resolved.
+        awaitCondition("the exited process's stop resolves and its exit is reported",
+                       () -> !exited || cluster.exitCodeOf(retired).isPresent(),
+                       30_000L,
+                       false);
+
         return new Verdict(exited, !exited && linked.test(watcher), refusals(watcher) - refusalsBefore);
     }
 

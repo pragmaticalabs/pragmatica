@@ -22,7 +22,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #1842 absence tripwire (phase-3 design 12 item 4b; CTO ruling 9f854db8b). Every termination authority must remove a node's
 /// `NodeDepartureKey` in the SAME transaction as its `ActivationDirectiveKey`. Bound today: CPR COMPLETE, the CTM's confirmed reap (B18) and the
-/// operator `--force` clear (B19), through `TerminationRetirement`. #1842 (the node source owning the instance lifecycle) has no
+/// operator `--force` clear (B19), through `TerminationRetirement`, and FSM2's C17b for a departed worker (`DepartureFlow#cleanup`, #3193, CTO
+/// ruling 6b6de53d51 item 3), which removes both at their exact values. #1842 (the node source owning the instance lifecycle) has no
 /// directive-deleting writer yet.
 ///
 /// The scan: every main source of `aether-deployment` and `aether/node` that names `ActivationDirectiveKey` next to a removal construct. The
@@ -39,11 +40,13 @@ class DirectiveDeletersTripwireTest {
                                                                      Map.entry("CommunityPlacementReconciler.java", "CPR COMPLETE: directive, placement and record in one transaction (4b)"),
                                                                      Map.entry("TerminationRetirement.java", "B18/B19: directive and record in one transaction (4b)"),
                                                                      Map.entry("Directory.java", "fsm2: the directive writer (J5) and its R-4.3.3 directive-removal with the record"),
+                                                                     Map.entry("DepartureFlow.java", "fsm2 C17b: a departed WORKER's directive and its record in one transaction, the record's exact-value removal the guard (4b, #3193)"),
                                                                      Map.entry("Indexer.java", "fsm2: the mirror of committed removes, a reader"),
                                                                      Map.entry("Outbox.java", "fsm2: re-reads the expected values of its drafts, a reader"),
                                                                      Map.entry("ClusterConfigRoutes.java", "management: a read witness, a reader"),
                                                                      Map.entry("NodeLifecycleRoutes.java", "management: reads the directive, a reader"),
                                                                      Map.entry("AetherNode.java", "the LEGACY route registration (B1), a reader"),
+                                                                     Map.entry("OwnDirectiveRetirement.java", "the worker's halt on the removal of its own directive (#3193), a reader"),
                                                                      Map.entry("WorkerHierarchyAssembly.java", "the worker's own onRemove reaction, a reader"),
                                                                      Map.entry("Fsm2Routes.java", "the FSM2 KV routes, a reader"),
                                                                      Map.entry("GovernorAuthority.java", "a read witness, a reader"));

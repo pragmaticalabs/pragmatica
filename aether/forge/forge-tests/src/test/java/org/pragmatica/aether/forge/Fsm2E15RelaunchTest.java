@@ -84,6 +84,9 @@ class Fsm2E15RelaunchTest {
         var violations = new CopyOnWriteArrayList<String>();
 
         awaitTrue("C17b removed C's slice rows before the relaunch", WAIT, () -> rowsOf(victim).isEmpty());
+        // The drain exit is recorded after the victim's stop resolved (#3173/#3174); snapshotting before that would leave `drained`
+        // empty and let the drain code pass as the relaunched process's refusal below.
+        awaitTrue("the drain exit is recorded", WAIT, () -> cluster.exitCodeOf(victim.id()).isPresent());
         var drained = cluster.exitCodeOf(victim.id());
         // The start promise of a refused process never resolves (the node stops during its start; EmberSameIdentityRelaunchTest), so awaiting it
         // only times out (dev11: the test's 10 min bound). The arm observes from the launch; the refusal's evidence is the relaunched process's
@@ -215,7 +218,8 @@ class Fsm2E15RelaunchTest {
                            .or("{\"error\":\"request failed\"}");
 
         log("publish -> " + response);
-        assertThat(response).as("SETUP: publish accepted").doesNotContain("\"error\"");
+        assertThat(response).as("SETUP: publish accepted (the slice artifact must be installed in the run's maven.repo.local: run `install`, not `verify`)")
+                             .contains("\"status\":\"applied\"");
     }
 
     private URI mgmt(String path) {

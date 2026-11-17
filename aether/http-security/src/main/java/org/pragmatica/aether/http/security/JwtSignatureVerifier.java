@@ -52,8 +52,10 @@ final class JwtSignatureVerifier {
     }
 
     private static Result<JwtTokenParser.ParsedJwt> checkMac(JwtTokenParser.ParsedJwt jwt, JwtSecret secret) {
-        return Result.lift(JwtSignatureVerifier::verificationFailed, () -> macOf(jwt, secret)).flatMap(mac -> macMatches(jwt,
-                                                                                                                         mac));
+        return Result.lift(JwtSignatureVerifier::verificationFailed,
+                           () -> macOf(jwt.signedContent(),
+                                       secret))
+                     .flatMap(mac -> macMatches(jwt, mac));
     }
 
     private static Result<JwtTokenParser.ParsedJwt> macMatches(JwtTokenParser.ParsedJwt jwt, byte[] mac) {
@@ -62,13 +64,14 @@ final class JwtSignatureVerifier {
                : new SecurityError.SignatureInvalid("Signature verification failed").result();
     }
 
+    /// HMAC-SHA256 over the signed content: the one primitive the verifier checks with and [JwtSigner] signs with.
     @SuppressWarnings({"JBCT-EX-01"})
-    private static byte[] macOf(JwtTokenParser.ParsedJwt jwt, JwtSecret secret) throws Exception {
+    static byte[] macOf(String signedContent, JwtSecret secret) throws Exception {
         var mac = Mac.getInstance(HMAC_SHA256);
 
         mac.init(new SecretKeySpec(secret.value(), HMAC_SHA256));
 
-        return mac.doFinal(jwt.signedContent().getBytes(StandardCharsets.US_ASCII));
+        return mac.doFinal(signedContent.getBytes(StandardCharsets.US_ASCII));
     }
 
     private static Result<String> resolveAlgorithm(String jwtAlg) {

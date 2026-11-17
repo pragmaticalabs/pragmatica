@@ -21,6 +21,7 @@
         <module>http-server</module>
         <module>tcp</module>
         <module>smtp</module>
+        <module>redis</module>
     </modules>
 
     <build>

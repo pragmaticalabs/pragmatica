@@ -1,0 +1,2 @@
+### Fixed (2026-11-15 — #1714: a Hetzner replacement is refused when an Aether firewall lost its aether-source label)
+- **An Aether-named firewall (`aether-<cluster>-...`) counts as managed even without the `aether-source` label**, so a replacement server whose source selector misses it fails closed with the typed "Refusing to provision" cause instead of being created with no firewall. Harness partition firewalls (#1500) carry neither label nor name, so #1503 auto-heal is unchanged. `[mechanism: unit tests with a fake client; no cloud run]`

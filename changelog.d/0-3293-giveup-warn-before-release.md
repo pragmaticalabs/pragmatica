@@ -1,0 +1,2 @@
+### Fixed (2026-11-15 — #3293: retry give-up WARN is visible when the in-flight count reaches zero)
+- **A QUIC retry give-up logs its WARN and counts the drop before it releases the in-flight retry count** (`QuicClusterNetwork.giveUpHeld`). The count used to drop first, so a reader waiting for `consensusRetriesInFlight() == 0` could see the give-up as finished before its WARN was written (`QuicLossWarnWindowTest` counted 0). `[mechanism: probe delaying the WARN went red on the old order, green on the new; see the PR]`

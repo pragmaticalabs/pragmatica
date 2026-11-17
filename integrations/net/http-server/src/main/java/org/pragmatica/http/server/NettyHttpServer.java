@@ -787,7 +787,8 @@ final class NettyHttpServer implements HttpServer {
             response.headers().set(X_REQUEST_ID, requestId);
             if (keepAlive) {
                 response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
-            } else if (lingerClose) {
+            } else {
+                // #2407: a response that ends the connection says so, whether it answers a Connection: close request or a refusal.
                 response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
             }
 
@@ -797,7 +798,9 @@ final class NettyHttpServer implements HttpServer {
             // #2984: the typed ContentType argument is the one Content-Type; a handler-set copy is dropped, not added twice.
             // copy(): the 500 path re-enters with the read-only EmptyHttpHeaders.INSTANCE, whose remove throws; pinned by
             // Http1ResponseFailureTest#failureBeforeTheResponseIsSent_isAnswered500_promptly.
-            response.headers().add(extraHeaders.copy().remove(HttpHeaderNames.CONTENT_TYPE));
+            // #2407: the server's Connection value is the only one; a handler-set copy would repeat the header and could contradict it.
+            response.headers()
+                    .add(extraHeaders.copy().remove(HttpHeaderNames.CONTENT_TYPE).remove(HttpHeaderNames.CONNECTION));
 
             return response;
         }

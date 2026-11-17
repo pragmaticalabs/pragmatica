@@ -92,10 +92,12 @@ class StreamResourceValidatorPartitionTest {
                                                                                        "[streams.billing]::producer-version-must-be-exact");
         }
 
-        /// #576's inert keys are per-alias too: the section parses, so the parser keeps it, and the
-        /// partition drops it here.
+        /// #3269 (owner ruling 2026-11-14, amending #1336): #576's inert keys parse, so the parser keeps the
+        /// section, and the deploy refuses it — a key the runtime would silently ignore is not dropped with a
+        /// report, it gates the publish with every failure found. A gated key leaves
+        /// [StreamResourceValidator#GATING_SECTION_RULES] when it is wired.
         @Test
-        void anInertStreamKey_dropsOnlyThatAlias() {
+        void anInertStreamKey_refusesThePublish_namingTheRule() {
             var toml = """
                     [streams.orders]
                     version = "1.0.0"
@@ -105,14 +107,14 @@ class StreamResourceValidatorPartitionTest {
                     version = "1.0.0"
                     """;
 
-            var partition = partition(toml, APP_ARTIFACT);
-
-            assertThat(partition.accepted()).containsOnlyKeys("shipping");
-            assertThat(fieldsAndRules(partition.rejected())).containsExactly("[streams.orders]::" + StreamResourceValidator.RULE_INERT_STREAM_CONFIG);
+            StreamResourceValidator.partition(Option.some(toml), APP_ARTIFACT, Map.of(), ReplicationContext.BUILT_IN)
+                                   .onSuccess(_ -> fail("an inert stream key must gate the publish"))
+                                   .onFailure(cause -> assertThat(fieldsAndRules(((StreamValidationFailures) cause).failures()))
+                                           .containsExactly("[streams.orders]::" + StreamResourceValidator.RULE_INERT_STREAM_CONFIG));
         }
 
         @Test
-        void anInertConsumerKey_dropsTheStreamItSitsUnder_namingTheConsumerSection() {
+        void anInertConsumerKey_refusesThePublish_namingTheConsumerSection() {
             var toml = """
                     [streams.orders]
                     version = "1.0.0"
@@ -124,11 +126,10 @@ class StreamResourceValidatorPartitionTest {
                     version = "1.0.0"
                     """;
 
-            var partition = partition(toml, APP_ARTIFACT);
-
-            assertThat(partition.accepted()).containsOnlyKeys("shipping");
-            assertThat(fieldsAndRules(partition.rejected())).containsExactly("[streams.orders.consumers.billing]::"
-                                                                             + StreamResourceValidator.RULE_INERT_CONSUMER_CONFIG);
+            StreamResourceValidator.partition(Option.some(toml), APP_ARTIFACT, Map.of(), ReplicationContext.BUILT_IN)
+                                   .onSuccess(_ -> fail("an inert consumer key must gate the publish"))
+                                   .onFailure(cause -> assertThat(fieldsAndRules(((StreamValidationFailures) cause).failures()))
+                                           .containsExactly("[streams.orders.consumers.billing]::" + StreamResourceValidator.RULE_INERT_CONSUMER_CONFIG));
         }
 
         /// rev1363 B1 (P3–P6): the alias is carried from the section the parser refused and the rule comes

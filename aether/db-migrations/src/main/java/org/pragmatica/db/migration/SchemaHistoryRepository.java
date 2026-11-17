@@ -11,6 +11,7 @@ import org.pragmatica.db.migration.SchemaHistoryRepository.MigrationProgress;
 import org.pragmatica.db.migration.SchemaHistoryRepository.MigrationStatus;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.DatabaseType;
+import org.pragmatica.aether.resource.db.PgSchemaName;
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.lang.Cause;
@@ -74,7 +75,14 @@ public interface SchemaHistoryRepository {
     Promise<Option<MigrationProgress>> queryProgress(SqlConnector connector, int version, MigrationType type);
 
     static SchemaHistoryRepository schemaHistoryRepository() {
-        return new DefaultSchemaHistoryRepository();
+        return schemaHistoryRepository(Option.none());
+    }
+
+    /// A repository whose history, meta and owner tables live in `schema` (#2100 E-B): each schema carries its own
+    /// version sequence and ownership claim. With `none` it is the unscoped repository of [#schemaHistoryRepository()].
+    /// Creating the schema itself is the migration runner's step, not the repository's.
+    static SchemaHistoryRepository schemaHistoryRepository(Option<PgSchemaName> schema) {
+        return new DefaultSchemaHistoryRepository(schema);
     }
 
     /// The `status` values of a history row, tracked by the B1 `status` column. A normally-recorded
@@ -122,47 +130,65 @@ public interface SchemaHistoryRepository {
 }
 
 final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
-    private static final String QUERY_META_SQL = "SELECT schema_version FROM " + SchemaHistoryEvolution.META_TABLE;
-
-    private static final String INSERT_META_SQL = "INSERT INTO " + SchemaHistoryEvolution.META_TABLE
-                                                + " (schema_version) VALUES (?)";
-
-    private static final String UPDATE_META_SQL = "UPDATE " + SchemaHistoryEvolution.META_TABLE
-                                                + " SET schema_version = ?";
-
     private static final RowMapper<Integer> SCHEMA_VERSION_MAPPER = row -> row.getInt("schema_version");
-    private static final String QUERY_OWNER_SQL = "SELECT blueprint_base FROM " + SchemaHistoryEvolution.OWNER_TABLE;
-
-    private static final String INSERT_OWNER_SQL = "INSERT INTO " + SchemaHistoryEvolution.OWNER_TABLE
-                                                 + " (blueprint_base) VALUES (?)";
-
     private static final RowMapper<String> OWNER_BASE_MAPPER = row -> row.getString("blueprint_base");
 
-    private static final String QUERY_APPLIED_SQL = "SELECT version, type, description, script, checksum, applied_by, applied_at, execution_ms "
-                                                  + "FROM aether_schema_history WHERE status = 'SUCCESS' ORDER BY version";
+    private final Option<PgSchemaName> schema;
+    private final String metaTable;
+    private final String ownerTable;
+    private final String queryMetaSql;
+    private final String insertMetaSql;
+    private final String updateMetaSql;
+    private final String queryOwnerSql;
+    private final String insertOwnerSql;
+    private final String queryAppliedSql;
+    private final String insertSql;
+    private final String insertProgressSql;
+    private final String updateProgressSql;
+    private final String updateStatusSql;
+    private final String finalizeSuccessSql;
+    private final String queryProgressSql;
+    private final String deleteSql;
+    private final String queryRepeatableSql;
 
-    private static final String INSERT_SQL = "INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms) "
-                                           + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+    /// Every statement is rendered once against `schema`: with `none` each is byte-identical to the unscoped form
+    /// (pinned by `SchemaHistoryStatementsFixtureTest`), with a schema every history, meta and owner table is
+    /// qualified by it, so a schema carries its own version sequence and its own ownership claim.
+    DefaultSchemaHistoryRepository(Option<PgSchemaName> schema) {
+        var history = SchemaHistoryEvolution.qualified(schema, SchemaHistoryEvolution.HISTORY_TABLE);
 
-    private static final String INSERT_PROGRESS_SQL = "INSERT INTO aether_schema_history "
-                                                    + "(version, type, description, script, checksum, applied_by, applied_at, execution_ms, status, statements_completed) "
-                                                    + "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)";
-
-    private static final String UPDATE_PROGRESS_SQL = "UPDATE aether_schema_history SET statements_completed = ? "
-                                                    + "WHERE version = ? AND type = ?";
-
-    private static final String UPDATE_STATUS_SQL = "UPDATE aether_schema_history SET status = ? WHERE version = ? AND type = ?";
-
-    private static final String FINALIZE_SUCCESS_SQL = "UPDATE aether_schema_history "
-                                                     + "SET status = ?, checksum = ?, applied_at = ?, execution_ms = ?, statements_completed = ? "
-                                                     + "WHERE version = ? AND type = ?";
-
-    private static final String QUERY_PROGRESS_SQL = "SELECT status, statements_completed, checksum FROM aether_schema_history "
-                                                   + "WHERE version = ? AND type = ?";
-
-    private static final String DELETE_SQL = "DELETE FROM aether_schema_history WHERE version = ? AND type = ?";
-
-    private static final String QUERY_REPEATABLE_SQL = "SELECT checksum FROM aether_schema_history WHERE type = 'REPEATABLE' AND description = ?";
+        this.schema = schema;
+        this.metaTable = SchemaHistoryEvolution.qualified(schema, SchemaHistoryEvolution.META_TABLE);
+        this.ownerTable = SchemaHistoryEvolution.qualified(schema, SchemaHistoryEvolution.OWNER_TABLE);
+        this.queryMetaSql = "SELECT schema_version FROM " + metaTable;
+        this.insertMetaSql = "INSERT INTO " + metaTable + " (schema_version) VALUES (?)";
+        this.updateMetaSql = "UPDATE " + metaTable + " SET schema_version = ?";
+        this.queryOwnerSql = "SELECT blueprint_base FROM " + ownerTable;
+        this.insertOwnerSql = "INSERT INTO " + ownerTable + " (blueprint_base) VALUES (?)";
+        this.queryAppliedSql = "SELECT version, type, description, script, checksum, applied_by, applied_at, execution_ms "
+                             + "FROM " + history
+                             + " WHERE status = 'SUCCESS' ORDER BY version";
+        this.insertSql = "INSERT INTO " + history
+                       + " (version, type, description, script, checksum, applied_by, applied_at, execution_ms) "
+                       + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+        this.insertProgressSql = "INSERT INTO " + history
+                               + " "
+                               + "(version, type, description, script, checksum, applied_by, applied_at, execution_ms, status, statements_completed) "
+                               + "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)";
+        this.updateProgressSql = "UPDATE " + history
+                               + " SET statements_completed = ? "
+                               + "WHERE version = ? AND type = ?";
+        this.updateStatusSql = "UPDATE " + history + " SET status = ? WHERE version = ? AND type = ?";
+        this.finalizeSuccessSql = "UPDATE " + history
+                                + " "
+                                + "SET status = ?, checksum = ?, applied_at = ?, execution_ms = ?, statements_completed = ? "
+                                + "WHERE version = ? AND type = ?";
+        this.queryProgressSql = "SELECT status, statements_completed, checksum FROM " + history
+                              + " "
+                              + "WHERE version = ? AND type = ?";
+        this.deleteSql = "DELETE FROM " + history + " WHERE version = ? AND type = ?";
+        this.queryRepeatableSql = "SELECT checksum FROM " + history + " WHERE type = 'REPEATABLE' AND description = ?";
+    }
 
     private static final RowMapper<SchemaHistoryRepository.AppliedMigration> APPLIED_MIGRATION_MAPPER = row -> all(row.getInt("version"),
                                                                                                                    row.getString("type")
@@ -187,13 +213,14 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
     /// at the latest version runs no evolution DDL — the flow is idempotent.
     @Override
     public Promise<Unit> bootstrap(SqlConnector connector) {
-        return connector.update(SchemaHistoryEvolution.createMetaTableSql(connector.databaseType()))
+        return connector.update(SchemaHistoryEvolution.createMetaTableSql(connector.databaseType(),
+                                                                          schema))
                         .flatMap(_ -> readSchemaVersion(connector))
                         .flatMap(version -> evolveFrom(connector, version));
     }
 
     private Promise<Integer> readSchemaVersion(SqlConnector connector) {
-        return connector.queryOptional(QUERY_META_SQL, SCHEMA_VERSION_MAPPER)
+        return connector.queryOptional(queryMetaSql, SCHEMA_VERSION_MAPPER)
                         .map(stored -> stored.or(0));
     }
 
@@ -217,23 +244,23 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
         return result;
     }
 
-    private static List<String> renderStatements(List<Step> steps, DatabaseType type) {
+    private List<String> renderStatements(List<Step> steps, DatabaseType type) {
         return steps.stream()
                     .flatMap(step -> step.ddl()
-                                         .render(type)
+                                         .render(type, schema)
                                          .stream())
                     .toList();
     }
 
     private Promise<Unit> persistSchemaVersion(SqlConnector connector, int previousVersion) {
         return previousVersion == 0
-               ? connector.update(insertIfAbsent(INSERT_META_SQL,
-                                                 SchemaHistoryEvolution.META_TABLE,
+               ? connector.update(insertIfAbsent(insertMetaSql,
+                                                 metaTable,
                                                  "INTEGER",
                                                  connector.databaseType()),
                                   SchemaHistoryEvolution.LATEST_VERSION)
                           .mapToUnit()
-               : connector.update(UPDATE_META_SQL, SchemaHistoryEvolution.LATEST_VERSION)
+               : connector.update(updateMetaSql, SchemaHistoryEvolution.LATEST_VERSION)
                           .mapToUnit();
     }
 
@@ -242,13 +269,14 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
     /// history read or write, so a refusal leaves the database exactly as it was found.
     @Override
     public Promise<Unit> claimOwnership(SqlConnector connector, String datasourceName, String owner) {
-        return connector.update(SchemaHistoryEvolution.createOwnerTableSql(connector.databaseType()))
+        return connector.update(SchemaHistoryEvolution.createOwnerTableSql(connector.databaseType(),
+                                                                           schema))
                         .flatMap(_ -> readOwnerBase(connector))
                         .flatMap(stored -> resolveClaim(connector, datasourceName, owner, stored));
     }
 
     private Promise<Option<String>> readOwnerBase(SqlConnector connector) {
-        return connector.queryOptional(QUERY_OWNER_SQL, OWNER_BASE_MAPPER);
+        return connector.queryOptional(queryOwnerSql, OWNER_BASE_MAPPER);
     }
 
     private Promise<Unit> resolveClaim(SqlConnector connector,
@@ -260,8 +288,8 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
     }
 
     private Promise<Unit> insertOwner(SqlConnector connector, String owner, String datasourceName) {
-        return connector.update(insertIfAbsent(INSERT_OWNER_SQL,
-                                               SchemaHistoryEvolution.OWNER_TABLE,
+        return connector.update(insertIfAbsent(insertOwnerSql,
+                                               ownerTable,
                                                "VARCHAR(256)",
                                                connector.databaseType()),
                                 owner)
@@ -305,12 +333,12 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
 
     @Override
     public Promise<List<SchemaHistoryRepository.AppliedMigration>> queryApplied(SqlConnector connector) {
-        return connector.queryList(QUERY_APPLIED_SQL, APPLIED_MIGRATION_MAPPER);
+        return connector.queryList(queryAppliedSql, APPLIED_MIGRATION_MAPPER);
     }
 
     @Override
     public Promise<Unit> recordMigration(SqlConnector connector, SchemaHistoryRepository.AppliedMigration migration) {
-        return connector.update(INSERT_SQL,
+        return connector.update(insertSql,
                                 migration.version(),
                                 migration.type().name(),
                                 migration.description(),
@@ -348,7 +376,7 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
     public Promise<Unit> recordInProgress(SqlConnector connector, AppliedMigration migration, int totalStatements) {
         return removeMigration(connector,
                                migration.version(),
-                               migration.type()).flatMap(_ -> connector.update(INSERT_PROGRESS_SQL,
+                               migration.type()).flatMap(_ -> connector.update(insertProgressSql,
                                                                                migration.version(),
                                                                                migration.type().name(),
                                                                                migration.description(),
@@ -365,7 +393,7 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
                                         int version,
                                         MigrationType type,
                                         int statementsCompleted) {
-        return connector.update(UPDATE_PROGRESS_SQL,
+        return connector.update(updateProgressSql,
                                 statementsCompleted,
                                 version,
                                 type.name())
@@ -374,7 +402,7 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
 
     @Override
     public Promise<Unit> markStatus(SqlConnector connector, int version, MigrationType type, String status) {
-        return connector.update(UPDATE_STATUS_SQL,
+        return connector.update(updateStatusSql,
                                 status,
                                 version,
                                 type.name())
@@ -386,7 +414,7 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
     /// second `INSERT` (which would conflict on the `(version, type)` PK).
     @Override
     public Promise<Unit> finalizeSuccess(SqlConnector connector, AppliedMigration migration, int totalStatements) {
-        return connector.update(FINALIZE_SUCCESS_SQL,
+        return connector.update(finalizeSuccessSql,
                                 MigrationStatus.SUCCESS,
                                 migration.checksum(),
                                 migration.appliedAt(),
@@ -399,12 +427,12 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
 
     @Override
     public Promise<Option<MigrationProgress>> queryProgress(SqlConnector connector, int version, MigrationType type) {
-        return connector.queryOptional(QUERY_PROGRESS_SQL, PROGRESS_MAPPER, version, type.name());
+        return connector.queryOptional(queryProgressSql, PROGRESS_MAPPER, version, type.name());
     }
 
     @Override
     public Promise<Unit> removeMigration(SqlConnector connector, int version, MigrationType type) {
-        return connector.update(DELETE_SQL,
+        return connector.update(deleteSql,
                                 version,
                                 type.name())
                         .mapToUnit();
@@ -412,6 +440,6 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
 
     @Override
     public Promise<Option<Long>> queryRepeatableChecksum(SqlConnector connector, String description) {
-        return connector.queryOptional(QUERY_REPEATABLE_SQL, CHECKSUM_MAPPER, description);
+        return connector.queryOptional(queryRepeatableSql, CHECKSUM_MAPPER, description);
     }
 }

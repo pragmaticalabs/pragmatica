@@ -46,7 +46,7 @@ class GapRebalanceTest {
         h.activate();
         assertThat(h.submitsBesides(ClusterModel.SubmitKind.WARNINGS)).as("first imbalanced tick: hysteresis, no move")
                   .isEmpty();
-        assertThat(h.warningPuts()).as("the worker-absence-unjudgeable warning of the core class is persisted, once")
+        assertThat(h.warningPuts()).as("the worker-absence-unjudgeable warning of the core class is persisted: one write carries the open row (#3274: no marker clear follows)")
                   .containsExactly(new FsmWarningKey("worker-absence-unjudgeable", "core"));
         assertThat(h.model().imbalancedTicks.size()).isEqualTo(3);
         h.deliver(new ClusterInput.Reconcile());
@@ -78,7 +78,7 @@ class GapRebalanceTest {
         h.deliver(new ClusterInput.Reconcile());
         h.deliver(new ClusterInput.Reconcile());
         assertThat(h.submitsBesides(ClusterModel.SubmitKind.WARNINGS)).isEmpty();
-        assertThat(h.warningPuts()).as("the worker-absence-unjudgeable warning of the core class is persisted, once")
+        assertThat(h.warningPuts()).as("the worker-absence-unjudgeable warning of the core class is persisted: one write carries the open row (#3274: no marker clear follows)")
                   .containsExactly(new FsmWarningKey("worker-absence-unjudgeable", "core"));
     }
 

@@ -46,6 +46,7 @@ ALLOW=(
   'aether/aether-config/src/test/java/org/pragmatica/aether/config/cluster/ReplacementBackupRenderTest.java|systemctl start|asserts the backup directory is created BEFORE the guarded FIRST start of a replacement (#1968), not a relaunch'
   'aether/tests/cloud/deploy-cloud.sh|systemctl start docker|`systemctl start docker` on a fresh VM, not an aether node'
   'integrations/dht/src/test/java/org/pragmatica/dht/|cluster[.]restart[(]|in-process DHT unit cluster restart (no NodeId lifecycle, no aether runtime)'
+  'integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaPauseWhileSyncingTest.java|cluster[.]restart[(][02][)]|in-process Rabia simulation (ScheduledCluster.restart: amnesiac replica, phase zero) used to put replicas into syncing (#3211); no NodeId lifecycle, no aether runtime'
   'aether/docker/scaling-test/k6/chaos-controller.sh|COMPOSE (stop|start)|#1968: the soak compose has no docker.sock/auto-heal wiring, so its stop/start chaos stays until that compose can heal under fresh ids'
   'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamCrashDurabilityTest.java|stop[(][)] then .*start[(][)] in restartCluster|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'
   'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/MultiPartitionCrashDurabilityTest.java|stop[(][)] then .*start[(][)] in restartCluster|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'

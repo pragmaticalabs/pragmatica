@@ -122,7 +122,7 @@ docker compose up
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FORGE_PORT` | 8888 | HTTP server port |
-| `CLUSTER_SIZE` | 5 | Initial number of nodes |
+| `CLUSTER_SIZE` | 5 | Initial number of nodes (minimum 3) |
 | `LOAD_RATE` | 1000 | Initial requests per second |
 | `JAVA_OPTS` | (see Dockerfile) | JVM options |
 

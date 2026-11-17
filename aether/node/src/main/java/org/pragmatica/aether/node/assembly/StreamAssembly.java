@@ -157,6 +157,7 @@ import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions;
@@ -1209,6 +1210,7 @@ public sealed interface StreamAssembly {
                                Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> clusterCommandApplier,
                                OperatorWarningSink operatorWarningSink,
                                SliceInvoker sliceInvoker,
+                               Supplier<Set<NodeId>> liveWorkers,
                                Functions.Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver,
                                DelegatedStorageAdapter delegatedStorageAdapter,
                                ArrayList<MessageRouter.Entry<?>> allEntries,
@@ -1404,14 +1406,17 @@ public sealed interface StreamAssembly {
                                                                                                                        streamReadRouter::readValidated));
 
         streamConsumerRuntime.operatorWarnings(operatorWarningSink);
-        var streamConsumerOwnership = streamConsumerOwnership(streamPartitionManager, streamReplicaSetController);
+        var streamConsumerOwnership = streamConsumerOwnership(streamPartitionManager,
+                                                              streamReplicaSetController,
+                                                              in.liveWorkers());
         var consumerAssignmentAuthority = StreamConsumerManager.AssignmentAuthority.assignmentAuthority(committedConsumerAssignments,
                                                                                                         ConsumerAssignmentWriter.consumerAssignmentWriter(isLeaderSupplier,
                                                                                                                                                           epochSources.generationEpoch(),
                                                                                                                                                           hlcClock,
                                                                                                                                                           committedConsumerAssignments),
                                                                                                         commands -> switchableCluster.apply(commands)
-                                                                                                                                     .mapToUnit());
+                                                                                                                                     .mapToUnit(),
+                                                                                                        isLeaderSupplier);
         var streamConsumerManager = StreamConsumerManager.streamConsumerManager(streamConsumerRegistry,
                                                                                 streamConsumerRuntime,
                                                                                 sliceInvoker,
@@ -1571,6 +1576,9 @@ public sealed interface StreamAssembly {
                                                  streamForwardHandler::onReadForward));
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.ReadForwardResponse.class,
                                                  streamForwardClient::onReadForwardResponse));
+        // #2583 P2: a removed node's open unsent-reply episode goes with it.
+        allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
+                                                 streamForwardHandler::onNodeRemoved));
         // A6: replica-side receive/apply. ReplicateEvents from an owner are landed into the local
         // partition ring offset-preserving via appendRecovered (NON-replicating — a replicated event is
         // never re-emitted, so there is no replicate→apply→replicate loop), then the highest applied
@@ -1841,9 +1849,15 @@ public sealed interface StreamAssembly {
     /// controller's OWN reconciled view, deliberately the same one its ownership decisions are computed
     /// from, so the ownership half and the placement half of an assignment cannot disagree about which
     /// nodes are alive.
+    ///
+    /// `liveWorkers` (#2600) is the membership FSM's worker-tier counted members: the controller's view is core-only,
+    /// so without it a slice ACTIVE only on workers has no candidate and its partitions are never assigned.
     private static StreamConsumerManager.PartitionOwnership streamConsumerOwnership(StreamPartitionManager manager,
-                                                                                    ReplicaSetController controller) {
-        record ownership(StreamPartitionManager manager, ReplicaSetController controller) implements StreamConsumerManager.PartitionOwnership {
+                                                                                    ReplicaSetController controller,
+                                                                                    Supplier<Set<NodeId>> liveWorkers) {
+        record ownership(StreamPartitionManager manager,
+                         ReplicaSetController controller,
+                         Supplier<Set<NodeId>> workerSource) implements StreamConsumerManager.PartitionOwnership {
             @Override
             public Option<Integer> partitionCount(String streamName) {
                 return manager.replicaCatalog()
@@ -1865,9 +1879,14 @@ public sealed interface StreamAssembly {
             public List<NodeId> liveMembers() {
                 return controller.reconciledMembers();
             }
+
+            @Override
+            public List<NodeId> liveWorkers() {
+                return List.copyOf(workerSource.get());
+            }
         }
 
-        return new ownership(manager, controller);
+        return new ownership(manager, controller, liveWorkers);
     }
 
     /// Where `artifact` is deployed cluster-wide, from this node's locally mirrored deployment map

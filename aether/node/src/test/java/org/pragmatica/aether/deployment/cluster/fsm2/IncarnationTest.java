@@ -88,7 +88,7 @@ class IncarnationTest {
          .directive(W1,
                     Fixtures.worker(C))
          .record(W1, DepartureState.DEPARTED, 1L, P1, DepartureCause.WORKER_LEAVE)
-         .activate();
+         .c17bLost().activate();
         w.h.clearLog();
         w.tokens.admit(W1, P2);
         w.h.deliver(new ClusterInput.WorkerJoin(W1, new Admission(process(P2))));
@@ -135,7 +135,7 @@ class IncarnationTest {
         assertThat(Rows.occupies(w.h.model(), MbWorld.pair(W1, ORDERS))).isTrue();
         assertThat(w.h.submitsBesides(SubmitKind.WARNINGS).stream().filter(s -> s.kind() != SubmitKind.COMMUNITY)).as("nothing is written for the rows")
                   .isEmpty();
-        assertThat(w.h.warningPuts()).as("the unjudgeable worker class is the only open warning persisted")
+        assertThat(w.h.warningPuts()).as("the unjudgeable worker class is the only open warning persisted (one write carries the open row, #3274)")
                   .containsExactly(new FsmWarningKey("worker-absence-unjudgeable", "worker"));
     }
 
@@ -217,7 +217,7 @@ class IncarnationTest {
         assertThat(w.h.submitsBesides(SubmitKind.WARNINGS).stream().filter(s -> s.kind() != SubmitKind.COMMUNITY)).as(arm
                                                                                            + ": no goal, no removal, nothing submitted")
                   .isEmpty();
-        assertThat(w.h.warningPuts()).as(arm + ": the unjudgeable worker class is the only open warning persisted")
+        assertThat(w.h.warningPuts()).as(arm + ": the unjudgeable worker class is the only open warning persisted (one write carries the open row, #3274)")
                   .containsExactly(new FsmWarningKey("worker-absence-unjudgeable", "worker"));
         assertThat(w.h.metricTotal("aether_deployment_fsm_stale_rows_total", t -> true)).as(arm + ": stale_rows_total")
                   .isZero();

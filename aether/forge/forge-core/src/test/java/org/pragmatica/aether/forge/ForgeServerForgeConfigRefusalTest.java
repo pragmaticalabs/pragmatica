@@ -41,6 +41,19 @@ class ForgeServerForgeConfigRefusalTest {
         assertThat(exits).containsExactly(1);
     }
 
+    /// #3299: `CLUSTER_SIZE` below the minimum is refused (exit 1), not replaced by the five-node default.
+    @Test
+    void loadForgeConfig_exitsWithOne_whenClusterSizeIsBelowTheMinimum() {
+        var exits = new ArrayList<Integer>();
+
+        ForgeServer.loadForgeConfig(new StartupConfig(Option.none(), Option.none(), Option.none(), false, 9090, 3, 1000), exits::add);
+        assertThat(exits).as("CONTROL: the minimum size is accepted").isEmpty();
+
+        ForgeServer.loadForgeConfig(new StartupConfig(Option.none(), Option.none(), Option.none(), false, 9090, 1, 1000), exits::add);
+
+        assertThat(exits).containsExactly(1);
+    }
+
     @Test
     void main_refusesToStart_whenForgeTomlStillSetsDashboardPort(@TempDir Path dir) throws Exception {
         Files.writeString(dir.resolve("forge.toml"), OLD_KEY);

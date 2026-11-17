@@ -2924,12 +2924,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// D3: a held frame, already reported `Sent`, is given up: it leaves the pressure count of its OWN lane (a DHT frame
-    /// can share the CONSENSUS stream) and is counted lost, one per frame.
+    /// can share the CONSENSUS stream) and is counted lost, one per frame. The pressure count is released LAST: it is the
+    /// observable that "the give-up finished" (#3293), so the count and the WARN must already be visible when it reaches
+    /// zero.
     @Contract
     private void giveUpHeld(HeldFrame frame, Cause cause) {
-        endRetry(frame.lane());
         quicMetrics.onDroppedAfterSent(frame.lane(), DropSite.RETRY_GAVE_UP, 1);
         warnRetryGaveUp(frame.peerId(), frame.lane(), cause);
+        endRetry(frame.lane());
     }
 
     /// A held frame leaves the backlog through the stream: it leaves its own lane's pressure count, ends the (peer, lane)

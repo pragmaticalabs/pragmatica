@@ -25,7 +25,7 @@
 5|AetherNode.java|the manager passed along to its LEGACY binding sites, to the node record, and to the assembly phases that run its engine-neutral setters|clusterDeploymentManager,
 1|AetherNode.java|an engine-neutral setter: it configures the manager; no input reaches a manager unbound under FSM2|nodeDeploymentManager.setShutdownCallback(node::stop);
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring, which binds it only under LEGACY and drops it, counted, under FSM2 (B1..B12)|deploymentWiring.legacyBinding("B6.SelfReady", () -> nodeDeploymentManager.setSelfReadySignal(selfReadySignal));
-1|AetherNode.java|the LEGACY leader toggle, reached only through DeploymentWiring.legacyGated (B7)|private static void toggleCdmOnLeaderChange(LeaderNotification.LeaderChange change, ClusterDeploymentManager cdm) {
+1|AetherNode.java|the LEGACY leader toggle, reached only through DeploymentWiring.legacyGatedLeaderToggle (B7)|private static void toggleCdmOnLeaderChange(LeaderNotification.LeaderChange change, ClusterDeploymentManager cdm) {
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|clusterDeploymentManager::onAppBlueprintPut))
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|clusterDeploymentManager::onSliceTargetPut))
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|clusterDeploymentManager::onVersionRoutingPut))

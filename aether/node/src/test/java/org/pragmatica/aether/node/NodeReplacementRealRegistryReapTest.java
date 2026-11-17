@@ -124,6 +124,8 @@ class NodeReplacementRealRegistryReapTest {
     private final AtomicReference<Promise<Unit>> processGate = new AtomicReference<>();
     /// The DRAIN commands the managers cleared.
     private final java.util.List<NodeId> clearedDrains = new java.util.concurrent.CopyOnWriteArrayList<>();
+    /// Every KV batch the manager's writer submitted, in submission order (NT-98 / NT-103 read what each retirement submitted).
+    private final java.util.List<List<KVCommand<AetherKey>>> submitted = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final AtomicInteger lists = new AtomicInteger();
     private final AtomicInteger terminates = new AtomicInteger();
     private final AtomicReference<Promise<List<InstanceInfo>>> listing = new AtomicReference<>(Promise.success(List.of()));
@@ -180,6 +182,8 @@ class NodeReplacementRealRegistryReapTest {
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private Promise<List<Object>> process(List<KVCommand<AetherKey>> commands) {
+        submitted.add(commands);
+
         var fifo = fifoGate.get();
 
         if (fifo != null) {
@@ -632,6 +636,101 @@ class NodeReplacementRealRegistryReapTest {
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(10))
                 .untilAsserted(() -> assertThat(List.of(holds(AetherKey.ActivationDirectiveKey.activationDirectiveKey(OLD)), holds(new AetherKey.NodeDepartureKey(OLD))))
                                          .as("directive and record leave together").containsExactly(false, false));
+    }
+
+    private static final TerminationRetirement NO_RETIREMENT = TerminationRetirement.NONE;
+
+    private TerminationRetirement production() {
+        return TerminationRetirement.production(store, this::process, () -> false, org.pragmatica.utility.warning.OperatorWarningSink.logOnly());
+    }
+
+    /// The batches submitted that remove the node's directive or departure record, as the mutated key sets.
+    private List<Set<AetherKey>> retirementBatches(NodeId node) {
+        var identity = Set.<AetherKey>of(AetherKey.ActivationDirectiveKey.activationDirectiveKey(node), new AetherKey.NodeDepartureKey(node));
+
+        return submitted.stream()
+                        .flatMap(List::stream)
+                        .filter(KVCommand.LeaderTransaction.class::isInstance)
+                        .map(command -> (KVCommand.LeaderTransaction<?, ?>) command)
+                        .map(tx -> tx.mutations().stream().map(m -> (AetherKey) m.key()).collect(java.util.stream.Collectors.toSet()))
+                        .filter(keys -> keys.stream().anyMatch(identity::contains))
+                        .toList();
+    }
+
+    private void assertIdentityKept(String why) {
+        assertThat(List.of(holds(AetherKey.ActivationDirectiveKey.activationDirectiveKey(OLD)), holds(new AetherKey.NodeDepartureKey(OLD))))
+                .as(why).containsExactly(true, true);
+        assertThat(retirementBatches(OLD)).as("no retirement was submitted: " + why).isEmpty();
+    }
+
+    /// NT-98 (Q1b), arm 1: the reaper deletes the directive on `confirmedGone`, and the delete and the tombstone (departure record) are one
+    /// transaction. Red when: the two keys go in different transactions, or in more than one batch.
+    @Test
+    void nt98_aConfirmedReap_removesTheDirectiveAndTheRecordInOneLeaderTransaction() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        identityOf(OLD);
+        ctmUnderTest.setTerminationRetirements(production(), NO_RETIREMENT);
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+
+        retire(OLD);
+
+        within(10, () -> assertThat(holds(AetherKey.ActivationDirectiveKey.activationDirectiveKey(OLD))).isFalse());
+        assertThat(retirementBatches(OLD)).as("exactly one transaction, carrying both keys")
+                .containsExactly(Set.of(AetherKey.ActivationDirectiveKey.activationDirectiveKey(OLD), new AetherKey.NodeDepartureKey(OLD)));
+    }
+
+    /// NT-98, arm 2: `notConfirmed` (the listing fails, the instance is not shown gone) keeps the directive and the record. Red when: an
+    /// unconfirmed reap retires the identity.
+    @Test
+    void nt98_aReapThatIsNotConfirmed_keepsTheDirectiveAndTheRecord() {
+        unconfirmedReapOf(OLD);
+        ctmUnderTest.setTerminationRetirements(production(), NO_RETIREMENT);
+
+        assertIdentityKept("unconfirmed reap");
+    }
+
+    /// NT-103 (C3), arm 1: the force-clear retires the directive and the record in one transaction of its own, and the cleared event carries
+    /// the operator, the attested instance and the forced flag. Red when: the pair is split or batched with other work, or a field is missing.
+    @Test
+    void nt103_aForcedClear_retiresTheIdentityInOneTransaction_andTheEventCarriesItsFields() {
+        unconfirmedReapOf(OLD);
+        ctmUnderTest.setTerminationRetirements(NO_RETIREMENT, production());
+        var gate = Promise.<Unit> promise();
+        clearedWarningGate.set(gate);
+
+        ctmUnderTest.clearUnconfirmed(OLD, "operator-x", "i-attested", true).await().onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+        gate.succeed(Unit.unit());
+
+        within(10, () -> assertThat(holds(new AetherKey.NodeDepartureKey(OLD))).as("the record is GC'd").isFalse());
+        assertThat(retirementBatches(OLD)).containsExactly(Set.of(AetherKey.ActivationDirectiveKey.activationDirectiveKey(OLD), new AetherKey.NodeDepartureKey(OLD)));
+        within(10, () -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-cleared:" + OLD.id())
+                                                              && w.contains("operator-x") && w.contains("i-attested") && w.contains("forced=true")));
+    }
+
+    /// NT-103, arm 2: a node that shows life is never force-cleared; its directive and record stay. Red when: a live node's identity is retired.
+    @Test
+    void nt103_aForcedClear_ofALiveNode_isRefused_andKeepsTheIdentity() {
+        unconfirmedReapOf(OLD);
+        ctmUnderTest.setTerminationRetirements(NO_RETIREMENT, production());
+        states.put(OLD, "Member");
+
+        var result = ctmUnderTest.clearUnconfirmed(OLD, "operator", "unknown", true).await();
+
+        assertThat(result.isFailure()).as("a live node is not cleared").isTrue();
+        assertIdentityKept("live node");
+    }
+
+    /// NT-103, arm 3: a clear without force never retires the identity (here it is refused: the provider cannot be asked). Red when: any
+    /// non-force path deletes the directive or the record.
+    @Test
+    void nt103_aClearWithoutForce_neverRetiresTheIdentity() {
+        unconfirmedReapOf(OLD);
+        ctmUnderTest.setTerminationRetirements(production(), production());
+
+        var result = ctmUnderTest.clearUnconfirmed(OLD, "operator", "unknown", false).await();
+
+        assertThat(result.isFailure()).as("refused without force while the provider cannot answer").isTrue();
+        assertIdentityKept("clear without force");
     }
 
     /// B19 under the LEGACY binding: the forced clear leaves both. The cleared warning reaches `warnings` through the sink's hand-off thread, after the

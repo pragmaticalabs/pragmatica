@@ -1687,6 +1687,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         return committedConfigOf(streamName).map(StreamConfig::retention);
     }
 
+    /// The partition count of the committed config this node has applied for `streamName`, else of a locally committed
+    /// entry (#3263): the one count a publisher routes by. None while this node has neither.
+    public Option<Integer> committedPartitions(String streamName) {
+        return committedConfigOf(streamName).map(StreamConfig::partitions);
+    }
+
     private Option<StreamConfig> committedConfigOf(String streamName) {
         return option(entries.appliedConfigs().get(streamName)).orElse(() -> option(streams.get(streamName)).filter(StreamEntry::isCommitted)
                                                                                    .map(StreamEntry::config));
@@ -1920,10 +1926,30 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// surfacing a transient publish failure so the leader-pinned retry can re-attempt; ASYNC fires the
     /// retry without blocking and reports plain success (the publish path proceeds to `publishLocal`; the
     /// next publish retries the commit if this one fails). Never re-materializes or re-reserves bytes.
+    ///
+    /// #3263: an existing life never changes its partition count (the `STREAM_CONFIG_CHANGE_NOT_APPLIED` contract,
+    /// [#notAppliedReason]), so the republish carries the LIFE'S count, never the declared one: committing the declared
+    /// count would make the committed config disagree with the rings this entry already holds. The declared count is
+    /// not applied and a WARN says so, as the publisher does.
     private Result<Unit> republishExistingConfig(StreamConfig config, StreamEntry entry, CommitMode commitMode) {
-        return publishStreamConfig(config.withIncarnation(entry.config().incarnation()),
+        return publishStreamConfig(keepLifeCount(config, entry).withIncarnation(entry.config().incarnation()),
                                    entry,
                                    commitMode).flatMap(_ -> commitMode.republished());
+    }
+
+    private static StreamConfig keepLifeCount(StreamConfig declared, StreamEntry entry) {
+        var kept = entry.config().partitions();
+
+        if (declared.partitions() != kept) {
+            log.warn("Stream '{}' declares {} partitions but its existing life has {}: the declared count is NOT applied,"
+                    + " the republish keeps {}",
+                     declared.name(),
+                     declared.partitions(),
+                     kept,
+                     kept);
+        }
+
+        return declared.withPartitions(kept);
     }
 
     /// #1278 (ruling C): the destroyed life stops being this node's applied life at once, not when the asynchronous

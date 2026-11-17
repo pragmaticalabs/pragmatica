@@ -44,6 +44,7 @@ import org.pragmatica.cluster.state.kvstore.WitnessedRemoval;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
 
@@ -2380,6 +2381,9 @@ public sealed interface AetherValue {
     /// for a datasource another blueprint already migrates, and the activation gate in
     /// `ClusterDeploymentState.areSchemasReady` matches records to slices by this owner so one
     /// blueprint's failed migration cannot hold an unrelated blueprint's slices.
+    ///
+    /// `artifactCoords` is the migration source: artifact coordinates, or `set:<id>@<version>`. It is read
+    /// only through [#source()]; no reader parses the string by hand.
     record SchemaVersionValue(String datasourceName,
                               int currentVersion,
                               String lastMigration,
@@ -2419,6 +2423,12 @@ public sealed interface AetherValue {
                                           owningBlueprint,
                                           attemptCount,
                                           System.currentTimeMillis());
+        }
+
+        /// The typed reading of `artifactCoords`: [MigrationSourceError.Absent] when blank,
+        /// [MigrationSourceError.Malformed] when it is neither artifact coordinates nor `set:<id>@<version>`.
+        public Result<MigrationSource> source() {
+            return MigrationSource.migrationSource(artifactCoords);
         }
 
         /// The same record with only `status` replaced — every other field, `updatedAt` included, kept.
@@ -3657,13 +3667,41 @@ public sealed interface AetherValue {
     /// #2834: an open leader-local warning of the cluster FSM, keyed by `FsmWarningKey(code, subject)`. `members` are the parts of a
     /// subject that covers several instances (a stray's condemned nodes, a schema hold's held nodes with their hold signature), keyed by
     /// node id; empty for a single-instance subject. Held sorted by node id: every node encodes the same bytes.
-    record FsmWarningValue(Map<String, String> members) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
+    ///
+    /// #3274: `open` is the fold of the members: some member held (a single-instance subject: the warning held). `message` is the text
+    /// of the transition the row records: the opener's message on an open row, the recovery's on a closed one. A close writes `open`
+    /// false, no members and the recovery text; no row is ever removed. The writer's stamp (`writerNode`, `writerProcess`,
+    /// `writerIncarnation`) names the leader incarnation that wrote the row: a reader tells its own rows from an earlier self's and from
+    /// another node's by it (`Warnings`, rule O). Flat components, so no new wire tag: `ProcessIncarnation` is pinned already.
+    ///
+    /// #3274: `revision` grows with every write of the key, so a written row never equals an earlier one: a stale transaction whose CAS
+    /// expects the earlier value cannot commit after it.
+    record FsmWarningValue(Map<String, String> members,
+                           boolean open,
+                           String message,
+                           long revision,
+                           NodeId writerNode,
+                           ProcessIncarnation writerProcess,
+                           long writerIncarnation) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
         public FsmWarningValue {
             members = Collections.unmodifiableSortedMap(new TreeMap<>(members));
         }
 
-        public static FsmWarningValue fsmWarningValue(Map<String, String> members) {
-            return new FsmWarningValue(members);
+        public static FsmWarningValue fsmWarningValue(Map<String, String> members,
+                                                      boolean open,
+                                                      String message,
+                                                      long revision,
+                                                      NodeId writerNode,
+                                                      ProcessIncarnation writerProcess,
+                                                      long writerIncarnation) {
+            return new FsmWarningValue(members, open, message, revision, writerNode, writerProcess, writerIncarnation);
+        }
+
+        /// The row's content without its revision and writer: two rows saying the same thing compare equal (`Warnings.same`).
+        public boolean sameContent(FsmWarningValue other) {
+            return open == other.open
+                   && members.equals(other.members)
+                   && message.equals(other.message);
         }
     }
 

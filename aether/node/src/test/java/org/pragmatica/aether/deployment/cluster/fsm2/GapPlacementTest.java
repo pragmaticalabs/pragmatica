@@ -77,7 +77,7 @@ class GapPlacementTest {
 
         assertThat(w.h.warns("invalid-placement")).hasSize(1);
         assertThat(w.h.submitsBesides(ClusterModel.SubmitKind.WARNINGS)).isEmpty();
-        assertThat(w.h.warningPuts()).as("the open warning is persisted: exactly one WARNINGS put")
+        assertThat(w.h.warningPuts()).as("the open warning is persisted: one write carries the open row (#3274: no marker clear follows)")
                   .containsExactly(new FsmWarningKey("invalid-placement", ORDERS.asString()));
     }
 

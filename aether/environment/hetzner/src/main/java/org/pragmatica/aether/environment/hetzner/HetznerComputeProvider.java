@@ -603,7 +603,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     private static Promise<List<Long>> unmanagedOrMissed(List<Firewall> clusterWide,
                                                          ClusterName cluster,
                                                          SourceName source) {
-        var ingress = clusterWide.stream().filter(HetznerComputeProvider::isIngressFirewall).count();
+        var ingress = clusterWide.stream().filter(firewall -> isIngressFirewall(firewall, cluster)).count();
 
         if (ingress == 0) {
             return ingressUnmanaged(cluster, source);
@@ -612,11 +612,28 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return FirewallSelectorMissed.firewallSelectorMissed(cluster, source, (int) ingress).promise();
     }
 
-    private static boolean isIngressFirewall(Firewall firewall) {
+    /// #1714: an ingress firewall is recognised by the [#SOURCE_LABEL] OR by the Aether name prefix
+    /// ([FirewallName#forSource] always yields `aether-<cluster>-...`). The name survives a label edit, so an
+    /// Aether firewall that lost its source label (manual edit, drift) still counts as evidence and the
+    /// provision fails closed instead of creating a server with no firewall. Harness partition firewalls
+    /// (#1500) carry neither, so #1503 stays intact.
+    private static boolean isIngressFirewall(Firewall firewall, ClusterName cluster) {
+        return hasSourceLabel(firewall) || hasAetherName(firewall, cluster);
+    }
+
+    private static boolean hasAetherName(Firewall firewall, ClusterName cluster) {
+        return Option.option(firewall.name())
+                     .map(name -> name.startsWith(AETHER_FIREWALL_PREFIX + cluster.value() + "-"))
+                     .or(false);
+    }
+
+    private static boolean hasSourceLabel(Firewall firewall) {
         return Option.option(firewall.labels())
                      .map(labels -> labels.containsKey(SOURCE_LABEL))
                      .or(false);
     }
+
+    private static final String AETHER_FIREWALL_PREFIX = "aether-";
 
     private static Promise<List<Long>> ingressUnmanaged(ClusterName cluster, SourceName source) {
         log.warn("Hetzner provision: no Aether-managed firewall exists for cluster '{}' (source '{}') — the server is "

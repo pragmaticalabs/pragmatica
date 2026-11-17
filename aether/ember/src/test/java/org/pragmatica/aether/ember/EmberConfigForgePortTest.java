@@ -24,7 +24,7 @@ class EmberConfigForgePortTest {
     /// instead, so neither outcome starts a cluster.
     @Test
     void ember_withForgePort_isTheForgePortThatIsValidated() {
-        Ember.cluster(1)
+        Ember.cluster(3)
              .withForgePort(0)
              .withLb(0)
              .start()
