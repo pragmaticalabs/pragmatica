@@ -32,6 +32,14 @@ import io.netty.channel.ChannelFuture;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.util.concurrent.GenericFutureListener;
 import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.Filter;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.appender.AppenderLoggingException;
+import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.NodeId;
@@ -41,10 +49,15 @@ import org.pragmatica.messaging.StreamType;
 import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.CALLS_REAL_METHODS;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.mockingDetails;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -785,6 +798,169 @@ class QuicLaneBacklogTest {
         }
     }
 
+    // --- #3313 memo3314 §4/§7: a throwing metric or logger cannot leave a fact of the episode model wrong ---
+
+    /// F1, metric (#3313): the drop metric throws when the held frame is given up. The frame left its backlog before the
+    /// metric ran, so nothing of the lane is held: once the stream is writable its event ends the episode, the pressure
+    /// count is back at zero, and a later write that meets backpressure opens a NEW episode with its own entry WARN (#2580
+    /// still works on the lane). A transport-side copy of "a frame is held", decremented after the metric, stays at +1 for
+    /// good and keeps the episode open.
+    @Test
+    void episode_dropMetricThrowsOnAGiveUp_theEpisodeStillEnds_andTheLaneOpensANewOne() throws Exception {
+        var metrics = spy(QuicTransportMetrics.quicTransportMetrics());
+
+        doThrow(new IllegalStateException("drop metric fault")).doCallRealMethod()
+                                                                .when(metrics)
+                                                                .onDroppedAfterSent(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP, 1L);
+        var network = networkWith(metrics);
+
+        assertEpisodeSurvivesAGiveUpFault(network, metrics, new FaultingAppender(""));
+    }
+
+    /// F1, logger (#3313): as above, with the give-up WARN throwing instead of the metric.
+    @Test
+    void episode_giveUpWarnThrows_theEpisodeStillEnds_andTheLaneOpensANewOne() throws Exception {
+        var metrics = spy(QuicTransportMetrics.quicTransportMetrics());
+        var network = networkWith(metrics);
+
+        assertEpisodeSurvivesAGiveUpFault(network, metrics, new FaultingAppender("gave up after retries"));
+    }
+
+    /// F2 (#3313): the entry WARN of the first held frame throws inside the backlog's admit callback. The callback cannot
+    /// let it out: the holding write returns, starts the drain, and the frame is written once the stream takes it; the
+    /// pressure count returns to zero and no episode stays open. A throw escaping the callback strands the frame in a
+    /// backlog nobody drains.
+    @Test
+    void episode_entryWarnThrowsOnTheFirstHeldFrame_theFrameIsStillDrained_andNoEpisodeStaysOpen() {
+        var metrics = spy(QuicTransportMetrics.quicTransportMetrics());
+        var network = networkWith(metrics);
+
+        assertFirstHeldFrameSurvivesACountFault(network, new FaultingAppender("entered"));
+    }
+
+    /// C1 (#3313): the backpressure-retry metric throws on the first held frame, inside the backlog's admit callback. As
+    /// for the entry WARN: the frame is still drained, the pressure count returns to zero and no episode stays open.
+    @Test
+    void episode_retryMetricThrowsOnTheFirstHeldFrame_theFrameIsStillDrained_andNoEpisodeStaysOpen() {
+        var metrics = spy(QuicTransportMetrics.quicTransportMetrics());
+
+        doThrow(new IllegalStateException("retry metric fault")).doCallRealMethod()
+                                                                 .when(metrics)
+                                                                 .onBackpressureRetry();
+        var network = networkWith(metrics);
+
+        assertFirstHeldFrameSurvivesACountFault(network, new FaultingAppender(""));
+        verify(metrics).onBackpressureRetry();
+    }
+
+    private static void assertEpisodeSurvivesAGiveUpFault(QuicClusterNetwork network,
+                                                          QuicTransportMetrics metrics,
+                                                          FaultingAppender faulting) throws Exception {
+        var lane = new Lane(succeeded(), -1);
+
+        try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+            faulting.install();
+            holdFrames(network, lane, StreamType.CONSENSUS, 1);
+            assertThat(network.openBackpressureEpisodesForTests()).as("the held frame opened an episode").isEqualTo(1);
+
+            verify(metrics, timeout(AWAIT.millis())).onDroppedAfterSent(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP, 1L);
+            awaitWithin("the backlog entry goes", AWAIT, () -> network.laneBacklogCountForTests() == 0);
+            assertThat(lane.written).as("control: the frame was given up, not written").isEmpty();
+            assertThat(faulting.faults()).as("control: the armed fault fired, if one was armed").isEqualTo(faulting.armed());
+
+            lane.writable.set(true);
+            fireWritabilityEvent(network, lane.ch);
+
+            awaitWithin("the episode ends once the stream is writable", AWAIT, () -> network.openBackpressureEpisodesForTests() == 0);
+            assertThat(network.consensusRetriesInFlight()).as("the pressure count returns to zero").isZero();
+
+            lane.writable.set(false);
+            holdFrames(network, lane, StreamType.CONSENSUS, 2);
+
+            assertThat(entered(capture)).as("a new episode on the lane logs its own entry WARN").hasSize(2);
+            assertThat(network.openBackpressureEpisodesForTests()).as("the new episode is open").isEqualTo(1);
+        }
+    }
+
+    private static void assertFirstHeldFrameSurvivesACountFault(QuicClusterNetwork network, FaultingAppender faulting) {
+        var lane = new Lane(succeeded(), -1);
+
+        try (var _ = LogCapture.capture(LOGGER, Level.INFO, false)) {
+            faulting.install();
+            var escaped = catchThrowable(() -> holdFrames(network, lane, StreamType.CONSENSUS, 1));
+
+            assertThat(network.heldFrameCountForTests(lane.ch)).as("control: the frame is held").isEqualTo(1);
+            assertThat(faulting.faults()).as("control: the armed fault fired, if one was armed").isEqualTo(faulting.armed());
+
+            lane.writable.set(true);
+            awaitWithin("the held frame is drained", AWAIT, () -> lane.written.size() == 1);
+            awaitWithin("the backlog entry goes", AWAIT, () -> network.laneBacklogCountForTests() == 0);
+
+            assertThat(network.consensusRetriesInFlight()).as("the pressure count returns to zero").isZero();
+            assertThat(network.openBackpressureEpisodesForTests()).as("no episode stays open").isZero();
+            assertThat(escaped).as("the fault did not escape the holding write").isNull();
+        }
+    }
+
+    /// A network whose transport metrics are `metrics`: the network builds its own through
+    /// [QuicTransportMetrics#quicTransportMetrics], which answers `metrics` while the network is constructed.
+    private static QuicClusterNetwork networkWith(QuicTransportMetrics metrics) {
+        try (var factory = mockStatic(QuicTransportMetrics.class, CALLS_REAL_METHODS)) {
+            factory.when(QuicTransportMetrics::quicTransportMetrics).thenReturn(metrics);
+
+            return LossAccountingFixtures.network(5, TimeSpan.timeSpan(10).millis());
+        }
+    }
+
+    private static List<String> entered(LogCapture capture) {
+        return capture.messages(Level.WARN)
+                      .stream()
+                      .filter(message -> message.contains("entered"))
+                      .toList();
+    }
+
+    /// A log4j appender that throws out of the logging call, once, for the first event whose message contains `marker`
+    /// (an empty marker arms nothing). `ignoreExceptions == false` and an [AppenderLoggingException] (a
+    /// `LoggingException`, which log4j rethrows to the caller) make the throw reach the code that logged. Installed on the
+    /// logger config a [LogCapture] put in place, so it goes when that capture closes.
+    private static final class FaultingAppender extends AbstractAppender {
+        private final String marker;
+        private final AtomicInteger faults = new AtomicInteger();
+
+        private FaultingAppender(String marker) {
+            super("Faulting-" + marker, (Filter) null, PatternLayout.createDefaultLayout(), false, Property.EMPTY_ARRAY);
+            this.marker = marker;
+        }
+
+        void install() {
+            var context = (LoggerContext) LogManager.getContext(false);
+
+            start();
+            context.getConfiguration()
+                   .getLoggerConfig(QuicLaneBacklogTest.LOGGER)
+                   .addAppender(this, Level.INFO, null);
+            context.updateLoggers();
+        }
+
+        int armed() {
+            return marker.isEmpty()
+                   ? 0
+                   : 1;
+        }
+
+        int faults() {
+            return faults.get();
+        }
+
+        @Override
+        public void append(LogEvent event) {
+            if (armed() == 1 && event.getMessage()
+                                     .getFormattedMessage()
+                                     .contains(marker) && faults.compareAndSet(0, 1)) {
+                throw new AppenderLoggingException("logger fault on: " + marker);
+            }
+        }
+    }
 
     @Test
     void sentCounters_directWrite_countsOneMessageAndItsBytes() {
