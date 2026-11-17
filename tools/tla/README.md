@@ -93,7 +93,8 @@ tools/tla/check.sh SharedPools leak aether/resource/api/src/main/java
 ```
 
 `small` applies the row's overrides (minutes in total); `full` runs every config as written (hours: liveness at the
-written bounds is the long pole). `sim` runs every config as written under TLC's random simulation
+written bounds is the long pole). `full` is not expected to finish `DHTDepartureDrain` `code`: its config as written (N=5 RF=3 MaxDrain=2
+MaxStale=1) did not finish in 150 minutes even before #3225 added state; the row records that bounded result. `sim` runs every config as written under TLC's random simulation
 (`-simulate num=<SIM_TRACES> -depth <SIM_DEPTH>`, stopped after `SIM_SECONDS` per config by
 `-Dtlc2.TLC.stopAfter`): each row prints its wall time, the trace count and the mean trace length. **Simulation is
 sampling, not a proof**: a `pass` row means no violation among the sampled traces; its gate is that every known-bad
