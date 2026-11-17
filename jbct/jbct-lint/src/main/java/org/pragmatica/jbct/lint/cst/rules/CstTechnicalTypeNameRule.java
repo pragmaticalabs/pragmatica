@@ -3,12 +3,12 @@ package org.pragmatica.jbct.lint.cst.rules;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
-import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.lint.TechnicalWords;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.lint.cst.LintRule;
 import org.pragmatica.jbct.parser.Cursor;
@@ -29,7 +29,6 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// `[lint.naming] remove` or a suppression. FN surface: a technology word the list does not carry.
 public class CstTechnicalTypeNameRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-NAM-06";
-    private static final Pattern CAMEL_BOUNDARY = Pattern.compile("(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])");
 
     @Override
     public String ruleId() {
@@ -67,7 +66,8 @@ public class CstTechnicalTypeNameRule implements CstLintRule {
     }
 
     private List<String> flaggedParts(String name, Set<String> words) {
-        return CAMEL_BOUNDARY.splitAsStream(name)
+        return TechnicalWords.tokens(name)
+                             .stream()
                              .filter(part -> words.contains(part.toLowerCase(Locale.ROOT)))
                              .toList();
     }

@@ -90,6 +90,30 @@ class NamingConfigTest {
     }
 
     @Test
+    void multiTokenWord_isRefused_inAddAndInRemove_namingKeyWordAndTokens() {
+        refusal("[lint.naming]\nadd = [\"PostgreSQL\"]\n").contains("lint.naming.add", "PostgreSQL", "Postgre, SQL");
+        refusal("[lint.naming]\nremove = [\"Seat\", \"SeatBook\"]\n").contains("lint.naming.remove", "SeatBook", "Seat, Book");
+    }
+
+    @Test
+    void singleTokenWord_isAccepted_andMatchesATypeNameToken() {
+        var words = config("[lint.naming]\nadd = [\"Postgres\", \"FACADE\"]\n").lint()
+                                                                                   .technicalWords();
+
+        assertThat(words.typeWords()).contains("postgres", "facade");
+        assertThat(TechnicalWords.tokens("PostgresOrderStore")).contains("Postgres");
+    }
+
+    @Test
+    void everyBuiltInWord_passesTheConfiguredWordValidation() {
+        var words = LintConfig.DEFAULT.technicalWords();
+
+        assertThat(words.packageWords()).isNotEmpty()
+                                        .allSatisfy(word -> assertThat(TechnicalWords.problem(word)).isEqualTo(Option.none()));
+        assertThat(words.typeWords()).allSatisfy(word -> assertThat(TechnicalWords.problem(word)).isEqualTo(Option.none()));
+    }
+
+    @Test
     void bothKeys_reachTheResolvedLists_throughTheParentChain() throws Exception {
         var root = repository("repo", "[lint.naming]\nadd = [\"Saga\"]\n");
         var module = write(root.resolve("module"), "[lint.naming]\nremove = [\"Service\"]\n");

@@ -77,6 +77,13 @@ class TechnicalNameRuleTest {
     }
 
     @Test
+    void add_ofASingleTokenWord_matchesATypeNameToken() {
+        var context = withWords(TechnicalWords.technicalWords(List.of("Postgres"), List.of("jooq")));
+
+        assertTrue(hasType("package org.example;\nclass PostgresOrderStore {}\n", context));
+    }
+
+    @Test
     void remove_narrowsTheList_forTypeNames() {
         var context = withWords(TechnicalWords.technicalWords(List.of(), List.of("Service", "client")));
 
