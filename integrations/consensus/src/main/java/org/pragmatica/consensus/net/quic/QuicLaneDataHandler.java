@@ -35,7 +35,7 @@ import org.slf4j.Logger;
 /// (and, on the CONTROL lane, the Hello handshake) completes.
 ///
 /// Deserializes incoming bytes and routes them via the [MessageReceiver] callback. Also
-/// hands the stream's writability event to the [BackpressureSettler] (#3313). All error attribution is
+/// hands the stream's writability and inactive events to the [BackpressureSettler] (#3313). All error attribution is
 /// lane-scoped so a stalled stream names its lane in the logs.
 ///
 /// Shared by both the dialer ([QuicClusterClient]) and the acceptor ([QuicClusterServer]):
@@ -49,16 +49,16 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final Logger log;
     private final BackpressureSettler settler;
 
-    /// #3313 — what a lane stream's writability event runs: the transport's backpressure-episode closer for that
-    /// stream ([QuicClusterNetwork#settleEpisodes]). A required argument, with no default: a no-op default is how the
-    /// event came to be dropped at every production construction. A transport with no episode ledger (a bare
-    /// [QuicClusterServer] / [QuicClusterClient] in tests) passes [#NONE].
+    /// #3313 — what a lane stream's writability event (T-c) and inactive event (T-d) run: the transport's
+    /// backpressure-episode closer for the stream's peer ([QuicClusterNetwork#onLaneStreamEvent]). A required argument,
+    /// with no default: a no-op default is how the event came to be dropped at every production construction. A
+    /// transport with no episode ledger (a bare [QuicClusterServer] / [QuicClusterClient] in tests) passes [#NONE].
     @FunctionalInterface
     interface BackpressureSettler {
-        BackpressureSettler NONE = _ -> {};
+        BackpressureSettler NONE = (_, _) -> {};
 
         @Contract
-        void settleEpisodes(QuicStreamChannel stream);
+        void settleEpisodes(NodeId peerId, QuicStreamChannel stream);
     }
 
     QuicLaneDataHandler(NodeId peerId,
@@ -124,7 +124,7 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
     @Contract
     public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
         if (ctx.channel().isWritable() && ctx.channel() instanceof QuicStreamChannel stream) {
-            settler.settleEpisodes(stream);
+            settler.settleEpisodes(peerId, stream);
         }
 
         super.channelWritabilityChanged(ctx);
@@ -144,11 +144,17 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
     }
 
     /// #1578 — the stream ended outright (reset, or the connection closed): the lane must not keep
-    /// resolving to it.
+    /// resolving to it. #3313 T-d: the stream's backpressure episodes are settled too. netty-quic fires no writability
+    /// event when a stream closes, so without this an episode opened by a write the stream refused would outlive a
+    /// stream that died while its connection lives.
     @Override
     @Contract
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
         streamEnded(ctx);
+        if (ctx.channel() instanceof QuicStreamChannel stream) {
+            settler.settleEpisodes(peerId, stream);
+        }
+
         super.channelInactive(ctx);
     }
 

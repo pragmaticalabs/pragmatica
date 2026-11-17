@@ -82,7 +82,9 @@ import static org.pragmatica.lang.Unit.unit;
 @Timeout(30)
 class QuicConsensusBackpressureTest {
 
-    private static final NodeId PEER = new NodeId("peer-1");
+    /// The peer the data handler of [LossAccountingFixtures] is built for: the closer settles a stream's events for the
+    /// handler's peer (#3313: episodes are keyed by peer and lane, with no stream identity).
+    private static final NodeId PEER = LossAccountingFixtures.PEER;
 
     @Nested
     class RawConsensusWriteRetryComposition {
@@ -488,8 +490,10 @@ class QuicConsensusBackpressureTest {
         private static final String LOGGER = "org.pragmatica.consensus.net.quic.QuicClusterNetwork";
         private static final int WRITES = 50;
 
+        /// #3313: a successful write is not a closer trigger (round 1 and the base ran the closer on every direct write);
+        /// the stream's writability event is.
         @Test
-        void manyBackpressuredWrites_logOneEntryWarn_andTheFirstWritableWriteOneSummary() {
+        void manyBackpressuredWrites_logOneEntryWarn_andTheWritabilityEventOneSummary() throws Exception {
             var writableNow = new AtomicBoolean(false);
             var blocked = switchableChannel(writableNow);
             var network = network();
@@ -504,8 +508,11 @@ class QuicConsensusBackpressureTest {
 
                 writableNow.set(true);
                 network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
+                assertThat(network.openBackpressureEpisodesForTests()).as("a successful write ends no episode").isEqualTo(1);
 
-                assertThat(capture.messages(Level.INFO)).as("the first writable write closes the episode with one summary")
+                LossAccountingFixtures.fireWritabilityEvent(network, blocked);
+
+                assertThat(capture.messages(Level.INFO)).as("the writability event closes the episode with one summary")
                                                         .filteredOn(message -> message.contains("cleared"))
                                                         .singleElement()
                                                         .satisfies(message -> assertThat(message).contains(WRITES + " write(s)"));
@@ -714,7 +721,7 @@ class QuicConsensusBackpressureTest {
 
         /// The summary reports how long the lane stayed unwritable, measured from the write that opened the episode.
         @Test
-        void summary_reportsTheEpisodeDuration() {
+        void summary_reportsTheEpisodeDuration() throws Exception {
             var network = network();
 
             var writableNow = new AtomicBoolean(false);
@@ -724,7 +731,7 @@ class QuicConsensusBackpressureTest {
                 blockWrites(network, lane, 1);
                 parkMillis(60);
                 writableNow.set(true);
-                network.writeIfWritableForTest(lane, payload(), PEER, StreamType.METRICS);
+                LossAccountingFixtures.fireWritabilityEvent(network, lane);
 
                 assertThat(capture.messages(Level.INFO)).filteredOn(message -> message.contains("cleared"))
                                                         .singleElement()
@@ -812,7 +819,7 @@ class QuicConsensusBackpressureTest {
                      },
                      done -> closeWhileWriting(network, stream, writableHere, done));
                 writableHere.set(true);
-                network.writeIfWritableForTest(stream, payload(), PEER, StreamType.METRICS);
+                network.onLaneStreamEvent(PEER, stream);
             }
 
             assertThat(reported.get()).as("writes reported by summaries, of %d backpressured", blockedWrites.get())
@@ -885,15 +892,15 @@ class QuicConsensusBackpressureTest {
             }
         }
 
-        /// #3313: an episode is the level of ONE stream, so the writes that close it go to the stream that counted it;
-        /// this thread sees it writable, the writers keep seeing it unwritable.
+        /// #3313: a successful write runs no closer, so this thread closes through the stream's writability event (T-c),
+        /// the settler production handlers run; it sees the stream writable, the writers keep seeing it unwritable.
         private static void closeWhileWriting(QuicClusterNetwork network,
                                               QuicStreamChannel stream,
                                               ThreadLocal<Boolean> writableHere,
                                               AtomicBoolean done) {
             writableHere.set(true);
             while (!done.get()) {
-                network.writeIfWritableForTest(stream, payload(), PEER, StreamType.METRICS);
+                network.onLaneStreamEvent(PEER, stream);
             }
         }
 

@@ -94,29 +94,13 @@ final class LaneBacklog<F> {
 
     /// Gives up on every held frame, head first, passing each to `discard`, and retires the backlog, so a writer still
     /// holding a reference to it after its owner dropped it gets [Admission#RETIRED] and cannot hold a frame nobody
-    /// drains. Each frame has left the backlog when `discard` sees it, as in [#drain], so [#holds] read from `discard`
-    /// no longer counts it.
+    /// drains. Each frame has left the backlog when `discard` sees it, as in [#drain].
     @Contract
     synchronized void discardAll(Consumer<F> discard) {
         retired = true;
         while (!held.isEmpty()) {
             discard.accept(held.pollFirst());
         }
-    }
-
-    /// #3313: runs `action` under the lock [#admit] accounts a frame under and [#drain] removes frames under, so what
-    /// `action` reads through [#holds] stays true until it returns: no frame joins or leaves in between. Reentrant: a
-    /// callback of [#admit], [#drain] or [#discardAll] may call it.
-    @Contract
-    synchronized void exclusively(Runnable action) {
-        action.run();
-    }
-
-    /// Whether a held frame satisfies `matching`. A frame passed to a callback of [#drain] or [#discardAll] has already
-    /// left: it is not counted.
-    synchronized boolean holds(Predicate<F> matching) {
-        return held.stream()
-                   .anyMatch(matching);
     }
 
     synchronized int size() {

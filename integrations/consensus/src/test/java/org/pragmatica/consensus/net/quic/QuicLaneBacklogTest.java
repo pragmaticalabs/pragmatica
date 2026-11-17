@@ -639,7 +639,7 @@ class QuicLaneBacklogTest {
 
             lane.writable.set(true);
             lane.faultOnNextWritableCheck.set(true);
-            network.settleEpisodes(lane.ch);
+            network.onLaneStreamEvent(PEER, lane.ch);
 
             assertThat(lane.faultOnNextWritableCheck).as("the closer's writability check threw").isFalse();
             assertThat(network.openBackpressureEpisodesForTests()).as("nothing is ended on a throw").isEqualTo(1);

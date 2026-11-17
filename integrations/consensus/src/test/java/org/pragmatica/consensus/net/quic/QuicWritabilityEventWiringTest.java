@@ -208,7 +208,7 @@ class QuicWritabilityEventWiringTest {
                                                      (connection, _, _) -> acceptorSide.set(connection),
                                                      (_, _) -> {},
                                                      BootTokens.bootTokens(0L),
-                                                     settledAtAcceptor::add);
+                                                     (_, stream) -> settledAtAcceptor.add(stream));
         server.start(0).await(AWAIT).onFailure(cause -> fail("server start: " + cause.message()));
         var port = server.boundPort().fold(() -> fail("server not bound"), bound -> bound);
 
@@ -217,7 +217,7 @@ class QuicWritabilityEventWiringTest {
                                                      Option.empty(),
                                                      (_, _) -> {},
                                                      BootTokens.bootTokens(0L),
-                                                     settledAtDialer::add);
+                                                     (_, stream) -> settledAtDialer.add(stream));
         dialerSide = client.connect(ACCEPTOR, new InetSocketAddress("127.0.0.1", port))
                            .await(AWAIT)
                            .fold(cause -> fail("dial: " + cause.message()), connection -> connection);
