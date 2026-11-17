@@ -11,8 +11,8 @@ import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
-import org.pragmatica.jbct.lint.JbctLinter;
 import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.lint.cst.LintRun;
 import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.shared.AnalysisCoverage;
 import org.pragmatica.jbct.shared.FileCollector;
@@ -41,23 +41,27 @@ public class CheckCommand implements Callable<Integer> {
     @picocli.CommandLine.Option(names = {"--mode"}, description = "JBCT mode for this run, overriding jbct.toml and --config: business or infrastructure")
     String mode;
 
-    /// The one place the resolved context is handed to the linter; tests replace it to observe the context (#2525).
-    Function<LintContext, JbctLinter> linterFactory = JbctLinter::jbctLinter;
+    /// The one place the resolved source roots, each with its context, are handed to the run; tests replace it to
+    /// observe or adjust them (#2525).
+    Function<List<LintRun.SourceRoot>, LintRun> runFactory = LintRun::lintRun;
 
     @Override
     public Integer call() {
-        // Load configuration
-        var loadedConfig = CliConfig.load(Option.option(configPath), Option.option(mode), paths.getFirst(), System.err);
+        // Resolve one configuration per argument path's source root
+        var resolvedRoots = CliRoots.resolve(Option.option(configPath),
+                                             Option.option(mode),
+                                             paths,
+                                             this::createContext,
+                                             System.err);
 
-        if (loadedConfig.isEmpty()) {
+        if (resolvedRoots.isEmpty()) {
             return CliConfig.CONFIG_ERROR_EXIT;
         }
 
-        var config = loadedConfig.unwrap();
-        var formatter = JbctFormatter.jbctFormatter(config.formatter());
-        var context = createContext(config);
-        var linter = linterFactory.apply(context);
-        var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
+        var roots = resolvedRoots.unwrap();
+        var formatter = JbctFormatter.jbctFormatter(roots.getFirst().config().formatter());
+        var run = runFactory.apply(roots.stream().map(CliRoots.ResolvedRoot::sourceRoot).toList());
+        var filesToProcess = CliRoots.allFiles(roots);
 
         if (filesToProcess.isEmpty()) {
             System.out.println("No Java files found.");
@@ -79,10 +83,23 @@ public class CheckCommand implements Callable<Integer> {
 
         for (var file : filesToProcess) {
             checkFormat(file, formatter, needsFormatting, formatErrors);
-            checkLint(file, linter, allDiagnostics, lintErrors, warnings, parseErrors);
+            checkLint(file, run, allDiagnostics, lintErrors, warnings, parseErrors);
         }
 
-        LayerCoverage.coverage(filesToProcess, context).map(LayerCoverage::render).onPresent(System.err::println);
+        var report = run.finish().onFailure(cause -> System.err.println("Error: " + cause.message())).option();
+
+        if (report.isEmpty()) {
+            return CliConfig.CONFIG_ERROR_EXIT;
+        }
+
+        report.unwrap().diagnostics().forEach(diagnostic -> record(diagnostic, allDiagnostics, lintErrors, warnings));
+        roots.stream()
+             .filter(root -> !root.files()
+                                  .isEmpty())
+             .forEach(root -> LayerCoverage.coverage(root.files(),
+                                                     root.context())
+                                           .map(LayerCoverage::render)
+                                           .onPresent(System.err::println));
         var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), parseErrors.get());
         // Report format issues
         if (!needsFormatting.isEmpty()) {
@@ -99,6 +116,8 @@ public class CheckCommand implements Callable<Integer> {
                 System.out.print(d.toHumanReadable());
             }
         }
+
+        report.unwrap().summary().forEach(System.out::println);
         // Summary. The counts are meaningless without the denominator they were taken over: a file
         // that could not be read or parsed contributes zero of everything, so an unqualified
         // `0 lint error(s)` reads as clean when it means unexamined (#977).
@@ -148,23 +167,15 @@ public class CheckCommand implements Callable<Integer> {
     }
 
     private void checkLint(Path file,
-                           JbctLinter linter,
+                           LintRun run,
                            List<Diagnostic> allDiagnostics,
                            AtomicInteger errors,
                            AtomicInteger warnings,
                            AtomicInteger parseErrors) {
         SourceFile.sourceFile(file)
-                  .flatMap(linter::lint)
+                  .flatMap(run::lint)
                   .onSuccess(diagnostics -> {
-                                 allDiagnostics.addAll(diagnostics);
-                                 for (var d : diagnostics) {
-                                     switch (d.severity()) {
-                                         case ERROR -> errors.incrementAndGet();
-                                         case WARNING -> warnings.incrementAndGet();
-                                         default -> {}
-                                     }
-                                 }
-
+                                 diagnostics.forEach(diagnostic -> record(diagnostic, allDiagnostics, errors, warnings));
                                  if (verbose && diagnostics.isEmpty()) {
                                      System.out.println("  ✓ lint: " + file.getFileName());
                                  }
@@ -173,5 +184,17 @@ public class CheckCommand implements Callable<Integer> {
                                  parseErrors.incrementAndGet();
                                  System.err.println("  ✗ parse error: " + file + ": " + cause.message());
                              });
+    }
+
+    private static void record(Diagnostic diagnostic,
+                               List<Diagnostic> allDiagnostics,
+                               AtomicInteger errors,
+                               AtomicInteger warnings) {
+        allDiagnostics.add(diagnostic);
+        switch (diagnostic.severity()) {
+            case ERROR -> errors.incrementAndGet();
+            case WARNING -> warnings.incrementAndGet();
+            default -> {}
+        }
     }
 }

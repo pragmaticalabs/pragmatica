@@ -11,8 +11,8 @@ import java.util.stream.Collectors;
 import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
-import org.pragmatica.jbct.lint.JbctLinter;
 import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.lint.cst.LintRun;
 import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.shared.AnalysisCoverage;
 import org.pragmatica.jbct.shared.FileCollector;
@@ -44,8 +44,9 @@ public class LintCommand implements Callable<Integer> {
     @picocli.CommandLine.Option(names = {"--mode"}, description = "JBCT mode for this run, overriding jbct.toml and --config: business or infrastructure")
     String mode;
 
-    /// The one place the resolved context is handed to the linter; tests replace it to observe the context (#2525).
-    Function<LintContext, JbctLinter> linterFactory = JbctLinter::jbctLinter;
+    /// The one place the resolved source roots, each with its context, are handed to the run; tests replace it to
+    /// observe or adjust them (#2525).
+    Function<List<LintRun.SourceRoot>, LintRun> runFactory = LintRun::lintRun;
 
     public enum OutputFormat {
         text,
@@ -55,17 +56,20 @@ public class LintCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
-        // Load configuration
-        var loadedConfig = CliConfig.load(Option.option(configPath), Option.option(mode), paths.getFirst(), System.err);
+        // Resolve one configuration per argument path's source root
+        var resolvedRoots = CliRoots.resolve(Option.option(configPath),
+                                             Option.option(mode),
+                                             paths,
+                                             this::createContext,
+                                             System.err);
 
-        if (loadedConfig.isEmpty()) {
+        if (resolvedRoots.isEmpty()) {
             return CliConfig.CONFIG_ERROR_EXIT;
         }
 
-        var config = loadedConfig.unwrap();
-        var context = createContext(config);
-        var linter = linterFactory.apply(context);
-        var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
+        var roots = resolvedRoots.unwrap();
+        var run = runFactory.apply(roots.stream().map(CliRoots.ResolvedRoot::sourceRoot).toList());
+        var filesToProcess = CliRoots.allFiles(roots);
         // #1100: a run that examined nothing is a coverage gap, never a pass, so it exits 2 like any other gap.
         if (filesToProcess.isEmpty()) {
             operatorOut().println("No Java files found: nothing was examined. This is a COVERAGE GAP, not a pass.");
@@ -83,13 +87,27 @@ public class LintCommand implements Callable<Integer> {
         var counters = new int[4];
         // 0=errors, 1=warnings, 2=infos, 3=unanalysed (unreadable or unparseable)
         for (var file : filesToProcess) {
-            processFile(file, linter, allDiagnostics, counters, unanalysed);
+            processFile(file, run, allDiagnostics, counters, unanalysed);
         }
 
-        LayerCoverage.coverage(filesToProcess, context).map(LayerCoverage::render).onPresent(System.err::println);
+        var report = run.finish().onFailure(cause -> System.err.println("Error: " + cause.message())).option();
+
+        if (report.isEmpty()) {
+            return CliConfig.CONFIG_ERROR_EXIT;
+        }
+
+        report.unwrap().diagnostics().forEach(diagnostic -> record(diagnostic, allDiagnostics, counters));
+        roots.stream()
+             .filter(root -> !root.files()
+                                  .isEmpty())
+             .forEach(root -> LayerCoverage.coverage(root.files(),
+                                                     root.context())
+                                           .map(LayerCoverage::render)
+                                           .onPresent(System.err::println));
         var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), counters[3]);
         // Output results
         printResults(allDiagnostics, filesToProcess.size(), unanalysed);
+        report.unwrap().summary().forEach(operatorOut()::println);
         // Print summary
         printSummary(coverage, counters[0], counters[1], counters[2]);
         // Exit code. 2 is reserved for "the tool could not do its job" — a coverage gap — and 1 for
@@ -123,22 +141,14 @@ public class LintCommand implements Callable<Integer> {
     }
 
     private void processFile(Path file,
-                             JbctLinter linter,
+                             LintRun run,
                              List<Diagnostic> allDiagnostics,
                              int[] counters,
                              List<Unanalysed> unanalysed) {
         SourceFile.sourceFile(file)
-                  .flatMap(linter::lint)
+                  .flatMap(run::lint)
                   .onSuccess(diagnostics -> {
-                                 allDiagnostics.addAll(diagnostics);
-                                 for (var d : diagnostics) {
-                                     switch (d.severity()) {
-                                         case ERROR -> counters[0]++;
-                                         case WARNING -> counters[1]++;
-                                         case INFO -> counters[2]++;
-                                     }
-                                 }
-
+                                 diagnostics.forEach(diagnostic -> record(diagnostic, allDiagnostics, counters));
                                  if (verbose && diagnostics.isEmpty()) {
                                      operatorOut().println("  ✓ " + file);
                                  }
@@ -149,6 +159,15 @@ public class LintCommand implements Callable<Integer> {
                                                                       cause.message()));
                                  System.err.println("  ✗ " + file + ": " + cause.message());
                              });
+    }
+
+    private static void record(Diagnostic diagnostic, List<Diagnostic> allDiagnostics, int[] counters) {
+        allDiagnostics.add(diagnostic);
+        switch (diagnostic.severity()) {
+            case ERROR -> counters[0]++;
+            case WARNING -> counters[1]++;
+            case INFO -> counters[2]++;
+        }
     }
 
     /// #633 — stdout is the document channel for the machine formats: `json`/`sarif` always emit

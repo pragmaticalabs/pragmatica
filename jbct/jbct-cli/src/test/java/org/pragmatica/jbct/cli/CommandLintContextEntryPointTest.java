@@ -9,8 +9,8 @@ import java.util.List;
 import java.util.function.Function;
 
 import org.pragmatica.jbct.config.JbctMode;
-import org.pragmatica.jbct.lint.JbctLinter;
 import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.lint.cst.LintRun;
 import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.AfterEach;
@@ -25,7 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #2525, fix round 2: `check`, `lint` and `score` are tested through the entry point a user runs
 /// (`CommandLine.execute` on the command, in a temp project), and the context they hand to the linter is observed at the one
-/// place it is handed over, the command's `linterFactory`. A test that calls `CliConfig.lintContext` or `createContext`
+/// place it is handed over, the command's `runFactory` (the source roots it gives the run). A test that calls `CliConfig.lintContext` or `createContext`
 /// instead cannot see a command build its own context, or drop `--mode`, inside `call()`.
 class CommandLintContextEntryPointTest {
     private static final String USER_HOME_PROPERTY = "user.home";
@@ -75,28 +75,28 @@ class CommandLintContextEntryPointTest {
         return Files.createDirectories(module.resolve("src/main/java"));
     }
 
-    /// Run the named command through `CommandLine.execute`; returns every context the command handed to the linter.
+    /// Run the named command through `CommandLine.execute`; returns every context the command handed to the run, one per source root.
     private List<LintContext> handedOver(String command, String... args) {
         var recorded = new ArrayList<LintContext>();
-        Function<LintContext, JbctLinter> recorder = context -> recordAndLint(recorded, context);
+        Function<List<LintRun.SourceRoot>, LintRun> recorder = roots -> recordAndRun(recorded, roots);
 
         switch (command) {
             case CHECK -> {
                 var check = new CheckCommand();
 
-                check.linterFactory = recorder;
+                check.runFactory = recorder;
                 new CommandLine(check).execute(args);
             }
             case LINT -> {
                 var lint = new LintCommand();
 
-                lint.linterFactory = recorder;
+                lint.runFactory = recorder;
                 new CommandLine(lint).execute(args);
             }
             default -> {
                 var score = new ScoreCommand();
 
-                score.linterFactory = recorder;
+                score.runFactory = recorder;
                 new CommandLine(score).execute(args);
             }
         }
@@ -104,10 +104,10 @@ class CommandLintContextEntryPointTest {
         return recorded;
     }
 
-    private static JbctLinter recordAndLint(List<LintContext> recorded, LintContext context) {
-        recorded.add(context);
+    private static LintRun recordAndRun(List<LintContext> recorded, List<LintRun.SourceRoot> roots) {
+        roots.forEach(root -> recorded.add(root.context()));
 
-        return JbctLinter.jbctLinter(context);
+        return LintRun.lintRun(roots);
     }
 
     private LintContext single(String command, String... args) {

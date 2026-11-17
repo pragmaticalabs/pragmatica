@@ -7,8 +7,9 @@ import java.util.concurrent.Callable;
 import java.util.function.Function;
 
 import org.pragmatica.jbct.config.JbctConfig;
-import org.pragmatica.jbct.lint.JbctLinter;
+import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.lint.cst.LintRun;
 import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.score.DensityGate;
 import org.pragmatica.jbct.score.ScoreCalculator;
@@ -58,8 +59,9 @@ public class ScoreCommand implements Callable<Integer> {
     @picocli.CommandLine.Option(names = {"--mode"}, description = "JBCT mode for this run, overriding jbct.toml and --config: business or infrastructure")
     String mode;
 
-    /// The one place the resolved context is handed to the linter; tests replace it to observe the context (#2525).
-    Function<LintContext, JbctLinter> linterFactory = JbctLinter::jbctLinter;
+    /// The one place the resolved source roots, each with its context, are handed to the run; tests replace it to
+    /// observe or adjust them (#2525).
+    Function<List<LintRun.SourceRoot>, LintRun> runFactory = LintRun::lintRun;
 
     @Override
     public Integer call() {
@@ -76,30 +78,69 @@ public class ScoreCommand implements Callable<Integer> {
             return USAGE_ERROR;
         }
 
-        var loadedConfig = CliConfig.load(Option.option(configPath), Option.option(mode), paths.getFirst(), System.err);
+        var resolvedRoots = CliRoots.resolve(Option.option(configPath),
+                                             Option.option(mode),
+                                             paths,
+                                             this::createContext,
+                                             System.err);
 
-        if (loadedConfig.isEmpty()) {
+        if (resolvedRoots.isEmpty()) {
             return CliConfig.CONFIG_ERROR_EXIT;
         }
 
-        var config = loadedConfig.unwrap();
-        var context = createContext(config);
-        var linter = linterFactory.apply(context);
-        var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
+        var roots = resolvedRoots.unwrap();
+        var scored = roots.stream().filter(ScoreCommand::isScored).toList();
+
+        roots.stream().filter(root -> !isScored(root)).forEach(root -> System.err.println(notScored(root)));
+        var run = runFactory.apply(roots.stream().map(CliRoots.ResolvedRoot::sourceRoot).toList());
+        var filesToProcess = CliRoots.allFiles(scored);
 
         if (filesToProcess.isEmpty()) {
-            System.err.println("No Java files found");
-
-            return 1;
+            return scored.isEmpty()
+                   ? 0
+                   : noFiles();
         }
 
-        var scan = SourceScan.sourceScan(filesToProcess, linter::lint, message -> System.err.println("  ✗ " + message));
+        var scan = SourceScan.sourceScan(filesToProcess, run::lint, message -> System.err.println("  ✗ " + message));
         var score = ScoreCalculator.calculate(scan);
+        var report = run.finish().onFailure(cause -> System.err.println("Error: " + cause.message())).option();
 
-        LayerCoverage.coverage(filesToProcess, context).map(LayerCoverage::render).onPresent(System.err::println);
+        if (report.isEmpty()) {
+            return CliConfig.CONFIG_ERROR_EXIT;
+        }
+
+        report.unwrap().summary().forEach(System.err::println);
+        scored.stream()
+              .filter(root -> !root.files()
+                                   .isEmpty())
+              .forEach(root -> LayerCoverage.coverage(root.files(),
+                                                      root.context())
+                                            .map(LayerCoverage::render)
+                                            .onPresent(System.err::println));
         outputScore(score);
 
         return gateExitCode(score);
+    }
+
+    private static int noFiles() {
+        System.err.println("No Java files found");
+
+        return 1;
+    }
+
+    /// `format-only` and `disabled` roots run no rule, so there is nothing to measure: the root is announced, never scored.
+    private static boolean isScored(CliRoots.ResolvedRoot root) {
+        return root.context()
+                   .mode() == JbctMode.BUSINESS || root.context()
+                                                       .mode() == JbctMode.INFRASTRUCTURE;
+    }
+
+    private static String notScored(CliRoots.ResolvedRoot root) {
+        return "Not scored: mode=" + root.context()
+                                         .mode()
+                                         .token()
+             + " root=" + root.path()
+             + " runs no JBCT rule, so it has no violation density.";
     }
 
     LintContext createContext(JbctConfig jbctConfig) {
