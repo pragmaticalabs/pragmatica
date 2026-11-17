@@ -4,9 +4,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
+import javax.lang.model.SourceVersion;
 
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.jbct.format.FormatterConfig;
@@ -45,8 +46,6 @@ record PartialConfig(PartialFormatter formatter,
                      PartialLayers layers,
                      Option<JbctMode> mode,
                      Option<String> basePackage) {
-    private static final Pattern PACKAGE_NAME = Pattern.compile("\\p{javaJavaIdentifierStart}\\p{javaJavaIdentifierPart}*(\\.\\p{javaJavaIdentifierStart}\\p{javaJavaIdentifierPart}*)*");
-
     private static final String BASE_PACKAGE_EXPECTED = "a Java package name, e.g. \"com.example.orders\"";
 
     /// A layer that sets nothing — the identity of [#mergeWith].
@@ -77,10 +76,7 @@ record PartialConfig(PartialFormatter formatter,
                                       toml.getStringList("lint", "excludePackages"),
                                       PartialLayers.partialLayers(toml),
                                       toml.getParsed("lint", "mode", JbctMode.ALLOWED, JbctMode::fromToken),
-                                      toml.getParsed("project",
-                                                     "basePackage",
-                                                     BASE_PACKAGE_EXPECTED,
-                                                     PartialConfig::basePackage));
+                                      basePackage(toml));
 
         return toml.requireNoTypeMismatches()
                    .flatMap(_ -> layer.requireSupportedMode());
@@ -99,9 +95,22 @@ record PartialConfig(PartialFormatter formatter,
                                  none());
     }
 
-    /// `[project] basePackage` text: a dotted Java package name, else [Option#none()] (recorded as a mismatch).
-    private static Option<String> basePackage(String raw) {
-        return PACKAGE_NAME.matcher(raw).matches()
+    /// `[project] basePackage`: a TOML string holding a dotted Java package name, none of whose segments is a keyword
+    /// or literal. Anything else, a non-string value included (`basePackage = true`), is recorded as a mismatch and
+    /// refused with the file, key and value named.
+    private static Option<String> basePackage(TomlDocument toml) {
+        var isString = toml.rawValue("project", "basePackage")
+                           .map(String.class::isInstance)
+                           .or(true);
+
+        return toml.getParsed("project",
+                              "basePackage",
+                              BASE_PACKAGE_EXPECTED,
+                              raw -> packageName(isString, raw));
+    }
+
+    private static Option<String> packageName(boolean isString, String raw) {
+        return isString && SourceVersion.isName(raw)
                ? some(raw)
                : none();
     }

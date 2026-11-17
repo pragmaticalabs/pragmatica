@@ -81,6 +81,44 @@ class JbctModeConfigTest {
     }
 
     @Test
+    void fromToml_refusesBasePackageWithAKeywordSegment() {
+        layer("[project]\nbasePackage = \"com.class.orders\"\n").onSuccess(layer -> Assertions.fail("must refuse, captured " + layer))
+             .onFailure(cause -> assertThat(cause.message()).contains("project.basePackage", "com.class.orders"));
+    }
+
+    @Test
+    void fromToml_refusesBasePackageThatIsALiteralOrKeywordOnItsOwn() {
+        layer("[project]\nbasePackage = \"true\"\n").onSuccess(layer -> Assertions.fail("must refuse, captured " + layer))
+             .onFailure(cause -> assertThat(cause.message()).contains("project.basePackage", "true"));
+    }
+
+    @Test
+    void fromToml_refusesBasePackageThatIsNotAString() {
+        layer("[project]\nbasePackage = true\n").onSuccess(layer -> Assertions.fail("must refuse, captured " + layer))
+             .onFailure(cause -> assertThat(cause.message()).contains("project.basePackage", "true"));
+    }
+
+    @Test
+    void fromToml_refusesBasePackageThatIsANumber() {
+        layer("[project]\nbasePackage = 42\n").onSuccess(layer -> Assertions.fail("must refuse, captured " + layer))
+             .onFailure(cause -> assertThat(cause.message()).contains("project.basePackage", "42"));
+    }
+
+    @Test
+    void fromToml_refusesANonStringWhoseTextReadsAsAPackageName() {
+        layer("[project]\nbasePackage = nan\n").onSuccess(layer -> Assertions.fail("must refuse, captured " + layer))
+             .onFailure(cause -> assertThat(cause.message()).contains("project.basePackage", "NaN"));
+        layer("[project]\nbasePackage = inf\n").onSuccess(layer -> Assertions.fail("must refuse, captured " + layer))
+             .onFailure(cause -> assertThat(cause.message()).contains("project.basePackage", "Infinity"));
+    }
+
+    @Test
+    void fromToml_acceptsBasePackageWithDigitsAndUnderscoresInsideSegments() {
+        config("[project]\nbasePackage = \"com.example_1.v2\"\n").onFailure(JbctModeConfigTest::fail)
+              .onSuccess(config -> assertThat(config.basePackage()).isEqualTo(Option.some("com.example_1.v2")));
+    }
+
+    @Test
     void toToml_roundTripsBothKeys() {
         config("[lint]\nmode = \"infrastructure\"\n[project]\nbasePackage = \"org.acme.billing\"\n").flatMap(config -> TomlParser.parse(config.toToml()).flatMap(JbctConfig::fromToml))
               .onFailure(JbctModeConfigTest::fail)

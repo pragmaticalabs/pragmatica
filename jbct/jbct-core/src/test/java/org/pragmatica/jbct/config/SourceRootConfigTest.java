@@ -3,6 +3,7 @@ package org.pragmatica.jbct.config;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.AfterEach;
@@ -166,6 +167,32 @@ class SourceRootConfigTest {
 
         assertThat(resolve(module)).isEqualTo(resolve(sourceRoot));
         assertThat(ConfigLoader.moduleDirectory(sourceRoot)).isEqualTo(ConfigLoader.moduleDirectory(module));
+    }
+
+    @Test
+    void basePackageKeywordSegment_isRefused_namingFileKeyAndValue() throws Exception {
+        var module = marked(repository("repo").resolve("module"));
+
+        write(module, "[project]\nbasePackage = \"com.class.orders\"\n");
+
+        var refusal = ConfigLoader.loadForSourceRoot(Option.none(), module).fold(Cause::message, _ -> "");
+
+        assertThat(refusal).contains(module.resolve(ConfigLoader.PROJECT_CONFIG_NAME).toString(),
+                                     "project.basePackage",
+                                     "com.class.orders");
+    }
+
+    @Test
+    void basePackageNonStringValue_isRefused_namingFileKeyAndValue() throws Exception {
+        var module = marked(repository("repo").resolve("module"));
+
+        write(module, "[project]\nbasePackage = true\n");
+
+        var refusal = ConfigLoader.loadForSourceRoot(Option.none(), module).fold(Cause::message, _ -> "");
+
+        assertThat(refusal).contains(module.resolve(ConfigLoader.PROJECT_CONFIG_NAME).toString(),
+                                     "project.basePackage",
+                                     "true");
     }
 
     private static JbctConfig resolve(Path path) {
