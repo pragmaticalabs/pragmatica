@@ -17,6 +17,7 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.worker.governor.GovernorAnnouncer;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
@@ -27,7 +28,9 @@ import org.pragmatica.lang.io.TimeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
-/// Repeated committed activation, and a refused community reassignment (H11), traverse consensus, scoped metadata and production node routing.
+/// Repeated committed activation, a refused community reassignment (H11), the retirement of a worker whose directive is removed,
+/// and a fresh join assigned to another community traverse consensus, scoped metadata and production node routing.
+/// A live worker has no move: removing its directive retires it (#3193), and a worker returns only by a fresh join (#3327).
 /// Reflection observes existing ownership handles; it neither installs a fake runtime nor arms tasks.
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
@@ -39,7 +42,7 @@ class HierarchicalWorkerRuntimeReplayTest {
         LifecycleAwait.bestEffort("stop runtime replay", cluster, cluster.stop());
     }
 
-    @Test void repeatedActivationRefusedReassignmentAndShutdownHaveOneRuntimeOwner() {
+    @Test void repeatedActivationRefusedReassignmentRetirementAndFreshJoinHaveOneRuntimeOwner() {
         LifecycleAwait.settled("start runtime replay", cluster, cluster.start());
         await().atMost(BUDGET.duration()).until(() -> cluster.currentLeader().isPresent());
         var workerId = LifecycleAwait.nodeSettled("admit runtime replay worker", cluster, cluster.addWorkerNode());
@@ -84,63 +87,61 @@ class HierarchicalWorkerRuntimeReplayTest {
         assertThat(worker.periodicTasks().armedCount()).isEqualTo(tasks);
         assertThat(observationListenerCount(worker)).isEqualTo(listeners);
 
-        // Removal then creation in another community is still allowed (#1840 item 3), so the runtime
-        // replacement path stays reachable and keeps its one-owner pin.
-        // One submission: a removal handled alone retires the worker under FSM2 (#3193). A key appears once per transaction, so
-        // removal and creation are two transactions, but they travel in one consensus batch and are applied back to back; the
-        // worker then finds the replacement committed when it handles the removal and does not retire.
-        commitTogether(List.of(new KVCommand.Mutation<>(key, Option.some(prior), Option.none())),
-                       List.of(new KVCommand.Mutation<>(communityKey, Option.none(), Option.some(originalCommunity)),
-                               new KVCommand.Mutation<>(key, Option.none(), Option.some(reassigned))));
-        await().atMost(BUDGET.duration()).until(() -> announcerHolder(worker).get() != original
-            && announcerHolder(worker).get().communityId().equals(communityKey.communityId()));
-        var replacement = announcerHolder(worker).get();
+        // Removing a live worker's directive is a RETIREMENT, never a move (#3193, #3327): the worker halts through the
+        // local drain and leaves the cluster. A worker returns only by a fresh join that is then assigned.
+        commit(List.of(new KVCommand.Mutation<>(key, Option.some(prior), Option.none())));
+        await().atMost(BUDGET.duration()).until(() -> cluster.getNode(workerId.id()).isEmpty());
+        await().atMost(BUDGET.duration()).until(() -> worker.periodicTasks().armedCount() == 0);
         assertThat(originalTimer.isScheduled()).isFalse();
         assertThat(original.isGovernor()).isFalse();
-        assertThat(timer(replacement).isScheduled()).isTrue();
-        assertThat(worker.periodicTasks().armedCount()).isEqualTo(tasks);
-        assertThat(observationListenerCount(worker)).isEqualTo(listeners);
+        assertThat(observationListenerCount(worker)).isLessThanOrEqualTo(listeners);
 
-        // A callback already dequeued before replacement may still reach the retired instance.
+        // A callback already dequeued before the halt may still reach the retired instance.
         original.onMembershipChange(List.of());
-        assertThat(announcerHolder(worker).get()).isSameAs(replacement);
         assertThat(originalTimer.isScheduled()).isFalse();
         assertThat(original.isGovernor()).isFalse();
         assertThat(((java.util.concurrent.atomic.AtomicLong) accessor(original, "sequence")).get()).isEqualTo(-1);
 
-        LifecycleAwait.nodeSettled("stop reassigned worker", cluster, cluster.killNode(workerId.id(), false));
-        assertThat(worker.periodicTasks().armedCount()).isZero();
+        // The fresh join: the first assignment of the next worker id is committed BEFORE the worker is admitted
+        // (production commitWorkerCommunity returns when a directive exists), so it starts in the other community.
+        var freshId = successor(workerId);
+        var freshKey = new AetherKey.ActivationDirectiveKey(freshId);
+        commit(List.of(new KVCommand.Mutation<>(communityKey, Option.none(), Option.some(originalCommunity)),
+                       new KVCommand.Mutation<>(freshKey, Option.none(), Option.some(reassigned))));
+        var admitted = LifecycleAwait.nodeSettled("admit fresh runtime replay worker", cluster, cluster.addWorkerNode());
+        assertThat(admitted).isEqualTo(freshId);
+        var fresh = cluster.getNode(admitted.id()).unwrap();
+        await().atMost(BUDGET.duration()).until(() -> announcerHolder(fresh).get() != null);
+        var replacement = announcerHolder(fresh).get();
+        assertThat(replacement).isNotSameAs(original);
+        assertThat(replacement.communityId()).isEqualTo(communityKey.communityId());
+        assertThat(timer(replacement).isScheduled()).isTrue();
+        assertThat(originalTimer.isScheduled()).isFalse();
+        assertThat(fresh.periodicTasks().armedCount()).isEqualTo(tasks);
+        assertThat(observationListenerCount(fresh)).isEqualTo(listeners);
+
+        LifecycleAwait.nodeSettled("stop fresh worker", cluster, cluster.killNode(admitted.id(), false));
+        assertThat(fresh.periodicTasks().armedCount()).isZero();
         assertThat(timer(replacement).isScheduled()).isFalse();
         original.onMembershipChange(List.of());
         replacement.onMembershipChange(List.of());
         assertThat(original.isGovernor()).isFalse();
         assertThat(replacement.isGovernor()).isFalse();
         assertThat(((java.util.concurrent.atomic.AtomicLong) accessor(replacement, "sequence")).get()).isEqualTo(-1);
-        assertThat(worker.periodicTasks().armedCount()).isZero();
+        assertThat(fresh.periodicTasks().armedCount()).isZero();
         assertThat(timer(replacement).isScheduled()).isFalse();
+    }
+
+    /// The next worker id the harness mints: the prefix counter advances by one per admitted node.
+    private static NodeId successor(NodeId id) {
+        var text = id.id();
+        var cut = text.lastIndexOf('-') + 1;
+
+        return NodeId.nodeId(text.substring(0, cut) + (Integer.parseInt(text.substring(cut)) + 1)).unwrap();
     }
 
     private void commit(List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
         assertThat(tryCommit(mutations)).as("transaction accepted").isTrue();
-    }
-
-    private void commitTogether(List<KVCommand.Mutation<AetherKey, AetherValue>> first,
-                                List<KVCommand.Mutation<AetherKey, AetherValue>> second) {
-        var node = leader();
-        var firstId = UUID.randomUUID().toString();
-        var secondId = UUID.randomUUID().toString();
-        var leaderValue = node.kvStore().getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap();
-        var results = node.<Object>apply(List.of(
-            new KVCommand.LeaderTransaction<AetherKey, AetherValue>(first.getFirst().key(), firstId, leaderValue, List.of(), first),
-            new KVCommand.LeaderTransaction<AetherKey, AetherValue>(second.getFirst().key(), secondId, leaderValue, List.of(), second)))
-            .await(BUDGET).unwrap();
-        assertThat(accepted(results, firstId)).as("removal accepted").isTrue();
-        assertThat(accepted(results, secondId)).as("replacement accepted").isTrue();
-    }
-
-    private static boolean accepted(List<Object> results, String transactionId) {
-        return results.stream().anyMatch(value -> value instanceof KVCommand.TransactionResult result
-            && result.transactionId().equals(transactionId) && result.accepted());
     }
 
     private boolean tryCommit(List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
