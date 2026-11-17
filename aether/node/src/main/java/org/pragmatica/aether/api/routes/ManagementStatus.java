@@ -155,7 +155,8 @@ public final class ManagementStatus {
                                                                                      "PUBLISHER_NOT_BOUND"),
                                                                      Listing.listing("org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator$CoordinatorError",
                                                                                      CONFLICT,
-                                                                                     "NOT_LEADER"),
+                                                                                     "NOT_LEADER",
+                                                                                     "SUPERSEDED"),
                                                                      Listing.listing(ROUTES
                                                                                     + "ScheduledTaskRoutes$InjectError$SliceNotLocal",
                                                                                      CONFLICT),

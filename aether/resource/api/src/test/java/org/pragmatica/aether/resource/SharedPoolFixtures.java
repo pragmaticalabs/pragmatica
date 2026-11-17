@@ -117,10 +117,13 @@ final class SharedPoolFixtures {
         private final FakePool pool;
         private final Fn0<Promise<Unit>> release;
         private final AtomicBoolean released = new AtomicBoolean();
+        /// Whether the pool was already closed when this view was made: a view handed out with this set is a dead one.
+        final boolean poolClosedAtIssue;
 
         FakeView(FakePool pool, Fn0<Promise<Unit>> release) {
             this.pool = pool;
             this.release = release;
+            this.poolClosedAtIssue = pool.closeCount() > 0;
         }
 
         @Override

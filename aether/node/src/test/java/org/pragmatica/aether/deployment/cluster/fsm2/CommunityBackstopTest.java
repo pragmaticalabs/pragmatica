@@ -92,6 +92,26 @@ class CommunityBackstopTest {
         }));
     }
 
+    /// The cause the C17s Put recorded for `node`: the record itself is gone once R-4.3.3 retires it, so the submission is the evidence.
+    private static List<Option<DepartureCause>> inferredCauses(MbWorld w, NodeId node) {
+        return w.inferred()
+                .stream()
+                .flatMap(s -> s.transaction()
+                               .mutations()
+                               .stream())
+                .filter(m -> m.key().equals(new NodeDepartureKey(node)) && m.replacement().isPresent())
+                .map(m -> ((NodeDepartureValue) m.replacement().unwrap()).cause())
+                .toList();
+    }
+
+    /// The reversal of a worker's inference (`departure-inferred-reversed`, its metric) is unreachable once C17b retired the worker's
+    /// directive (#3193): C11f needs a recorded WORKER directive, so only the worker's own join (WorkerJoin) re-admits it. Pinned so that
+    /// a path that starts reversing it again is a visible change rather than a silent one.
+    private static void assertNoReversal(MbWorld w) {
+        assertThat(w.h.warns("departure-inferred-reversed")).as("the view alone cannot reverse a retired worker's inference").isEmpty();
+        assertThat(w.h.metricTotal("aether_deployment_fsm_departures_inferred_reversed_total", t -> true)).isZero();
+    }
+
     /// The real placement reconciler (CPR) over the harness's store; its provider effects are inert stubs.
     private static CommunityPlacementReconciler placement(MbWorld w, Set<NodeId> admitted) {
         var actuator = new CommunityPlacementReconciler.Actuator() {
@@ -255,10 +275,11 @@ class CommunityBackstopTest {
     }
 
     // NT-128 (c)
-    // Red when: the residual is not reachable (no DEPARTED(STALE)); C17b removes more than slice rows, desired keys and routes; the
-    // directive or placement key is touched; a and b are not re-placed with exactly one new goal per affected instance; or, on the
-    // governor's correction, C11f does not run J2 (ADMITTED expecting the STALE value), departure-inferred-reversed is not raised
-    // (and counted once), w10 is not counted again, or its NodeId or token changed.
+    // #3193 (CTO ruling f407aba5dd, supersedes Q1 for worker directives): C17b retires the inferred worker's directive too, and R-4.3.3 then
+    // retires the STALE record, so the settled state is the identity without directive or record; the placement key stays.
+    // Red when: C17b leaves the worker's directive or the STALE record behind, or removes the placement key or more than slice rows, desired
+    // keys, routes and the directive; a and b are not re-placed with exactly one new goal per affected instance; or, on the governor's
+    // correction, the worker is not admitted again (a new WORKER directive), is not counted again, or its NodeId or token changed.
     @Test
     void wrongGovernorView_replacesOnce_thenIsReadmittedWhenTheViewHeals() {
         var w10 = node("w10");
@@ -270,11 +291,12 @@ class CommunityBackstopTest {
         var since = w.since(w10).or(0L);
 
         w.evolveUntil(since + bounds().workerRemoval() + 1_000_000L + 31_000_000_000L, C, GOV, aliveOthers, others);
-        assertThat(w.recordOf(w10).flatMap(NodeDepartureValue::cause)).as("the residual is reachable")
-                  .isEqualTo(Option.some(DepartureCause.STALE));
+        assertThat(w.h.warns("departure-inferred")).as("the residual is reachable: the inference was made").hasSize(1);
+        assertThat(inferredCauses(w, w10)).as("the C17s Put records cause STALE").containsExactly(Option.some(DepartureCause.STALE));
         assertThat(w.present(new SliceObservedKey(w10, ORDERS)) || w.present(new SliceObservedKey(w10, BILLING))).isFalse();
-        assertThat(w.present(new ActivationDirectiveKey(w10)) && w.present(new NodePlacementKey(w10))).as("identity persists")
-                  .isTrue();
+        assertThat(w.present(new ActivationDirectiveKey(w10))).as("C17b retired the worker's directive (#3193)").isFalse();
+        assertThat(w.recordOf(w10).isEmpty()).as("R-4.3.3 retired the STALE record with the directive").isTrue();
+        assertThat(w.present(new NodePlacementKey(w10))).as("the placement key stays").isTrue();
         for (var artifact : List.of(ORDERS, BILLING)) {
             var elsewhere = others.stream().filter(m -> w.present(new SliceDesiredKey(m, artifact))).toList();
 
@@ -282,22 +304,23 @@ class CommunityBackstopTest {
         }
 
         var tokenBefore = w.h.model().admissions.get(w10).map(Admission::token);
-        var reversedBefore = w.h.metricTotal("aether_deployment_fsm_departures_inferred_reversed_total", t -> true);
         var all = List.of(w10, M1, M2, M3, M4);
 
         w.evolve(C, GOV, Set.copyOf(all), all, 31_000L);
-        assertThat(w.recordOf(w10).map(NodeDepartureValue::state)).as("J2 replaced the STALE record")
-                  .isEqualTo(Option.some(DepartureState.ADMITTED));
-        assertThat(w.h.warns("departure-inferred-reversed")).hasSize(1);
-        assertThat(w.h.metricTotal("aether_deployment_fsm_departures_inferred_reversed_total", t -> true)).isEqualTo(reversedBefore + 1);
+        assertThat(w.recordOf(w10).isEmpty()).as("the view alone does not re-admit a retired identity").isTrue();
+        assertNoReversal(w);
+        w.h.deliver(new ClusterInput.WorkerJoin(w10, w.admissionOf(w10)));
+        w.h.drain();
+        assertThat(w.stored(new ActivationDirectiveKey(w10)).map(v -> ((ActivationDirectiveValue) v).role()))
+                  .as("a new WORKER directive (#3028)").isEqualTo(Option.some(ActivationDirectiveValue.WORKER));
         assertThat(w.counts(w10)).isTrue();
         assertThat(w.h.model().admissions.get(w10).map(Admission::token)).isEqualTo(tokenBefore);
     }
 
     // NT-128 (c) variant
-    // Red when: the reappearance in localAlive (not in the roster) does not re-admit.
+    // Red when: the reappearance in localAlive (not in the roster) re-admits a retired identity (#3193: only its own join does), or that join does not admit it.
     @Test
-    void wrongGovernorView_reappearanceInLocalAlive_alsoReadmits() {
+    void wrongGovernorView_reappearanceInLocalAlive_aloneDoesNotReadmit_theOwnJoinDoes() {
         var w10 = node("w10");
         var w = residualWorld();
         var others = List.of(M1, M2, M3, M4);
@@ -307,10 +330,18 @@ class CommunityBackstopTest {
         var since = w.since(w10).or(0L);
 
         w.evolveUntil(since + bounds().workerRemoval() + 1_000_000L + 31_000_000_000L, C, GOV, aliveOthers, others);
-        assertThat(w.recordOf(w10).flatMap(NodeDepartureValue::cause)).isEqualTo(Option.some(DepartureCause.STALE));
+        assertThat(w.h.warns("departure-inferred")).hasSize(1);
+        assertThat(inferredCauses(w, w10)).as("the C17s Put records cause STALE").containsExactly(Option.some(DepartureCause.STALE));
+        assertThat(w.recordOf(w10).isEmpty()).as("the STALE record is retired with the directive (#3193)").isTrue();
         w.refreshSeams(s -> s.withLocalAlive(Option.some(Set.of(w10, M1, M2, M3, M4))));
         w.h.drain();
-        assertThat(w.recordOf(w10).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.ADMITTED));
+        assertThat(w.recordOf(w10).isEmpty()).as("localAlive alone does not re-admit a retired identity").isTrue();
+        assertNoReversal(w);
+        w.h.deliver(new ClusterInput.WorkerJoin(w10, w.admissionOf(w10)));
+        w.h.drain();
+        assertThat(w.stored(new ActivationDirectiveKey(w10)).map(v -> ((ActivationDirectiveValue) v).role()))
+                  .as("the own join directs it again (#3028)").isEqualTo(Option.some(ActivationDirectiveValue.WORKER));
+        assertThat(w.counts(w10)).isTrue();
     }
 
     private MbWorld sixWorkers() {

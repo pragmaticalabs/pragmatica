@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 import org.pragmatica.aether.example.shared.Address;
@@ -221,7 +222,7 @@ public interface FulfillmentService {
             private static boolean isSameDayRestricted(CreateShipmentRequest request) {
                 return request.shippingOption() == ShippingOption.SAME_DAY && NO_SAME_DAY_STATES.contains(request.shippingAddress()
                                                                                                                  .state()
-                                                                                                                 .toUpperCase());
+                                                                                                                 .toUpperCase(Locale.ROOT));
             }
 
             private Promise<Shipment> persistShipment(Shipment shipment) {
@@ -287,7 +288,7 @@ public interface FulfillmentService {
 
             private boolean isOptionAvailable(ShippingOption option, Address destination) {
                 return option != ShippingOption.SAME_DAY || !NO_SAME_DAY_STATES.contains(destination.state()
-                                                                                                    .toUpperCase());
+                                                                                                    .toUpperCase(Locale.ROOT));
             }
 
             private ShippingQuote.ShippingOptionQuote createQuote(ShippingOption option,

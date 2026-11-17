@@ -5,6 +5,7 @@ package org.pragmatica.aether.cli.cluster;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -107,7 +108,7 @@ sealed interface ConfigReferenceResolver {
 
     private static String resolveEnvVarName(String type, String name) {
         return "secrets".equals(type)
-               ? "AETHER_" + name.toUpperCase()
+               ? "AETHER_" + name.toUpperCase(Locale.ROOT)
                                  .replace('-', '_')
                : name;
     }

@@ -33,11 +33,11 @@ public class CstMessageComponentLastRule implements CstLintRule {
         return CauseHierarchies.causeRecords(root, causeNames)
                                .stream()
                                .filter(record -> {
-                                   var components = CauseHierarchies.recordComponentNames(record);
-                                   var index = components.indexOf("message");
+                                           var components = CauseHierarchies.recordComponentNames(record);
+                                           var index = components.indexOf("message");
 
-                                   return index >= 0 && index != components.size() - 1;
-                               })
+                                           return index >= 0 && index != components.size() - 1;
+                                       })
                                .map(record -> Diagnostic.diagnostic(RULE_ID,
                                                                     ctx.severityFor(RULE_ID),
                                                                     ctx.fileName(),

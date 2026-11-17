@@ -98,13 +98,14 @@ class ReplicationSenderValidationTest {
     }
 
     /// Owner handoff: the new owner observed its commit before this replica did. Refusing here would
-    /// withhold acks from the legitimate owner until this replica's KV caught up.
+    /// withhold the records from the legitimate owner until this replica's KV caught up; they are applied, but not acked
+    /// (#2840): the copy is not verified for the newer epoch.
     @Test
-    void onReplicateEvents_appliesAndAcks_whenBatchEpochIsNewerThanThisReplicasCommittedView() {
+    void onReplicateEvents_appliesButDoesNotAck_whenBatchEpochIsNewerThanThisReplicasCommittedView() {
         handler(0L, committedTo(OWNER)).onReplicateEvents(batch(OTHER_REPLICA, 0L, COMMITTED_EPOCH.nextCounter()));
 
         assertThat(appends.get()).isEqualTo(2);
-        assertThat(acks).hasSize(1);
+        assertThat(acks).isEmpty();
     }
 
     @Test

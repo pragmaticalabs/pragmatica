@@ -39,8 +39,10 @@ import org.slf4j.LoggerFactory;
 /// and nothing else (P3-R4). An op with no artifact (`NOTIFY_CONFIG`) has a lane of its own.
 ///
 /// **Hazards and rules.**
-/// - **H3b (quick flap).** The old incarnation's fire-and-forget `SUSPEND` is still running when the new incarnation's reactivation ops are
-///   queued: they wait behind it in the artifact's FIFO.
+/// - **H3b (quick flap).** Two halves. Lane order: the old incarnation's `SUSPEND` op is still running when the new incarnation's
+///   reactivation ops are queued, so they wait behind it in the artifact's FIFO; but `SUSPEND` returns at once and the lane does not cover its
+///   cluster write. Route order: the adapter keeps that route removal as a pending promise per artifact, and the next `PUBLISH_ROUTES` of the
+///   artifact awaits it (bounded), so the reactivation's `Put` is not overtaken by the old `Remove` (`SliceRuntimeAdapter`).
 /// - **H3c (stale ops).** On dequeue, a chain op (token non-zero) whose incarnation differs from the interpreter's current one is discarded
 ///   unrun and counted `dropped_stale`. Token-0 teardown ops (`SUSPEND`, `UNPUBLISH`, `FORCED_CLEANUP`, `EVICT`) still run: they were queued
 ///   before the new incarnation's ops, so they run first, and teardown is safe. **The timeout clock starts when the op starts**, not when it is

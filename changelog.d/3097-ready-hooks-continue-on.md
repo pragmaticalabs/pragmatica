@@ -1,0 +1,2 @@
+### Changed (2026-11-12 — #3097: QuicClusterNetwork.fireReadyHooks hand-rolled a thread hop)
+- **Transport-ready hooks now leave the Netty I/O thread through `Promise.continueOn()`** (#3097) instead of a hand-written `Promise.promise(...)` hop. Per-hook isolation (a throwing hook is logged at WARN and the rest still run) and the #1461 property (a completed start implies the hooks fired) are unchanged. [verified: `QuicClusterNetworkLifecycleTest#readyHook_doesNotRunOnANettyIoThread`, `#startedNetwork_awaitedStart_hasAlreadyFiredASlowReadyHook`]

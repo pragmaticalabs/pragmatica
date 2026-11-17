@@ -51,6 +51,7 @@ public class CstUseCaseStructureRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-UC-02";
     private static final String REQUEST_SUFFIX = "Request";
     private static final String RESPONSE_SUFFIX = "Response";
+
     private static final String UNIT_PROMISE = "Promise<Unit>";
 
     /// Annotations that are never resource qualifiers — everything else on a parameter or on a
@@ -127,7 +128,9 @@ public class CstUseCaseStructureRule implements CstLintRule {
     /// `@Heartbeat Promise<Unit> heartbeat();` — the shape the `Scheduled` contract mandates: no
     /// parameters, `Promise<Unit>` return, and a resource-qualifier annotation naming the schedule.
     private boolean isScheduledHook(Cursor root, Cursor method) {
-        return hasNoParameters(method) && returnsUnitPromise(method) && carriesResourceQualifier(root, method);
+        return hasNoParameters(method)
+               && returnsUnitPromise(method)
+               && carriesResourceQualifier(root, method);
     }
 
     private boolean hasNoParameters(Cursor method) {
@@ -143,7 +146,7 @@ public class CstUseCaseStructureRule implements CstLintRule {
 
     private boolean carriesResourceQualifier(Cursor root, Cursor method) {
         return enclosingMember(root, method).map(this::declaresQualifierAnnotation)
-                           .or(false);
+                              .or(false);
     }
 
     private boolean declaresQualifierAnnotation(Cursor node) {
@@ -199,8 +202,8 @@ public class CstUseCaseStructureRule implements CstLintRule {
     /// the exemption rather than granted it.
     private boolean carriesFactType(Cursor param) {
         return childByRule(param, RuleKind.TYPE).flatMap(CstNodes::typeSimpleName)
-                           .map(name -> !isRequestOrResponse(name))
-                           .or(false);
+                          .map(name -> !isRequestOrResponse(name))
+                          .or(false);
     }
 
     private boolean isRequestOrResponse(String name) {

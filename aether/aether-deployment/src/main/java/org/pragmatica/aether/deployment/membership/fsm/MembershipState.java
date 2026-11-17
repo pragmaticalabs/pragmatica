@@ -262,12 +262,13 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
     /// reports quorum loss ([`MembershipContext#reportsQuorumLoss`]) the newer incarnation is recorded but the member
     /// stays DEPARTING; the report's clearing arrives with a further incarnation bump and recovers it here, or the
     /// DEPARTING timeout terminalizes it first and the same bump reopens it through [`#rejoinIfNewer`].
+    /// #3119: the hold applies only while this observer itself holds quorum ([`MembershipContext#quorumLossHoldsOut`]).
     private static void recoverFromDepartingIfNewer(MembershipContext ctx,
                                                     long incarnation,
                                                     TransitionRequest<MembershipState, MembershipEvent> tx) {
         if (incarnation <= ctx.lastSeenIncarnation()) {
             tx.ignore();
-        } else if (ctx.reportsQuorumLoss()) {
+        } else if (ctx.quorumLossHoldsOut()) {
             tx.handle(() -> ctx.observeIncarnation(incarnation));
         } else {
             ctx.observeIncarnation(incarnation);
@@ -281,11 +282,12 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
     /// #2936: while the member itself reports quorum loss ([`MembershipContext#reportsQuorumLoss`]) a newer
     /// incarnation does not reopen it either; the report's clearing arrives with a further incarnation bump, which
     /// still exceeds the terminal incarnation and reopens it then.
+    /// #3119: the hold applies only while this observer itself holds quorum ([`MembershipContext#quorumLossHoldsOut`]).
     private static void rejoinIfNewer(MembershipContext ctx,
                                       Dead current,
                                       long incarnation,
                                       TransitionRequest<MembershipState, MembershipEvent> tx) {
-        if (incarnation <= current.terminalIncarnation() || ctx.reportsQuorumLoss()) {
+        if (incarnation <= current.terminalIncarnation() || ctx.quorumLossHoldsOut()) {
             tx.ignore();
         } else {
             tx.transitionTo(ctx.observedRejoin(incarnation));

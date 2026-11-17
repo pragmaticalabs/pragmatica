@@ -61,7 +61,7 @@ class OwnerPromotionAlarmLockOrderTest {
                                                                    1L,
                                                                    false,
                                                                    List.of(),
-                                                                   List.of(new EpochStart(EPOCH, 5L))));
+                                                                   List.of(EpochStart.epochStart(EPOCH, 5L, Option.none()))));
 
         return OwnerActivation.ownerActivation(SELF,
                                                (_, _) -> record,

@@ -123,5 +123,25 @@ class GeneratedConstructorLiftRuntimeTest {
             strictCalls.incrementAndGet();
             return delegate.strict(request);
         }
+
+        @Override
+        public Promise<ShortResponse> byTag(QueryItemRequest request) {
+            return delegate.byTag(request);
+        }
+
+        @Override
+        public Promise<ShortResponse> tagged(QueryBodyRequest request) {
+            return delegate.tagged(request);
+        }
+
+        @Override
+        public Promise<ShortResponse> pathTag(PathQueryRequest request) {
+            return delegate.pathTag(request);
+        }
+
+        @Override
+        public Promise<ShortResponse> pathTagged(PathQueryBodyRequest request) {
+            return delegate.pathTagged(request);
+        }
     }
 }

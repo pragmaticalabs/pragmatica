@@ -7,6 +7,10 @@ updateItem = "PUT /items/{id:Long}"
 lookup = "GET /lookup/{code}"
 strict = "GET /strict/{code}"
 openCode = "POST /open/{code}"
+byTag = "GET /bytag?tag"
+tagged = "POST /tagged?tag"
+pathTag = "GET /pt/{code}?tag"
+pathTagged = "PUT /ptb/{code}?tag"
 
 [errors]
 default = 500

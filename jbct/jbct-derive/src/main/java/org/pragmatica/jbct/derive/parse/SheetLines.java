@@ -8,6 +8,7 @@ import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Option;
 
+
 /// A locator for `[[array-of-tables]]` header line numbers in the raw sheet text.
 ///
 /// The shared [org.pragmatica.config.toml.TomlParser] discards positions once a document is
@@ -23,7 +24,7 @@ public record SheetLines(Map<String, List<Integer>> arrayHeaders) {
     }
 
     /// Scan the raw sheet text and index every array-table header by name.
-    public static SheetLines of(String content) {
+    public static SheetLines sheetLines(String content) {
         Map<String, List<Integer>> headers = new LinkedHashMap<>();
         String[] lines = content.split("\n", -1);
 

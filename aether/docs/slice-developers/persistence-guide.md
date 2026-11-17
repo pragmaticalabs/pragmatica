@@ -174,6 +174,16 @@ Promise<Unit> updateUser(long id, UpdateUserRequest request);
 | `Promise<Unit>` | No result (DML) |
 | `Promise<Long>` | Scalar count (an expression such as `count(*)` needs an alias: `SELECT count(*) AS n FROM t`) |
 | `Promise<Boolean>` | Scalar boolean (an expression such as `EXISTS(..)` needs an alias: `SELECT EXISTS(..) AS found`; see Nullable Columns) |
+| `Promise<V>`, `Promise<Option<V>>`, `Promise<List<V>>` where `V` declares `static ValueMapping<V, P> valueMapping()` | Scalar value object: the single column is read as `P` and decoded through `valueMapping().lift()`; a lift failure is a typed `RowDecode` failure of the method. A bare expression needs an alias, as for `Long` |
+
+**Row records are built through their factory.** A row record returned by `@Query` or a CRUD method must declare the
+type-named static factory (`UserRow` -> `static UserRow userRow(long id, String name, ...)`, parameters = components in
+order). The generated mapper calls it, never `new`: it returns `UserRow` (joined with `map`) or `Result<UserRow>` when the
+record has an invariant (joined with `flatMap`, so a rejected row is the method's failure). A record without it fails the
+build with a message naming the expected signature.
+
+**Transactions.** `PgSqlConnector.transactional(c -> ...)` hands the callback a `PgSqlConnector` bound to the
+transaction, so generated adapters compose with it directly: `UserPersistenceFactory.userPersistence(c)` inside the callback.
 
 ### Query Narrowing
 

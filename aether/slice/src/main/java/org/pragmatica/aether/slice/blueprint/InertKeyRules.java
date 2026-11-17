@@ -4,6 +4,7 @@
 package org.pragmatica.aether.slice.blueprint;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
@@ -116,7 +117,7 @@ public sealed interface InertKeyRules {
 
     private static String lower(Enum<?> value) {
         return value.toString()
-                    .toLowerCase();
+                    .toLowerCase(Locale.ROOT);
     }
 
     private static String consumerMessage(String key, String value) {

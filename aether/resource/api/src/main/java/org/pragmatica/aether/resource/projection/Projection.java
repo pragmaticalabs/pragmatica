@@ -30,7 +30,7 @@ import org.slf4j.LoggerFactory;
 /// §10): fold each durably-delivered topic event into a keyed read model.
 ///
 /// ```java
-/// var projection = Projection.of(ORDERS_COMPLETED)              // Topic<OrderCompleted>
+/// var projection = Projection.projection(ORDERS_COMPLETED)              // Topic<OrderCompleted>
 ///                            .into(store, OrderCompleted::orderId)
 ///                            .apply(Orders::fold);
 /// ```
@@ -391,7 +391,7 @@ public record Projection<S, T>(String name,
         return store.cursorCommitted(token, partition, committedCursor);
     }
 
-    public static <T> Builder<T> of(Topic<T> topic) {
+    public static <T> Builder<T> projection(Topic<T> topic) {
         return new Builder<>(topic);
     }
 

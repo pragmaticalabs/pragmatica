@@ -24,9 +24,9 @@ public final class NodeReplacementAnnouncements {
 
     public record Announcement(OperatorWarningCode code, String subject, String message) {}
 
-    public static List<Announcement> of(NodeId original,
-                                        Option<NodeReplacementValue> before,
-                                        NodeReplacementValue after) {
+    public static List<Announcement> nodeReplacementAnnouncements(NodeId original,
+                                                                  Option<NodeReplacementValue> before,
+                                                                  NodeReplacementValue after) {
         var out = new ArrayList<Announcement>();
         var subject = original.id();
         var prior = before.map(NodeReplacementValue::phase).or(NodeReplacementPhase.UNKNOWN);

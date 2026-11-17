@@ -40,7 +40,7 @@ class CommittedProvenanceTest {
             publish(owner, E1, 3);
             publish(owner, E2, 2);
 
-            var attributed = StreamPartitionManager.committedProvenance(List.of(new EpochStart(E1, 0L), new EpochStart(E2, 3L)), 4L);
+            var attributed = StreamPartitionManager.committedProvenance(List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 3L, Option.none())), 4L);
 
             assertThat(attributed).isEqualTo(owner.epochHistory("s", 0).unwrap());
         }
@@ -49,7 +49,7 @@ class CommittedProvenanceTest {
     /// A folded entry's start belongs to its `coversFrom`: it gets no entry (its range reads UNDEFINED).
     @Test
     void foldedEntry_getsNoEntry() {
-        var attributed = StreamPartitionManager.committedProvenance(List.of(new EpochStart(E1, 0L), new EpochStart(E3, 5L, E2)), 9L);
+        var attributed = StreamPartitionManager.committedProvenance(List.of(EpochStart.epochStart(E1, 0L, Option.none()), new EpochStart(E3, 5L, E2, Option.none())), 9L);
 
         assertThat(attributed).containsExactly(entry(E1, 0L));
     }
@@ -57,10 +57,10 @@ class CommittedProvenanceTest {
     /// An epoch whose range is empty wrote nothing and is skipped; an epoch beginning above `toOffset` attributes nothing.
     @Test
     void emptyRange_andStartsAboveTheSlice_areDropped() {
-        var attributed = StreamPartitionManager.committedProvenance(List.of(new EpochStart(E1, 0L), new EpochStart(E2, 3L), new EpochStart(E3, 3L)), 2L);
+        var attributed = StreamPartitionManager.committedProvenance(List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 3L, Option.none()), EpochStart.epochStart(E3, 3L, Option.none())), 2L);
 
         assertThat(attributed).containsExactly(entry(E1, 0L));
-        assertThat(StreamPartitionManager.committedProvenance(List.of(new EpochStart(E1, 0L), new EpochStart(E2, 3L), new EpochStart(E3, 3L)), 5L))
+        assertThat(StreamPartitionManager.committedProvenance(List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 3L, Option.none()), EpochStart.epochStart(E3, 3L, Option.none())), 5L))
                 .containsExactly(entry(E1, 0L), entry(E3, 3L));
         assertThat(StreamPartitionManager.committedProvenance(List.of(), 5L)).isEmpty();
     }

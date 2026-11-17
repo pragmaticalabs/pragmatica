@@ -30,6 +30,9 @@ class WideMapperCompileTest {
         var fields = IntStream.range(0, columnCount)
                               .mapToObj(i -> "long f" + i)
                               .collect(Collectors.joining(", "));
+        var names = IntStream.range(0, columnCount)
+                             .mapToObj(i -> "f" + i)
+                             .collect(Collectors.joining(", "));
         var selectList = IntStream.range(0, columnCount)
                                   .mapToObj(i -> "f" + i)
                                   .collect(Collectors.joining(", "));
@@ -44,12 +47,12 @@ class WideMapperCompileTest {
             @PgSql
             public interface WideRepo {
 
-                record WideRow(%s) {}
+                record WideRow(%s) { static WideRow wideRow(%s) { return new WideRow(%s); } }
 
                 @Query("SELECT %s FROM wide WHERE f0 = :f0")
                 Promise<Option<WideRow>> findWide(long f0);
             }
-            """.formatted(fields, selectList);
+            """.formatted(fields, fields, names, selectList);
     }
 
     @Nested
@@ -68,7 +71,7 @@ class WideMapperCompileTest {
             assertThat(generated).contains("var part1 = Result.all(");
             assertThat(generated).contains("var part2 = Result.all(");
             assertThat(generated).contains(").id();");
-            assertThat(generated).contains("new WideRepo.WideRow(");
+            assertThat(generated).contains("WideRepo.WideRow.wideRow(").doesNotContain("new WideRepo.WideRow(");
         }
 
         @Test

@@ -153,7 +153,7 @@ class UpgradeRunServiceTest {
 
         assertThat(committed).as("one commit, straight to ABORTED").hasSize(1);
         assertThat(committed.getFirst().state()).isEqualTo(UpgradeRunState.ABORTED);
-        assertThat(UpgradeRunAnnouncements.of(Option.some(paused), committed.getFirst()).stream().map(UpgradeRunAnnouncements.Announcement::code).toList())
+        assertThat(UpgradeRunAnnouncements.upgradeRunAnnouncements(Option.some(paused), committed.getFirst()).stream().map(UpgradeRunAnnouncements.Announcement::code).toList())
             .as("the committed transition, not a hand-fed one")
             .containsExactly(OperatorWarningCode.UPGRADE_PAUSE_ENDED, OperatorWarningCode.UPGRADE_ABORTED);
     }

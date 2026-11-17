@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.jbct.slice.routing;
 
+import java.util.Locale;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
@@ -43,7 +45,7 @@ public sealed interface RouteSecurityLevel {
             return EMPTY_VALUE.result();
         }
 
-        var trimmed = value.trim().toLowerCase();
+        var trimmed = value.trim().toLowerCase(Locale.ROOT);
 
         return switch (trimmed) {
             case "public" -> Result.success(PUBLIC);
@@ -61,7 +63,7 @@ public sealed interface RouteSecurityLevel {
             case OptionalAuth _ -> 1;
             case Authenticated _ -> 2;
             case Role _ -> 3;
-            case Unspecified _ -> -1;
+            case Unspecified _ -> - 1;
         };
     }
 

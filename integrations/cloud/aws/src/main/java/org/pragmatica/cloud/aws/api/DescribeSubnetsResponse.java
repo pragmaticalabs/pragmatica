@@ -18,9 +18,9 @@ package org.pragmatica.cloud.aws.api;
 
 import java.util.List;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-
 import org.pragmatica.lang.Option;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 import tools.jackson.dataformat.xml.annotation.JacksonXmlElementWrapper;
 import tools.jackson.dataformat.xml.annotation.JacksonXmlProperty;
@@ -38,8 +38,7 @@ import tools.jackson.dataformat.xml.annotation.JacksonXmlRootElement;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record DescribeSubnetsResponse(@JacksonXmlProperty(localName = "subnetSet") SubnetSet subnetSet) {
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record SubnetSet(@JacksonXmlElementWrapper(useWrapping = false)
-                            @JacksonXmlProperty(localName = "item") List<Subnet> items) {}
+    public record SubnetSet(@JacksonXmlElementWrapper(useWrapping = false) @JacksonXmlProperty(localName = "item") List<Subnet> items) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record Subnet(@JacksonXmlProperty(localName = "subnetId") String subnetId,

@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -336,12 +337,12 @@ public final class NodeReplacementWiring {
                                 NodeId original,
                                 Option<NodeReplacementValue> before,
                                 NodeReplacementValue after) {
-        NodeReplacementAnnouncements.of(original, before, after).forEach(a -> OperatorWarnings.raise(LOG,
-                                                                                                     warnings,
-                                                                                                     a.code(),
-                                                                                                     a.subject(),
-                                                                                                     "{}",
-                                                                                                     a.message()));
+        NodeReplacementAnnouncements.nodeReplacementAnnouncements(original, before, after).forEach(a -> OperatorWarnings.raise(LOG,
+                                                                                                                               warnings,
+                                                                                                                               a.code(),
+                                                                                                                               a.subject(),
+                                                                                                                               "{}",
+                                                                                                                               a.message()));
 
         return Unit.unit();
     }
@@ -817,7 +818,7 @@ public final class NodeReplacementWiring {
             var external = chosen.isPresent();
             var now = in.clock().getAsLong();
             var record = new NodeReplacementValue(replacement,
-                                                  role.toLowerCase(),
+                                                  role.toLowerCase(Locale.ROOT),
                                                   NodeReplacementPhase.PROVISIONING,
                                                   now + in.timings().provisioningMs(),
                                                   source,

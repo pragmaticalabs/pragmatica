@@ -81,6 +81,9 @@ class JoinedEvidenceTest {
     private MbWorld communityOfW1(Set<NodeId> alive) {
         var w = MbWorld.world(CORE_1, CORE_2);
 
+        // #3193: C17b retires a departed worker's directive, and R-4.3.3 then its record. These tests observe the evidence arms while the
+        // DEPARTED record stands, i.e. before C17b commits, so its submission (still logged) is lost.
+        w.h.loseKinds = Set.of(SubmitKind.CLEANUP);
         w.admit(CORE_1, 0x1111L);
         w.admit(CORE_2, 0x2222L);
         w.workers(C, 10, alive, W1, M1, M2, M3, M4).target(ORDERS, 2, "WORKERS_ONLY");

@@ -23,6 +23,7 @@ import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Locale;
 import java.util.SplittableRandom;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -443,7 +444,7 @@ class RequestGateStreamWireTest {
 
         var text = head.toString(StandardCharsets.ISO_8859_1);
         var length = text.lines()
-                         .filter(line -> line.toLowerCase().startsWith("content-length:"))
+                         .filter(line -> line.toLowerCase(Locale.ROOT).startsWith("content-length:"))
                          .map(line -> Integer.parseInt(line.substring(line.indexOf(':') + 1).strip()))
                          .findFirst()
                          .orElse(0);

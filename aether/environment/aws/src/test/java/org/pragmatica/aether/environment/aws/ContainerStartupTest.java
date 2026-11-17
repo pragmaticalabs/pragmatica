@@ -11,7 +11,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-import org.testcontainers.DockerClientFactory;
+import org.pragmatica.testing.DockerRequirement;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.utility.DockerImageName;
@@ -28,7 +28,7 @@ class ContainerStartupTest {
 
     @BeforeEach
     void requireDocker() {
-        assumeTrue(dockerAvailable(), "requires a Docker daemon");
+        assumeTrue(DockerRequirement.dockerAvailable(), "requires a Docker daemon");
     }
 
     @Test
@@ -75,14 +75,6 @@ class ContainerStartupTest {
         return container.withCreateContainerCmdModifier(cmd -> cmd.withEntrypoint("sh", "-c", script))
                         .waitingFor(Wait.forLogMessage(".*Ready\\..*\\n", 1)
                                         .withStartupTimeout(Duration.ofSeconds(20)));
-    }
-
-    private static boolean dockerAvailable() {
-        try {
-            return DockerClientFactory.instance().isDockerAvailable();
-        } catch (RuntimeException e) {
-            return false;
-        }
     }
 
     private static final class Fixed extends GenericContainer<Fixed> {

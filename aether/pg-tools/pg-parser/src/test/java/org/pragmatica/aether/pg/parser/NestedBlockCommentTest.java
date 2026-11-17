@@ -81,7 +81,7 @@ class NestedBlockCommentTest {
     /// separately, so the two failures cannot be confused.
     private static List<CstNavigator> selectItems(String sql) {
         return PARSER.parseCst(sql)
-                     .map(node -> CstNavigator.of((CstNode.NonTerminal) node)
+                     .map(node -> CstNavigator.cstNavigator((CstNode.NonTerminal) node)
                                               .findAll("TargetElem"))
                      .or(List.of());
     }

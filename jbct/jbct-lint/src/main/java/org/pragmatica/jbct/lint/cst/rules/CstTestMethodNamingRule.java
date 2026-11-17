@@ -51,7 +51,7 @@ public class CstTestMethodNamingRule implements CstLintRule {
 
     private boolean isTestMethod(Cursor root, Cursor method) {
         return hasTestAnnotation(method) || enclosingMember(root, method).map(this::hasTestAnnotation)
-                                                        .or(false);
+                                                           .or(false);
     }
 
     private boolean hasTestAnnotation(Cursor holder) {

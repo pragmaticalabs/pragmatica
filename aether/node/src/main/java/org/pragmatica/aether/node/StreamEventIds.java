@@ -26,7 +26,7 @@ final class StreamEventIds {
     private StreamEventIds() {}
 
     /// `kind` of the event, then the committed record it describes.
-    static String of(String kind, StreamPartitionOwnershipKey key, StreamPartitionOwnershipValue record) {
+    static String streamEventIds(String kind, StreamPartitionOwnershipKey key, StreamPartitionOwnershipValue record) {
         var epoch = record.ownerEpoch();
 
         return String.join(":",

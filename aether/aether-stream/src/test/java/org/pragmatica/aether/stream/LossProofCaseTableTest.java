@@ -14,6 +14,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipV
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
 
@@ -69,7 +70,7 @@ class LossProofCaseTableTest {
         var record = foldedThenRestartedAt(60L);
 
         assertThat(record.epochStarts()).as("premise: two entries, the oldest folded").hasSize(2);
-        assertThat(record.epochStarts().getFirst()).isEqualTo(new EpochStart(e(6), 0L, e(1)));
+        assertThat(record.epochStarts().getFirst()).isEqualTo(new EpochStart(e(6), 0L, e(1), Option.some(SELF)));
         assertDiverged(record, e(3), 25L, 0L, false);
     }
 
@@ -84,7 +85,7 @@ class LossProofCaseTableTest {
     /// C7: 16 exact entries (epochs 10..25 at 100..250), consumer of epoch 1 at 250: epoch 11 began at 110 < 250. Proven.
     @Test
     void c7_fullUnfoldedHistory_consumerOlderThanAll_warns() {
-        var record = withStarts(IntStream.range(0, 16).mapToObj(i -> new EpochStart(e(10 + i), 100L + i * 10L)).toList());
+        var record = withStarts(IntStream.range(0, 16).mapToObj(i -> EpochStart.epochStart(e(10 + i), 100L + i * 10L, Option.none())).toList());
 
         assertDiverged(record, e(1), 250L, 100L, true);
     }
@@ -92,16 +93,16 @@ class LossProofCaseTableTest {
     /// C8: 17 starts fold (entry: epoch 11, start 100, standing for 10..11); a consumer older than every folded epoch at 105: proven.
     @Test
     void c8_foldedEntry_consumerOlderThanEveryFoldedEpoch_warns() {
-        var record = withStarts(IntStream.range(0, 17).mapToObj(i -> new EpochStart(e(10 + i), 100L + i * 10L)).toList());
+        var record = withStarts(IntStream.range(0, 17).mapToObj(i -> EpochStart.epochStart(e(10 + i), 100L + i * 10L, Option.none())).toList());
 
-        assertThat(record.epochStarts().getFirst()).isEqualTo(new EpochStart(e(11), 100L, e(10)));
+        assertThat(record.epochStarts().getFirst()).isEqualTo(new EpochStart(e(11), 100L, e(10), Option.none()));
         assertDiverged(record, e(1), 105L, 100L, true);
     }
 
     /// C9: a consumer at or below the oldest start holds nothing any later epoch re-assigned: admitted, no rewind.
     @Test
     void c9_consumerBelowEveryStart_isAdmitted() {
-        var record = withStarts(IntStream.range(0, 17).mapToObj(i -> new EpochStart(e(10 + i), 100L + i * 10L)).toList());
+        var record = withStarts(IntStream.range(0, 17).mapToObj(i -> EpochStart.epochStart(e(10 + i), 100L + i * 10L, Option.none())).toList());
 
         assertThat(EpochValidation.admit("s", 0, record, e(1), 90L).isSuccess()).isTrue();
     }

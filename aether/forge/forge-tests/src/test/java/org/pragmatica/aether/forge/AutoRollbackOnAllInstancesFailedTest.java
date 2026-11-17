@@ -43,6 +43,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.PreviousVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.stream.SystemStreams;
@@ -263,6 +264,7 @@ class AutoRollbackOnAllInstancesFailedTest {
             basePort = freeBasePort(attempted);
             attempted.add(basePort);
             cluster = EmberCluster.emberCluster(NODES, basePort, basePort + MGMT_OFFSET, basePort + APP_OFFSET, prefix);
+            engineOverride().onPresent(cluster::withDeploymentEngine);
             var starting = cluster.start();
             var outcome = starting.await(LifecycleAwait.LIFECYCLE_BOUND).fold(Cause::message, _ -> "started");
 
@@ -299,12 +301,30 @@ class AutoRollbackOnAllInstancesFailedTest {
     }
 
     private boolean hostsActiveInstance(AetherNode node) {
+        return (legacyActive(node) || observedActive(node)) && node.invocationHandler()
+                                                                   .localSlice(ARTIFACT)
+                                                                   .isPresent();
+    }
+
+    private boolean legacyActive(AetherNode node) {
         return leader().kvStore()
                        .getTyped(new AetherKey.NodeArtifactKey(node.self(), ARTIFACT), AetherValue.NodeArtifactValue.class)
                        .filter(value -> value.state() == SliceState.ACTIVE)
-                       .isPresent() && node.invocationHandler()
-                                           .localSlice(ARTIFACT)
-                                           .isPresent();
+                       .isPresent();
+    }
+
+    /// F5b: under FSM2 the instance's state is its observed row; no `NodeArtifactKey` is written.
+    private boolean observedActive(AetherNode node) {
+        return leader().kvStore()
+                       .getTyped(new AetherKey.SliceObservedKey(node.self(), ARTIFACT), AetherValue.SliceObservedValue.class)
+                       .filter(value -> value.state() == AetherValue.SliceObservedState.ACTIVE)
+                       .isPresent();
+    }
+
+    /// The deployment engine this suite forces, over the global selector; none here, FSM2 in
+    /// [AutoRollbackOnAllInstancesFailedFsm2Test].
+    Option<DeploymentEngine> engineOverride() {
+        return Option.none();
     }
 
     private Option<String> committedClusterToml() {

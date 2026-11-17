@@ -210,8 +210,8 @@ public interface Idempotency {
                 var entry = (CachedEntry<T>) entries.compute(key,
                                                              (k, existing) -> {
                                                                  if (existing != null && !existing.shouldReplace(now)) {
-                                                                 return existing;
-                                                             }
+                                                                     return existing;
+                                                                 }
 
                                                                  created.set(true);
 

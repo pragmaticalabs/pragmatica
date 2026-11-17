@@ -33,6 +33,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ApiKeyAuditKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ApiKeyKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AutoHealStateKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeIdHighWaterKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
@@ -62,6 +63,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ApiKeyAuditValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ApiKeyValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeIdHighWaterValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
@@ -237,6 +239,7 @@ final class BackupFixtures {
                        new Fixture(ApiKeyKey.apiKeyKey("key-1"), ApiKeyValue.apiKeyValue("key-1", "sha256:abc=", 60_000)),
                        new Fixture(ApiKeyAuditKey.apiKeyAuditKey("audit-1"), ApiKeyAuditValue.apiKeyAuditValue("key-1", "REVOKED", AWKWARD)),
                        new Fixture(AutoHealStateKey.autoHealStateKey(), AutoHealStateValue.autoHealStateValue(false, AWKWARD, 1_700_000_000_000L)),
+                       new Fixture(NodeIdHighWaterKey.nodeIdHighWaterKey("hetzner-eu", "core"), new NodeIdHighWaterValue(7)),
                        new Fixture(BlueprintStreamBindingsKey.blueprintStreamBindingsKey(owner),
                                    BlueprintStreamBindingsValue.blueprintStreamBindingsValue(List.of(NamedAddress.namedAddress("stock", topic)))),
                        new Fixture(EntityCheckpointKey.entityCheckpointKey("orders/by-customer", 5),

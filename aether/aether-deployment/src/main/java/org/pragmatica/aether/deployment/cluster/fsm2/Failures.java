@@ -92,12 +92,12 @@ public sealed interface Failures {
     }
 
     private static ClusterModel closeOne(ClusterModel m, Ctx ctx, Artifact artifact, String why) {
-        m.retryExhaustedWarned = m.retryExhaustedWarned.remove(artifact);
-        ctx.warn(Recoveries.RETRY_EXHAUSTED_SETTLED,
-                 artifact.asString(),
-                 "Retries of " + artifact.asString() + ": " + why);
-
-        return m;
+        return Warnings.raise(m,
+                              Recoveries.RETRY_EXHAUSTED_SETTLED,
+                              artifact.asString(),
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              "Retries of " + artifact.asString() + ": " + why);
     }
 
     /// R-3.3.6: the terminal both failure branches converge on.
@@ -166,6 +166,22 @@ public sealed interface Failures {
         return committed + pending;
     }
 
+    /// ```tla Fsm2Leader:EventFire
+    /// \* Event-only family (retry exhaustion): Failures.java exhausted. code and pre3085 guard once per episode;
+    /// \* pre2834 raised unconditionally. Retry counts are committed judgments (Failures.java), so a successor whose
+    /// \* exhaustion write was never committed retries and exhausts again while the fault persists: one firing per
+    /// \* incarnation while cond holds (fairness below). The exhaustion op is an artifact intent: a flush is queued.
+    /// EventFire(n, e) ==
+    ///   /\ e \in EventFam /\ fsm[n] = "Active" /\ e \in cond /\ e \notin fired[n]
+    ///   /\ WarnOK(n)
+    ///   /\ LET raise == MODE = "pre2834" \/ e \notin warned[n]
+    ///          adds == IF raise THEN {e} ELSE {}
+    ///      IN /\ Apply(n, warned[n] \cup adds, rows[n], dirty[n], wInfl[n], gInfl[n], gIntent[n], raise, TRUE,
+    ///                    Pub(adds, {}), Hold(n, adds, {}))
+    ///   /\ fired' = [fired EXCEPT ![n] = fired[n] \cup {e}]
+    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, view, net, settles,
+    ///                  condBudget, faultBudget, redo>>
+    /// ```
     private static ClusterModel exhausted(ClusterModel m, Ctx ctx, SlicePair pair, String reason) {
         var artifact = pair.artifact();
 
@@ -177,15 +193,17 @@ public sealed interface Failures {
         }
 
         routeFailed(m, ctx, pair, reason);
-        m.retryExhaustedWarned = m.retryExhaustedWarned.add(artifact);
-        ctx.warn("retry-exhausted-unsettled",
-                 artifact.asString(),
-                 "Max retries exceeded for " + artifact
-                + " on " + pair.node().id()
-                + ": " + reason
-                + " - not marking permanently failed, no blueprint apply is outstanding");
-
-        return m;
+        // #3274: evidence at every exhaustion; `Warnings.raise` opens once per episode (a held key is not raised again).
+        return Warnings.raise(m,
+                              Warnings.RETRY_EXHAUSTED,
+                              artifact.asString(),
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              "Max retries exceeded for " + artifact
+                             + " on " + pair.node()
+                                            .id()
+                             + ": " + reason
+                             + " - not marking permanently failed, no blueprint apply is outstanding");
     }
 
     /// The announcement rides the failure transaction and goes out when that transaction is accepted. A write that is lost is decided

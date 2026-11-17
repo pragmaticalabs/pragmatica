@@ -1,0 +1,2 @@
+### Fixed (2026-11-14 — #3230: a slice row delivered just before the control loop's Warmup entry was lost)
+- **Control loop Warmup entry no longer clears the slice states** (#3230). Entry runs asynchronously after the leader flip; the observed-row feed shows each row once, so a row delivered in that window was wiped and never replayed, and the scaling gate missed an in-progress slice (flaky `EmberObservedSourceBootTokenTest`). Warmup entry still undoes the previous term's cooldowns. [verified: `ControlLoopWarmupKeepsRowsTest` (red on the old reset)]

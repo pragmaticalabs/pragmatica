@@ -6,6 +6,7 @@ package org.pragmatica.aether.config;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -92,10 +93,15 @@ public final class ConfigValidator {
                                errors);
         storageMaintenanceErrors(config.timeouts().storageMaintenance(),
                                  errors);
+        applyDeadlineErrors(config.timeouts().deployment(),
+                            errors);
         streamingErrors(config.streaming(), errors);
         promotionEscapeErrors(config.streaming(),
                               config.timeouts().swim().suspectTimeout(),
                               errors);
+        ownerLeaseErrors(config.streaming(),
+                         config.timeouts().swim().suspectTimeout(),
+                         errors);
         archiveRetentionErrors(config.slice(), errors);
         uploadErrors(config.appHttp().upload(),
                      errors);
@@ -167,6 +173,12 @@ public final class ConfigValidator {
                        + "re-places its slices, or both run at once").formatted(cluster.coreAbsence(),
                                                                                 cluster.communityAbsence()));
         }
+    }
+
+    /// #970 (R-4.1.7): a zero apply deadline would abandon every apply at once (or, read as unusable, never end one); it is reported rather than
+    /// floored. A negative duration never reaches here (the parser refuses it), so the schema pause cap, which may be zero, needs no check.
+    private static void applyDeadlineErrors(TimeoutsConfig.DeploymentTimeouts deployment, List<String> errors) {
+        positiveTimeSpanError(deployment.applyDeadline(), "timeouts.deployment.apply_deadline", errors);
     }
 
     /// #250 review: `StorageMaintenanceDriver` schedules `demote()`+`collectGarbage()` on this interval
@@ -299,6 +311,39 @@ public final class ConfigValidator {
         }
     }
 
+    /// #2981 owner lease (fence-lease design 7, step 4): `R < T` so a renewal lands before the lease it renews lapses;
+    /// `clock_drift_bound` in `[1e-3, 1)` (the wait `W = T (1 + rho) / (1 - rho) + 50 ms` is meaningless at or above 1, and a
+    /// NaN fails the range test); `T + W < suspect_timeout` keeps the lease wait inside the detection time a crash already
+    /// costs. The suspect-timeout bound is checked only when the drift bound is valid, since `W` is undefined otherwise.
+    private static void ownerLeaseErrors(StreamingConfig streaming, TimeSpan suspectTimeout, List<String> errors) {
+        var rho = streaming.clockDriftBound();
+
+        if (streaming.ownerLeaseRenewal().nanos() >= streaming.ownerLease().nanos()) {
+            errors.add("streaming.owner_lease_renewal (%dms) must be less than streaming.owner_lease (%dms)".formatted(streaming.ownerLeaseRenewal()
+                                                                                                                                .millis(),
+                                                                                                                       streaming.ownerLease()
+                                                                                                                                .millis()));
+        }
+
+        if (! (rho >= StreamingConfig.MIN_CLOCK_DRIFT_BOUND && rho < 1)) {
+            errors.add("streaming.clock_drift_bound must be >= %s and < 1. Got: %s".formatted(StreamingConfig.MIN_CLOCK_DRIFT_BOUND,
+                                                                                              rho));
+
+            return;
+        }
+
+        var lease = streaming.ownerLease().nanos();
+        var wait = streaming.ownerLeaseWait().nanos();
+
+        if (lease + wait >= suspectTimeout.nanos()) {
+            errors.add("streaming.owner_lease (%dms) plus the new owner's lease wait (%dms, owner_lease * (1 + clock_drift_bound) / (1 - clock_drift_bound) + 50ms) must be less than timeouts.swim.suspect_timeout (%dms)".formatted(streaming.ownerLease()
+                                                                                                                                                                                                                                               .millis(),
+                                                                                                                                                                                                                                      streaming.ownerLeaseWait()
+                                                                                                                                                                                                                                               .millis(),
+                                                                                                                                                                                                                                      suspectTimeout.millis()));
+        }
+    }
+
     private static Result<AetherConfig> toResult(AetherConfig config, List<String> errors) {
         return errors.size() == 0
                ? success(config)
@@ -382,7 +427,7 @@ public final class ConfigValidator {
     }
 
     private static void gcErrors(NodeConfig node, List<String> errors) {
-        var gc = node.gc().toLowerCase();
+        var gc = node.gc().toLowerCase(Locale.ROOT);
         var isValid = VALID_GC.stream().anyMatch(gc::equals);
 
         if (!isValid) {

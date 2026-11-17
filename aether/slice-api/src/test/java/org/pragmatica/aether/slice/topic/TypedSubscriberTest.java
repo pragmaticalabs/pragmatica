@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// typed payload and returns its result unchanged (success and failure).
 class TypedSubscriberTest {
     private static final Cause HANDLER_FAILED = Causes.cause("Handler failed");
-    private static final Topic<SeatSold> SEAT_SOLD = Topic.of("seat-sold", SeatSold.class);
+    private static final Topic<SeatSold> SEAT_SOLD = Topic.topic("seat-sold", SeatSold.class);
 
     record SeatSold(String seatId) {}
 

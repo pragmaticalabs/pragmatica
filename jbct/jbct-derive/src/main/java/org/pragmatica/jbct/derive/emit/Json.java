@@ -2,6 +2,7 @@ package org.pragmatica.jbct.derive.emit;
 
 import java.util.List;
 
+
 /// A minimal JSON emitter for the machine output of `derive` (SPEC.md §4 emit).
 ///
 /// Rationale (SPEC.md §7 asks to check for an existing codec first): pragmatica-lite's only JSON
@@ -33,7 +34,8 @@ public sealed interface Json permits Json.unused {
 
     /// A JSON object from its members.
     static String object(List<Field> fields) {
-        return "{" + String.join(",", fields.stream().map(Json::member).toList()) + "}";
+        return "{" + String.join(",",
+                                 fields.stream().map(Json::member).toList()) + "}";
     }
 
     /// A JSON array from already-rendered element JSON.

@@ -10,6 +10,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateAck;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -249,12 +250,8 @@ public final class ReplicaRegistry {
         watermarkStore.persistWatermark(streamName, partition, nodeId, confirmedOffset);
     }
 
-    /// The owner's live-ack path (#2888): as the six-argument update, but an ack whose offset is LOWER than the row's
-    /// confirmed offset under the SAME epoch is refused, so a reordered or duplicated ack (transport retry, ack resend after
-    /// #2882) cannot move a replica's watermark backwards. An ack from an OLDER epoch than the row's is refused whatever its offset, so a stale
-    /// tenure cannot overwrite a newer one. A NEWER epoch is a new lineage: its first ack replaces the row, lower offset included,
-    /// because a new tenure may legitimately restart the confirmation. An equal offset is applied,
-    /// so a state upgrade at the same offset is not lost. The persisted watermark follows the surviving row.
+    /// Evidence that names no replica process ([ReplicateAck#NO_BOOT_TOKEN]), such as the owner's own pull from a survivor: as
+    /// the seven-argument advance, so it only ever raises a row within the row's epoch and keeps the row's process.
     @Contract
     public void advanceWatermark(String streamName,
                                  int partition,
@@ -262,12 +259,43 @@ public final class ReplicaRegistry {
                                  long confirmedOffset,
                                  ReplicationState state,
                                  Epoch epoch) {
+        advanceWatermark(streamName, partition, nodeId, confirmedOffset, state, epoch, ReplicateAck.NO_BOOT_TOKEN);
+    }
+
+    /// The owner's live-ack path (#2888, #1697): the row is monotone within one `(owner epoch, replica boot token)`. An ack
+    /// whose offset is LOWER than the row's under the SAME epoch and the SAME replica process is refused, so a reordered or
+    /// duplicated ack (transport retry, ack resend after #2882) cannot move a replica's watermark backwards. An ack from an
+    /// OLDER epoch than the row's is refused whatever its offset, so a stale tenure cannot overwrite a newer one. A NEWER epoch
+    /// is a new lineage, and an ack of ANOTHER replica process ([#sameProcess]) is a replica that restarted and may hold less:
+    /// either replaces the row, lower offset included, so the owner never keeps counting copies a restarted replica lost. An
+    /// equal offset is applied, so a state upgrade at the same offset is not lost. The persisted watermark follows the surviving
+    /// row.
+    ///
+    /// Not guaranteed: boot tokens are unordered, so an ack of a SUPERSEDED process delivered after the new process's ack
+    /// replaces the row too. That residual is an OVER-count (the unsafe direction: the row can name more than the current process
+    /// holds). It lasts until the current process's NEXT ack, so it is bounded by an event, not by time: an idle partition keeps
+    /// it. It is strictly better than the #2888 rule, which kept the over-count for good. Reachable by a Forge/Ember restart that
+    /// reuses the NodeId; whether a production crash-restart with the same NodeId can ack before the identity ledger refuses it
+    /// is [unverified].
+    ///
+    /// Evidence naming no process ([ReplicateAck#NO_BOOT_TOKEN]) re-raises a replaced row only within the row's epoch, and the
+    /// production writer of it (`PartitionBackfill#recordSurvivorConfirmed`) passes `Epoch.ZERO`, so a row confirmed under a real
+    /// epoch refuses it.
+    @Contract
+    public void advanceWatermark(String streamName,
+                                 int partition,
+                                 NodeId nodeId,
+                                 long confirmedOffset,
+                                 ReplicationState state,
+                                 Epoch epoch,
+                                 long bootToken) {
         var key = partitionKey(streamName, partition);
         var surviving = option(replicas.get(key)).flatMap(nodeMap -> advanceRow(nodeMap,
                                                                                 nodeId,
                                                                                 confirmedOffset,
                                                                                 state,
-                                                                                epoch));
+                                                                                epoch,
+                                                                                bootToken));
 
         watermarkStore.persistWatermark(streamName,
                                         partition,
@@ -275,32 +303,56 @@ public final class ReplicaRegistry {
                                         surviving.map(ReplicaDescriptor::confirmedOffset).or(confirmedOffset));
     }
 
+    /// Whether an ack of process `bootToken` comes from the process the row was confirmed by (#1697): tokens are compared by
+    /// equality only, and an ack naming no process ([ReplicateAck#NO_BOOT_TOKEN]) is taken as the row's own. A row that names
+    /// no process does not match a real token, so the first ack of a known process replaces it.
+    static boolean sameProcess(ReplicaDescriptor current, long bootToken) {
+        return bootToken == ReplicateAck.NO_BOOT_TOKEN || bootToken == current.bootToken();
+    }
+
     private static Option<ReplicaDescriptor> advanceRow(ConcurrentHashMap<NodeId, ReplicaDescriptor> nodeMap,
                                                         NodeId nodeId,
                                                         long confirmedOffset,
                                                         ReplicationState state,
-                                                        Epoch epoch) {
-        return option(nodeMap.computeIfPresent(nodeId, (_, current) -> monotone(current, confirmedOffset, state, epoch)));
+                                                        Epoch epoch,
+                                                        long bootToken) {
+        return option(nodeMap.computeIfPresent(nodeId,
+                                               (_, current) -> monotone(current,
+                                                                        confirmedOffset,
+                                                                        state,
+                                                                        epoch,
+                                                                        bootToken)));
     }
 
-    private static boolean isStale(ReplicaDescriptor current, long confirmedOffset, Epoch epoch) {
+    private static boolean isStale(ReplicaDescriptor current, long confirmedOffset, Epoch epoch, long bootToken) {
         var order = epoch.compareTo(current.epoch());
 
-        return order < 0 || order == 0 && current.confirmedOffset() > confirmedOffset;
+        return order < 0 || order == 0
+                            && sameProcess(current, bootToken)
+                            && current.confirmedOffset() > confirmedOffset;
     }
 
     private static ReplicaDescriptor monotone(ReplicaDescriptor current,
                                               long confirmedOffset,
                                               ReplicationState state,
-                                              Epoch epoch) {
-        return isStale(current, confirmedOffset, epoch)
+                                              Epoch epoch,
+                                              long bootToken) {
+        return isStale(current, confirmedOffset, epoch, bootToken)
                ? current
                : replicaDescriptor(current.nodeId(),
                                    current.streamName(),
                                    current.partition(),
                                    confirmedOffset,
                                    state,
-                                   epoch);
+                                   epoch,
+                                   rowToken(current, bootToken));
+    }
+
+    /// The process a surviving row names: the ack's, unless the ack names none, when the row keeps its own.
+    private static long rowToken(ReplicaDescriptor current, long bootToken) {
+        return bootToken == ReplicateAck.NO_BOOT_TOKEN
+               ? current.bootToken()
+               : bootToken;
     }
 
     @Contract

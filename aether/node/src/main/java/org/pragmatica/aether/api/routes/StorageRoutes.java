@@ -14,6 +14,7 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.StorageFactory.StorageSetup;
+import org.pragmatica.aether.node.StorageMaintenanceProgress;
 import org.pragmatica.aether.node.prefetch.PrefetchGossipStats;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StorageStatusKey;
@@ -78,7 +79,9 @@ public final class StorageRoutes implements RouteSource {
                                   ReadinessDetail readiness,
                                   Option<WalUsage> wal) {}
 
-    record StorageListResponse(List<StorageInstanceSummary> instances) {}
+    /// `maintenance` is the node's storage maintenance progress (#800): when the latest tick finished, how it ended, how many
+    /// ticks in a row failed, and the blocks demoted and collected since boot.
+    record StorageListResponse(List<StorageInstanceSummary> instances, StorageMaintenanceProgress maintenance) {}
 
     /// Background tier demotion on this node: `active` is whether it is running now, the rest is cumulative since boot.
     record DemotionDetail(boolean active, int blocksDemoted, long bytesMoved, long lastRunMs) {}
@@ -168,7 +171,7 @@ public final class StorageRoutes implements RouteSource {
                                          .asJson());
     }
 
-    private StorageListResponse listInstances() {
+    StorageListResponse listInstances() {
         var node = nodeSupplier.get();
         var summaries = node.storageSetups()
                             .values()
@@ -177,7 +180,7 @@ public final class StorageRoutes implements RouteSource {
                                                     walUsageFor(node, setup)))
                             .toList();
 
-        return new StorageListResponse(summaries);
+        return new StorageListResponse(summaries, node.storageMaintenanceProgress());
     }
 
     Result<StorageDetailResponse> instanceDetail(String name) {

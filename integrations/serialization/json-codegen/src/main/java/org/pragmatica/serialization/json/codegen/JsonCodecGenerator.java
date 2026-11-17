@@ -67,6 +67,10 @@ public final class JsonCodecGenerator {
     private final JsonTypeAnalyzer analyzer;
     private final List<TypeMirror> roots = new ArrayList<>();
     private final List<JsonType.ListOf> containerRoots = new ArrayList<>();
+    // Every root that is not a bare record -- a List, Set, Option or Map, as a body or a response -- reaches its
+    // records as nested values, which must stay strict (#2963); containerRoots holds only the body ones, which also
+    // get a codec of their own.
+    private final List<JsonType> nestingRoots = new ArrayList<>();
 
     private static final String NESTED_REASON = "the record is also a component of another type the slice decodes or answers, and a codec shared with response decoding must not drop required fields";
 
@@ -133,6 +137,7 @@ public final class JsonCodecGenerator {
                     .map(JsonType.ListOf.class::cast)
                     .onPresent(containerRoots::add);
             analyzed.filter(_ -> body).onPresent(root -> bindRequest(root, bound));
+            analyzed.filter(root -> !(root instanceof JsonType.RecordRef)).onPresent(nestingRoots::add);
 
             return none();
         }
@@ -211,8 +216,8 @@ public final class JsonCodecGenerator {
     }
 
     private boolean reachedAsNested(String record) {
-        return reachedByComponent(record) || containerRoots.stream()
-                                                           .anyMatch(root -> reaches(root, record));
+        return reachedByComponent(record) || nestingRoots.stream()
+                                                         .anyMatch(root -> reaches(root, record));
     }
 
     private boolean reachedByComponent(String record) {

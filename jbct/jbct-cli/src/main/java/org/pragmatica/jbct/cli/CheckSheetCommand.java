@@ -24,9 +24,7 @@ import picocli.CommandLine.Parameters;
 /// derive result — vector, pressure matrix, decision records — which does not exist yet, so
 /// emitting gate-only JSON now would fix a format Phase B must break. The [Verdict] record is the
 /// documented seam a Phase-B JSON emitter serializes.
-@Command(name = "check-sheet",
-         description = "Validate an architecture answer sheet against the entry gate (issue #443)",
-         mixinStandardHelpOptions = true)
+@Command(name = "check-sheet", description = "Validate an architecture answer sheet against the entry gate (issue #443)", mixinStandardHelpOptions = true)
 public class CheckSheetCommand implements Callable<Integer> {
     @Parameters(paramLabel = "<sheet.toml>", description = "Answer sheet (TOML) to check", arity = "1")
     Path sheet;

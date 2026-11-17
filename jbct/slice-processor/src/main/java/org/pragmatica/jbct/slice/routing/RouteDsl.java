@@ -5,6 +5,7 @@ package org.pragmatica.jbct.slice.routing;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -96,7 +97,7 @@ public record RouteDsl(String method,
             return INVALID_FORMAT.result();
         }
 
-        var method = matcher.group(1).toUpperCase();
+        var method = matcher.group(1).toUpperCase(Locale.ROOT);
         var pathPart = matcher.group(2);
         var queryPart = matcher.group(3);
 

@@ -122,6 +122,10 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
         }
     }
 
+    /// `applyDeadline` and `applySchemaPauseMax` (R-4.1.7, #970) bound a blueprint apply that never resolves: `applyDeadline` is the
+    /// unpaused time an open apply may wait for its slices before it reaches a terminal (ROLLED_BACK under ALL_OR_NOTHING, FAILED under
+    /// BEST_EFFORT), and `applySchemaPauseMax` is the most time an open schema migration gate may pause that clock. Both are policy
+    /// defaults, not measured values.
     public record DeploymentTimeouts(TimeSpan loading,
                                      TimeSpan activating,
                                      TimeSpan deactivating,
@@ -129,7 +133,9 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
                                      TimeSpan activationChain,
                                      TimeSpan transitionRetryDelay,
                                      TimeSpan reconciliationInterval,
-                                     int maxLifecycleRetries) {
+                                     int maxLifecycleRetries,
+                                     TimeSpan applyDeadline,
+                                     TimeSpan applySchemaPauseMax) {
         public static DeploymentTimeouts deploymentTimeouts() {
             return new DeploymentTimeouts(timeSpan(2).minutes(),
                                           timeSpan(1).minutes(),
@@ -138,7 +144,9 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
                                           timeSpan(90).seconds(),
                                           timeSpan(2).seconds(),
                                           timeSpan(30).seconds(),
-                                          60);
+                                          60,
+                                          timeSpan(15).minutes(),
+                                          timeSpan(2).hours());
         }
     }
 

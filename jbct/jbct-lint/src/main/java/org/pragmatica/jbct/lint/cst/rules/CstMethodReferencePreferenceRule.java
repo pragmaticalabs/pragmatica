@@ -73,7 +73,6 @@ public class CstMethodReferencePreferenceRule implements CstLintRule {
 
         if (instanceMatch.matches()) {
             var methodName = instanceMatch.group(2);
-
             // #1568: JBCT-TOT-01 flags this lambda because its body is a partial accessor; the method-reference spelling
             // is a violation nothing can see (TOT-02 matches it only by name), so do not steer code into it.
             if (MapperSafety.PARTIAL_ACCESSOR_NAMES.contains(methodName)) {

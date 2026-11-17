@@ -39,13 +39,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ClusterTestPortsTest {
     private static final int SWIM = CoreSwimHealthDetector.SWIM_PORT_OFFSET;
     /// TCP-only: the port is for an HTTP/1 management server and nothing UDP ever binds it.
-    /// Reservation forms caught: `ServerSocket(0`, `ServerSocket(0, backlog, addr)`, any `ServerSocketChannel`, and an
+    /// Reservation forms caught: `ServerSocket(0`, `ServerSocket(0, backlog, addr)`, `ServerSocketChannel.open()` with no argument or with an INET/INET6 family (a UNIX-family channel binds a filesystem path and reserves no port), and an
     /// explicit `bind(new InetSocketAddress(..., 0))`. A bare `new InetSocketAddress(.., 0)` is NOT matched: it is also
     /// how a live `HttpServer.create(...)` binds (GitBackupRepositoryTest), which would be a false positive.
     /// KNOWN GAP (#2016): a port held in a variable (`new ServerSocket(port)`, `bind(addrOf(p))`) is not caught. Such a
     /// call is also how tests deliberately HOLD a taken port, so no text pattern separates the two without false
     /// positives; telling them apart needs data flow (the port came from a closed socket), which this scan cannot see.
-    private static final java.util.regex.Pattern RESERVES = java.util.regex.Pattern.compile("ServerSocket\\(\\s*0|ServerSocketChannel|\\.bind\\(\\s*new (?:java\\.net\\.)?InetSocketAddress\\([^()]*(?:\\([^()]*\\))?[^()]*\\b0\\s*\\)\\s*\\)");
+    private static final java.util.regex.Pattern RESERVES = java.util.regex.Pattern.compile("ServerSocket\\(\\s*0|ServerSocketChannel\\.open\\(\\s*(?:\\)|(?:java\\.net\\.)?StandardProtocolFamily\\.INET)|\\.bind\\(\\s*new (?:java\\.net\\.)?InetSocketAddress\\([^()]*(?:\\([^()]*\\))?[^()]*\\b0\\s*\\)\\s*\\)");
     private final List<int[]> reservations = new ArrayList<>();
     private static final String TCP_ONLY_MANAGEMENT_TEST = "ManagementServerDhtCatchUpGaugeTest.java";
 
@@ -133,7 +133,45 @@ class ClusterTestPortsTest {
 
             assertThat(got).as("a port with cluster UDP held must not be issued").isNotEqualTo(taken);
         }
-        assertThat(ClusterTestPorts.freeClusterPort(offering(taken))).as("control: the same port, released").isEqualTo(taken);
+        assertAcceptedUnlessTakenMeanwhile(ClusterTestPorts.freeClusterPort(offering(taken)), taken, ClusterTestPorts.isFreeClusterPort(taken), "control: the same port, released");
+    }
+
+    /// #3188: the released-port control cannot promise the SAME port back. The lock held since [#occupiableClusterCandidate] keeps every
+    /// cooperating allocator out, but a process that binds an explicit window port without the lock (another module under `-T 1C`) can take the
+    /// released port between the release and the re-probe, and the allocator then correctly issues another one. This forces that contender into
+    /// the window deterministically: the control must hold, and the allocator must have skipped the port because it is taken.
+    @Test
+    void releasedPortControl_holdsWhenAThirdPartyTakesThePortInTheWindow() throws IOException {
+        var taken = occupiableClusterCandidate(true);
+
+        try (var contender = new DatagramSocket(new InetSocketAddress(taken))) {
+            var got = ClusterTestPorts.freeClusterPort(offering(taken));
+
+            assertThat(got).as("the contender holds " + taken + ", so it must not be issued").isNotEqualTo(taken);
+            assertAcceptedUnlessTakenMeanwhile(got, taken, ClusterTestPorts.isFreeClusterPort(taken), "control: the same port, released");
+        }
+    }
+
+    /// The control still bites: a port reported free that the allocator refused fails it, so it cannot pass vacuously.
+    @Test
+    void releasedPortControl_failsWhenAFreePortWasRefused() {
+        var taken = occupiableClusterCandidate(true);
+
+        assertThatThrownBy(() -> assertAcceptedUnlessTakenMeanwhile(taken + 1, taken, true, "refused"))
+            .isInstanceOf(AssertionError.class);
+    }
+
+    /// #3188: "released, so accepted again" holds unless another process took the port after the release. Either the allocator returned the
+    /// port, or the port is observably taken by now; a free port that was refused is a real defect and still fails. The residual: a contender
+    /// that binds and releases the port inside the allocator's probe leaves a free port refused. No retry hides that.
+    private static void assertAcceptedUnlessTakenMeanwhile(int got, int taken, boolean stillFree, String label) {
+        if (got != taken) {
+            assertThat(stillFree).as(label + ": " + taken + " was refused although it is free").isFalse();
+        }
+    }
+
+    private static boolean isFreeOnBothProtocols(int port) {
+        return ClusterTestPorts.udpFree(port) && ClusterTestPorts.tcpFree(port);
     }
 
     @Test
@@ -143,7 +181,7 @@ class ClusterTestPortsTest {
         try (var held = new DatagramSocket(new InetSocketAddress(taken + SWIM))) {
             assertThat(ClusterTestPorts.freeClusterPort(offering(taken))).as("SWIM UDP held").isNotEqualTo(taken);
         }
-        assertThat(ClusterTestPorts.freeClusterPort(offering(taken))).as("control: SWIM released").isEqualTo(taken);
+        assertAcceptedUnlessTakenMeanwhile(ClusterTestPorts.freeClusterPort(offering(taken)), taken, ClusterTestPorts.isFreeClusterPort(taken), "control: SWIM released");
     }
 
     /// The both-protocol helper must skip a candidate whose TCP side is taken, and one whose UDP side is taken.
@@ -155,7 +193,7 @@ class ClusterTestPortsTest {
             held.bind(new InetSocketAddress(taken));
             assertThat(ClusterTestPorts.freeTcpAndUdpPort(offering(taken))).as("TCP held").isNotEqualTo(taken);
         }
-        assertThat(ClusterTestPorts.freeTcpAndUdpPort(offering(taken))).as("control: TCP released").isEqualTo(taken);
+        assertAcceptedUnlessTakenMeanwhile(ClusterTestPorts.freeTcpAndUdpPort(offering(taken)), taken, isFreeOnBothProtocols(taken), "control: TCP released");
     }
 
     @Test
@@ -165,7 +203,7 @@ class ClusterTestPortsTest {
         try (var held = new DatagramSocket(new InetSocketAddress(taken))) {
             assertThat(ClusterTestPorts.freeTcpAndUdpPort(offering(taken))).as("UDP held").isNotEqualTo(taken);
         }
-        assertThat(ClusterTestPorts.freeTcpAndUdpPort(offering(taken))).as("control: UDP released").isEqualTo(taken);
+        assertAcceptedUnlessTakenMeanwhile(ClusterTestPorts.freeTcpAndUdpPort(offering(taken)), taken, isFreeOnBothProtocols(taken), "control: UDP released");
     }
 
     /// #2731 proof (cooperating allocators in two JVMs): a child JVM allocates ports and holds them WITHOUT binding, i.e.
@@ -270,6 +308,18 @@ class ClusterTestPortsTest {
             assertThat(held.getLocalPort()).isEqualTo(clusterPort + SWIM);
             assertThat(ClusterTestPorts.isFreeClusterPort(clusterPort)).isFalse();
         }
+    }
+
+    /// The tripwire pattern flags every TCP reservation form and no UNIX-family channel (#3101).
+    @Test
+    void reservesPattern_flagsTcpForms_andNotUnixDomainChannels() {
+        assertThat(RESERVES.matcher("new ServerSocket(0)").find()).as("ServerSocket(0").isTrue();
+        assertThat(RESERVES.matcher("ServerSocketChannel.open()").find()).as("open() no args").isTrue();
+        assertThat(RESERVES.matcher("ServerSocketChannel.open(StandardProtocolFamily.INET)").find()).as("INET").isTrue();
+        assertThat(RESERVES.matcher("ServerSocketChannel.open(StandardProtocolFamily.INET6)").find()).as("INET6").isTrue();
+        assertThat(RESERVES.matcher("ch.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0))").find()).as("bind InetSocketAddress 0").isTrue();
+        assertThat(RESERVES.matcher("ServerSocketChannel.open(StandardProtocolFamily.UNIX)").find()).as("UNIX family").isFalse();
+        assertThat(RESERVES.matcher("var a = UnixDomainSocketAddress.of(path); server.bind(a);").find()).as("UnixDomainSocketAddress").isFalse();
     }
 
     /// Tripwire for the class: a node test that reserves a cluster port over TCP and lets a node bind UDP on it.

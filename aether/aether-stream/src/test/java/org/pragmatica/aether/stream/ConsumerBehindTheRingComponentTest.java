@@ -150,7 +150,8 @@ class ConsumerBehindTheRingComponentTest {
     @Test
     void forwardedConsumerRead_belowTheOwnersRing_isServedFromTheTier_underTheOwnerEpoch() {
         tier.seal(STREAM, PARTITION, 0, 19);
-        manager.ownershipRecords((_, _) -> Option.some(record(List.of(new EpochStart(E1, 0L), new EpochStart(E2, 25L)))));
+        manager.ownerLease(OwnerLease.TEST_VALID);
+        manager.ownershipRecords((_, _) -> Option.some(record(List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 25L, Option.none())))));
         var assignee = assigneeOf(manager);
 
         try {
@@ -174,7 +175,8 @@ class ConsumerBehindTheRingComponentTest {
     @Test
     void localValidatedRead_belowTheRing_keepsEpochAdmissionFirst_andTheWarnLineNamesTheGroup() {
         tier.seal(STREAM, PARTITION, 0, 19);
-        manager.ownershipRecords((_, _) -> Option.some(record(List.of(new EpochStart(E1, 0L), new EpochStart(E2, 5L)))));
+        manager.ownerLease(OwnerLease.TEST_VALID);
+        manager.ownershipRecords((_, _) -> Option.some(record(List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 5L, Option.none())))));
         var router = StreamReadRouter.localOnly(manager);
 
         var diverged = router.readValidated(STREAM, PARTITION, 7L, 5, E1).await();
@@ -187,6 +189,7 @@ class ConsumerBehindTheRingComponentTest {
         assertThat(served.ownerEpoch()).isEqualTo(E2);
         assertThat(served.fromTier()).isTrue();
 
+        manager.ownerLease(OwnerLease.TEST_VALID);
         manager.ownershipRecords((_, _) -> Option.none());
         var lines = new CopyOnWriteArrayList<String>();
         var detach = LogCapture.warningsOf(ConsumerRuntimeState.class, lines);
@@ -210,7 +213,7 @@ class ConsumerBehindTheRingComponentTest {
         tier.seal(STREAM, PARTITION, 0, 19);
         manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
         manager.ownerEpochSource((_, _) -> E2);
-        manager.epochStarts((_, _) -> List.of(new EpochStart(E2, 5L)));
+        manager.epochStarts((_, _) -> List.of(EpochStart.epochStart(E2, 5L, Option.none())));
 
         var read = manager.readServingTiered(STREAM, PARTITION, 2L, 10, Epoch.ZERO).await().unwrap();
 

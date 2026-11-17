@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -23,6 +24,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Verify;
 
 
 /// Admission (spec C15, C16, C11d and the join table J0 to J9): a core joins (`NodeJoined`) or a worker joins
@@ -36,6 +38,21 @@ public sealed interface Joins {
     String DEFAULT_SOURCE = "default";
 
     // -- C15 / C16 -------------------------------------------------------------------------------------------------
+    /// #3172: a worker join, with the source label read at enqueue time overlaid on the seam snapshot before placement reads it. A blank or absent
+    /// source never replaces a snapshot value; a later `SeamsRefreshed` replaces the whole snapshot, and both come from the same descriptor.
+    static ClusterModel onWorkerJoin(ClusterModel m, Ctx ctx, ClusterInput.WorkerJoin join) {
+        join.source().filter(Verify.Is::notBlank).onPresent(source -> overlaySource(m, join.node(), source));
+
+        return onJoin(m, ctx, join.node(), join.admission(), true);
+    }
+
+    private static void overlaySource(ClusterModel m, NodeId node, String source) {
+        var merged = new HashMap<>(m.seams.memberSource());
+
+        merged.put(node, source);
+        m.seams = m.seams.withMemberSource(merged);
+    }
+
     /// A join input: update `admissions[n]`, re-classify n's rows (R-3.3.1), clear `absentSince[n]`, then evaluate the table. A row that
     /// admits n marks it joined (R-2.11 (a)).
     static ClusterModel onJoin(ClusterModel m, Ctx ctx, NodeId node, Admission admission, boolean worker) {
@@ -156,15 +173,19 @@ public sealed interface Joins {
     }
 
     /// D.6 row 13: a join reported unmatched that a row has now matched ends its episode: `join-matched`, same subject. The episode is
-    /// `unmatchedWarned`, not the pending join's `warned` flag, which the tick re-arms to repeat the WARN. A join that is still unmatched
-    /// raises nothing.
+    /// `unmatchedWarned` (#3274: `Warnings.raise` closes it only if held), not the pending join's `warned` flag. A join that is still
+    /// unmatched raises nothing.
     private static ClusterModel matchedIfWarned(ClusterModel m, Ctx ctx, NodeId node) {
-        if (m.unmatchedWarned.contains(node) && !m.pendingJoins.get(node).map(PendingJoin::warned).or(false)) {
-            m.unmatchedWarned = m.unmatchedWarned.remove(node);
-            ctx.warn(Recoveries.JOIN_MATCHED, node.id(), "A join row matched " + node.id() + " again");
-        }
-
-        return m;
+        return m.pendingJoins.get(node)
+                             .map(PendingJoin::warned)
+                             .or(false)
+               ? m
+               : Warnings.raise(m,
+                                Recoveries.JOIN_MATCHED,
+                                node.id(),
+                                Warnings.SINGLE,
+                                Warnings.SINGLE,
+                                "A join row matched " + node.id() + " again");
     }
 
     private static ClusterModel evaluateRows(ClusterModel m, Ctx ctx, NodeId node, PendingJoin join) {
@@ -321,26 +342,24 @@ public sealed interface Joins {
                : m;
     }
 
-    /// J9: no row matched. It is visible and retried, never silently left uncounted. The WARN is emitted once per unmatched episode:
-    /// every reconcile pass evaluates the join again (step 10), and a WARN per pass would grow with write load; the tick re-arms it.
+    /// J9: no row matched. It is visible and retried, never silently left uncounted. #3274: every evaluation is evidence; the warning is
+    /// announced once per unmatched episode (`Warnings.raise` opens only an unheld key, rule E announces the open).
     static ClusterModel unmatched(ClusterModel m,
                                   Ctx ctx,
                                   NodeId node,
                                   PendingJoin join,
                                   Option<NodeDepartureValue> record) {
-        if (!join.warned()) {
-            m.unmatchedWarned = m.unmatchedWarned.add(node);
-            ctx.warn("join-unmatched",
-                     node.id(),
-                     "No join row matched " + node.id()
-                    + ": record=" + record
-                    + " admission=" + join.admission()
-                    + " worker=" + join.worker());
-        }
-
         m.pendingJoins = m.pendingJoins.put(node, join.asWarned());
 
-        return m;
+        return Warnings.raise(m,
+                              Warnings.JOIN_UNMATCHED,
+                              node.id(),
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              "No join row matched " + node.id()
+                             + ": record=" + record
+                             + " admission=" + join.admission()
+                             + " worker=" + join.worker());
     }
 
     private static ClusterModel refuse(ClusterModel m, Ctx ctx, NodeId node, String code, String message) {
@@ -411,7 +430,8 @@ public sealed interface Joins {
     }
 
     /// Every reconcile pass evaluates the deferred joins again until a row matches or the node departs. The pass the 30 s tick queued
-    /// first re-arms the `join-unmatched` WARN of the joins that are still unmatched.
+    /// first re-arms the joins that are still unmatched, so their next evaluation raises `join-unmatched` again; that raise is evidence
+    /// only, since the key is still held: the WARN is announced once per episode (#3274) and stays readable at GET /api/v1/warnings.
     static ClusterModel retryPending(ClusterModel m, Ctx ctx) {
         if (m.joinWarningsDue) {
             rearmWarnings(m);

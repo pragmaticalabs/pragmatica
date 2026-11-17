@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.jbct.slice.routing;
 
+import java.util.Locale;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
@@ -26,7 +28,7 @@ public enum OverridePolicy {
         }
 
         return switch (value.trim()
-                            .toLowerCase()) {
+                            .toLowerCase(Locale.ROOT)) {
             case "strengthen_only" -> Result.success(STRENGTHEN_ONLY);
             case "full" -> Result.success(FULL);
             case "none" -> Result.success(NONE);

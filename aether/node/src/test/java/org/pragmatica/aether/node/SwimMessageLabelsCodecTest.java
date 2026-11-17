@@ -86,6 +86,21 @@ class SwimMessageLabelsCodecTest {
     }
 
     @Test
+    void ping_onBehalfOf_roundTripsPresentAndAbsent() {
+        var update = MembershipUpdate.membershipUpdate(new NodeId("core-r"), MemberState.ALIVE, 1L, ADDRESS, 5L, CORE_LABELS);
+        var relayed = Ping.relayedPing(FROM, 12L, List.of(update), new NodeId("requester"));
+        var direct = Ping.ping(FROM, 13L, List.of(update));
+
+        Ping decodedRelayed = codec.decode(codec.encode((SwimMessage) relayed));
+        Ping decodedDirect = codec.decode(codec.encode((SwimMessage) direct));
+
+        assertThat(decodedRelayed).isEqualTo(relayed);
+        assertThat(decodedRelayed.onBehalfOf().isPresent()).isTrue();
+        assertThat(decodedDirect).isEqualTo(direct);
+        assertThat(decodedDirect.onBehalfOf().isEmpty()).isTrue();
+    }
+
+    @Test
     void ack_piggybackWithLabels_roundTripsLabels() {
         var labelled = MembershipUpdate.membershipUpdate(new NodeId("core-r"), MemberState.ALIVE, 1L, ADDRESS, 5L, CORE_LABELS);
         var ack = Ack.ack(FROM, 12L, List.of(labelled));

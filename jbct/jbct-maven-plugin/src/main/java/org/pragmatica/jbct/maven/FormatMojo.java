@@ -66,10 +66,10 @@ public class FormatMojo extends AbstractJbctMojo {
                   .flatMap(source -> formatter.isFormatted(source)
                                               .flatMap(isFormatted -> {
                                                            if (isFormatted) {
-                                                           unchanged.incrementAndGet();
+                                                               unchanged.incrementAndGet();
 
-                                                           return org.pragmatica.lang.Result.success(source);
-                                                       }
+                                                               return org.pragmatica.lang.Result.success(source);
+                                                           }
 
                                                            return formatter.format(source)
                                                                            .flatMap(formattedSource -> formattedSource.write()

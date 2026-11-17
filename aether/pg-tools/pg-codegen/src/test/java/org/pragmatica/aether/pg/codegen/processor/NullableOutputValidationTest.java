@@ -80,7 +80,7 @@ class NullableOutputValidationTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("nullableForms")
     void nullableOutput_onNonOptionField_failsTheBuild(String name, String fields, String sql, String reason) throws Exception {
-        var result = compile(repo("NullableRepo", "record Row(" + fields + ") {}", sql, "Promise<List<Row>> run()"));
+        var result = compile(repo("NullableRepo", TestCompilationHelper.rowRecord("Row", fields), sql, "Promise<List<Row>> run()"));
 
         assertThat(result.success()).isFalse();
         assertThat(result.diagnostics())
@@ -98,7 +98,7 @@ class NullableOutputValidationTest {
     @Test
     void unmatchedField_isNotBlamedOnANamedNullableOutput() throws Exception {
         var result = compile(repo("NamedNotReadRepo",
-                                  "record Row(String foo) {}",
+                                  TestCompilationHelper.rowRecord("Row", "String foo"),
                                   "SELECT correlation_id FROM orders",
                                   "Promise<List<Row>> run()"));
 
@@ -127,7 +127,7 @@ class NullableOutputValidationTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("provenForms")
     void provenNonNullOutput_onNonOptionField_isAccepted(String name, String fields, String sql) throws Exception {
-        var result = compile(repo("ProvenRepo", "record Row(" + fields + ") {}", sql, "Promise<List<Row>> run()"));
+        var result = compile(repo("ProvenRepo", TestCompilationHelper.rowRecord("Row", fields), sql, "Promise<List<Row>> run()"));
 
         assertThat(result.diagnostics()).doesNotContain(MAY_BE_NULL);
         assertThat(result.success()).as(result.diagnostics()).isTrue();
@@ -139,7 +139,7 @@ class NullableOutputValidationTest {
         var optionFields = String.join(", ", java.util.Arrays.stream(fields.split(", "))
                                                              .map(NullableOutputValidationTest::optionIfNullable)
                                                              .toList());
-        var result = compile(repo("OptionRepo", "record Row(" + optionFields + ") {}", sql, "Promise<List<Row>> run()"));
+        var result = compile(repo("OptionRepo", TestCompilationHelper.rowRecord("Row", optionFields), sql, "Promise<List<Row>> run()"));
 
         assertThat(result.diagnostics()).doesNotContain(MAY_BE_NULL);
         assertThat(result.success()).as(result.diagnostics()).isTrue();
@@ -179,7 +179,7 @@ class NullableOutputValidationTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("provenIntoOption")
     void provenNonNullOutput_onOptionField_failsTheBuild(String name, String field, String sql, String output, String proof) throws Exception {
-        var result = compile(repo("ProvenOptionRepo", "record Row(" + field + ") {}", sql, "Promise<List<Row>> run()"));
+        var result = compile(repo("ProvenOptionRepo", TestCompilationHelper.rowRecord("Row", field), sql, "Promise<List<Row>> run()"));
 
         assertThat(result.success()).isFalse();
         assertThat(result.diagnostics())
@@ -194,7 +194,7 @@ class NullableOutputValidationTest {
     /// The fix hint names the plain element type of the `Option`.
     @Test
     void provenNonNullOutput_onOptionField_namesThePlainTypeInTheFix() throws Exception {
-        var result = compile(repo("PlainTypeRepo", "record Row(Option<String> status)  {}", "SELECT status FROM orders", "Promise<List<Row>> run()"));
+        var result = compile(repo("PlainTypeRepo", TestCompilationHelper.rowRecord("Row", "Option<String> status"), "SELECT status FROM orders", "Promise<List<Row>> run()"));
 
         assertThat(result.success()).isFalse();
         assertThat(result.diagnostics())
@@ -206,7 +206,7 @@ class NullableOutputValidationTest {
     @Test
     void unprovenOutput_onOptionField_besideProvenPlainField_isAccepted() throws Exception {
         var result = compile(repo("MixedRepo",
-                                  "record Row(long id, Option<UUID> correlationId) {}",
+                                  TestCompilationHelper.rowRecord("Row", "long id, Option<UUID> correlationId"),
                                   "SELECT id, correlation_id FROM orders",
                                   "Promise<List<Row>> run()"));
 
@@ -219,7 +219,7 @@ class NullableOutputValidationTest {
     @ValueSource(strings = {"Promise<Row>", "Promise<Option<Row>>", "Promise<List<Row>>"})
     void provenNonNullOutput_onOptionField_failsTheBuild_underEveryRowWrapper(String wrapper) throws Exception {
         var result = compile(repo("WrappedProvenRepo" + wrapperId(wrapper),
-                                  "record Row(Option<String> status) {}",
+                                  TestCompilationHelper.rowRecord("Row", "Option<String> status"),
                                   "SELECT status FROM orders",
                                   wrapper + " run()"));
 
@@ -237,7 +237,7 @@ class NullableOutputValidationTest {
     @ValueSource(strings = {"Promise<Row>", "Promise<Option<Row>>", "Promise<List<Row>>"})
     void unprovenOutput_onOptionField_isAccepted_underEveryRowWrapper(String wrapper) throws Exception {
         var result = compile(repo("WrappedUnprovenRepo" + wrapperId(wrapper),
-                                  "record Row(Option<UUID> correlationId) {}",
+                                  TestCompilationHelper.rowRecord("Row", "Option<UUID> correlationId"),
                                   "SELECT correlation_id FROM orders",
                                   wrapper + " run()"));
 
@@ -263,7 +263,7 @@ class NullableOutputValidationTest {
     @ValueSource(strings = {"String", "Option<String>"})
     void duplicateOutputName_mappedToRecordField_failsTheBuild(String fieldType) throws Exception {
         var result = compile(repo("DuplicateRepo",
-                                  "record Row(" + fieldType + " name) {}",
+                                  TestCompilationHelper.rowRecord("Row", fieldType + " name"),
                                   "SELECT CAST(o.correlation_id AS text) AS name, u.name FROM orders o JOIN users u ON u.id = o.user_id",
                                   "Promise<List<Row>> run()"));
 
@@ -275,7 +275,7 @@ class NullableOutputValidationTest {
     @Test
     void duplicateOutputName_notReadByAnyField_isAccepted() throws Exception {
         var result = compile(repo("UnreadDuplicateRepo",
-                                  "record Row(long id)  {}",
+                                  TestCompilationHelper.rowRecord("Row", "long id"),
                                   "SELECT o.id AS id, o.status AS name, u.name FROM orders o JOIN users u ON u.id = o.user_id",
                                   "Promise<List<Row>> run()"));
 
@@ -330,7 +330,7 @@ class NullableOutputValidationTest {
                 throw new UnsupportedOperationException("label has no lexeme at rule ColLabel");
             }
         };
-        var source = repo("ForcedFailureRepo", "record Row(long id) {}", "SELECT id FROM orders", "Promise<List<Row>> run()");
+        var source = repo("ForcedFailureRepo", TestCompilationHelper.rowRecord("Row", "long id"), "SELECT id FROM orders", "Promise<List<Row>> run()");
 
         var result = TestCompilationHelper.compileWithProcessor(failing, source, "test/ForcedFailureRepo.java", tempDir);
 

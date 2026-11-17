@@ -694,7 +694,7 @@ public final class QueryValidator {
         if ("SelectStmt".equals(nt.ruleName())) return;
 
         if ("BaseTableRef".equals(nt.ruleName())) {
-            refs.add(CstNavigator.of(nt));
+            refs.add(CstNavigator.cstNavigator(nt));
 
             return;
         }
@@ -802,7 +802,7 @@ public final class QueryValidator {
         if ("SelectStmt".equals(nt.ruleName())) return;
 
         if ("ColRef".equals(nt.ruleName())) {
-            refs.add(CstNavigator.of(nt));
+            refs.add(CstNavigator.cstNavigator(nt));
 
             return;
         }

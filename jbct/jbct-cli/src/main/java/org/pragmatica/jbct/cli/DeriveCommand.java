@@ -23,9 +23,7 @@ import picocli.CommandLine.Parameters;
 /// Exit codes (SPEC.md §5): 0 clean · 1 gate errors (or an unparseable sheet) · 2 halts /
 /// contradictions · 3 judgment points pending. The engine emits judgment points; it never resolves
 /// them (SPEC.md §1).
-@Command(name = "derive",
-         description = "Derive an architecture vector from an answer sheet (issue #443)",
-         mixinStandardHelpOptions = true)
+@Command(name = "derive", description = "Derive an architecture vector from an answer sheet (issue #443)", mixinStandardHelpOptions = true)
 public class DeriveCommand implements Callable<Integer> {
     @Parameters(paramLabel = "<sheet.toml>", description = "Answer sheet (TOML) to derive", arity = "1")
     Path sheet;
@@ -35,8 +33,7 @@ public class DeriveCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
-        return Derive.derive(sheet)
-                     .fold(this::reportParseFailure, this::reportResult);
+        return Derive.derive(sheet).fold(this::reportParseFailure, this::reportResult);
     }
 
     private Integer reportParseFailure(Cause cause) {

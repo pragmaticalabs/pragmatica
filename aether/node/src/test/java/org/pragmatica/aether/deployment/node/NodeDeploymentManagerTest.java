@@ -177,7 +177,7 @@ class NodeDeploymentManagerTest {
                                                                         Option.some(publisher),
                                                                         Option.none());
 
-        sliceStore.markAsLoadedWithSlice(artifact);
+        markLoadedWithDeliveredEntry(artifact, SliceState.ACTIVE);
         withPublisher.onQuorumStateChange(ClusterStateNotification.active());
         withPublisher.onNodeArtifactPut(artifactPut(artifact, SliceState.ACTIVE));
 
@@ -230,7 +230,7 @@ class NodeDeploymentManagerTest {
     void onNodeArtifactPut_triggersActivation_forActivateState() {
         var artifact = createTestArtifact();
 
-        sliceStore.markAsLoadedWithSlice(artifact);
+        markLoadedWithDeliveredEntry(artifact, SliceState.LOADED);
 
         manager.onQuorumStateChange(ClusterStateNotification.active());
         sendNodeArtifactPut(artifact, SliceState.ACTIVATE);
@@ -242,7 +242,7 @@ class NodeDeploymentManagerTest {
     void onNodeArtifactPut_triggersDeactivation_forDeactivateState() {
         var artifact = createTestArtifact();
 
-        sliceStore.markAsLoadedWithSlice(artifact);
+        markLoadedWithDeliveredEntry(artifact, SliceState.LOADED);
 
         manager.onQuorumStateChange(ClusterStateNotification.active());
         sendNodeArtifactPut(artifact, SliceState.DEACTIVATE);
@@ -292,7 +292,7 @@ class NodeDeploymentManagerTest {
     void onNodeArtifactPut_recordsButNoAction_forActiveState_whenSliceLoaded() {
         var artifact = createTestArtifact();
 
-        sliceStore.markAsLoadedWithSlice(artifact);
+        markLoadedWithDeliveredEntry(artifact, SliceState.LOADED);
 
         manager.onQuorumStateChange(ClusterStateNotification.active());
         sendNodeArtifactPut(artifact, SliceState.ACTIVE);
@@ -344,7 +344,7 @@ class NodeDeploymentManagerTest {
     void onNodeArtifactPut_transitionsToActive_afterSuccessfulActivation() {
         var artifact = createTestArtifact();
 
-        sliceStore.markAsLoadedWithSlice(artifact);
+        markLoadedWithDeliveredEntry(artifact, SliceState.LOADED);
 
         manager.onQuorumStateChange(ClusterStateNotification.active());
         clusterNode.appliedCommands.clear();
@@ -436,6 +436,13 @@ class NodeDeploymentManagerTest {
 
     private Artifact createTestArtifact() {
         return Artifact.artifact("org.example:test-slice:1.0.0").unwrap();
+    }
+
+    /// #3028: a slice is loaded only after this node was delivered its `NodeArtifactKey`, so a loaded slice is seeded together with that
+    /// delivered entry; without it the quorum-return catch-up sweep (design 4 rule 2) correctly unloads the slice as unassigned.
+    private void markLoadedWithDeliveredEntry(Artifact artifact, SliceState state) {
+        sliceStore.markAsLoadedWithSlice(artifact);
+        kvStore.put(NodeArtifactKey.nodeArtifactKey(self, artifact), NodeArtifactValue.nodeArtifactValue(state));
     }
 
     private void sendNodeArtifactPut(Artifact artifact, SliceState state) {
@@ -636,6 +643,12 @@ class NodeDeploymentManagerTest {
 
         @Override
         public Option<AetherValue> get(AetherKey key) {
+            return Option.option(storage.get(key));
+        }
+
+        /// This double has no delivery pipeline: what it stores is what its subscribers were told (#3028 catch-up sweep reads the delivered view).
+        @Override
+        public Option<AetherValue> delivered(AetherKey key) {
             return Option.option(storage.get(key));
         }
 

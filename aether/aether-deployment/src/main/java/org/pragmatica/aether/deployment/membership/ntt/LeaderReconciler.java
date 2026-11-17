@@ -872,6 +872,18 @@ public final class LeaderReconciler {
                             : guard);
     }
 
+    /// What the slice-ownership predicate answers now, over the row source `AetherNode` wired. Read-only, for the boot test that pins which
+    /// row source the drain-victim ordering reads (F5a, know `63ff3388bd`): under FSM2 the legacy scan sees no rows and answers `false`.
+    public Predicate<NodeId> ownsActiveSlicesView() {
+        return ownsActiveSlices.get();
+    }
+
+    /// What the drain-availability guard answers now, over the row source `AetherNode` wired. Read-only, for the same boot test as
+    /// [`#ownsActiveSlicesView`]: under FSM2 the legacy scan sees no rows and the guard never refuses.
+    public BiFunction<NodeId, Set<NodeId>, Option<DrainRefusal>> sliceDrainGuardView() {
+        return sliceDrainGuard.get();
+    }
+
     /// The default [`#sliceDrainGuard`]: no refusal, so ownership ordering alone decides.
     private static Option<DrainRefusal> permitsEveryDrain(NodeId candidate, Set<NodeId> remainingNodes) {
         return none();

@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import org.pragmatica.storage.DegradeReporter;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -16,6 +17,7 @@ import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.PromotionManager;
 import org.pragmatica.storage.TierLevel;
@@ -256,7 +258,8 @@ class StoragePromotionWiringTest {
                                                                   PromotionStallWatch.promotionStallWatch(setups,
                                                                                                           OperatorWarningSink.logOnly()),
                                                                   StorageFactory.compositeGarbageCollector(setups),
-                                                                  Runnable::run);
+                                                                  Runnable::run,
+                                                                  DegradeReporter.degradeReporter("test"), () -> Unit.unit(), System::currentTimeMillis, TimeSpan.timeSpan(5).minutes());
     }
 
     private static boolean maintenanceActive(StorageFactory.StorageSetup setup) {

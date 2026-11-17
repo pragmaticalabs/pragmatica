@@ -6,6 +6,7 @@ package org.pragmatica.db.migration;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -18,6 +19,10 @@ import org.pragmatica.db.migration.SchemaHistoryRepository.MigrationProgress;
 import org.pragmatica.db.migration.SchemaHistoryRepository.MigrationStatus;
 import org.pragmatica.aether.pg.split.Statement;
 import org.pragmatica.aether.pg.split.StatementSplitter;
+import org.pragmatica.aether.resource.db.DatabaseConnectorError;
+import org.pragmatica.aether.resource.db.DatabaseType;
+import org.pragmatica.aether.resource.db.PgSchemaName;
+import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -30,6 +35,9 @@ import org.pragmatica.lang.io.TimeSpan;
 import static org.pragmatica.db.migration.MigrationError.BaselineConflict.baselineConflict;
 import static org.pragmatica.db.migration.MigrationError.ChecksumMismatch.checksumMismatch;
 import static org.pragmatica.db.migration.MigrationError.InvalidIndexLeftBehind.invalidIndexLeftBehind;
+import static org.pragmatica.db.migration.MigrationError.NonTransactionalScriptUnfenced.nonTransactionalScriptUnfenced;
+import static org.pragmatica.db.migration.MigrationError.SchemaCreateDenied.schemaCreateDenied;
+import static org.pragmatica.db.migration.MigrationError.SchemaQualifierUnsupported.schemaQualifierUnsupported;
 import static org.pragmatica.db.migration.MigrationError.UndoNotAvailable.undoNotAvailable;
 import static org.pragmatica.db.migration.SchemaHistoryRepository.AppliedMigration.appliedMigration;
 
@@ -63,7 +71,19 @@ public interface SchemaMigrations {
     /// `statementTimeout` bounds every statement on the migration's pinned database session (FDB-2a, #2591); the
     /// caller passes its own per-attempt migration timeout, so no single statement outlives the attempt.
     static SchemaMigrations schemaMigrations(TimeSpan statementTimeout) {
-        return new DefaultSchemaMigrations(SchemaHistoryRepository.schemaHistoryRepository(), statementTimeout);
+        return schemaMigrations(statementTimeout, Option.none());
+    }
+
+    /// Migrations scoped to a PostgreSQL schema (#2100 E-B, know 932bb4b546: one migration path, the schema a
+    /// provisioning parameter). Every history, meta and owner table lives in `schema`, so each schema carries its own
+    /// version sequence and ownership claim; the database fence stays per database. After the fence is held and before
+    /// bootstrap the runner creates the schema if it is absent: a role that may not is refused with
+    /// [MigrationError.SchemaCreateDenied], an engine without schemas with [MigrationError.SchemaQualifierUnsupported].
+    /// With `none` every statement is byte-identical to [#schemaMigrations(TimeSpan)].
+    static SchemaMigrations schemaMigrations(TimeSpan statementTimeout, Option<PgSchemaName> schema) {
+        return new DefaultSchemaMigrations(SchemaHistoryRepository.schemaHistoryRepository(schema),
+                                           statementTimeout,
+                                           schema);
     }
 
     record SchemaResult(int appliedCount, int currentVersion, long totalMs) {
@@ -75,11 +95,22 @@ public interface SchemaMigrations {
 
 final class DefaultSchemaMigrations implements SchemaMigrations {
     private final SchemaHistoryRepository historyRepo;
-    private final TimeSpan statementTimeout;
 
-    DefaultSchemaMigrations(SchemaHistoryRepository historyRepo, TimeSpan statementTimeout) {
+    private static final RowMapper<Integer> PRESENT_MAPPER = row -> row.getInt("present");
+    private static final RowMapper<String> ROLE_MAPPER = row -> row.getString("role");
+    private static final String CURRENT_ROLE_SQL = "SELECT current_user AS role";
+    private static final String INSUFFICIENT_PRIVILEGE = "42501";
+    private static final String UNKNOWN_ROLE = "<unknown role>";
+
+    private final TimeSpan statementTimeout;
+    private final Option<PgSchemaName> schema;
+
+    DefaultSchemaMigrations(SchemaHistoryRepository historyRepo,
+                            TimeSpan statementTimeout,
+                            Option<PgSchemaName> schema) {
         this.historyRepo = historyRepo;
         this.statementTimeout = statementTimeout;
+        this.schema = schema;
     }
 
     /// Claim ownership of the physical database IMMEDIATELY after bootstrap and BEFORE
@@ -136,23 +167,52 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                                                        owner)));
     }
 
-    /// The database fence (FDB-2a, #2591; design §1, §2.3). On a tier-1 engine ([MigrationFence#isTierOne]) the whole
+    /// The database fence (FDB-2a, #2591; design §1, §2.3). On a tier-1 engine ([MigrationFence#isSessionFenced]) the whole
     /// run happens on ONE dedicated session ([SqlConnector#pinned], bounded by the statement timeout): the fence is
     /// acquired first, and only then are bootstrap, the ownership claim, the history read and every statement run, all
     /// on that session ([FencedSession], which re-verifies the fence before each write). Leaving the scope closes the
-    /// session, which is what releases the fence; [MigrationFence#release] before it is a courtesy. Another holder ends
+    /// session, which is what releases the fence; [MigrationFence#release(SqlConnector)] before it is a courtesy. Another holder ends
     /// the attempt with [MigrationError.MigrationFencedInDatabase] having run and read nothing.
     ///
-    /// Every other engine keeps today's unfenced path until FDB-2b gives it its tier-2/3 fence.
+    /// Tier 2 (SQL Server, Oracle) and H2 take the same route. The tier-3 engines (CockroachDB, DB2, SQLite) have no
+    /// session lock: they run on the caller's connector and carry their per-script lock inside the [FencedSession]
+    /// ([#scriptLockOf]), taken as the first statement of each script's transaction (FDB-2b).
     private <T> Promise<T> fenced(String datasource,
                                   SqlConnector connector,
                                   String nodeId,
                                   SqlConnector.TransactionCallback<T> body) {
-        return MigrationFence.isTierOne(connector.databaseType())
+        return qualifierRefusal(connector.databaseType()).fold(() -> fencedRun(datasource, connector, nodeId, body),
+                                                               cause -> cause.promise());
+    }
+
+    /// Only PostgreSQL has the schemas a scoped migration needs (the history table is spliced as `"<schema>".table`);
+    /// every other engine is refused before the fence is even taken, never given an unqualified table instead.
+    private Option<Cause> qualifierRefusal(DatabaseType type) {
+        return schema.filter(_ -> type != DatabaseType.POSTGRESQL)
+                     .map(name -> schemaQualifierUnsupported(name.value(),
+                                                             type.name()));
+    }
+
+    private <T> Promise<T> fencedRun(String datasource,
+                                     SqlConnector connector,
+                                     String nodeId,
+                                     SqlConnector.TransactionCallback<T> body) {
+        return MigrationFence.isSessionFenced(connector.databaseType())
                ? connector.pinned(statementTimeout.duration(),
                                   session -> acquireThen(datasource, session, nodeId, body),
                                   DefaultSchemaMigrations::closeIsTheRelease)
-               : body.execute(connector);
+                          .mapError(cause -> MigrationFence.refusedAtConnect(datasource,
+                                                                             connector.databaseType(),
+                                                                             cause))
+               : acquireThen(datasource, connector, nodeId, body);
+    }
+
+    /// The per-script lock of a tier-3 run; none on a session-fenced run and on a bare connector.
+    private static Option<MigrationFence.ScriptLock> scriptLockOf(SqlConnector connector) {
+        return switch (connector) {
+            case FencedSession fenced -> fenced.fence().scriptLock();
+            default -> Option.none();
+        };
     }
 
     private static <T> Promise<T> acquireThen(String datasource,
@@ -161,7 +221,8 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                               SqlConnector.TransactionCallback<T> body) {
         return MigrationFence.acquire(session, datasource, nodeId).flatMap(fence -> body.execute(new FencedSession(session,
                                                                                                                    fence))
-                                                                                        .fold(outcome -> releaseIfStillHeld(session,
+                                                                                        .fold(outcome -> releaseIfStillHeld(fence,
+                                                                                                                            session,
                                                                                                                             outcome)));
     }
 
@@ -171,10 +232,11 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
     /// `RELEASE_ALL_LOCKS()` there would drop the lock of the client that does hold it, when a pooler shares the session
     /// (CTO ruling, FDB-2a fix round 1). Design-out of the unlock's own failure: closing the session is the release, so
     /// a failed courtesy unlock never changes the run's outcome.
-    private static <T> Promise<T> releaseIfStillHeld(SqlConnector session, Result<T> outcome) {
+    private static <T> Promise<T> releaseIfStillHeld(MigrationFence fence, SqlConnector session, Result<T> outcome) {
         return lostTheFence(outcome)
                ? outcome.async()
-               : MigrationFence.release(session).fold(_ -> outcome.async());
+               : fence.release(session)
+                      .fold(_ -> outcome.async());
     }
 
     private static boolean lostTheFence(Result<?> outcome) {
@@ -230,9 +292,52 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
     /// Bootstrap, then the ownership claim, then the applied-history read: on a fenced session all three run only
     /// after the fence is held (design §1: history is read ONLY after acquire).
     private Promise<List<AppliedMigration>> claimAndReadHistory(String datasource, SqlConnector session, String owner) {
-        return historyRepo.bootstrap(session)
-                          .flatMap(_ -> historyRepo.claimOwnership(session, datasource, owner))
-                          .flatMap(_ -> historyRepo.queryApplied(session));
+        return ensureSchema(session).flatMap(_ -> historyRepo.bootstrap(session))
+                           .flatMap(_ -> historyRepo.claimOwnership(session, datasource, owner))
+                           .flatMap(_ -> historyRepo.queryApplied(session));
+    }
+
+    /// The scoped schema must exist before its tables can: a catalog read first, so a role that may only USE a
+    /// pre-created schema never attempts a `CREATE SCHEMA`; only an absent schema is created.
+    private Promise<Unit> ensureSchema(SqlConnector session) {
+        return schema.fold(Promise::unitPromise, name -> createWhenAbsent(session, name));
+    }
+
+    private static Promise<Unit> createWhenAbsent(SqlConnector session, PgSchemaName name) {
+        return session.queryOptional(SchemaHistoryEvolution.schemaExistsSql(),
+                                     PRESENT_MAPPER,
+                                     name.value())
+                      .flatMap(present -> present.fold(() -> createSchema(session, name),
+                                                       _ -> Promise.unitPromise()));
+    }
+
+    private static Promise<Unit> createSchema(SqlConnector session, PgSchemaName name) {
+        return session.update(SchemaHistoryEvolution.createSchemaSql(name))
+                      .mapToUnit()
+                      .fold(outcome -> outcome.fold(cause -> deniedOrFailed(session, name, cause),
+                                                    _ -> Promise.unitPromise()));
+    }
+
+    private static Promise<Unit> deniedOrFailed(SqlConnector session, PgSchemaName name, Cause cause) {
+        return isPermissionDenied(cause)
+               ? currentRole(session).flatMap(role -> schemaCreateDenied(name.value(), role).promise())
+               : cause.promise();
+    }
+
+    /// SQLSTATE 42501 (insufficient_privilege) names a refused `CREATE SCHEMA`; a transport that reports no SQLSTATE is
+    /// read by the server's `permission denied` message, as the SQLite arm of the history collision check is.
+    private static boolean isPermissionDenied(Cause cause) {
+        return cause instanceof DatabaseConnectorError error && (error.sqlState()
+                                                                      .map(INSUFFICIENT_PRIVILEGE::equals)
+                                                                      .or(false) || error.message()
+                                                                                         .contains("permission denied"));
+    }
+
+    /// FER (degrade forward): the role name only decorates the refusal, so a failed lookup names an unknown role and
+    /// the run still ends in [MigrationError.SchemaCreateDenied], which is what the operator needs to act on.
+    private static Promise<String> currentRole(SqlConnector session) {
+        return session.queryOne(CURRENT_ROLE_SQL, ROLE_MAPPER)
+                      .fold(outcome -> Promise.success(outcome.or(UNKNOWN_ROLE)));
     }
 
     private static Result<List<ParsedMigration>> parseAll(List<MigrationScript> scripts) {
@@ -474,13 +579,40 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
 
         return dialect.ddlTransactional() && !anyNonTransactional
                ? runInTransaction(migration, connector, texts, nodeId, startNanos)
-               : runAutocommit(datasource,
-                               migration,
-                               connector,
-                               autocommitStatements(statements, dialect),
-                               nodeId,
-                               startNanos,
-                               resumable);
+               : tierThreeRefusal(migration, connector, statements, dialect).fold(() -> runAutocommit(datasource,
+                                                                                                      migration,
+                                                                                                      connector,
+                                                                                                      autocommitStatements(statements,
+                                                                                                                           dialect),
+                                                                                                      nodeId,
+                                                                                                      startNanos,
+                                                                                                      resumable),
+                                                                                  Cause::promise);
+    }
+
+    /// FDB-2b (design §2.3): a tier-3 script is fenced only while it runs in ONE transaction, so one holding a
+    /// statement that cannot run in a transaction is refused before its first statement.
+    private static Option<Cause> tierThreeRefusal(ParsedMigration migration,
+                                                  SqlConnector connector,
+                                                  List<Statement> statements,
+                                                  ExecutionDialect dialect) {
+        return scriptLockOf(connector).flatMap(lock -> firstNonTransactional(statements, dialect).map(text -> refusal(lock,
+                                                                                                                      migration,
+                                                                                                                      text)));
+    }
+
+    private static Cause refusal(MigrationFence.ScriptLock lock, ParsedMigration migration, String statement) {
+        return nonTransactionalScriptUnfenced(lock.engine(),
+                                              migration.entry().filename(),
+                                              statement);
+    }
+
+    private static Option<String> firstNonTransactional(List<Statement> statements, ExecutionDialect dialect) {
+        return Option.from(statements.stream()
+                                     .map(Statement::text)
+                                     .filter(text -> !dialect.spec()
+                                                             .isTransactional(text))
+                                     .findFirst());
     }
 
     private static List<AutocommitStatement> autocommitStatements(List<Statement> statements,
@@ -501,10 +633,52 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                            List<String> statements,
                                            String nodeId,
                                            long startNanos) {
-        return connector.transactional(tx -> applyAll(tx, statements).flatMap(_ -> recordExecution(migration,
-                                                                                                   tx,
-                                                                                                   nodeId,
-                                                                                                   startNanos)));
+        return transactionally(migration,
+                               connector,
+                               tx -> applyAll(tx, statements).flatMap(_ -> recordExecution(migration,
+                                                                                           tx,
+                                                                                           nodeId,
+                                                                                           startNanos)));
+    }
+
+    /// One script's transaction. On a tier-3 engine its FIRST statement is the per-script lock, and under it the
+    /// script's history row is read again: a serialized second runner finds the row and skips, completing without a
+    /// statement (design §2.3, H1). Every other engine runs `body` in a plain transaction.
+    private Promise<Unit> transactionally(ParsedMigration migration,
+                                          SqlConnector connector,
+                                          SqlConnector.TransactionCallback<Unit> body) {
+        return scriptLockOf(connector).fold(() -> connector.transactional(body),
+                                            lock -> connector.transactional(tx -> lock.take(tx)
+                                                                                      .flatMap(_ -> skipIfApplied(migration,
+                                                                                                                  tx,
+                                                                                                                  body))));
+    }
+
+    private Promise<Unit> skipIfApplied(ParsedMigration migration,
+                                        SqlConnector tx,
+                                        SqlConnector.TransactionCallback<Unit> body) {
+        return appliedAlready(migration, tx).flatMap(applied -> applied
+                                                                ? Promise.unitPromise()
+                                                                : body.execute(tx));
+    }
+
+    /// The history row, as the lock holder sees it now: applied means a `SUCCESS` row with this script's checksum
+    /// (a repeatable: the stored checksum of its description). A row with another checksum is NOT a skip: the insert
+    /// meets it and ends [MigrationError.HistoryRowCollision].
+    private Promise<Boolean> appliedAlready(ParsedMigration migration, SqlConnector tx) {
+        var checksum = migration.entry().checksum();
+
+        return migration.type() == MigrationType.REPEATABLE
+               ? historyRepo.queryRepeatableChecksum(tx,
+                                                     migration.description())
+                            .map(stored -> stored.fold(() -> false,
+                                                       current -> current == checksum))
+               : historyRepo.queryProgress(tx,
+                                           migration.version(),
+                                           migration.type())
+                            .map(progress -> progress.fold(() -> false,
+                                                           row -> row.status()
+                                                                     .equals(MigrationStatus.SUCCESS) && row.checksum() == checksum));
     }
 
     /// Autocommit, checkpoint-aware path (MySQL/Oracle, whose DDL self-commits so it cannot be made
@@ -808,20 +982,40 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                        String sql,
                                        String nodeId,
                                        long startNanos) {
-        return connector.transactional(tx -> executeStatementsNaive(tx, sql).flatMap(_ -> recordExecution(migration,
-                                                                                                          tx,
-                                                                                                          nodeId,
-                                                                                                          startNanos)));
+        var statements = naiveStatements(sql);
+
+        return naiveRefusal(migration, connector, statements).fold(() -> transactionally(migration,
+                                                                                         connector,
+                                                                                         tx -> applyAll(tx, statements).flatMap(_ -> recordExecution(migration,
+                                                                                                                                                     tx,
+                                                                                                                                                     nodeId,
+                                                                                                                                                     startNanos))),
+                                                                   Cause::promise);
     }
 
-    private static Promise<Unit> executeStatementsNaive(SqlConnector tx, String sql) {
+    /// SQLite (tier 3, naive path): `VACUUM` cannot run inside a transaction, so a script holding it is refused.
+    /// `[marked guess: VACUUM is the statement the SQLite path can name as non-transactional]`
+    private static Option<Cause> naiveRefusal(ParsedMigration migration,
+                                              SqlConnector connector,
+                                              List<String> statements) {
+        return scriptLockOf(connector).flatMap(lock -> Option.from(statements.stream()
+                                                                             .filter(text -> text.toUpperCase(Locale.ROOT)
+                                                                                                 .startsWith("VACUUM"))
+                                                                             .findFirst()).map(text -> refusal(lock,
+                                                                                                               migration,
+                                                                                                               text)));
+    }
+
+    private static List<String> naiveStatements(String sql) {
         var stripped = Arrays.stream(sql.split("\n"))
                              .filter(line -> !line.strip()
                                                   .startsWith("--"))
                              .collect(Collectors.joining("\n"));
-        var statements = Arrays.stream(stripped.split(";")).map(String::strip).filter(s -> !s.isEmpty()).toList();
 
-        return applyAll(tx, statements);
+        return Arrays.stream(stripped.split(";"))
+                     .map(String::strip)
+                     .filter(s -> !s.isEmpty())
+                     .toList();
     }
 
     private static Promise<Unit> applyAll(SqlConnector executor, List<String> statements) {
@@ -888,10 +1082,30 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                              int version,
                                              SqlConnector connector,
                                              String nodeId) {
-        return connector.transactional(tx -> tx.update(undoScript.entry().sql())
-                                               .mapToUnit())
-                        .flatMap(_ -> historyRepo.removeMigration(connector, version, MigrationType.VERSIONED))
-                        .map(_ -> 1);
+        return scriptLockOf(connector).fold(() -> connector.transactional(tx -> undoAndForget(undoScript, version, tx)),
+                                            lock -> connector.transactional(tx -> lock.take(tx)
+                                                                                      .flatMap(_ -> undoIfRecorded(undoScript,
+                                                                                                                   version,
+                                                                                                                   tx))))
+                           .map(_ -> 1);
+    }
+
+    /// FDB-2b (design §0.5): the undo script and the removal of its history row run on ONE transaction connector.
+    /// On a transactional-DDL engine (PostgreSQL, CockroachDB, DB2, SQL Server, SQLite) they commit as ONE unit, so
+    /// a crash between them leaves neither or both. On an engine whose DDL commits implicitly (MySQL, Oracle, H2)
+    /// the undo DDL is already committed when the history row is removed: a failure or crash between the two leaves
+    /// the DDL undone and the history row present. Nothing is rolled back there, and the undo script must be written
+    /// to be re-runnable.
+    private Promise<Unit> undoAndForget(ParsedMigration undoScript, int version, SqlConnector tx) {
+        return tx.update(undoScript.entry().sql())
+                 .flatMap(_ -> historyRepo.removeMigration(tx, version, MigrationType.VERSIONED));
+    }
+
+    /// Tier 3: under the lock the row is read again; a serialized second runner finds it already gone and skips.
+    private Promise<Unit> undoIfRecorded(ParsedMigration undoScript, int version, SqlConnector tx) {
+        return historyRepo.queryProgress(tx, version, MigrationType.VERSIONED)
+                          .flatMap(row -> row.fold(Promise::unitPromise,
+                                                   _ -> undoAndForget(undoScript, version, tx)));
     }
 
     private Promise<SchemaResult> executeBaseline(String datasource,

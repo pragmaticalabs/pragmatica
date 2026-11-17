@@ -1,6 +1,5 @@
 package org.pragmatica.jbct.lint.cst.shape;
 
-
 /// The single JBCT structural pattern a method's body implements (issue #448, phase 1 census).
 ///
 /// The book's "single pattern per function" rule holds that every method realises exactly one of

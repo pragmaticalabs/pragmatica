@@ -12,6 +12,7 @@ import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.kvstore.SliceRowSource;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -129,7 +130,7 @@ class NodeLifecycleRoutesSliceFloorTest {
         return NodeLifecycleRoutes.nodeLifecycleRoutes(this::nodeProxy,
                                                        sink,
                                                        () -> Set.copyOf(pendingDrains),
-                                                       NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore),
+                                                       NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore, SliceRowSource.legacy()),
                                                                                                  OperatorWarningSink.handingOffTo(warnings::add)));
     }
 

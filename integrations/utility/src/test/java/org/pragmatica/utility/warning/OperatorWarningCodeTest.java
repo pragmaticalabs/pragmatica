@@ -119,6 +119,29 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.TERMINATION_RETIREMENT_RESOLVED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE);
     }
 
+    /// #2981 step 5: the lease and clock codes are operator-visible literals, each WARNING closed by an INFO recovery; the
+    /// truncation codes split by outcome (refused WARNING with recovery, retracted INFO). A change would orphan open alerts or silence the lease signal.
+    @Test
+    void ownerLeaseCodes_arePinned() {
+        assertThat(OperatorWarningCode.STREAM_OWNER_LEASE_LAPSED.code()).isEqualTo("stream-owner-lease-lapsed");
+        assertThat(OperatorWarningCode.STREAM_OWNER_LEASE_LAPSED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.STREAM_OWNER_LEASE_RESTORED.code()).isEqualTo("stream-owner-lease-restored");
+        assertThat(OperatorWarningCode.STREAM_OWNER_LEASE_RESTORED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_OWNER_LEASE_RESTORED.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.STREAM_OWNER_LEASE_LAPSED));
+        assertThat(OperatorWarningCode.NODE_CLOCK_RATE_DIVERGENCE.code()).isEqualTo("node-clock-rate-divergence");
+        assertThat(OperatorWarningCode.NODE_CLOCK_RATE_DIVERGENCE.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.NODE_CLOCK_RATE_NORMAL.code()).isEqualTo("node-clock-rate-normal");
+        assertThat(OperatorWarningCode.NODE_CLOCK_RATE_NORMAL.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.NODE_CLOCK_RATE_NORMAL.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.NODE_CLOCK_RATE_DIVERGENCE));
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_REFUSED.code()).isEqualTo("stream-truncation-refused");
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_REFUSED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_QUARANTINE_CLEARED.code()).isEqualTo("stream-truncation-quarantine-cleared");
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_QUARANTINE_CLEARED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_QUARANTINE_CLEARED.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.STREAM_TRUNCATION_REFUSED));
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_RETRACTED.code()).isEqualTo("stream-truncation-retracted");
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_RETRACTED.level()).isEqualTo(WarningLevel.INFO);
+    }
+
     @Test
     void codes_areKebabCase() {
         assertThat(Arrays.stream(OperatorWarningCode.values())
@@ -376,6 +399,9 @@ class OperatorWarningCodeTest {
         OperatorWarningCode.STORAGE_WAL_TAIL_CUT,
         // D1, added on purpose: a failed KV dispatcher stops (in production, halts) its node; the only end is a restart.
         OperatorWarningCode.KV_DISPATCHER_FAILED,
+        // #3193, added on purpose: a live worker whose own directive was retired halts (EXIT_DRAINED); the halt ends the process, so nothing
+        // is left to publish a recovery, and the only end is a fresh WorkerJoin, which is a new admission.
+        OperatorWarningCode.OWN_DIRECTIVE_RETIRED,
         OperatorWarningCode.STORAGE_VOLUME_GUARD_INACTIVE,
         OperatorWarningCode.STORAGE_STREAM_DISK_CAP_OVER_SPACE,
         OperatorWarningCode.STORAGE_STREAM_DISK_SPACE_UNREADABLE,
@@ -477,15 +503,25 @@ class OperatorWarningCodeTest {
                                                                                      .isEqualTo(23);
     }
 
-    /// CTO ruling A2 on #2831 (O3): of the D.6 recoveries, exactly those whose open condition is committed state close across nodes (rows 6/7,
-    /// the inferred-departure record; row 19, the committed exclusions), so a successor leader publishes them. The leader-local families do
-    /// not; their stale opens after a leader change are #2834. Red when: a committed-family recovery is refused by a successor, or a
-    /// leader-local recovery is published by a node that never raised its warning.
+    /// CTO ruling A2 on #2831 (O3), extended by #2834: of the D.6 recoveries, exactly those whose open condition is committed state close
+    /// across nodes, so a successor leader publishes them. Rows 6/7 (the inferred-departure record) and row 19 (the committed exclusions)
+    /// always were; the leader-local families commit their open set (`FsmWarningKey`) since #2834. `deployment-engine-matched` is raised by
+    /// each node about itself, so it does not. Red when: a committed-family recovery is refused by a successor, or the node-local recovery is
+    /// published by a node that never raised its warning.
     @Test
-    void d6Ruling_onlyTheCommittedStateRecoveries_closeAcrossNodes() {
+    void d6Ruling_theCommittedStateRecoveries_closeAcrossNodes() {
         assertThat(D6_RECOVERIES.keySet().stream().filter(OperatorWarningCode::closesAcrossNodes)).containsExactlyInAnyOrder(OperatorWarningCode.DEPARTURE_INFERRED_REVERSED,
                                                                                                                           OperatorWarningCode.DEPARTURE_INFERRED_CONFIRMED,
-                                                                                                                          OperatorWarningCode.SLICE_UNRESPONSIVE_EXPIRED);
+                                                                                                                          OperatorWarningCode.SLICE_UNRESPONSIVE_EXPIRED,
+                                                                                                                          OperatorWarningCode.DEPARTURE_BREAKER_CLEARED,
+                                                                                                                          OperatorWarningCode.PLACEMENT_VALID,
+                                                                                                                          OperatorWarningCode.JOIN_MATCHED,
+                                                                                                                          OperatorWarningCode.RETRY_EXHAUSTED_SETTLED,
+                                                                                                                          OperatorWarningCode.SCHEMA_HOLD_CLEARED,
+                                                                                                                          OperatorWarningCode.SCHEMA_STATUS_READABLE,
+                                                                                                                          OperatorWarningCode.STRAY_INSTANCE_REMOVED,
+                                                                                                                          OperatorWarningCode.WORKER_ABSENCE_JUDGEABLE,
+                                                                                                                          OperatorWarningCode.WORKER_COMMUNITY_POLICY_MATCHED);
     }
 
     /// #752: a recovery code closes a condition of its own subsystem, and a condition is not itself a recovery, so a
@@ -511,6 +547,18 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED.level()).isEqualTo(WarningLevel.INFO);
         assertThat(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED.recoveryOf().unwrap())
             .isEqualTo(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED);
+    }
+
+    /// #2600: a slice ACTIVE on no live core or worker is a WARNING; its restoration is the INFO recovery that closes it.
+    @Test
+    void candidateRestored_isInfo_andClosesNoLiveCandidate() {
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE.code()).isEqualTo("stream-consumer-no-live-candidate");
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED.code()).isEqualTo("stream-consumer-candidate-restored");
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED.recoveryOf().unwrap())
+            .isEqualTo(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE.hasRecovery()).isTrue();
     }
 
     /// #1941's resolved counterpart is a recovery, so it is INFO and paired with the not-registered condition.
@@ -579,5 +627,18 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED.level()).isEqualTo(WarningLevel.INFO);
         assertThat(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED.recoveryOf().or(OperatorWarningCode.JSON_CONFIG_APPLIED))
             .isEqualTo(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK);
+    }
+
+    /// #3174 H3b: the unpublish-bound expiry is an operator-visible WARNING of the `deployment` subsystem, closed by an INFO recovery; the
+    /// literals are alert keys, so a change would orphan open alerts.
+    @Test
+    void routeUnpublishAwait_isAWarning_withAnInfoRecoveryOfTheSameSubsystem() {
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_EXPIRED.code()).isEqualTo("route-unpublish-await-expired");
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_EXPIRED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_EXPIRED.subsystem()).isEqualTo("deployment");
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_SETTLED.code()).isEqualTo("route-unpublish-await-settled");
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_SETTLED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_SETTLED.subsystem()).isEqualTo("deployment");
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_SETTLED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_EXPIRED);
     }
 }

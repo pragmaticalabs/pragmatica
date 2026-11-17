@@ -41,6 +41,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.SliceRowSource;
 import org.pragmatica.aether.node.projection.ProjectionNodeSupport;
 import org.pragmatica.aether.node.stream.ConsensusBatchCounters;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
@@ -102,6 +103,13 @@ public interface ManageableNode {
         return coreNodeIds().contains(self());
     }
 
+    /// Whether this node is configured as a worker or spot node (a worker section, or its own seed entry labelled `worker`/`spot`): the role test
+    /// of `WorkerHierarchyAssembly.metadataServingReady`. Its replica holds only the worker-scoped keys, so a core-only read refuses here
+    /// (#3274). The default answers from [#hasCompleteClusterView], which also counts a node absent from its own seed as a worker.
+    default boolean isConfiguredWorker() {
+        return ! hasCompleteClusterView();
+    }
+
     /// Current core routing candidates, excluding worker entries in bootstrap seeds.
     default Set<NodeId> coreNodeIds() {
         return topologyConfig().coreNodes()
@@ -112,6 +120,9 @@ public interface ManageableNode {
     }
 
     KVStore<AetherKey, AetherValue> kvStore();
+    /// Where the per-node slice rows of [#kvStore] are read (deployment state machine spec 1.6.1): the deployment engine's source. No default:
+    /// a node answers its wiring's source, and a node double names the rows it serves (F5a, v3135b g13).
+    SliceRowSource sliceRows();
 
     /// D1-react (KVStore dispatcher design §3.6): the node's react executors, one per C9 component, for the per-component
     /// `react.queue.depth`, high-water and engine-stopped drop gauges. Default empty for node doubles.
@@ -141,7 +152,7 @@ public interface ManageableNode {
     /// #1652 — the leader's instantaneous live-member count for a community, served by
     /// `GET /cluster/communities`. An observation, not committed state; [Option#none] when this node
     /// cannot observe it (not the leader, liveness unwired, no committed roster). Default none keeps
-    /// test proxies compiling; the production node record delegates to its deployment manager.
+    /// test proxies compiling; the production node record reads it from the source that decided the state: the committed model under FSM2, the roster against the liveness view under LEGACY (#3159).
     default Option<Integer> communityLiveMembers(String communityId) {
         return Option.none();
     }
@@ -217,6 +228,16 @@ public interface ManageableNode {
     org.pragmatica.aether.slice.stream.StreamNamespacesService streamNamespacesService();
     Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver();
     Map<String, StorageFactory.StorageSetup> storageSetups();
+
+    /// What the storage maintenance tick has done on this node (#800); never run for a node without the driver.
+    default StorageMaintenanceProgress storageMaintenanceProgress() {
+        return StorageMaintenanceProgress.storageMaintenanceProgress();
+    }
+
+    /// Why storage maintenance on this node is degraded (#800), none while it is not; none for a node without the driver.
+    default Option<String> storageMaintenanceDegradation() {
+        return Option.none();
+    }
 
     /// The node's prefetch gossip counters; none before SWIM runs, and on a node with no prefetch gossip at all.
     default Option<PrefetchGossipStats> prefetchGossipStats() {

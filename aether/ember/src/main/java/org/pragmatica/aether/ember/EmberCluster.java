@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.config.ConfigSource;
 import org.pragmatica.config.ConfigurationProvider;
@@ -79,6 +80,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.aether.http.RouteTable;
 import org.pragmatica.aether.slice.SliceActionConfig;
@@ -132,6 +134,10 @@ public final class EmberCluster {
     /// test sets it to the OLD label before `start` and to the TARGET label before the run, and the nodes the run provisions
     /// then carry the new one. Harness-scoped.
     private volatile String versionLabel = "";
+    /// TEST SEAM (#2981 step 6) — the `NodeInfo.LABEL_WIRE_GENERATION` every node booted from now on advertises ("" = none: the
+    /// consensus layer stamps this binary's generation). Lets one in-JVM build boot an OLDER generation, so a test can show a later
+    /// node refusing to join it. Harness-scoped.
+    private volatile String wireGenerationLabel = "";
     private final Queue<Integer> availableSlots = new ConcurrentLinkedQueue<>();
     private final Map<String, Integer> slotsByNodeId = new ConcurrentHashMap<>();
     /// Slot each node last ran on, retained after the node is killed — lets [#relaunchNode] start a
@@ -139,6 +145,13 @@ public final class EmberCluster {
     private final Map<String, Integer> lastSlotByNodeId = new ConcurrentHashMap<>();
     /// Exit code each node exited with (see [#exitCodeOf]); the latest exit wins for a reused NodeId.
     private final Map<String, Integer> exitCodes = new ConcurrentHashMap<>();
+    /// #3173/#3174: every node stop that has been started and has not RESOLVED yet, however long ago it hit its bound. A stop
+    /// that expired its bound is still running (QUIC port bound), so it stays here until it resolves; [#stop] awaits these
+    /// alongside the registry, which a node removed by [#stopRemoved] has already left. The key is a per-stop token.
+    private final Map<Object, InFlightStop> inFlightStops = new ConcurrentHashMap<>();
+
+    private record InFlightStop(String nodeId, Promise<Unit> stop) {}
+
     private final int initialClusterSize;
     private final Set<String> localWorkerAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final Set<String> localCoreAdmissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -266,6 +279,15 @@ public final class EmberCluster {
     /// [Option#none] keeps the default. Nodes already started keep theirs.
     private final AtomicReference<Option<TimeSpan>> communityAbsence = new AtomicReference<>(Option.none());
 
+    /// The `timeouts.deployment.reconciliationInterval` every node created FROM NOW ON is configured with, in place of the default
+    /// (#3243). Both engines read this one setting: legacy through `ClusterDeploymentManager`'s tick, FSM2 through `Timing.withTick`.
+    /// [Option#none] keeps the default. Nodes already started keep theirs.
+    private final AtomicReference<Option<TimeSpan>> reconciliationInterval = new AtomicReference<>(Option.none());
+
+    /// The `coreAbsence` window (the worker-side fence) every node created FROM NOW ON is configured with, in place of the
+    /// default. [Option#none] keeps the default. Nodes already started keep theirs.
+    private final AtomicReference<Option<TimeSpan>> coreAbsence = new AtomicReference<>(Option.none());
+
     /// The `[streaming]` section every node is created with. Defaults to [StreamingConfig#streamingConfig()];
     /// [#withStreamingConfig] overrides it (e.g. `reshuffle_concurrency = 1` to make a partition's
     /// materialization queue behind another).
@@ -292,6 +314,8 @@ public final class EmberCluster {
 
     /// Per-node engine overrides (phase-3 design 8.2, W-29's misconfigured-newcomer arms), by NodeId; a node absent here takes [#deploymentEngine].
     private final Map<String, DeploymentEngine> nodeEngines = new ConcurrentHashMap<>();
+    /// Per-node `[streaming]` overrides (#2923), keyed by node id; a node without an entry uses [#streamingConfig].
+    private final Map<String, StreamingConfig> nodeStreamingConfigs = new ConcurrentHashMap<>();
 
     /// #715 — the [AetherNodeConfig] object actually passed to the most recently constructed node's
     /// constructor. Captured from the real `config` value itself, never mirrored independently at
@@ -558,6 +582,22 @@ public final class EmberCluster {
         communityAbsence.set(Option.some(window));
     }
 
+    /// TEST SEAM (#3243) — the periodic reconcile tick (`timeouts.deployment.reconciliationInterval`) of every node created after
+    /// this call, so a test can set it beyond its own deadline and thereby exclude the tick as a producer of whatever it observes.
+    /// Applies to both deployment engines. Nodes already started keep their interval. Harness-scoped; production paths never call this.
+    @Contract
+    public void withReconciliationIntervalForNewNodes(TimeSpan interval) {
+        reconciliationInterval.set(Option.some(interval));
+    }
+
+    /// TEST SEAM (#3028) — the `coreAbsence` window of every node created after this call, so a test can order a worker's
+    /// fence (exit code 2) before or after the cores' removal of it. Keep it strictly below the `communityAbsence` window
+    /// (#590). Nodes already started keep their window. Harness-scoped; production paths never call this.
+    @Contract
+    public void withCoreAbsenceForNewNodes(TimeSpan window) {
+        coreAbsence.set(Option.some(window));
+    }
+
     /// TEST SEAM (#1777) — the DHT replication EVERY node is created with, in place of FULL. MUST be called before
     /// [#start]. Harness-scoped; production paths never call this.
     @Contract
@@ -572,6 +612,14 @@ public final class EmberCluster {
         streamingConfig.set(config);
     }
 
+    /// TEST SEAM (#2923) — the `[streaming]` section for the single node `nodeIdStr`, whatever the cluster's is: a per-node
+    /// off-heap budget (`StreamingConfig#withMemoryBudget`) makes that node's replica budget-deferred. MUST be called before
+    /// that node is created. Harness-scoped; production paths never call this.
+    @Contract
+    public void withStreamingConfig(String nodeIdStr, StreamingConfig config) {
+        nodeStreamingConfigs.put(nodeIdStr, config);
+    }
+
     /// Phase-3 design 8.2 — construct every node of this cluster with `engine`. MUST be called before [#start]. Harness-scoped: the engine
     /// has no TOML key in phase 3.
     @Contract
@@ -584,6 +632,10 @@ public final class EmberCluster {
     @Contract
     public void withDeploymentEngine(String nodeIdStr, DeploymentEngine engine) {
         nodeEngines.put(nodeIdStr, engine);
+    }
+
+    private StreamingConfig streamingConfigOf(NodeId nodeId) {
+        return Option.option(nodeStreamingConfigs.get(nodeId.id())).or(streamingConfig::get);
     }
 
     private DeploymentEngine engineOf(NodeId nodeId) {
@@ -852,6 +904,8 @@ public final class EmberCluster {
         return Result.unitResult();
     }
 
+    /// Starts the cluster. A cluster below [EmberConfig#MINIMUM_NODES] is refused with the typed
+    /// `EmberConfigError.InvalidValue` before any node is created (#3299).
     public Promise<Unit> start() {
         return start(Set.of());
     }
@@ -881,6 +935,10 @@ public final class EmberCluster {
     }
 
     private Promise<Unit> start(Set<String> heldBackNodeIds, Set<String> excludedFromGenesis) {
+        if (initialClusterSize < EmberConfig.MINIMUM_NODES) {
+            return EmberConfig.tooFewNodes(initialClusterSize).promise();
+        }
+
         return selectedEngine.async()
                              .flatMap(_ -> startNodes(heldBackNodeIds, excludedFromGenesis));
     }
@@ -907,11 +965,10 @@ public final class EmberCluster {
             var slot = availableSlots.poll();
             var nodeId = nodeId(nodeIdPrefix + "-" + i).unwrap();
             var port = basePort + slot * portStride;
-            var info = versionLabel.isEmpty()
+            var seamLabels = withSeamLabels(Map.of());
+            var info = seamLabels.isEmpty()
                        ? NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap())
-                       : NodeInfo.nodeInfo(nodeId,
-                                           nodeAddress("localhost", port).unwrap(),
-                                           Map.of(NodeInfo.LABEL_VERSION, versionLabel));
+                       : NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap(), seamLabels);
 
             initialNodes.add(info);
             instanceTags.put(nodeId.id(), harnessInstanceTags(nodeId, Map.of()));
@@ -1193,16 +1250,54 @@ public final class EmberCluster {
         return unit;
     }
 
+    /// Stops every node and fails, naming it, when a node's stop does not resolve inside [#NODE_TIMEOUT]. The wait covers the
+    /// registry AND every stop already in flight: a node removed by `killNode` or a self-drain is no longer in the registry
+    /// but may still hold its ports (#3173/#3174).
+    ///
+    /// A failed stop clears the registry, so a retry does not re-stop the leaked node. It does await that node's still-pending
+    /// stop, though, and fails naming it again until that stop resolves: a retry is not cleanup, but it never reports success
+    /// while the node holds its ports.
     public Promise<Unit> stop() {
         log.info("Stopping Ember cluster");
         rollingRestartTask.cancel();
         rollingRestartActive.set(false);
         var registered = registeredNow();
-        var stopPromises = nodes.values().stream().map(EmberCluster::submitStop).toList();
+        var unstopped = new ConcurrentLinkedQueue<String>();
+        var pending = inFlightStops.values()
+                                   .stream()
+                                   .map(flight -> bounded(flight.stop(),
+                                                          NODE_TIMEOUT).recover(cause -> noteUnstopped(unstopped,
+                                                                                                       flight.nodeId(),
+                                                                                                       cause)))
+                                   .toList();
+        var stopPromises = nodes.entrySet()
+                                .stream()
+                                .map(entry -> submitStop(entry.getValue()).recover(cause -> noteUnstopped(unstopped,
+                                                                                                          entry.getKey(),
+                                                                                                          cause)))
+                                .toList();
 
-        return clearThenSettle(settledWithLateArrivals(stopPromises, registered),
+        return clearThenSettle(settledWithLateArrivals(Stream.concat(pending.stream(), stopPromises.stream()).toList(),
+                                                       registered),
                                this::clearClusterState,
-                               Promise::unitPromise);
+                               () -> unstoppedOutcome(unstopped));
+    }
+
+    /// #3173/#3174: a node whose stop did not resolve inside [#NODE_TIMEOUT] is still running, with its QUIC port bound. The
+    /// cluster stop used to swallow that and succeed, so the next cluster's bind failed. The node is recorded here (the recover
+    /// runs before the settle, so the outcome sees every entry) and [#unstoppedOutcome] turns the record into a failure.
+    private static Unit noteUnstopped(ConcurrentLinkedQueue<String> unstopped, String nodeId, Cause cause) {
+        log.error("Node {} did not stop: {}", nodeId, cause.message());
+        unstopped.add(nodeId);
+
+        return Unit.unit();
+    }
+
+    private static Promise<Unit> unstoppedOutcome(ConcurrentLinkedQueue<String> unstopped) {
+        return unstopped.isEmpty()
+               ? Promise.success(Unit.unit())
+               : Causes.cause("Ember cluster stop: node(s) not stopped within " + NODE_TIMEOUT
+                             + ", still running: " + unstopped).promise();
     }
 
     /// The nodes in the registry right now, by identity: what a teardown is about to stop.
@@ -1228,7 +1323,7 @@ public final class EmberCluster {
         var late = nodes.values()
                         .stream()
                         .filter(node -> !registered.contains(node))
-                        .map(EmberCluster::submitStop)
+                        .map(this::submitStop)
                         .map(stop -> stop.recover(_ -> Unit.unit()))
                         .toList();
 
@@ -1251,9 +1346,33 @@ public final class EmberCluster {
     /// teardown produces more simultaneous membership churn. That is precisely the input that
     /// triggered #929, which is why this lands only together with the `MembershipFsm` transition
     /// guard; on its own it would make that deadlock more frequent, not less.
-    private static Promise<Unit> submitStop(AetherNode node) {
-        return Promise.<Unit> promise(promise -> node.stop()
-                                                     .onResult(promise::resolve)).timeout(NODE_TIMEOUT);
+    private Promise<Unit> submitStop(AetherNode node) {
+        return Promise.<Unit> promise(promise -> trackedStop(node.self().id(),
+                                                             node).onResult(promise::resolve)).timeout(NODE_TIMEOUT);
+    }
+
+    /// Start `node.stop()` and keep it in [#inFlightStops] until it resolves. The returned promise is the node's own, never
+    /// failed by a bound: bound a COPY with [#bounded], so a stop that resolves after its bound is still seen.
+    private Promise<Unit> trackedStop(String nodeId, AetherNode node) {
+        var token = new Object();
+        var raw = node.stop();
+
+        inFlightStops.put(token, new InFlightStop(nodeId, raw));
+
+        return raw.onResult(_ -> inFlightStops.remove(token));
+    }
+
+    private static Promise<Unit> bounded(Promise<Unit> stop, TimeSpan bound) {
+        return Promise.<Unit> promise(copy -> stop.onResult(copy::resolve)).timeout(bound);
+    }
+
+    private Option<Promise<Unit>> inFlightStopOf(String nodeId) {
+        return Option.from(inFlightStops.values()
+                                        .stream()
+                                        .filter(flight -> flight.nodeId()
+                                                                .equals(nodeId))
+                                        .map(InFlightStop::stop)
+                                        .findFirst());
     }
 
     private Unit clearClusterState(Unit unit) {
@@ -1432,7 +1551,7 @@ public final class EmberCluster {
         var port = basePort + slot * portStride;
         var mgmtPort = baseMgmtPort + slot * portStride;
         var appHttpPort = baseAppHttpPort + slot * portStride;
-        var advertised = withVersionLabel(labels);
+        var advertised = withSeamLabels(labels);
         var info = advertised.isEmpty()
                    ? NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap())
                    : NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap(), advertised);
@@ -1459,16 +1578,29 @@ public final class EmberCluster {
         return this;
     }
 
-    private Map<String, String> withVersionLabel(Map<String, String> labels) {
-        if (versionLabel.isEmpty() || labels.containsKey(NodeInfo.LABEL_VERSION)) {
+    /// TEST SEAM (#2981 step 6) — see [#wireGenerationLabel]. Applies to nodes booted after the call; running nodes keep theirs.
+    public EmberCluster nodeWireGeneration(String generation) {
+        wireGenerationLabel = generation;
+
+        return this;
+    }
+
+    private Map<String, String> withSeamLabels(Map<String, String> labels) {
+        return withSeamLabel(withSeamLabel(labels, NodeInfo.LABEL_VERSION, versionLabel),
+                             NodeInfo.LABEL_WIRE_GENERATION,
+                             wireGenerationLabel);
+    }
+
+    private static Map<String, String> withSeamLabel(Map<String, String> labels, String key, String value) {
+        if (value.isEmpty() || labels.containsKey(key)) {
             return labels;
         }
 
-        var versioned = new java.util.HashMap<>(labels);
+        var labelled = new java.util.HashMap<>(labels);
 
-        versioned.put(NodeInfo.LABEL_VERSION, versionLabel);
+        labelled.put(key, value);
 
-        return Map.copyOf(versioned);
+        return Map.copyOf(labelled);
     }
 
     /// The core list a new node is configured with: the full current list, or only `mintTimePeers` plus the node
@@ -1522,13 +1654,26 @@ public final class EmberCluster {
     }
 
     private Promise<Unit> killNodeInternal(String nodeIdStr, AetherNode node, boolean graceful) {
-        if (!nodes.remove(nodeIdStr, node)) {
-            return Promise.unitPromise();
-        }
+        return stopRemoved(nodeIdStr, node, graceful).recover(_ -> Unit.unit());
+    }
 
-        var timeout = graceful
-                      ? NODE_TIMEOUT
-                      : TimeSpan.timeSpan(1).seconds();
+    /// Remove the node from the registry and stop it, bounded; the result FAILS when the bound expires (the node may still be
+    /// running), so the caller decides whether that matters. [#killNodeInternal] swallows it, the self-exit path does not.
+    /// The bound is on a copy: the stop itself stays tracked in [#inFlightStops] until it resolves.
+    private Promise<Unit> stopRemoved(String nodeIdStr, AetherNode node, boolean graceful) {
+        var bound = graceful
+                    ? NODE_TIMEOUT
+                    : TimeSpan.timeSpan(1).seconds();
+
+        return removeAndStop(nodeIdStr, node, graceful).map(stop -> bounded(stop, bound))
+                            .or(() -> Promise.unitPromise());
+    }
+
+    /// The node's own stop promise (unbounded), or none when another path already removed the node.
+    private Option<Promise<Unit>> removeAndStop(String nodeIdStr, AetherNode node, boolean graceful) {
+        if (!nodes.remove(nodeIdStr, node)) {
+            return Option.none();
+        }
 
         log.info("{} node {}",
                  graceful
@@ -1539,11 +1684,8 @@ public final class EmberCluster {
         instanceTags.remove(nodeIdStr);
         var slotOpt = Option.option(slotsByNodeId.remove(nodeIdStr));
 
-        return node.stop()
-                   .onSuccess(_ -> slotOpt.onPresent(availableSlots::offer))
-                   .timeout(timeout)
-                   .recover(_ -> Unit.unit())
-                   .onSuccess(_ -> log.info("Node {} removed from cluster", nodeIdStr));
+        return Option.some(trackedStop(nodeIdStr, node).onSuccess(_ -> slotOpt.onPresent(availableSlots::offer))
+                                      .onSuccess(_ -> log.info("Node {} removed from cluster", nodeIdStr)));
     }
 
     public int targetClusterSize() {
@@ -1701,8 +1843,10 @@ public final class EmberCluster {
                                   defaults.storageMaintenance());
     }
 
-    private static TimeoutsConfig withCommunityAbsence(TimeoutsConfig base, TimeSpan window) {
+    private static TimeoutsConfig withAbsence(TimeoutsConfig base, Option<TimeSpan> core, Option<TimeSpan> community) {
         var cluster = base.cluster();
+        var coreWindow = core.or(cluster.coreAbsence());
+        var communityWindow = community.or(cluster.communityAbsence());
 
         return new TimeoutsConfig(base.invocation(),
                                   base.forwarding(),
@@ -1712,9 +1856,39 @@ public final class EmberCluster {
                                                                      cluster.reconciliationInterval(),
                                                                      cluster.pingInterval(),
                                                                      cluster.channelProtection(),
-                                                                     cluster.coreAbsence(),
-                                                                     window,
+                                                                     coreWindow,
+                                                                     communityWindow,
                                                                      cluster.offlineBufferCap()),
+                                  base.consensus(),
+                                  base.election(),
+                                  base.swim(),
+                                  base.observability(),
+                                  base.dht(),
+                                  base.worker(),
+                                  base.security(),
+                                  base.repository(),
+                                  base.scaling(),
+                                  base.storageMaintenance());
+    }
+
+    private static TimeoutsConfig withReconciliation(TimeoutsConfig base, Option<TimeSpan> interval) {
+        var d = base.deployment();
+        var deployment = new TimeoutsConfig.DeploymentTimeouts(d.loading(),
+                                                               d.activating(),
+                                                               d.deactivating(),
+                                                               d.unloading(),
+                                                               d.activationChain(),
+                                                               d.transitionRetryDelay(),
+                                                               interval.or(d.reconciliationInterval()),
+                                                               d.maxLifecycleRetries(),
+                                                               d.applyDeadline(),
+                                                               d.applySchemaPauseMax());
+
+        return new TimeoutsConfig(base.invocation(),
+                                  base.forwarding(),
+                                  deployment,
+                                  base.rollingUpdate(),
+                                  base.cluster(),
                                   base.consensus(),
                                   base.election(),
                                   base.swim(),
@@ -1737,14 +1911,11 @@ public final class EmberCluster {
         var helloTimeout = raised
                            ? RAISED_HELLO_TIMEOUT
                            : TopologyConfig.DEFAULT_HELLO_TIMEOUT;
-        var nodeTimeouts = communityAbsence.get()
-                                           .map(window -> withCommunityAbsence(raised
-                                                                               ? RAISED_TIMEOUTS
-                                                                               : TimeoutsConfig.timeoutsConfig(),
-                                                                               window))
-                                           .or(raised
-                                               ? RAISED_TIMEOUTS
-                                               : TimeoutsConfig.timeoutsConfig());
+        var baseTimeouts = raised
+                           ? RAISED_TIMEOUTS
+                           : TimeoutsConfig.timeoutsConfig();
+        var nodeTimeouts = withReconciliation(withAbsence(baseTimeouts, coreAbsence.get(), communityAbsence.get()),
+                                              reconciliationInterval.get());
         Option<MembershipConfig> membership = raised
                                               ? RAISED_MEMBERSHIP
                                               : Option.empty();
@@ -1789,7 +1960,7 @@ public final class EmberCluster {
 
         // membership-config override: raised split-timeout ONLY for the #491 pinned convergence variant
         // (via withRaisedSwimTimeouts); otherwise none — forge nodes use MembershipConfig defaults
-        streamingConfig.get(),
+        streamingConfigOf(nodeId),
                                           ClusterFormationConfig.defaults(),
 
         // #298 — in-process nodes never pass through Main, so no cluster
@@ -1982,9 +2153,9 @@ public final class EmberCluster {
         return Map.of("artifacts", config);
     }
 
-    private void onNodeExit(String nodeIdStr, int exitCode) {
-        exitCodes.put(nodeIdStr, exitCode);
-        handleSelfDrain(nodeIdStr);
+    /// Package-visible so a test can fire a node's exit callback over a fake node.
+    void onNodeExit(String nodeIdStr, int exitCode) {
+        handleSelfDrain(nodeIdStr, exitCode);
     }
 
     /// The process exit code a node exited with in this harness (`AetherNode.EXIT_DRAINED`,
@@ -1994,10 +2165,29 @@ public final class EmberCluster {
         return Option.option(exitCodes.get(nodeIdStr));
     }
 
-    private void handleSelfDrain(String nodeIdStr) {
-        Option.option(nodes.get(nodeIdStr)).onPresent(node -> killNodeInternal(nodeIdStr, node, true).onFailure(cause -> log.warn("Self-drain cleanup failed for {}: {}",
-                                                                                                                                  nodeIdStr,
-                                                                                                                                  cause.message())));
+    /// #3173/#3174: the exit is reported (`exitCodeOf`) only after the node's stop RESOLVED, however late: the exit is recorded
+    /// off the node's own stop promise, not the bounded copy, so a stop that outlives [#NODE_TIMEOUT] and resolves later still
+    /// reports. While it has not resolved the node is unreported, and an expiry is logged. A node already out of the registry
+    /// has its stop in flight on another path (`killNode`, an earlier exit): the exit waits for that stop. Only a node with
+    /// no stop in flight at all is reported at once.
+    private void handleSelfDrain(String nodeIdStr, int exitCode) {
+        Option.option(nodes.get(nodeIdStr))
+              .flatMap(node -> removeAndStop(nodeIdStr, node, true))
+              .onPresent(stop -> reportWhenResolved(nodeIdStr, exitCode, stop))
+              .onPresent(stop -> bounded(stop, NODE_TIMEOUT).onFailure(cause -> log.warn("Self-drain stop of {} did not resolve, exit {} not reported until it does: {}",
+                                                                                         nodeIdStr,
+                                                                                         exitCode,
+                                                                                         cause.message())))
+              .onEmpty(() -> reportAfterInFlightStop(nodeIdStr, exitCode));
+    }
+
+    private void reportAfterInFlightStop(String nodeIdStr, int exitCode) {
+        inFlightStopOf(nodeIdStr).onPresent(stop -> reportWhenResolved(nodeIdStr, exitCode, stop))
+                      .onEmpty(() -> exitCodes.put(nodeIdStr, exitCode));
+    }
+
+    private void reportWhenResolved(String nodeIdStr, int exitCode, Promise<Unit> stop) {
+        stop.onSuccess(_ -> exitCodes.put(nodeIdStr, exitCode));
     }
 
     public List<NodeMetrics> nodeMetrics() {

@@ -8,6 +8,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testing.RequiresDocker;
 import org.testcontainers.containers.MSSQLServerContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -21,8 +22,6 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
-import static org.testcontainers.DockerClientFactory.instance;
 
 /// Differential test that proves [StatementSplitter] against a real SQL Server (T-SQL) engine.
 ///
@@ -52,10 +51,11 @@ import static org.testcontainers.DockerClientFactory.instance;
 /// isolated within the container's `tempdb` working database.
 ///
 /// Heavy: needs a real SQL Server engine, so the class is tagged `heavy-db` and excluded from the
-/// default build. If Docker is unavailable the whole class is skipped via [#dockerAvailable] rather
+/// default build. If Docker is unavailable the whole class is skipped via [RequiresDocker] rather
 /// than failing.
 @Tag("heavy-db")
-@Testcontainers(disabledWithoutDocker = true)
+@RequiresDocker
+@Testcontainers
 class StatementSplitterSqlServerDiffTest {
     private static final DialectSpec SQLSERVER = Dialects.SQLSERVER;
 
@@ -64,17 +64,7 @@ class StatementSplitterSqlServerDiffTest {
         new MSSQLServerContainer<>("mcr.microsoft.com/mssql/server:2022-latest").acceptLicense();
 
     @BeforeAll
-    static void requireDocker() {
-        assumeTrue(dockerAvailable(), "Docker is not available — skipping real-SQLServer differential test");
-    }
-
-    /// Whether a Docker daemon is reachable, probed without throwing so the suite skips cleanly.
-    private static boolean dockerAvailable() {
-        try {
-            return instance().isDockerAvailable();
-        } catch (Throwable ignored) {
-            return false;
-        }
+    static void awaitReady() {
     }
 
     // ----- corpus: each script exercises a distinct T-SQL split hazard ----------------
@@ -341,7 +331,7 @@ class StatementSplitterSqlServerDiffTest {
     /// test ran. Best-effort: the shared container is discarded after the class anyway.
     @AfterEach
     void dropCaseObjects() {
-        if (!dockerAvailable() || !SQL_SERVER.isRunning()) {
+        if (!SQL_SERVER.isRunning()) {
             return;
         }
         try (var connection = openConnection();

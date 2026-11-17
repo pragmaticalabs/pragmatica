@@ -20,9 +20,7 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// T, Option<T>, Result<T>, or Promise<T>.
 public class CstReturnKindRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-01";
-
     private static final String DOC_LINK = "https://pragmatica.dev/java/jbct/rules/#jbct-ret-01";
-
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
     private static final Set<String> FORBIDDEN_TYPES = Set.of("Optional",
@@ -53,7 +51,7 @@ public class CstReturnKindRule implements CstLintRule {
     private boolean isPrivateMethod(Cursor method, Cursor root) {
         // Find the member wrapper ancestor which contains the Modifier
         return enclosingMember(root, method).map(cm -> text(cm).contains("private "))
-                           .or(false);
+                              .or(false);
     }
 
     private Stream<Diagnostic> checkMethod(Cursor method, LintContext ctx) {

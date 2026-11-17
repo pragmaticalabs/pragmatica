@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.IntStream;
 
@@ -130,7 +131,7 @@ public sealed interface LoadConfigLoader {
     private static Option<Duration> toDuration(String durationStr) {
         var trimmed = option(durationStr).map(String::trim).filter(s -> !s.isBlank() && !"0".equals(s));
 
-        return trimmed.map(String::toLowerCase)
+        return trimmed.map(txt -> txt.toLowerCase(Locale.ROOT))
                       .flatMap(LoadConfigLoader::toDurationValue);
     }
 

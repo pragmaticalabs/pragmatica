@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.forge.simulator;
 
+import java.util.Locale;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
@@ -78,7 +80,7 @@ public enum SimulatorMode {
                                                                                          v -> !v.isBlank());
     }
     private static String normalizeModeName(String value) {
-        return value.toUpperCase()
+        return value.toUpperCase(Locale.ROOT)
                     .replace("-", "_")
                     .replace(" ", "_");
     }

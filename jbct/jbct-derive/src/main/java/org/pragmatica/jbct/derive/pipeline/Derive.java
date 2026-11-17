@@ -15,6 +15,7 @@ import org.pragmatica.jbct.derive.result.Halt;
 import org.pragmatica.jbct.derive.result.Strike;
 import org.pragmatica.lang.Result;
 
+
 /// Derive — the full pipeline (SPEC.md §4): `parse → normalize → prune → press → resolve → verify
 /// → emit`. This interface is the `emit`-less spine; the emitters render the [DeriveResult] it
 /// produces.
@@ -73,6 +74,8 @@ public sealed interface Derive permits Derive.unused {
     }
 
     private static List<Halt> halts(ResolveResult resolved, VerifyResult verified) {
-        return Stream.concat(resolved.halts().stream(), verified.halts().stream()).toList();
+        return Stream.concat(resolved.halts().stream(),
+                             verified.halts().stream())
+                     .toList();
     }
 }

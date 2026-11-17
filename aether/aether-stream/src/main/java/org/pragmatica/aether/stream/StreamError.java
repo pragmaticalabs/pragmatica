@@ -184,6 +184,29 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// #2981 step 2 (design 2.2 check 3, r7.1 C2): a suffix truncation of a confirmation-factor >= 2 partition asked to cut below
+    /// the ring's visible offset (`keepThrough < visibleOffset`), which would retract records already served and let the next append
+    /// reuse their offsets. Under the owner's lineage rule this cut is unreachable, so the refusal is a defect, not an operating state:
+    /// nothing changed (ring, WAL, witness and visible stand) and the quarantine stands.
+    record TruncateBelowVisible(String streamName, int partition, long keepThrough, long visibleOffset) implements StreamError {
+        /// The text every message of this refusal carries; the refused-cut episode keeps the message only, so it recognizes the kind by this.
+        public static final String MESSAGE_MARKER = "would retract records already visible";
+
+        @Override
+        public String message() {
+            return "Cannot truncate %s[%d] back to offset %d: it %s (visible through %d)".formatted(streamName,
+                                                                                                    partition,
+                                                                                                    keepThrough,
+                                                                                                    MESSAGE_MARKER,
+                                                                                                    visibleOffset);
+        }
+
+        /// Whether `detail` is the text of this refusal.
+        public static boolean describes(String detail) {
+            return detail.contains(MESSAGE_MARKER);
+        }
+    }
+
     /// Ring seed-offset precondition rejection (spec PHASE A-WAL §W1): {@link OffHeapRingBuffer#seedHead}
     /// requires a FRESH ring (`headOffset() == -1`, no appends yet) and a non-negative `base`. The seed
     /// is a replay-only positioning op; this rejects a misuse — a non-fresh ring or a negative `base` —
@@ -624,6 +647,27 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// #2981 step 2 (design §2.2 check 1): this node holds a confirmation-factor >= 2 partition of `streamName` but its node lease is
+    /// not valid now (no own renewal delivered within the lease, a clock suspension, or a store reset or snapshot install revoked it), so
+    /// it neither appends nor serves reads as owner. Refused before anything reached the ring, the WAL or a replica, and no activation
+    /// is started. Transient: the next delivered renewal restores the lease. Read routing treats it as [OwnerNotActivated].
+    record OwnerLeaseLapsed(String streamName, int partition) implements StreamError, Cause.Transient {
+        /// The text every message of this refusal carries; a forwarded refusal reaches the publisher as a string only.
+        public static final String MESSAGE_MARKER = "has no valid node lease on this node";
+
+        @Override
+        public String message() {
+            return "Stream partition %s[%d] %s (owner admission paused until a renewal lands)".formatted(streamName,
+                                                                                                         partition,
+                                                                                                         MESSAGE_MARKER);
+        }
+
+        /// Whether `detail` is the text of this refusal.
+        public static boolean describes(String detail) {
+            return detail.contains(MESSAGE_MARKER);
+        }
+    }
+
     /// Linearizable-read owner mismatch (#345 item 1e): a `LINEARIZABLE` read landed on `actual` but the
     /// committed `StreamPartitionOwnershipValue.owner` for the `(stream, partition)` arc is `expected`, so
     /// `actual` is NOT the authoritative owner (a stale committed view, or a routing race during a
@@ -678,6 +722,29 @@ public sealed interface StreamError extends Cause {
         public String message() {
             return "Linearizable read rejected for %s[%d]: the no-op consensus round did not apply within the read timeout budget".formatted(streamName,
                                                                                                                                              partition);
+        }
+    }
+
+    /// #2981 step 2 (design §2.2 check 2): the replicas confirmed an append of `(streamName, partition)`, but the committed
+    /// ownership `(owner, ownerEpoch, ownershipTerm)` is no longer the one the ack waiter registered under: another owner may
+    /// have activated without the append. The write is NOT acknowledged; whether it survives is unknown, and every writer reports
+    /// it as `PublishOutcomeUnknown` (a retry may duplicate it: no publish idempotency key at rc5). Transient.
+    record OwnershipMovedBeforeAck(String streamName, int partition) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Append to %s[%d] not acknowledged: the committed ownership changed before the acknowledgement completed".formatted(streamName,
+                                                                                                                                       partition);
+        }
+    }
+
+    /// #2981 step 2 (design §2.2 check 2, F-1a-4): the replicas confirmed an append of `(streamName, partition)` while this node's
+    /// lease was lapsed, and no renewal re-validated it within the ack budget (5 s from registration). Not a failure of the
+    /// write: the acks arrived and the record may well survive, so every writer reports it as `PublishOutcomeUnknown`. Transient.
+    record OwnerLeaseLapsedBeforeAck(String streamName, int partition) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Append to %s[%d] not acknowledged: the node lease stayed lapsed through the acknowledgement budget".formatted(streamName,
+                                                                                                                                  partition);
         }
     }
 }

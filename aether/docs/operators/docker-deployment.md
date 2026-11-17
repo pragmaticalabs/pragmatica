@@ -151,7 +151,7 @@ node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FORGE_PORT` | 8888 | Forge API port |
-| `CLUSTER_SIZE` | 5 | Simulated cluster size |
+| `CLUSTER_SIZE` | 5 | Simulated cluster size (minimum 3; smaller values are refused) |
 | `LOAD_RATE` | 1000 | Requests per second |
 | `JAVA_OPTS` | `-Xmx1g -XX:+UseZGC` | JVM options |
 

@@ -5,6 +5,7 @@ import java.util.List;
 import org.pragmatica.jbct.derive.model.Meta;
 import org.pragmatica.jbct.lint.Diagnostic;
 
+
 /// The full result of `derive` (SPEC.md §4 emit): everything computed from a sheet, from one object
 /// that both the markdown and JSON emitters render. A sheet that fails the entry gate yields a
 /// gate-only result (the fake-answer halt); a clean sheet yields the full pipeline output.
@@ -58,6 +59,7 @@ public record DeriveResult(String source,
         if (!gateFindings.isEmpty()) {
             return 1;
         }
+
         if (!halts.isEmpty()) {
             return 2;
         }

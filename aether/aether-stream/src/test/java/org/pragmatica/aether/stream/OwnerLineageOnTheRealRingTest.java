@@ -47,6 +47,7 @@ class OwnerLineageOnTheRealRingTest {
     void setUp() {
         manager = streamPartitionManager(Long.MAX_VALUE);
         manager.placementRoleSupplier((_, _) -> role.get());
+        manager.ownerLease(OwnerLease.TEST_VALID);
         manager.ownershipRecords((_, _) -> record.get());
         activation = OwnerActivation.ownerActivation(SELF,
                                                      (_, _) -> record.get(),

@@ -101,11 +101,11 @@ public class CstConstructorBypassRule implements CstLintRule {
         }
 
         return enclosingMember(root, node).map(member -> {
-                                    var memberText = text(member);
+                                                   var memberText = text(member);
 
-                                    return memberText.contains("static ") && memberText.contains("Result<");
-                                })
-                           .or(false);
+                                                   return memberText.contains("static ") && memberText.contains("Result<");
+                                               })
+                              .or(false);
     }
 
     private boolean enclosingTypeIsValueObject(Cursor root, Cursor node, Set<String> valueObjectTypes) {

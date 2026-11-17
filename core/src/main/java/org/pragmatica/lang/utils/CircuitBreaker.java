@@ -130,8 +130,8 @@ public interface CircuitBreaker {
                                                long successCount = testSuccessCount.incrementAndGet();
 
                                                if (successCount >= testAttempts) {
-                                               transitionTo(State.CLOSED);
-                                           }
+                                                   transitionTo(State.CLOSED);
+                                               }
                                            })
                                 .onFailure(error -> shouldTrip.ifTrue(error,
                                                                       () -> transitionTo(State.OPEN)));
@@ -162,8 +162,8 @@ public interface CircuitBreaker {
             private void scheduleReset() {
                 SharedScheduler.schedule(() -> {
                                              if (stateRef.get() == State.OPEN && isResetTimeoutExpired()) {
-                                             transitionTo(State.HALF_OPEN);
-                                         }
+                                                 transitionTo(State.HALF_OPEN);
+                                             }
                                          },
                                          resetTimeout);
             }

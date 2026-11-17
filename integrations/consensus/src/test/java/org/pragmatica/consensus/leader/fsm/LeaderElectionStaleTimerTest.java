@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// Verifies the L1 fix: `Electing` and `ReElecting` are now data-carrying records that hold the
@@ -112,14 +113,14 @@ class LeaderElectionStaleTimerTest {
         // via NodeAdded in QuorumWaiting so that `adoptLeaderIfInTopology` accepts the
         // synthesized `LeaderCommitted` event.
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B)));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B), seq()));
         h.dispatch(new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
         // LeaderCommitted handled directly by AwaitingKvSync.handle — no need for the grace
         // timeout. This mirrors the cold-boot fix path: AwaitingKvSync absorbs the leader-commit
         // notification and transitions straight to Led without ever entering Electing.
         h.dispatch(new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted(SELF));
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
-        h.dispatch(new ClusterFsmEvent.NodeGone(SELF, List.of(PEER_A, PEER_B)));
+        h.dispatch(new ClusterFsmEvent.NodeGone(SELF, List.of(PEER_A, PEER_B), seq()));
         assertThat(h.state()).isInstanceOf(LeaderElectionState.ReElecting.class);
         var reElecting = (LeaderElectionState.ReElecting) h.state();
         var pendingTick = reElecting.tickFuture().get();

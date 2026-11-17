@@ -3,17 +3,17 @@
 ## Version: 1.0
 ## Status: Implementation-Ready (DESIGN only — see the inert-configuration warning below)
 ## Target Release: Post Passive Worker Pools Phase 1
-## Last Updated: 2026-09-14 (#677: the #576 inert keys descoped from 1.0; their refusal is validation-time and does NOT block a publish)
+## Last Updated: 2026-11-14 (#3269: a blueprint carrying a #576 inert key is refused at publish with HTTP 422; #677 descoped the keys from 1.0)
 
 > **⚠️ NOT EVERY KEY IN THIS SPEC IS WIRED, AND THE UNWIRED ONES ARE REJECTED.** The
 > "Implementation-Ready" status above describes the DESIGN. Several `[streams.X]` configuration keys
 > documented below — the whole per-consumer tuning family in §3.2/§3.3, plus `compression` and a
 > non-default `encryption_key_id` — are read by nothing at runtime, and since **#576** a blueprint
 > declaring them is **refused by blueprint validation** rather than silently accepted. **That refusal
-> does not block the publish today** — `BlueprintService.streamBindings` discards it and writes empty
-> stream bindings — so copying an example from those sections into a real `resources.toml` does NOT
-> fail the deployment; it publishes, and any slice consuming the aliased stream then fails with
-> `StreamAddressError.UnboundStreamAlias`. Every such key is flagged in place. **#677 descoped them for 1.0** (2026-09-14): they
+> blocks the publish (#3269)** — the rules `inert-stream-config-key` and `inert-consumer-config-key` are in
+> `StreamResourceValidator.GATING_SECTION_RULES`, so the publish answers HTTP 422 naming the rule and commits
+> nothing. Copying an example from those sections into a real `resources.toml` therefore fails the
+> deployment. A key leaves the gated set when it is wired. Every such key is flagged in place. **#677 descoped them for 1.0** (2026-09-14): they
 > stay rejected, `encryption_key_id` waits on #253's production key source, and compression plus the
 > per-consumer tuning family are a post-GA epic — a design target, not a 1.0 promise. The
 > authoritative per-operation statement of what streaming actually guarantees is
@@ -381,15 +381,15 @@ Consumer groups are configured inline under the stream section. Each consumer gr
 
 > **⚠️ EVERY KEY IN THIS EXAMPLE IS REFUSED BY BLUEPRINT VALIDATION (#576).** None of the
 > per-consumer tuning keys below is read at runtime, and `StreamResourceValidator.guardInertConfig`
-> fails them as inert configuration — but that verdict does not block the publish today (it is dropped
-> by `BlueprintService.streamBindings`), so the blueprint DOES deploy, with empty stream bindings. The block is
+> fails them as inert configuration, and that verdict blocks the publish (#3269): the answer is HTTP 422
+> naming `inert-consumer-config-key` or `inert-stream-config-key`, and nothing is committed. The block is
 > retained as a post-GA DESIGN target (descoped from 1.0 in #677), not as a working example. `auto_offset_reset` is the sharpest
 > case: the only value the validator accepts is `"earliest"`, because a never-committed consumer always
 > starts at offset 0 **by the #478 ruling, permanently** — so the `"latest"` shown here (and named as
 > the default) is precisely the value that will be refused.
 
 ```toml
-# DESIGN TARGET — every key below is refused as inert (#576, #677); that refusal does not block the publish today.
+# DESIGN TARGET — every key below is refused as inert (#576, #677); that refusal blocks the publish (#3269).
 [streams.order-events.consumers.analytics]
 auto_offset_reset = "latest"     # REJECTED: only "earliest" is accepted (#478 makes it permanent)
 checkpoint_interval = "1s"       # REJECTED as inert: not read at runtime

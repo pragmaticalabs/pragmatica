@@ -118,6 +118,9 @@ class NodeDeploymentStateConfigWatchSurvivalTest {
 
         kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(ARTIFACT.base()),
                                                                       SliceTargetValue.sliceTargetValue(ARTIFACT.version(), 1)))));
+        // #3028: the committed entry the suspended slice stands for; without it the quorum-return sweep unloads the slice instead.
+        kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(SELF, ARTIFACT),
+                                                                      NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE)))));
         cluster = new RecordingClusterNode(SELF);
         feed = DefaultConfigChangeFeed.defaultConfigChangeFeed(() -> 0L, ConfigReadProtocol.unprotected(), timeSpan(2).seconds());
         store = (sliceStore) SliceStore.sliceStore(SliceRegistry.sliceRegistry(),

@@ -58,7 +58,7 @@ public sealed interface PackageGlob permits PackageGlob.unused {
         var segments = new ArrayList<String>();
 
         for (var segment : glob.split("\\.", -1)) {
-            if (! isRepeatedAnyDepth(segments, segment)) {
+            if (!isRepeatedAnyDepth(segments, segment)) {
                 segments.add(segment);
             }
         }
@@ -67,7 +67,9 @@ public sealed interface PackageGlob permits PackageGlob.unused {
     }
 
     private static boolean isRepeatedAnyDepth(List<String> segments, String segment) {
-        return ANY_DEPTH.equals(segment) && ! segments.isEmpty() && ANY_DEPTH.equals(segments.getLast());
+        return ANY_DEPTH.equals(segment)
+               && !segments.isEmpty()
+               && ANY_DEPTH.equals(segments.getLast());
     }
 
     private static String segmentRegex(List<String> segments, int index) {

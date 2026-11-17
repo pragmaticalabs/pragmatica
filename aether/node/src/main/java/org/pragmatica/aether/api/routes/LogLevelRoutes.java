@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -52,11 +53,11 @@ public final class LogLevelRoutes implements RouteSource {
     private Promise<LogLevelSetResponse> handleSetLevel(SetLogLevelRequest req) {
         return validateSetRequest(req).async()
                                  .flatMap(valid -> logLevelRegistry.setLevel(valid.logger(),
-                                                                             valid.level().toUpperCase())
+                                                                             valid.level().toUpperCase(Locale.ROOT))
                                                                    .map(_ -> new LogLevelSetResponse("level_set",
                                                                                                      valid.logger(),
                                                                                                      valid.level()
-                                                                                                          .toUpperCase())));
+                                                                                                          .toUpperCase(Locale.ROOT))));
     }
 
     private Result<SetLogLevelRequest> validateSetRequest(SetLogLevelRequest req) {
@@ -68,7 +69,7 @@ public final class LogLevelRoutes implements RouteSource {
             return LogLevelError.MISSING_FIELDS.result();
         }
 
-        if (!VALID_LEVELS.contains(req.level().toUpperCase())) {
+        if (!VALID_LEVELS.contains(req.level().toUpperCase(Locale.ROOT))) {
             return LogLevelError.INVALID_LEVEL.result();
         }
 

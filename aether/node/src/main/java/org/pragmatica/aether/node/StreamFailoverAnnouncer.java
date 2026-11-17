@@ -71,18 +71,18 @@ public interface StreamFailoverAnnouncer {
                                                                               isr,
                                                                               liveIds,
                                                                               "owner not live and no in-sync replica live; unclean failover is off",
-                                                                              StreamEventIds.of("stream-failover-refused",
-                                                                                                key,
-                                                                                                record))
+                                                                              StreamEventIds.streamEventIds("stream-failover-refused",
+                                                                                                            key,
+                                                                                                            record))
                : OperationalEvent.StreamFailoverResolved.streamFailoverResolved(key.stream(),
                                                                                 key.partition(),
                                                                                 record.owner().id(),
                                                                                 isr,
                                                                                 liveIds,
                                                                                 "owner live again or an in-sync replica elected",
-                                                                                StreamEventIds.of("stream-failover-resolved",
-                                                                                                  key,
-                                                                                                  record));
+                                                                                StreamEventIds.streamEventIds("stream-failover-resolved",
+                                                                                                              key,
+                                                                                                              record));
     }
 
     private static List<String> ids(List<NodeId> nodes) {

@@ -9,6 +9,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -94,10 +95,14 @@ public sealed interface StreamResourceValidator {
     String STREAMS_SECTION_PREFIX = "streams.";
     String STRONG = "strong";
     List<String> CONSISTENCY_KEYS = List.of("consistency_mode", "consistency");
+
     /// #1336: per-section rules whose violation refuses the deploy instead of dropping the one alias —
     /// see [#partition]. Data, so a ruling flips one line. [#RULE_UNSUPPORTED_CONSISTENCY] is not listed
     /// because [#ensureHonourableConsistency] refuses it before any partition runs.
-    Set<String> GATING_SECTION_RULES = Set.of(RULE_SOURCE_RESERVED_KIND, RULE_SOURCE_SYSTEM_NOT_CONSUMER);
+    Set<String> GATING_SECTION_RULES = Set.of(RULE_SOURCE_RESERVED_KIND,
+                                              RULE_SOURCE_SYSTEM_NOT_CONSUMER,
+                                              RULE_INERT_STREAM_CONFIG,
+                                              RULE_INERT_CONSUMER_CONFIG);
 
     /// Run the full validation pass for a deploy attempt.
     ///
@@ -152,13 +157,15 @@ public sealed interface StreamResourceValidator {
     ///    reserved stream kind with a typed 4xx on every mint path, and a deploy must refuse the same
     ///    declaration the same way — a deliberate reach into a reserved namespace, not a config slip —
     ///    rather than drop the alias and let the slice fail at load. Listed in [#GATING_SECTION_RULES].
+    ///    [#RULE_INERT_STREAM_CONFIG] and [#RULE_INERT_CONSUMER_CONFIG] (#3269, owner ruling 2026-11-14,
+    ///    amending #1336): a key the runtime would silently ignore refuses the deploy rather than drop the
+    ///    alias, for the same reason. A key leaves [#GATING_SECTION_RULES] when it is wired.
     ///
     /// Every other rule is per-section — the parser's, one id per cause type ([#ruleFor]):
     /// [#RULE_VERSION_AND_SOURCE_EXCLUSIVE], [#RULE_PRODUCER_VERSION_EXACT], [#RULE_PARTITIONS_OVER_CEILING],
     /// [#RULE_REPLICATION_POLICY_INVALID], [#RULE_REPLICATION_EXCEEDS_CORE_COUNT], [#RULE_UNKNOWN_STREAM_KEY], [#RULE_STREAM_KEY_INVALID], [#RULE_SOURCE_ADDRESS_INVALID], [#RULE_NAMESPACE_INVALID],
     /// [#RULE_STREAM_NAME_INVALID], [#RULE_VERSION_FORMAT_INVALID], [#RULE_STREAM_RESOURCE_INVALID] for a cause
-    /// type not named here — and #576's inert config keys ([#RULE_INERT_STREAM_CONFIG],
-    /// [#RULE_INERT_CONSUMER_CONFIG]). Each names the alias it sits under, taken from the section the parser
+    /// type not named here. Each names the alias it sits under, taken from the section the parser
     /// refused, never from message text. [#RULE_NAMESPACE_RESERVED] on an External source has no producer at
     /// this head: `ResourceAddress.resourceAddress(String)` accepts `system:` (spec §11.2 allows it).
     ///
@@ -254,8 +261,8 @@ public sealed interface StreamResourceValidator {
     /// publish path has no production caller), so deploying it would produce a stream every write refuses.
     /// `BlueprintService` runs this on every `resources.toml` it deploys, on both the artifact and the body
     /// publish path, before any command is applied — and regardless of `registerOnly`, so a STRONG blueprint
-    /// cannot even be registered. Reported under [#RULE_UNSUPPORTED_CONSISTENCY], not the non-gating
-    /// [#RULE_INERT_STREAM_CONFIG].
+    /// cannot even be registered. Reported under [#RULE_UNSUPPORTED_CONSISTENCY], not [#RULE_INERT_STREAM_CONFIG]
+    /// (which also refuses the deploy, but from [#partition], after this gate).
     static Result<Unit> ensureHonourableConsistency(Option<String> resourcesConfig) {
         var failures = resourcesConfig.map(StreamResourceValidator::consistencyFailures).or(List.of());
 
@@ -315,7 +322,7 @@ public sealed interface StreamResourceValidator {
 
     private static String classifyNamespaceFailure(Cause cause) {
         return cause.message()
-                    .toLowerCase()
+                    .toLowerCase(Locale.ROOT)
                     .contains("reserved")
                ? RULE_NAMESPACE_RESERVED
                : RULE_BLUEPRINT_NAMESPACE;

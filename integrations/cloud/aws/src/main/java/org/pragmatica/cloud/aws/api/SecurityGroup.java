@@ -43,8 +43,7 @@ public record SecurityGroup(@JacksonXmlProperty(localName = "groupId") String gr
     /// nothing about what remains. Outbound (`ipPermissionsEgress`) is deliberately NOT bound — Aether
     /// never manages egress, and binding it would invite code that does.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record IpPermissionSet(@JacksonXmlElementWrapper(useWrapping = false)
-                                  @JacksonXmlProperty(localName = "item") List<IpPermission> items) {}
+    public record IpPermissionSet(@JacksonXmlElementWrapper(useWrapping = false) @JacksonXmlProperty(localName = "item") List<IpPermission> items) {}
 
     /// One inbound permission. `fromPort`/`toPort` are boxed because EC2 omits them entirely for
     /// protocols that have no ports (`-1`/`icmp`), and a primitive would silently read that as port 0.
@@ -52,12 +51,10 @@ public record SecurityGroup(@JacksonXmlProperty(localName = "groupId") String gr
     public record IpPermission(@JacksonXmlProperty(localName = "ipProtocol") String ipProtocol,
                                @JacksonXmlProperty(localName = "fromPort") Integer fromPort,
                                @JacksonXmlProperty(localName = "toPort") Integer toPort,
-                               @JacksonXmlElementWrapper(useWrapping = false)
-                               @JacksonXmlProperty(localName = "ipRanges") IpRangeSet ipRanges) {}
+                               @JacksonXmlElementWrapper(useWrapping = false) @JacksonXmlProperty(localName = "ipRanges") IpRangeSet ipRanges) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record IpRangeSet(@JacksonXmlElementWrapper(useWrapping = false)
-                             @JacksonXmlProperty(localName = "item") List<IpRange> items) {}
+    public record IpRangeSet(@JacksonXmlElementWrapper(useWrapping = false) @JacksonXmlProperty(localName = "item") List<IpRange> items) {}
 
     /// `description` is bound because a REVOKE has to reproduce the stored rule exactly. EC2 accepted
     /// the rule with the description `openIngress` attached, and a revoke that omits it fails to match
@@ -75,7 +72,8 @@ public record SecurityGroup(@JacksonXmlProperty(localName = "groupId") String gr
             return 0;
         }
 
-        return ipPermissions.items().size();
+        return ipPermissions.items()
+                            .size();
     }
 
     /// Tags as a key/value map, tolerating an absent tag set (`<tagSet />` deserializes with a null

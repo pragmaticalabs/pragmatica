@@ -8,6 +8,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testing.RequiresDocker;
 import org.testcontainers.containers.Db2Container;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -24,8 +25,6 @@ import java.util.Locale;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.abort;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
-import static org.testcontainers.DockerClientFactory.instance;
 
 /// Differential test that proves [StatementSplitter] against a real DB2 engine.
 ///
@@ -54,10 +53,11 @@ import static org.testcontainers.DockerClientFactory.instance;
 /// isolated within the container's single test database (the test user owns it).
 ///
 /// Heavy: needs a real DB2 engine, so the class is tagged `heavy-db` and excluded from the default
-/// build. If Docker is unavailable the whole class is skipped via [#dockerAvailable] rather than
+/// build. If Docker is unavailable the whole class is skipped via [RequiresDocker] rather than
 /// failing.
 @Tag("heavy-db")
-@Testcontainers(disabledWithoutDocker = true)
+@RequiresDocker
+@Testcontainers
 class StatementSplitterDb2DiffTest {
     private static final DialectSpec DB2 = Dialects.DB2;
 
@@ -66,18 +66,8 @@ class StatementSplitterDb2DiffTest {
         new Db2Container("icr.io/db2_community/db2:11.5.9.0").acceptLicense();
 
     @BeforeAll
-    static void requireDocker() {
-        assumeTrue(dockerAvailable(), "Docker is not available — skipping real-DB2 differential test");
+    static void awaitReady() {
         awaitConnectable();
-    }
-
-    /// Whether a Docker daemon is reachable, probed without throwing so the suite skips cleanly.
-    private static boolean dockerAvailable() {
-        try {
-            return instance().isDockerAvailable();
-        } catch (Throwable ignored) {
-            return false;
-        }
     }
 
     /// Blocks until DB2 actually accepts JDBC connections, not merely until the container reports
@@ -379,7 +369,7 @@ class StatementSplitterDb2DiffTest {
     /// ran. Best-effort: the shared container is discarded after the class anyway.
     @AfterEach
     void dropCaseObjects() {
-        if (!dockerAvailable() || !DB2_DB.isRunning()) {
+        if (!DB2_DB.isRunning()) {
             return;
         }
         try (var connection = openConnection();

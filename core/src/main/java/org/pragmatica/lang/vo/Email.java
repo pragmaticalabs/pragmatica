@@ -15,6 +15,8 @@
  */
 package org.pragmatica.lang.vo;
 
+import java.util.Locale;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
@@ -74,7 +76,7 @@ public record Email(String localPart, String domain) {
         }
 
         var local = trimmed.substring(0, atIndex);
-        var domainRaw = trimmed.substring(atIndex + 1).toLowerCase();
+        var domainRaw = trimmed.substring(atIndex + 1).toLowerCase(Locale.ROOT);
 
         return validateLocalPart(local).flatMap(_ -> validateDomain(domainRaw))
                                 .map(_ -> new Email(local, domainRaw));

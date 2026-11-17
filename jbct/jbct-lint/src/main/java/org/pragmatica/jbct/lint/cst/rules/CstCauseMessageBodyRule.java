@@ -23,6 +23,7 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstCauseMessageBodyRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-CAUSE-02";
     private static final Pattern NO_PARAMS_MESSAGE = Pattern.compile("\\bmessage\\s*\\(\\s*\\)");
+
     private static final Pattern FIELD_RETURN_ONLY = Pattern.compile("^\\{?\\s*return\\s+(this\\s*\\.\\s*)?message\\s*;\\s*\\}?$");
 
     @Override
@@ -37,18 +38,20 @@ public class CstCauseMessageBodyRule implements CstLintRule {
         }
 
         var causeNames = CauseHierarchies.causeInterfaceNames(root);
-        var diagnostics = Stream.<Diagnostic>builder();
+        var diagnostics = Stream.<Diagnostic> builder();
 
         for (var record : CauseHierarchies.causeRecords(root, causeNames)) {
-            messageMethods(root, record).forEach(method -> diagnostics.add(
-                diagnostic(method, ctx, "Cause record declares message(); the trailing message component's accessor is the implementation")));
+            messageMethods(root, record).forEach(method -> diagnostics.add(diagnostic(method,
+                                                                                      ctx,
+                                                                                      "Cause record declares message(); the trailing message component's accessor is the implementation")));
         }
 
         for (var anEnum : CauseHierarchies.causeEnums(root, causeNames)) {
             messageMethods(root, anEnum).stream()
-                                  .filter(method -> !isFieldReturningAccessor(method))
-                                  .forEach(method -> diagnostics.add(
-                diagnostic(method, ctx, "Cause enum's message() must be exactly the field-returning accessor (return message;)")));
+                          .filter(method -> !isFieldReturningAccessor(method))
+                          .forEach(method -> diagnostics.add(diagnostic(method,
+                                                                        ctx,
+                                                                        "Cause enum's message() must be exactly the field-returning accessor (return message;)")));
         }
 
         for (var iface : findAllInterfaces(root)) {
@@ -57,9 +60,10 @@ public class CstCauseMessageBodyRule implements CstLintRule {
             }
 
             messageMethods(root, iface).stream()
-                                 .filter(method -> isDefaultMethod(root, method))
-                                 .forEach(method -> diagnostics.add(
-                diagnostic(method, ctx, "Cause interface declares a default message(); each variant carries its own text")));
+                          .filter(method -> isDefaultMethod(root, method))
+                          .forEach(method -> diagnostics.add(diagnostic(method,
+                                                                        ctx,
+                                                                        "Cause interface declares a default message(); each variant carries its own text")));
         }
 
         return diagnostics.build();
@@ -71,10 +75,12 @@ public class CstCauseMessageBodyRule implements CstLintRule {
     /// mutant by its enclosing class: scope to the member's nearest enclosing type, always.
     private java.util.List<Cursor> messageMethods(Cursor root, Cursor type) {
         return findAllMethods(type).stream()
-                      .filter(method -> FileTypeClassifier.directlyEncloses(root, ownTypeKind(type), method))
-                      .filter(method -> "message".equals(FileTypeClassifier.methodName(method)))
-                      .filter(method -> NO_PARAMS_MESSAGE.matcher(memberDeclText(method)).find())
-                      .toList();
+                             .filter(method -> FileTypeClassifier.directlyEncloses(root,
+                                                                                   ownTypeKind(type),
+                                                                                   method))
+                             .filter(method -> "message".equals(FileTypeClassifier.methodName(method)))
+                             .filter(method -> NO_PARAMS_MESSAGE.matcher(memberDeclText(method)).find())
+                             .toList();
     }
 
     /// The TYPE_KIND node member-scoping keys on: `type` itself when it is one (nested types are
@@ -87,7 +93,7 @@ public class CstCauseMessageBodyRule implements CstLintRule {
 
     private boolean isFieldReturningAccessor(Cursor method) {
         return methodBody(method).map(body -> FIELD_RETURN_ONLY.matcher(text(body).trim()).matches())
-                                 .or(false);
+                         .or(false);
     }
 
     /// The modifier check runs over COMMENT-MASKED member text: a doc comment attaches to the
@@ -96,7 +102,7 @@ public class CstCauseMessageBodyRule implements CstLintRule {
     /// migration, in modifier clothing.
     private boolean isDefaultMethod(Cursor root, Cursor method) {
         return enclosingMember(root, method).map(member -> MapperSafety.blankNonCode(text(member)).contains("default "))
-                            .or(false);
+                              .or(false);
     }
 
     private Diagnostic diagnostic(Cursor method, LintContext ctx, String message) {

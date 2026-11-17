@@ -23,9 +23,15 @@
     </licenses>
 
     <properties>
-        <!-- One reused fork runs every selected class, so this bounds the whole run, not one class.
-             1800 fits the per-PR job. heavy-forge.yml raises it, because the Heavy set runs in one fork. -->
-        <failsafe.forkedProcessTimeoutInSeconds>1800</failsafe.forkedProcessTimeoutInSeconds>
+        <!-- One reused fork runs every selected class, so this bounds the whole run, not one class (surefire
+             starts the clock at the first test set and never resets it). When it elapses surefire writes a
+             thread dump to failsafe-reports/*-jvmRunN.dump, and the #1344 guard fails the build on any such
+             dump: that is the budget alarm working, not a corrupted channel (#3122).
+             The default is sized for the UNFILTERED run, which executes every class including Heavy and
+             quarantine (68 min observed on a loaded host, 52 min quiet). ci.yml, whose step has a 30 min wall,
+             passes 1800 explicitly beside its excludedGroups so failsafe, not GitHub, ends a wedged run.
+             heavy-forge.yml passes 5700 for the Heavy set. Keep the default above the unfiltered run. -->
+        <failsafe.forkedProcessTimeoutInSeconds>5700</failsafe.forkedProcessTimeoutInSeconds>
     </properties>
 
     <dependencies>

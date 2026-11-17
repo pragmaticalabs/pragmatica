@@ -85,6 +85,7 @@ public interface AwsClient {
     /// numbered from 1). A group that no longer exists yields an empty list rather than a failure,
     /// so a teardown read after deletion is idempotent.
     Promise<List<SecurityGroup>> describeSecurityGroups(Map<String, String> tagFilters);
+
     /// Authorizes one inbound CIDR rule on a security group. A rule that already exists
     /// (`InvalidPermission.Duplicate`) resolves as success, so re-bootstrapping over an existing
     /// firewall is idempotent.
@@ -93,13 +94,19 @@ public interface AwsClient {
                                                 int port,
                                                 String cidr,
                                                 String description);
+
     /// Revokes one inbound CIDR rule from a security group. An already-absent rule
     /// (`InvalidPermission.NotFound`) or an already-deleted group (`InvalidGroup.NotFound`)
     /// resolves as success, so teardown is idempotent and order-insensitive.
     /// `description` must reproduce the stored rule's own description, or EC2 does not match it and
     /// answers `InvalidPermission.NotFound`. Pass the value read back from the group, not the one the
     /// caller happens to remember. Empty when the rule carries none.
-    Promise<Unit> revokeSecurityGroupIngress(String groupId, String protocol, int port, String cidr, String description);
+    Promise<Unit> revokeSecurityGroupIngress(String groupId,
+                                             String protocol,
+                                             int port,
+                                             String cidr,
+                                             String description);
+
     /// Deletes a security group. An already-deleted group (`InvalidGroup.NotFound`) resolves as
     /// success, so repeated teardown is idempotent.
     Promise<Unit> deleteSecurityGroup(String groupId);
@@ -152,8 +159,9 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
     /// `authorizeSecurityGroupIngress_fails_forUnrelatedErrorCode` pins.
     private static final Set<String> RULE_ALREADY_PRESENT = Set.of("InvalidPermission.Duplicate");
     private static final Set<String> GROUP_ALREADY_ABSENT = Set.of("InvalidGroup.NotFound");
-    private static final AwsError MISSING_GROUP_ID =
-        new AwsError.ParseError("Missing groupId in CreateSecurityGroup response", Option.none());
+
+    private static final AwsError MISSING_GROUP_ID = new AwsError.ParseError("Missing groupId in CreateSecurityGroup response",
+                                                                             Option.none());
 
     @Override
     public Promise<RunInstancesResponse> runInstances(RunInstancesRequest request) {
@@ -221,7 +229,11 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
     }
 
     @Override
-    public Promise<Unit> revokeSecurityGroupIngress(String groupId, String protocol, int port, String cidr, String description) {
+    public Promise<Unit> revokeSecurityGroupIngress(String groupId,
+                                                    String protocol,
+                                                    int port,
+                                                    String cidr,
+                                                    String description) {
         return postQueryTolerating(EC2_SERVICE,
                                    config.ec2Url(),
                                    buildRevokeIngressForm(groupId, protocol, port, cidr, description),
@@ -266,7 +278,6 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
     }
 
     // --- Query-protocol (EC2 + ELBv2) helpers: form-encoded request, XML response ---
-
     /// Reads DescribeInstances to its end (see [#listAll]); the reservations of every page are
     /// concatenated in order into one response with no token.
     private Promise<DescribeInstancesResponse> describeAll(String formBody) {
@@ -478,7 +489,9 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
 
     private Promise<DescribeSecurityGroupsResponse> parseSecurityGroupsPage(HttpResult<String> result) {
         if (result.isSuccess()) {
-            return xmlMapper.readString(result.body(), DescribeSecurityGroupsResponse.class).async();
+            return xmlMapper.readString(result.body(),
+                                        DescribeSecurityGroupsResponse.class)
+                            .async();
         }
 
         var error = AwsError.fromResponse(result.statusCode(), result.body());
@@ -493,8 +506,7 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
     }
 
     private static Promise<String> extractGroupId(CreateSecurityGroupResponse response) {
-        return Option.option(response.groupId())
-                     .async(MISSING_GROUP_ID);
+        return Option.option(response.groupId()).async(MISSING_GROUP_ID);
     }
 
     // --- Form body builders ---
@@ -543,8 +555,7 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
         request.availabilityZone()
                .onPresent(az -> sb.append("&Placement.AvailabilityZone=")
                                   .append(AwsSigV4Signer.urlEncode(az)));
-        request.spotMarketOptions()
-               .onPresent(spot -> appendSpotMarketOptions(sb, spot));
+        request.spotMarketOptions().onPresent(spot -> appendSpotMarketOptions(sb, spot));
 
         return sb.toString();
     }
@@ -582,10 +593,10 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
     // --- EC2 security group form builders ---
     private static String buildCreateSecurityGroupForm(String name, String description, Option<String> vpcId) {
         var sb = new StringBuilder("Action=CreateSecurityGroup&Version=").append(EC2_API_VERSION)
-                                                                        .append("&GroupName=")
-                                                                        .append(AwsSigV4Signer.urlEncode(name))
-                                                                        .append("&GroupDescription=")
-                                                                        .append(AwsSigV4Signer.urlEncode(description));
+                                                                         .append("&GroupName=")
+                                                                         .append(AwsSigV4Signer.urlEncode(name))
+                                                                         .append("&GroupDescription=")
+                                                                         .append(AwsSigV4Signer.urlEncode(description));
 
         vpcId.onPresent(v -> sb.append("&VpcId=")
                                .append(AwsSigV4Signer.urlEncode(v)));
@@ -622,7 +633,11 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
 
     /// EC2 ignores a description on revoke — the rule is matched by protocol, port range and CIDR
     /// alone — so [AwsClient#revokeSecurityGroupIngress] takes none and none is emitted.
-    private static String buildRevokeIngressForm(String groupId, String protocol, int port, String cidr, String description) {
+    private static String buildRevokeIngressForm(String groupId,
+                                                 String protocol,
+                                                 int port,
+                                                 String cidr,
+                                                 String description) {
         var form = buildIngressRuleForm("RevokeSecurityGroupIngress", groupId, protocol, port, cidr);
 
         if (description == null || description.isBlank()) {
@@ -633,7 +648,8 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
     }
 
     private static String buildIngressRuleForm(String action, String groupId, String protocol, int port, String cidr) {
-        return "Action=" + action + "&Version=" + EC2_API_VERSION
+        return "Action=" + action
+             + "&Version=" + EC2_API_VERSION
              + "&GroupId=" + AwsSigV4Signer.urlEncode(groupId)
              + "&IpPermissions.1.IpProtocol=" + AwsSigV4Signer.urlEncode(protocol)
              + "&IpPermissions.1.FromPort=" + port
@@ -643,20 +659,15 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
 
     @Override
     public Promise<Option<String>> vpcOfSubnet(String subnetId) {
-        return postQuery(EC2_SERVICE,
-                         config.ec2Url(),
-                         buildDescribeSubnetsForm(subnetId),
-                         DescribeSubnetsResponse.class).map(DescribeSubnetsResponse::vpcId);
+        return postQuery(EC2_SERVICE, config.ec2Url(), buildDescribeSubnetsForm(subnetId), DescribeSubnetsResponse.class).map(DescribeSubnetsResponse::vpcId);
     }
 
     private static String buildDescribeSubnetsForm(String subnetId) {
-        return "Action=DescribeSubnets&Version=" + EC2_API_VERSION
-             + "&SubnetId.1=" + AwsSigV4Signer.urlEncode(subnetId);
+        return "Action=DescribeSubnets&Version=" + EC2_API_VERSION + "&SubnetId.1=" + AwsSigV4Signer.urlEncode(subnetId);
     }
 
     private static String buildDeleteSecurityGroupForm(String groupId) {
-        return "Action=DeleteSecurityGroup&Version=" + EC2_API_VERSION
-             + "&GroupId=" + AwsSigV4Signer.urlEncode(groupId);
+        return "Action=DeleteSecurityGroup&Version=" + EC2_API_VERSION + "&GroupId=" + AwsSigV4Signer.urlEncode(groupId);
     }
 
     // --- ELBv2 Query-protocol form builders ---

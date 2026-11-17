@@ -69,12 +69,23 @@ public sealed interface ReplicationMessage extends ProtocolMessage {
 
     /// `ownerEpoch` is the committed owner epoch the replica confirmed under (#1730 phase 2): the owner counts a row only while it
     /// is its current epoch, so a confirmation from an earlier tenure never resolves a later one. [Epoch#ZERO] when unfenced.
-    record ReplicateAck(NodeId replicaId, String streamName, int partition, long confirmedOffset, Epoch ownerEpoch) implements ReplicationMessage {
+    /// `bootToken` is the sending replica process's boot token (#1697): random per process, compared by equality only, so the
+    /// owner keeps the highest ack of one process and lets a NEW process (which may hold less) replace it.
+    /// [#NO_BOOT_TOKEN] when the sender has no process identity to give. Adding it was a flag day: the codec is positional.
+    record ReplicateAck(NodeId replicaId,
+                        String streamName,
+                        int partition,
+                        long confirmedOffset,
+                        Epoch ownerEpoch,
+                        long bootToken) implements ReplicationMessage {
+        /// The token of an ack whose sender names no process (the reserved `0` of `BootToken`).
+        public static final long NO_BOOT_TOKEN = 0L;
+
         public static ReplicateAck replicateAck(NodeId replicaId,
                                                 String streamName,
                                                 int partition,
                                                 long confirmedOffset) {
-            return new ReplicateAck(replicaId, streamName, partition, confirmedOffset, Epoch.ZERO);
+            return new ReplicateAck(replicaId, streamName, partition, confirmedOffset, Epoch.ZERO, NO_BOOT_TOKEN);
         }
 
         public static ReplicateAck replicateAck(NodeId replicaId,
@@ -82,7 +93,17 @@ public sealed interface ReplicationMessage extends ProtocolMessage {
                                                 int partition,
                                                 long confirmedOffset,
                                                 Epoch ownerEpoch) {
-            return new ReplicateAck(replicaId, streamName, partition, confirmedOffset, ownerEpoch);
+            return new ReplicateAck(replicaId, streamName, partition, confirmedOffset, ownerEpoch, NO_BOOT_TOKEN);
+        }
+
+        /// An ack of the replica process `bootToken` (#1697): the form every production replica sends.
+        public static ReplicateAck replicateAck(NodeId replicaId,
+                                                String streamName,
+                                                int partition,
+                                                long confirmedOffset,
+                                                Epoch ownerEpoch,
+                                                long bootToken) {
+            return new ReplicateAck(replicaId, streamName, partition, confirmedOffset, ownerEpoch, bootToken);
         }
 
         @Override

@@ -24,7 +24,7 @@ class UpgradeRunAnnouncementsTest {
     }
 
     private static List<OperatorWarningCode> codes(Option<UpgradeRunValue> before, UpgradeRunValue after) {
-        return UpgradeRunAnnouncements.of(before, after).stream().map(UpgradeRunAnnouncements.Announcement::code).toList();
+        return UpgradeRunAnnouncements.upgradeRunAnnouncements(before, after).stream().map(UpgradeRunAnnouncements.Announcement::code).toList();
     }
 
     @Test
@@ -73,7 +73,7 @@ class UpgradeRunAnnouncementsTest {
 
     @Test
     void everyEventOfTheRunSharesOneSubject_whichIsWhatPairsARecoveryWithItsCondition() {
-        var subjects = UpgradeRunAnnouncements.of(Option.some(run(UpgradeRunState.PAUSED, 1, 1L)), run(UpgradeRunState.ABORTED, 1, 1L))
+        var subjects = UpgradeRunAnnouncements.upgradeRunAnnouncements(Option.some(run(UpgradeRunState.PAUSED, 1, 1L)), run(UpgradeRunState.ABORTED, 1, 1L))
                                               .stream()
                                               .map(UpgradeRunAnnouncements.Announcement::subject)
                                               .distinct()

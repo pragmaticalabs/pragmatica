@@ -14,6 +14,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// Parses the living-system inputs of a sheet: the optional `[current_vector]` and the optional
 /// `[[floors]]` (SPEC.md §3). These feed Phase-B audit and verification; Phase A only parses and
 /// carries them, so the entry gate ignores both.
@@ -30,8 +31,11 @@ public sealed interface LivingSystemParser {
     /// The verification floors, one per `[[floors]]` block (empty when none are supplied).
     static Result<List<Floor>> floors(TomlDocument doc, SheetLines lines) {
         var arr = doc.getTableArray("floors").or(List.of());
-        var results = IntStream.range(0, arr.size())
-                               .mapToObj(i -> floor(i, lines.lineFor("floors", i), arr.get(i)))
+        var results = IntStream.range(0,
+                                      arr.size())
+                               .mapToObj(i -> floor(i,
+                                                    lines.lineFor("floors", i),
+                                                    arr.get(i)))
                                .toList();
 
         return Result.allOf(results);
@@ -43,8 +47,7 @@ public sealed interface LivingSystemParser {
                           axis(doc, "read_write"),
                           axis(doc, "state"),
                           axis(doc, "persistence"),
-                          recovery(doc))
-                     .map(CurrentVector::new);
+                          recovery(doc)).map(CurrentVector::new);
     }
 
     private static Result<List<AxisPosition>> axis(TomlDocument doc, String key) {
@@ -81,15 +84,17 @@ public sealed interface LivingSystemParser {
 
     private static Result<RecoveryPosition> recoveryFromMap(Map<String, Object> map) {
         return Result.all(required(map, "operation", "current_vector.recovery"),
-                          required(map, "class", "current_vector.recovery"))
-                     .map(RecoveryPosition::new);
+                          required(map, "class", "current_vector.recovery")).map(RecoveryPosition::new);
     }
 
     private static Result<Floor> floor(int index, int line, Map<String, Object> row) {
         return TomlAccess.str(row, "path")
                          .toResult(Causes.cause("missing 'path'"))
                          .flatMap(Scope::scope)
-                         .mapError(cause -> new SheetError.MalformedRow("floors", index, line, cause.message()))
+                         .mapError(cause -> new SheetError.MalformedRow("floors",
+                                                                        index,
+                                                                        line,
+                                                                        cause.message()))
                          .flatMap(path -> hopsOf(row, path));
     }
 

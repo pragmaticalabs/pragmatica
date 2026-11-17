@@ -23,7 +23,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.DockerClientFactory;
+import org.pragmatica.testing.DockerRequirement;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -52,7 +52,7 @@ class R2dbcJooqConnectorTypedErrorsTest {
 
     @BeforeAll
     static void startPostgres() {
-        assumeTrue(DockerClientFactory.instance().isDockerAvailable(), "Docker is required for the live-PostgreSQL pin");
+        assumeTrue(DockerRequirement.dockerAvailable(), "Docker is required for the live-PostgreSQL pin");
         postgres = new PostgreSQLContainer<>("postgres:16");
         postgres.start();
         connectible = new NettyConnectibleBuilder().hostname(postgres.getHost())
@@ -107,7 +107,6 @@ class R2dbcJooqConnectorTypedErrorsTest {
         assertThat(cause.isTransient()).as("a terminated backend is transient: %s", cause.message()).isTrue();
         assertThat(cause).isInstanceOf(DatabaseConnectorError.ConnectionFailed.class);
     }
-
 
     @Test
     void toConnectorError_unretryableStates_areQueryFailuresThatAreNotTransient() {

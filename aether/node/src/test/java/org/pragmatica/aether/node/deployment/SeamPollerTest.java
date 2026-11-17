@@ -42,6 +42,7 @@ class SeamPollerTest {
     private final AtomicReference<Set<NodeId>> counted = new AtomicReference<>(Set.of(SELF, PEER));
     private final AtomicReference<Option<Set<NodeId>>> coreView = new AtomicReference<>(Option.none());
     private final AtomicReference<Option<Set<NodeId>>> localAlive = new AtomicReference<>(Option.none());
+    private final AtomicReference<Map<NodeId, String>> memberSources = new AtomicReference<>(Map.of());
     private final ManualClock clock = new ManualClock();
     private final SeamPoller.Sink sink = new SeamPoller.Sink() {
         @Override
@@ -67,12 +68,32 @@ class SeamPollerTest {
                                                             coreView::get,
                                                             localAlive::get,
                                                             Set::of,
+                                                            memberSources::get,
                                                             Map::of,
-                                                            Map::of,
+                                                            Set::of,
                                                             counted::get,
                                                             node -> tokens.getOrDefault(node, 0L)),
                                      sink,
                                      clock);
+    }
+
+    // -- #3172 ------------------------------------------------------------------------------------------------------
+    /// Red when: the per-node read returns another node's label (for example the first one in the map) instead of the label keyed by the node asked about.
+    @Test
+    void memberSource_readsTheLabelKeyedByTheNodeAskedAbout() {
+        memberSources.set(Map.of(SELF, "us", PEER, "eu"));
+        var poller = poller();
+
+        assertThat(poller.memberSource(SELF)).isEqualTo(Option.some("us"));
+        assertThat(poller.memberSource(PEER)).isEqualTo(Option.some("eu"));
+    }
+
+    /// Red when: a node with no label is given another node's label.
+    @Test
+    void memberSource_isAbsent_forANodeWithoutALabel() {
+        memberSources.set(Map.of(SELF, "us"));
+
+        assertThat(poller().memberSource(OTHER)).isEqualTo(Option.none());
     }
 
     // -- W-14, MT-13a ---------------------------------------------------------------------------------------------------
@@ -134,6 +155,7 @@ class SeamPollerTest {
                                                                   () -> supersededSet,
                                                                   () -> sources,
                                                                   () -> policies,
+                                                                  () -> Set.of(PEER),
                                                                   () -> Set.of(SELF),
                                                                   node -> 0L),
                                            sink,
@@ -148,6 +170,7 @@ class SeamPollerTest {
         assertThat(seams.superseded()).isEqualTo(supersededSet);
         assertThat(seams.memberSource()).isEqualTo(sources);
         assertThat(seams.communityPolicies()).isEqualTo(policies);
+        assertThat(seams.coreRoleMembers()).isEqualTo(Set.of(PEER));
     }
 
     /// `MembershipInputs` delivers the input FIRST and samples behind it (review M1; v-2204 V06): a sample that already lacks a node must never be
@@ -159,7 +182,7 @@ class SeamPollerTest {
             order.add("sample");
 
             return Set.of(SELF);
-        }, Set::of, Set::of, coreView::get, localAlive::get, Set::of, Map::of, Map::of, Set::of, node -> 0L), sink, clock);
+        }, Set::of, Set::of, coreView::get, localAlive::get, Set::of, Map::of, Map::of, Set::of, Set::of, node -> 0L), sink, clock);
         var inputs = MembershipInputs.membershipInputs(input -> order.add("deliver:" + input.getClass().getSimpleName()),
                                                        AdmissionSeam.admissionSeam(node -> 0L, node -> 0L),
                                                        poller);
@@ -177,7 +200,7 @@ class SeamPollerTest {
         var release = new CountDownLatch(1);
         var calls = new AtomicInteger();
         Supplier<Set<NodeId>> slowFirst = () -> sampleSlowFirst(calls, entered, release);
-        var poller = SeamPoller.seamPoller(new SeamPoller.Sources(slowFirst, Set::of, Set::of, coreView::get, localAlive::get, Set::of, Map::of, Map::of, Set::of, node -> 0L), sink, clock);
+        var poller = SeamPoller.seamPoller(new SeamPoller.Sources(slowFirst, Set::of, Set::of, coreView::get, localAlive::get, Set::of, Map::of, Map::of, Set::of, Set::of, node -> 0L), sink, clock);
         var older = Thread.ofPlatform().start(poller::poll);
 
         assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();

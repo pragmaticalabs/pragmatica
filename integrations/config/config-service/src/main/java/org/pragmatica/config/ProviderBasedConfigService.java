@@ -703,7 +703,7 @@ public final class ProviderBasedConfigService implements ConfigService {
     }
 
     private static Option<Object> lookupFieldDefault(Class<?> configClass, RecordComponent component) {
-        var constant = "DEFAULT_" + toSnakeCase(component.getName()).toUpperCase();
+        var constant = "DEFAULT_" + toSnakeCase(component.getName()).toUpperCase(Locale.ROOT);
 
         try {
             var field = configClass.getField(constant);
@@ -820,7 +820,7 @@ public final class ProviderBasedConfigService implements ConfigService {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static Result<Object> safeParseEnum(String value, Class<?> type, String fullKey) {
-        var upperValue = value.toUpperCase();
+        var upperValue = value.toUpperCase(Locale.ROOT);
 
         return Text.parseEnum((Class<Enum>) type,
                               upperValue)

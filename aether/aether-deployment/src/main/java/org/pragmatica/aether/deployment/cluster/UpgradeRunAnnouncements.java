@@ -35,7 +35,7 @@ public final class UpgradeRunAnnouncements {
                                                                 .startedAtMs() != after.startedAtMs()));
     }
 
-    public static List<Announcement> of(Option<UpgradeRunValue> before, UpgradeRunValue after) {
+    public static List<Announcement> upgradeRunAnnouncements(Option<UpgradeRunValue> before, UpgradeRunValue after) {
         var out = new ArrayList<Announcement>();
         var prior = before.map(UpgradeRunValue::state).or(UpgradeRunState.UNKNOWN);
 

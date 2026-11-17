@@ -5,6 +5,7 @@ package org.pragmatica.aether.config;
 
 import java.nio.file.Path;
 import java.util.Collection;
+import java.util.Locale;
 import java.util.Set;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -61,11 +62,11 @@ public sealed interface RepositoryType {
 
     @SuppressWarnings("JBCT-RET-07")
     private static Result<RepositoryType> fromNormalized(String name) {
-        return switch (name.toLowerCase()) {
+        return switch (name.toLowerCase(Locale.ROOT)) {
             case "local" -> success(new Local());
             case "builtin" -> success(new Builtin());
             default -> {
-                if (name.toLowerCase().startsWith("remote:")) {
+                if (name.toLowerCase(Locale.ROOT).startsWith("remote:")) {
                     yield parseRemote(name.substring(7));
                 }
 

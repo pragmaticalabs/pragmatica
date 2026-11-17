@@ -26,8 +26,8 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testing.DockerRequirement;
 import org.reactivestreams.Publisher;
-import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -46,7 +46,7 @@ class PgAsyncStatementParametersTest {
 
     @BeforeAll
     static void startPostgres() {
-        assumeTrue(DockerClientFactory.instance().isDockerAvailable(), "Docker is required for the live-PostgreSQL pin");
+        assumeTrue(DockerRequirement.dockerAvailable(), "Docker is required for the live-PostgreSQL pin");
         postgres = new PostgreSQLContainer<>("postgres:16");
         postgres.start();
         pool = new NettyConnectibleBuilder().ssl(SslConfig.disabled())

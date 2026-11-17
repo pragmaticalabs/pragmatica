@@ -1,0 +1,4 @@
+### Fixed (2026-11-12 — #2981: stream owner path acted without checking the node's owner lease)
+- **The stream owner path did not check the node lease**, so a node whose lease had lapsed could still activate as owner, advance the visible offset and publish.
+- Owner activation is refused while the lease has lapsed (CF>=2). Visible advance and announce re-check the lease, publishes park on it with a deadline, and truncation below the visible offset is refused (CF>=2) or retracted (CF=1), with operator codes. KV reset revokes the lease, and startup fails when the lease seam is unwired. [verified: `OwnerLeaseAckParkTest`, `OffHeapRingBufferVisibleWritersTest`]
+- The KV replay-start hook now fans out to every registered listener; a listener that throws does not skip the others. [verified: `KVStoreReplaySignalTest`; mechanism: `NotificationDispatcher.replayStartListeners`]

@@ -16,6 +16,12 @@
     <description>Promise-based JDBC wrapper with HikariCP connection pooling</description>
 
     <dependencies>
+        <!-- DockerRequirement / RequiresDocker: the one Docker guard (#3089) -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>testing</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>

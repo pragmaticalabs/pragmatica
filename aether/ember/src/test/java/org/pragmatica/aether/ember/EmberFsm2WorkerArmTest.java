@@ -38,7 +38,9 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// - Each worker is admitted by the leader's cluster FSM (B10 `WorkerJoin`): its activation directive is committed, it reports ready and its node
 ///   FSM is active, entered on the B4 edge (`QuorumEstablished`, not only the B3 heal's `ReconcileActivation`; the node half over the replica feed, know `23ca0fd65f` D.2).
 /// - A target placed WORKERS_ONLY gives one worker a `SliceDesiredKey`, and that key reaches the worker's own replica (its node FSM's input).
-/// - That worker's departure (B9 `WorkerLeave`) is recorded DEPARTED by the leader, which removes the worker's desired keys.
+/// - That worker's departure (B9 `WorkerLeave`) is recorded DEPARTED by the leader, which removes the worker's desired keys. For a worker the C17b
+///   transaction removes the departure record together with the activation directive (#3193, know 6b6de53d51 item 3): DEPARTED is transient (about 5 ms),
+///   so the state that persists, and is asserted, is the record and the directive both absent, after the directive was present before the kill.
 ///
 /// Without the core-side admission (`DeploymentWiring.workerJoin` bound as a counted drop) no directive is written and the worker never becomes
 /// placeable (`worker-assignment-overdue`): the directive and desired-key waits time out. This test is the only kill of AetherNode's B4 entry
@@ -98,8 +100,11 @@ class EmberFsm2WorkerArmTest {
 
         awaitCondition("D.2: the worker's own SliceDesiredKey reaches its replica", () -> desiredFor(host, placed));
 
+        assertThat(directivePresent(placed)).as("control: the worker was ADMITTED (directive present) before the kill").isTrue();
+        assertThat(recordPresent(placed)).as("control: the worker has no departure record before the kill").isFalse();
         cluster.killNode(placed.id()).await(STOP_BOUND);
-        awaitCondition("B9: the leader records the worker DEPARTED", () -> departed(placed));
+        awaitCondition("B9/C17b: the leader retires the departed worker: its departure record and activation directive leave in one transaction",
+                       () -> !recordPresent(placed) && !directivePresent(placed));
         awaitCondition("C17: the departed worker's desired keys are removed", () -> !desiredFor(leader(), placed));
     }
 
@@ -181,10 +186,15 @@ class EmberFsm2WorkerArmTest {
                                               && desired.artifact().equals(SLICE));
     }
 
-    private boolean departed(NodeId target) {
+    private boolean recordPresent(NodeId target) {
         return leader().kvStore()
                        .getTyped(new AetherKey.NodeDepartureKey(target), AetherValue.NodeDepartureValue.class)
-                       .filter(record -> record.state() == AetherValue.DepartureState.DEPARTED)
+                       .isPresent();
+    }
+
+    private boolean directivePresent(NodeId target) {
+        return leader().kvStore()
+                       .getTyped(new AetherKey.ActivationDirectiveKey(target), AetherValue.class)
                        .isPresent();
     }
 

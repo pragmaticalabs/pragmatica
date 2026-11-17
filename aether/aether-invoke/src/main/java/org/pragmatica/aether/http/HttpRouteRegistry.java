@@ -6,6 +6,7 @@ package org.pragmatica.aether.http;
 
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.Collectors;
 import java.util.HashMap;
 import java.util.Comparator;
@@ -512,7 +513,7 @@ public interface HttpRouteRegistry {
 
             @Override
             public Option<RouteInfo> findRoute(String httpMethod, String path) {
-                return Option.option(routesByMethod.get(httpMethod.toUpperCase()))
+                return Option.option(routesByMethod.get(httpMethod.toUpperCase(Locale.ROOT)))
                              .map(AtomicReference::get)
                              .filter(routes -> !routes.isEmpty())
                              .flatMap(routes -> findMatchingRoute(routes, path));

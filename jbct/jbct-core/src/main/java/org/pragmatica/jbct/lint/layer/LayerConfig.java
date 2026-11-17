@@ -54,7 +54,10 @@ public record LayerConfig(List<String> domainGlobs,
 
     /// True when no explicit globs are configured (the classifier will use conventions only).
     public boolean isEmpty() {
-        return domainGlobs.isEmpty() && applicationGlobs.isEmpty() && adapterGlobs.isEmpty()
-               && bootstrapGlobs.isEmpty() && sliceGlobs.isEmpty();
+        return domainGlobs.isEmpty()
+               && applicationGlobs.isEmpty()
+               && adapterGlobs.isEmpty()
+               && bootstrapGlobs.isEmpty()
+               && sliceGlobs.isEmpty();
     }
 }

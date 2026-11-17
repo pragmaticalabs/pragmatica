@@ -52,8 +52,9 @@ final class Http3TestClient {
     /// The response to one request: its status, body, header section and `diagnostics`, the timed event log of the
     /// exchange (stream and connection events, close causes, why the answer was finished). The status is `closed`, and
     /// the headers empty, when the stream or the connection ended without one (#2746/#2605: a bare `closed` named no
-    /// cause).
-    record Answer(String status, String body, Http3Headers headers, String diagnostics) {
+    /// cause). `statusAfterMs` is the time from the request stream's opening to the status's arrival, `-1` when none
+    /// arrived (#2873: a status alone cannot tell a 408 on time from one that came after the wait was raised to 25 s).
+    record Answer(String status, String body, Http3Headers headers, String diagnostics, long statusAfterMs) {
         /// The status, or an [IllegalStateException] carrying the diagnostics when the exchange produced none.
         String statusText() {
             if (status.isEmpty() || !status.chars().allMatch(Character::isDigit)) {
@@ -68,6 +69,16 @@ final class Http3TestClient {
     private static final class Trace {
         private final long start = System.nanoTime();
         private final StringBuilder events = new StringBuilder();
+        private volatile long opened = start;
+
+        /// Marks the request stream's opening, the origin of [#sinceOpenedMs].
+        void markOpened() {
+            opened = System.nanoTime();
+        }
+
+        long sinceOpenedMs() {
+            return (System.nanoTime() - opened) / 1_000_000;
+        }
 
         synchronized void add(String event) {
             events.append(event).append('@').append((System.nanoTime() - start) / 1_000_000).append("ms ");
@@ -171,6 +182,7 @@ final class Http3TestClient {
 
                 var stream = Http3.newRequestStream(quic, reader).sync().getNow();
 
+                trace.markOpened();
                 trace.add("stream-open");
                 writer.write(stream);
                 trace.add("request-written");
@@ -216,6 +228,7 @@ final class Http3TestClient {
         private final StringBuilder body = new StringBuilder();
         private final Trace trace;
         private String status = "closed";
+        private long statusAfterMs = -1;
         private Http3Headers headers = new DefaultHttp3Headers();
 
         AnswerReader(Trace trace) {
@@ -228,6 +241,7 @@ final class Http3TestClient {
                 if ("closed".equals(status)) {
                     status = String.valueOf(frame.headers().status());
                     headers = frame.headers();
+                    statusAfterMs = trace.sinceOpenedMs();
                     trace.add("headers(" + status + ")");
                 }
             }
@@ -262,7 +276,7 @@ final class Http3TestClient {
         void finish(String reason) {
             synchronized (body) {
                 trace.add("finish:" + reason);
-                answer.complete(new Answer(status, body.toString(), headers, trace.render()));
+                answer.complete(new Answer(status, body.toString(), headers, trace.render(), statusAfterMs));
             }
         }
     }

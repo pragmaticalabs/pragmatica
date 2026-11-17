@@ -9,6 +9,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
@@ -159,7 +160,7 @@ class KvStoreApiKeyValidator implements SecurityValidator {
             return AuthorizationRole.VIEWER;
         }
 
-        return switch (raw.toUpperCase()) {
+        return switch (raw.toUpperCase(Locale.ROOT)) {
             case "ADMIN" -> AuthorizationRole.ADMIN;
             case "OPERATOR" -> AuthorizationRole.OPERATOR;
             case "VIEWER" -> AuthorizationRole.VIEWER;

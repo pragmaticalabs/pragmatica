@@ -37,10 +37,10 @@ class StreamPartitionManagerEpochStartsTest {
     private static final Epoch E3 = Epoch.epoch(1L, 1L, 3L);
     private static final Epoch E4 = Epoch.epoch(1L, 1L, 4L);
 
-    private static final List<EpochStart> STALE_TAIL_STARTS = List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L));
+    private static final List<EpochStart> STALE_TAIL_STARTS = List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none()));
 
     private final AtomicReference<Epoch> committed = new AtomicReference<>(E3);
-    private final AtomicReference<List<EpochStart>> starts = new AtomicReference<>(List.of(new EpochStart(E2, 11L), new EpochStart(E3, 21L)));
+    private final AtomicReference<List<EpochStart>> starts = new AtomicReference<>(List.of(EpochStart.epochStart(E2, 11L, Option.none()), EpochStart.epochStart(E3, 21L, Option.none())));
     private final AtomicReference<Role> role = new AtomicReference<>(Role.OWNER);
     @TempDir
     Path wal;
@@ -138,7 +138,7 @@ class StreamPartitionManagerEpochStartsTest {
 
         assertThat(manager.replicaVerified(STREAM, PARTITION)).as("no history yet: doubted from 0").isFalse();
 
-        starts.set(List.of(new EpochStart(E3, 8L)));
+        starts.set(List.of(EpochStart.epochStart(E3, 8L, Option.none())));
 
         assertThat(manager.replicaVerified(STREAM, PARTITION)).as("head 2 is below the committed start 8").isTrue();
     }
@@ -148,7 +148,7 @@ class StreamPartitionManagerEpochStartsTest {
     /// start and be doubted from the oldest, 0).
     @Test
     void copyWithALog_isJudgedFromTheEpochItsLogRecorded() {
-        try (var logged = loggedReplica(List.of(new EpochStart(E2, 0L), new EpochStart(E3, 10L)), E2, 5)) {
+        try (var logged = loggedReplica(List.of(EpochStart.epochStart(E2, 0L, Option.none()), EpochStart.epochStart(E3, 10L, Option.none())), E2, 5)) {
             assertThat(logged.unverifiedFrom(STREAM, PARTITION)).isEqualTo(Option.none());
         }
     }
@@ -156,7 +156,7 @@ class StreamPartitionManagerEpochStartsTest {
     /// A log whose newest recorded epoch IS the current one is doubted nowhere.
     @Test
     void copyWhoseLogRecordedTheCurrentEpoch_isNotDoubted() {
-        try (var logged = loggedReplica(List.of(new EpochStart(E3, 0L)), E3, 5)) {
+        try (var logged = loggedReplica(List.of(EpochStart.epochStart(E3, 0L, Option.none())), E3, 5)) {
             assertThat(logged.unverifiedFrom(STREAM, PARTITION)).isEqualTo(Option.none());
         }
     }
@@ -199,7 +199,7 @@ class StreamPartitionManagerEpochStartsTest {
     /// E3 starts at 9, below E2's 11: an E1 copy holding 0..10 holds E1's 9..10, which E3 re-assigned.
     @Test
     void laterEpochStartingBelowAnEarlierStart_doubtsFromTheLowest() {
-        try (var logged = emptyLoggedReplica(List.of(new EpochStart(E1, 0L), new EpochStart(E2, 11L), new EpochStart(E3, 9L)))) {
+        try (var logged = emptyLoggedReplica(List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 11L, Option.none()), EpochStart.epochStart(E3, 9L, Option.none())))) {
             record(logged, 0, 11, E1);
 
             assertThat(logged.unverifiedFrom(STREAM, PARTITION)).isEqualTo(Option.some(9L));
@@ -223,7 +223,7 @@ class StreamPartitionManagerEpochStartsTest {
     /// lineage E3 and open the serve gate (start Long.MAX_VALUE) for records E4 re-assigned.
     @Test
     void staleEpochJudge_keepsTheNewerDoubt_andTheServeGateClosed() {
-        starts.set(List.of(new EpochStart(E1, 0L), new EpochStart(E3, 0L), new EpochStart(E4, 11L)));
+        starts.set(List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 0L, Option.none()), EpochStart.epochStart(E4, 11L, Option.none())));
         append(16);
         manager.markVerifiedForEpoch(STREAM, PARTITION, E3);
         committed.set(E4);
@@ -261,7 +261,7 @@ class StreamPartitionManagerEpochStartsTest {
     @Test
     void entriesInstalledAboveTheHead_doubtNothing() {
         committed.set(E4);
-        try (var logged = emptyLoggedReplica(List.of(new EpochStart(E1, 0L), new EpochStart(E2, 5L), new EpochStart(E3, 6L)))) {
+        try (var logged = emptyLoggedReplica(List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 5L, Option.none()), EpochStart.epochStart(E3, 6L, Option.none())))) {
             record(logged, 0, 5, E1);
             logged.installProvenance(STREAM, PARTITION, 5L, 9L, List.of(owned(E1, 0L), owned(E2, 5L), owned(E3, 8L))).unwrap();
 
@@ -274,7 +274,7 @@ class StreamPartitionManagerEpochStartsTest {
     /// lowest later start, 7): the copy is doubted only from E2's own re-assignment, E3's start 8 (not E1's 7).
     @Test
     void rangeEndingBelowItsReassignment_doubtsNothingInIt() {
-        try (var logged = emptyLoggedReplica(List.of(new EpochStart(E2, 7L), new EpochStart(E3, 8L)))) {
+        try (var logged = emptyLoggedReplica(List.of(EpochStart.epochStart(E2, 7L, Option.none()), EpochStart.epochStart(E3, 8L, Option.none())))) {
             record(logged, 0, 5, E1);
             record(logged, 5, 10, E2);
 

@@ -1,5 +1,7 @@
 package org.pragmatica.aether.example.shared;
 
+import java.util.Locale;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
@@ -13,7 +15,7 @@ public record ProductId(String value) {
     public static Result<ProductId> productId(String raw) {
         return Verify.ensure(raw, Verify.Is::notBlank, INVALID_PRODUCT_ID)
                      .map(String::trim)
-                     .map(String::toUpperCase)
+                     .map(text -> text.toUpperCase(Locale.ROOT))
                      .filter(INVALID_PRODUCT_ID, ProductId::isValidFormat)
                      .map(ProductId::new);
     }

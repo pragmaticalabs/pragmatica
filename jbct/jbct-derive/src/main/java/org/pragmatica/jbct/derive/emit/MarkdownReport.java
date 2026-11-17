@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.derive.emit;
 
 import java.util.List;
+import java.util.Locale;
 
 import org.pragmatica.jbct.derive.result.Combination;
 import org.pragmatica.jbct.derive.result.DecisionRecord;
@@ -13,6 +14,7 @@ import org.pragmatica.jbct.derive.result.Strike;
 import org.pragmatica.jbct.derive.result.VectorPosition;
 import org.pragmatica.jbct.derive.result.Verification;
 import org.pragmatica.jbct.lint.Diagnostic;
+
 
 /// Human output for `derive` (SPEC.md §4 emit): a markdown report — the derived vector with each
 /// position's citing answers (F10), the pressure matrix (inert rows included), decision records,
@@ -32,63 +34,98 @@ public sealed interface MarkdownReport permits MarkdownReport.unused {
     }
 
     private static String gated(DeriveResult result) {
-        return String.join("\n", List.of(header(result),
-                                          section("Entry gate — sheet rejected (fake-answer halt)",
-                                                  result.gateFindings().stream().map(MarkdownReport::findingLine).toList())));
+        return String.join("\n",
+                           List.of(header(result),
+                                   section("Entry gate — sheet rejected (fake-answer halt)",
+                                           result.gateFindings().stream().map(MarkdownReport::findingLine).toList())));
     }
 
     private static String full(DeriveResult result) {
-        return String.join("\n", List.of(header(result),
-                                         section("Derived vector", result.vector().stream().map(MarkdownReport::vectorLine).toList()),
-                                         section("Pressure matrix (inert rows included)",
-                                                 result.pressures().stream().map(MarkdownReport::pressureLine).toList()),
-                                         section("Mandate strikes (prune)", result.strikes().stream().map(MarkdownReport::strikeLine).toList()),
-                                         section("Combination checks", result.combinations().stream().map(MarkdownReport::combinationLine).toList()),
-                                         section("Decision records", result.decisions().stream().map(MarkdownReport::decisionLine).toList()),
-                                         section("Recovery assignments", result.recovery().stream().map(MarkdownReport::recoveryLine).toList()),
-                                         section("Verification (exit gate)", result.verifications().stream().map(MarkdownReport::verificationLine).toList()),
-                                         section("Halts", result.halts().stream().map(MarkdownReport::haltLine).toList()),
-                                         section("Judgment points (emitted, never resolved)",
-                                                 result.judgmentPoints().stream().map(MarkdownReport::judgmentLine).toList()),
-                                         footnote()));
+        return String.join("\n",
+                           List.of(header(result),
+                                   section("Derived vector",
+                                           result.vector().stream().map(MarkdownReport::vectorLine).toList()),
+                                   section("Pressure matrix (inert rows included)",
+                                           result.pressures().stream().map(MarkdownReport::pressureLine).toList()),
+                                   section("Mandate strikes (prune)",
+                                           result.strikes().stream().map(MarkdownReport::strikeLine).toList()),
+                                   section("Combination checks",
+                                           result.combinations().stream().map(MarkdownReport::combinationLine).toList()),
+                                   section("Decision records",
+                                           result.decisions().stream().map(MarkdownReport::decisionLine).toList()),
+                                   section("Recovery assignments",
+                                           result.recovery().stream().map(MarkdownReport::recoveryLine).toList()),
+                                   section("Verification (exit gate)",
+                                           result.verifications()
+                                                 .stream()
+                                                 .map(MarkdownReport::verificationLine)
+                                                 .toList()),
+                                   section("Halts",
+                                           result.halts().stream().map(MarkdownReport::haltLine).toList()),
+                                   section("Judgment points (emitted, never resolved)",
+                                           result.judgmentPoints().stream().map(MarkdownReport::judgmentLine).toList()),
+                                   footnote()));
     }
 
     private static String header(DeriveResult result) {
-        return "# Derivation — " + result.meta().system() + " (" + result.meta().era() + ")\n"
-             + "Source: " + result.source() + " · mode: " + kebab(result.meta().mode().name())
-             + " · exit " + result.exitCode() + "\n";
+        return "# Derivation — " + result.meta()
+                                         .system()
+             + " (" + result.meta()
+                            .era()
+             + ")\n"
+             + "Source: " + result.source()
+             + " · mode: " + kebab(result.meta().mode().name())
+             + " · exit " + result.exitCode()
+             + "\n";
     }
 
     private static String vectorLine(VectorPosition position) {
-        return "- **" + position.axis().label() + "**: " + position.value()
-             + "  _[" + kebab(position.resolution().name()) + "]_" + citing(position.citing());
+        return "- **" + position.axis()
+                                .label()
+             + "**: " + position.value()
+             + "  _[" + kebab(position.resolution().name())
+             + "]_" + citing(position.citing());
     }
 
     private static String pressureLine(Pressure pressure) {
-        return "- " + pressure.axis().label() + " | " + kebab(pressure.mode().name()) + " | "
-             + pressure.direction() + " | " + pressure.mechanism() + " | " + pressure.citations();
+        return "- " + pressure.axis()
+                              .label()
+             + " | " + kebab(pressure.mode().name())
+             + " | " + pressure.direction()
+             + " | " + pressure.mechanism()
+             + " | " + pressure.citations();
     }
 
     private static String strikeLine(Strike strike) {
-        return "- " + strike.display() + " struck by " + strike.struckBy().cite();
+        return "- " + strike.display() + " struck by " + strike.struckBy()
+                                                               .cite();
     }
 
     private static String combinationLine(Combination combination) {
-        return "- " + combination.axis().label() + ": " + combination.note();
+        return "- " + combination.axis()
+                                 .label() + ": " + combination.note();
     }
 
     private static String decisionLine(DecisionRecord decision) {
-        return "- " + decision.axis().label() + ": **" + decision.position() + "** — forced by "
-             + decision.forcedBy() + "; via " + decision.via() + "; costs " + decision.costs()
+        return "- " + decision.axis()
+                              .label()
+             + ": **" + decision.position()
+             + "** — forced by " + decision.forcedBy()
+             + "; via " + decision.via()
+             + "; costs " + decision.costs()
              + "; revisit when " + decision.revisitWhen();
     }
 
     private static String recoveryLine(RecoveryAssignment assignment) {
-        return "- " + assignment.operation() + ": " + kebab(assignment.recoveryClass().name()) + " — " + assignment.rationale();
+        return "- " + assignment.operation()
+             + ": " + kebab(assignment.recoveryClass().name())
+             + " — " + assignment.rationale();
     }
 
     private static String verificationLine(Verification verification) {
-        return "- " + verification.rule() + " @ " + verification.scope() + ": " + verification.status()
+        return "- " + verification.rule()
+             + " @ " + verification.scope()
+             + ": " + verification.status()
              + " — " + verification.detail();
     }
 
@@ -107,7 +144,10 @@ public sealed interface MarkdownReport permits MarkdownReport.unused {
     }
 
     private static String findingLine(Diagnostic finding) {
-        return "- " + finding.ruleId() + " (line " + finding.line() + "): " + finding.message() + " — " + finding.details();
+        return "- " + finding.ruleId()
+             + " (line " + finding.line()
+             + "): " + finding.message()
+             + " — " + finding.details();
     }
 
     private static String footnote() {
@@ -128,6 +168,7 @@ public sealed interface MarkdownReport permits MarkdownReport.unused {
     }
 
     private static String kebab(String enumName) {
-        return enumName.toLowerCase().replace('_', '-');
+        return enumName.toLowerCase(Locale.ROOT)
+                       .replace('_', '-');
     }
 }

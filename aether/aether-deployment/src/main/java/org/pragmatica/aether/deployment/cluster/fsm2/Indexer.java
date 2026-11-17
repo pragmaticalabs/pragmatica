@@ -124,6 +124,9 @@ public sealed interface Indexer {
                                                  : m;
             case AetherKey.TopicSubscriptionKey k -> indexTopicRow(m, k, k.nodeId(), value);
             case AetherKey.TopicPublisherKey k -> indexTopicRow(m, k, k.nodeId(), value);
+            case AetherKey.FsmWarningKey k -> value instanceof AetherValue.FsmWarningValue v
+                                              ? Warnings.indexRow(m, k, v)
+                                              : m;
             default -> m;
         };
     }
@@ -153,6 +156,7 @@ public sealed interface Indexer {
             case AetherKey.CommunityPlacementOperationKey k -> removePlacementOp(m, k.communityId());
             case AetherKey.TopicSubscriptionKey k -> removeTopicRow(m, k, k.nodeId());
             case AetherKey.TopicPublisherKey k -> removeTopicRow(m, k, k.nodeId());
+            case AetherKey.FsmWarningKey k -> Warnings.removeRow(m, k);
             default -> m;
         };
     }

@@ -5,14 +5,27 @@
 package org.pragmatica.aether.node.deployment;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.config.StreamingConfig;
+import org.pragmatica.aether.node.assembly.StreamAssemblyLeaseWiring;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLeaseKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLeaseValue;
+import org.pragmatica.aether.stream.NodeLease;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -102,5 +115,53 @@ class Fsm2WorkerInstallTest {
 
             worker.awaitThat(() -> worker.count("DesiredPut", "applied", "node") == 2.0);
         }
+    }
+
+    /// #2981 step 2, S1 (r7 C1): the store's replay start is a listener LIST, so ONE install tells both production registrations: FSM2's install
+    /// signal (`DeploymentWiring.listeningForInstalls`, the F1 watermark reset) and the node lease's revoke (`StreamAssembly.nodeLease`), whatever
+    /// the registration order. Mutation: `onReplayStart` back to a single slot (last registration wins: the FSM2 half goes red; first wins: the
+    /// lease half goes red).
+    @Test
+    void oneInstall_tellsBothTheNodeFsmAndTheNodeLease() {
+        try (var worker = enteredWorker()) {
+            var submitted = new ArrayList<KVCommand<AetherKey>>();
+            var lease = StreamAssemblyLeaseWiring.nodeLease(Fsm2Harness.SELF,
+                                                            StreamingConfig.streamingConfig(),
+                                                            worker.store,
+                                                            commands -> record(submitted, commands),
+                                                            OperatorWarningSink.logOnly(),
+                                                            new ArrayList<MessageRouter.Entry<?>>());
+
+            lease.renew();
+            deliverLast(lease, submitted);
+            assertThat(lease.valid()).as("granted before the install").isTrue();
+
+            var first = new HashMap<AetherKey, AetherValue>(worker.store.snapshot());
+
+            first.put(desiredKey(ORDERS), desired());
+            install(worker, first, 50L);
+            assertThat(lease.valid()).as("the install's replay start revoked the lease").isFalse();
+            worker.awaitThat(() -> worker.count("DesiredPut", "applied", "node") == 1.0);
+            await().pollDelay(Duration.ofMillis(1000)).atMost(Duration.ofSeconds(3)).until(() -> true);
+            install(worker, new HashMap<AetherKey, AetherValue>(worker.store.snapshot()), 1L);
+            worker.slot.set(1);
+            worker.leaderPut(desiredKey(PAYMENTS), desired());
+
+            worker.awaitThat(() -> worker.count("DesiredPut", "applied", "node") == 2.0);
+            assertThat(worker.count("DesiredPut", "dropped_revision", "node")).as("the node FSM's watermark was reset by the same install").isZero();
+        }
+    }
+
+    private static Promise<List<Object>> record(List<KVCommand<AetherKey>> sink, List<KVCommand<AetherKey>> commands) {
+        sink.addAll(commands);
+
+        return Promise.success(List.of());
+    }
+
+    private static void deliverLast(NodeLease lease, List<KVCommand<AetherKey>> submitted) {
+        var seq = ((NodeLeaseValue) ((KVCommand.Put<?, ?>) submitted.getLast()).value()).seq();
+
+        lease.onRenewal(new ValuePut<>(new KVCommand.Put<>(NodeLeaseKey.nodeLeaseKey(Fsm2Harness.SELF), NodeLeaseValue.nodeLeaseValue(seq)),
+                                       Option.none()));
     }
 }

@@ -49,6 +49,9 @@ public enum ManagementRoute {
     // #261 (real backfill). Staleness: a forwarded read reflects the replica's CAUGHT_UP watermark,
     // which may trail the owner by the in-flight replication window (sub-second under steady load).
     EVENTS(GET, "/events", List.of(), ANY),
+    // #3274: the open FSM warnings of ONE committed state, read on the answering core and labelled by its revision. LOCAL: core nodes
+    // only, no forwarding; a worker, a core without quorum, and a core whose label is 0 or not exact refuse (WarningsRoutes).
+    WARNINGS(GET, "/warnings", List.of(), LOCAL),
     CERTIFICATES_LIST(GET, "/certificates", List.of(), LOCAL),
     CLUSTER_TOPOLOGY(GET, "/cluster/topology", List.of(), LEADER),
     CLUSTER_GENERATION(GET, "/cluster/generation", List.of(), LEADER),
@@ -77,6 +80,8 @@ public enum ManagementRoute {
     CLUSTER_STATUS(GET, "/cluster/status", List.of(), LEADER),
     CLUSTER_CONFIG_APPLY(POST, "/cluster/config", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_SCALE(POST, "/cluster/scale", List.of(), LEADER),
+    // #1715: reserve `<source>-<role>-<n>` node ids from the committed per-(source, role) high-water; the leader commits the advance.
+    CLUSTER_NODE_IDS_RESERVE(POST, "/cluster/node-ids/reserve", List.of(), LEADER),
     CLUSTER_CIRCUIT_BREAKER_STATUS(GET, "/cluster/topology/circuit-breaker", List.of(), LEADER),
     CLUSTER_CIRCUIT_BREAKER_RESET(POST, "/cluster/topology/circuit-breaker/reset", List.of(), LEADER),
     CLUSTER_AUTO_HEAL_STATUS(GET, "/cluster/topology/auto-heal", List.of(), LEADER),

@@ -53,6 +53,7 @@ public final class SeamPoller {
                           Supplier<Set<NodeId>> superseded,
                           Supplier<Map<NodeId, String>> memberSource,
                           Supplier<Map<String, CommunityPlacement>> communityPolicies,
+                          Supplier<Set<NodeId>> coreRoleMembers,
                           Supplier<Set<NodeId>> members,
                           ToLongFunction<NodeId> tokenOf) {}
 
@@ -99,7 +100,14 @@ public final class SeamPoller {
                            sources.localAlive().get(),
                            sources.superseded().get(),
                            sources.memberSource().get(),
-                           sources.communityPolicies().get());
+                           sources.communityPolicies().get(),
+                           sources.coreRoleMembers().get());
+    }
+
+    /// #3172: the membership `source` label of one node, read from the same supplier [#sample] reads, so an overlay built from it and a later
+    /// snapshot cannot disagree. Absent when the descriptor has none yet.
+    public Option<String> memberSource(NodeId node) {
+        return Option.option(sources.memberSource().get().get(node));
     }
 
     /// Starts the 5 s cadence. The first sample is taken at once so the FSM does not wait a full interval for its first view. A poller already

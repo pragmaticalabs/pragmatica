@@ -29,6 +29,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.StreamType;
 
 import static org.pragmatica.lang.Option.option;
 
@@ -163,9 +164,13 @@ public final class PeerState {
         /// Peer is CONNECTED — caller should serialize and write the message to `connection()`.
         record SendNow(QuicPeerConnection connection) implements OfferOutcome {}
 
-        /// Message was queued into the offline buffer. `oldestEvicted=true` means the buffer
-        /// was at capacity and the oldest entry was dropped to make room.
-        record Queued(boolean oldestEvicted) implements OfferOutcome {}
+        /// Message was queued into the offline buffer. `evictedLane` is present when the buffer
+        /// was at capacity and the oldest entry was dropped to make room: it is the lane of that dropped entry.
+        record Queued(Option<StreamType> evictedLane) implements OfferOutcome {
+            public boolean oldestEvicted() {
+                return evictedLane.isPresent();
+            }
+        }
 
         /// Peer is REMOVED — message dropped.
         record Dropped() implements OfferOutcome {}
@@ -670,15 +675,18 @@ public final class PeerState {
 
     /// Called only from [#offerOutbound], under the per-peer monitor.
     private OfferOutcome buffered(Message.Wired message, Expiry expiry) {
-        var wasFull = offlineBuffer.size() >= OFFLINE_BUFFER_MAX;
-
-        if (wasFull) {
-            offlineBuffer.pollFirst();
-        }
+        var evictedLane = evictOldestIfFull();
 
         offlineBuffer.offerLast(new Buffered(message, expiry));
 
-        return new OfferOutcome.Queued(wasFull);
+        return new OfferOutcome.Queued(evictedLane);
+    }
+
+    /// Called only from [#buffered], under the per-peer monitor: drops the oldest entry of a full buffer and names its lane.
+    private Option<StreamType> evictOldestIfFull() {
+        return offlineBuffer.size() >= OFFLINE_BUFFER_MAX
+               ? Option.some(offlineBuffer.pollFirst().message().streamType())
+               : Option.none();
     }
 
     /// Drain the offline buffer. Intended to be called right after `attach` returns ACCEPTED.

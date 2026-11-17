@@ -96,7 +96,9 @@ class EmberClusterStagedSeamsTest {
         var built = emberCluster(3, PORTS.first(), PORTS.first() + 40, PORTS.first() + 80, "cfg-ctor", provider);
 
         assertThat(built.withConfigSource(source("extra")).isFailure()).isTrue();
-        assertThat(built.withConfigSource(source("extra")).fold(cause -> cause.message(), _ -> "")).contains("configProvider");
+        String refusal = built.withConfigSource(source("extra")).fold(cause -> cause.message(), _ -> "");
+
+        assertThat(refusal).contains("configProvider");
     }
 
     @Test

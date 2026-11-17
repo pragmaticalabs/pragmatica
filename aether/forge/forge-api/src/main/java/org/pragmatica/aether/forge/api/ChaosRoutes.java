@@ -7,6 +7,7 @@ package org.pragmatica.aether.forge.api;
 import java.time.Duration;
 import java.util.Deque;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Consumer;
 
 import org.pragmatica.aether.ember.EmberCluster;
@@ -224,7 +225,7 @@ public final class ChaosRoutes {
 
     private static Result<ChaosEvent> parseChaosEvent(InjectRequest request, Duration duration) {
         var optDuration = Option.option(duration);
-        var type = request.type().map(String::toUpperCase).or("");
+        var type = request.type().map(text -> text.toUpperCase(Locale.ROOT)).or("");
         var nodeId = request.nodeId().fold(() -> null, s -> s);
         var artifact = request.artifact().fold(() -> null, s -> s);
 

@@ -63,8 +63,7 @@ import org.pragmatica.lang.Unit;
 /// @param typeMismatchLedger  Reads that found the key present with the wrong type (#1455)
 public record TomlDocument(Map<String, Map<String, Object>> sections,
                            Map<String, List<Map<String, Object>>> tableArrays,
-                           @ConfigKeyLive("#1455: not a config key: per-document read diagnostics, consumed via requireNoTypeMismatches()")
-                           TypeMismatchLedger typeMismatchLedger) {
+                           @ConfigKeyLive("#1455: not a config key: per-document read diagnostics, consumed via requireNoTypeMismatches()") TypeMismatchLedger typeMismatchLedger) {
     /// Empty document constant.
     public static final TomlDocument EMPTY = new TomlDocument(Map.of("", Map.of()),
                                                               Map.of());

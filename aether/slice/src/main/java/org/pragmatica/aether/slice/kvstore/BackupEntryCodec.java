@@ -23,6 +23,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ApiKeyAuditKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ApiKeyKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AutoHealStateKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeIdHighWaterKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
@@ -48,6 +49,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ApiKeyAuditValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ApiKeyValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeIdHighWaterValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
@@ -199,6 +201,9 @@ public record BackupEntryCodec(SliceCodec codec) {
                                                              KeyBinding.keyBinding(AutoHealStateKey.class,
                                                                                    AutoHealStateValue.class,
                                                                                    AutoHealStateKey::autoHealStateKey),
+                                                             KeyBinding.keyBinding(NodeIdHighWaterKey.class,
+                                                                                   NodeIdHighWaterValue.class,
+                                                                                   NodeIdHighWaterKey::nodeIdHighWaterKey),
                                                              KeyBinding.keyBinding(BlueprintStreamBindingsKey.class,
                                                                                    BlueprintStreamBindingsValue.class,
                                                                                    BlueprintStreamBindingsKey::blueprintStreamBindingsKey),

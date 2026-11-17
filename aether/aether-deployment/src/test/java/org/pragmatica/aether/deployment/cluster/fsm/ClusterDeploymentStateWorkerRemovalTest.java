@@ -26,6 +26,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLeaseKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -35,6 +36,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLeaseValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicPublisherValue;
@@ -72,11 +74,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 import io.netty.buffer.ByteBuf;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #731 (symmetric sibling of #728): a worker's REMOVED edge never reaches
@@ -107,6 +111,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
     private RecordingClusterNode cluster;
     private InMemoryKvStore kvStore;
     private FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness;
+    private ClusterDeploymentContext context;
 
     @BeforeEach
     void setUp() {
@@ -122,7 +127,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
         // down the WORKER branch of assignNodeRole (mirrors CommunityMintTest's setup) and makes
         // SELF the only allocatableNode for the post-departure reconcile assertion.
         Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
-                fsm -> new ClusterDeploymentContext(fsm,
+                fsm -> (context = new ClusterDeploymentContext(fsm,
                                                     SELF,
                                                     cluster,
                                                     kvStore,
@@ -137,7 +142,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
                                                     1,
                                                     timeSpan(300).seconds(),
                                                     System::currentTimeMillis,
-                                                    memberSourceSupplier).dormant();
+                                                    memberSourceSupplier)).dormant();
         harness = FsmTestHarness.harness("worker-removal-" + SELF.id(), factory);
         harness.dispatch(new Activate());
     }
@@ -513,6 +518,155 @@ class ClusterDeploymentStateWorkerRemovalTest {
     /// Net-new regression: no existing test exercises `handleNodeRemoval` at this FSM layer for a
     /// CORE node. Confirms the #731 WORKER-channel addition left the pre-existing CORE
     /// `MembershipDecisionReceived(NodeRemoved)` arm's cleanup behavior unchanged.
+    /// #3028 M2: a falsely-dead worker rejoins promptly, while its departure cleanup (whose last step deletes the activation directive) is
+    /// still committing. The join used to read the directive that was about to vanish, return early, and the delete then landed: no directive.
+    @Nested
+    class JoinDuringRemovalInFlight {
+        private static final NodeId W = WORKER_1;
+
+        private Option<AetherValue> directive() {
+            return kvStore.get(ActivationDirectiveKey.activationDirectiveKey(W));
+        }
+
+        /// The removal's directive delete has landed in the committed state while its chain (a lost or stuck ack) is still unresolved: a join
+        /// that runs now has a visible effect, a fresh directive, because the early-return check finds none.
+        private void dropDirective() {
+            kvStore.commit(List.of(new KVCommand.Remove<AetherKey>(ActivationDirectiveKey.activationDirectiveKey(W))));
+            assertThat(directive().isPresent()).as("precondition: the directive is gone").isFalse();
+        }
+
+        private void rejoin() {
+            harness.dispatch(new WorkerJoinReceived(WorkerJoinDecision.workerJoinDecision(W, "worker", HlcTimestamp.ZERO)));
+        }
+
+        @Test
+        void workerJoin_duringRemovalInFlight_directivePresentAtEnd() {
+            joinWorker(W);
+            assertThat(directive().isPresent()).as("precondition: the directive is committed").isTrue();
+            var commit = Promise.<Unit>promise();
+
+            cluster.gate = commit;
+            leaveWorker(W);
+            rejoin();
+            commit.succeed(Unit.unit());
+
+            await().atMost(5, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(directive().isPresent())
+                           .as("#3028 M2: the join waited for the removal, then assigned afresh: the directive is present at the end")
+                           .isTrue());
+        }
+
+        @Test
+        void workerJoin_removalFails_joinStillRuns() {
+            joinWorker(W);
+            dropDirective();
+            var commit = Promise.<Unit>promise();
+
+            cluster.gate = commit;
+            leaveWorker(W);
+            rejoin();
+            cluster.gate = Promise.unitPromise();
+            commit.fail(new org.pragmatica.consensus.ConsensusError.CommandBatchIsEmpty());
+
+            await().atMost(5, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(directive().isPresent())
+                           .as("a failed removal still releases the join, which then reads the committed state")
+                           .isTrue());
+        }
+
+        /// The join is released by whichever comes first, the removal settling or the bound; the other must then do nothing. A second
+        /// release would re-run the join after the directive was dropped again.
+        @Test
+        void workerJoin_removalSettlesBeforeBound_joinRunsOnce() {
+            joinWorker(W);
+            context.setRemovalWaitBound(timeSpan(800).millis());
+            var commit = Promise.<Unit>promise();
+
+            cluster.gate = commit;
+            leaveWorker(W);
+            rejoin();
+            commit.succeed(Unit.unit());
+            await().atMost(5, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(directive().isPresent()).as("the join ran once the removal settled").isTrue());
+            dropDirective();
+
+            await().pollDelay(1500, TimeUnit.MILLISECONDS)
+                   .atMost(3, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(directive().isPresent()).as("the bound firing afterwards must not run the join again").isFalse());
+        }
+
+        /// A removal that settles with no join waiting must not leave its entry behind: the entry is the join's wait handle.
+        @Test
+        void removalSettles_entryDropped_withoutAJoin() {
+            joinWorker(W);
+            var commit = Promise.<Unit>promise();
+
+            cluster.gate = commit;
+            leaveWorker(W);
+            assertThat(context.removalsInFlight()).as("the removal is pending").containsKey(W);
+            commit.succeed(Unit.unit());
+
+            await().atMost(5, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(context.removalsInFlight()).as("settled removal leaves no entry").doesNotContainKey(W));
+        }
+
+        /// [guess: 2 x the 30 s consensus applyTimeout] pinned so a change to it is a decision, not an accident.
+        @Test
+        void removalWaitBound_defaultsToTwiceApplyTimeout() {
+            assertThat(context.removalWaitBound()).isEqualTo(timeSpan(60).seconds());
+        }
+
+        @Test
+        void workerJoin_removalNeverResolves_joinRunsAfterBound() {
+            joinWorker(W);
+            dropDirective();
+            context.setRemovalWaitBound(timeSpan(300).millis());
+            cluster.gate = Promise.<Unit>promise();
+
+            leaveWorker(W);
+            assertThat(context.removalsInFlight()).as("the removal is pending").containsKey(W);
+            rejoin();
+
+            assertThat(directive().isPresent()).as("inside the bound the join is still waiting").isFalse();
+            cluster.gate = Promise.unitPromise();
+            await().atMost(5, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(directive().isPresent())
+                           .as("past the bound the join ran against the committed state")
+                           .isTrue());
+            assertThat(context.removalsInFlight()).doesNotContainKey(W);
+        }
+    }
+
+    /// #2981 step 2 (CTO ruling 2026-11-11): a decommissioned node's lease row goes with its footprint; a removed node (which may rejoin under
+    /// the same id) keeps it, and another node's row is never touched. Mutation: `nodeLeaseRemoval` returning nothing -> RED on the first test.
+    @Nested
+    class NodeLeaseOnDecommission {
+        @Test
+        void decommission_removesTheDecommissionedNodesLeaseRow_andKeepsEveryOthers() {
+            var departed = NodeLeaseKey.nodeLeaseKey(CORE_2);
+            var other = NodeLeaseKey.nodeLeaseKey(CORE_1);
+
+            kvStore.put(departed, NodeLeaseValue.nodeLeaseValue(7L));
+            kvStore.put(other, NodeLeaseValue.nodeLeaseValue(9L));
+
+            harness.dispatch(new MembershipDecisionReceived(MembershipDecision.nodeDecommissioned(CORE_2, List.of(SELF, CORE_1))));
+
+            assertThat(kvStore.get(departed)).as("the decommissioned node never renews again").isEqualTo(Option.empty());
+            assertThat(kvStore.get(other)).as("another node's lease row").isEqualTo(Option.some(NodeLeaseValue.nodeLeaseValue(9L)));
+        }
+
+        @Test
+        void removal_keepsTheRemovedNodesLeaseRow() {
+            var removed = NodeLeaseKey.nodeLeaseKey(CORE_2);
+
+            kvStore.put(removed, NodeLeaseValue.nodeLeaseValue(7L));
+
+            harness.dispatch(new MembershipDecisionReceived(MembershipDecision.nodeRemoved(CORE_2, List.of(SELF, CORE_1))));
+
+            assertThat(kvStore.get(removed)).as("a removed node may rejoin under the same id").isEqualTo(Option.some(NodeLeaseValue.nodeLeaseValue(7L)));
+        }
+    }
+
     @Nested
     class CoreRemovalRegression {
         @Test
@@ -1042,6 +1196,8 @@ class ClusterDeploymentStateWorkerRemovalTest {
         final List<KVCommand<AetherKey>> commands = Collections.synchronizedList(new ArrayList<>());
         final List<List<KVCommand<AetherKey>>> batches = Collections.synchronizedList(new ArrayList<>());
         private final InMemoryKvStore committed;
+        /// #3028 M2: while set, every batch commits only once this promise resolves (a slow or stuck consensus commit).
+        volatile Promise<Unit> gate = Promise.unitPromise();
 
         RecordingClusterNode(NodeId self, InMemoryKvStore committed) {
             this.self = self;
@@ -1067,7 +1223,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
 
             commands.addAll(batch);
             batches.add(List.copyOf(batch));
-            return Promise.success(committed.process(committed.createBatch(batch)));
+            return gate.map(_ -> committed.process(committed.createBatch(batch)));
         }
     }
 

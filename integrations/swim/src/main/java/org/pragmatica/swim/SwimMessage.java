@@ -21,6 +21,7 @@ import java.util.Map;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.swim.SwimMember.MemberState;
 
@@ -28,10 +29,20 @@ import org.pragmatica.swim.SwimMember.MemberState;
 /// Messages exchanged by the SWIM protocol.
 @Codec
 public sealed interface SwimMessage {
-    /// Direct ping probe carrying piggybacked membership updates.
-    record Ping(NodeId from, long sequence, List<MembershipUpdate> piggyback) implements SwimMessage {
+    /// Ping probe carrying piggybacked membership updates. `onBehalfOf` names the requester of a relayed probe
+    /// (set by the relayer from the PingReq, #3028 D3) so the target can answer the requester's entry; empty on a
+    /// direct ping.
+    record Ping(NodeId from, long sequence, List<MembershipUpdate> piggyback, Option<NodeId> onBehalfOf) implements SwimMessage {
+        public Ping(NodeId from, long sequence, List<MembershipUpdate> piggyback) {
+            this(from, sequence, piggyback, Option.none());
+        }
+
         public static Ping ping(NodeId from, long sequence, List<MembershipUpdate> piggyback) {
-            return new Ping(from, sequence, piggyback);
+            return new Ping(from, sequence, piggyback, Option.none());
+        }
+
+        public static Ping relayedPing(NodeId from, long sequence, List<MembershipUpdate> piggyback, NodeId requester) {
+            return new Ping(from, sequence, piggyback, Option.some(requester));
         }
     }
 

@@ -133,10 +133,10 @@ public interface Memo<K, V> {
             var entry = cache.compute(key,
                                       (k, existing) -> {
                                           if (existing != null) {
-                                          hits.incrementAndGet();
+                                              hits.incrementAndGet();
 
-                                          return existing;
-                                      }
+                                              return existing;
+                                          }
 
                                           misses.incrementAndGet();
 

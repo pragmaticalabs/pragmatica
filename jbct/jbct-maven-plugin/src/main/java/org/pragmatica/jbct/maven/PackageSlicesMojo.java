@@ -176,7 +176,7 @@ public class PackageSlicesMojo extends AbstractMojo {
             // Only a direct dependency can be a slice dependency, so only its jar is scanned, once.
             var sliceManifests = isDirectDependency
                                  ? scannedManifests(artifact, unreadable)
-                                 : List.<Properties>of();
+                                 : List.<Properties> of();
 
             if (artifactId.startsWith("infra-") && isDirectDependency) {
                 // Infrastructure dependencies (direct only)
@@ -212,8 +212,7 @@ public class PackageSlicesMojo extends AbstractMojo {
     private List<String> unpackagedSliceDependencies(SliceManifest manifest, Set<String> providedInterfaces) {
         return manifest.dependencies()
                        .stream()
-                       .filter(dep -> !isLocalSliceCoordinate(dep.artifact())
-                                      && !providedInterfaces.contains(dep.interfaceQualifiedName()))
+                       .filter(dep -> !isLocalSliceCoordinate(dep.artifact()) && !providedInterfaces.contains(dep.interfaceQualifiedName()))
                        .map(dep -> dep.interfaceQualifiedName() + " (coordinate '" + dep.artifact() + "')")
                        .toList();
     }
@@ -226,12 +225,17 @@ public class PackageSlicesMojo extends AbstractMojo {
     }
 
     private String refusalMessage(SliceManifest manifest, List<String> unpackaged) {
-        return "Slice " + manifest.sliceName() + " declares " + unpackaged.size() + " dependenc"
-               + (unpackaged.size() == 1 ? "y" : "ies") + " that would reach no [slices] entry: "
-               + String.join(", ", unpackaged) + ". A sibling slice in this module is packaged only under '"
-               + project.getGroupId() + ":" + project.getArtifactId() + "-<slice>'; compile with -Aslice.groupId="
-               + project.getGroupId() + " -Aslice.artifactId=" + project.getArtifactId()
-               + " (jbct-init writes both), or declare the provider's slice artifact as a direct Maven dependency.";
+        return "Slice " + manifest.sliceName()
+             + " declares " + unpackaged.size()
+             + " dependenc" + (unpackaged.size() == 1
+                               ? "y"
+                               : "ies")
+             + " that would reach no [slices] entry: " + String.join(", ", unpackaged)
+             + ". A sibling slice in this module is packaged only under '" + project.getGroupId()
+             + ":" + project.getArtifactId()
+             + "-<slice>'; compile with -Aslice.groupId=" + project.getGroupId()
+             + " -Aslice.artifactId=" + project.getArtifactId()
+             + " (jbct-init writes both), or declare the provider's slice artifact as a direct Maven dependency.";
     }
 
     /// `SliceManifest` reads an absent coordinate as "", never null.
@@ -286,7 +290,7 @@ public class PackageSlicesMojo extends AbstractMojo {
     /// The slice manifests of a direct dependency; a jar that cannot be read is recorded in `unreadable`.
     private static List<Properties> scannedManifests(Artifact artifact, List<String> unreadable) {
         return sliceManifestsOf(artifact).onFailure(cause -> unreadable.add(cause.message()))
-                                         .or(List.of());
+                               .or(List.of());
     }
 
     /// Every slice manifest in `artifact`'s jar, read in ONE scan (#1700 review: three copies of this scan
@@ -301,10 +305,12 @@ public class PackageSlicesMojo extends AbstractMojo {
         }
 
         var coordinate = artifact.getGroupId() + ":" + artifact.getArtifactId();
-
         // Result::allOf is overloaded (List, Stream, varargs), so the reference is ambiguous here.
-        return Result.lift(thrown -> unreadable(coordinate, file.toString(), thrown),
-                           () -> readSliceManifests(coordinate, new JarFile(file)))
+        return Result.lift(thrown -> unreadable(coordinate,
+                                                file.toString(),
+                                                thrown),
+                           () -> readSliceManifests(coordinate,
+                                                    new JarFile(file)))
                      .flatMap(results -> Result.allOf(results));
     }
 
@@ -327,7 +333,9 @@ public class PackageSlicesMojo extends AbstractMojo {
     }
 
     private static boolean isSliceManifestEntry(JarEntry entry) {
-        return entry.getName().startsWith(SLICE_MANIFEST_DIR) && entry.getName().endsWith(".manifest");
+        return entry.getName()
+                    .startsWith(SLICE_MANIFEST_DIR) && entry.getName()
+                                                            .endsWith(".manifest");
     }
 
     /// JDK boundary: `JarFile.getInputStream` and `Properties.load` throw IOException, lifted by [#manifestIn].
@@ -353,9 +361,10 @@ public class PackageSlicesMojo extends AbstractMojo {
         static SliceJarUnreadable sliceJarUnreadable(String artifact, String location, String detail) {
             return new SliceJarUnreadable(artifact,
                                           location,
-                                          "Cannot read " + artifact + " (" + location + ") to find its slice manifests: "
-                                          + detail
-                                          + ". Whether it provides a slice dependency cannot be decided; re-resolve or rebuild that artifact.");
+                                          "Cannot read " + artifact
+                                         + " (" + location
+                                         + ") to find its slice manifests: " + detail
+                                         + ". Whether it provides a slice dependency cannot be decided; re-resolve or rebuild that artifact.");
         }
     }
 
@@ -534,7 +543,8 @@ public class PackageSlicesMojo extends AbstractMojo {
                 // A referenced outer class is useless without its nested classes
                 for (var name : withNestedClasses(reference, available)) {
                     if (bundled.add(name)) {
-                        archiver.addFile(classesPath.resolve(name + CLASS_SUFFIX).toFile(), name + CLASS_SUFFIX);
+                        archiver.addFile(classesPath.resolve(name + CLASS_SUFFIX).toFile(),
+                                         name + CLASS_SUFFIX);
                         pending.add(name);
                     }
                 }
@@ -605,13 +615,13 @@ public class PackageSlicesMojo extends AbstractMojo {
         var prefix = internalName + "$";
 
         return Stream.concat(Stream.of(internalName),
-                             available.stream()
-                                      .filter(name -> name.startsWith(prefix)))
+                             available.stream().filter(name -> name.startsWith(prefix)))
                      .toList();
     }
 
     private static String toInternalName(String relativePath) {
-        return relativePath.substring(0, relativePath.length() - CLASS_SUFFIX.length());
+        return relativePath.substring(0,
+                                      relativePath.length() - CLASS_SUFFIX.length());
     }
 
     private void addDirectoryClasses(JarArchiver archiver, Path dir, Path classesPath, Set<String> bundled) {
@@ -895,8 +905,7 @@ public class PackageSlicesMojo extends AbstractMojo {
                 if (classFile.exists() && bundled.add(toInternalName(relativePath))) {
                     // Transform factory classes with UNRESOLVED versions
                     if (className.endsWith("Factory") && !versionMap.isEmpty() && relativePath.equals(className.replace('.',
-                                                                                                                        '/')
-                                                                                                     + CLASS_SUFFIX)) {
+                                                                                                                        '/') + CLASS_SUFFIX)) {
                         var transformedBytes = transformFactoryBytecode(classFile, versionMap);
                         // Write transformed bytecode to temp file for archiving
                         var tempClass = Files.createTempFile("factory-", ".class");

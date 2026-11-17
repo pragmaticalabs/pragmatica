@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.schema;
 
 import java.time.Duration;
+import java.util.Locale;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.schema.SchemaError.PhysicalDatasourceOwnershipConflict;
@@ -440,7 +441,7 @@ class AetherSchemaManagerResumeTest {
         }
 
         private Promise<Integer> applyUpdate(String sql, Object[] params) {
-            var upper = sql.toUpperCase();
+            var upper = sql.toUpperCase(Locale.ROOT);
 
             if (sql.contains(META_TABLE)) {
                 return applyMetaUpdate(upper, params);
@@ -568,7 +569,7 @@ class AetherSchemaManagerResumeTest {
         }
 
         private List<Map<String, Object>> selectRows(String sql, Object[] params) {
-            var upper = sql.toUpperCase();
+            var upper = sql.toUpperCase(Locale.ROOT);
 
             if (sql.contains(META_TABLE)) {
                 return metaVersion == 0 ? List.of() : List.of(Map.of("schema_version", metaVersion));

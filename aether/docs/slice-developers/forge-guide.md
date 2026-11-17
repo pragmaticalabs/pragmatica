@@ -86,7 +86,7 @@ Environment variables override CLI arguments:
 | FORGE_LOAD_CONFIG | Path to load config file |
 | FORGE_AUTO_START | Set to "true" to auto-start load |
 | FORGE_PORT | Forge API port (default: 8888) |
-| CLUSTER_SIZE | Number of nodes (default: 5) |
+| CLUSTER_SIZE | Number of nodes (default: 5, minimum: 3) |
 | LOAD_RATE | Initial load rate (legacy support) |
 | AETHER_FORGE_DATA | Absolute path of the durable data directory (overrides the per-project default) |
 | AETHER_HOME | Data directory parent, **for config-less runs only** — see below |

@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.jbct.slice.routing;
 
+import java.util.Locale;
 import java.util.Map;
 
 import org.pragmatica.lang.Cause;
@@ -194,7 +195,7 @@ public record MediaType(String category, String emitExpression, String headerTex
                    : value;
 
         return head.trim()
-                   .toLowerCase();
+                   .toLowerCase(Locale.ROOT);
     }
 
     private static String escape(String input) {

@@ -51,7 +51,6 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// suppress this rule, and does not — they inspect different things.
 public class CstAbsorbedFailureRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-REC-01";
-
     /// The absorbing combinator. `recover` is the one that turns a failure into a value.
     private static final Pattern ABSORPTION = Pattern.compile("\\.recover\\s*\\(");
 
@@ -78,16 +77,15 @@ public class CstAbsorbedFailureRule implements CstLintRule {
         }
 
         return findAllMethods(root).stream()
-                      .filter(method -> ABSORPTION.matcher(memberDeclText(method)).find())
-                      .filter(this::isInnermostAbsorber)
-                      .filter(method -> !isJustified(method))
-                      .map(method -> createDiagnostic(method, ctx));
+                             .filter(method -> ABSORPTION.matcher(memberDeclText(method)).find())
+                             .filter(this::isInnermostAbsorber)
+                             .filter(method -> !isJustified(method))
+                             .map(method -> createDiagnostic(method, ctx));
     }
 
     /// A reason recorded in a comment inside the method, or in the comment block directly above it.
     private boolean isJustified(Cursor method) {
-        return JUSTIFICATION.matcher(MapperSafety.commentsOnly(memberDeclText(method))).find()
-               || JUSTIFICATION.matcher(precedingComment(method)).find();
+        return JUSTIFICATION.matcher(MapperSafety.commentsOnly(memberDeclText(method))).find() || JUSTIFICATION.matcher(precedingComment(method)).find();
     }
 
     /// The contiguous comment/annotation lines directly above the method's declaration line (a blank line ends the block),
@@ -95,9 +93,12 @@ public class CstAbsorbedFailureRule implements CstLintRule {
     private static String precedingComment(Cursor method) {
         var input = method.cst().input();
         // up to, not including, the newline that ends the previous line: a trailing separator would read as a blank line
-        var lines = input.substring(0, Math.max(0, lineStart(input, anchorOf(method).spanStart()) - 1)).split("\n", -1);
+        var lines = input.substring(0,
+                                    Math.max(0,
+                                             lineStart(input,
+                                                       anchorOf(method).spanStart()) - 1))
+                         .split("\n", -1);
         var block = new StringBuilder();
-
         // Lines of a multi-line annotation's argument list (`@SuppressWarnings({"a",\n "b"})`) sit between the comment and the method
         // and are not comment or annotation lines on their own. They are held in `pending` and committed only once the walk reaches
         // the annotation's own `@` line; a code line that merely ends in `)` therefore cannot pull a comment above it into the block.
@@ -124,7 +125,6 @@ public class CstAbsorbedFailureRule implements CstLintRule {
 
             open = Math.max(0, open + count(line, ')') - count(line, '('));
             pending.insert(0, line + "\n");
-
             if (open == 0) {
                 if (!line.startsWith("@")) {
                     break;
@@ -158,8 +158,7 @@ public class CstAbsorbedFailureRule implements CstLintRule {
     /// two diagnostics for one decision, at a line the reader cannot act on.
     private boolean isInnermostAbsorber(Cursor method) {
         return findAllMethods(method).stream()
-                      .noneMatch(nested -> nested.idx() != method.idx()
-                                          && ABSORPTION.matcher(memberDeclText(nested)).find());
+                             .noneMatch(nested -> nested.idx() != method.idx() && ABSORPTION.matcher(memberDeclText(nested)).find());
     }
 
     private static int countMatches(Pattern pattern, String text) {

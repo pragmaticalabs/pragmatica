@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
+import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #2869: after the leader lease trips (directly, or through a majority-confirmed pre-vote doubt), the
@@ -116,7 +117,7 @@ class ReElectionSuspectTest {
                                    List<NodeId> topology,
                                    NodeId leader) {
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, topology));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, topology, seq()));
         h.dispatch(new ConsensusReady());
         h.dispatch(new LeaderCommitted(leader, 1L));
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);

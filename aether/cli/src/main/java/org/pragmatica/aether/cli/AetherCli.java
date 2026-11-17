@@ -19,6 +19,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.jar.JarFile;
@@ -59,7 +60,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.TopicsCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.VersionsCommand.class, AetherCli.DhtCommand.class, AetherCli.EntityCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.backup.BackupCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, GenerateCompletion.class})
+@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.TopicsCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.VersionsCommand.class, AetherCli.DhtCommand.class, AetherCli.EntityCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.backup.BackupCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.warnings.WarningsCommand.class, GenerateCompletion.class})
 @Contract
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -980,7 +981,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var body = "{\"targetRole\":\"" + role.trim().toUpperCase() + "\"}";
+                var body = "{\"targetRole\":\"" + role.trim().toUpperCase(Locale.ROOT) + "\"}";
                 var response = nodesParent.parent.post(NODE_PROMOTE, List.of(nodeId), body);
                 var errorCode = OutputFormatter.checkResponseError(response,
                                                                    nodesParent.parent.outputOptions(),
@@ -992,7 +993,9 @@ public class AetherCli implements Runnable {
 
                 return OutputFormatter.printAction(response,
                                                    nodesParent.parent.outputOptions(),
-                                                   "acknowledge node " + nodeId + " role " + role.trim().toUpperCase());
+                                                   "acknowledge node " + nodeId
+                                                  + " role " + role.trim()
+                                                                   .toUpperCase(Locale.ROOT));
             }
         }
 
@@ -2624,7 +2627,7 @@ public class AetherCli implements Runnable {
             private void setStrategy(String strategyType) {
                 String body;
 
-                switch (strategyType.toLowerCase()) {
+                switch (strategyType.toLowerCase(Locale.ROOT)) {
                     case "fixed" -> body = buildFixedStrategyBody();
                     case "adaptive" -> body = buildAdaptiveStrategyBody();
                     default -> {
@@ -3356,12 +3359,12 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var body = "{\"logger\":\"" + logger + "\",\"level\":\"" + level.toUpperCase() + "\"}";
+                var body = "{\"logger\":\"" + logger + "\",\"level\":\"" + level.toUpperCase(Locale.ROOT) + "\"}";
                 var response = loggingParent.parent.post(LOG_LEVEL_SET, body);
 
                 return OutputFormatter.printAction(response,
                                                    loggingParent.parent.outputOptions(),
-                                                   "Log level set: " + logger + " = " + level.toUpperCase());
+                                                   "Log level set: " + logger + " = " + level.toUpperCase(Locale.ROOT));
             }
         }
 

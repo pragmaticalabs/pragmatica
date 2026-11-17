@@ -42,7 +42,8 @@ import org.pragmatica.lang.Unit;
 /// is given and loads (its failure refuses that boot since #2052, with exit 65); this gate is the one
 /// that stops a sub-3-node start with NO config file, from `--peers=`/`CLUSTER_PEERS`.
 public final class ClusterSizeGate {
-    private static final int MINIMUM_SUPPORTED_CLUSTER_SIZE = 3;
+    /// Also the floor of Ember and Forge (`EmberConfig#MINIMUM_NODES`, #3299).
+    public static final int MINIMUM_SUPPORTED_CLUSTER_SIZE = 3;
 
     private ClusterSizeGate() {}
 

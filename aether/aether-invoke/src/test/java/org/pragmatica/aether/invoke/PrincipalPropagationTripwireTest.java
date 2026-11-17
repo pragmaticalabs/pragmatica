@@ -7,6 +7,7 @@ package org.pragmatica.aether.invoke;
 import java.lang.reflect.RecordComponent;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -148,7 +149,7 @@ class PrincipalPropagationTripwireTest {
         assertThat(values).as("a SecurityContext value is on the wire").noneMatch(SecurityContext.class::isInstance);
         assertThat(values.stream().filter(value -> !(value instanceof byte[])).map(String::valueOf))
             .as("the caller's identity is on the wire under another form")
-            .noneMatch(text -> text.toLowerCase().contains(ALICE_KEY));
+            .noneMatch(text -> text.toLowerCase(Locale.ROOT).contains(ALICE_KEY));
     }
 
     /// "No identity" travels as empty, never as a stand-in principal or a default role.

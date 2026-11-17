@@ -3,7 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package com.example.successstatus;
 
-import org.pragmatica.aether.slice.mapping.ValueMapping;
+import org.pragmatica.lang.vo.ValueMapping;
 import org.pragmatica.lang.Result;
 
 
@@ -14,6 +14,6 @@ public record DraftId(String value) {
     }
 
     public static ValueMapping<DraftId, String> valueMapping() {
-        return ValueMapping.of(DraftId::value, DraftId::draftId);
+        return ValueMapping.valueMapping(DraftId::value, DraftId::draftId);
     }
 }

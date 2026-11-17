@@ -84,14 +84,14 @@ public class CstInjectionRule implements CstLintRule {
     }
 
     private boolean isImplementation(Cursor typeKind) {
-        return IMPLEMENTS.matcher(headerOf(typeKind))
-                         .find();
+        return IMPLEMENTS.matcher(headerOf(typeKind)).find();
     }
 
-    private boolean isInjectableImplementation(Cursor root, Cursor typeKind, Set<String> injectable, boolean useCaseFile) {
-        if (DeclSupport.implementedHeadNames(typeKind)
-                       .stream()
-                       .anyMatch(injectable::contains)) {
+    private boolean isInjectableImplementation(Cursor root,
+                                               Cursor typeKind,
+                                               Set<String> injectable,
+                                               boolean useCaseFile) {
+        if (DeclSupport.implementedHeadNames(typeKind).stream().anyMatch(injectable::contains)) {
             return true;
         }
 
@@ -100,8 +100,8 @@ public class CstInjectionRule implements CstLintRule {
 
     private Stream<Diagnostic> injectionDiagnostics(Cursor root, Cursor typeKind, LintContext ctx) {
         var mutableFields = directOf(root, typeKind, CstNodes::isFieldDecl).stream()
-                                   .filter(field -> isMutableInstanceField(root, field))
-                                   .map(field -> fieldDiagnostic(field, ctx));
+                                    .filter(field -> isMutableInstanceField(root, field))
+                                    .map(field -> fieldDiagnostic(field, ctx));
         var setters = FileTypeClassifier.directMethods(root, typeKind)
                                         .stream()
                                         .filter(this::isSetter)
@@ -112,8 +112,8 @@ public class CstInjectionRule implements CstLintRule {
 
     private List<Cursor> directOf(Cursor root, Cursor typeKind, Predicate<Cursor> predicate) {
         return findAll(typeKind, predicate).stream()
-                     .filter(node -> FileTypeClassifier.directlyEncloses(root, typeKind, node))
-                     .toList();
+                      .filter(node -> FileTypeClassifier.directlyEncloses(root, typeKind, node))
+                      .toList();
     }
 
     private boolean isMutableInstanceField(Cursor root, Cursor field) {
@@ -124,12 +124,11 @@ public class CstInjectionRule implements CstLintRule {
 
     private String fieldModifiers(Cursor root, Cursor field) {
         return enclosingMember(root, field).map(wrapper -> text(wrapper))
-                            .or(text(field));
+                              .or(text(field));
     }
 
     private boolean isSetter(Cursor method) {
-        return SETTER.matcher(FileTypeClassifier.methodName(method))
-                     .matches();
+        return SETTER.matcher(FileTypeClassifier.methodName(method)).matches();
     }
 
     private String headerOf(Cursor typeKind) {

@@ -69,7 +69,7 @@ class LivePlacementMembersWiringTest {
     void consumerGroupOwnership_readsTheController() {
         var code = assemblyCode();
 
-        assertThat(code).containsOnlyOnce("varstreamConsumerOwnership=streamConsumerOwnership(streamPartitionManager,streamReplicaSetController);");
+        assertThat(code).containsOnlyOnce("varstreamConsumerOwnership=streamConsumerOwnership(streamPartitionManager,streamReplicaSetController,in.liveWorkers());");
         assertThat(code).containsOnlyOnce("publicList<NodeId>liveMembers(){returncontroller.reconciledMembers();}");
     }
 

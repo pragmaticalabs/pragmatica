@@ -56,7 +56,6 @@ import static org.pragmatica.lang.Option.some;
 /// is stripped best-effort only.
 public class CstBoundaryTypeRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-BND-01";
-
     /// `import` / `import static` prefix, and the whitespace and semicolons around a qualified
     /// name — precompiled so the import scan does not recompile them per declaration.
     private static final Pattern IMPORT_PREFIX = Pattern.compile("^\\s*import\\s+(?:static\\s+)?");
@@ -165,7 +164,8 @@ public class CstBoundaryTypeRule implements CstLintRule {
     private Stream<Diagnostic> forbiddenImports(Cursor root, LintContext ctx) {
         return findAll(root, RuleKind.IMPORT_DECL).stream()
                       .filter(imp -> FORBIDDEN_FQNS.contains(importedName(imp)))
-                      .map(imp -> new Occurrence(imp, simpleNameOf(importedName(imp))))
+                      .map(imp -> new Occurrence(imp,
+                                                 simpleNameOf(importedName(imp))))
                       .map(occurrence -> createDiagnostic(occurrence, ctx));
     }
 
@@ -225,11 +225,9 @@ public class CstBoundaryTypeRule implements CstLintRule {
     /// Fully qualified name of an import declaration, `.*` retained for a star import. Static
     /// member imports yield a name that is simply not in the forbidden set.
     private static String importedName(Cursor imp) {
-        var body = IMPORT_PREFIX.matcher(text(imp))
-                                .replaceFirst("");
+        var body = IMPORT_PREFIX.matcher(text(imp)).replaceFirst("");
 
-        return SEPARATORS.matcher(body)
-                         .replaceAll("");
+        return SEPARATORS.matcher(body).replaceAll("");
     }
 
     /// Leading type name of a `Type` / `RefType` node text: everything before the first generic
@@ -251,7 +249,6 @@ public class CstBoundaryTypeRule implements CstLintRule {
         }
 
         head = head.trim();
-
         var lastSpace = Math.max(head.lastIndexOf(' '), head.lastIndexOf('\t'));
 
         if (lastSpace >= 0) {
@@ -269,7 +266,8 @@ public class CstBoundaryTypeRule implements CstLintRule {
                                      ctx.fileName(),
                                      startLine(occurrence.node()),
                                      startColumn(occurrence.node()),
-                                     "Forbidden boundary type '" + name + "' in business logic; use " + replacement(name),
+                                     "Forbidden boundary type '" + name
+                                    + "' in business logic; use " + replacement(name),
                                      "Boundary types (JDK async, reactive publishers, framework responses) must not "
                                     + "leak into business logic. Convert them at the adapter boundary.");
     }

@@ -26,6 +26,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// R6 verification: rank-staircase first-tick scheduling on entry to `Electing` AND `ReElecting`.
@@ -91,7 +92,7 @@ class RankStaircaseTest {
         var h = buildHarness(NODE_1, Option.some(trackingHandler), kvLeader);
 
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(NODE_1, CLUSTER));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(NODE_1, CLUSTER, seq()));
         h.dispatch(new ConsensusReady());
         h.dispatch(new KvSyncGraceTimeout());
         assertThat(h.state())
@@ -128,7 +129,7 @@ class RankStaircaseTest {
         var h = buildHarness(NODE_5, Option.some(trackingHandler), kvLeader);
 
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(NODE_5, CLUSTER));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(NODE_5, CLUSTER, seq()));
         h.dispatch(new ConsensusReady());
         h.dispatch(new KvSyncGraceTimeout());
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Electing.class);
@@ -176,13 +177,13 @@ class RankStaircaseTest {
         // Drive into Led first so hasEverHadLeader=true (puts the AwaitingKvSync fall-through
         // on the ReElecting path, not Electing).
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(NODE_5, CLUSTER));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(NODE_5, CLUSTER, seq()));
         h.dispatch(new LeaderCommitted(NODE_1));
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
 
         // Drop the leader: a NodeGone for the current leader transitions Led → ReElecting.
         var topologyAfterLoss = List.of(NODE_2, NODE_3, NODE_4, NODE_5);
-        h.dispatch(new ClusterFsmEvent.NodeGone(NODE_1, topologyAfterLoss));
+        h.dispatch(new ClusterFsmEvent.NodeGone(NODE_1, topologyAfterLoss, seq()));
         assertThat(h.state())
                 .as("Led → ReElecting on loss of the current leader")
                 .isInstanceOf(LeaderElectionState.ReElecting.class);
@@ -248,7 +249,7 @@ class RankStaircaseTest {
                 });
 
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(NODE_2, survivingCluster));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(NODE_2, survivingCluster, seq()));
         h.dispatch(new ConsensusReady());
         h.dispatch(new KvSyncGraceTimeout());
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Electing.class);

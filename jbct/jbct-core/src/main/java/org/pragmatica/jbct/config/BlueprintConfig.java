@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.jbct.config;
 
+import java.util.Locale;
+
 import org.pragmatica.lang.Option;
 
 
@@ -26,7 +28,7 @@ public record BlueprintConfig(SchemaMode schema) {
         /// The mode a config file names, or empty for a token that names none; the config parser refuses
         /// it (#1455) instead of falling back to [#REQUIRED].
         public static Option<SchemaMode> schemaMode(String value) {
-            return switch (value.toLowerCase()
+            return switch (value.toLowerCase(Locale.ROOT)
                                 .trim()) {
                 case "required" -> Option.some(REQUIRED);
                 case "external" -> Option.some(EXTERNAL);
@@ -35,7 +37,7 @@ public record BlueprintConfig(SchemaMode schema) {
             };
         }
         public static SchemaMode fromString(String value) {
-            return switch (value.toLowerCase()
+            return switch (value.toLowerCase(Locale.ROOT)
                                 .trim()) {
                 case "required" -> REQUIRED;
                 case "external" -> EXTERNAL;

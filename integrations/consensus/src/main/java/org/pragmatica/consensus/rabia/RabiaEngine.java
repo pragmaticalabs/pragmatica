@@ -189,6 +189,10 @@ public class RabiaEngine<C extends Command> {
     private static final int GENESIS_WARN_EVERY_ROUNDS = 10;
 
     private volatile Option<Cause> authorityFailure = Option.none();
+    /// #3213 — whether the persisted state was written by THIS engine instance ([#saveState]). Its configuration was then
+    /// this engine's own installed voter configuration at the persisted phase, not a backup loaded across a restart, so a
+    /// COLD sync answer keeps it ([#coldAnswerState]). False until the first save: a backup stays stripped (#1526).
+    private volatile boolean persistedByThisEngine = false;
     /// Why this node's OWN persisted history could not be restored (#1468). Set only by
     /// [#recordOwnRestoreFailure] and never cleared in-process: the own-restore arm runs only after a genesis has
     /// resolved (adoption needs an installed electorate), and no genesis installs after that, so unlike
@@ -205,7 +209,6 @@ public class RabiaEngine<C extends Command> {
     /// refused as a whole and never decoded row by row). Cleared by any successful restore. It is not a fence: only candidate
     /// selection ([#adoptableCandidate]) and the status read it.
     private volatile Option<RestoreFailures> restoreFailures = Option.none();
-
     /// Why the re-persist of a restored or adopted state failed (#1516): the second permanent fence the watchdog
     /// bounds. Set only by [#recordRestoredStateSaveFailure], and like `ownRestoreFailure` never cleared in-process:
     /// that arm too runs only after a genesis has resolved. It is deliberately NOT `authorityFailure` itself, which
@@ -910,7 +913,7 @@ public class RabiaEngine<C extends Command> {
             this.rosterPresent = rosterPresent;
             this.member = member;
         }
-        static Role of(boolean declared, boolean rosterPresent, boolean member) {
+        static Role role(boolean declared, boolean rosterPresent, boolean member) {
             if (!rosterPresent) {
                 return declared
                        ? PRE_GENESIS_OBSERVER
@@ -955,9 +958,9 @@ public class RabiaEngine<C extends Command> {
     Role role() {
         var roster = voters;
 
-        return Role.of(observerMode,
-                       roster.isPresent(),
-                       roster.map(v -> v.contains(self)).or(false));
+        return Role.role(observerMode,
+                         roster.isPresent(),
+                         roster.map(v -> v.contains(self)).or(false));
     }
 
     /// Ballots count only from installed voters at the current epoch. An old-epoch ballot for a slot at
@@ -1011,11 +1014,14 @@ public class RabiaEngine<C extends Command> {
             return Result.success(Unit.unit());
         }
 
-        return voters.fold(() -> persistence.save(stateMachine, currentPhase.get(), pendingBatches.values()),
+        return voters.fold(() -> persistence.save(stateMachine,
+                                                  currentPhase.get(),
+                                                  pendingBatches.values()),
                            configuration -> persistence.save(stateMachine,
                                                              currentPhase.get(),
                                                              pendingBatches.values(),
-                                                             configuration));
+                                                             configuration))
+                     .onSuccessRun(() -> persistedByThisEngine = true);
     }
 
     private final NodeId self;
@@ -1028,6 +1034,15 @@ public class RabiaEngine<C extends Command> {
     private final ParticipationMarker participationMarker;
     private final ConsensusMetrics metrics;
     private final boolean activationGated;
+    /// #2981 step 6: runs once per engine start, after quorum is first established and before the node's first
+    /// consensus apply (sync). Default no-op; failure refuses startup. NOT the `activationGated` authorizer.
+    private volatile Supplier<Promise<Unit>> preSyncCheck = () -> Promise.success(Unit.unit());
+    /// True until a check is installed, so an engine without one behaves exactly as before.
+    private volatile boolean preSyncDone = true;
+    private final AtomicBoolean preSyncRunning = new AtomicBoolean();
+    /// The newest accepted cluster-state edge; the pre-sync completion consults it, so a PASSIVE that arrived
+    /// during the wait suppresses sync.
+    private volatile ClusterStateNotification latestClusterState;
     private final TimeSpan phaseStallCheck;
     private volatile boolean activationAuthorized;
     private volatile boolean observerMode;
@@ -1050,7 +1065,7 @@ public class RabiaEngine<C extends Command> {
         PASSIVE,
         OBSERVING,
         ACTIVE;
-        static PublishedSense of(EngineState state) {
+        static PublishedSense publishedSense(EngineState state) {
             if (state.isActive()) {
                 return ACTIVE;
             }
@@ -1089,9 +1104,10 @@ public class RabiaEngine<C extends Command> {
     /// request opens a round ([#openSyncRound]); an activation completes it and a quorum-loss pause invalidates it ([#closeSyncRound]).
     /// A response is accepted only into an open round, so input that crosses a pause (answers to a request sent before it) or arrives
     /// after the adoption it was meant for cannot take a `Paused` engine to `Active` without a quorum ACTIVE, nor re-adopt on a
-    /// settled one. The flag starts open: a cold engine takes responses before its first request, as it always did. The rounds are
-    /// local; the protocol carries no round id, so answers to an earlier request of the SAME open round are still accepted.
-    private volatile boolean syncRoundOpen = true;
+    /// settled one. The flag starts CLOSED (#2981 step 6): only this engine's own request opens a round, so an unsolicited or stale
+    /// response cannot install state on an engine that has not yet passed its pre-sync check. The rounds are local; the protocol
+    /// carries no round id, so answers to an earlier request of the SAME open round are still accepted.
+    private volatile boolean syncRoundOpen = false;
     private final RabiaPersistence<C> persistence;
     /// Consecutive sync rounds that failed to reach the response threshold, driving the periodic
     /// stuck-in-`Syncing` WARN (#660). Reset when a sync round starts fresh, when state is adopted, and
@@ -1372,6 +1388,7 @@ public class RabiaEngine<C extends Command> {
         }
 
         log.trace("Node {} received cluster state {}", self, clusterStateNotification);
+        latestClusterState = clusterStateNotification;
         switch (clusterStateNotification.state()) {
             case ACTIVE -> handleClusterActive(clusterStateNotification);
             case PASSIVE -> pauseForQuorumLoss();
@@ -1380,6 +1397,12 @@ public class RabiaEngine<C extends Command> {
 
     private void handleClusterActive(ClusterStateNotification notification) {
         if (authorityFailure.isPresent()) {
+            return;
+        }
+
+        if (!preSyncDone) {
+            runPreSyncCheck();
+
             return;
         }
 
@@ -1393,7 +1416,8 @@ public class RabiaEngine<C extends Command> {
         // no state reset) from cold-start (Stopped → Syncing). The Paused branch keeps the
         // engine's existing currentPhase / phases / pendingBatches intact;
         // any Decisions delivered during the pause have already been applied, so we just
-        // re-arm phase processing.
+        // re-arm phase processing. An engine paused before it activated resumes into
+        // Syncing instead (#3211, see doResumeFromPause).
         var current = engineState.get();
 
         if (current.isPaused()) {
@@ -1410,6 +1434,44 @@ public class RabiaEngine<C extends Command> {
             // Stopped (cold start) or Observing — begin a sync round to catch up, then Active.
             clusterConnected();
         }
+    }
+
+    /// Install the pre-sync check (#2981 step 6). Install before [#start]; production never replaces the default
+    /// except through `RabiaNode` wiring.
+    @Contract
+    public void preSyncCheck(Supplier<Promise<Unit>> check) {
+        this.preSyncCheck = check;
+        this.preSyncDone = false;
+    }
+
+    /// Runs the pre-sync check without blocking the notifying thread: a wait already in flight absorbs repeated ACTIVE
+    /// edges, and the completion re-enters on the engine thread.
+    private void runPreSyncCheck() {
+        if (preSyncRunning.compareAndSet(false, true)) {
+            preSyncCheck.get().onResult(result -> safeExecute(() -> preSyncCompleted(result)));
+        }
+    }
+
+    private void preSyncCompleted(Result<Unit> result) {
+        preSyncRunning.set(false);
+        var _ = result.fold(this::refuseStartup, _ -> preSyncPassed());
+    }
+
+    private Unit preSyncPassed() {
+        preSyncDone = true;
+        Option.option(latestClusterState)
+              .filter(latest -> latest.state() == ClusterStateNotification.State.ACTIVE)
+              .onPresent(this::handleClusterActive);
+
+        return Unit.unit();
+    }
+
+    private Unit refuseStartup(Cause cause) {
+        log.error("Node {}: refusing to start consensus: {}", self, cause.message());
+        var _ = startPromise.get().fail(cause);
+        var _ = stop();
+
+        return Unit.unit();
     }
 
     /// Authorize a gated engine to start consensus participation.
@@ -1529,8 +1591,14 @@ public class RabiaEngine<C extends Command> {
     /// phase processing without a sync round — Decisions delivered during the pause are
     /// applied directly by [#handleDecision], keeping the engine current.
     ///
+    /// A `Syncing` engine is paused too, but it has not activated: it has neither adopted state nor
+    /// passed the restart self-vouch, and has not written its participation record. Its `Paused`
+    /// carries `activated = false`, and the resume runs a fresh sync round instead of entering `Idle`
+    /// (#3211, #2287): otherwise a restarted node behind the decided slot could vote on that slot again.
+    ///
     /// In-flight stall/sync timers are cancelled. State is also persisted to durable
-    /// storage so that a crash during the pause leaves a recoverable snapshot.
+    /// storage so that a crash during the pause leaves a recoverable snapshot (not when paused from
+    /// `Syncing`: an unsynchronised node has no authoritative state to save, see [#doPauseForQuorumLoss]).
     private void pauseForQuorumLoss() {
         safeExecute(this::doPauseForQuorumLoss);
     }
@@ -1547,11 +1615,23 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        var oldState = engineState.getAndSet(new EngineState.Paused());
+        var wasSyncing = current instanceof EngineState.Syncing;
+        var oldState = engineState.getAndSet(new EngineState.Paused(!wasSyncing));
 
         closeSyncRound();
         exitState(oldState);
         notifyConsensusStateTransition();
+        if (wasSyncing) {
+            // A node still synchronising has nothing authoritative to persist: its live state is the
+            // empty restart state, and saving it would overwrite a durable phase P with phase 0, after which
+            // the restart self-vouch on resume would answer COLD without P (#3211).
+            log.info("Node {} paused (quorum lost) while synchronising. Nothing persisted. currentPhase={}",
+                     self,
+                     currentPhase.get());
+
+            return;
+        }
+
         saveState().onSuccessRun(() -> log.info("Node {} paused (quorum lost). State retained, snapshot persisted. currentPhase={}, pendingBatches={}",
                                                 self,
                                                 currentPhase.get(),
@@ -1564,6 +1644,11 @@ public class RabiaEngine<C extends Command> {
     /// Transitions `Paused` → `Idle`, preserving `currentPhase`, `phases`, `pendingBatches`,
     /// and binary-round ballots. Re-arms processing if pending batches remain. No sync round —
     /// Decisions delivered during the pause have already been applied.
+    ///
+    /// That holds only for an engine that had activated before the pause. One paused from `Syncing`
+    /// (`Paused.activated == false`) resumes into a fresh sync round ([#doClusterConnected]), so it
+    /// reaches `Idle` only through [#activate]: adoption or the restart self-vouch, then the
+    /// participation record (#3211, #2287).
     private void resumeFromPause() {
         safeExecute(this::doResumeFromPause);
     }
@@ -1577,7 +1662,14 @@ public class RabiaEngine<C extends Command> {
     private void doResumeFromPause() {
         var current = engineState.get();
 
-        if (!current.isPaused()) {
+        if (! (current instanceof EngineState.Paused paused)) {
+            return;
+        }
+
+        if (!paused.activated()) {
+            log.info("Node {} resumed from pause (quorum returned) before it activated: synchronizing again", self);
+            doClusterConnected();
+
             return;
         }
 
@@ -2604,9 +2696,9 @@ public class RabiaEngine<C extends Command> {
     /// that never had a quorum to lose (auto-heal replacements join as observers).
     ///
     /// A `Paused` engine is settled too: a sync tick must not move a `Paused` (or `Observing`) engine. The intended exit from
-    /// `Paused` is a quorum ACTIVE ([#resumeFromPause], no sync round). Pausing from `Syncing` cancels the scheduled retry but
-    /// not a tick already queued on the executor; that tick must not turn `Paused` into `Syncing`, because `Syncing` ignores the
-    /// ACTIVE that would have resumed the engine.
+    /// `Paused` is a quorum ACTIVE ([#resumeFromPause]: no sync round after an activation, a fresh one otherwise). Pausing
+    /// from `Syncing` cancels the scheduled retry but not a tick already queued on the executor; that tick must not turn
+    /// `Paused` into `Syncing`, because `Syncing` ignores the ACTIVE that would have resumed the engine.
     private void doSynchronize() {
         if (isSyncSettled()) {
             return;
@@ -2925,10 +3017,24 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// A backup's voter configuration is not authority: a cold restart forms a fresh genesis and restores
-    /// only the data under it (owner ruling, #1526). Own restores and COLD sync answers therefore carry
-    /// no configuration.
+    /// only the data under it (owner ruling, #1526). Own restores, and COLD sync answers served from such a backup
+    /// ([#coldAnswerState]), therefore carry no configuration.
     private static <C extends Command> SavedState<C> withoutConfiguration(SavedState<C> state) {
         return new SavedState<>(state.snapshot(), state.lastCommittedPhase(), state.pendingBatches(), Option.none());
+    }
+
+    /// #3213 — the state a COLD sync answer serves. A backup loaded across a restart is data, never authority (#1526), so it
+    /// travels without its configuration, as before. State THIS engine persisted keeps the configuration it was saved under:
+    /// that was this engine's own installed electorate at that phase. Stripping it made a phase past a roster change read as
+    /// genesis-epoch evidence, so a laggard still at the genesis epoch adopted it from one COLD answer and voted the next slot
+    /// under the old roster. With it, a receiver at a lower epoch sees a NEWER epoch, which only a LIVE responder authorizes
+    /// ([#newerEpochCandidates]), and keeps waiting for one. No receiver installs a configuration from a COLD answer: a newer
+    /// epoch is refused there, and an equal one is already installed. No wire or persisted shape changes.
+    /// In production (`RabiaPersistence.inMemory`, a dead node never returns) the strip arm is reached only by restored backups.
+    private SavedState<C> coldAnswerState(SavedState<C> state) {
+        return persistedByThisEngine
+               ? state
+               : withoutConfiguration(state);
     }
 
     private void activateOnLiveState(String reason) {
@@ -3142,7 +3248,7 @@ public class RabiaEngine<C extends Command> {
     /// node whose [#activate] is refused (authority failure, outside the electorate, participation record not
     /// writable) retries on the next sync round, and replaying on each of those rounds delivered the same world once
     /// per round from a node that was not serving. Dropping the effects instead would lose them: the node can reach
-    /// `Idle`/`Observing` without a second restore (`Syncing` -> `Paused` -> [#doResumeFromPause], or a promotion), and a
+    /// `Idle`/`Observing` without a second restore (a later round that activates without adoption, or a promotion), and a
     /// consumer that never saw the replay would serve a world it was never told about, with derived views that the
     /// listeners invalidate left stale. So it is called at the tail of every transition that writes a serving state through [#enterServing] (after the
     /// state is published and the start promise resolved, before the first phase is started); with the mark clear it is a
@@ -3303,8 +3409,10 @@ public class RabiaEngine<C extends Command> {
                                               : state.lastCommittedPhase());
         state.configuration().onPresent(this::adoptSyncedConfiguration);
         persistRestoredState();
+        // #3274: an adoption, not a completion: the label may move past slots this node never applied (the advance-only max above, the
+        // empty-snapshot branch over untouched content), and the state machine records that.
         runIsolated("phase publish",
-                    () -> stateMachine.onPhaseCompleted(currentPhase.get().value()));
+                    () -> stateMachine.onPhaseAdopted(currentPhase.get().value()));
         log.info("Node {} restored state from persistence. Current phase {}", self, currentPhase.get());
     }
 
@@ -3432,7 +3540,7 @@ public class RabiaEngine<C extends Command> {
     /// `ClusterStateNotification.ACTIVE` / `PASSIVE` on the cluster `MessageRouter`.
     @Contract
     private void notifyConsensusStateTransition() {
-        var next = PublishedSense.of(engineState.get());
+        var next = PublishedSense.publishedSense(engineState.get());
         var prev = lastPublishedSense.get();
 
         if (next == prev) {
@@ -3596,8 +3704,9 @@ public class RabiaEngine<C extends Command> {
         // currentPhase, pendingBatches) so it can serve the SAME live-equivalent payload an
         // active/observing node would. Only genuinely stateless engines (Stopped/Syncing) fall
         // back to the persisted/empty snapshot, which omits pendingBatches and would otherwise
-        // leave a joiner unable to re-propose an in-flight batch.
-        if (state.isActive() || state.isObserving() || state.isPaused()) {
+        // leave a joiner unable to re-propose an in-flight batch. A Paused engine that never activated
+        // (paused from Syncing, #3211) holds no adopted state: it answers COLD, exactly as Syncing does.
+        if (state.isActive() || state.isObserving() || state instanceof EngineState.Paused paused && paused.activated()) {
             stateMachine.makeSnapshot()
                         .map(snapshot -> new SyncResponse<>(self,
                                                             new SavedState<C>(snapshot,
@@ -3611,9 +3720,7 @@ public class RabiaEngine<C extends Command> {
         } else {
             log.trace("Node {} is inactive, trying to share saved (or empty) state for request: {}", self, request);
             var response = new SyncResponse<>(self,
-                                              persistence.load()
-                                                         .map(RabiaEngine::withoutConfiguration)
-                                                         .or(SavedState.empty()),
+                                              persistence.load().map(this::coldAnswerState).or(SavedState.empty()),
                                               ResponderState.COLD);
 
             sendSyncResponse(request.sender(), response);

@@ -165,6 +165,15 @@ public final class ClusterFsm {
     }
 
     /// `Deactivate`: cancel the incarnation's timers and discard the model (3.2, NT-02).
+    ///
+    /// ```tla Fsm2Leader:Deactivate
+    /// \* CI-1 Deactivate after the committed leader moved: ClusterFsm.java.
+    /// Deactivate(n) ==
+    ///   /\ fsm[n] = "Active" /\ kvLeader # n
+    ///   /\ Discard(n)
+    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, shown, inc, view, net, settles,
+    ///                  condBudget, faultBudget, redo>>
+    /// ```
     private static ClusterState deactivated(ClusterModel model, Ctx ctx) {
         cancelTimers(model, ctx);
 
@@ -208,9 +217,10 @@ public final class ClusterFsm {
     }
 
     /// One input against a copy of the model, then the end-of-step bookkeeping: a flush is queued if the handlers left
-    /// intents (R-5.7.4).
+    /// intents (R-5.7.4). A dirty open set with nothing to write is clean again (#3274, `Warnings.clean`).
     private ClusterModel apply(ClusterModel model, ClusterInput input, Ctx ctx) {
-        var next = Outbox.requestFlush(Handlers.handle(model.copy(), ctx, input),
+        var next = Outbox.requestFlush(Warnings.clean(Handlers.handle(model.copy(), ctx, input),
+                                                      ctx),
                                        ctx);
 
         return reportScans(next, ctx, next.scans.count());

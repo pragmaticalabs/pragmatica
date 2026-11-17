@@ -34,8 +34,7 @@ public class CstNullableParameterRule implements CstLintRule {
     // The captured token must be a bare identifier, not member access: the leading (?<![.\w$])
     // rejects `cfg.timeout == null` (field named like a param) and the trailing (?![.\w$]) rejects
     // `null == cfg.timeout` — only a null check of the parameter itself counts.
-    private static final Pattern NULL_CHECK_PATTERN =
-        Pattern.compile("(?<![.\\w$])(\\w+)\\s*[!=]=\\s*null\\b|\\bnull\\s*[!=]=\\s*(\\w+)(?![.\\w$])");
+    private static final Pattern NULL_CHECK_PATTERN = Pattern.compile("(?<![.\\w$])(\\w+)\\s*[!=]=\\s*null\\b|\\bnull\\s*[!=]=\\s*(\\w+)(?![.\\w$])");
 
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
     // Param shape: optional modifiers/annotations + type tokens + identifier (last word before , or end)
@@ -69,7 +68,6 @@ public class CstNullableParameterRule implements CstLintRule {
         if (bodyOpt.isEmpty()) {
             return Stream.empty();
         }
-
         // Blank string literals and comments so a `param == null` written inside a log message or
         // a comment never counts as a real null check. Nested type bodies (local / anonymous-class
         // methods) are also blanked so an inner method's null check is not re-attributed to this
@@ -91,8 +89,7 @@ public class CstNullableParameterRule implements CstLintRule {
         var names = new HashSet<String>();
         // Only this method's own (direct) parameters — not parameters of nested local/anonymous
         // type methods, whose bodies are scanned separately.
-        var params = methodParams(method).map(node -> parameterNodes(node))
-                                         .or(List.of());
+        var params = methodParams(method).map(node -> parameterNodes(node)).or(List.of());
 
         for (var param : params) {
             // Parameter name is a token (Identifier) in v6; recover it from param text:

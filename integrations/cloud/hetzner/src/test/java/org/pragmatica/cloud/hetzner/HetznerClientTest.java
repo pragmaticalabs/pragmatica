@@ -202,6 +202,48 @@ class HetznerClientTest {
             assertThat(testHttp.requestedUris()).containsExactly(first, first + "&page=2");
         }
 
+        /// #2499: the client itself refuses an empty, blank or empty-clause selector, typed and BEFORE any request.
+        @Test
+        void listServers_emptySelector_refusedWithoutRequest() {
+            client.listServers("")
+                  .await()
+                  .onSuccess(servers -> assertThat(servers).isNull())
+                  .onFailure(cause -> assertThat(cause.message()).startsWith("Refusing Hetzner label selector"));
+
+            assertThat(testHttp.requestedUris()).as("#2499: no request for an empty selector").isEmpty();
+        }
+
+        @Test
+        void listServers_emptyClauseSelector_refusedWithoutRequest() {
+            client.listServers("aether-cluster=c1,")
+                  .await()
+                  .onSuccess(servers -> assertThat(servers).isNull())
+                  .onFailure(cause -> assertThat(cause.message()).startsWith("Refusing Hetzner label selector"));
+
+            assertThat(testHttp.requestedUris()).isEmpty();
+        }
+
+        /// #2499: a null selector is refused (typed, no request), never read as "no selector, match all".
+        @Test
+        void listServers_nullSelector_refusedWithoutRequest() {
+            client.listServers(null)
+                  .await()
+                  .onSuccess(servers -> assertThat(servers).isNull())
+                  .onFailure(cause -> assertThat(cause.message()).startsWith("Refusing Hetzner label selector"));
+
+            assertThat(testHttp.requestedUris()).as("#2499: no request for a null selector").isEmpty();
+        }
+
+        @Test
+        void listFirewalls_blankSelector_refusedWithoutRequest() {
+            client.listFirewalls("  ")
+                  .await()
+                  .onSuccess(firewalls -> assertThat(firewalls).isNull())
+                  .onFailure(cause -> assertThat(cause.message()).startsWith("Refusing Hetzner label selector"));
+
+            assertThat(testHttp.requestedUris()).isEmpty();
+        }
+
         @Test
         void listServers_singlePageWithoutNextPage_issuesOneRequest() {
             testHttp.respondByUri(Map.of(BASE_URL + "/servers", page("servers", List.of(1, 2), null)));

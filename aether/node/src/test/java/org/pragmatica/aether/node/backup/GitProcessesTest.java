@@ -337,6 +337,50 @@ class GitProcessesTest {
         }
     }
 
+    /// The production wiring of the stop confirmation (#3016, defaultPredTrue): the three-argument kill confirms a stop with the real `/proc` check, so a
+    /// freeze that stops nothing (`true` leaves the member running) holds the first round until the freeze's half of the bound. A confirmation that
+    /// always says "stopped" returns at once.
+    @Test
+    @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void kill_waitsForTheStopToBeConfirmed_byTheProductionCheck() throws Exception {
+        assumeTrue(Files.isDirectory(Path.of("/proc/self/task")), "a host with /proc");
+        var root = new ProcessBuilder("sleep", mark).start();
+        var started = System.nanoTime();
+
+        var dead = GitProcesses.kill(List.of(root), 4_000, List.of("true"));
+        var elapsedMs = (System.nanoTime() - started) / 1_000_000;
+
+        assertThat(dead).as("the tree is dead").isTrue();
+        assertThat(elapsedMs).as("the member never read stopped, so the round waited for the freeze's half of the bound").isGreaterThanOrEqualTo(1_800L);
+    }
+
+    /// An interrupt that lands while the kill waits for a stop is recorded, the wait goes on, and the caller's flag is set again (#3016, pauseNoRecord).
+    @Test
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void kill_interruptedDuringTheStopWait_keepsTheFlag() throws Exception {
+        var root = new ProcessBuilder("sleep", mark).start();
+        var waiting = new java.util.concurrent.CountDownLatch(1);
+        var interrupted = new AtomicBoolean();
+        var outcome = new CompletableFuture<List<Boolean>>();
+        var killer = new Thread(() -> {
+            var dead = GitProcesses.kill(List.of(root), 20_000, List.of("true"), _ -> {
+                waiting.countDown();
+                return interrupted.get();
+            });
+
+            outcome.complete(List.of(dead, Thread.interrupted()));
+        });
+
+        killer.start();
+        assertThat(waiting.await(10, TimeUnit.SECONDS)).as("the kill reached the stop wait").isTrue();
+        killer.interrupt();
+        interrupted.set(true);
+        var result = outcome.get(30, TimeUnit.SECONDS);
+
+        assertThat(result.get(0)).as("the tree is dead and kill says so").isTrue();
+        assertThat(result.get(1)).as("the interrupt flag is set again").isTrue();
+    }
+
     /// The production check of a stopped member reads `/proc`: a running process is not stopped, a `SIGSTOP`ped one is, a continued one is not again,
     /// and one that is gone reads stopped (nothing is left to wait for).
     @Test

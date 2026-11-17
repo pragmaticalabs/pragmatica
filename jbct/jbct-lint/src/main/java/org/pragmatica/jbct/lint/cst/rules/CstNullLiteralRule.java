@@ -83,8 +83,7 @@ public class CstNullLiteralRule implements CstLintRule {
     }
 
     private void addNullArgument(String masked, int start, Stream.Builder<Diagnostic> diagnostics, LintContext ctx) {
-        var callName = MapperSafety.enclosingCallName(masked, start)
-                                   .or("");
+        var callName = MapperSafety.enclosingCallName(masked, start).or("");
 
         if (callName.isEmpty() || NULLABLE_ADAPTER_CALLS.contains(callName)) {
             return;

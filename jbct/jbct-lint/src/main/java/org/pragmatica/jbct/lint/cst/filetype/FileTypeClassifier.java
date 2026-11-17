@@ -50,9 +50,13 @@ public final class FileTypeClassifier {
     private FileTypeClassifier() {}
 
     private static final Pattern HEADER_NAME = Pattern.compile("\\b(?:record|class|interface|enum)\\s+([A-Za-z_$][A-Za-z0-9_$]*)");
+
     private static final Pattern METHOD_NAME = Pattern.compile("\\b([A-Za-z_$][A-Za-z0-9_$]*)\\s*\\(");
+
     private static final Pattern EXTENDS_CLAUSE = Pattern.compile("\\bextends\\b([\\s\\S]*?)(?=\\bimplements\\b|\\bpermits\\b|$)");
+
     private static final Pattern IMPLEMENTS_CLAUSE = Pattern.compile("\\bimplements\\b([\\s\\S]*?)(?=\\bpermits\\b|$)");
+
     private static final String CAUSE = "Cause";
     private static final Pattern SEALED = Pattern.compile("\\bsealed\\b");
     private static final Pattern PUBLIC = Pattern.compile("\\bpublic\\b");
@@ -66,7 +70,6 @@ public final class FileTypeClassifier {
 
     /// Carrier types that wrap a factory's own type in a value-object / use-case factory.
     private static final Set<String> WRAPPERS = Set.of("Result", "Option", "Promise");
-
     /// JDK interfaces a value object may legitimately implement without becoming a service/adapter.
     private static final Set<String> VALUE_ISH_JDK = Set.of("Comparable", "Serializable");
 
@@ -85,7 +88,7 @@ public final class FileTypeClassifier {
         }
 
         return principalDecl(root).map(typeDecl -> classifyDecl(root, typeDecl))
-                                  .or(FileType.UNCLASSIFIED);
+                            .or(FileType.UNCLASSIFIED);
     }
 
     /// The principal type node (a `TypeKind`) the verdict is about, for rules that anchor a
@@ -99,7 +102,7 @@ public final class FileTypeClassifier {
     /// the scoping primitive the structural rules build member views on.
     public static boolean directlyEncloses(Cursor root, Cursor typeKind, Cursor node) {
         return findAncestor(root, node, RuleKind.TYPE_KIND).map(ancestor -> ancestor.idx() == typeKind.idx())
-                            .or(false);
+                           .or(false);
     }
 
     /// Method members declared directly in `typeKind`. Methods of nested types are excluded, and so are
@@ -107,8 +110,8 @@ public final class FileTypeClassifier {
     /// otherwise read as the enclosing type's own methods (#655).
     public static List<Cursor> directMethods(Cursor root, Cursor typeKind) {
         return findAllMethods(typeKind).stream()
-                      .filter(method -> isInMemberListOf(root, typeKind, method))
-                      .toList();
+                             .filter(method -> isInMemberListOf(root, typeKind, method))
+                             .toList();
     }
 
     /// Whether `node` is in `typeKind`'s own member list: the first scope boundary above it is `typeKind`,
@@ -138,7 +141,7 @@ public final class FileTypeClassifier {
     /// JBCT-ORD-01 unsatisfiable for every slice (#645).
     public static boolean isLocalDeclaration(Cursor root, Cursor node) {
         return enclosingMethodMember(root, node).filter(CstNodes::isMethodMember)
-                            .isPresent();
+                                    .isPresent();
     }
 
     /// Whether a method member carries the `static` modifier.
@@ -156,7 +159,9 @@ public final class FileTypeClassifier {
     public static boolean isAbstractMethod(Cursor root, Cursor method) {
         var modifiers = modifiersText(root, method);
 
-        return ! modifiers.contains("static ") && !modifiers.contains("default ") && !methodBody(method).isPresent();
+        return ! modifiers.contains("static ")
+               && !modifiers.contains("default ")
+               && !methodBody(method).isPresent();
     }
 
     /// Whether the type node (a `TypeKind`) is an interface.
@@ -195,7 +200,7 @@ public final class FileTypeClassifier {
         }
 
         return childByRule(typeDecl, RuleKind.TYPE_KIND).map(typeKind -> classifyKind(root, typeKind, header))
-                            .or(FileType.UNCLASSIFIED);
+                          .or(FileType.UNCLASSIFIED);
     }
 
     /// Classify an arbitrary type node (a `TypeKind`), for callers that need the role of a
@@ -247,8 +252,8 @@ public final class FileTypeClassifier {
     /// An execute-only interface (an SPI, command runner, or connector) lacks that corroboration and
     /// is not read as a use case.
     private static boolean isUseCaseInterface(Cursor root, Cursor typeKind) {
-        return hasExecuteEntry(root, typeKind)
-               && (hasNestedRequestOrResponse(root, typeKind) || hasStaticSelfFactory(root, typeKind));
+        return hasExecuteEntry(root, typeKind) && (hasNestedRequestOrResponse(root, typeKind) || hasStaticSelfFactory(root,
+                                                                                                                      typeKind));
     }
 
     /// Whether a declaration header identifies an error type: a DIRECT super named `Cause`, or a
@@ -290,14 +295,12 @@ public final class FileTypeClassifier {
             return;
         }
 
-        for (var entry : matcher.group(1)
-                                .split(",")) {
+        for (var entry : matcher.group(1).split(",")) {
             var name = entry.trim();
             var dot = name.lastIndexOf('.');
 
             if (dot >= 0) {
-                name = name.substring(dot + 1)
-                           .trim();
+                name = name.substring(dot + 1).trim();
             }
 
             if (!name.isEmpty()) {
@@ -343,8 +346,7 @@ public final class FileTypeClassifier {
 
     private static List<Cursor> topLevelTypes(Cursor root) {
         return findAll(root, RuleKind.TYPE_DECL).stream()
-                      .filter(typeDecl -> !findAncestor(root, typeDecl, RuleKind.TYPE_DECL)
-                                                        .isPresent())
+                      .filter(typeDecl -> !findAncestor(root, typeDecl, RuleKind.TYPE_DECL).isPresent())
                       .toList();
     }
 
@@ -356,24 +358,23 @@ public final class FileTypeClassifier {
 
     private static boolean hasExecuteEntry(Cursor root, Cursor typeKind) {
         return directMethods(root, typeKind).stream()
-                                            .anyMatch(method -> methodName(method).equals("execute"));
+                            .anyMatch(method -> methodName(method).equals("execute"));
     }
 
     private static boolean isStepInterface(Cursor root, Cursor typeKind) {
         var abstractMethods = directMethods(root, typeKind).stream()
-                                                           .filter(method -> isAbstractMethod(root, method))
-                                                           .count();
-
+                                           .filter(method -> isAbstractMethod(root, method))
+                                           .count();
         // #655: only a type in the interface's own member list disqualifies it. A record declared inside a
         // default method is local, not a member.
         return abstractMethods == 1 && directNestedTypes(root, typeKind).stream()
-                                                               .noneMatch(nested -> isInMemberListOf(root, typeKind, nested));
+                                                        .noneMatch(nested -> isInMemberListOf(root, typeKind, nested));
     }
 
     private static boolean hasNestedRequestOrResponse(Cursor root, Cursor typeKind) {
         return directNestedTypes(root, typeKind).stream()
-                                                .map(FileTypeClassifier::declaredName)
-                                                .anyMatch(name -> name.endsWith("Request") || name.endsWith("Response"));
+                                .map(FileTypeClassifier::declaredName)
+                                .anyMatch(name -> name.endsWith("Request") || name.endsWith("Response"));
     }
 
     /// Whether the type has a direct static factory that produces its own type — the interface type
@@ -382,8 +383,8 @@ public final class FileTypeClassifier {
         var ownName = declaredName(typeKind);
 
         return directMethods(root, typeKind).stream()
-                                            .filter(method -> isStatic(root, method))
-                                            .anyMatch(method -> producesOwnType(method, ownName));
+                            .filter(method -> isStatic(root, method))
+                            .anyMatch(method -> producesOwnType(method, ownName));
     }
 
     /// Whether the record has a direct static factory returning `Result<Own>` — the value object's
@@ -393,15 +394,14 @@ public final class FileTypeClassifier {
         var ownName = declaredName(typeKind);
 
         return directMethods(root, typeKind).stream()
-                                            .filter(method -> isStatic(root, method))
-                                            .anyMatch(method -> returnsWrapperOf(method, "Result", ownName));
+                            .filter(method -> isStatic(root, method))
+                            .anyMatch(method -> returnsWrapperOf(method, "Result", ownName));
     }
 
     /// Whether a method's return type produces `ownTypeName` — either that type directly, or wrapped
     /// as `Result`/`Option`/`Promise` of it.
     public static boolean producesOwnType(Cursor method, String ownTypeName) {
-        var returnType = methodReturnType(method).map(type -> text(type).trim())
-                                                 .or("");
+        var returnType = methodReturnType(method).map(type -> text(type).trim()).or("");
         var outer = simpleTypeName(returnType);
 
         if (outer.equals(ownTypeName)) {
@@ -412,8 +412,7 @@ public final class FileTypeClassifier {
     }
 
     private static boolean returnsWrapperOf(Cursor method, String wrapper, String ownTypeName) {
-        var returnType = methodReturnType(method).map(type -> text(type).trim())
-                                                 .or("");
+        var returnType = methodReturnType(method).map(type -> text(type).trim()).or("");
 
         return simpleTypeName(returnType).equals(wrapper) && innerSimpleName(returnType).equals(ownTypeName);
     }
@@ -427,13 +426,12 @@ public final class FileTypeClassifier {
 
     private static boolean hasMainMethod(Cursor root, Cursor typeKind) {
         return directMethods(root, typeKind).stream()
-                                            .anyMatch(method -> methodName(method).equals("main"));
+                            .anyMatch(method -> methodName(method).equals("main"));
     }
 
     private static boolean implementsExternalInterface(Cursor root, Cursor typeKind) {
         return directSuperNames(headerOf(typeKind)).stream()
-                                                   .anyMatch(name -> !VALUE_ISH_JDK.contains(name)
-                                                                     && !isDeclaredInFile(root, name));
+                               .anyMatch(name -> !VALUE_ISH_JDK.contains(name) && !isDeclaredInFile(root, name));
     }
 
     private static boolean isDeclaredInFile(Cursor root, String name) {
@@ -444,7 +442,7 @@ public final class FileTypeClassifier {
     /// Simple head name of a type text — the outermost type name, before any generic arguments and
     /// package qualifier (`Result<Money>` -> `Result`, `com.x.Email` -> `Email`).
     private static String simpleTypeName(String typeText) {
-        var head = typeText.split("<", 2)[0].trim();
+        var head = typeText.split("<", 2) [0].trim();
         var dot = head.lastIndexOf('.');
 
         return dot >= 0
@@ -470,7 +468,6 @@ public final class FileTypeClassifier {
                 depth++;
             } else if (c == '>') {
                 depth--;
-
                 if (depth == 0) {
                     return simpleTypeName(typeText.substring(open + 1, i));
                 }
@@ -485,22 +482,19 @@ public final class FileTypeClassifier {
     /// wrapper; falls back to the method text when no wrapper is found.
     private static String modifiersText(Cursor root, Cursor method) {
         return enclosingMember(root, method).map(wrapper -> text(wrapper))
-                            .or(text(method));
+                              .or(text(method));
     }
 
     private static boolean isPublic(Cursor typeDecl) {
-        return PUBLIC.matcher(headerOf(typeDecl))
-                     .find();
+        return PUBLIC.matcher(headerOf(typeDecl)).find();
     }
 
     private static boolean isSealed(String header) {
-        return SEALED.matcher(header)
-                     .find();
+        return SEALED.matcher(header).find();
     }
 
     private static boolean hasUnusedRecord(Cursor typeKind) {
-        return UNUSED_RECORD.matcher(text(typeKind))
-                            .find();
+        return UNUSED_RECORD.matcher(text(typeKind)).find();
     }
 
     /// Declaration header up to (excluding) the body brace — carries modifiers, name, and the
@@ -528,7 +522,6 @@ public final class FileTypeClassifier {
             if (text.charAt(i) != '@') {
                 builder.append(text.charAt(i));
                 i++;
-
                 continue;
             }
 

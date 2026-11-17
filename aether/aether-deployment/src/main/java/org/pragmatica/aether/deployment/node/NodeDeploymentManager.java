@@ -6,10 +6,13 @@ package org.pragmatica.aether.deployment.node;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.LongConsumer;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentContext;
+import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.CatchUpSwept;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.ConfigChanged;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactRemoveReceived;
@@ -98,6 +101,10 @@ public interface NodeDeploymentManager {
     @Contract
     @MessageReceiver
     void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
+
+    /// #3028: a KV replay burst was delivered (`KVStore.onReplayEnd`); raises the catch-up sweep on the FSM.
+    @Contract
+    void onReplayDelivered(long revision);
 
     /// #381 — a `ConfigKey` change applied to this node's dynamic config overlay (`DynamicConfigManager`
     /// calls this after the overlay is updated, so a slice reading through its facade sees the new
@@ -417,21 +424,31 @@ public interface NodeDeploymentManager {
                                                                    Option<SliceInvokerFacade> sliceInvokerFacade,
                                                                    TimeSpan activationChainTimeout,
                                                                    TimeSpan transitionRetryDelay,
-                                                                   Supplier<Epoch> observedEpochSupplier) {
-        return nodeDeploymentManager(self,
-                                     selfAddress,
-                                     router,
-                                     sliceStore,
-                                     cluster,
-                                     kvStore,
-                                     invocationHandler,
-                                     configuration,
-                                     nodeCodec,
-                                     httpRoutePublisher,
-                                     sliceInvokerFacade,
-                                     activationChainTimeout,
-                                     transitionRetryDelay,
-                                     () -> Option.some(observedEpochSupplier.get()));
+                                                                   Supplier<Epoch> observedEpochSupplier,
+                                                                   Consumer<LongConsumer> replayEndRegistrar) {
+        return bindReplayEnd(nodeDeploymentManager(self,
+                                                   selfAddress,
+                                                   router,
+                                                   sliceStore,
+                                                   cluster,
+                                                   kvStore,
+                                                   invocationHandler,
+                                                   configuration,
+                                                   nodeCodec,
+                                                   httpRoutePublisher,
+                                                   sliceInvokerFacade,
+                                                   activationChainTimeout,
+                                                   transitionRetryDelay,
+                                                   () -> Option.some(observedEpochSupplier.get())),
+                             replayEndRegistrar);
+    }
+
+    /// #3028: hands the manager's catch-up sweep trigger to the registrar the wiring supplies (bound only under LEGACY, so no engine-neutral name leaks).
+    private static NodeDeploymentManager bindReplayEnd(NodeDeploymentManager manager,
+                                                       Consumer<LongConsumer> registrar) {
+        registrar.accept(manager::onReplayDelivered);
+
+        return manager;
     }
 
     private static NodeDeploymentContext buildContext(NodeId self,
@@ -595,6 +612,12 @@ public interface NodeDeploymentManager {
         @Override
         public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
             ctx.dispatch(new NodeRoutesPutReceived(valuePut));
+        }
+
+        @Contract
+        @Override
+        public void onReplayDelivered(long revision) {
+            ctx.dispatch(new CatchUpSwept());
         }
 
         @Contract

@@ -44,7 +44,8 @@ public record DescribeTargetHealthResponse(@JacksonXmlProperty(localName = "Desc
 
     /// Target identifier.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Target(@JacksonXmlProperty(localName = "Id") String id, @JacksonXmlProperty(localName = "Port") int port) {}
+    public record Target(@JacksonXmlProperty(localName = "Id") String id,
+                         @JacksonXmlProperty(localName = "Port") int port) {}
 
     /// Target health state.
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -53,8 +54,7 @@ public record DescribeTargetHealthResponse(@JacksonXmlProperty(localName = "Desc
 
     /// Extracts a flat list of TargetHealth records, tolerating an absent result or empty target set.
     public List<TargetHealth> toTargetHealthList() {
-        if (result == null || result.targetHealthDescriptions() == null
-            || result.targetHealthDescriptions().members() == null) {
+        if (result == null || result.targetHealthDescriptions() == null || result.targetHealthDescriptions().members() == null) {
             return List.of();
         }
 

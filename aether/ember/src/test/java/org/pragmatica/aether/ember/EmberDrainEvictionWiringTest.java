@@ -23,7 +23,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.metrics.NodeReportedState;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterState;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.deployment.SeamPoller;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -70,6 +73,22 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// completes it in the same call), after which the pong's own call starts a second episode on the pong thread, which
 /// is what the thread attribution observes.
 ///
+/// ## Two engines, one property: the pong is what starts the eviction, the reconcile tick is not
+///
+/// `deployment.reconciliationInterval` is set to [#RECONCILE_INTERVAL] (beyond the test's own `@Timeout`) on every node, through
+/// `EmberCluster.withReconciliationIntervalForNewNodes`. Legacy reads it for the CDM's `reconcile()` tick, FSM2 for `Timing.withTick`
+/// (`Fsm2System.timing`), so within the test the periodic tick cannot be the producer on either engine. The engine is read from the
+/// started nodes (`deploymentWiring().engine()`) and each arm names its own anchors; nothing is skipped.
+///
+/// - LEGACY: the anchors and the pong-thread attribution above. The pong's entry is synchronous.
+/// - FSM2: the pong's `ClusterInput.NodeDraining` is a no-op until the 5 s-sampled seams list the drainee (`Drains.start`); the
+///   first effective start is the seam sample that sees the drainee, whose `Lifecycle.onSeams` requests a reconcile at once (not the
+///   tick), and `Drains.resume` starts the loop. There is no synchronous entry, so thread attribution does not apply. The precondition is the
+///   cluster interpreter's state being `ClusterState.Active` (raised when the rebuild completes, the counterpart of `REBUILT_MARKER`), and
+///   the drainee keeps reporting at the ping interval (one pong is forgotten by the readiness sweep within three pings, before a 5 s
+///   sample; it stops reporting once the sampled seams list it, so the on-change reconcile request is the only producer of the loop), and the observable is `ClusterEffect.Log` "Drain complete for node <id>" (the bare id, unlike the legacy line) (`Drains.advance`, logged by `EffectTranslator` on
+///   [#FSM2_LOGGER]). It must arrive within one seam interval (`SeamPoller.INTERVAL_MS`) plus [#FSM2_SLACK_MS] of the pong.
+///
 /// A fabricated worker id is used as the drainee (as in `EmberDrainAcknowledgementWiringTest`) so the
 /// reconciler neither drains nor dials a real peer; it holds no slice, which is what makes
 /// `completeDrain` the terminal step.
@@ -96,6 +115,14 @@ class EmberDrainEvictionWiringTest {
     /// Well inside the 30s reconcile interval, so the tick is not a plausible producer within it.
     private static final long EVICTION_BOUND_MS = 10_000L;
     private static final long POLL_MS = 100;
+    /// The cluster ping interval (`ClusterTimeouts.pingInterval`, 1 s by default): how often a real drainee reports.
+    private static final long PING_MS = 1_000L;
+    /// Beyond the test's `@Timeout(300)`: the periodic tick of either engine cannot fire within the test.
+    private static final TimeSpan RECONCILE_INTERVAL = TimeSpan.timeSpan(1).hours();
+    /// Logger `EffectTranslator` writes `ClusterEffect.Log` to under FSM2.
+    private static final String FSM2_LOGGER = "org.pragmatica.aether.deployment.fsm.cluster";
+    /// Stated slack on top of one seam interval: the sample's own jitter plus the interpreter's consumer hop.
+    private static final long FSM2_SLACK_MS = 10_000L;
     private static final String ACTIVE_LOGGER =
             "org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState$Active";
     /// First line of `ClusterDeploymentState.Active.onEntry`; the FSM state is already Active when it is logged.
@@ -117,19 +144,17 @@ class EmberDrainEvictionWiringTest {
     @Test
     @Timeout(300)
     void leaderNode_drainingPong_startsTheLeaderSideEviction_andNotViaTheReconcileTick() {
-        cluster = EmberTestPorts.startedCluster(PORTS,
-                                                basePort -> emberCluster(CLUSTER_SIZE,
-                                                                         basePort,
-                                                                         basePort + MGMT_OFFSET,
-                                                                         basePort + APP_HTTP_OFFSET,
-                                                                         "devi"),
-                                                START_BOUND);
+        cluster = EmberTestPorts.startedCluster(PORTS, EmberDrainEvictionWiringTest::tickExcludedCluster, START_BOUND);
+
+        var engine = activeEngine();
+
+        System.out.println("EmberDrainEvictionWiringTest engine=" + engine);
 
         var drainee = NodeId.nodeId("drainee-evict-" + UUID.randomUUID()).unwrap();
         var pongThread = Thread.currentThread().getName();
         var drainingAtPongThreadEviction = new java.util.concurrent.atomic.AtomicBoolean();
         var leaderRef = new java.util.concurrent.atomic.AtomicReference<AetherNode>();
-        var capture = LogCapture.capture(ACTIVE_LOGGER, Level.INFO, true, event -> {
+        var capture = LogCapture.capture(engine == DeploymentEngine.FSM2 ? FSM2_LOGGER : ACTIVE_LOGGER, Level.INFO, true, event -> {
             if (event.getMessage().getFormattedMessage().contains("Starting drain eviction for node " + drainee)
                     && pongThread.equals(event.getThreadName())) {
                 drainingAtPongThreadEviction.set(leaderRef.get().metricsCollector().reportedStates().get(drainee) == NodeReportedState.DRAINING);
@@ -139,40 +164,128 @@ class EmberDrainEvictionWiringTest {
         try {
             var leader = awaitLeader();
 
-            awaitCondition("the leader's cluster deployment manager must log its activation (it is Active from that line on) before the pong is sent",
-                           System.currentTimeMillis() + 60_000L,
-                           () -> contains(capture, ACTIVATION_MARKER),
-                           capture::messages);
-            awaitCondition("the leader's cluster deployment manager must finish its activation before the pong is sent",
-                           System.currentTimeMillis() + 60_000L,
-                           () -> contains(capture, REBUILT_MARKER),
-                           capture::messages);
             leaderRef.set(leader);
-            leader.metricsCollector().onClusterSyncPong(drainingPong(drainee));
-
-            assertThat(drainingAtPongThreadEviction.get())
-                .describedAs("the pong's synchronous callback must start the eviction on the pong's own thread while "
-                             + "the DRAINING report is present; false means the registration is missing or the CDM "
-                             + "ignored the pong. The pong is sent after the CDM logged the END of its activation, so it meets a fully entered "
-                             + "Active CDM")
-                .isTrue();
-
-            var started = "Starting drain eviction for node " + drainee;
-            var completed = "Drain complete for node " + drainee;
-
-            awaitCondition("the DRAINING pong must start the leader-side drain eviction — the registration in "
-                           + "assembleNode is the only production path to it",
-                           System.currentTimeMillis() + EVICTION_BOUND_MS,
-                           () -> contains(capture, started),
-                           capture::messages);
-            awaitCondition("the loop must RUN, not merely log its entry: with no slice on the drainee its "
-                           + "terminal step is completeDrain",
-                           System.currentTimeMillis() + EVICTION_BOUND_MS,
-                           () -> contains(capture, completed),
-                           capture::messages);
+            if (engine == DeploymentEngine.FSM2) {
+                awaitFsm2DrainComplete(leader, capture, drainee);
+            } else {
+                awaitLegacyEvictionFromPong(leader, capture, drainee, drainingAtPongThreadEviction);
+            }
         } finally {
             capture.close();
         }
+    }
+
+    private static EmberCluster tickExcludedCluster(int basePort) {
+        var built = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "devi");
+
+        built.withReconciliationIntervalForNewNodes(RECONCILE_INTERVAL);
+        return built;
+    }
+
+    private DeploymentEngine activeEngine() {
+        var engines = cluster.allNodes().stream().map(node -> node.deploymentWiring().engine()).distinct().toList();
+
+        assertThat(engines).describedAs("every node of the cluster runs the one selected engine").hasSize(1);
+        return engines.getFirst();
+    }
+
+    /// FSM2 arm: the pong is delivered to an `Active` cluster FSM, and the loop must complete within one seam interval plus the slack. The
+    /// reconcile tick is [#RECONCILE_INTERVAL] away, so the only producers are the pong and the seam sample's own reconcile request.
+    private void awaitFsm2DrainComplete(AetherNode leader, LogCapture capture, NodeId drainee) {
+        awaitCondition("the leader's cluster FSM must be Active (rebuild complete) before the pong is sent",
+                       System.currentTimeMillis() + 60_000L,
+                       () -> clusterFsmActive(leader),
+                       () -> List.of(String.valueOf(leader.deploymentWiring().system().map(system -> system.clusterInterpreter().state()))));
+        awaitCondition("the leader's cluster FSM must hold a real seam sample that already counts and finds ready every node, so the sample "
+                       + "that first lists the drainee changes ONLY the draining set (the first sample changes every field against UNWIRED)",
+                       System.currentTimeMillis() + 60_000L,
+                       () -> seamsSettled(leader),
+                       () -> List.of(String.valueOf(leader.deploymentWiring().system().map(system -> system.clusterInterpreter().state()))));
+        var lastPongMs = new long[]{System.currentTimeMillis()};
+
+        leader.metricsCollector().onClusterSyncPong(drainingPong(drainee));
+
+        // A draining node keeps reporting every ping; one pong would be forgotten by the readiness sweep within three pings, before the
+        // 5 s seam sample can see it. So the report is repeated at the ping interval, as a real drainee's is.
+        awaitCondition("under FSM2 the DRAINING reports must lead to the drain loop completing within one seam interval ("
+                       + SeamPoller.INTERVAL_MS + " ms) plus " + FSM2_SLACK_MS + " ms of the first, with the reconcile tick " + RECONCILE_INTERVAL
+                       + " away",
+                       System.currentTimeMillis() + SeamPoller.INTERVAL_MS + FSM2_SLACK_MS,
+                       () -> repeatReport(leader, drainee, lastPongMs) || contains(capture, "Drain complete for node " + drainee.id()),
+                       capture::messages);
+    }
+
+    /// Re-sends the DRAINING report once per ping interval until the seam sample lists the drainee; false, so the caller's own condition decides.
+    private static boolean repeatReport(AetherNode leader, NodeId drainee, long[] lastPongMs) {
+        var now = System.currentTimeMillis();
+
+        if (now - lastPongMs[0] >= PING_MS && !seamsListDrainee(leader, drainee)) {
+            lastPongMs[0] = now;
+            leader.metricsCollector().onClusterSyncPong(drainingPong(drainee));
+        }
+        return false;
+    }
+
+    private static boolean seamsSettled(AetherNode leader) {
+        return leader.deploymentWiring()
+                     .system()
+                     .map(system -> system.clusterInterpreter().state())
+                     .filter(state -> state instanceof ClusterState.Active)
+                     .map(state -> ((ClusterState.Active) state).model().seams())
+                     .map(seams -> seams.countedCores().size() == CLUSTER_SIZE && seams.ready().size() == CLUSTER_SIZE)
+                     .or(false);
+    }
+
+    /// True once the sampled seams list the drainee. From then on no further report is sent: a later report would pass `Drains.start`'s
+    /// seam gate and start the loop itself, so the only producer left is the on-change `Reconcile.request` of `Lifecycle.onSeams`.
+    private static boolean seamsListDrainee(AetherNode leader, NodeId drainee) {
+        return leader.deploymentWiring()
+                     .system()
+                     .map(system -> system.clusterInterpreter().state())
+                     .filter(state -> state instanceof ClusterState.Active)
+                     .map(state -> ((ClusterState.Active) state).model().seams().draining().contains(drainee))
+                     .or(false);
+    }
+
+    private static boolean clusterFsmActive(AetherNode leader) {
+        return leader.deploymentWiring().system().map(system -> system.clusterInterpreter().state() instanceof ClusterState.Active).or(false);
+    }
+
+    /// LEGACY arm: the pong's entry is synchronous, so the eviction must start on the pong's own thread (see the class doc).
+    private void awaitLegacyEvictionFromPong(AetherNode leader,
+                                             LogCapture capture,
+                                             NodeId drainee,
+                                             java.util.concurrent.atomic.AtomicBoolean drainingAtPongThreadEviction) {
+        awaitCondition("the leader's cluster deployment manager must log its activation (it is Active from that line on) before the pong is sent",
+                       System.currentTimeMillis() + 60_000L,
+                       () -> contains(capture, ACTIVATION_MARKER),
+                       capture::messages);
+        awaitCondition("the leader's cluster deployment manager must finish its activation before the pong is sent",
+                       System.currentTimeMillis() + 60_000L,
+                       () -> contains(capture, REBUILT_MARKER),
+                       capture::messages);
+        leader.metricsCollector().onClusterSyncPong(drainingPong(drainee));
+
+        assertThat(drainingAtPongThreadEviction.get())
+            .describedAs("the pong's synchronous callback must start the eviction on the pong's own thread while "
+                         + "the DRAINING report is present; false means the registration is missing or the CDM "
+                         + "ignored the pong. The pong is sent after the CDM logged the END of its activation, so it meets a fully entered "
+                         + "Active CDM")
+            .isTrue();
+
+        var started = "Starting drain eviction for node " + drainee;
+        var completed = "Drain complete for node " + drainee;
+
+        awaitCondition("the DRAINING pong must start the leader-side drain eviction — the registration in "
+                       + "assembleNode is the only production path to it",
+                       System.currentTimeMillis() + EVICTION_BOUND_MS,
+                       () -> contains(capture, started),
+                       capture::messages);
+        awaitCondition("the loop must RUN, not merely log its entry: with no slice on the drainee its "
+                       + "terminal step is completeDrain",
+                       System.currentTimeMillis() + EVICTION_BOUND_MS,
+                       () -> contains(capture, completed),
+                       capture::messages);
     }
 
     private AetherNode awaitLeader() {

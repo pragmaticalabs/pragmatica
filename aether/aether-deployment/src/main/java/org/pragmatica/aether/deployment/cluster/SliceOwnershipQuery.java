@@ -17,11 +17,10 @@ import java.util.stream.Collectors;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.SliceRowSource;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
@@ -39,10 +38,14 @@ import static org.pragmatica.lang.Option.some;
 /// [`#minAvailableDrainGuard`] — never when draining it would drop a hosted slice below its
 /// `minAvailable`.
 ///
-/// Ownership is read from the KV-Store entries the cluster-deployment FSM itself uses as its source
-/// of truth: `NodeArtifactKey(nodeId, artifact) → NodeArtifactValue(state, ...)`. A node OWNS an
+/// Ownership is read from the per-node slice rows of the KV-Store, through the engine's [SliceRowSource]:
+/// `NodeArtifactKey(nodeId, artifact) → NodeArtifactValue(state, ...)` under LEGACY, and under FSM2 the
+/// CURRENT `SliceObservedKey` rows (deployment state machine spec 1.6.1, NT-110): a row stale on positive
+/// evidence and the UNLOADED tombstone read as absent, so a node holding only those owns nothing and
+/// counts toward no `remainingActive`. A node OWNS an
 /// active slice when it has at least one entry whose [`SliceState`] is LIVE — anything except the
-/// terminal/teardown states FAILED / UNLOAD / UNLOADING (mirrors the FSM's `isLiveState`). A LIVE
+/// terminal/teardown states FAILED / UNLOAD / UNLOADING (mirrors the FSM's `isLiveState`; on FSM2 rows
+/// this is exactly spec R-1.6.2's positive `isLive()` list). A LIVE
 /// state therefore includes the load/activate ramp (LOAD…ACTIVE), so a node mid-role-propagation
 /// that is ABOUT to own slices is shielded too, satisfying the "do not drain a node about to own
 /// slices" caveat without any extra signal.
@@ -55,25 +58,22 @@ public sealed interface SliceOwnershipQuery {
     /// Build the active-slice-ownership predicate backed by `kvStore`. The returned predicate reads
     /// the KV-Store fresh on each call (never a stale snapshot), so it always reflects the latest
     /// committed slice placement at the moment a drain pass evaluates a candidate.
-    static Predicate<NodeId> ownsActiveSlices(KVStore<AetherKey, AetherValue> kvStore) {
-        return nodeId -> nodeHasLiveSlice(kvStore, nodeId);
+    static Predicate<NodeId> ownsActiveSlices(KVStore<AetherKey, AetherValue> kvStore, SliceRowSource rows) {
+        return nodeId -> nodeHasLiveSlice(kvStore, rows, nodeId);
     }
 
-    private static boolean nodeHasLiveSlice(KVStore<AetherKey, AetherValue> kvStore, NodeId nodeId) {
+    private static boolean nodeHasLiveSlice(KVStore<AetherKey, AetherValue> kvStore,
+                                            SliceRowSource rows,
+                                            NodeId nodeId) {
         var found = new AtomicBoolean(false);
 
-        kvStore.forEach(NodeArtifactKey.class,
-                        NodeArtifactValue.class,
-                        (key, value) -> recordIfLiveOwnership(found, nodeId, key, value));
+        rows.forEachRow(kvStore, (node, _, state) -> recordIfLiveOwnership(found, nodeId, node, state));
 
         return found.get();
     }
 
-    private static void recordIfLiveOwnership(AtomicBoolean found,
-                                              NodeId nodeId,
-                                              NodeArtifactKey key,
-                                              NodeArtifactValue value) {
-        if (key.nodeId().equals(nodeId) && isLiveState(value.state())) {
+    private static void recordIfLiveOwnership(AtomicBoolean found, NodeId nodeId, NodeId node, SliceState state) {
+        if (node.equals(nodeId) && isLiveState(state)) {
             found.set(true);
         }
     }
@@ -103,16 +103,18 @@ public sealed interface SliceOwnershipQuery {
     ///   owner of it is refused and the surplus is deferred. Since #1497 every writer without an explicit
     ///   value uses `ceil(instances/2)`, so this holds only for a single-instance slice (floor 1) or an
     ///   operator who set the floor to the count.
-    static BiFunction<NodeId, Set<NodeId>, Option<DrainRefusal>> minAvailableDrainGuard(KVStore<AetherKey, AetherValue> kvStore) {
-        return (candidate, remainingNodes) -> firstRefusal(kvStore, candidate, remainingNodes);
+    static BiFunction<NodeId, Set<NodeId>, Option<DrainRefusal>> minAvailableDrainGuard(KVStore<AetherKey, AetherValue> kvStore,
+                                                                                        SliceRowSource rows) {
+        return (candidate, remainingNodes) -> firstRefusal(kvStore, rows, candidate, remainingNodes);
     }
 
     /// The same availability test as [#minAvailableDrainGuard], answering EVERY hosted slice that draining
     /// `candidate` would drop below its `minAvailable`, sorted by artifact, not just the first (#1720). The operator
     /// drain and shutdown routes need all of them: the refusal names each slice, and a forced breach warns about
     /// each. Empty when every hosted slice keeps its floor. Same inputs, same counting rules.
-    static BiFunction<NodeId, Set<NodeId>, List<DrainRefusal>> minAvailableDrainViolations(KVStore<AetherKey, AetherValue> kvStore) {
-        return (candidate, remainingNodes) -> refusalStream(kvStore, candidate, remainingNodes).toList();
+    static BiFunction<NodeId, Set<NodeId>, List<DrainRefusal>> minAvailableDrainViolations(KVStore<AetherKey, AetherValue> kvStore,
+                                                                                           SliceRowSource rows) {
+        return (candidate, remainingNodes) -> refusalStream(kvStore, rows, candidate, remainingNodes).toList();
     }
 
     /// Why the guard refused to drain `owner`: `artifact` would be left with `remainingActive` ACTIVE
@@ -125,15 +127,17 @@ public sealed interface SliceOwnershipQuery {
     }
 
     private static Option<DrainRefusal> firstRefusal(KVStore<AetherKey, AetherValue> kvStore,
+                                                     SliceRowSource rows,
                                                      NodeId candidate,
                                                      Set<NodeId> remainingNodes) {
-        return Option.from(refusalStream(kvStore, candidate, remainingNodes).findFirst());
+        return Option.from(refusalStream(kvStore, rows, candidate, remainingNodes).findFirst());
     }
 
     private static java.util.stream.Stream<DrainRefusal> refusalStream(KVStore<AetherKey, AetherValue> kvStore,
+                                                                       SliceRowSource rows,
                                                                        NodeId candidate,
                                                                        Set<NodeId> remainingNodes) {
-        var placements = livePlacements(kvStore);
+        var placements = livePlacements(kvStore, rows);
 
         return hostedArtifacts(placements, candidate).stream()
                               .sorted(Comparator.comparing(Artifact::asString))
@@ -141,16 +145,17 @@ public sealed interface SliceOwnershipQuery {
     }
 
     /// The distinct artifacts `node` holds a LIVE placement of.
-    private static Set<Artifact> hostedArtifacts(Map<NodeArtifactKey, SliceState> placements, NodeId node) {
+    private static Set<Artifact> hostedArtifacts(Map<Placement, SliceState> placements, NodeId node) {
         return placements.keySet()
                          .stream()
-                         .filter(key -> key.isForNode(node))
-                         .map(NodeArtifactKey::artifact)
+                         .filter(key -> key.node()
+                                           .equals(node))
+                         .map(Placement::artifact)
                          .collect(Collectors.toSet());
     }
 
     private static Option<DrainRefusal> refusalFor(KVStore<AetherKey, AetherValue> kvStore,
-                                                   Map<NodeArtifactKey, SliceState> placements,
+                                                   Map<Placement, SliceState> placements,
                                                    NodeId candidate,
                                                    Artifact artifact,
                                                    Set<NodeId> remainingNodes) {
@@ -163,26 +168,26 @@ public sealed interface SliceOwnershipQuery {
     }
 
     /// Every LIVE placement in the KV-Store, keyed by `(node, artifact)`, with its state.
-    private static Map<NodeArtifactKey, SliceState> livePlacements(KVStore<AetherKey, AetherValue> kvStore) {
-        var placements = new HashMap<NodeArtifactKey, SliceState>();
+    private static Map<Placement, SliceState> livePlacements(KVStore<AetherKey, AetherValue> kvStore,
+                                                             SliceRowSource rows) {
+        var placements = new HashMap<Placement, SliceState>();
 
-        kvStore.forEach(NodeArtifactKey.class,
-                        NodeArtifactValue.class,
-                        (key, value) -> recordIfLive(placements, key, value));
+        rows.forEachRow(kvStore, (node, artifact, state) -> recordIfLive(placements, node, artifact, state));
 
         return placements;
     }
 
     @Contract
-    private static void recordIfLive(Map<NodeArtifactKey, SliceState> placements,
-                                     NodeArtifactKey key,
-                                     NodeArtifactValue value) {
-        if (isLiveState(value.state())) {
-            placements.put(key, value.state());
+    private static void recordIfLive(Map<Placement, SliceState> placements,
+                                     NodeId node,
+                                     Artifact artifact,
+                                     SliceState state) {
+        if (isLiveState(state)) {
+            placements.put(new Placement(node, artifact), state);
         }
     }
 
-    private static long remainingActive(Map<NodeArtifactKey, SliceState> placements,
+    private static long remainingActive(Map<Placement, SliceState> placements,
                                         Artifact artifact,
                                         Set<NodeId> remainingNodes) {
         return placements.entrySet()
@@ -193,14 +198,14 @@ public sealed interface SliceOwnershipQuery {
 
     /// An ACTIVE instance of `artifact` on one of `remainingNodes` — a placement on a non-member, on a
     /// node already departing, or on a victim of this pass is not availability.
-    private static boolean isRemainingActiveInstance(Map.Entry<NodeArtifactKey, SliceState> placement,
+    private static boolean isRemainingActiveInstance(Map.Entry<Placement, SliceState> placement,
                                                      Artifact artifact,
                                                      Set<NodeId> remainingNodes) {
         var key = placement.getKey();
 
         return key.artifact()
                   .equals(artifact)
-               && remainingNodes.contains(key.nodeId())
+               && remainingNodes.contains(key.node())
                && placement.getValue() == SliceState.ACTIVE;
     }
 
@@ -220,6 +225,9 @@ public sealed interface SliceOwnershipQuery {
                && state != SliceState.UNLOAD
                && state != SliceState.UNLOADING;
     }
+
+    /// One `(node, artifact)` placement, whichever engine's row it was read from.
+    record Placement(NodeId node, Artifact artifact) {}
 
     record unused() implements SliceOwnershipQuery {}
 }

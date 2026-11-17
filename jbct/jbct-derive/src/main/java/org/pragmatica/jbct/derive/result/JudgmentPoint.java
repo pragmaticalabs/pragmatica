@@ -25,7 +25,7 @@ public record JudgmentPoint(Kind kind, String subject, String detail) {
     }
 
     /// A judgment point of the given kind about a subject (an axis, operation, or scope).
-    public static JudgmentPoint of(Kind kind, String subject, String detail) {
+    public static JudgmentPoint judgmentPoint(Kind kind, String subject, String detail) {
         return new JudgmentPoint(kind, subject, detail);
     }
 }

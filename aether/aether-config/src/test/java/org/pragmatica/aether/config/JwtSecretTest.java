@@ -4,6 +4,7 @@
 
 package org.pragmatica.aether.config;
 
+import java.util.Locale;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -70,6 +71,6 @@ class JwtSecretTest {
     @Test
     void equals_comparesContent() {
         assertThat(JwtSecret.jwtSecret(THIRTY_TWO).unwrap()).isEqualTo(JwtSecret.jwtSecret(THIRTY_TWO).unwrap());
-        assertThat(JwtSecret.jwtSecret(THIRTY_TWO).unwrap()).isNotEqualTo(JwtSecret.jwtSecret(THIRTY_TWO.toUpperCase()).unwrap());
+        assertThat(JwtSecret.jwtSecret(THIRTY_TWO).unwrap()).isNotEqualTo(JwtSecret.jwtSecret(THIRTY_TWO.toUpperCase(Locale.ROOT)).unwrap());
     }
 }

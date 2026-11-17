@@ -39,7 +39,7 @@ class PartitionStateIsolationTest {
     void setUp() {
         manager.placementRoleSupplier((_, _) -> role.get());
         manager.ownerEpochSource((_, _) -> EPOCH);
-        manager.epochStarts((_, _) -> List.of(new EpochStart(EPOCH, 0L)));
+        manager.epochStarts((_, _) -> List.of(EpochStart.epochStart(EPOCH, 0L, Option.none())));
         manager.createStream(StreamConfig.streamConfig(STREAM, 2, RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 3_600_000L), "earliest"))
                .onFailure(cause -> fail(cause.message()));
         role.set(Role.REPLICA);

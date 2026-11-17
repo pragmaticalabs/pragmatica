@@ -5,6 +5,7 @@ package org.pragmatica.aether.pg.schema.builder;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 import org.pragmatica.aether.pg.parser.ast.common.DataTypeName;
@@ -533,7 +534,7 @@ public final class DdlAnalyzer {
             }
         }
 
-        var methodText = stmt.tokenText("IndexMethod").or("btree").toLowerCase();
+        var methodText = stmt.tokenText("IndexMethod").or("btree").toLowerCase(Locale.ROOT);
         var method = switch (methodText) {
             case "hash" -> Index.IndexMethod.HASH;
             case "gin" -> Index.IndexMethod.GIN;

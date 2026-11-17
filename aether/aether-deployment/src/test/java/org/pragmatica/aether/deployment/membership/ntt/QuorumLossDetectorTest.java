@@ -1244,6 +1244,34 @@ class QuorumLossDetectorTest {
         }
 
         @Test
+        void reportsQuorumLoss_isFalseWhileHeld() {
+            members(5);
+            coreCount(5);
+
+            assertThat(detector.reportsQuorumLoss()).as("a held quorum is not quorum loss").isFalse();
+        }
+
+        @Test
+        void reportsQuorumLoss_isTrueOnlyForALostVoter() {
+            members(5);
+            coreCount(5);
+            detector.onConsensusEdge(false, ConsensusRole.UNCHANGED);
+
+            assertThat(detector.reportsQuorumLoss()).as("control: a voter's plain PASSIVE is quorum loss").isTrue();
+        }
+
+        @Test
+        void reportsQuorumLoss_isFalseForAnObserverReport_neverReadAsLost() {
+            members(5);
+            coreCount(5);
+            detector.onConsensusEdge(false, ConsensusRole.OBSERVER);
+
+            assertThat(detector.reportsQuorumLoss())
+                .as("an OBSERVER report is passive by role: never quorum loss (#2936 ruling, #3119)")
+                .isFalse();
+        }
+
+        @Test
         void observerResumed_reportsObserver() {
             detector.setQuorumReportListener(reports::add);
             members(5);

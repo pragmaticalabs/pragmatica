@@ -109,19 +109,20 @@ final class DataSourceJooqOperations implements JooqOperations {
         return Promise.lift(e -> JooqError.fromException(e, query.getSQL()),
                             () -> {
                                 try (var conn = dataSource.getConnection()) {
-                                var result = DSL.using(conn, dialect).fetch(query);
+                                    var result = DSL.using(conn, dialect).fetch(query);
 
-                                if (result.isEmpty()) {
-                                throw new JooqNoResultException("Query returned no results");
-                            }
+                                    if (result.isEmpty()) {
+                                        throw new JooqNoResultException("Query returned no results");
+                                    }
 
-                                if (result.size() > 1) {
-                                throw new JooqMultipleResultsException("Query returned " + result.size() + " results",
-                                                                       result.size());
-                            }
+                                    if (result.size() > 1) {
+                                        throw new JooqMultipleResultsException("Query returned " + result.size()
+                                                                              + " results",
+                                                                               result.size());
+                                    }
 
-                                return result.get(0);
-                            }
+                                    return result.get(0);
+                                }
                             });
     }
 
@@ -130,12 +131,12 @@ final class DataSourceJooqOperations implements JooqOperations {
         return Promise.lift(e -> JooqError.fromException(e, query.getSQL()),
                             () -> {
                                 try (var conn = dataSource.getConnection()) {
-                                var result = DSL.using(conn, dialect).fetch(query);
+                                    var result = DSL.using(conn, dialect).fetch(query);
 
-                                return result.isEmpty()
-                                       ? Option.none()
-                                       : Option.option(result.get(0));
-                            }
+                                    return result.isEmpty()
+                                           ? Option.none()
+                                           : Option.option(result.get(0));
+                                }
                             });
     }
 
@@ -144,8 +145,8 @@ final class DataSourceJooqOperations implements JooqOperations {
         return Promise.lift(e -> JooqError.fromException(e, query.getSQL()),
                             () -> {
                                 try (var conn = dataSource.getConnection()) {
-                                return DSL.using(conn, dialect).fetch(query);
-                            }
+                                    return DSL.using(conn, dialect).fetch(query);
+                                }
                             });
     }
 
@@ -154,8 +155,8 @@ final class DataSourceJooqOperations implements JooqOperations {
         return Promise.lift(e -> JooqError.fromException(e, query.getSQL()),
                             () -> {
                                 try (var conn = dataSource.getConnection()) {
-                                return DSL.using(conn, dialect).execute(query);
-                            }
+                                    return DSL.using(conn, dialect).execute(query);
+                                }
                             });
     }
 

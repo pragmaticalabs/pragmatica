@@ -9,6 +9,7 @@ import javax.tools.Diagnostic;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -35,7 +36,7 @@ public sealed interface LintRunner {
             }
 
             return switch (raw.trim()
-                              .toUpperCase()) {
+                              .toUpperCase(Locale.ROOT)) {
                 case "OFF" -> OFF;
                 case "WARNING", "WARN" -> WARNING;
                 case "ERROR" -> ERROR;

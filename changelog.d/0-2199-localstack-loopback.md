@@ -1,0 +1,2 @@
+### Fixed (2026-11-12 — #2199: AwsLocalStackContractTest inside a socket-sharing container)
+- **`AwsLocalStackContractTest` failed in `@BeforeAll` when Maven ran inside a container sharing the host's Docker daemon** (#2199). The in-container `awslocal` calls resolved their endpoint to the Docker gateway, which does not reach LocalStack. Each call now sets `LOCALSTACK_HOST=localhost:4566` and talks to LocalStack over loopback inside its own container; the SDK client path is unchanged. Test-only. [verified: `AwsLocalStackContractTest` on a bb iso=1 ticket and on the host path]

@@ -19,9 +19,7 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// Forbids Promise<Result<T>>, Option<Option<T>>, etc.
 public class CstNestedWrapperRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-02";
-
     private static final String DOC_LINK = "https://pragmatica.dev/java/jbct/rules/#jbct-ret-02";
-
     private static final Set<String> WRAPPER_TYPES = Set.of("Option", "Result", "Promise");
 
     // Pattern to detect nested wrappers like Promise<Result<...>>

@@ -273,13 +273,13 @@ public class NettyPgProtocolStream extends PgProtocolStream {
                  .onPresent(cc -> {
                                 if (cc.password()
                                       .isPresent()) {
-                                builder.keyManager(cc.cert().toFile(),
-                                                   cc.key().toFile(),
-                                                   cc.password().or((String) null));
-                            } else {
-                                builder.keyManager(cc.cert().toFile(),
-                                                   cc.key().toFile());
-                            }
+                                    builder.keyManager(cc.cert().toFile(),
+                                                       cc.key().toFile(),
+                                                       cc.password().or((String) null));
+                                } else {
+                                    builder.keyManager(cc.cert().toFile(),
+                                                       cc.key().toFile());
+                                }
                             });
         sslConfig.sslContextCustomizer().onPresent(c -> c.accept(builder));
 

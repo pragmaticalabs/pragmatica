@@ -134,24 +134,22 @@ class OperatorWarningsTest {
         assertThat(capture.entries()).hasSize(1);
     }
 
-    /// #1617 R2: `raise` never waits for the publisher. A publisher that takes 2 s must not make `raise`
-    /// take 2 s, because warnings are raised from SWIM, replication and the core-absence fence.
+    /// #1617 R2: `raise` never waits for the publisher, because warnings are raised from SWIM, replication
+    /// and the core-absence fence. #3190: the property is structural, not a wall-clock bound. The publisher
+    /// blocks on a latch the test releases only AFTER `raise` has returned, so a synchronous hand-off cannot
+    /// have finished the publisher by then. The 10 s wait only bounds a hang; it is never what the test measures.
     @Test
-    void raise_slowPublisher_returnsWithoutWaitingForIt() {
-        var published = new CountDownLatch(1);
-        var sink = OperatorWarningSink.handingOffTo(warning -> slowPublish(published));
-        var started = System.nanoTime();
+    void raise_slowPublisher_returnsWithoutWaitingForIt() throws InterruptedException {
+        var release = new CountDownLatch(1);
+        var finished = new CountDownLatch(1);
+        var sink = OperatorWarningSink.handingOffTo(warning -> gatedPublish(release, finished));
 
         OperatorWarnings.raise(SITE_LOG, sink, REPLICA_FSYNC_FAILED, "orders[3]", "sync failed");
 
-        var elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+        assertThat(finished.getCount()).as("raise() returned while the publisher was still blocked").isEqualTo(1L);
 
-        // Half the publisher's 2 s delay: a synchronous publish takes >= 2000 ms, so this still separates
-        // hand-off from blocking by construction, without a tight bound that a loaded CI runner trips
-        // (86 ms was observed on CI with the hand-off working).
-        assertThat(elapsedMs).as("raise() returned after %d ms with a 2 s publisher", elapsedMs)
-                             .isLessThan(1000L);
-        await(() -> published.getCount() == 0L, 5);
+        release.countDown();
+        assertThat(finished.await(10, TimeUnit.SECONDS)).as("the publisher finishes once released").isTrue();
     }
 
     /// #1617 R2: a burst beyond the hand-off queue is dropped and counted, never blocking the caller; the
@@ -186,13 +184,13 @@ class OperatorWarningsTest {
             .anyMatch(line -> line.startsWith("10 operator warning event(s) dropped"));
     }
 
-    private static void slowPublish(CountDownLatch published) {
+    private static void gatedPublish(CountDownLatch release, CountDownLatch finished) {
         try {
-            Thread.sleep(2_000);
+            release.await(10, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-        published.countDown();
+        finished.countDown();
     }
 
     private static void block(CountDownLatch inPublisher, CountDownLatch release, AtomicInteger publishedCount) {

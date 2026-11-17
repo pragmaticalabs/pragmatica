@@ -41,11 +41,12 @@ public class CstCauseShapeRule implements CstLintRule {
         }
 
         var causeNames = CauseHierarchies.causeInterfaceNames(root);
-        var diagnostics = Stream.<Diagnostic>builder();
+        var diagnostics = Stream.<Diagnostic> builder();
 
         for (var cls : findAllClasses(root)) {
             if (CauseHierarchies.isCauseVariant(cls, causeNames)) {
-                diagnostics.add(diagnostic(cls, ctx,
+                diagnostics.add(diagnostic(cls,
+                                           ctx,
                                            "Cause variant '" + DeclSupport.declName(cls)
                                           + "' is a class; a data-carrying failure belongs in a record, a fixed-text one in the hierarchy's enum"));
             }
@@ -55,11 +56,13 @@ public class CstCauseShapeRule implements CstLintRule {
             var components = CauseHierarchies.recordComponentNames(record);
 
             if (components.isEmpty() && !PLACEHOLDER_FILLER.equals(DeclSupport.declName(record))) {
-                diagnostics.add(diagnostic(record, ctx,
+                diagnostics.add(diagnostic(record,
+                                           ctx,
                                            "Cause record '" + DeclSupport.declName(record)
                                           + "' has no components and cannot implement message() structurally"));
             } else if (components.size() == 1 && "message".equals(components.getFirst())) {
-                diagnostics.add(diagnostic(record, ctx,
+                diagnostics.add(diagnostic(record,
+                                           ctx,
                                            "Fixed-text failure '" + DeclSupport.declName(record)
                                           + "' modeled as a message-only record; it belongs in the hierarchy's enum"));
             }
@@ -79,28 +82,30 @@ public class CstCauseShapeRule implements CstLintRule {
     /// wearing enum clothes.
     private java.util.Optional<Diagnostic> malformedEnumDiagnostic(Cursor anEnum, LintContext ctx) {
         var extraField = findAll(anEnum, RuleKind.FIELD_DECL).stream()
-                                 .anyMatch(field -> !MESSAGE_FIELD.matcher(text(field)).find());
-
+                                .anyMatch(field -> !MESSAGE_FIELD.matcher(text(field)).find());
         var dataConstant = findAll(anEnum, RuleKind.ENUM_CONST).stream()
-                                   .anyMatch(constant -> CauseHierarchies.enumConstantArgCount(constant) != 1);
+                                  .anyMatch(constant -> CauseHierarchies.enumConstantArgCount(constant) != 1);
 
         if (!extraField && !dataConstant) {
             return java.util.Optional.empty();
         }
 
-        return java.util.Optional.of(diagnostic(anEnum, ctx,
+        return java.util.Optional.of(diagnostic(anEnum,
+                                                ctx,
                                                 "Cause enum '" + DeclSupport.declName(anEnum)
                                                + "' is not in the prescribed shape; a constant carrying data belongs in a record"
                                                + " (record Name(Data data, String message))"));
     }
 
-    private Stream<Diagnostic> anonymousVariants(Cursor root, String source, java.util.Set<String> causeNames, LintContext ctx) {
+    private Stream<Diagnostic> anonymousVariants(Cursor root,
+                                                 String source,
+                                                 java.util.Set<String> causeNames,
+                                                 LintContext ctx) {
         var masked = MapperSafety.blankNonCode(source);
-        var out = Stream.<Diagnostic>builder();
+        var out = Stream.<Diagnostic> builder();
 
         for (var name : causeNames) {
-            var anonymous = Pattern.compile("\\bnew\\s+" + Pattern.quote(name) + "\\s*\\([^)]*\\)\\s*\\{")
-                                   .matcher(masked);
+            var anonymous = Pattern.compile("\\bnew\\s+" + Pattern.quote(name) + "\\s*\\([^)]*\\)\\s*\\{").matcher(masked);
 
             while (anonymous.find()) {
                 out.add(Diagnostic.diagnostic(RULE_ID,

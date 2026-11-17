@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentToken;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
+import org.pragmatica.aether.slice.kvstore.ReplicaFilter;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.Cursor;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -235,12 +236,37 @@ public record ClusterCursorStore(ConsumerCursorStore local,
                                   RewindEpoch rewindEpoch) {
         return committedReader.apply(key)
                               .filter(committed -> committed.token()
-                                                            .equals(token)
-                                                   && committed.committedOffset() == offset
-                                                   && committed.rewindEpoch()
-                                                               .equals(rewindEpoch))
+                                                            .equals(token) && committed.committedOffset() == offset && committed.rewindEpoch()
+                                                                                                                                .equals(rewindEpoch))
                               .map(_ -> CommitOutcome.persisted())
-                              .or(() -> notOurs(key, token, rewindEpoch));
+                              .or(() -> unreadable(key)
+                                        ? blindVerdict(key, token)
+                                        : notOurs(key, token, rewindEpoch));
+    }
+
+    /// #2596: a forwarding node whose replica excludes the cursor key ([ReplicaFilter]) and reads nothing for it can never
+    /// read its checkpoint back. A reader that does show a cursor (a mirror one decision behind, #1335 B1) keeps the read-back path.
+    private boolean unreadable(StreamCursorCheckpointKey key) {
+        return forwarding.getAsBoolean()
+               && ReplicaFilter.replicaFilter().excludes(key)
+               && committedReader.apply(key)
+                                 .isEmpty();
+    }
+
+    /// #2596: the verdict of a node that cannot read its own checkpoint back. The forwarded `Put` and the `Noop` barrier settled on
+    /// the core, whose applier admits the checkpoint exactly while the committed assignment carries our token, so the
+    /// assignment record stands in for the unreadable cursor: still ours means the write was admitted ([CommitOutcome.Persisted]),
+    /// moved means it was refused ([CommitOutcome.Fenced]). Not covered: the rewind fence (#1333), which this node cannot see
+    /// and which the manager's `restartRewound` still handles. [unverified: that the barrier brings the assignment mirror up to
+    /// the decision; a mirror one decision behind reports Persisted for a write the core refused, which costs a redelivery, not a skip.]
+    private CommitOutcome blindVerdict(StreamCursorCheckpointKey key, AssignmentToken token) {
+        return committedAssignments.assignmentOf(key.streamName(),
+                                                 key.partitionIndex(),
+                                                 key.consumerGroup())
+                                   .filter(assignment -> assignment.token()
+                                                                   .equals(token))
+                                   .map(_ -> CommitOutcome.persisted())
+                                   .or(() -> fenced(key, token));
     }
 
     /// The committed checkpoint is not ours. Fenced only if the assignment record agrees — it no longer

@@ -64,7 +64,6 @@ public sealed interface ScoreCalculator permits ScoreCalculator.unused {
     record unused() implements ScoreCalculator {}
 
     Logger log = LoggerFactory.getLogger(ScoreCalculator.class);
-
     /// Lines per KLOC: the density denominator scale.
     double LINES_PER_KLOC = 1000.0;
 
@@ -74,7 +73,8 @@ public sealed interface ScoreCalculator permits ScoreCalculator.unused {
         var breakdown = new EnumMap<ScoreCategory, ScoreResult.CategoryScore>(ScoreCategory.class);
 
         for (var category : ScoreCategory.values()) {
-            breakdown.put(category, categoryScore(violationsIn(category, scan.diagnostics()), scan.linesOfCode()));
+            breakdown.put(category,
+                          categoryScore(violationsIn(category, scan.diagnostics()), scan.linesOfCode()));
         }
 
         return ScoreResult.scoreResult(totalDensity(breakdown, scan.linesOfCode()),
@@ -103,7 +103,8 @@ public sealed interface ScoreCalculator permits ScoreCalculator.unused {
 
     private static void warnUnknownRule(String ruleId) {
         log.warn("Lint rule '{}' has no score-category mapping and is excluded from the JBCT density report; "
-                 + "add it to RuleCategoryMapping (categorized or intentionally uncategorized).", ruleId);
+                + "add it to RuleCategoryMapping (categorized or intentionally uncategorized).",
+                 ruleId);
     }
 
     private static List<Diagnostic> violationsIn(ScoreCategory category, List<Diagnostic> diagnostics) {
@@ -135,7 +136,8 @@ public sealed interface ScoreCalculator permits ScoreCalculator.unused {
     private static double totalDensity(Map<ScoreCategory, ScoreResult.CategoryScore> breakdown, int linesOfCode) {
         return densityPerKloc(ScoreCategory.countedCategories()
                                            .stream()
-                                           .mapToInt(category -> breakdown.get(category).violations())
+                                           .mapToInt(category -> breakdown.get(category)
+                                                                          .violations())
                                            .sum(),
                               linesOfCode);
     }

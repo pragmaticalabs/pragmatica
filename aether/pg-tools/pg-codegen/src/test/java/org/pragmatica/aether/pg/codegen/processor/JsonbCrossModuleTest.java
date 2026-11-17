@@ -34,7 +34,11 @@ class JsonbCrossModuleTest {
         import org.pragmatica.aether.pg.codegen.annotation.Jsonb;
         import org.pragmatica.lang.Option;
 
-        public record DocumentRow(long id, @Jsonb Profile profile, @Jsonb Option<Profile> previous) {}
+        public record DocumentRow(long id, @Jsonb Profile profile, @Jsonb Option<Profile> previous) {
+            public static DocumentRow documentRow(long id, Profile profile, Option<Profile> previous) {
+                return new DocumentRow(id, profile, previous);
+            }
+        }
         """;
     private static final String REPO = """
         package test;

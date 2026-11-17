@@ -278,10 +278,7 @@ public class PgRow implements Row, KeyToValue {
         // so a binary-format column was decoded as text. `UPDATE ... RETURNING id` returns uuid in
         // binary, which then reached UUID.fromString as mojibake and failed AFTER the statement had
         // already committed -- the caller saw "store unavailable" for a write that applied.
-        return dataConverter.toObject(columns[index].type(),
-                                      data.getValue(index),
-                                      type,
-                                      columns[index].isBinary());
+        return dataConverter.toObject(columns[index].type(), data.getValue(index), type, columns[index].isBinary());
     }
 
     @Override

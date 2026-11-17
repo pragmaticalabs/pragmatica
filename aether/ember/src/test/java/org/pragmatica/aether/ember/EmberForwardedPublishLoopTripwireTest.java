@@ -6,14 +6,10 @@ package org.pragmatica.aether.ember;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.util.List;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.Arrays;
-import java.util.TreeSet;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.AfterAll;
@@ -26,45 +22,47 @@ import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.storage.AppendLog;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.StreamTripwireSupport.engineKey;
-import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 
-/// Streams overhaul tripwire, step 2 (#2201), forwarded publish: C-01 - a forwarded publish runs its WAL durability wait on the
+/// Streams overhaul tripwire, step 2 (#2201), forwarded publish: C-01 - a forwarded publish does synchronous disk I/O on the
 /// transport event loop.
 ///
 /// A publish made through a NON-owner's write router (the path every entry point shares, #1263) reaches the owner as a
-/// `PublishForward`, which `QuicClusterNetwork` routes inline on the QUIC loop thread that decoded it. The inbound filter
-/// records which thread delivers each `PublishForward`; a sampler then reads that thread's stack while 400 forwarded publishes
-/// run. The instrument is sampling, so the test asserts a lower bound on what it caught, not a rate: at least one sample finds
-/// the loop thread parked inside `StreamForwardHandler.onPublishForward`. A sampler that missed every stall would fail the
-/// tripwire loudly, not pass it.
-/// - Tripwire: at least one such sample.
-/// - `@Disabled` acceptance: no sample ever finds a transport thread inside `onPublishForward` parked.
+/// `PublishForward`, which `QuicClusterNetwork` routes inline on the QUIC loop thread that decoded it. #2952 took the WAL
+/// group-commit wait off that thread, but the FIRST append of a fresh owner epoch still records the epoch on the loop thread:
+/// `AppendLog.writeAttributed` -> `EpochHistory.persist` -> `FileChannel.force` (the sidecar file, then its directory), under
+/// the epoch history's lock. Every later append of the epoch skips it, so the stall is one per epoch and a stack sampler lands
+/// on it only by luck (#3128: 0 of 1875 samples under CI load).
 ///
-/// One cluster for the class (with data directories: the WAL is what is waited on), booted by the first test that runs.
+/// The instrument is therefore not a sampler: `AppendLog.epochPersistProbe` (test-only) runs on the thread that enters
+/// `EpochHistory.persist`, and the probe records that thread and its stack. Each test publishes through a FRESH stream, so its
+/// first forwarded publish records a fresh epoch every time.
+/// - Tripwire: `persist` WAS entered on a transport event-loop thread from inside `StreamForwardHandler.onPublishForward`.
+/// - `@Disabled` acceptance: `persist` is never entered on a transport thread inside `onPublishForward`.
+///
+/// One cluster for the class (with data directories: the epoch sidecar and the WAL live there), booted by the first test that runs.
 @PortBudget
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class EmberForwardedPublishLoopTripwireTest {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final long ISR_BUDGET_MS = 90_000L;
-    private static final int FORWARDED_PUBLISHES = 400;
-    private static final String STREAM = "c04";
-    private static final String ENGINE_KEY = engineKey(STREAM);
+    private static final int FORWARDED_PUBLISHES = 20;
 
-    private final Set<Thread> forwardThreads = ConcurrentHashMap.newKeySet();
+    private final ConcurrentLinkedQueue<Persist> persists = new ConcurrentLinkedQueue<>();
     private final AtomicLong forwardsSeen = new AtomicLong();
 
     private EmberCluster cluster;
     private Path dataDir;
-    private AetherNode owner;
-    private AetherNode replica;
     private Throwable bootFailure;
+    private volatile String watchedKey = "";
 
     @AfterAll
     void tearDown() {
+        AppendLog.epochPersistProbe(() -> {});
         if (cluster != null) {
             assertThat(cluster.stop().await(STOP_BOUND).fold(Cause::message, _ -> "stopped")).isEqualTo("stopped");
         }
@@ -73,42 +71,84 @@ class EmberForwardedPublishLoopTripwireTest {
 
     @Test
     @Timeout(600)
-    void forwardedPublish_tripwire_parksTheTransportLoopThreadInsideTheHandler() {
-        boot();
+    void forwardedPublish_tripwire_persistsTheEpochHistoryOnTheTransportLoopThread() {
+        var run = publishThroughFreshStream("c04");
 
-        var samples = sampleForwardedPublishes();
-
-        assertThat(samples.forwardsSeen()).as("control: the owner received the forwarded publishes (PublishForward messages seen)").isGreaterThanOrEqualTo((long) FORWARDED_PUBLISHES);
-        assertThat(samples.transportThreads()).as("control: PublishForward was delivered on netty/QUIC event-loop threads").isNotEmpty()
-                                              .allSatisfy(name -> assertThat(name).contains("EventLoop"));
-        assertThat(samples.parkedInHandler()).as("C-01 fixed? No sample of the transport thread found it parked inside StreamForwardHandler.onPublishForward "
-                                                 + "(samples inside the handler: %d, example frames: %s). Delete this tripwire and enable "
-                                                 + "forwardedPublish_neverParksTheTransportLoopThread (#2201)",
-                                                 samples.insideHandler(),
-                                                 samples.example())
-                                             .isGreaterThanOrEqualTo(1L);
+        assertThat(run.forwardsSeen()).as("control: the owner received the forwarded publishes (PublishForward messages seen)").isGreaterThanOrEqualTo((long) FORWARDED_PUBLISHES);
+        assertThat(run.persists()).as("control: the fresh stream's first append recorded its epoch (EpochHistory.persist entered)").isNotEmpty();
+        assertThat(run.onTransportInHandler()).as("C-01 fixed? EpochHistory.persist (FileChannel.force under the AppendLog lock) was never entered on a transport "
+                                                  + "event-loop thread inside StreamForwardHandler.onPublishForward (persists seen: %s). Delete this tripwire and "
+                                                  + "enable forwardedPublish_neverPersistsTheEpochHistoryOnTheTransportLoopThread (#2201, #3130)",
+                                               run.summary())
+                                              .isNotEmpty();
     }
 
     @Test
-    @Disabled("C-01 (#2201): enable when the forwarded publish's WAL wait leaves the transport thread; RED today: the loop thread is parked inside onPublishForward")
+    @Disabled("C-01 (#2201): enable when the forwarded publish's epoch-history persist leaves the transport thread; RED today: EpochHistory.persist forces the sidecar file and directory on the loop thread")
     @Timeout(600)
-    void forwardedPublish_neverParksTheTransportLoopThread() {
-        boot();
+    void forwardedPublish_neverPersistsTheEpochHistoryOnTheTransportLoopThread() {
+        var run = publishThroughFreshStream("c04b");
 
-        var samples = sampleForwardedPublishes();
-
-        assertThat(samples.forwardsSeen()).as("control: the owner received the forwarded publishes").isGreaterThanOrEqualTo((long) FORWARDED_PUBLISHES);
-        assertThat(samples.parkedInHandler()).as("samples that found a transport thread parked inside onPublishForward (example frames: %s)", samples.example()).isZero();
+        assertThat(run.forwardsSeen()).as("control: the owner received the forwarded publishes").isGreaterThanOrEqualTo((long) FORWARDED_PUBLISHES);
+        assertThat(run.persists()).as("control: the fresh stream's first append recorded its epoch (EpochHistory.persist entered)").isNotEmpty();
+        assertThat(run.onTransportInHandler()).as("EpochHistory.persist entered on a transport thread inside onPublishForward (persists seen: %s)", run.summary()).isEmpty();
     }
 
-    private record Samples(long forwardsSeen, Set<String> transportThreads, long insideHandler, long parkedInHandler, String example) {}
+    /// One `persist` entry: the thread that made it, and whether that thread was inside `StreamForwardHandler.onPublishForward`.
+    private record Persist(String thread, boolean inHandler, String frames) {}
+
+    private record Run(long forwardsSeen, List<Persist> persists) {
+        List<Persist> onTransportInHandler() {
+            return persists.stream().filter(entry -> entry.inHandler() && entry.thread().contains("EventLoop")).toList();
+        }
+
+        String summary() {
+            return persists.stream().map(entry -> entry.thread() + (entry.inHandler() ? " [in onPublishForward] " : " ") + entry.frames()).collect(Collectors.joining(" || "));
+        }
+    }
+
+    private Run publishThroughFreshStream(String stream) {
+        boot();
+
+        var engineKey = engineKey(stream);
+
+        StreamTripwireSupport.createStream(cluster.allNodes().getFirst(), StreamTripwireSupport.smallRingStream(stream, 1, 100_000L, 3_600_000L));
+
+        var record = StreamTripwireSupport.awaitFullIsr(cluster, engineKey, ISR_BUDGET_MS);
+        var owner = cluster.getNode(record.owner().id()).unwrap();
+        var replica = cluster.allNodes().stream().filter(node -> !node.self().equals(owner.self())).findFirst().orElseThrow();
+        var router = StreamTripwireSupport.component(replica, "streamWriteRouter", StreamWriteRouter.class);
+        var forwardsBefore = forwardsSeen.get();
+
+        persists.clear();
+        watchedKey = engineKey;
+        AppendLog.epochPersistProbe(this::recordPersist);
+
+        for (var i = 0; i < FORWARDED_PUBLISHES; i++) {
+            var offset = StreamTripwireSupport.publishOnceActivated(router, engineKey, ("forwarded-" + i).getBytes(StandardCharsets.UTF_8));
+
+            assertThat(offset.isSuccess()).as("forwarded publish %d via the non-owner %s: %s", i, replica.self().id(), offset).isTrue();
+        }
+        AppendLog.epochPersistProbe(() -> {});
+
+        return new Run(forwardsSeen.get() - forwardsBefore, List.copyOf(persists));
+    }
+
+    /// Runs on whichever thread enters `EpochHistory.persist`; reads its own stack, once.
+    private void recordPersist() {
+        var thread = Thread.currentThread();
+        var frames = thread.getStackTrace();
+        var inHandler = Arrays.stream(frames).anyMatch(frame -> frame.getMethodName().equals("onPublishForward"));
+
+        persists.add(new Persist(thread.getName(), inHandler, Arrays.stream(frames).skip(2).limit(8).map(StackTraceElement::toString).collect(Collectors.joining(" <- "))));
+    }
 
     private void boot() {
         if (bootFailure != null) {
             throw new AssertionError("the shared cluster failed to boot for an earlier test: " + bootFailure, bootFailure);
         }
 
-        if (owner != null) {
+        if (cluster != null) {
             return;
         }
 
@@ -124,83 +164,20 @@ class EmberForwardedPublishLoopTripwireTest {
     private void bootCluster() {
         cluster = EmberTestPorts.startedCluster(StreamTripwireSupport.PORTS, this::threeNodes, START_BOUND);
         StreamTripwireSupport.awaitLeader(cluster);
-        StreamTripwireSupport.createStream(cluster.allNodes().getFirst(), StreamTripwireSupport.smallRingStream(STREAM, 1, 100_000L, 3_600_000L));
-
-        var record = StreamTripwireSupport.awaitFullIsr(cluster, ENGINE_KEY, ISR_BUDGET_MS);
-
-        owner = cluster.getNode(record.owner().id()).unwrap();
-        replica = cluster.allNodes().stream().filter(node -> !node.self().equals(owner.self())).findFirst().orElseThrow();
         cluster.allNodes().forEach(this::observe);
     }
 
-    /// A pure observer on every node's inbound path: it counts and records, and lets every message through.
+    /// A pure observer on every node's inbound path: it counts, and lets every message through.
     private void observe(AetherNode node) {
         node.setInboundFaultFilter((_, message) -> observed(message));
     }
 
     private boolean observed(Object message) {
-        if (message instanceof StreamForwardMessage.PublishForward forward && ENGINE_KEY.equals(forward.streamName())) {
+        if (message instanceof StreamForwardMessage.PublishForward forward && watchedKey.equals(forward.streamName())) {
             forwardsSeen.incrementAndGet();
-            forwardThreads.add(Thread.currentThread());
         }
 
         return true;
-    }
-
-    private Samples sampleForwardedPublishes() {
-        var forwardsBefore = forwardsSeen.get();
-        var running = new AtomicBoolean(true);
-        var inside = new AtomicLong();
-        var parked = new AtomicLong();
-        var example = new AtomicReference<>("none");
-        var sampler = Thread.ofPlatform().name("tripwire-stack-sampler").start(() -> sampleLoop(running, inside, parked, example));
-        var router = StreamTripwireSupport.component(replica, "streamWriteRouter", StreamWriteRouter.class);
-
-        for (var i = 0; i < FORWARDED_PUBLISHES; i++) {
-            var offset = StreamTripwireSupport.publishOnceActivated(router, ENGINE_KEY, ("forwarded-" + i).getBytes(StandardCharsets.UTF_8));
-
-            assertThat(offset.isSuccess()).as("forwarded publish %d via the non-owner %s: %s", i, replica.self().id(), offset).isTrue();
-        }
-        running.set(false);
-        StreamTripwireSupport.joinQuietly(sampler);
-
-        var names = new TreeSet<String>();
-
-        forwardThreads.forEach(thread -> names.add(thread.getName()));
-
-        return new Samples(forwardsSeen.get() - forwardsBefore, names, inside.get(), parked.get(), example.get());
-    }
-
-    private void sampleLoop(AtomicBoolean running,
-                            AtomicLong inside,
-                            AtomicLong parked,
-                            AtomicReference<String> example) {
-        while (running.get()) {
-            for (var thread : List.copyOf(forwardThreads)) {
-                sampleOne(thread, inside, parked, example);
-            }
-            Thread.onSpinWait();
-        }
-    }
-
-    private static void sampleOne(Thread thread, AtomicLong inside, AtomicLong parked, AtomicReference<String> example) {
-        var frames = thread.getStackTrace();
-        var inHandler = Arrays.stream(frames).anyMatch(frame -> frame.getMethodName().equals("onPublishForward"));
-
-        if (!inHandler) {
-            return;
-        }
-        inside.incrementAndGet();
-        if (Arrays.stream(frames).limit(12).anyMatch(EmberForwardedPublishLoopTripwireTest::isBlockingFrame)) {
-            parked.incrementAndGet();
-            example.compareAndSet("none", Arrays.stream(frames).limit(8).map(StackTraceElement::toString).collect(Collectors.joining(" <- ")));
-        }
-    }
-
-    private static boolean isBlockingFrame(StackTraceElement frame) {
-        var method = frame.getMethodName();
-
-        return method.equals("park") || method.equals("parkNanos") || method.equals("await") || method.equals("force") || method.equals("force0");
     }
 
     private EmberCluster threeNodes(int basePort) {

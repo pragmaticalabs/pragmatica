@@ -5,6 +5,7 @@
 package org.pragmatica.aether.api.routes;
 
 import io.netty.buffer.ByteBuf;
+import java.util.Locale;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -99,7 +100,7 @@ class ScheduledTaskRoutesExecutionsByNodeTest {
                           .await();
 
             assertThat(result.isFailure()).isTrue();
-            result.onFailure(cause -> assertThat(cause.message().toLowerCase()).contains("not found"));
+            result.onFailure(cause -> assertThat(cause.message().toLowerCase(Locale.ROOT)).contains("not found"));
         }
     }
 

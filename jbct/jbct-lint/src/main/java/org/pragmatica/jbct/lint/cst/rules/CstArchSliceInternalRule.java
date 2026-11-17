@@ -58,13 +58,13 @@ public class CstArchSliceInternalRule implements CstLintRule {
             return Stream.empty();
         }
 
-        var fileSliceRoot = ctx.layers()
-                               .sliceRootOf(packageName);
+        var fileSliceRoot = ctx.layers().sliceRootOf(packageName);
         var diagnostics = Stream.<Diagnostic> builder();
 
         for (var reference : ArchSupport.collectReferences(root)) {
-            crossSliceViolation(reference.packageName(), fileSliceRoot, ctx).onPresent(reason ->
-                diagnostics.add(createDiagnostic(reference.node(), reason, ctx)));
+            crossSliceViolation(reference.packageName(), fileSliceRoot, ctx).onPresent(reason -> diagnostics.add(createDiagnostic(reference.node(),
+                                                                                                                                  reason,
+                                                                                                                                  ctx)));
         }
 
         return diagnostics.build();
@@ -81,8 +81,9 @@ public class CstArchSliceInternalRule implements CstLintRule {
                   .sliceRootOf(referencedPackage)
                   .filter(referencedRoot -> !referencedPackage.equals(referencedRoot))
                   .filter(referencedRoot -> !belongsToSameSlice(fileSliceRoot, referencedRoot))
-                  .map(referencedRoot -> "import reaches into slice '" + referencedRoot + "' internal package '"
-                                         + referencedPackage + "'");
+                  .map(referencedRoot -> "import reaches into slice '" + referencedRoot
+                                        + "' internal package '" + referencedPackage
+                                        + "'");
     }
 
     private boolean belongsToSameSlice(Option<String> fileSliceRoot, String referencedRoot) {

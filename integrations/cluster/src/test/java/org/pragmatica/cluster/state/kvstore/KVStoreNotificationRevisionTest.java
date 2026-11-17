@@ -242,4 +242,57 @@ class KVStoreNotificationRevisionTest {
 
         assertThat(events).containsExactly("install@10", "put", "install@10", "put");
     }
+
+    /// #2981 C1: replay-start is a listener LIST. FSM2's install signal and the node lease's revoke both register; a single slot would let the
+    /// second registration displace the first (fail-open revoke). Mutation: back to one slot (assignment) -> RED on "first".
+    @Test
+    void replayStart_tellsEveryRegisteredListener_inRegistrationOrder() {
+        var events = new ArrayList<String>();
+
+        recordPuts();
+        store.processCommitted(store.createBatch(List.of(new KVCommand.Put<>(FIRST, "one"))), 8);
+        store.onReplayStart(revision -> events.add("first@" + revision));
+        store.onReplayStart(revision -> events.add("second@" + revision));
+
+        store.replayNotifications();
+
+        assertThat(events).containsExactly("first@8", "second@8");
+    }
+
+    /// #2981 C1: one failing replay-start listener does not skip the ones registered after it (the revoke must not depend on FSM2's listener
+    /// staying healthy). Mutation: drop the per-listener isolation -> RED (the throw escapes and "second" is never told).
+    @Test
+    void replayStart_aThrowingListener_doesNotSkipTheOthers() {
+        var events = new ArrayList<String>();
+
+        recordPuts();
+        store.processCommitted(store.createBatch(List.of(new KVCommand.Put<>(FIRST, "one"))), 8);
+        store.onReplayStart(KVStoreNotificationRevisionTest::failingListener);
+        store.onReplayStart(revision -> events.add("second@" + revision));
+
+        store.replayNotifications();
+
+        assertThat(events).containsExactly("second@8");
+    }
+
+    /// #2981 step 2, S2 (r7 S2): every reset listener is told, in registration order, BEFORE the store is emptied (the node lease is revoked
+    /// before the view can regress). Mutations: `reset()` not calling the listeners -> RED (no events); listeners told after `resetStorage`
+    /// -> RED (they see 0 entries).
+    @Test
+    void reset_tellsEveryResetListener_beforeTheStoreIsEmptied() {
+        var events = new ArrayList<String>();
+
+        store.processCommitted(store.createBatch(List.of(new KVCommand.Put<>(FIRST, "one"))), 8);
+        store.onReset(() -> events.add("first:" + store.snapshot().size()));
+        store.onReset(() -> events.add("second:" + store.snapshot().size()));
+
+        store.reset();
+
+        assertThat(events).containsExactly("first:1", "second:1");
+        assertThat(store.snapshot()).isEmpty();
+    }
+
+    private static void failingListener(long revision) {
+        throw new IllegalStateException("listener failure at " + revision);
+    }
 }
