@@ -189,6 +189,23 @@ class SlPlacementTest {
             assertThat(h.warns("invalid-placement")).isNotEmpty();
         }
 
+        /// #3274 (seen over GET /api/v1/warnings): the `invalid-placement` text carries the parse failure's message on one line. Red when:
+        /// the text carries the exception's stack trace (the default lift mapper), i.e. a newline or a "\tat " frame.
+        @Test
+        void invalidPlacement_textIsTheCauseMessageOnly() {
+            var h = threeCores();
+
+            h.seedQuietly(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "NOWHERE"));
+            h.activate();
+            var message = h.warns("invalid-placement")
+                           .getFirst()
+                           .message();
+
+            assertThat(message).contains("NOWHERE")
+                               .doesNotContain("\n")
+                               .doesNotContain("\tat ");
+        }
+
         /// D.6 row 10 (know 7cc9e79f61). Red when: `invalid-placement` is raised on every pass instead of once per episode; the first pass
         /// that parses the placement does not close it with `placement-valid`, same subject; or the close is raised while it is invalid.
         @Test

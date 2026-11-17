@@ -92,12 +92,12 @@ public sealed interface Failures {
     }
 
     private static ClusterModel closeOne(ClusterModel m, Ctx ctx, Artifact artifact, String why) {
-        m.retryExhaustedWarned = m.retryExhaustedWarned.remove(artifact);
-        ctx.warn(Recoveries.RETRY_EXHAUSTED_SETTLED,
-                 artifact.asString(),
-                 "Retries of " + artifact.asString() + ": " + why);
-
-        return m;
+        return Warnings.raise(m,
+                              Recoveries.RETRY_EXHAUSTED_SETTLED,
+                              artifact.asString(),
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              "Retries of " + artifact.asString() + ": " + why);
     }
 
     /// R-3.3.6: the terminal both failure branches converge on.
@@ -193,18 +193,17 @@ public sealed interface Failures {
         }
 
         routeFailed(m, ctx, pair, reason);
-        // #2834: once per episode: an open warning, this leader's or inherited from the committed open set (`Warnings.inherit`), is not raised again.
-        if (!m.retryExhaustedWarned.contains(artifact)) {
-            m.retryExhaustedWarned = m.retryExhaustedWarned.add(artifact);
-            ctx.warn("retry-exhausted-unsettled",
-                     artifact.asString(),
-                     "Max retries exceeded for " + artifact
-                    + " on " + pair.node().id()
-                    + ": " + reason
-                    + " - not marking permanently failed, no blueprint apply is outstanding");
-        }
-
-        return m;
+        // #3274: evidence at every exhaustion; `Warnings.raise` opens once per episode (a held key is not raised again).
+        return Warnings.raise(m,
+                              Warnings.RETRY_EXHAUSTED,
+                              artifact.asString(),
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              "Max retries exceeded for " + artifact
+                             + " on " + pair.node()
+                                            .id()
+                             + ": " + reason
+                             + " - not marking permanently failed, no blueprint apply is outstanding");
     }
 
     /// The announcement rides the failure transaction and goes out when that transaction is accepted. A write that is lost is decided

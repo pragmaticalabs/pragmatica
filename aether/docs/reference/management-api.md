@@ -386,6 +386,30 @@ Returns the principal, authorization role, and roles attached to the request's a
 
 Route is `LOCAL` (no forwarding) — the answer is per-request, not per-cluster.
 
+### GET /api/v1/warnings
+
+The open FSM warnings of ONE committed state, read on the answering core node and labelled by that core's committed revision. Core nodes only; the route is not forwarded, so point the client at a core.
+
+```bash
+curl http://localhost:8080/api/v1/warnings
+```
+
+```json
+{
+  "revision": 1842,
+  "warnings": [
+    {"code": "STRAY", "subject": "node-4", "members": {"node-4": "..."}, "message": "..."}
+  ]
+}
+```
+
+- `warnings` are sorted by `code`, then `subject`. `members` are the parts of a subject that covers several instances (empty for a single-instance subject). `message` is the row's latest message, as the writing leader committed it. A closed row (a recovered warning: `open` false, no members) is not listed.
+- **Refusals (503, typed, each with its own detail):** (1) the node is a worker (its replica holds no warning rows); (2) the core does not hold quorum (the same signal `/api/status`, `/api/health` and `/health/ready` report); (3) the core has committed no state yet (revision 0, genesis or a reset store); (4) the core's revision label is not exact (a snapshot restore moved the label without the content). Recovery: query another core, or retry; the not-exact refusal clears at the core's next snapshot install.
+- **Staleness of a served answer:** the answering core's apply lag, which is not bounded. The quorum check is an observation read just before the store read, not a safety guard. `[mechanism: one KVStore monitor hold reads revision, exact flag and rows together]`
+- **Guarantee:** the answer is one committed state of ONE core, read under one store monitor hold. It is not linearizable: two cores, or two requests to one core, may answer from different states. `revision` is the only ordering signal, and it is not monotone across cores, a reset, a snapshot install or a restart (a reset or restart returns it to a lower value). A served answer can trail the cluster by the core's apply lag. Do not use it as an automation gate (for example "no warnings, so proceed"): an empty list says only that this core's state at `revision` holds none.
+
+CLI: `aether warnings`.
+
 ### GET /api/v1/events
 
 Get cluster events from the event aggregator. Returns structured events including topology changes, leader elections, deployments, slice failures, and network events.
