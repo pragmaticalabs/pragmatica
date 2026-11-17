@@ -72,7 +72,9 @@ public class CstTechnicalPackageSegmentRule implements CstLintRule {
 
     private String matches(List<String> flagged) {
         return flagged.stream()
-                      .map(segment -> "segment '" + segment + "' matches word '" + segment.toLowerCase(Locale.ROOT) + "'")
+                      .map(segment -> "segment '" + segment
+                                     + "' matches word '" + segment.toLowerCase(Locale.ROOT)
+                                     + "'")
                       .collect(Collectors.joining(", "));
     }
 

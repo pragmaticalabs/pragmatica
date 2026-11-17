@@ -188,6 +188,7 @@ record PartialConfig(PartialFormatter formatter,
         private static final String NAMING = "lint.naming";
         private static final Set<String> NAMING_KEYS = Set.of("add", "remove");
         private static final String NAMING_KEYS_EXPECTED = "one of the keys: add, remove";
+
         private static final String NAMING_WORDS_EXPECTED = "an array of single-token words made of letters and digits, e.g. [\"Saga\"]";
 
         PartialLint {
@@ -232,8 +233,7 @@ record PartialConfig(PartialFormatter formatter,
 
         private static String namingProblems(List<String> words) {
             return words.stream()
-                        .flatMap(word -> TechnicalWords.problem(word)
-                                                       .stream())
+                        .flatMap(word -> TechnicalWords.problem(word).stream())
                         .collect(Collectors.joining("; "));
         }
 

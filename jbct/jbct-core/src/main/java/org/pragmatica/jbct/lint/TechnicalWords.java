@@ -25,6 +25,7 @@ import org.pragmatica.lang.Option;
 public record TechnicalWords(Set<String> typeWords, Set<String> packageWords) {
     private static final Pattern CAMEL_BOUNDARY = Pattern.compile("(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])");
     private static final Pattern WORD_SHAPE = Pattern.compile("[A-Za-z][A-Za-z0-9]*");
+
     private static final List<String> TYPE_DEFAULTS = List.of("repository",
                                                               "dao",
                                                               "controller",
@@ -64,8 +65,7 @@ public record TechnicalWords(Set<String> typeWords, Set<String> packageWords) {
     /// The camel-case tokens of a type name: the split JBCT-NAM-06 compares to the words, and the one every configured
     /// word must survive whole.
     public static List<String> tokens(String name) {
-        return CAMEL_BOUNDARY.splitAsStream(name)
-                             .toList();
+        return CAMEL_BOUNDARY.splitAsStream(name).toList();
     }
 
     /// Why a configured word cannot be used, empty when it can: a word is made of letters and digits starting with a
@@ -81,7 +81,8 @@ public record TechnicalWords(Set<String> typeWords, Set<String> packageWords) {
 
         return tokens.size() == 1
                ? Option.none()
-               : Option.some("'" + word + "' splits into the tokens " + String.join(", ", tokens)
+               : Option.some("'" + word
+                            + "' splits into the tokens " + String.join(", ", tokens)
                             + " and so can never equal one token of a type name; configure a single-token word");
     }
 
