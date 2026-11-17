@@ -572,6 +572,7 @@ public final class SliceProjectInitializer {
         indentSize = 4
 
         [lint]
+        mode = "business"
         failOnWarning = false
         # excludePackages = ["some.generated.**"]
         """;
