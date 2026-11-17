@@ -1,1 +1,2 @@
 org.pragmatica.aether.resource.RecordingResourceFactory
+org.pragmatica.aether.resource.db.ControlledSqlConnectorFactory

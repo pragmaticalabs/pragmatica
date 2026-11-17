@@ -2477,6 +2477,11 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
+            public boolean isConfiguredWorker() {
+                return AetherNode.configuredWorker(config);
+            }
+
+            @Override
             public boolean hasCompleteClusterView() {
                 return config.workerConfig()
                              .isEmpty()
@@ -2933,9 +2938,15 @@ public interface AetherNode extends ManageableNode {
         // cluster-sync pong; the leader alone judges "every ACTIVE instance of this version is broken" and
         // routes the event to rollback, the cluster event and the alert. The tick forgets its state on a
         // non-leader, so a new leader starts from fresh windows.
+        // F5b (phase-3 design 8.2 D-10): under FSM2 the ACTIVE instances come from the current SliceObservedKey rows, since FSM2
+        // writes no NodeArtifactKey and the legacy source would leave the detector, and #1573 auto-rollback, inert.
         var allInstancesFailedDetector = AllInstancesFailedDetector.allInstancesFailedDetector(metricsCollector::allObservations,
-                                                                                               () -> activeInstancesByArtifact(deploymentMap,
-                                                                                                                               Option.option(membershipFsmRef.get())),
+                                                                                               deploymentWiring.source("B22.AllInstancesFailedDetector.activeInstances",
+                                                                                                                       () -> ObservedSourceWiring.observedActiveInstances(kvStore,
+                                                                                                                                                                          Option.option(membershipFsmRef.get()),
+                                                                                                                                                                          admissionSeam),
+                                                                                                                       () -> activeInstancesByArtifact(deploymentMap,
+                                                                                                                                                       Option.option(membershipFsmRef.get()))),
                                                                                                isLeaderSupplier,
                                                                                                delegateRouter::route,
                                                                                                System::currentTimeMillis);
@@ -3152,7 +3163,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               growthLog,
                                                                                                                               selfId,
                                                                                                                               gossipKeyRotationHandler,
-                                                                                                                              reactors.executor("WorkerActivation")));
+                                                                                                                              reactors.executor("WorkerActivation"),
+                                                                                                                              drainProcedure,
+                                                                                                                              nodeReportedStateHolder,
+                                                                                                                              operatorWarningSink));
         var governorAnnouncerHolder = workerActivationOut.governorAnnouncerHolder();
         var communityDirectory = workerActivationOut.communityDirectory();
         var activationKvRouter = workerActivationOut.activationKvRouter();
@@ -3544,6 +3558,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                    clusterCommandApplier,
                                                                                                    operatorWarningSink,
                                                                                                    sliceInvoker,
+                                                                                                   membershipFsm::workerCountedMembers,
                                                                                                    taskGroupOwnerResolver,
                                                                                                    delegatedStorageAdapter,
                                                                                                    allEntries,
@@ -5183,9 +5198,9 @@ public interface AetherNode extends ManageableNode {
         // #231 Step 2 — CDM (DEPLOYMENT) leader-pinned. LoadBalancer (DEPLOYMENT) MUST be registered
         // AFTER CDM since it reconciles routes CDM produces.
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              deploymentWiring.legacyGated("B7.LeaderChange",
-                                                                           change -> toggleCdmOnLeaderChange(change,
-                                                                                                             clusterDeploymentManager))));
+                                              deploymentWiring.legacyGatedLeaderToggle("B7.LeaderChange",
+                                                                                       change -> toggleCdmOnLeaderChange(change,
+                                                                                                                         clusterDeploymentManager))));
         loadBalancerManager.onPresent(lbm -> entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                                                    change -> toggleLbOnLeaderChange(change,
                                                                                                                     lbm))));

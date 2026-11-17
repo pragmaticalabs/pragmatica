@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node.deployment;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -116,8 +117,10 @@ public final class EngineMarkerGuard {
     private final LongSupplier wallClock;
     private final OperatorWarningSink warnings;
     private final Consumer<String> exit;
-    private final Map<String, Runnable> parked = new LinkedHashMap<>();
-    /// Serializes the actions; held while one runs, never by a thread that is only deciding.
+    private final Map<String, List<Runnable>> parked = new LinkedHashMap<>();
+    /// Serializes the actions; held while one runs. A thread that only decides takes it in one case: an evaluation that finds drained work
+    /// pending (its own opening, or an earlier opening whose thread has not yet got the lock, #3270) queues on it to run that work, and may then
+    /// run nothing, because another thread ran the work first or a refusal dropped it (#3271).
     private final ReentrantLock running = new ReentrantLock();
     private List<Runnable> drained = List.of();
     private State state = State.WAITING;
@@ -168,22 +171,39 @@ public final class EngineMarkerGuard {
         return state == State.OPEN;
     }
 
-    /// Runs `action` now if the guard is open; otherwise parks it under `name`, replacing an earlier parked action of that name (an activation
-    /// is level-triggered: a later `Deactivate` supersedes a parked `Activate`). Parked actions run, in the order they were first parked, when
-    /// the guard opens; a refused node drops them.
+    /// Runs `action` now if the guard is open; otherwise parks it under `name`, replacing everything parked under that name (an activation
+    /// is level-triggered: a later `Deactivate` supersedes a parked `Activate`, and a parked `Deactivate`-then-`Activate` pair). Parked actions
+    /// run, in the order they were first parked, when the guard opens. A refused node drops them (#3271): the parked ones, and the drained ones
+    /// an opening has not yet run, whether still pending or already handed to a thread; each drained action checks for a refusal just before it
+    /// runs. What the refusal cannot stop is an action already started, or past that check, when it lands: that one runs to completion.
     @Contract
     public void whenOpen(String name, Runnable action) {
         running.lock();
         try {
-            runAdmitted(name, action);
+            runAdmitted(name, action, false);
+        } finally {
+            running.unlock();
+        }
+    }
+
+    /// Like [#whenOpen], but a parked action of that name is kept and `action` runs after it (#3253): a parked `Activate` must not erase a parked
+    /// `Deactivate`, because the pair re-incarnates the FSM (`Deactivate`, then `Activate`, the B14 rule) while the `Activate` alone is ignored by
+    /// an FSM that is still Active. A later [#whenOpen] under the same name still replaces the whole parked sequence. The guard cannot tell the
+    /// kinds apart (the actions are opaque), so the caller picks the method.
+    @Contract
+    public void whenOpenAfterParked(String name, Runnable action) {
+        running.lock();
+        try {
+            runAdmitted(name, action, true);
         } finally {
             running.unlock();
         }
     }
 
     /// Reads the committed mirror and moves to the state it justifies. Idempotent; called on every notification of the three keys it depends on,
-    /// on a leader change, and when the window ends. It never waits for an action that is running: only the evaluation that opens the guard runs
-    /// what was parked, and only that one queues behind a running action.
+    /// on a leader change, and when the window ends. It does not wait for a running action unless drained work is pending: an evaluation that
+    /// finds parked work drained (its own opening, or an earlier opening whose thread has not yet run it) queues behind a running action to run it.
+    /// Otherwise it only decides and returns.
     @Contract
     public void evaluate() {
         if (decided()) {
@@ -196,7 +216,7 @@ public final class EngineMarkerGuard {
         }
     }
 
-    /// True when this evaluation opened the guard and there is parked work to run.
+    /// True when drained work is pending after this evaluation: this evaluation opened the guard, or an earlier opening is still waiting to run it.
     private synchronized boolean decided() {
         if (state != State.REFUSED) {
             decide(verdict());
@@ -206,17 +226,17 @@ public final class EngineMarkerGuard {
     }
 
     /// With `running` held: runs `action` behind everything drained so far, or parks it.
-    private void runAdmitted(String name, Runnable action) {
-        admitted(name, action).forEach(Runnable::run);
+    private void runAdmitted(String name, Runnable action, boolean keepParked) {
+        admitted(name, action, keepParked).forEach(Runnable::run);
     }
 
     /// Run or park, decided in one step, and only once nothing drained is left ahead (P2, v-2643 finding 2). Drained work is handed back first,
     /// followed by a fresh decision for `action`: an opening that lands while that work runs drains more, and the fresh decision runs it ahead
     /// too, so an older parked action never runs after a newer admitted one. Actions themselves never run under the decision monitor.
-    private synchronized List<Runnable> admitted(String name, Runnable action) {
+    private synchronized List<Runnable> admitted(String name, Runnable action, boolean keepParked) {
         if (!drained.isEmpty()) {
             return Stream.concat(takeDrained().stream(),
-                                 Stream.<Runnable> of(() -> runAdmitted(name, action)))
+                                 Stream.<Runnable> of(() -> runAdmitted(name, action, keepParked)))
                          .toList();
         }
 
@@ -225,18 +245,41 @@ public final class EngineMarkerGuard {
         }
 
         if (state != State.REFUSED) {
-            parked.put(name, action);
+            park(name, action, keepParked);
         }
 
         return List.of();
     }
 
+    private void park(String name, Runnable action, boolean keepParked) {
+        var sequence = keepParked
+                       ? new ArrayList<>(parked.getOrDefault(name, List.of()))
+                       : new ArrayList<Runnable>();
+
+        sequence.add(action);
+        parked.put(name, sequence);
+    }
+
+    /// Hands the drained work out, each action behind a refusal check (#3271): a refusal that lands while an earlier action of the same batch
+    /// runs drops the rest.
     private synchronized List<Runnable> takeDrained() {
         var actions = drained;
 
         drained = List.of();
 
-        return actions;
+        return actions.stream()
+                      .map(this::unlessRefused)
+                      .toList();
+    }
+
+    private Runnable unlessRefused(Runnable action) {
+        return () -> runUnlessRefused(action);
+    }
+
+    private void runUnlessRefused(Runnable action) {
+        if (state() != State.REFUSED) {
+            action.run();
+        }
     }
 
     /// With `running` held: the actions that were parked when the guard opened run first, in the order they were first parked, so an action
@@ -337,6 +380,7 @@ public final class EngineMarkerGuard {
     private void refuse() {
         state = State.REFUSED;
         parked.clear();
+        drained = List.of();
         var reason = describe();
 
         log.error("[{}] {} The node refuses itself and exits.",
@@ -374,8 +418,14 @@ public final class EngineMarkerGuard {
         windowExpired = false;
     }
 
+    /// Appends the parked actions behind any drained work still pending (#3261): an opening whose evaluating thread has not yet got `running`
+    /// leaves its drain in `drained`, and a close and reopen before it does must not discard that work.
+    /// Invariant: an action parks only while `drained` is empty, and `drain()` clears `parked`, so `parked` is empty whenever `drained` is pending.
+    /// The append order is therefore unobservable; the append itself is still required, because a second `drain()` while older work is pending
+    /// must keep that work (#3261).
     private void drain() {
-        drained = List.copyOf(parked.values());
+        drained = Stream.concat(drained.stream(),
+                                parked.values().stream().flatMap(List::stream)).toList();
         parked.clear();
     }
 

@@ -349,10 +349,12 @@ public final class ControlLoopContext {
         return Map.copyOf(sliceActivationTimes);
     }
 
+    /// Warmup entry: undoes the previous term's slice cooldowns. The slice states are NOT cleared (#3230): the feeds record them in every
+    /// FSM state and show each row once, and Warmup entry runs asynchronously after the leader flip, so a row delivered in between
+    /// would be wiped and never replayed. Removals are tracked as live, so the states stay current across terms.
     @Contract
     public void resetSliceProtectionState() {
         protectionGeneration.incrementAndGet();
-        sliceStates.clear();
         sliceActivationTimes.clear();
     }
 

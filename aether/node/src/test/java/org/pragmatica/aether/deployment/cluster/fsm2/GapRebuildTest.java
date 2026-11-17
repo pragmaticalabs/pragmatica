@@ -115,6 +115,8 @@ class GapRebuildTest {
     void rebuild_indexesEveryFamily_andStartsTheLeaderLocalClocksEmpty() {
         var h = everything();
 
+        // #3193: C17b would retire the departed worker's directive; this test reads the Rebuild's indexes before it commits.
+        h.loseKinds = Set.of(ClusterModel.SubmitKind.CLEANUP);
         h.activate();
         var m = h.model();
         var id = blueprintId("org.example:app:1.0.0");

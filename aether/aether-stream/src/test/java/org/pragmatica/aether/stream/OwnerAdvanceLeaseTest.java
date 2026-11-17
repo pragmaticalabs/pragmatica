@@ -17,9 +17,14 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipV
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
+import org.pragmatica.aether.stream.replication.ReplicationMessage;
+import org.pragmatica.aether.stream.replication.ReplicationMessage.CommitAdvance;
+import org.pragmatica.aether.stream.replication.ReplicationTransport;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -65,11 +70,14 @@ class OwnerAdvanceLeaseTest {
     private final AtomicBoolean activated = new AtomicBoolean(true);
     private final AtomicReference<Option<StreamPartitionOwnershipValue>> record = new AtomicReference<>(Option.some(RECORD));
     private final AtomicReference<Option<NodeId>> remoteOwner = new AtomicReference<>(Option.none());
+    private final List<CommitAdvance> announced = new CopyOnWriteArrayList<>();
     private StreamPartitionManager manager;
+    private StreamPartitionManager replica;
 
     @AfterEach
     void closeManager() {
         Option.option(manager).onPresent(StreamPartitionManager::close);
+        Option.option(replica).onPresent(StreamPartitionManager::close);
     }
 
     // ---- one test per non-replica entry path ------------------------------------------------------------------------------
@@ -278,6 +286,99 @@ class OwnerAdvanceLeaseTest {
         assertThat(committed).as("control: under a valid lease the tick announces visible").containsExactly(0L);
     }
 
+    /// #3307 (F-a3): an owner holding the OWNER role and a valid lease whose ownership has NOT activated announces nothing,
+    /// neither from the append listener (the ack raised its visible to 0 through the replica-life mark) nor from any tick. A
+    /// replica that holds the record durably therefore hears no mark, so [StreamPartitionManager#behindCommittedOwner] reads
+    /// `true` (no mark announced in its life: the `or(true)` arm) and its GOVERNOR reads go to the owner instead of its own copy.
+    @Test
+    void notActivatedOwner_announcesNothingOverSeveralTicks_soAReplicaHoldingTheRecordStillForwards() {
+        ownerVisibleAtZero(false);
+        replicaHoldingOneRecord();
+        manager.repeatVisible();
+        manager.repeatVisible();
+        manager.repeatVisible();
+        deliverAnnouncementsToTheReplica();
+        assertThat(announced).as("a not-yet-activated owner announces no visible mark").isEmpty();
+        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("the replica heard nothing: it forwards").isTrue();
+    }
+
+    /// Control for the test above: the same owner, activated, announces its visible mark on the tick, and the same replica then
+    /// reads itself caught up (`false`) and serves locally -- the outcome the not-activated owner must not cause.
+    @Test
+    void activatedOwner_announcesItsVisibleMark_andTheReplicaHoldingTheRecordServesLocally() {
+        ownerVisibleAtZero(true);
+        replicaHoldingOneRecord();
+        manager.repeatVisible();
+        deliverAnnouncementsToTheReplica();
+        assertThat(announced).as("an activated owner announces visible on the tick")
+                             .extracting(CommitAdvance::committedThrough)
+                             .contains(0L);
+        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("the replica heard the mark: it serves locally").isFalse();
+    }
+
+    /// #3307 (F-c1): the empty-log `-1` is a mark too. An owner holding the OWNER role, a valid lease and the record, with an
+    /// EMPTY ring and an ownership NOT activated, announces nothing over several ticks.
+    @Test
+    void notActivatedOwner_withAnEmptyLog_announcesNothingOverSeveralTicks() {
+        ownerWithAnEmptyLog(false);
+        manager.repeatVisible();
+        manager.repeatVisible();
+        manager.repeatVisible();
+        assertThat(announced).as("a not-yet-activated owner announces no mark, not even the empty log's -1").isEmpty();
+    }
+
+    /// Control for the test above, and the never-written partition's path through activation: the same owner, once activated,
+    /// announces `-1` on the tick, and an empty replica of the never-written partition stops forwarding -- as before #3307,
+    /// only delayed to the activation.
+    @Test
+    void ownerWithAnEmptyLog_onceActivated_announcesMinusOne_andAnEmptyReplicaStopsForwarding() {
+        ownerWithAnEmptyLog(false);
+        emptyReplica();
+        manager.repeatVisible();
+        deliverAnnouncementsToTheReplica();
+        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("before activation the replica heard nothing: it forwards")
+                                                                   .isTrue();
+        activated.set(true);
+        manager.repeatVisible();
+        deliverAnnouncementsToTheReplica();
+        assertThat(announced).as("the activated owner announces the empty log")
+                             .extracting(CommitAdvance::committedThrough)
+                             .containsOnly(-1L)
+                             .isNotEmpty();
+        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("the replica heard -1: it answers the never-written partition")
+                                                                   .isFalse();
+    }
+
+    /// #3307 (F-c1): a replica lagging behind the mark it heard from the previous owner (epoch ZERO, through 0; its own copy
+    /// is empty) keeps that mark while the new owner (epoch of [#RECORD]) has not activated: no `-1` arrives to replace it
+    /// under the newer epoch ([StreamPartitionManager] `newerMark`), so `behindCommittedOwner` keeps reading `true`.
+    @Test
+    void laggingReplica_keepsItsMark_whileTheNewOwnerWithAnEmptyLogIsNotActivated() {
+        ownerWithAnEmptyLog(false);
+        laggingReplica();
+        manager.repeatVisible();
+        manager.repeatVisible();
+        manager.repeatVisible();
+        deliverAnnouncementsToTheReplica();
+        assertThat(announced).as("a not-yet-activated owner announces nothing").isEmpty();
+        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("the lagging replica still forwards").isTrue();
+    }
+
+    /// Control for the test above: the same owner, activated, announces `-1` under its newer epoch, which replaces the lagging
+    /// replica's mark -- the outcome a not-activated owner must not cause, so the arms above end in different states.
+    @Test
+    void laggingReplica_markReplacedByMinusOne_onceTheNewOwnerIsActivated() {
+        ownerWithAnEmptyLog(true);
+        laggingReplica();
+        manager.repeatVisible();
+        deliverAnnouncementsToTheReplica();
+        assertThat(announced).as("the activated owner announces the empty log")
+                             .extracting(CommitAdvance::committedThrough)
+                             .containsOnly(-1L)
+                             .isNotEmpty();
+        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("the -1 under the newer epoch replaced the mark").isFalse();
+    }
+
     // ---- structural rule ----------------------------------------------------------------------------------------------------
 
     /// Design §8 (R3-S1): in `StreamPartitionManager`, `advanceVisible(` is called only inside `ownerAdvance` and the REPLICA
@@ -290,7 +391,92 @@ class OwnerAdvanceLeaseTest {
                                           .isNotEmpty();
     }
 
+    /// #3307 (F-c1): an owner's mark leaves the manager only through `sendMark`, and `sendMark` is called only from the one
+    /// gated `announceMark`. Read by method body (declaration line to the closing `    }`), not through [#callersOf], whose
+    /// declaration pattern also matches a bare indented call such as `sendMark(...)`. A second announce site fails here.
+    @Test
+    void announcements_leaveOnlyThroughTheOneGatedMethod() throws IOException {
+        var source = codeLines(Files.readAllLines(SPM_SOURCE));
+
+        assertThat(count(source, ".announceCommitted(")).as("one send of the announce message in the manager").isEqualTo(1);
+        assertThat(count(bodyOf(source, "    private void sendMark("), ".announceCommitted(")).as("... inside sendMark").isEqualTo(1);
+        assertThat(count(source, "sendMark(")).as("sendMark: its declaration and one call").isEqualTo(2);
+        assertThat(count(bodyOf(source, "    private void announceMark("), "sendMark(")).as("... the call inside announceMark")
+                                                                                  .isEqualTo(1);
+    }
+
     // ---- fixture ------------------------------------------------------------------------------------------------------------
+
+    /// An owner (CF 2, lease valid, record naming it) whose visible reaches 0 with or without activation: a mark of 5 from its
+    /// replica life bounds the not-activated fallback `min(bound, durable, mark)` above the acked record, so both arms expose it.
+    private void ownerVisibleAtZero(boolean ownerActivated) {
+        var role = new AtomicReference<>(ReplicaSetController.Role.OWNER);
+        var replication = replicationWithPeer(this::recordAnnouncement);
+
+        manager = wired(streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication));
+        manager.placementRoleSupplier((_, _) -> role.get());
+        createStream(2);
+        role.set(ReplicaSetController.Role.NONE);
+        manager.commitAdvanced(STREAM, PARTITION, 5L, Epoch.ZERO);
+        role.set(ReplicaSetController.Role.OWNER);
+        publish("e0");
+        activated.set(ownerActivated);
+        replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 0L));
+        assertThat(visible()).as("control: the owner's visible reached the acked record").isEqualTo(0L);
+    }
+
+    private void replicaHoldingOneRecord() {
+        replica = streamPartitionManager(Long.MAX_VALUE);
+        replica.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
+        replica.createStream(streamConfig(2))
+               .onFailure(cause -> fail(cause.message()));
+        replica.appendRecovered(STREAM, PARTITION, "r0".getBytes(UTF_8), 1L)
+               .onFailure(cause -> fail("recovered append failed: " + cause.message()));
+        assertThat(replica.partitionBuffer(STREAM, PARTITION).map(OffHeapRingBuffer::durableOffset)
+                          .or(Long.MIN_VALUE)).as("control: the replica holds the record durably")
+                                              .isEqualTo(0L);
+    }
+
+    /// An owner (CF 2, lease valid, record naming it, announcing under the record's epoch) whose ring is materialized and EMPTY.
+    private void ownerWithAnEmptyLog(boolean ownerActivated) {
+        manager = wired(streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replicationWithPeer(this::recordAnnouncement)));
+        manager.ownerEpochSource((_, _) -> RECORD.ownerEpoch());
+        manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.OWNER);
+        activated.set(ownerActivated);
+        createStream(2);
+        assertThat(manager.partitionBuffer(STREAM, PARTITION).map(OffHeapRingBuffer::durableOffset)
+                          .or(Long.MIN_VALUE)).as("control: the owner's ring exists and is empty")
+                                              .isEqualTo(-1L);
+    }
+
+    private void emptyReplica() {
+        replica = streamPartitionManager(Long.MAX_VALUE);
+        replica.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
+        replica.createStream(streamConfig(2))
+               .onFailure(cause -> fail(cause.message()));
+    }
+
+    /// An empty replica that heard the previous owner's mark (epoch ZERO, through 0): it lags, so it forwards.
+    private void laggingReplica() {
+        emptyReplica();
+        replica.commitAdvanced(STREAM, PARTITION, 0L, Epoch.ZERO);
+        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("control: the replica lags the mark it heard").isTrue();
+        assertThat(RECORD.ownerEpoch().isStrictlyAfter(Epoch.ZERO)).as("control: the new owner's epoch is newer").isTrue();
+    }
+
+    private Promise<WriteOutcome> recordAnnouncement(NodeId target, ReplicationMessage message) {
+        if (message instanceof CommitAdvance advance) {
+            announced.add(advance);
+        }
+        return Promise.success(new WriteOutcome.Sent(target));
+    }
+
+    private void deliverAnnouncementsToTheReplica() {
+        announced.forEach(advance -> replica.commitAdvanced(advance.streamName(),
+                                                            advance.partition(),
+                                                            advance.committedThrough(),
+                                                            advance.ownerEpoch()));
+    }
 
     private long visibleAfterAnAck(Runnable condition) {
         var replication = replicationWithPeer();
@@ -357,17 +543,21 @@ class OwnerAdvanceLeaseTest {
     }
 
     private void createStream(int confirmationFactor) {
-        manager.createStream(StreamConfig.streamConfig(STREAM,
-                                                       1,
-                                                       RetentionPolicy.retentionPolicy(),
-                                                       "earliest",
-                                                       1_048_576L,
-                                                       ConsistencyMode.EVENTUAL,
-                                                       3,
-                                                       confirmationFactor,
-                                                       StreamCompression.NONE,
-                                                       Option.none()))
+        manager.createStream(streamConfig(confirmationFactor))
                .onFailure(cause -> fail(cause.message()));
+    }
+
+    private static StreamConfig streamConfig(int confirmationFactor) {
+        return StreamConfig.streamConfig(STREAM,
+                                         1,
+                                         RetentionPolicy.retentionPolicy(),
+                                         "earliest",
+                                         1_048_576L,
+                                         ConsistencyMode.EVENTUAL,
+                                         3,
+                                         confirmationFactor,
+                                         StreamCompression.NONE,
+                                         Option.none());
     }
 
     private void publish(String payload) {
@@ -389,11 +579,15 @@ class OwnerAdvanceLeaseTest {
     }
 
     private static ReplicationManager replicationWithPeer() {
+        return replicationWithPeer(ReplicationTransport.NOOP);
+    }
+
+    private static ReplicationManager replicationWithPeer(ReplicationTransport transport) {
         ReplicaRegistry registry = replicaRegistry();
 
         registry.registerReplica(STREAM, PARTITION, SELF);
         registry.registerReplica(STREAM, PARTITION, PEER);
-        return replicationManager(SELF, registry);
+        return replicationManager(SELF, registry, transport);
     }
 
     /// The name of the method enclosing every line of the manager's source that contains `call`.
@@ -412,6 +606,26 @@ class OwnerAdvanceLeaseTest {
             }
         }
         return callers;
+    }
+
+    private static List<String> codeLines(List<String> lines) {
+        return lines.stream()
+                    .filter(line -> !line.stripLeading().startsWith("///"))
+                    .toList();
+    }
+
+    private static long count(List<String> lines, String needle) {
+        return lines.stream()
+                    .filter(line -> line.contains(needle))
+                    .count();
+    }
+
+    /// The lines of the top-level member whose declaration starts with `declaration`, through its closing `    }`; empty if absent.
+    private static List<String> bodyOf(List<String> lines, String declaration) {
+        return lines.stream()
+                    .dropWhile(line -> !line.startsWith(declaration))
+                    .takeWhile(line -> !line.equals("    }"))
+                    .toList();
     }
 
     private static void clear(Path dir) {

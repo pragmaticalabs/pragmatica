@@ -1063,6 +1063,19 @@ public final class MembershipFsm {
         return coreMembers();
     }
 
+    /// The worker-tier counterpart of [`#coreCountedMembers`] (#2600): counted members (MEMBER + SUSPECT) whose
+    /// descriptor role is explicitly `worker` or `spot`. An unknown role is in neither projection. A
+    /// worker-hosted consumer's candidate set reads this: the declarative stream-consumer manager must see the live
+    /// workers a slice is ACTIVE on, which the core-only ownership view cannot name. Insertion-ordered.
+    public Set<NodeId> workerCountedMembers() {
+        return members.entrySet()
+                      .stream()
+                      .filter(entry -> entry.getValue()
+                                            .isWorkerCountedMember())
+                      .map(Map.Entry::getKey)
+                      .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
     /// The OBSERVED-REACHABILITY projection (#557 / #558): [`#coreCountedMembers`] narrowed to
     /// members for which first-hand reachability evidence was latched — a completed QUIC handshake
     /// or a SWIM ALIVE observation ([`MemberTracking#everReachable`]) — plus `self`, which is
@@ -2479,6 +2492,11 @@ public final class MembershipFsm {
         /// AND its descriptor role is not the explicit literal `worker` (unknown role = included).
         synchronized boolean isCoreCountedMember() {
             return countsTowardEffective() && descriptor.isCore();
+        }
+
+        /// Whether this member counts (MEMBER + SUSPECT) AND its descriptor role is `worker` or `spot`.
+        synchronized boolean isWorkerCountedMember() {
+            return countsTowardEffective() && descriptor.isWorker();
         }
 
         /// Strict quorum-numerator predicate ([`MembershipFsm#strictCoreMemberCount`], Wave 2 /

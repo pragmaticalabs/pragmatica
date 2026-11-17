@@ -1,0 +1,408 @@
+[POSTGRESQL]
+ evolution.meta 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+ evolution.owner 
+    CREATE TABLE IF NOT EXISTS aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)
+ evolution.v1 
+    CREATE TABLE IF NOT EXISTS aether_schema_history (\n    version        INTEGER      NOT NULL,\n    type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,\n    description    VARCHAR(256) NOT NULL,\n    script         VARCHAR(512) NOT NULL,\n    checksum       BIGINT       NOT NULL,\n    applied_by     VARCHAR(128) NOT NULL,\n    applied_at     BIGINT       NOT NULL,\n    execution_ms   INTEGER      NOT NULL,\n    PRIMARY KEY (version, type)\n)
+ evolution.v2 
+    ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'
+    ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0
+ bootstrap 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+    SELECT schema_version FROM aether_schema_history_meta
+    CREATE TABLE IF NOT EXISTS aether_schema_history (\n    version        INTEGER      NOT NULL,\n    type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,\n    description    VARCHAR(256) NOT NULL,\n    script         VARCHAR(512) NOT NULL,\n    checksum       BIGINT       NOT NULL,\n    applied_by     VARCHAR(128) NOT NULL,\n    applied_at     BIGINT       NOT NULL,\n    execution_ms   INTEGER      NOT NULL,\n    PRIMARY KEY (version, type)\n)
+    ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'
+    ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0
+    INSERT INTO aether_schema_history_meta (schema_version) VALUES (?)  -- [2]
+ bootstrapFrom1 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+    SELECT schema_version FROM aether_schema_history_meta
+    ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'
+    ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0
+    UPDATE aether_schema_history_meta SET schema_version = ?  -- [2]
+ claimOwnership 
+    CREATE TABLE IF NOT EXISTS aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)
+    SELECT blueprint_base FROM aether_schema_owner
+    INSERT INTO aether_schema_owner (blueprint_base) VALUES (?)  -- [owner]
+ queryApplied 
+    SELECT version, type, description, script, checksum, applied_by, applied_at, execution_ms FROM aether_schema_history WHERE status = 'SUCCESS' ORDER BY version
+ recordMigration 
+    INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)  -- [7, VERSIONED, desc, V7__desc.sql, 42, node-1, 1000, 5]
+ recordInProgress 
+    DELETE FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+    INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms, status, statements_completed) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)  -- [7, VERSIONED, desc, V7__desc.sql, 42, node-1, 1000, IN_PROGRESS]
+ updateProgress 
+    UPDATE aether_schema_history SET statements_completed = ? WHERE version = ? AND type = ?  -- [2, 7, VERSIONED]
+ markStatus 
+    UPDATE aether_schema_history SET status = ? WHERE version = ? AND type = ?  -- [FAILED, 7, VERSIONED]
+ finalizeSuccess 
+    UPDATE aether_schema_history SET status = ?, checksum = ?, applied_at = ?, execution_ms = ?, statements_completed = ? WHERE version = ? AND type = ?  -- [SUCCESS, 42, 1000, 5, 3, 7, VERSIONED]
+ queryProgress 
+    SELECT status, statements_completed, checksum FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+ removeMigration 
+    DELETE FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+ queryRepeatableChecksum 
+    SELECT checksum FROM aether_schema_history WHERE type = 'REPEATABLE' AND description = ?  -- [desc]
+[MYSQL]
+ evolution.meta 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+ evolution.owner 
+    CREATE TABLE IF NOT EXISTS aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)
+ evolution.v1 
+    CREATE TABLE IF NOT EXISTS aether_schema_history (\n    version        INTEGER      NOT NULL,\n    type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,\n    description    VARCHAR(256) NOT NULL,\n    script         VARCHAR(512) NOT NULL,\n    checksum       BIGINT       NOT NULL,\n    applied_by     VARCHAR(128) NOT NULL,\n    applied_at     BIGINT       NOT NULL,\n    execution_ms   INTEGER      NOT NULL,\n    PRIMARY KEY (version, type)\n)
+ evolution.v2 
+    ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'
+    ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0
+ bootstrap 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+    SELECT schema_version FROM aether_schema_history_meta
+    CREATE TABLE IF NOT EXISTS aether_schema_history (\n    version        INTEGER      NOT NULL,\n    type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,\n    description    VARCHAR(256) NOT NULL,\n    script         VARCHAR(512) NOT NULL,\n    checksum       BIGINT       NOT NULL,\n    applied_by     VARCHAR(128) NOT NULL,\n    applied_at     BIGINT       NOT NULL,\n    execution_ms   INTEGER      NOT NULL,\n    PRIMARY KEY (version, type)\n)
+    ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'
+    ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0
+    INSERT INTO aether_schema_history_meta (schema_version) VALUES (?)  -- [2]
+ bootstrapFrom1 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+    SELECT schema_version FROM aether_schema_history_meta
+    ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'
+    ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0
+    UPDATE aether_schema_history_meta SET schema_version = ?  -- [2]
+ claimOwnership 
+    CREATE TABLE IF NOT EXISTS aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)
+    SELECT blueprint_base FROM aether_schema_owner
+    INSERT INTO aether_schema_owner (blueprint_base) VALUES (?)  -- [owner]
+ queryApplied 
+    SELECT version, type, description, script, checksum, applied_by, applied_at, execution_ms FROM aether_schema_history WHERE status = 'SUCCESS' ORDER BY version
+ recordMigration 
+    INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)  -- [7, VERSIONED, desc, V7__desc.sql, 42, node-1, 1000, 5]
+ recordInProgress 
+    DELETE FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+    INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms, status, statements_completed) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)  -- [7, VERSIONED, desc, V7__desc.sql, 42, node-1, 1000, IN_PROGRESS]
+ updateProgress 
+    UPDATE aether_schema_history SET statements_completed = ? WHERE version = ? AND type = ?  -- [2, 7, VERSIONED]
+ markStatus 
+    UPDATE aether_schema_history SET status = ? WHERE version = ? AND type = ?  -- [FAILED, 7, VERSIONED]
+ finalizeSuccess 
+    UPDATE aether_schema_history SET status = ?, checksum = ?, applied_at = ?, execution_ms = ?, statements_completed = ? WHERE version = ? AND type = ?  -- [SUCCESS, 42, 1000, 5, 3, 7, VERSIONED]
+ queryProgress 
+    SELECT status, statements_completed, checksum FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+ removeMigration 
+    DELETE FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+ queryRepeatableChecksum 
+    SELECT checksum FROM aether_schema_history WHERE type = 'REPEATABLE' AND description = ?  -- [desc]
+[MARIADB]
+ evolution.meta 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+ evolution.owner 
+    CREATE TABLE IF NOT EXISTS aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)
+ evolution.v1 
+    CREATE TABLE IF NOT EXISTS aether_schema_history (\n    version        INTEGER      NOT NULL,\n    type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,\n    description    VARCHAR(256) NOT NULL,\n    script         VARCHAR(512) NOT NULL,\n    checksum       BIGINT       NOT NULL,\n    applied_by     VARCHAR(128) NOT NULL,\n    applied_at     BIGINT       NOT NULL,\n    execution_ms   INTEGER      NOT NULL,\n    PRIMARY KEY (version, type)\n)
+ evolution.v2 
+    ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'
+    ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0
+ bootstrap 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+    SELECT schema_version FROM aether_schema_history_meta
+    CREATE TABLE IF NOT EXISTS aether_schema_history (\n    version        INTEGER      NOT NULL,\n    type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,\n    description    VARCHAR(256) NOT NULL,\n    script         VARCHAR(512) NOT NULL,\n    checksum       BIGINT       NOT NULL,\n    applied_by     VARCHAR(128) NOT NULL,\n    applied_at     BIGINT       NOT NULL,\n    execution_ms   INTEGER      NOT NULL,\n    PRIMARY KEY (version, type)\n)
+    ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'
+    ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0
+    INSERT INTO aether_schema_history_meta (schema_version) VALUES (?)  -- [2]
+ bootstrapFrom1 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+    SELECT schema_version FROM aether_schema_history_meta
+    ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'
+    ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0
+    UPDATE aether_schema_history_meta SET schema_version = ?  -- [2]
+ claimOwnership 
+    CREATE TABLE IF NOT EXISTS aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)
+    SELECT blueprint_base FROM aether_schema_owner
+    INSERT INTO aether_schema_owner (blueprint_base) VALUES (?)  -- [owner]
+ queryApplied 
+    SELECT version, type, description, script, checksum, applied_by, applied_at, execution_ms FROM aether_schema_history WHERE status = 'SUCCESS' ORDER BY version
+ recordMigration 
+    INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)  -- [7, VERSIONED, desc, V7__desc.sql, 42, node-1, 1000, 5]
+ recordInProgress 
+    DELETE FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+    INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms, status, statements_completed) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)  -- [7, VERSIONED, desc, V7__desc.sql, 42, node-1, 1000, IN_PROGRESS]
+ updateProgress 
+    UPDATE aether_schema_history SET statements_completed = ? WHERE version = ? AND type = ?  -- [2, 7, VERSIONED]
+ markStatus 
+    UPDATE aether_schema_history SET status = ? WHERE version = ? AND type = ?  -- [FAILED, 7, VERSIONED]
+ finalizeSuccess 
+    UPDATE aether_schema_history SET status = ?, checksum = ?, applied_at = ?, execution_ms = ?, statements_completed = ? WHERE version = ? AND type = ?  -- [SUCCESS, 42, 1000, 5, 3, 7, VERSIONED]
+ queryProgress 
+    SELECT status, statements_completed, checksum FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+ removeMigration 
+    DELETE FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+ queryRepeatableChecksum 
+    SELECT checksum FROM aether_schema_history WHERE type = 'REPEATABLE' AND description = ?  -- [desc]
+[H2]
+ evolution.meta 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+ evolution.owner 
+    CREATE TABLE IF NOT EXISTS aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)
+ evolution.v1 
+    CREATE TABLE IF NOT EXISTS aether_schema_history (\n    version        INTEGER      NOT NULL,\n    type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,\n    description    VARCHAR(256) NOT NULL,\n    script         VARCHAR(512) NOT NULL,\n    checksum       BIGINT       NOT NULL,\n    applied_by     VARCHAR(128) NOT NULL,\n    applied_at     BIGINT       NOT NULL,\n    execution_ms   INTEGER      NOT NULL,\n    PRIMARY KEY (version, type)\n)
+ evolution.v2 
+    ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'
+    ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0
+ bootstrap 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+    SELECT schema_version FROM aether_schema_history_meta
+    CREATE TABLE IF NOT EXISTS aether_schema_history (\n    version        INTEGER      NOT NULL,\n    type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,\n    description    VARCHAR(256) NOT NULL,\n    script         VARCHAR(512) NOT NULL,\n    checksum       BIGINT       NOT NULL,\n    applied_by     VARCHAR(128) NOT NULL,\n    applied_at     BIGINT       NOT NULL,\n    execution_ms   INTEGER      NOT NULL,\n    PRIMARY KEY (version, type)\n)
+    ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'
+    ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0
+    INSERT INTO aether_schema_history_meta (schema_version) VALUES (?)  -- [2]
+ bootstrapFrom1 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+    SELECT schema_version FROM aether_schema_history_meta
+    ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'
+    ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0
+    UPDATE aether_schema_history_meta SET schema_version = ?  -- [2]
+ claimOwnership 
+    CREATE TABLE IF NOT EXISTS aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)
+    SELECT blueprint_base FROM aether_schema_owner
+    INSERT INTO aether_schema_owner (blueprint_base) VALUES (?)  -- [owner]
+ queryApplied 
+    SELECT version, type, description, script, checksum, applied_by, applied_at, execution_ms FROM aether_schema_history WHERE status = 'SUCCESS' ORDER BY version
+ recordMigration 
+    INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)  -- [7, VERSIONED, desc, V7__desc.sql, 42, node-1, 1000, 5]
+ recordInProgress 
+    DELETE FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+    INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms, status, statements_completed) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)  -- [7, VERSIONED, desc, V7__desc.sql, 42, node-1, 1000, IN_PROGRESS]
+ updateProgress 
+    UPDATE aether_schema_history SET statements_completed = ? WHERE version = ? AND type = ?  -- [2, 7, VERSIONED]
+ markStatus 
+    UPDATE aether_schema_history SET status = ? WHERE version = ? AND type = ?  -- [FAILED, 7, VERSIONED]
+ finalizeSuccess 
+    UPDATE aether_schema_history SET status = ?, checksum = ?, applied_at = ?, execution_ms = ?, statements_completed = ? WHERE version = ? AND type = ?  -- [SUCCESS, 42, 1000, 5, 3, 7, VERSIONED]
+ queryProgress 
+    SELECT status, statements_completed, checksum FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+ removeMigration 
+    DELETE FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+ queryRepeatableChecksum 
+    SELECT checksum FROM aether_schema_history WHERE type = 'REPEATABLE' AND description = ?  -- [desc]
+[SQLITE]
+ evolution.meta 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+ evolution.owner 
+    CREATE TABLE IF NOT EXISTS aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)
+ evolution.v1 
+    CREATE TABLE IF NOT EXISTS aether_schema_history (\n    version        INTEGER      NOT NULL,\n    type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,\n    description    VARCHAR(256) NOT NULL,\n    script         VARCHAR(512) NOT NULL,\n    checksum       BIGINT       NOT NULL,\n    applied_by     VARCHAR(128) NOT NULL,\n    applied_at     BIGINT       NOT NULL,\n    execution_ms   INTEGER      NOT NULL,\n    PRIMARY KEY (version, type)\n)
+ evolution.v2 
+    ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'
+    ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0
+ bootstrap 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+    SELECT schema_version FROM aether_schema_history_meta
+    CREATE TABLE IF NOT EXISTS aether_schema_history (\n    version        INTEGER      NOT NULL,\n    type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,\n    description    VARCHAR(256) NOT NULL,\n    script         VARCHAR(512) NOT NULL,\n    checksum       BIGINT       NOT NULL,\n    applied_by     VARCHAR(128) NOT NULL,\n    applied_at     BIGINT       NOT NULL,\n    execution_ms   INTEGER      NOT NULL,\n    PRIMARY KEY (version, type)\n)
+    ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'
+    ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0
+    INSERT INTO aether_schema_history_meta (schema_version) SELECT CAST(? AS INTEGER) WHERE NOT EXISTS (SELECT 1 FROM aether_schema_history_meta)  -- [2]
+ bootstrapFrom1 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+    SELECT schema_version FROM aether_schema_history_meta
+    ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'
+    ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0
+    UPDATE aether_schema_history_meta SET schema_version = ?  -- [2]
+ claimOwnership 
+    CREATE TABLE IF NOT EXISTS aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)
+    SELECT blueprint_base FROM aether_schema_owner
+    INSERT INTO aether_schema_owner (blueprint_base) SELECT CAST(? AS VARCHAR(256)) WHERE NOT EXISTS (SELECT 1 FROM aether_schema_owner)  -- [owner]
+    SELECT blueprint_base FROM aether_schema_owner
+ queryApplied 
+    SELECT version, type, description, script, checksum, applied_by, applied_at, execution_ms FROM aether_schema_history WHERE status = 'SUCCESS' ORDER BY version
+ recordMigration 
+    INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)  -- [7, VERSIONED, desc, V7__desc.sql, 42, node-1, 1000, 5]
+ recordInProgress 
+    DELETE FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+    INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms, status, statements_completed) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)  -- [7, VERSIONED, desc, V7__desc.sql, 42, node-1, 1000, IN_PROGRESS]
+ updateProgress 
+    UPDATE aether_schema_history SET statements_completed = ? WHERE version = ? AND type = ?  -- [2, 7, VERSIONED]
+ markStatus 
+    UPDATE aether_schema_history SET status = ? WHERE version = ? AND type = ?  -- [FAILED, 7, VERSIONED]
+ finalizeSuccess 
+    UPDATE aether_schema_history SET status = ?, checksum = ?, applied_at = ?, execution_ms = ?, statements_completed = ? WHERE version = ? AND type = ?  -- [SUCCESS, 42, 1000, 5, 3, 7, VERSIONED]
+ queryProgress 
+    SELECT status, statements_completed, checksum FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+ removeMigration 
+    DELETE FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+ queryRepeatableChecksum 
+    SELECT checksum FROM aether_schema_history WHERE type = 'REPEATABLE' AND description = ?  -- [desc]
+[ORACLE]
+ evolution.meta 
+    BEGIN EXECUTE IMMEDIATE q'[CREATE TABLE aether_schema_history_meta (schema_version INTEGER NOT NULL)]'; EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; END;
+ evolution.owner 
+    BEGIN EXECUTE IMMEDIATE q'[CREATE TABLE aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)]'; EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; END;
+ evolution.v1 
+    BEGIN EXECUTE IMMEDIATE q'[CREATE TABLE aether_schema_history (\n    version        INTEGER      NOT NULL,\n    type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,\n    description    VARCHAR(256) NOT NULL,\n    script         VARCHAR(512) NOT NULL,\n    checksum       NUMBER(19)       NOT NULL,\n    applied_by     VARCHAR(128) NOT NULL,\n    applied_at     NUMBER(19)       NOT NULL,\n    execution_ms   INTEGER      NOT NULL,\n    PRIMARY KEY (version, type)\n)]'; EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; END;
+ evolution.v2 
+    ALTER TABLE aether_schema_history ADD (status VARCHAR(16) DEFAULT 'SUCCESS' NOT NULL, statements_completed INTEGER DEFAULT 0 NOT NULL)
+ bootstrap 
+    BEGIN EXECUTE IMMEDIATE q'[CREATE TABLE aether_schema_history_meta (schema_version INTEGER NOT NULL)]'; EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; END;
+    SELECT schema_version FROM aether_schema_history_meta
+    BEGIN EXECUTE IMMEDIATE q'[CREATE TABLE aether_schema_history (\n    version        INTEGER      NOT NULL,\n    type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,\n    description    VARCHAR(256) NOT NULL,\n    script         VARCHAR(512) NOT NULL,\n    checksum       NUMBER(19)       NOT NULL,\n    applied_by     VARCHAR(128) NOT NULL,\n    applied_at     NUMBER(19)       NOT NULL,\n    execution_ms   INTEGER      NOT NULL,\n    PRIMARY KEY (version, type)\n)]'; EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; END;
+    ALTER TABLE aether_schema_history ADD (status VARCHAR(16) DEFAULT 'SUCCESS' NOT NULL, statements_completed INTEGER DEFAULT 0 NOT NULL)
+    INSERT INTO aether_schema_history_meta (schema_version) VALUES (?)  -- [2]
+ bootstrapFrom1 
+    BEGIN EXECUTE IMMEDIATE q'[CREATE TABLE aether_schema_history_meta (schema_version INTEGER NOT NULL)]'; EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; END;
+    SELECT schema_version FROM aether_schema_history_meta
+    ALTER TABLE aether_schema_history ADD (status VARCHAR(16) DEFAULT 'SUCCESS' NOT NULL, statements_completed INTEGER DEFAULT 0 NOT NULL)
+    UPDATE aether_schema_history_meta SET schema_version = ?  -- [2]
+ claimOwnership 
+    BEGIN EXECUTE IMMEDIATE q'[CREATE TABLE aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)]'; EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; END;
+    SELECT blueprint_base FROM aether_schema_owner
+    INSERT INTO aether_schema_owner (blueprint_base) VALUES (?)  -- [owner]
+ queryApplied 
+    SELECT version, type, description, script, checksum, applied_by, applied_at, execution_ms FROM aether_schema_history WHERE status = 'SUCCESS' ORDER BY version
+ recordMigration 
+    INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)  -- [7, VERSIONED, desc, V7__desc.sql, 42, node-1, 1000, 5]
+ recordInProgress 
+    DELETE FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+    INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms, status, statements_completed) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)  -- [7, VERSIONED, desc, V7__desc.sql, 42, node-1, 1000, IN_PROGRESS]
+ updateProgress 
+    UPDATE aether_schema_history SET statements_completed = ? WHERE version = ? AND type = ?  -- [2, 7, VERSIONED]
+ markStatus 
+    UPDATE aether_schema_history SET status = ? WHERE version = ? AND type = ?  -- [FAILED, 7, VERSIONED]
+ finalizeSuccess 
+    UPDATE aether_schema_history SET status = ?, checksum = ?, applied_at = ?, execution_ms = ?, statements_completed = ? WHERE version = ? AND type = ?  -- [SUCCESS, 42, 1000, 5, 3, 7, VERSIONED]
+ queryProgress 
+    SELECT status, statements_completed, checksum FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+ removeMigration 
+    DELETE FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+ queryRepeatableChecksum 
+    SELECT checksum FROM aether_schema_history WHERE type = 'REPEATABLE' AND description = ?  -- [desc]
+[SQLSERVER]
+ evolution.meta 
+    IF OBJECT_ID(N'aether_schema_history_meta', N'U') IS NULL CREATE TABLE aether_schema_history_meta (schema_version INTEGER NOT NULL)
+ evolution.owner 
+    IF OBJECT_ID(N'aether_schema_owner', N'U') IS NULL CREATE TABLE aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)
+ evolution.v1 
+    IF OBJECT_ID(N'aether_schema_history', N'U') IS NULL CREATE TABLE aether_schema_history (\n    version        INTEGER      NOT NULL,\n    type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,\n    description    VARCHAR(256) NOT NULL,\n    script         VARCHAR(512) NOT NULL,\n    checksum       BIGINT       NOT NULL,\n    applied_by     VARCHAR(128) NOT NULL,\n    applied_at     BIGINT       NOT NULL,\n    execution_ms   INTEGER      NOT NULL,\n    PRIMARY KEY (version, type)\n)
+ evolution.v2 
+    ALTER TABLE aether_schema_history ADD status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS', statements_completed INTEGER NOT NULL DEFAULT 0
+ bootstrap 
+    IF OBJECT_ID(N'aether_schema_history_meta', N'U') IS NULL CREATE TABLE aether_schema_history_meta (schema_version INTEGER NOT NULL)
+    SELECT schema_version FROM aether_schema_history_meta
+    IF OBJECT_ID(N'aether_schema_history', N'U') IS NULL CREATE TABLE aether_schema_history (\n    version        INTEGER      NOT NULL,\n    type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,\n    description    VARCHAR(256) NOT NULL,\n    script         VARCHAR(512) NOT NULL,\n    checksum       BIGINT       NOT NULL,\n    applied_by     VARCHAR(128) NOT NULL,\n    applied_at     BIGINT       NOT NULL,\n    execution_ms   INTEGER      NOT NULL,\n    PRIMARY KEY (version, type)\n)
+    ALTER TABLE aether_schema_history ADD status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS', statements_completed INTEGER NOT NULL DEFAULT 0
+    INSERT INTO aether_schema_history_meta (schema_version) VALUES (?)  -- [2]
+ bootstrapFrom1 
+    IF OBJECT_ID(N'aether_schema_history_meta', N'U') IS NULL CREATE TABLE aether_schema_history_meta (schema_version INTEGER NOT NULL)
+    SELECT schema_version FROM aether_schema_history_meta
+    ALTER TABLE aether_schema_history ADD status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS', statements_completed INTEGER NOT NULL DEFAULT 0
+    UPDATE aether_schema_history_meta SET schema_version = ?  -- [2]
+ claimOwnership 
+    IF OBJECT_ID(N'aether_schema_owner', N'U') IS NULL CREATE TABLE aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)
+    SELECT blueprint_base FROM aether_schema_owner
+    INSERT INTO aether_schema_owner (blueprint_base) VALUES (?)  -- [owner]
+ queryApplied 
+    SELECT version, type, description, script, checksum, applied_by, applied_at, execution_ms FROM aether_schema_history WHERE status = 'SUCCESS' ORDER BY version
+ recordMigration 
+    INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)  -- [7, VERSIONED, desc, V7__desc.sql, 42, node-1, 1000, 5]
+ recordInProgress 
+    DELETE FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+    INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms, status, statements_completed) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)  -- [7, VERSIONED, desc, V7__desc.sql, 42, node-1, 1000, IN_PROGRESS]
+ updateProgress 
+    UPDATE aether_schema_history SET statements_completed = ? WHERE version = ? AND type = ?  -- [2, 7, VERSIONED]
+ markStatus 
+    UPDATE aether_schema_history SET status = ? WHERE version = ? AND type = ?  -- [FAILED, 7, VERSIONED]
+ finalizeSuccess 
+    UPDATE aether_schema_history SET status = ?, checksum = ?, applied_at = ?, execution_ms = ?, statements_completed = ? WHERE version = ? AND type = ?  -- [SUCCESS, 42, 1000, 5, 3, 7, VERSIONED]
+ queryProgress 
+    SELECT status, statements_completed, checksum FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+ removeMigration 
+    DELETE FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+ queryRepeatableChecksum 
+    SELECT checksum FROM aether_schema_history WHERE type = 'REPEATABLE' AND description = ?  -- [desc]
+[DB2]
+ evolution.meta 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+ evolution.owner 
+    CREATE TABLE IF NOT EXISTS aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)
+ evolution.v1 
+    CREATE TABLE IF NOT EXISTS aether_schema_history (\n    version        INTEGER      NOT NULL,\n    type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,\n    description    VARCHAR(256) NOT NULL,\n    script         VARCHAR(512) NOT NULL,\n    checksum       BIGINT       NOT NULL,\n    applied_by     VARCHAR(128) NOT NULL,\n    applied_at     BIGINT       NOT NULL,\n    execution_ms   INTEGER      NOT NULL,\n    PRIMARY KEY (version, type)\n)
+ evolution.v2 
+    ALTER TABLE aether_schema_history ADD (status VARCHAR(16) DEFAULT 'SUCCESS' NOT NULL, statements_completed INTEGER DEFAULT 0 NOT NULL)
+ bootstrap 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+    SELECT schema_version FROM aether_schema_history_meta
+    CREATE TABLE IF NOT EXISTS aether_schema_history (\n    version        INTEGER      NOT NULL,\n    type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,\n    description    VARCHAR(256) NOT NULL,\n    script         VARCHAR(512) NOT NULL,\n    checksum       BIGINT       NOT NULL,\n    applied_by     VARCHAR(128) NOT NULL,\n    applied_at     BIGINT       NOT NULL,\n    execution_ms   INTEGER      NOT NULL,\n    PRIMARY KEY (version, type)\n)
+    ALTER TABLE aether_schema_history ADD (status VARCHAR(16) DEFAULT 'SUCCESS' NOT NULL, statements_completed INTEGER DEFAULT 0 NOT NULL)
+    INSERT INTO aether_schema_history_meta (schema_version) SELECT CAST(? AS INTEGER) FROM SYSIBM.SYSDUMMY1 WHERE NOT EXISTS (SELECT 1 FROM aether_schema_history_meta)  -- [2]
+ bootstrapFrom1 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+    SELECT schema_version FROM aether_schema_history_meta
+    ALTER TABLE aether_schema_history ADD (status VARCHAR(16) DEFAULT 'SUCCESS' NOT NULL, statements_completed INTEGER DEFAULT 0 NOT NULL)
+    UPDATE aether_schema_history_meta SET schema_version = ?  -- [2]
+ claimOwnership 
+    CREATE TABLE IF NOT EXISTS aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)
+    SELECT blueprint_base FROM aether_schema_owner
+    INSERT INTO aether_schema_owner (blueprint_base) SELECT CAST(? AS VARCHAR(256)) FROM SYSIBM.SYSDUMMY1 WHERE NOT EXISTS (SELECT 1 FROM aether_schema_owner)  -- [owner]
+    SELECT blueprint_base FROM aether_schema_owner
+ queryApplied 
+    SELECT version, type, description, script, checksum, applied_by, applied_at, execution_ms FROM aether_schema_history WHERE status = 'SUCCESS' ORDER BY version
+ recordMigration 
+    INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)  -- [7, VERSIONED, desc, V7__desc.sql, 42, node-1, 1000, 5]
+ recordInProgress 
+    DELETE FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+    INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms, status, statements_completed) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)  -- [7, VERSIONED, desc, V7__desc.sql, 42, node-1, 1000, IN_PROGRESS]
+ updateProgress 
+    UPDATE aether_schema_history SET statements_completed = ? WHERE version = ? AND type = ?  -- [2, 7, VERSIONED]
+ markStatus 
+    UPDATE aether_schema_history SET status = ? WHERE version = ? AND type = ?  -- [FAILED, 7, VERSIONED]
+ finalizeSuccess 
+    UPDATE aether_schema_history SET status = ?, checksum = ?, applied_at = ?, execution_ms = ?, statements_completed = ? WHERE version = ? AND type = ?  -- [SUCCESS, 42, 1000, 5, 3, 7, VERSIONED]
+ queryProgress 
+    SELECT status, statements_completed, checksum FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+ removeMigration 
+    DELETE FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+ queryRepeatableChecksum 
+    SELECT checksum FROM aether_schema_history WHERE type = 'REPEATABLE' AND description = ?  -- [desc]
+[COCKROACHDB]
+ evolution.meta 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+ evolution.owner 
+    CREATE TABLE IF NOT EXISTS aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)
+ evolution.v1 
+    CREATE TABLE IF NOT EXISTS aether_schema_history (\n    version        INTEGER      NOT NULL,\n    type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,\n    description    VARCHAR(256) NOT NULL,\n    script         VARCHAR(512) NOT NULL,\n    checksum       BIGINT       NOT NULL,\n    applied_by     VARCHAR(128) NOT NULL,\n    applied_at     BIGINT       NOT NULL,\n    execution_ms   INTEGER      NOT NULL,\n    PRIMARY KEY (version, type)\n)
+ evolution.v2 
+    ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'
+    ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0
+ bootstrap 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+    SELECT schema_version FROM aether_schema_history_meta
+    CREATE TABLE IF NOT EXISTS aether_schema_history (\n    version        INTEGER      NOT NULL,\n    type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,\n    description    VARCHAR(256) NOT NULL,\n    script         VARCHAR(512) NOT NULL,\n    checksum       BIGINT       NOT NULL,\n    applied_by     VARCHAR(128) NOT NULL,\n    applied_at     BIGINT       NOT NULL,\n    execution_ms   INTEGER      NOT NULL,\n    PRIMARY KEY (version, type)\n)
+    ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'
+    ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0
+    INSERT INTO aether_schema_history_meta (schema_version) SELECT CAST(? AS INTEGER) WHERE NOT EXISTS (SELECT 1 FROM aether_schema_history_meta)  -- [2]
+ bootstrapFrom1 
+    CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)
+    SELECT schema_version FROM aether_schema_history_meta
+    ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'
+    ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0
+    UPDATE aether_schema_history_meta SET schema_version = ?  -- [2]
+ claimOwnership 
+    CREATE TABLE IF NOT EXISTS aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)
+    SELECT blueprint_base FROM aether_schema_owner
+    INSERT INTO aether_schema_owner (blueprint_base) SELECT CAST(? AS VARCHAR(256)) WHERE NOT EXISTS (SELECT 1 FROM aether_schema_owner)  -- [owner]
+    SELECT blueprint_base FROM aether_schema_owner
+ queryApplied 
+    SELECT version, type, description, script, checksum, applied_by, applied_at, execution_ms FROM aether_schema_history WHERE status = 'SUCCESS' ORDER BY version
+ recordMigration 
+    INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)  -- [7, VERSIONED, desc, V7__desc.sql, 42, node-1, 1000, 5]
+ recordInProgress 
+    DELETE FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+    INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms, status, statements_completed) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)  -- [7, VERSIONED, desc, V7__desc.sql, 42, node-1, 1000, IN_PROGRESS]
+ updateProgress 
+    UPDATE aether_schema_history SET statements_completed = ? WHERE version = ? AND type = ?  -- [2, 7, VERSIONED]
+ markStatus 
+    UPDATE aether_schema_history SET status = ? WHERE version = ? AND type = ?  -- [FAILED, 7, VERSIONED]
+ finalizeSuccess 
+    UPDATE aether_schema_history SET status = ?, checksum = ?, applied_at = ?, execution_ms = ?, statements_completed = ? WHERE version = ? AND type = ?  -- [SUCCESS, 42, 1000, 5, 3, 7, VERSIONED]
+ queryProgress 
+    SELECT status, statements_completed, checksum FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+ removeMigration 
+    DELETE FROM aether_schema_history WHERE version = ? AND type = ?  -- [7, VERSIONED]
+ queryRepeatableChecksum 
+    SELECT checksum FROM aether_schema_history WHERE type = 'REPEATABLE' AND description = ?  -- [desc]

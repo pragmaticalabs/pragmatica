@@ -4,8 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -127,6 +129,35 @@ class EpochStartCodecTest {
         assertThat(twoOldFormat).as("the instrument: both owner encodings were really removed").hasSize(two.length - 2 * ownerBytes.length);
         assertThatThrownBy(() -> codec.read(Unpooled.wrappedBuffer(oneOldFormat))).isInstanceOf(RuntimeException.class);
         assertThatThrownBy(() -> codec.read(Unpooled.wrappedBuffer(twoOldFormat))).isInstanceOf(RuntimeException.class);
+    }
+
+    /// v3186 (CTO, #2981 step 3b): the WRITE side of the owner, probed apart from the reader. The encoded bytes carry the start's
+    /// owner id (a start owner no other field names), two starts differing only in their owner encode differently, and each
+    /// decodes back to its own owner: an encoder that dropped or replaced the owner fails here even if a reader were lenient.
+    @Test
+    void epochStartOwner_isWrittenByTheEncoder_andSurvivesEncodeThenDecode() {
+        var codec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
+        var first = NodeId.nodeId("fence-owner-a").unwrap();
+        var second = NodeId.nodeId("fence-owner-b").unwrap();
+        var withFirst = encoded(codec, List.of(EpochStart.epochStart(OWN, 100L, Option.some(first))));
+        var withSecond = encoded(codec, List.of(EpochStart.epochStart(OWN, 100L, Option.some(second))));
+
+        assertThat(contains(withFirst, first.id().getBytes(StandardCharsets.UTF_8))).as("the encoder wrote the owner's id").isTrue();
+        assertThat(contains(withSecond, second.id().getBytes(StandardCharsets.UTF_8))).as("the encoder wrote the owner's id").isTrue();
+        assertThat(withFirst).as("the owner is part of the encoding").isNotEqualTo(withSecond);
+        assertThat(decodedStarts(codec, withFirst)).containsExactly(EpochStart.epochStart(OWN, 100L, Option.some(first)));
+        assertThat(decodedStarts(codec, withSecond)).containsExactly(EpochStart.epochStart(OWN, 100L, Option.some(second)));
+    }
+
+    private static List<EpochStart> decodedStarts(SliceCodec codec, byte[] bytes) {
+        KVCommand.Put<?, ?> decoded = codec.read(Unpooled.wrappedBuffer(bytes));
+
+        return ((StreamPartitionOwnershipValue) decoded.value()).epochStarts();
+    }
+
+    private static boolean contains(byte[] bytes, byte[] part) {
+        return IntStream.rangeClosed(0, bytes.length - part.length)
+                        .anyMatch(at -> Arrays.equals(bytes, at, at + part.length, part, 0, part.length));
     }
 
     private static byte[] encoded(SliceCodec codec, List<EpochStart> starts) {

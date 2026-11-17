@@ -1,0 +1,2 @@
+### Fixed (2026-11-15 — #2407: HTTP/1.1 responses that end the connection did not say `Connection: close`)
+- **The duplicate-Host 400 and the 200 answering a `Connection: close` request now carry `Connection: close`.** The connection was already closed (#2482); only the header was missing, so a client had to infer it from end of stream. `NettyResponseWriter` now sets the header on every response that does not keep the connection alive. [verified: `Http1ConnectionCloseHeaderTest`, red without the header]

@@ -30,6 +30,7 @@ import org.pragmatica.aether.deployment.cluster.UpgradeRunIndex;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
+import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.NodeReportedState;
@@ -61,6 +62,7 @@ import org.pragmatica.aether.worker.health.CommunityHealthRuntime;
 import org.pragmatica.aether.worker.health.CommunityMemberDirectory;
 import org.pragmatica.aether.worker.health.GovernorCandidateHealth;
 import org.pragmatica.aether.worker.health.WorkerAdmission;
+import org.pragmatica.aether.worker.isolation.OwnDirectiveRetirement;
 import org.pragmatica.aether.worker.metadata.WorkerMetadataChannel;
 import org.pragmatica.aether.worker.metadata.WorkerMetadataMessage;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
@@ -92,6 +94,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.utility.react.ReactExecutor;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.serialization.SliceCodec;
 
 import org.slf4j.Logger;
@@ -154,7 +157,10 @@ public sealed interface WorkerHierarchyAssembly {
                                   Logger growthLog,
                                   NodeId selfId,
                                   GossipKeyRotationHandler gossipKeyRotationHandler,
-                                  ReactExecutor react) {}
+                                  ReactExecutor react,
+                                  DrainProcedure drainProcedure,
+                                  NodeReportedStateHolder nodeReportedStateHolder,
+                                  OperatorWarningSink operatorWarningSink) {}
 
     /// What `workerActivation` hands back for the rest of the assembly.
     record WorkerActivationOutputs(AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
@@ -183,6 +189,17 @@ public sealed interface WorkerHierarchyAssembly {
         var selfId = in.selfId();
         var gossipKeyRotationHandler = in.gossipKeyRotationHandler();
         var react = in.react();
+        var drainProcedure = in.drainProcedure();
+        // #3193 ruling item 2: a live worker whose own directive is retired with no replacement halts through the
+        // core-absence path's local drain (drained exit). The halt is submitted as an undo: an undo is never gated by an
+        // engine stop, so the halt cannot be dropped, and it runs off the dispatcher thread like every reaction.
+        var ownDirectiveRetirement = ownDirectiveRetirementFor(config,
+                                                               selfId,
+                                                               kvStore,
+                                                               drainProcedure,
+                                                               react,
+                                                               in.nodeReportedStateHolder(),
+                                                               in.operatorWarningSink());
         // Worker-mode activation needs the SWIM detector to feed the governor announcer
         // (GAP 2). The detector is a local declared further down (after the SWIM config is
         // built), but this registration lambda is constructed here — so capture it through a
@@ -205,53 +222,52 @@ public sealed interface WorkerHierarchyAssembly {
 
         aetherEntries.add(MessageRouter.Entry.route(GovernorAuthorityMessage.Response.class,
                                                     governorAuthorityClient::onResponse));
-        var activationKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
-                                                     .onPut(AetherKey.ActivationDirectiveKey.class,
-                                                            (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> handleActivationDirective(put,
-                                                                                                                                                                                selfId,
-                                                                                                                                                                                clusterNode,
-                                                                                                                                                                                switchableCluster,
-                                                                                                                                                                                forwardingClusterNode,
-                                                                                                                                                                                config,
-                                                                                                                                                                                delegateRouter,
-                                                                                                                                                                                kvStore,
-                                                                                                                                                                                sliceStore,
-                                                                                                                                                                                sliceInvoker,
-                                                                                                                                                                                swimHealthDetectorHolder::get,
-                                                                                                                                                                                communityDirectory,
-                                                                                                                                                                                governorAnnouncerHolder,
-                                                                                                                                                                                governorAuthorityClient,
-                                                                                                                                                                                () -> runtimeReady(clusterNode) && workerProjectionFreshRef.get()
-                                                                                                                                                                                                                                           .getAsBoolean(),
-                                                                                                                                                                                growthLog,
-                                                                                                                                                                                react))
-                                                     .onPut(AetherKey.CommunityPlacementOperationKey.class,
-                                                            (ValuePut<AetherKey.CommunityPlacementOperationKey, AetherValue.CommunityPlacementOperationValue> put) -> communityRetirements.put(put.cause()
-                                                                                                                                                                                                  .value()))
-                                                     .onRemove(AetherKey.CommunityPlacementOperationKey.class,
-                                                               (ValueRemove<AetherKey.CommunityPlacementOperationKey, AetherValue.CommunityPlacementOperationValue> remove) -> communityRetirements.remove(remove.cause()
-                                                                                                                                                                                                                 .key()
-                                                                                                                                                                                                                 .communityId()))
-                                                     .onPut(AetherKey.NodeReplacementKey.class,
-                                                            (ValuePut<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> put) -> NodeReplacementWiring.absorbPut(nodeReplacements,
-                                                                                                                                                                              kvStore::isReplaying,
-                                                                                                                                                                              put))
-                                                     .onRemove(AetherKey.NodeReplacementKey.class,
-                                                               (ValueRemove<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> remove) -> nodeReplacements.remove(remove.cause()
-                                                                                                                                                                                     .key()))
-                                                     .onPut(AetherKey.UpgradeRunKey.class,
-                                                            (ValuePut<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue> put) -> UpgradeRunWiring.absorbPut(upgradeRuns,
-                                                                                                                                                               kvStore::isReplaying,
-                                                                                                                                                               put))
-                                                     .onRemove(AetherKey.UpgradeRunKey.class,
-                                                               (ValueRemove<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue>_) -> upgradeRuns.remove())
-                                                     .onPut(AetherKey.NodePlacementKey.class,
-                                                            (ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> put) -> retryPlacedWorker(put,
-                                                                                                                                                            membershipFsmRef::get,
-                                                                                                                                                            placementRedrive))
-                                                     .onPut(AetherKey.GossipKeyRotationKey.class,
-                                                            gossipKeyRotationHandler::onGossipKeyRotationPut)
-                                                     .build();
+        var activationKvRouter = withOwnDirectiveRetirement(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.ActivationDirectiveKey.class,
+                                                                                                                                         (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> handleActivationDirective(put,
+                                                                                                                                                                                                                                                             selfId,
+                                                                                                                                                                                                                                                             clusterNode,
+                                                                                                                                                                                                                                                             switchableCluster,
+                                                                                                                                                                                                                                                             forwardingClusterNode,
+                                                                                                                                                                                                                                                             config,
+                                                                                                                                                                                                                                                             delegateRouter,
+                                                                                                                                                                                                                                                             kvStore,
+                                                                                                                                                                                                                                                             sliceStore,
+                                                                                                                                                                                                                                                             sliceInvoker,
+                                                                                                                                                                                                                                                             swimHealthDetectorHolder::get,
+                                                                                                                                                                                                                                                             communityDirectory,
+                                                                                                                                                                                                                                                             governorAnnouncerHolder,
+                                                                                                                                                                                                                                                             governorAuthorityClient,
+                                                                                                                                                                                                                                                             () -> runtimeReady(clusterNode) && workerProjectionFreshRef.get()
+                                                                                                                                                                                                                                                                                                                        .getAsBoolean(),
+                                                                                                                                                                                                                                                             growthLog,
+                                                                                                                                                                                                                                                             react)),
+                                                            ownDirectiveRetirement).onPut(AetherKey.CommunityPlacementOperationKey.class,
+                                                                                          (ValuePut<AetherKey.CommunityPlacementOperationKey, AetherValue.CommunityPlacementOperationValue> put) -> communityRetirements.put(put.cause()
+                                                                                                                                                                                                                                .value()))
+                                                           .onRemove(AetherKey.CommunityPlacementOperationKey.class,
+                                                                     (ValueRemove<AetherKey.CommunityPlacementOperationKey, AetherValue.CommunityPlacementOperationValue> remove) -> communityRetirements.remove(remove.cause()
+                                                                                                                                                                                                                       .key()
+                                                                                                                                                                                                                       .communityId()))
+                                                           .onPut(AetherKey.NodeReplacementKey.class,
+                                                                  (ValuePut<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> put) -> NodeReplacementWiring.absorbPut(nodeReplacements,
+                                                                                                                                                                                    kvStore::isReplaying,
+                                                                                                                                                                                    put))
+                                                           .onRemove(AetherKey.NodeReplacementKey.class,
+                                                                     (ValueRemove<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> remove) -> nodeReplacements.remove(remove.cause()
+                                                                                                                                                                                           .key()))
+                                                           .onPut(AetherKey.UpgradeRunKey.class,
+                                                                  (ValuePut<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue> put) -> UpgradeRunWiring.absorbPut(upgradeRuns,
+                                                                                                                                                                     kvStore::isReplaying,
+                                                                                                                                                                     put))
+                                                           .onRemove(AetherKey.UpgradeRunKey.class,
+                                                                     (ValueRemove<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue>_) -> upgradeRuns.remove())
+                                                           .onPut(AetherKey.NodePlacementKey.class,
+                                                                  (ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> put) -> retryPlacedWorker(put,
+                                                                                                                                                                  membershipFsmRef::get,
+                                                                                                                                                                  placementRedrive))
+                                                           .onPut(AetherKey.GossipKeyRotationKey.class,
+                                                                  gossipKeyRotationHandler::onGossipKeyRotationPut)
+                                                           .build();
 
         return new WorkerActivationOutputs(governorAnnouncerHolder, communityDirectory, activationKvRouter);
     }
@@ -905,6 +921,37 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                Set.of(),
                                                                                                false,
                                                                                                false));
+    }
+
+    /// #3193 ruling item 2: this node's own-directive observer, over the committed store, the drain state and the local halt.
+    static OwnDirectiveRetirement ownDirectiveRetirementFor(AetherNodeConfig config,
+                                                            NodeId selfId,
+                                                            KVStore<AetherKey, AetherValue> kvStore,
+                                                            DrainProcedure drainProcedure,
+                                                            ReactExecutor react,
+                                                            NodeReportedStateHolder nodeReportedStateHolder,
+                                                            OperatorWarningSink operatorWarningSink) {
+        return OwnDirectiveRetirement.ownDirectiveRetirement(selfId,
+                                                             configuredWorker(config),
+                                                             () -> kvStore.getTyped(AetherKey.ActivationDirectiveKey.activationDirectiveKey(selfId),
+                                                                                    AetherValue.ActivationDirectiveValue.class),
+                                                             () -> drainProcedure.state() != DrainProcedure.DrainState.INACTIVE,
+                                                             haltThrough(react,
+                                                                         DrainAssembly.directiveRetiredHalt(drainProcedure,
+                                                                                                            nodeReportedStateHolder)),
+                                                             operatorWarningSink);
+    }
+
+    /// Registers the own-directive observer on both edges of `ActivationDirectiveKey`: the put latches DIRECTED, the remove may halt.
+    static KVNotificationRouter.Builder<AetherKey, AetherValue> withOwnDirectiveRetirement(KVNotificationRouter.Builder<AetherKey, AetherValue> builder,
+                                                                                           OwnDirectiveRetirement ownDirectiveRetirement) {
+        return builder.onPut(AetherKey.ActivationDirectiveKey.class, ownDirectiveRetirement::onPut)
+                      .onRemove(AetherKey.ActivationDirectiveKey.class, ownDirectiveRetirement::onRemove);
+    }
+
+    /// Submits `halt` as an undo (#3193): an undo is never dropped by a closed gate, so a stopping engine cannot lose the halt.
+    static Runnable haltThrough(ReactExecutor react, Runnable halt) {
+        return () -> react.undo("own-directive-retired", halt);
     }
 
     @SuppressWarnings({"JBCT-RET-01"})

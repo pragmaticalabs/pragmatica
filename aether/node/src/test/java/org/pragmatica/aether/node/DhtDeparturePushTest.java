@@ -90,8 +90,15 @@ class DhtDeparturePushTest {
                                .toList();
 
         assertThat(vacatedSlots).as("control: both drainers held the key, so two slots open").hasSize(2);
-        assertThat(pushedTo.stream().distinct().toList()).as("the push reached every node that newly owns the key")
-                                                     .containsExactlyInAnyOrderElementsOf(vacatedSlots);
+        var pushed = pushedTo.stream().distinct().toList();
+
+        assertThat(pushed).as("the push reached every node that newly owns the key").containsAll(vacatedSlots);
+        // #3208/#3209: the drain set may name a live node (#1818), so the push also reaches the named prefix of the ring walk and the
+        // first unnamed node. That is the co-drainer and a node that already held the key, never a node outside the replica set.
+        // The old exact-target pin asserted the narrower pre-#3208 set, which could strand the copy.
+        assertThat(pushed.stream().filter(id -> !vacatedSlots.contains(id)).toList())
+            .as("the extra targets are the co-drainer and an existing replica, nobody else")
+            .allMatch(id -> id.equals(CO_DRAINER) || ring.nodesFor(key, 3).contains(id));
     }
 
     /// #2684 round B, N09: the drain window's `halted` reaches the DHT window, so a node that already halted sends nothing.

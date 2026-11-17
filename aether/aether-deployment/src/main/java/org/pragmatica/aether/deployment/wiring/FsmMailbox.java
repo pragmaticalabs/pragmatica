@@ -134,6 +134,11 @@ public final class FsmMailbox<I> {
                      .or(true);
     }
 
+    /// True once [#start()] has created the consumer thread, whether or not it is still alive: `false` means no item has been taken yet.
+    public boolean started() {
+        return Option.option(consumer).isPresent();
+    }
+
     /// True on the consumer thread (a confinement check for the state only that thread may touch).
     public boolean onConsumerThread() {
         return Thread.currentThread() == consumer;

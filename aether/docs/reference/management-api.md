@@ -386,6 +386,30 @@ Returns the principal, authorization role, and roles attached to the request's a
 
 Route is `LOCAL` (no forwarding) — the answer is per-request, not per-cluster.
 
+### GET /api/v1/warnings
+
+The open FSM warnings of ONE committed state, read on the answering core node and labelled by that core's committed revision. Core nodes only; the route is not forwarded, so point the client at a core.
+
+```bash
+curl http://localhost:8080/api/v1/warnings
+```
+
+```json
+{
+  "revision": 1842,
+  "warnings": [
+    {"code": "STRAY", "subject": "node-4", "members": {"node-4": "..."}, "message": "..."}
+  ]
+}
+```
+
+- `warnings` are sorted by `code`, then `subject`. `members` are the parts of a subject that covers several instances (empty for a single-instance subject). `message` is the row's latest message, as the writing leader committed it. A closed row (a recovered warning: `open` false, no members) is not listed.
+- **Refusals (503, typed, each with its own detail):** (1) the node is a worker (its replica holds no warning rows); (2) the core does not hold quorum (the same signal `/api/status`, `/api/health` and `/health/ready` report); (3) the core has committed no state yet (revision 0, genesis or a reset store); (4) the core's revision label is not exact (a snapshot restore moved the label without the content). Recovery: query another core, or retry; the not-exact refusal clears at the core's next snapshot install.
+- **Staleness of a served answer:** the answering core's apply lag, which is not bounded. The quorum check is an observation read just before the store read, not a safety guard. `[mechanism: one KVStore monitor hold reads revision, exact flag and rows together]`
+- **Guarantee:** the answer is one committed state of ONE core, read under one store monitor hold. It is not linearizable: two cores, or two requests to one core, may answer from different states. `revision` is the only ordering signal, and it is not monotone across cores, a reset, a snapshot install or a restart (a reset or restart returns it to a lower value). A served answer can trail the cluster by the core's apply lag. Do not use it as an automation gate (for example "no warnings, so proceed"): an empty list says only that this core's state at `revision` holds none.
+
+CLI: `aether warnings`.
+
 ### GET /api/v1/events
 
 Get cluster events from the event aggregator. Returns structured events including topology changes, leader elections, deployments, slice failures, and network events.
@@ -506,6 +530,7 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 
 - `swim-kill-gate-held` (WARNING — SWIM is holding the death of a long-healthy peer that only this node accused)
 - `core-absence-fence` (CRITICAL — a worker lost the core and is dissolving locally)
+- `own-directive-retired` (CRITICAL — a live worker's own activation directive was removed with no replacement, so it halts with exit code 2; subject is the worker's node id; no recovery code, the node returns only by joining again)
 - `replica-fsync-failed` (WARNING — a replica withheld its ack because fsync failed; the owner does not count that copy)
 - `node-never-joined` (WARNING — a configured core member died on this node's view without this node ever observing it reachable; it never joined, so no `NODE_FAILED` event or CRITICAL node-health alert is raised for it, issue #1835)
 - `swim-member-address-conflict` (WARNING — an ANNOUNCE for a member arrived from an address other than the one that member is pinned to and was refused, or gossip carried another address for a pinned member and its address was ignored; `subject` is the member, the message names both addresses; replace the member under a fresh NodeId or restore its address)
@@ -541,6 +566,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `slice-start-deferral-ended` (INFO — the recovery: the target arrived, or the parked entry was superseded, removed or dropped as stale; raised only for a subject whose `slice-start-awaiting-target` was raised)
 - `apply-deadline-exceeded` (WARNING — an FSM2 blueprint apply (LEGACY ignores the deadline) did not resolve (every declared slice ACTIVE) within `[timeouts.deployment] apply_deadline` and was closed by the deadline: ROLLED_BACK under ALL_OR_NOTHING, FAILED under BEST_EFFORT, cause `apply-deadline-exceeded`, issue #970; `subject` is the blueprint; recovery: republish or delete the blueprint; leader churn shorter than the deadline can postpone it, see #3120)
 - `apply-deadline-cleared` (INFO — the recovery: the blueprint's outcome was replaced by a republish or removed; raised only for a subject whose `apply-deadline-exceeded` was raised)
+- `route-unpublish-await-expired` (WARNING — a `PUBLISH_ROUTES` went ahead after waiting its whole 100 s bound for the same artifact's earlier `SUSPEND` route removal, which had not settled, so that removal may still delete the fresh routes; raised once per unsettled removal; subject: node and artifact)
+- `route-unpublish-await-settled` (INFO — the recovery, same subject: the removal that outlived the bound has settled)
 - `consensus-restore-refused` (CRITICAL — a node failed to restore responder consensus snapshots in three consecutive rounds, whatever the responder, phase or digest; raised once per run of failures; a snapshot is refused as a whole and never partially decoded; a snapshot that failed three times is no longer selected, and no snapshot below its phase is adopted; with no other candidate the node stays out of service in sync with no automatic exit; `subject` is the refusing node, the message names the latest responder, phase, digest and cause; repair or replace the responder's state, or replace the node, issue #2316)
 - `consensus-restore-recovered` (INFO — the recovery: the node restored a readable snapshot; published only after a published `consensus-restore-refused` for the same `subject`)
 - `observer-consensus-lagging` (WARNING — an observer, a node outside the voter roster such as an auto-heal replacement still joining, stopped applying consensus decisions while it catches up or after it lost sight of the quorum; it is not a voter, so this is not a quorum loss and no `QUORUM_LOST` is raised; routing on that node is quiesced until it observes again; `subject` is the node, issue #2306)
@@ -1196,13 +1223,14 @@ whose violation leaves nothing to bind refuse the publish outright with **`422`*
 usual problem document, whose `detail` is the text `Stream resource validation failed (N errors):` followed
 by one `[rule] field — message` line per failure (not the structured triples above): a `resources.toml` that does not parse
 (`resources-toml-parse`), a blueprint whose own namespace cannot be derived
-(`blueprint-namespace-invalid`, `namespace-reserved`) while it declares at least one stream, and an
+(`blueprint-namespace-invalid`, `namespace-reserved`) while it declares at least one stream, an
 `External` source naming a runtime-provisioned stream kind (`source-reserved-kind`, #1282 — refused here
-exactly as the management API refuses it on every mint path). Every other rule costs only its own alias:
+exactly as the management API refuses it on every mint path), and #576's inert keys (`inert-stream-config-key`,
+`inert-consumer-config-key`; #3269, owner ruling 2026-11-14, amending #1336 — a key leaves the refused set when it is wired). Every other rule costs only its own alias:
 the parser's per-section rules — `version-and-source-mutually-exclusive`, `producer-version-must-be-exact`,
 `partitions-over-ceiling`, `replication-policy-invalid` (#1564: `1 <= confirmation_factor <= replication_factor` does not hold, or a `replication_factor` below 3 came from the cluster default rather than the declaration), `replication-exceeds-core-count` (#1564: `replication_factor` above the cluster's desired core count), `unknown-stream-key` (a key under `[streams.X]` the stream parser does not read, #1549; the removed #1564 keys `replicas`, `min-sync-replicas` and `min_sync_replicas` land here, naming `replication_factor` / `confirmation_factor`), `stream-key-invalid` (a malformed, overflowing, non-integer or below-minimum value), `source-address-invalid`, `namespace-invalid`,
 `stream-name-invalid`, `version-format-invalid`, and `stream-resource-invalid` for a parser refusal no rule
-names yet — and #576's inert keys (`inert-stream-config-key`, `inert-consumer-config-key`). The rule is
+names yet. The rule is
 derived from the parser's typed cause, never from message text. Before #1336 any one failing rule silently emptied the whole bindings entry, valid
 declarations included.
 
@@ -3564,7 +3592,7 @@ Recovery: `aether cluster bootstrap <aether-cluster.toml>`.
 
 Apply a cluster configuration change. Computes a diff against the stored config and executes actionable changes.
 
-**Scale-only in rc4 (#686).** The only actionable changes are a role's core/worker count going up or
+**Scale-only in rc5 (#686); rollout of the other changes is not available in this release.** The only actionable changes are a role's core/worker count going up or
 down (`ScaleUp`/`ScaleDown`), applied as a fenced desired-count write that the leader's reconciler
 actuates. Non-scale changes — sources, roles, runtime, source fields, cluster-level fields — are not
 applicable through this route; a plan containing any of them is rejected in full (typed
@@ -3690,8 +3718,8 @@ is 3. Worker and spot counts carry no quorum constraint and are required only to
 
 **Refusals** (both HTTP 400):
 
-- Undeclared `(source, role)` — the topology is changed with `aether cluster apply`, not with a
-  scale. Adding the pair here would turn a mistyped source name into a real provisioning target.
+- Undeclared `(source, role)` — the topology is not changed with a scale (and `aether cluster apply`
+  is scale-only in rc5). Adding the pair here would turn a mistyped source name into a real provisioning target.
 - Blank `source` when several sources declare the role. The response names the candidates.
 
 **Conflicts** (HTTP 409):

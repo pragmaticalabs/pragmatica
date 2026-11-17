@@ -101,6 +101,22 @@ public record StreamConfig(String name,
                                 newIncarnation);
     }
 
+    /// This config carrying `newPartitions`, every other field carried over verbatim (#3263: a republish of an existing life
+    /// keeps the life's own partition count).
+    public StreamConfig withPartitions(int newPartitions) {
+        return new StreamConfig(name,
+                                newPartitions,
+                                retention,
+                                autoOffsetReset,
+                                maxEventSizeBytes,
+                                consistencyMode,
+                                replicationFactor,
+                                confirmationFactor,
+                                compression,
+                                encryptionKeyId,
+                                incarnation);
+    }
+
     /// The stored factors as a pair. The engine re-checks them with [ReplicationFactors#replicationFactors].
     public ReplicationFactors replication() {
         return new ReplicationFactors(replicationFactor, confirmationFactor);

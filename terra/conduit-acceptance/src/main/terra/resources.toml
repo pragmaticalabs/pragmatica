@@ -1,0 +1,21 @@
+# A fixed pool of 32 connections, role `conduit`, warmed to min at start (#2948); sessions are named by application_name. Host, port and url are overridden per run with
+# TERRA_DATABASE__HOST / __PORT / __ASYNC_URL (the run script does).
+[database]
+type = "POSTGRESQL"
+name = "conduit-terra"
+host = "localhost"
+port = 5432
+database = "conduit"
+username = "conduit"
+password = "conduit"
+async_url = "postgresql://localhost:5432/conduit"
+application_name = "conduit-terra"
+
+[database.pool_config]
+min_connections = 32
+max_connections = 32
+idle_timeout = "10m"
+connection_timeout = "5s"
+max_lifetime = "30m"
+leak_detection_timeout = "0s"
+io_threads = 0

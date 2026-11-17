@@ -41,6 +41,7 @@
         <module>email-http</module>
         <module>xml</module>
         <module>storage</module>
+        <module>kafka-client</module>
     </modules>
 
     <dependencies>

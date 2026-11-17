@@ -172,4 +172,37 @@ public sealed interface MigrationError extends Cause {
                    : oneLine;
         }
     }
+
+    /// #2100 E-B: the schema a migration is scoped to is absent and the connecting role may not create it. Nothing was
+    /// created, no history table was touched and no script ran.
+    record SchemaCreateDenied(String schema, String role) implements MigrationError {
+        public static SchemaCreateDenied schemaCreateDenied(String schema, String role) {
+            return new SchemaCreateDenied(schema, role);
+        }
+
+        @Override
+        public String message() {
+            return "Schema " + schema
+                 + " does not exist and role '" + role
+                 + "' may not create it. No statement was run. To recover: create the schema (CREATE SCHEMA " + schema
+                 + ") or grant CREATE on the database to that role, then retry the migration"
+                 + " ('aether schema retry'). A schema created by hand also needs USAGE and CREATE for the role.";
+        }
+    }
+
+    /// #2100 E-B: a schema-scoped migration reached an engine that has no PostgreSQL-style schemas, so it is refused
+    /// before the first statement; the history table is never silently placed unqualified.
+    record SchemaQualifierUnsupported(String schema, String engine) implements MigrationError {
+        public static SchemaQualifierUnsupported schemaQualifierUnsupported(String schema, String engine) {
+            return new SchemaQualifierUnsupported(schema, engine);
+        }
+
+        @Override
+        public String message() {
+            return "Migration scoped to schema " + schema
+                 + " refused: " + engine
+                 + " is not supported for schema-scoped migration (PostgreSQL only). No statement was run."
+                 + " To recover: point the datasource at a PostgreSQL database, or remove the schema setting.";
+        }
+    }
 }

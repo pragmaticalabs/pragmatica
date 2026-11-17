@@ -131,7 +131,22 @@ jobs:
         with:
           java-version: '25'
           distribution: 'zulu'
-          cache: 'maven'
+
+      # #3297: restore-only. setup-java's own maven cache is saved by whichever job finishes first under one key shared by
+      # jobs that resolve different artifacts, so a hit could still lack what this job needs and send it to Central (429).
+      # Only forge-tests saves this cache (full reactor), so the key holds the full set.
+      - name: Restore Maven repository (full-set cache, saved by forge-tests)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-full-${{ hashFiles('**/pom.xml') }}
+          # Fallback order: newest m2-full (any pom generation), then the newest setup-java maven cache of the base branch (the
+          # pre-#3297 key; GitHub caches are scoped by ref, so a merge-group run reads only its own ref and the base branch, and an
+          # m2-full saved on a PR ref is invisible to it). If neither exists (first run ever, or after eviction: 7 days unused or
+          # the 10 GB limit) the job resolves from Central with the #3280 retries; that case is not hidden, it is the residual exposure.
+          restore-keys: |
+            m2-full-
+            setup-java-Linux-x64-maven-
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
@@ -189,7 +204,15 @@ jobs:
         with:
           java-version: '25'
           distribution: 'zulu'
-          cache: 'maven'
+
+      - name: Restore Maven repository (full-set cache, saved by forge-tests)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-full-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            m2-full-
+            setup-java-Linux-x64-maven-
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
@@ -198,8 +221,10 @@ jobs:
         id: plan
         run: |
           python3 -B tools/ci-test-groups.py modules --group "${{ matrix.group }}" | tr ',' '\n' > "test-group-${{ matrix.group }}.txt"
-          echo "modules=$(python3 -B tools/ci-test-groups.py modules --group "${{ matrix.group }}")" >> "$GITHUB_OUTPUT"
-          echo "examples=$(python3 -B tools/ci-test-groups.py has-examples --group "${{ matrix.group }}")" >> "$GITHUB_OUTPUT"
+          modules=$(python3 -B tools/ci-test-groups.py modules --group "${{ matrix.group }}")
+          examples=$(python3 -B tools/ci-test-groups.py has-examples --group "${{ matrix.group }}")
+          echo "modules=$modules" >> "$GITHUB_OUTPUT"
+          echo "examples=$examples" >> "$GITHUB_OUTPUT"
 
       - name: Install this group's upstream modules
         run: mvn install -B -DskipTests -pl "${{ steps.plan.outputs.modules }}" -am
@@ -308,7 +333,15 @@ jobs:
         with:
           java-version: '25'
           distribution: 'zulu'
-          cache: 'maven'
+
+      - name: Restore Maven repository (full-set cache, saved by forge-tests)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-full-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            m2-full-
+            setup-java-Linux-x64-maven-
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
@@ -341,6 +374,14 @@ jobs:
           -Dfailsafe.excludedGroups=Heavy,quarantine
           -Dfailsafe.forkedProcessTimeoutInSeconds=1800
         timeout-minutes: 30
+
+      # Saved only on success: the key is exact and immutable, so a save from a partial run would pin an incomplete set.
+      - name: Save Maven repository (full-set cache)
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-full-${{ hashFiles('**/pom.xml') }}
 
       - name: Upload Forge test results
         uses: actions/upload-artifact@v6
@@ -379,7 +420,15 @@ jobs:
         with:
           java-version: '25'
           distribution: 'zulu'
-          cache: 'maven'
+
+      - name: Restore Maven repository (full-set cache, saved by forge-tests)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-full-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            m2-full-
+            setup-java-Linux-x64-maven-
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
@@ -389,7 +438,8 @@ jobs:
         id: plan
         run: |
           python3 -B -m unittest discover -s tools -p test_ember_shard.py
-          echo "classes=$(python3 -B tools/ember-shard.py --shards "$SHARDS" --index "$SHARD")" >> "$GITHUB_OUTPUT"
+          classes=$(python3 -B tools/ember-shard.py --shards "$SHARDS" --index "$SHARD")
+          echo "classes=$classes" >> "$GITHUB_OUTPUT"
 
       - name: Install Ember's upstream modules
         run: mvn install -B -DskipTests -pl aether/ember -am
@@ -438,7 +488,15 @@ jobs:
         with:
           java-version: '25'
           distribution: 'zulu'
-          cache: 'maven'
+
+      - name: Restore Maven repository (full-set cache, saved by forge-tests)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-full-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            m2-full-
+            setup-java-Linux-x64-maven-
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
@@ -448,7 +506,8 @@ jobs:
         id: plan
         run: |
           python3 -B -m unittest discover -s tools -p test_consensus_shard.py
-          echo "classes=$(python3 -B tools/ember-shard.py --module consensus --shards "$SHARDS" --index "$SHARD")" >> "$GITHUB_OUTPUT"
+          classes=$(python3 -B tools/ember-shard.py --module consensus --shards "$SHARDS" --index "$SHARD")
+          echo "classes=$classes" >> "$GITHUB_OUTPUT"
 
       - name: Install Consensus's upstream modules
         run: mvn install -B -DskipTests -pl integrations/consensus -am
@@ -500,7 +559,16 @@ jobs:
         with:
           java-version: '25'
           distribution: 'zulu'
-          cache: 'maven'
+
+      - name: Restore Maven repository (full-set cache, saved by forge-tests)
+        if: steps.plan.outputs.modules != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-full-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            m2-full-
+            setup-java-Linux-x64-maven-
 
       - name: Bootstrap annotation processors and Maven plugins
         if: steps.plan.outputs.modules != ''

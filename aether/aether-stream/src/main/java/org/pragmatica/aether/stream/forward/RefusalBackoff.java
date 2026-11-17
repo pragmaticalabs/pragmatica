@@ -64,6 +64,11 @@ public final class RefusalBackoff<K> {
         nominalHoldNanos.remove(key);
     }
 
+    /// Test-visible: the number of keys holding a doubled hold; a key's entry is what [#sent] clears.
+    int tracked() {
+        return nominalHoldNanos.size();
+    }
+
     private static Long doubled(Long previous, Long first) {
         return Math.min(previous * 2, MAX_HOLD.nanos());
     }

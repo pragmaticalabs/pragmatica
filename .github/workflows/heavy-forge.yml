@@ -111,10 +111,59 @@ jobs:
             aether/forge/forge-tests/target/failsafe-reports/*.txt
           retention-days: 14
 
+  # #2898: Conduit (RealWorld) on Terra as a permanent acceptance app. Builds terra/conduit-acceptance, starts it with its own PostgreSQL and runs
+  # the upstream RealWorld API suite (terra/conduit-acceptance/spec/hurl) through run-acceptance.sh, which exits non-zero on any failed request or
+  # assertion and on a suite that examined nothing. Nightly and workflow_dispatch only: never on a pull request, not even a `run-heavy` one.
+  # A red here is a release blocker for the framework gap the failing request exercises; it reaches the heavy-nightly issue through `notify`.
+  conduit-acceptance:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: conduit-acceptance-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: 'zulu'
+          cache: 'maven'
+
+      - name: Bootstrap annotation processors and Maven plugins
+        run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
+
+      # -am builds the app's dependencies, never its dependents; the module's own unit tests run here (no database), the suite does the rest.
+      - name: Build and unit-test the Conduit app
+        run: mvn install -B -pl terra/conduit-acceptance -am -DskipTests && mvn test -B -pl terra/conduit-acceptance
+
+      - name: Run the RealWorld API suite against Conduit on Terra
+        env:
+          WORK: ${{ runner.temp }}/conduit-acceptance
+          KEEP_WORK: '1'
+        run: |
+          set -o pipefail
+          terra/conduit-acceptance/run-acceptance.sh | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the suite output and the application log
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: conduit-acceptance-output
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/conduit-acceptance/app.log
+            ${{ runner.temp }}/conduit-acceptance/report/*.out
+          retention-days: 14
+
   # One heavy-nightly issue: opened or commented on a red scheduled night, closed on a green one. `issues: write` is scoped to
   # this job only; the test job above keeps `contents: read`. The lists come in through env, never interpolated into the script.
   notify:
-    needs: heavy-forge-tests
+    needs: [heavy-forge-tests, conduit-acceptance]
     if: always() && github.event_name == 'schedule' && (needs.heavy-forge-tests.result == 'success' || needs.heavy-forge-tests.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -135,13 +184,17 @@ jobs:
           REASON: ${{ needs.heavy-forge-tests.outputs.reason }}
           NEW_REDS: ${{ needs.heavy-forge-tests.outputs.new_reds }}
           KNOWN_REDS: ${{ needs.heavy-forge-tests.outputs.known_reds }}
+          CONDUIT_RESULT: ${{ needs.conduit-acceptance.result }}
         run: |
           set -euo pipefail
           gh label create heavy-nightly --description "the nightly Heavy forge run" --force >/dev/null
           open=$(gh issue list --label heavy-nightly --state open --json number --jq '.[0].number // empty')
           # Close ONLY on a night that is both a green job and a summary that read real reports (state ok). Anything else, including a missing or
           # unknown state, keeps the issue open: an unknown night is never green.
-          if [ "$RESULT" = success ] && [ "${STATE:-}" = ok ]; then
+          # The Conduit acceptance job is part of the night: a failed or cancelled run keeps the issue open and is listed as a new red.
+          conduit_red=no
+          case "${CONDUIT_RESULT:-}" in failure|cancelled) conduit_red=yes; NEW_REDS="${NEW_REDS:+$NEW_REDS$'\n'}conduit-acceptance (terra/conduit-acceptance, ${CONDUIT_RESULT})";; esac
+          if [ "$RESULT" = success ] && [ "${STATE:-}" = ok ] && [ "$conduit_red" = no ]; then
             if [ -n "$open" ]; then
               gh issue close "$open" --comment "Green: $RUN_URL ($SHA)"
             fi
@@ -149,7 +202,7 @@ jobs:
           fi
           body=$(printf 'Run: %s\nCommit: %s\nState: %s %s\n\nNew reds:\n%s\n\nKnown reds:\n%s\n' "$RUN_URL" "$SHA" "${STATE:-unknown}" "${REASON:-}" "${NEW_REDS:-none listed}" "${KNOWN_REDS:-none}")
           # the title says which kind of bad night this is, and follows the latest night when it changes
-          if [ "${STATE:-}" = red ]; then title="Heavy nightly: new reds"; else title="Heavy nightly: unknown result"; fi
+          if [ "${STATE:-}" = red ] || [ "$conduit_red" = yes ]; then title="Heavy nightly: new reds"; else title="Heavy nightly: unknown result"; fi
           if [ -n "$open" ]; then
             gh issue edit "$open" --title "$title"
             gh issue comment "$open" --body "$body"

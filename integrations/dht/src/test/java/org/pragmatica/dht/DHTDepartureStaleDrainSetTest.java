@@ -1,6 +1,7 @@
 package org.pragmatica.dht;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.dht.storage.OwnerEpochGate;
@@ -33,6 +34,7 @@ import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine
 /// exhausts the ring, no node lies beyond the vacated slots, so the push must fall back to every
 /// remaining node instead of only the newcomers. Keys are under-replicated (one responsible replica
 /// lacks each), as run 7's joiners were; the empty-set arm is the positive control.
+@Timeout(30)
 class DHTDepartureStaleDrainSetTest {
     private static final DHTConfig CONFIG = new DHTConfig(3, 2, 2, DHTConfig.DEFAULT_TIMEOUT);
     private static final byte[] V0 = "v0".getBytes(StandardCharsets.UTF_8);

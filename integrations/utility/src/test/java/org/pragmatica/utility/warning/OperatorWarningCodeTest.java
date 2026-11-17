@@ -399,6 +399,9 @@ class OperatorWarningCodeTest {
         OperatorWarningCode.STORAGE_WAL_TAIL_CUT,
         // D1, added on purpose: a failed KV dispatcher stops (in production, halts) its node; the only end is a restart.
         OperatorWarningCode.KV_DISPATCHER_FAILED,
+        // #3193, added on purpose: a live worker whose own directive was retired halts (EXIT_DRAINED); the halt ends the process, so nothing
+        // is left to publish a recovery, and the only end is a fresh WorkerJoin, which is a new admission.
+        OperatorWarningCode.OWN_DIRECTIVE_RETIRED,
         OperatorWarningCode.STORAGE_VOLUME_GUARD_INACTIVE,
         OperatorWarningCode.STORAGE_STREAM_DISK_CAP_OVER_SPACE,
         OperatorWarningCode.STORAGE_STREAM_DISK_SPACE_UNREADABLE,
@@ -546,6 +549,18 @@ class OperatorWarningCodeTest {
             .isEqualTo(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED);
     }
 
+    /// #2600: a slice ACTIVE on no live core or worker is a WARNING; its restoration is the INFO recovery that closes it.
+    @Test
+    void candidateRestored_isInfo_andClosesNoLiveCandidate() {
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE.code()).isEqualTo("stream-consumer-no-live-candidate");
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED.code()).isEqualTo("stream-consumer-candidate-restored");
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CANDIDATE_RESTORED.recoveryOf().unwrap())
+            .isEqualTo(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_NO_LIVE_CANDIDATE.hasRecovery()).isTrue();
+    }
+
     /// #1941's resolved counterpart is a recovery, so it is INFO and paired with the not-registered condition.
     @Test
     void registeredAgain_isInfo_andClosesNotRegistered() {
@@ -612,5 +627,18 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED.level()).isEqualTo(WarningLevel.INFO);
         assertThat(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED.recoveryOf().or(OperatorWarningCode.JSON_CONFIG_APPLIED))
             .isEqualTo(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK);
+    }
+
+    /// #3174 H3b: the unpublish-bound expiry is an operator-visible WARNING of the `deployment` subsystem, closed by an INFO recovery; the
+    /// literals are alert keys, so a change would orphan open alerts.
+    @Test
+    void routeUnpublishAwait_isAWarning_withAnInfoRecoveryOfTheSameSubsystem() {
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_EXPIRED.code()).isEqualTo("route-unpublish-await-expired");
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_EXPIRED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_EXPIRED.subsystem()).isEqualTo("deployment");
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_SETTLED.code()).isEqualTo("route-unpublish-await-settled");
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_SETTLED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_SETTLED.subsystem()).isEqualTo("deployment");
+        assertThat(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_SETTLED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_EXPIRED);
     }
 }

@@ -530,6 +530,22 @@ class CloseAndOverrunProbeTest {
         assertThat(probe.counts).contains("Drain:closed");
     }
 
+    /// #3173: a node refused before `start()` drains on its stop. With no consumer the marker was never taken, and the stop hung for the whole
+    /// bound, past the cluster's own node stop bound. The pending gate also pins that `drained()` is skipped: no input was stepped.
+    @Test
+    void drain_ofANeverStartedRuntime_isResolvedAtOnce_withoutWaitingForWhatMustHoldAfterTheMarker() {
+        var probe = new Probe(new ManualTimerService());
+
+        probe.drainGate = Promise.promise();
+        probe.deliver("queued-before-start");
+
+        var drained = probe.drain();
+
+        await().atMost(Duration.ofSeconds(1)).until(drained::isResolved);
+        assertThat(probe.steps).as("nothing was stepped: no consumer exists").isEmpty();
+        probe.close();
+    }
+
     @Test
     void drain_doesNotStopTheConsumer_theInputsAfterItAreStillHandled() {
         var probe = new Probe(new ManualTimerService());

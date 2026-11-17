@@ -42,6 +42,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockingDetails;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -54,6 +55,8 @@ import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.PEER;
 class QuicLaneBacklogTest {
     private static final String LOGGER = "org.pragmatica.consensus.net.quic.QuicClusterNetwork";
     private static final long POLL_NANOS = TimeSpan.timeSpan(5).millis().nanos();
+    /// Quiet window after a wait, long enough for a duplicate asynchronous effect (a second resend) to show.
+    private static final long SETTLE_NANOS = TimeSpan.timeSpan(200).millis().nanos();
 
     /// A stream whose writability, liveness and write behaviour the test drives. `written` holds the first byte of
     /// every frame handed to the stream, in hand-off order.
@@ -224,6 +227,12 @@ class QuicLaneBacklogTest {
 
         lane.writable.set(true);
         awaitWithin("the held frame is written", AWAIT, () -> lane.written.size() == 1);
+
+        // #3212: `lane.written` fills inside the failing stream's write, BEFORE the failed write's listener runs the resend,
+        // so the resend is still pending here. Wait for the resend itself, then pin "exactly once" after the drain settled.
+        verify(kept, timeout(AWAIT.nanos() / 1_000_000L).times(1)).writeAndFlush(any());
+        awaitWithin("the backlog entry is removed", AWAIT, () -> network.laneBacklogCountForTests() == 0);
+        LockSupport.parkNanos(SETTLE_NANOS);
 
         verify(kept, times(1)).writeAndFlush(any());
         assertThat(network.quicMetrics().retiredStreamResendCount()).as("re-sent exactly once").isEqualTo(1L);

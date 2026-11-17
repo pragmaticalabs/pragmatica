@@ -180,7 +180,7 @@ public interface BlueprintService {
 
     /// #811: [#validate] plus everything a publish would refuse BEFORE it stores anything: the blueprint's slices are
     /// expanded from the repository and run through the same preflight as [#publish] (pub/sub, topic tier, route
-    /// collisions, config sections including topic sections, replication). Nothing is stored. The default answers what
+    /// collisions, config sections including topic sections, replication, and the `resources.toml` stream gates, #3273). Nothing is stored. The default answers what
     /// [#validate] answers, for implementations with no repository to expand against.
     default Promise<Blueprint> validateDeployable(String dsl) {
         return validate(dsl).async();
@@ -612,9 +612,13 @@ class BlueprintServiceInstance implements BlueprintService {
                        .flatMap(this::preflightWithoutStoring);
     }
 
+    /// #3273: the dry run derives the slice stream bindings through [#sliceStreamBindings], the one function [#storeBlueprint]
+    /// derives them with, so the `resources.toml` gates (STRONG consistency, reserved or system source kinds, inert stream and
+    /// consumer keys) refuse here exactly what they refuse at publish. The derived bindings are discarded: nothing is stored.
     private Promise<Blueprint> preflightWithoutStoring(Blueprint blueprint) {
         return BlueprintExpander.expand(blueprint, repository)
                                 .flatMap(this::validatePubSub)
+                                .flatMap(preflighted -> sliceStreamBindings(preflighted.expanded()))
                                 .map(_ -> blueprint);
     }
 

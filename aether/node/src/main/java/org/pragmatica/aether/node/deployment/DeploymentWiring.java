@@ -296,8 +296,8 @@ public final class DeploymentWiring {
                : recorded(point, LEGACY_TARGET, target);
     }
 
-    /// A legacy activation hook (B2, B3, B7): the legacy target, run only while the engine marker guard is open. The guard is inert under LEGACY
-    /// unless a mismatching marker is committed.
+    /// A legacy activation hook (B2, B3, B4; B7 is [#legacyGatedLeaderToggle]): the legacy target, run only while the engine marker guard is open.
+    /// The guard is inert under LEGACY unless a mismatching marker is committed.
     public <T> Consumer<T> legacyGated(String point, Consumer<T> target) {
         return isFsm2()
                ? recorded(point, DROPPED_TARGET, dropped(point))
@@ -311,6 +311,29 @@ public final class DeploymentWiring {
         return isFsm2()
                ? recorded(point, DROPPED_TARGET, () -> dropCounter(point).increment())
                : recorded(point, LEGACY_TARGET + "+gate", () -> guard.whenOpen(point, target));
+    }
+
+    /// The legacy leader toggle (B7), gated like [#legacyGated(String, Consumer)] except for what a parked election does (#3262, the #3253 shape
+    /// on the legacy path): a change that makes this node the leader is parked behind what is already parked under `point`, because a parked
+    /// leave followed by a parked election must reach the target as both, in order (`deactivate`, then `activate`, the re-incarnation), while an
+    /// Active legacy cluster FSM ignores the `activate` alone. A change away from this node still replaces the whole parked sequence (a later
+    /// leave supersedes a parked election).
+    public Consumer<LeaderNotification.LeaderChange> legacyGatedLeaderToggle(String point,
+                                                                             Consumer<LeaderNotification.LeaderChange> target) {
+        return isFsm2()
+               ? recorded(point, DROPPED_TARGET, dropped(point))
+               : recorded(point, LEGACY_TARGET + "+gate+toggle", change -> gateLeaderToggle(point, target, change));
+    }
+
+    @Contract
+    private void gateLeaderToggle(String point,
+                                  Consumer<LeaderNotification.LeaderChange> target,
+                                  LeaderNotification.LeaderChange change) {
+        if (change.localNodeIsLeader()) {
+            guard.whenOpenAfterParked(point, () -> target.accept(change));
+        } else {
+            guard.whenOpen(point, () -> target.accept(change));
+        }
     }
 
     private <T> Consumer<T> dropped(String point) {
@@ -568,6 +591,14 @@ public final class DeploymentWiring {
             bindings.put(point, LEGACY_TARGET);
             registration.run();
         }
+    }
+
+    // -- 4a sources (F5b, phase-3 design 8.2 D-10) ------------------------------------------------------------------
+    /// B22: a source read on demand: FSM2's observed rows under FSM2, the legacy source under LEGACY.
+    public <T> Supplier<T> source(String point, Supplier<T> fsm2, Supplier<T> legacy) {
+        return isFsm2()
+               ? recorded(point, "fsm2:observed", fsm2)
+               : recorded(point, LEGACY_TARGET, legacy);
     }
 
     /// B17 (Q8): whether the blueprint publish batch writes the apply record: on under FSM2, off under LEGACY.
