@@ -59,9 +59,14 @@ reconcile, stream ownership, catch-up and ISR, SharedPools, quorum re-admission)
 - a tag that is not `<Module>:<Part>`;
 - a duplicate `Part` or config variant (both positions are named);
 - a missing `head` or `tail`, or no config;
-- an action fragment that does not define its own name, or that `tail` never references.
+- an action fragment that does not define its own name, or that `tail` never references;
+- a reference no fragment of the module defines (#3311): an operator application `Name(`, or a capitalised bare name,
+  that is not defined (`==`), declared (`CONSTANT`, `VARIABLE`, `EXTENDS`), bound (a parameter, `\A`, `\E`, `CHOOSE`,
+  a set or function constructor) or a keyword or standard-module operator. Every such reference is named with its
+  Java line. The check is lexical, not scoped: a name bound anywhere in the module counts as bound everywhere, so it
+  can miss a reference but never reports a defined one; a lowercase bare name is left to SANY.
 
-Syntax and semantic errors are SANY's and TLC's. `check.sh` annotates every `line N, col M ... of module <Module>`
+Other syntax and semantic errors are SANY's and TLC's. `check.sh` annotates every `line N, col M ... of module <Module>`
 position in TLC's output with the Java source line it came from (`<Module>.map.tsv`), so a counterexample reads as
 a sequence of Java locations.
 
