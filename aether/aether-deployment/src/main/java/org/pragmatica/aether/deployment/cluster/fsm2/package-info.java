@@ -1003,6 +1003,38 @@
 /// PROPERTY PersistedOrCleared
 /// ```
 ///
+/// ```tlacfg Fsm2Leader:mut_nodeposed_close
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "nodeposed"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY WarningsClose
+/// ```
+///
+/// ```tlacfg Fsm2Leader:mut_noruleo_agree
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "noruleo"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// INVARIANT OpenSetAgreement
+/// ```
+///
 /// ```tlacfg Fsm2Leader:code_nolate_agree
 /// CONSTANT MODE = "code"
 /// CONSTANT A2834 = FALSE

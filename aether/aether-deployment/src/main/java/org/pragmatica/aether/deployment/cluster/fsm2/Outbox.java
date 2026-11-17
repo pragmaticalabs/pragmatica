@@ -578,7 +578,8 @@ public sealed interface Outbox {
     // the submission's pending entries were already released and its intent is re-derived level-triggered from the mirror.
     /// ```tla Fsm2Leader:Settle
     /// \* WriteSettled of this incarnation: Outbox.java. W accepted (code): rule E publishes from the committed pair, a deposed
-    /// \* writer included (Warnings.accepted / notified), and the mirror takes the mutations; pre-#3274 modes: the held prefix the
+    /// \* writer included (Warnings.accepted / notified; mutant "nodeposed": a writer that is not the committed leader emits
+    /// \* nothing), and the mirror takes the mutations; pre-#3274 modes: the held prefix the
     /// \* tx carried lands (Warnings.accepted, committed: Warnings.java:253), published at the end of the step
     /// \* unless the node's leader value names another node (Warnings.java:168, ledByAnother: then it stays
     /// \* landed and held); refused: the refusal's values re-index the mirror, m.leader := refusal leader, unlanded marks
@@ -601,7 +602,7 @@ public sealed interface Outbox {
     ///         /\ redo' = [redo EXCEPT ![n] = IF stale THEN redo[n] \cup {s.tx} ELSE redo[n]]
     ///         /\ Apply(n, warned[n], r, d, IF isW THEN stale ELSE wInfl[n], IF isW THEN gInfl[n] ELSE stale,
     ///                  gIntent[n], FALSE, flushQ[n] \/ stale,
-    ///                  IF isW /\ s.out = "acc" /\ MODE = "code" THEN RuleE(shown, s.tx.wexp, s.wrep) ELSE shown, held[n], ld, v)
+    ///                  IF isW /\ s.out = "acc" /\ MODE = "code" /\ (MUT # "nodeposed" \/ kvLeader = n) THEN RuleE(shown, s.tx.wexp, s.wrep) ELSE shown, held[n], ld, v)
     ///   /\ UNCHANGED <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, fired, net,
     ///                  condBudget, faultBudget>>
     /// ```
