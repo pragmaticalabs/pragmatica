@@ -74,6 +74,17 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
         return load(explicitConfigPath, some(moduleDirectory(sourceRoot)));
     }
 
+    /// The layer file that decides a source root's `[lint] mode`: the nearest of the explicit config, the `jbct.toml`
+    /// chain from the root's [#moduleDirectory] outward, and the user config, that writes the key; none when no file
+    /// does (the built-in default applies). The same layers [#loadForSourceRoot] folds, in the order that makes the
+    /// nearest win, so the answer is the file the summary line can name (#2525).
+    static Result<Option<Path>> modeLayer(Option<Path> explicitConfigPath, Path sourceRoot) {
+        var candidates = modeCandidates(explicitConfigPath, moduleDirectory(sourceRoot));
+
+        return Result.allOf(candidates.stream().map(ConfigLoader::parseLayer).toList()).map(layers -> firstWithMode(candidates,
+                                                                                                                    layers));
+    }
+
     /// The directory a source root's `jbct.toml` walk starts at: the nearest ancestor holding a [#MODULE_MARKER],
     /// searched no higher than the first [#REPOSITORY_MARKER] ancestor; with no marker on that path, the source
     /// root's own directory (R1 (a)), so a `jbct.toml` in `src/` or `src/main/java` is read for such a root only.
@@ -134,6 +145,25 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
     /// Get the default user config file path.
     static Path getUserConfigPath() {
         return getUserConfigDir().resolve(USER_CONFIG_NAME);
+    }
+
+    private static List<Path> modeCandidates(Option<Path> explicitConfigPath, Path moduleDirectory) {
+        return Stream.of(explicitConfigPath.stream(),
+                         findProjectConfigChain(moduleDirectory).reversed().stream(),
+                         userConfigCandidate().stream())
+                     .flatMap(stream -> stream)
+                     .toList();
+    }
+
+    private static Option<Path> firstWithMode(List<Path> candidates, List<Option<PartialConfig>> layers) {
+        return Option.from(IntStream.range(0,
+                                           candidates.size())
+                                    .filter(index -> layers.get(index)
+                                                           .filter(layer -> layer.mode()
+                                                                                 .isPresent())
+                                                           .isPresent())
+                                    .boxed()
+                                    .findFirst()).map(candidates::get);
     }
 
     private static Path startOf(Path sourceRoot) {
