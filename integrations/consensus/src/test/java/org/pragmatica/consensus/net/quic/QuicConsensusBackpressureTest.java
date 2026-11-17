@@ -196,7 +196,9 @@ class QuicConsensusBackpressureTest {
             network.writeIfWritableForTest(ch, new byte[]{2}, PEER, StreamType.CONSENSUS);
             network.writeIfWritableForTest(ch, new byte[]{3}, PEER, StreamType.CONSENSUS);
 
-            awaitWriteFlush(ch, 3);
+            // #3313: await the recorded order itself, not the mock's invocation count: Mockito records the third
+            // writeAndFlush before its answer appends to `order`, so the count can read 3 while `order` holds two.
+            awaitOrderSize(order, 3);
             assertThat(order).as("frames reach the stream in send order").containsExactly(1, 2, 3);
         }
 
@@ -1007,6 +1009,16 @@ class QuicConsensusBackpressureTest {
                 parkBriefly();
             }
         }
+    }
+
+    private static void awaitOrderSize(List<Integer> order, int expected) {
+        var deadline = System.nanoTime() + TimeSpan.timeSpan(5).seconds().nanos();
+
+        while (order.size() < expected && System.nanoTime() < deadline) {
+            parkBriefly();
+        }
+
+        assertThat(order).as("the stream took %d frames", expected).hasSizeGreaterThanOrEqualTo(expected);
     }
 
     private static void parkBriefly() {

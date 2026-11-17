@@ -181,10 +181,11 @@ class QuicLaneBacklogTest {
         awaitWithin("the closed stream's entry is removed within a few passes, not after the 10 s budget",
                     TimeSpan.timeSpan(2).seconds(),
                     () -> network.laneBacklogCountForTests() == 0);
+        awaitDropped(network, StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP, 3L);
         assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP))
             .as("one RETRY_GAVE_UP per discarded frame")
             .isEqualTo(3L);
-        assertThat(network.consensusRetriesInFlight()).as("every discarded frame leaves the pressure count").isZero();
+        awaitWithin("every discarded frame leaves the pressure count", AWAIT, () -> network.consensusRetriesInFlight() == 0);
         assertThat(lane.written).isEmpty();
     }
 
@@ -214,6 +215,11 @@ class QuicLaneBacklogTest {
         feeder.join();
         tokens.set(Integer.MAX_VALUE);
         awaitWithin("the backlog drains once the stream is writable", AWAIT, () -> network.laneBacklogCountForTests() == 0);
+        awaitWithin("every frame is written or counted lost",
+                    AWAIT,
+                    () -> written.get() + network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS,
+                                                                                      DropSite.RETRY_GAVE_UP) >= frames);
+        awaitWithin("the pressure count returns to zero", AWAIT, () -> network.consensusRetriesInFlight() == 0);
 
         var gaveUp = network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP);
 
@@ -261,6 +267,7 @@ class QuicLaneBacklogTest {
         awaitWithin("the entry is removed", AWAIT, () -> network.laneBacklogCountForTests() == 0);
 
         assertThat(lane.written).containsExactly(1, 2);
+        awaitWithin("the pressure count returns to zero", AWAIT, () -> network.consensusRetriesInFlight() == 0);
         assertThat(network.consensusRetriesInFlight()).as("exactly zero after the mixed backlog drained").isZero();
     }
 
@@ -303,6 +310,7 @@ class QuicLaneBacklogTest {
         awaitWithin("the held frame is written", AWAIT, () -> lane.written.size() == 1);
         awaitWithin("the failed held write is counted", AWAIT, () -> network.quicMetrics().writeFailureCount() == 1);
 
+        awaitDropped(network, StreamType.CONSENSUS, DropSite.WRITE_FAILED, 1L);
         assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.WRITE_FAILED)).isEqualTo(1L);
     }
 
@@ -319,9 +327,13 @@ class QuicLaneBacklogTest {
         awaitWithin("the frames behind the throwing one are written", AWAIT, () -> lane.written.size() == 2);
         awaitWithin("the entry is removed", AWAIT, () -> network.laneBacklogCountForTests() == 0);
 
+        awaitWithin("the frames behind the throwing one are recorded", AWAIT, () -> lane.written.size() >= 2);
         assertThat(lane.written).containsExactly(2, 3);
+        awaitDropped(network, StreamType.CONSENSUS, DropSite.WRITE_FAILED, 1L);
         assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.WRITE_FAILED)).isEqualTo(1L);
+        awaitWithin("the failed write is counted", AWAIT, () -> network.quicMetrics().writeFailureCount() >= 1L);
         assertThat(network.quicMetrics().writeFailureCount()).isEqualTo(1L);
+        awaitWithin("the pressure count returns to zero", AWAIT, () -> network.consensusRetriesInFlight() == 0);
         assertThat(network.consensusRetriesInFlight()).isZero();
     }
 
@@ -340,10 +352,12 @@ class QuicLaneBacklogTest {
 
         awaitWithin("the faulted backlog's entry is removed", AWAIT, () -> network.laneBacklogCountForTests() == 0);
 
+        awaitWithin("the pressure count returns to zero", AWAIT, () -> network.consensusRetriesInFlight() == 0);
         assertThat(network.consensusRetriesInFlight()).as("both held frames left the pressure count").isZero();
         assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP))
             .as("each abandoned frame is counted lost once")
             .isEqualTo(2L);
+        awaitWithin("the fault was injected and consumed", AWAIT, () -> !lane.faultOnNextWritableCheck.get());
         assertThat(lane.faultOnNextWritableCheck).as("the fault was injected and consumed").isFalse();
     }
 
@@ -360,6 +374,7 @@ class QuicLaneBacklogTest {
             network.writeIfWritableForTest(lane.ch, new byte[]{2}, PEER, StreamType.CONSENSUS);
 
             awaitWithin("both frames are written by the drain", AWAIT, () -> lane.written.size() == 2);
+            awaitCleared(capture, 1);
 
             assertThat(lane.written).containsExactly(1, 2);
             assertThat(capture.messages(Level.WARN)).filteredOn(message -> message.startsWith("Backpressure on peer"))
@@ -410,11 +425,13 @@ class QuicLaneBacklogTest {
 
             awaitWithin("the entry is removed once the drain wrote the frames", AWAIT, () -> network.laneBacklogCountForTests() == 0);
 
+            awaitWithin("the drained frames are recorded", AWAIT, () -> lane.written.size() >= 3);
             assertThat(lane.written).containsExactly(1, 2, 3);
             assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP))
                 .as("a backlog that drained empty gave nothing up")
                 .isZero();
             assertThat(capture.messages(Level.WARN)).filteredOn(message -> message.contains("gave up")).isEmpty();
+            awaitWithin("the pressure count returns to zero", AWAIT, () -> network.consensusRetriesInFlight() == 0);
             assertThat(network.consensusRetriesInFlight()).isZero();
         }
     }
@@ -431,7 +448,9 @@ class QuicLaneBacklogTest {
         awaitWithin("the expired backlog's entry is removed", AWAIT, () -> network.laneBacklogCountForTests() == 0);
 
         assertThat(lane.written).isEmpty();
+        awaitDropped(network, StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP, 3L);
         assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP)).isEqualTo(3L);
+        awaitWithin("the pressure count returns to zero", AWAIT, () -> network.consensusRetriesInFlight() == 0);
         assertThat(network.consensusRetriesInFlight()).isZero();
     }
 
@@ -481,6 +500,7 @@ class QuicLaneBacklogTest {
         awaitWithin("the dead stream's entry goes", AWAIT, () -> network.laneBacklogCountForTests() == 0);
 
         assertThat(lane.written).as("nothing is written to a stream that closed").isEmpty();
+        awaitDropped(network, StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP, 3L);
         assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP)).isEqualTo(3L);
     }
 
@@ -497,6 +517,7 @@ class QuicLaneBacklogTest {
         lane.writable.set(true);
         awaitWithin("the held frame is written", AWAIT, () -> lane.written.size() == 1);
 
+        awaitWithin("the held write ended the episode", AWAIT, () -> network.openBackpressureEpisodesForTests() == 0);
         assertThat(network.openBackpressureEpisodesForTests()).as("the held write ended the episode").isZero();
     }
 
@@ -526,6 +547,7 @@ class QuicLaneBacklogTest {
             awaitWithin("the backlog entry goes", AWAIT, () -> network.laneBacklogCountForTests() == 0);
 
             assertThat(lane.written).as("no frame was written after the holds").isEmpty();
+            awaitCleared(capture, 1);
             assertThat(cleared(capture)).as("one cleared line for the one episode").hasSize(1);
         }
     }
@@ -551,7 +573,9 @@ class QuicLaneBacklogTest {
             awaitWithin("the backlog entry goes", AWAIT, () -> network.laneBacklogCountForTests() == 0);
 
             assertThat(lane.written).as("control: the frame was given up, not written").isEmpty();
+            awaitWithin("the give-up's closer run ended the episode", AWAIT, () -> network.openBackpressureEpisodesForTests() == 0);
             assertThat(network.openBackpressureEpisodesForTests()).as("the give-up's closer run ended the episode").isZero();
+            awaitCleared(capture, 1);
             assertThat(cleared(capture)).as("one cleared line for the one episode").hasSize(1);
         }
     }
@@ -571,11 +595,15 @@ class QuicLaneBacklogTest {
 
             awaitWithin("the faulted backlog's entry is removed", AWAIT, () -> network.laneBacklogCountForTests() == 0);
 
+            awaitWithin("the fault was injected and consumed", AWAIT, () -> !lane.faultThenWritable.get());
             assertThat(lane.faultThenWritable).as("the fault was injected and consumed").isFalse();
             assertThat(lane.active).as("the channel is still open").isTrue();
             assertThat(lane.written).as("the abandoned frames were not written").isEmpty();
+            awaitDropped(network, StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP, 2L);
             assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP)).isEqualTo(2L);
+            awaitWithin("the abandon ended the episode", AWAIT, () -> network.openBackpressureEpisodesForTests() == 0);
             assertThat(network.openBackpressureEpisodesForTests()).as("the abandon ended the episode").isZero();
+            awaitCleared(capture, 1);
             assertThat(cleared(capture)).as("one cleared line for the one episode").hasSize(1);
         }
     }
@@ -598,6 +626,7 @@ class QuicLaneBacklogTest {
 
             awaitWithin("the DHT episode ends once the stream is writable", AWAIT, () -> network.openBackpressureEpisodesForTests() == 0);
 
+            awaitCleared(capture, 1);
             assertThat(cleared(capture)).singleElement()
                                         .satisfies(message -> assertThat(message).contains("lane DHT cleared"));
         }
@@ -623,15 +652,19 @@ class QuicLaneBacklogTest {
             awaitWithin("the CONSENSUS frame is written", AWAIT, () -> lane.written.size() == 1);
 
             assertThat(network.laneBacklogCountForTests()).as("control: the DHT frame is still held").isEqualTo(1);
+            awaitWithin("the CONSENSUS episode ended", AWAIT, () -> network.openBackpressureEpisodesForTests() <= 1);
             assertThat(network.openBackpressureEpisodesForTests()).as("the DHT episode stays open while its frame is held")
                                                                   .isEqualTo(1);
+            awaitCleared(capture, 1);
             assertThat(cleared(capture)).singleElement()
                                         .satisfies(message -> assertThat(message).contains("lane CONSENSUS cleared"));
 
             lane.writable.set(true);
             awaitWithin("the DHT frame is written", AWAIT, () -> lane.written.size() == 2);
 
+            awaitWithin("the DHT frame leaving ended its episode", AWAIT, () -> network.openBackpressureEpisodesForTests() == 0);
             assertThat(network.openBackpressureEpisodesForTests()).as("the DHT frame leaving ended its episode").isZero();
+            awaitCleared(capture, 2);
             assertThat(cleared(capture)).as("one cleared line per episode").hasSize(2);
         }
     }
@@ -657,6 +690,7 @@ class QuicLaneBacklogTest {
                     () -> lane.written.size() == 2 && network.laneBacklogCountForTests() == 0);
 
         assertThat(lane.written).as("the drain wrote both frames, in send order").containsExactly(1, 2);
+        awaitWithin("no episode stays open once its frame is written", AWAIT, () -> network.openBackpressureEpisodesForTests() == 0);
         assertThat(network.openBackpressureEpisodesForTests()).as("no episode stays open once its frame is written").isZero();
     }
 
@@ -676,8 +710,10 @@ class QuicLaneBacklogTest {
 
             awaitWithin("the faulted backlog's entry is removed", AWAIT, () -> network.laneBacklogCountForTests() == 0);
 
+            awaitWithin("the fault was injected and consumed", AWAIT, () -> !lane.faultOnNextWritableCheck.get());
             assertThat(lane.faultOnNextWritableCheck).as("the fault was injected and consumed").isFalse();
             assertThat(lane.active).as("the channel is still open").isTrue();
+            awaitDropped(network, StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP, 2L);
             assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP)).isEqualTo(2L);
             assertThat(network.openBackpressureEpisodesForTests()).as("the abandon on an unwritable stream leaves the episode open")
                                                                   .isEqualTo(1);
@@ -709,10 +745,13 @@ class QuicLaneBacklogTest {
             // removal: awaiting the episode end instead raced the removal (seen once at f3313q's WIP).
             awaitWithin("the closed stream's entry is gone", AWAIT, () -> network.laneBacklogCountForTests() == 0);
 
+            awaitWithin("the abandon ended the closed stream's episode", AWAIT, () -> network.openBackpressureEpisodesForTests() == 0);
             assertThat(network.openBackpressureEpisodesForTests()).as("the abandon ended the closed stream's episode").isZero();
             assertThat(lane.writable).as("the stream never turned writable").isFalse();
             assertThat(lane.written).as("nothing is written to a closed stream").isEmpty();
+            awaitDropped(network, StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP, 2L);
             assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP)).isEqualTo(2L);
+            awaitCleared(capture, 1);
             assertThat(cleared(capture)).as("one cleared line for the one episode").hasSize(1);
         }
     }
@@ -748,6 +787,7 @@ class QuicLaneBacklogTest {
             awaitWithin("the episode ends once no backlog holds a frame of the lane",
                         AWAIT,
                         () -> network.openBackpressureEpisodesForTests() == 0);
+            awaitCleared(capture, 1);
             assertThat(cleared(capture)).as("one cleared line for the one episode").hasSize(1);
         }
     }
@@ -971,6 +1011,8 @@ class QuicLaneBacklogTest {
             lane.writable.set(true);
             awaitWithin("the held frame is written", AWAIT, () -> lane.written.size() == 1);
             awaitWithin("the cleared INFO threw", AWAIT, () -> faulting.faults() == 1);
+            // The INFO throws before the remove (endEpisode): await the removal itself, not the fault that precedes it.
+            awaitWithin("the throwing INFO did not keep the episode", AWAIT, () -> network.openBackpressureEpisodesForTests() == 0);
 
             assertThat(network.openBackpressureEpisodesForTests()).as("the throwing INFO did not keep the episode")
                                                                   .isZero();
@@ -989,12 +1031,14 @@ class QuicLaneBacklogTest {
             verify(metrics, timeout(AWAIT.millis())).onDroppedAfterSent(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP, 1L);
             awaitWithin("the backlog entry goes", AWAIT, () -> network.laneBacklogCountForTests() == 0);
             assertThat(lane.written).as("control: the frame was given up, not written").isEmpty();
+            awaitWithin("control: the armed fault fired, if one was armed", AWAIT, () -> faulting.faults() >= faulting.armed());
             assertThat(faulting.faults()).as("control: the armed fault fired, if one was armed").isEqualTo(faulting.armed());
 
             lane.writable.set(true);
             fireWritabilityEvent(network, lane.ch);
 
             awaitWithin("the episode ends once the stream is writable", AWAIT, () -> network.openBackpressureEpisodesForTests() == 0);
+            awaitWithin("the pressure count returns to zero", AWAIT, () -> network.consensusRetriesInFlight() == 0);
             assertThat(network.consensusRetriesInFlight()).as("the pressure count returns to zero").isZero();
 
             lane.writable.set(false);
@@ -1018,7 +1062,9 @@ class QuicLaneBacklogTest {
             awaitWithin("the held frame is drained", AWAIT, () -> lane.written.size() == 1);
             awaitWithin("the backlog entry goes", AWAIT, () -> network.laneBacklogCountForTests() == 0);
 
+            awaitWithin("the pressure count returns to zero", AWAIT, () -> network.consensusRetriesInFlight() == 0);
             assertThat(network.consensusRetriesInFlight()).as("the pressure count returns to zero").isZero();
+            awaitWithin("no episode stays open", AWAIT, () -> network.openBackpressureEpisodesForTests() == 0);
             assertThat(network.openBackpressureEpisodesForTests()).as("no episode stays open").isZero();
             assertThat(escaped).as("the fault did not escape the holding write").isNull();
         }
@@ -1116,6 +1162,7 @@ class QuicLaneBacklogTest {
         lane.writable.set(true);
         awaitWithin("both held frames are written", AWAIT, () -> lane.written.size() == 2);
 
+        awaitWithin("both held frames are counted sent", AWAIT, () -> network.quicMetrics().messagesSentCount() >= 2L && network.quicMetrics().bytesSentCount() >= 12L);
         assertThat(network.quicMetrics().messagesSentCount()).isEqualTo(2L);
         assertThat(network.quicMetrics().bytesSentCount()).isEqualTo(12L);
     }
@@ -1224,5 +1271,19 @@ class QuicLaneBacklogTest {
         }
 
         assertThat(condition.getAsBoolean()).as(what).isTrue();
+    }
+
+    /// #3313: awaits the captured "cleared" lines a test then asserts, at least `atLeast` of them; the test's own assertion
+    /// then pins the exact count. Never inferred from another observable (the episode's removal, a write, a count), so
+    /// no test depends on the order in which the network logs the line and removes the episode.
+    private static void awaitCleared(LogCapture capture, int atLeast) {
+        awaitWithin("at least " + atLeast + " cleared line(s) captured", AWAIT, () -> cleared(capture).size() >= atLeast);
+    }
+
+    /// #3313: awaits a loss count a test then asserts, at least `atLeast`; the test's own assertion pins the exact count.
+    private static void awaitDropped(QuicClusterNetwork network, StreamType lane, DropSite site, long atLeast) {
+        awaitWithin("at least " + atLeast + " " + site + " on " + lane,
+                    AWAIT,
+                    () -> network.quicMetrics().droppedAfterSentCount(lane, site) >= atLeast);
     }
 }
