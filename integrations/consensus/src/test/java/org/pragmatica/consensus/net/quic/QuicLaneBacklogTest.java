@@ -65,6 +65,9 @@ class QuicLaneBacklogTest {
         final AtomicBoolean active = new AtomicBoolean(true);
         /// Armed: the next writability check throws once, as a fault inside a drain pass would.
         final AtomicBoolean faultOnNextWritableCheck = new AtomicBoolean(false);
+        /// Armed: the next writability check turns the stream writable, then throws once, so the pass that faults is the
+        /// first to see the stream writable whichever drain tick it is.
+        final AtomicBoolean faultThenWritable = new AtomicBoolean(false);
         final List<Integer> written = new CopyOnWriteArrayList<>();
         final QuicStreamChannel ch = mock(QuicStreamChannel.class);
 
@@ -77,6 +80,12 @@ class QuicLaneBacklogTest {
         private boolean writableOrFault() {
             if (faultOnNextWritableCheck.compareAndSet(true, false)) {
                 throw new IllegalStateException("fault inside the drain pass");
+            }
+
+            if (faultThenWritable.compareAndSet(true, false)) {
+                writable.set(true);
+
+                throw new IllegalStateException("fault inside the drain pass, stream now writable");
             }
 
             return writable.get();
@@ -448,6 +457,80 @@ class QuicLaneBacklogTest {
         assertThat(network.openBackpressureEpisodesForTests()).as("the held write ended the episode").isZero();
     }
 
+    // --- #3313: an episode ends when its last held frame is given up or abandoned, with no later write on the lane ---
+
+    /// Every held frame expires while the stream is unwritable: the episode stays open (the last write attempt found the
+    /// stream unwritable), and the drain tick, still running for it, ends it once the stream turns writable. Nothing is
+    /// written to the lane after the holds: the end must not depend on later traffic.
+    @Test
+    void episode_everyHeldFrameGivenUp_endsWhenTheStreamTurnsWritable_withoutALaterWrite() {
+        var network = LossAccountingFixtures.network(5, TimeSpan.timeSpan(10).millis());
+        var lane = new Lane(succeeded(), -1);
+
+        try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+            holdFrames(network, lane, StreamType.CONSENSUS, 1, 2, 3);
+
+            awaitWithin("every held frame is given up",
+                        AWAIT,
+                        () -> network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP) == 3L);
+            assertThat(network.openBackpressureEpisodesForTests()).as("still unwritable: the episode stays open").isEqualTo(1);
+
+            lane.writable.set(true);
+
+            awaitWithin("the episode ends once the stream is writable", AWAIT, () -> network.openBackpressureEpisodesForTests() == 0);
+            awaitWithin("the backlog entry goes", AWAIT, () -> network.laneBacklogCountForTests() == 0);
+
+            assertThat(lane.written).as("no frame was written after the holds").isEmpty();
+            assertThat(cleared(capture)).as("one cleared line for the one episode").hasSize(1);
+        }
+    }
+
+    /// A drain fault abandons the backlog while the stream is open and writable: the abandon removes the last held frame
+    /// on a writable stream, so it ends the episode itself.
+    @Test
+    void episode_backlogAbandonedOnAnOpenWritableStream_endsWithoutALaterWrite() {
+        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var lane = new Lane(succeeded(), -1);
+
+        try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+            holdFrames(network, lane, StreamType.CONSENSUS, 1, 2);
+            assertThat(network.openBackpressureEpisodesForTests()).isEqualTo(1);
+
+            lane.faultThenWritable.set(true);
+
+            awaitWithin("the faulted backlog's entry is removed", AWAIT, () -> network.laneBacklogCountForTests() == 0);
+
+            assertThat(lane.faultThenWritable).as("the fault was injected and consumed").isFalse();
+            assertThat(lane.active).as("the channel is still open").isTrue();
+            assertThat(lane.written).as("the abandoned frames were not written").isEmpty();
+            assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP)).isEqualTo(2L);
+            assertThat(network.openBackpressureEpisodesForTests()).as("the abandon ended the episode").isZero();
+            assertThat(cleared(capture)).as("one cleared line for the one episode").hasSize(1);
+        }
+    }
+
+    /// A held DHT frame is given up: the episode it ends is keyed by its OWN lane, (peer, DHT), whichever stream held it
+    /// (a DHT frame can share the CONSENSUS stream).
+    @Test
+    void episode_dhtFrameGivenUp_endsTheEpisodeOfItsOwnLane() {
+        var network = LossAccountingFixtures.network(5, TimeSpan.timeSpan(10).millis());
+        var lane = new Lane(succeeded(), -1);
+
+        try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+            holdFrames(network, lane, StreamType.DHT, 1);
+
+            awaitWithin("the held frame is given up",
+                        AWAIT,
+                        () -> network.quicMetrics().droppedAfterSentCount(StreamType.DHT, DropSite.RETRY_GAVE_UP) == 1L);
+            lane.writable.set(true);
+
+            awaitWithin("the DHT episode ends once the stream is writable", AWAIT, () -> network.openBackpressureEpisodesForTests() == 0);
+
+            assertThat(cleared(capture)).singleElement()
+                                        .satisfies(message -> assertThat(message).contains("lane DHT cleared"));
+        }
+    }
+
     // --- item 21: held AND direct writes are counted as sent ---
 
     @Test
@@ -483,6 +566,13 @@ class QuicLaneBacklogTest {
         for (var frame : frames) {
             network.writeIfWritableForTest(lane.ch, new byte[]{(byte) frame}, PEER, streamType);
         }
+    }
+
+    private static List<String> cleared(LogCapture capture) {
+        return capture.messages(Level.INFO)
+                      .stream()
+                      .filter(message -> message.startsWith("Backpressure on peer") && message.contains("cleared"))
+                      .toList();
     }
 
     private static Lane writableLane() {
