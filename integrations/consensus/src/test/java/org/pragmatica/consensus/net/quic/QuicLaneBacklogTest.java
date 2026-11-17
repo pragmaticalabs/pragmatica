@@ -18,6 +18,8 @@ package org.pragmatica.consensus.net.quic;
 
 import java.nio.channels.ClosedChannelException;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -70,12 +72,20 @@ class QuicLaneBacklogTest {
         /// first to see the stream writable whichever drain tick it is.
         final AtomicBoolean faultThenWritable = new AtomicBoolean(false);
         final List<Integer> written = new CopyOnWriteArrayList<>();
+        /// Every thread that read the stream's liveness: a drain pass reads it before it takes the backlog lock.
+        final Set<Thread> livenessReaders = ConcurrentHashMap.newKeySet();
         final QuicStreamChannel ch = mock(QuicStreamChannel.class);
 
         Lane(ChannelFuture future, int throwOnFrame) {
             when(ch.isWritable()).thenAnswer(_ -> writableOrFault());
-            when(ch.isActive()).thenAnswer(_ -> active.get());
+            when(ch.isActive()).thenAnswer(_ -> readLiveness());
             when(ch.writeAndFlush(any())).thenAnswer(invocation -> record(invocation.getArgument(0), future, throwOnFrame));
+        }
+
+        private boolean readLiveness() {
+            livenessReaders.add(Thread.currentThread());
+
+            return active.get();
         }
 
         private boolean writableOrFault() {
@@ -535,6 +545,115 @@ class QuicLaneBacklogTest {
         }
     }
 
+    /// F1 (#3313): a drain writes the held frame between its hold and its episode's opening. A CONSENSUS frame starts the
+    /// backlog; a DHT frame joins it on the unwritable stream and opens its own lane's episode. At that opening the hook
+    /// turns the stream writable and waits until the drain either wrote both frames (the opening runs outside the backlog
+    /// lock, so nothing holds the drain off) or is blocked on the lock the holding thread holds. Once the drain wrote
+    /// both frames, no episode may stay open: the opening and the closer exclude each other.
+    @Test
+    void episode_drainWritesTheFrameBetweenItsHoldAndItsEpisodeOpening_noEpisodeStaysOpen() {
+        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var lane = new Lane(succeeded(), -1);
+        var holder = Thread.currentThread();
+
+        holdFrames(network, lane, StreamType.CONSENSUS, 1);
+        network.beforeHeldEpisodeCountForTests(_ -> letTheDrainRace(lane, holder));
+        holdFrames(network, lane, StreamType.DHT, 2);
+        network.beforeHeldEpisodeCountForTests(null);
+
+        awaitWithin("the drain wrote both frames and the backlog retired",
+                    AWAIT,
+                    () -> lane.written.size() == 2 && network.laneBacklogCountForTests() == 0);
+
+        assertThat(lane.written).as("the drain wrote both frames, in send order").containsExactly(1, 2);
+        assertThat(network.openBackpressureEpisodesForTests()).as("no episode stays open once its frame is written").isZero();
+    }
+
+    /// M13 (#3313): a drain fault abandons the backlog while the stream is open and still UNWRITABLE. The abandon removes
+    /// the last held frame, but the stream takes no writes, so the episode stays open; the stream's writability event
+    /// ends it.
+    @Test
+    void episode_backlogAbandonedOnAnUnwritableStream_staysOpen_untilTheWritabilityEvent() throws Exception {
+        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var lane = new Lane(succeeded(), -1);
+
+        try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+            holdFrames(network, lane, StreamType.CONSENSUS, 1, 2);
+            assertThat(network.openBackpressureEpisodesForTests()).as("the unwritable frames opened an episode").isEqualTo(1);
+
+            lane.faultOnNextWritableCheck.set(true);
+
+            awaitWithin("the faulted backlog's entry is removed", AWAIT, () -> network.laneBacklogCountForTests() == 0);
+
+            assertThat(lane.faultOnNextWritableCheck).as("the fault was injected and consumed").isFalse();
+            assertThat(lane.active).as("the channel is still open").isTrue();
+            assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP)).isEqualTo(2L);
+            assertThat(network.openBackpressureEpisodesForTests()).as("the abandon on an unwritable stream leaves the episode open")
+                                                                  .isEqualTo(1);
+            assertThat(cleared(capture)).as("no cleared line while the stream takes no writes").isEmpty();
+
+            lane.writable.set(true);
+            fireWritabilityEvent(network, lane.ch);
+
+            assertThat(network.openBackpressureEpisodesForTests()).as("the writability event ended the episode").isZero();
+            assertThat(lane.written).as("nothing was written after the holds").isEmpty();
+            assertThat(cleared(capture)).as("one cleared line for the one episode").hasSize(1);
+        }
+    }
+
+    /// M13 (#3313): the stream closes with frames held. The drain abandons the backlog, and the closer run by that abandon
+    /// ends the episode at once: a closed stream is gone, so no writability event is waited for.
+    @Test
+    void episode_backlogAbandonedOnAClosedStream_endsAtOnce() {
+        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var lane = new Lane(succeeded(), -1);
+
+        try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+            holdFrames(network, lane, StreamType.CONSENSUS, 1, 2);
+            assertThat(network.openBackpressureEpisodesForTests()).as("the unwritable frames opened an episode").isEqualTo(1);
+
+            lane.active.set(false);
+
+            awaitWithin("the abandon ended the closed stream's episode", AWAIT, () -> network.openBackpressureEpisodesForTests() == 0);
+
+            assertThat(network.laneBacklogCountForTests()).as("the closed stream's entry is gone").isZero();
+            assertThat(lane.writable).as("the stream never turned writable").isFalse();
+            assertThat(lane.written).as("nothing is written to a closed stream").isEmpty();
+            assertThat(network.quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP)).isEqualTo(2L);
+            assertThat(cleared(capture)).as("one cleared line for the one episode").hasSize(1);
+        }
+    }
+
+    /// M15 (#3313): the closer's writability check throws. Nothing is ended on a throw: the episode stays open and one
+    /// WARN says so; the closer's next run (the stream's writability event) ends it. A refused KV write opens the
+    /// episode, so no drain runs the closer behind the test's back.
+    @Test
+    void episode_writabilityCheckThrowsInTheCloser_staysOpen_oneWarn_andTheNextRunEndsIt() throws Exception {
+        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var lane = new Lane(succeeded(), -1);
+
+        try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
+            holdFrames(network, lane, StreamType.KV, 1);
+            assertThat(network.openBackpressureEpisodesForTests()).as("the refused write opened an episode").isEqualTo(1);
+            assertThat(network.laneBacklogCountForTests()).as("a refused write holds nothing").isZero();
+
+            lane.writable.set(true);
+            lane.faultOnNextWritableCheck.set(true);
+            network.settleEpisodes(lane.ch);
+
+            assertThat(lane.faultOnNextWritableCheck).as("the closer's writability check threw").isFalse();
+            assertThat(network.openBackpressureEpisodesForTests()).as("nothing is ended on a throw").isEqualTo(1);
+            assertThat(leftOpenWarnings(capture)).as("exactly one WARN for the failed check").hasSize(1);
+            assertThat(cleared(capture)).as("no cleared line on a throw").isEmpty();
+
+            fireWritabilityEvent(network, lane.ch);
+
+            assertThat(network.openBackpressureEpisodesForTests()).as("the closer's next run ended the episode").isZero();
+            assertThat(cleared(capture)).as("one cleared line for the one episode").hasSize(1);
+            assertThat(leftOpenWarnings(capture)).as("the next run warns nothing").hasSize(1);
+        }
+    }
+
     // --- item 21: held AND direct writes are counted as sent ---
 
     @Test
@@ -577,6 +696,29 @@ class QuicLaneBacklogTest {
                       .stream()
                       .filter(message -> message.startsWith("Backpressure on peer") && message.contains("cleared"))
                       .toList();
+    }
+
+    private static List<String> leftOpenWarnings(LogCapture capture) {
+        return capture.messages(Level.WARN)
+                      .stream()
+                      .filter(message -> !message.contains("entered"))
+                      .toList();
+    }
+
+    /// The F1 race at the episode's opening: the stream turns writable, then the holding thread waits until the drain
+    /// either wrote both frames or is blocked on a lock (the backlog's, which the holding thread holds). The drain runs on
+    /// a virtual thread of the shared scheduler; it is found as a reader of the stream's liveness other than the holder.
+    private static void letTheDrainRace(Lane lane, Thread holder) {
+        lane.writable.set(true);
+        awaitWithin("the drain wrote both frames or waits for the backlog lock",
+                    AWAIT,
+                    () -> lane.written.size() == 2 || drainBlocked(lane, holder));
+    }
+
+    private static boolean drainBlocked(Lane lane, Thread holder) {
+        return lane.livenessReaders.stream()
+                                   .filter(reader -> reader != holder)
+                                   .anyMatch(reader -> reader.getState() == Thread.State.BLOCKED);
     }
 
     private static Lane writableLane() {

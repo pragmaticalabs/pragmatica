@@ -358,6 +358,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// set only through [#writabilityEventObserverForTests].
     private volatile Consumer<QuicStreamChannel> writabilityEventObserver = ignored -> {};
 
+    /// Test hook (#3313): told of every held frame that found its stream unwritable, on the holding thread, just before
+    /// its backpressure episode is counted ([#countHeld], under the backlog lock). Lets a test run a drain against the
+    /// window between a frame's hold and its episode's opening. Defaults to a no-op; set only through
+    /// [#beforeHeldEpisodeCountForTests].
+    private volatile Consumer<StreamType> beforeHeldEpisodeCount = ignored -> {};
+
     /// REMOVE view-changes report a connectivity observation upstream via
     /// `PeerConnectivityReporter` on leader and follower alike (#691 removed the leader-only
     /// `QuicDisconnectListener`, a v1 surface whose only consumer was deleted with the
@@ -2855,6 +2861,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private void countHeld(HeldFrame frame, QuicStreamChannel ch, boolean unwritable) {
         beginRetry(frame.lane());
         if (unwritable) {
+            beforeHeldEpisodeCount.accept(frame.lane());
             var _ = countBackpressuredWrite(frame.peerId(), frame.lane(), ch);
         }
 
@@ -4187,6 +4194,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
         this.writabilityEventObserver = observer == null
                                         ? ignored -> {}
                                         : observer;
+    }
+
+    /// Package-private test hook (#3313) — run on the holding thread just before a held frame's backpressure episode is
+    /// counted. A null hook restores the no-op.
+    @Contract
+    void beforeHeldEpisodeCountForTests(Consumer<StreamType> hook) {
+        this.beforeHeldEpisodeCount = hook == null
+                                      ? ignored -> {}
+                                      : hook;
     }
 
     /// Package-private test hook (#2971) — observe every view read for a view-carrying observation, on the reading
