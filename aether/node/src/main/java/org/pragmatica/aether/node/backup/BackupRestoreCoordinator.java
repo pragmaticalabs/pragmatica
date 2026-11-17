@@ -815,8 +815,8 @@ public final class BackupRestoreCoordinator {
                  decision.commit());
     }
 
-    /// The decision is read once: the latch key and the advice come from the same read. A failure that lands after a terminal
-    /// decision was committed is stale (the next pass finishes at once), so it announces nothing and leaves the latch alone.
+    /// The decision is read once: the latch key and the advice come from the same read. A failure that lands after a committed decision
+    /// other than `IN_PROGRESS` is stale (the next pass finishes at once), so it announces nothing and leaves the latch alone.
     @Contract
     private void onFailure(Cause cause) {
         var decision = RestoreGate.decision(kvStore);
@@ -834,7 +834,7 @@ public final class BackupRestoreCoordinator {
         scheduleRetry();
     }
 
-    /// A terminal decision is committed: nothing is left to restore, so nothing is blocked.
+    /// A committed decision other than `IN_PROGRESS` (`UNKNOWN` included, which is not terminal): there is no restore to continue, so nothing is blocked.
     private static boolean settled(Option<BackupRestoreValue> decision) {
         return decision.filter(marker -> !inProgress(marker))
                        .isPresent();
@@ -849,11 +849,12 @@ public final class BackupRestoreCoordinator {
                         .equals(announced);
     }
 
-    /// The advice is a function of one fact, the one [#pass] folds on: is a restore marker committed? It never depends on the
+    /// The advice is a function of one fact, the one [#continueFrom] resumes on: is an `IN_PROGRESS` marker committed? It never depends on the
     /// step, because the coordinator cannot know whether a failed step is repairable at the source (#3300). No sentence promises
     /// that a retry will succeed or that nothing can help.
     private String blockedAdvice(Option<BackupRestoreValue> decision) {
-        return decision.fold(this::unmarkedAdvice, this::markedAdvice);
+        return decision.filter(BackupRestoreCoordinator::inProgress)
+                       .fold(this::unmarkedAdvice, this::markedAdvice);
     }
 
     /// No marker: the first decision is blocked, `[backup] restore` is still read, and every retry reads the source afresh.
@@ -864,10 +865,10 @@ public final class BackupRestoreCoordinator {
     }
 
     /// A committed `IN_PROGRESS` marker pins its commit, and a resumed restore never reads `[backup] restore` again, so a restart
-    /// with it, on any subset of nodes, leaves the blocked restore standing.
+    /// with it, on some of the nodes while others keep running, leaves the blocked restore standing.
     private String markedAdvice(BackupRestoreValue marker) {
         return "A restore of commit " + marker.commit()
-             + " is in progress and that commit is pinned, so restarting any subset of the nodes with [backup] restore = \"fresh\" does not abandon it."
+             + " is in progress and that commit is pinned, so restarting some of the nodes while others keep running with [backup] restore = \"fresh\" does not abandon it."
              + " It resumes on a retry once what the failed step names is readable again at the backup source (" + sourceDescription()
              + "). If it cannot be repaired there, the exit is to stop ALL nodes and cold-start them with [backup] restore = \"fresh\":"
              + " that discards the partly restored state and is a whole-cluster stop";

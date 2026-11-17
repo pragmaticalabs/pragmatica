@@ -94,7 +94,7 @@ NodeIds with empty state is not a supported restart mode (#1543).
 
 **When the restore cannot read the backup** (remote unreachable, head undecodable): the cluster stays up
 and GATED — no fresh boot, no crash loop. A `BACKUP_RESTORE_BLOCKED` warning names the remote, the step that failed and the
-exits; the restore retries with backoff capped at 60 s, and a new warning follows whenever the step or the marker state changes. The
+exits; the restore retries with backoff capped at 60 s, and a new warning follows whenever the step or the marker state changes (the exception: a failure that lands after a committed decision other than `IN_PROGRESS` is logged at debug and raises no warning). The
 steps it can name: `source unreachable` (preparing the local repository or fetching the backup ref), `ref unresolved`,
 `backup vanished` (the source holds no backup branch), `commit unreadable` (`git show` of the commit failed: a missing
 object and a git failure look the same here), `document undecodable`, `history unreadable` (the backup history reachable
@@ -106,7 +106,7 @@ names depends on one fact only, whether the restore has committed its `IN_PROGRE
   names; the next retry reads the source again. Or restart with `[backup] restore = "fresh"` to skip the restore and abandon
   the backup `[verified: BackupRestoreCoordinatorTest.Blocked, EmberKvBackupRestoreTest]`.
 - **Marker committed** (the warning says "A restore of commit <sha> is in progress"): that commit is pinned. `restore =
-  "fresh"` on a restart does NOT abandon it, on any subset of nodes, because the marker is cluster state and a resumed restore
+  "fresh"` on a restart does NOT abandon it, on some of the nodes while others keep running, because the marker is cluster state and a resumed restore
   never reads `restore` again `[verified: BackupRestoreCoordinatorTest.Blocked
   aBlockedResume_ignoresRestoreFresh_andNamesBothExits]`. The restore resumes on a retry once what the failed step names is
   readable again at the source `[verified: BackupRestoreCoordinatorTest.Blocked
@@ -284,7 +284,7 @@ mode; a remote that needs credentials the process does not hold fails, and the b
 |------|---------|-----------------|
 | `BACKUP_GATED` | The head belongs to another lineage | Restore it, or `aether backup declare-genesis` to make this cluster the head |
 | `BACKUP_FORKED` | Another cluster (a different incarnation id) holds the head at this cluster's own lineage and incarnation (two clusters restored from the same backup) | Retire one cluster; run `aether backup declare-genesis` on the one whose state continues |
-| `backup-restore-blocked` (cluster event, CRITICAL) | A cold start cannot read the backup; cluster-state writes stay refused until it can (#1533). The warning names the failed step | No marker committed (the warning says "No restore marker is committed"): fix what the failed step names (the next retry reads the source again), or restart with `[backup] restore = "fresh"` to abandon the backup. Marker committed (the warning says "A restore of commit <sha> is in progress"): the restore resumes once what the failed step names is readable again at the source; if it cannot be repaired there, stop ALL nodes and cold-start with `restore = "fresh"` (discards the partly restored state). A restart of any subset of the nodes with `fresh` does not abandon a marked restore |
+| `backup-restore-blocked` (cluster event, CRITICAL) | A cold start cannot read the backup; cluster-state writes stay refused until it can (#1533). The warning names the failed step | No marker committed (the warning says "No restore marker is committed"): fix what the failed step names (the next retry reads the source again), or restart with `[backup] restore = "fresh"` to abandon the backup. Marker committed (the warning says "A restore of commit <sha> is in progress"): the restore resumes once what the failed step names is readable again at the source; if it cannot be repaired there, stop ALL nodes and cold-start with `restore = "fresh"` (discards the partly restored state). A restart of some of the nodes while others keep running, with `fresh`, does not abandon a marked restore |
 | `backup-restore-unblocked` (INFO) | The block ended: the backup was read and the restore decided, or the blocked node stopped leading or is stopping (a restart is a stop first) | None. A crash of the blocked node cannot raise it (see `backup-config-restored`); a leader that still cannot read the backup raises `backup-restore-blocked` again |
 | `backup-config-missing` (cluster event, `OPERATOR_WARNING`) | This leader has no `[backup]` while the committed state says the backup is in use; nothing is backed up while it leads (#1968) | Restart it with the cluster's `[backup]` (or `AETHER_BACKUP_*`), or move leadership |
 | `backup-config-restored` (INFO) | The leader that lacked `[backup]` no longer leads, or its node is stopping (graceful stop, drain, self-fence) | None; a new leader without `[backup]` raises the warning again. A crash (`kill -9`, power loss, OOM kill) cannot raise it: that node's `backup-config-missing` then stays the last event for the code, and only another node's event layer could close it, which the event design does not allow. Treat a `backup-config-missing` whose node is gone as closed |

@@ -72,6 +72,8 @@ import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.node.backup.GitFixtures.bareRemote;
@@ -84,7 +86,7 @@ class BackupRestoreCoordinatorTest {
     static final String INCARNATION_ID = "01K4ZT9Q6W3X8Y2B7C5D1INST0";
     /// #3300: the two exits of the blocked-restore warning, as the coordinator words them.
     private static final String RESUME_EXIT = "resumes on a retry once what the failed step names is readable again at the backup source";
-    private static final String QUALIFIED_FRESH = "restarting any subset of the nodes with [backup] restore = \"fresh\" does not abandon it";
+    private static final String QUALIFIED_FRESH = "restarting some of the nodes while others keep running with [backup] restore = \"fresh\" does not abandon it";
     private static final String COLD_START_EXIT = "If it cannot be repaired there, the exit is to stop ALL nodes and cold-start them with [backup] restore = \"fresh\"";
     private static final String FRESH_EXIT = "restart with [backup] restore = \"fresh\" to skip the restore and abandon the backup";
     private static final String ABSENT_COMMIT = "1111111111111111111111111111111111111111";
@@ -1202,6 +1204,43 @@ class BackupRestoreCoordinatorTest {
             assertThat(outcome()).as("CONTROL: the terminal decision stands").isEqualTo(BackupRestoreOutcome.RESTORED);
             assertThat(warnings).as("no warning, in particular none with an in-progress or no-marker advice").isEmpty();
             assertThat(coordinator.isComplete()).as("the next pass finished at once").isTrue();
+        }
+
+        /// One row per committed decision outcome: only `IN_PROGRESS` is a restore to continue, so only it is resumed on the retry and only
+        /// it is announced (with the pinned-restore advice). Every other outcome, `UNKNOWN` (not terminal, the gate stays closed) included, is
+        /// stale to a landing Blocked failure: nothing announced, and the next pass finishes at once. The switch has no default, so a new
+        /// outcome does not compile until it has a row, and the parameter source covers every outcome. Red under `continueFrom` resuming on
+        /// `!= RESTORED`, `settled` true only for `RESTORED` or equal to `isTerminal()`, `inProgress` true for `UNKNOWN`.
+        @ParameterizedTest
+        @EnumSource(BackupRestoreOutcome.class)
+        void aDecisionCommittedBeforeTheFailureLands_isResumedAndAnnounced_onlyWhileInProgress(BackupRestoreOutcome outcome) {
+            var coordinator = coordinator(Option.some(source(Option.some(temp.resolve("gone.git").toString()), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
+                                            BackupRestoreValue.backupRestoreValue(outcome, LINEAGE, 3, 40, ABSENT_COMMIT)));
+            worker.advance(0);
+            fireRetries(3);
+
+            assertThat(outcome()).as("CONTROL: the committed decision stands").isEqualTo(outcome);
+            assertThat(warnings).extracting(BackupWarning::code).isEqualTo(announcedFor(outcome));
+            assertThat(coordinator.isComplete()).as("a retry that resumes stays blocked, any other finishes at once")
+                                                .isEqualTo(! resumes(outcome));
+            assertThat(warnings).allSatisfy(warning -> assertThat(warning.detail()).contains("is in progress", RESUME_EXIT)
+                                                                                   .doesNotContain("No restore marker"));
+        }
+
+        private static boolean resumes(BackupRestoreOutcome outcome) {
+            return switch (outcome) {
+                case IN_PROGRESS -> true;
+                case RESTORED, FRESH, SKIPPED_EXISTING_STATE, DISABLED, UNKNOWN -> false;
+            };
+        }
+
+        private static List<Code> announcedFor(BackupRestoreOutcome outcome) {
+            return resumes(outcome)
+                   ? List.of(Code.BACKUP_RESTORE_BLOCKED)
+                   : List.of();
         }
 
         /// Recovery clears the latch: after the block is closed on stopping leading, the same step failing under the next term is a new
