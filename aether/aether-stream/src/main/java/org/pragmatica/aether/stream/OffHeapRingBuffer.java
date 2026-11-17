@@ -18,10 +18,12 @@ import java.util.function.LongConsumer;
 import java.util.function.LongPredicate;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.TierAwareRetention;
+import org.pragmatica.aether.slice.stream.RingGeometry;
 import org.pragmatica.storage.AppendLog;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -68,18 +70,19 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// (#1340 review M-1: reconstructing it from two ring-relative positions reads an EXACTLY full ring,
     /// `headEnd == tailDataPos`, as empty).
     private static final long HEADER_DATA_TAIL_POS = 48;
-    private static final long HEADER_SIZE = 64;
-    private static final long INDEX_ENTRY_SIZE = 24;
+    private static final long HEADER_SIZE = RingGeometry.HEADER_SIZE;
+    private static final long INDEX_ENTRY_SIZE = RingGeometry.INDEX_ENTRY_SIZE;
     private static final long INDEX_DATA_OFFSET = 0;
     private static final long INDEX_DATA_LENGTH = 8;
     private static final long INDEX_TIMESTAMP = 16;
     /// Fixed data-segment granule. The data region grows one segment at a time toward the cap
     /// (`dataRegionSize`). The last logical segment is clamped so total allocated data never
     /// exceeds the cap. See spec §4.2.
-    static final long DEFAULT_SEGMENT_BYTES = 256 * 1024L;
-    /// The largest capacity whose control region plus first segment is representable in a `long` — beyond
-    /// it [#floorBytes] overflows and the ring would be built over a truncated index (#1549).
-    public static final long MAX_CAPACITY = (Long.MAX_VALUE - HEADER_SIZE - DEFAULT_SEGMENT_BYTES) / INDEX_ENTRY_SIZE;
+    static final long DEFAULT_SEGMENT_BYTES = RingGeometry.SEGMENT_BYTES;
+    /// The largest capacity whose control region plus a one-segment first region is representable in a `long` — beyond
+    /// it [#floorBytes] overflows and the ring would be built over a truncated index (#1549). A ring whose first region
+    /// is larger (see [RingGeometry#maxCapacity]) is bounded lower.
+    public static final long MAX_CAPACITY = RingGeometry.maxCapacity(DEFAULT_SEGMENT_BYTES);
     /// Always-admit growth predicate (default seam — standalone buffers grow without budget gating).
     private static final LongPredicate ALWAYS_ADMIT = _ -> true;
     /// The guard of an ordered append whose caller keeps its own checks (WAL replay, replica receive): admits every write.
@@ -209,7 +212,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     private OffHeapRingBuffer(Arena arena,
                               MemorySegment controlSegment,
-                              MemorySegment firstDataSegment,
+                              List<MemorySegment> firstDataSegments,
                               long firstDataSegmentBytes,
                               long capacity,
                               long dataRegionSize,
@@ -224,7 +227,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         this.arena = arena;
         this.controlSegment = controlSegment;
         this.dataSegments = new ArrayList<>();
-        this.dataSegments.add(firstDataSegment);
+        this.dataSegments.addAll(firstDataSegments);
         this.allocatedDataBytes = firstDataSegmentBytes;
         this.capacity = capacity;
         this.dataRegionSize = dataRegionSize;
@@ -267,11 +270,24 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                                       long dataRegionSize,
                                                       EvictionListener listener,
                                                       EvictionPolicy policy) {
+        return offHeapRingBuffer(streamName, partition, capacity, dataRegionSize, 0L, listener, policy);
+    }
+
+    /// As the convenience overload above, for a stream whose events are up to `maxEventSize`: the first data region holds
+    /// one maximal event ([RingGeometry#firstSegmentBytes]). The overloads without it mean `maxEventSize = 0`.
+    public static OffHeapRingBuffer offHeapRingBuffer(String streamName,
+                                                      int partition,
+                                                      long capacity,
+                                                      long dataRegionSize,
+                                                      long maxEventSize,
+                                                      EvictionListener listener,
+                                                      EvictionPolicy policy) {
         return buildFloor(Arena.ofShared(),
                           streamName,
                           partition,
                           capacity,
                           dataRegionSize,
+                          maxEventSize,
                           listener,
                           policy,
                           ALWAYS_ADMIT,
@@ -282,7 +298,13 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// Floor bytes a buffer reserves at creation: control region (header + index) plus the first
     /// data segment (`min(DEFAULT_SEGMENT_BYTES, maxBytes)`). See spec §4.0.
     public static long floorBytes(long capacity, long maxBytes) {
-        return HEADER_SIZE + INDEX_ENTRY_SIZE * capacity + firstSegmentBytes(maxBytes);
+        return floorBytes(capacity, maxBytes, 0L);
+    }
+
+    /// As [#floorBytes(long, long)], for a stream whose events are up to `maxEventSize`: the first data region is
+    /// `min(maxBytes, max(256 KiB, maxEventSize))` ([RingGeometry#floorBytes]).
+    public static long floorBytes(long capacity, long maxBytes, long maxEventSize) {
+        return RingGeometry.floorBytes(capacity, maxBytes, maxEventSize);
     }
 
     /// Total bytes if the buffer grows to the retention cap: control region plus the full data
@@ -331,6 +353,30 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                                               LongPredicate reserve,
                                                               LongConsumer release,
                                                               LongSupplier budgetFreed) {
+        return offHeapRingBuffer(streamName,
+                                 partition,
+                                 capacity,
+                                 dataRegionSize,
+                                 0L,
+                                 listener,
+                                 policy,
+                                 reserve,
+                                 release,
+                                 budgetFreed);
+    }
+
+    /// As the seam factory above, for a stream whose events are up to `maxEventSize`: the first data region, and so the
+    /// floor reserved against the seam, holds one maximal event ([RingGeometry#firstSegmentBytes]).
+    public static Result<OffHeapRingBuffer> offHeapRingBuffer(String streamName,
+                                                              int partition,
+                                                              long capacity,
+                                                              long dataRegionSize,
+                                                              long maxEventSize,
+                                                              EvictionListener listener,
+                                                              EvictionPolicy policy,
+                                                              LongPredicate reserve,
+                                                              LongConsumer release,
+                                                              LongSupplier budgetFreed) {
         var arena = Arena.ofShared();
 
         return buildFloorGuarded(arena,
@@ -338,6 +384,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                  partition,
                                  capacity,
                                  dataRegionSize,
+                                 maxEventSize,
                                  listener,
                                  policy,
                                  reserve,
@@ -356,6 +403,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                                                int partition,
                                                                long capacity,
                                                                long dataRegionSize,
+                                                               long maxEventSize,
                                                                EvictionListener listener,
                                                                EvictionPolicy policy,
                                                                LongPredicate reserve,
@@ -373,6 +421,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                       partition,
                                       capacity,
                                       dataRegionSize,
+                                      maxEventSize,
                                       listener,
                                       policy,
                                       reserve,
@@ -390,6 +439,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                                 int partition,
                                                 long capacity,
                                                 long dataRegionSize,
+                                                long maxEventSize,
                                                 EvictionListener listener,
                                                 EvictionPolicy policy,
                                                 LongPredicate reserve,
@@ -397,9 +447,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                                 LongSupplier budgetFreed) {
         var indexSize = INDEX_ENTRY_SIZE * capacity;
         var controlSize = HEADER_SIZE + indexSize;
-        var firstSegmentBytes = firstSegmentBytes(dataRegionSize);
+        var firstSegmentBytes = RingGeometry.firstSegmentBytes(dataRegionSize, maxEventSize);
         var controlSegment = arena.allocate(controlSize, 64);
-        var firstDataSegment = arena.allocate(firstSegmentBytes, 64);
+        var firstDataSegments = allocateFirstRegion(arena, firstSegmentBytes);
 
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, -1L);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, 0L);
@@ -411,7 +461,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
         return new OffHeapRingBuffer(arena,
                                      controlSegment,
-                                     firstDataSegment,
+                                     firstDataSegments,
                                      firstSegmentBytes,
                                      capacity,
                                      dataRegionSize,
@@ -425,8 +475,14 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                      firstSegmentBytes);
     }
 
-    private static long firstSegmentBytes(long dataRegionSize) {
-        return Math.min(DEFAULT_SEGMENT_BYTES, dataRegionSize);
+    /// The first data region as default-size segments, the last clamped to what remains, so the uniform
+    /// `position / DEFAULT_SEGMENT_BYTES` addressing holds for it and for every segment grown after it (R-1 (a)).
+    private static List<MemorySegment> allocateFirstRegion(Arena arena, long firstSegmentBytes) {
+        return IntStream.range(0,
+                               RingGeometry.firstSegmentCount(firstSegmentBytes))
+                        .mapToObj(index -> arena.allocate(RingGeometry.firstSegmentSize(firstSegmentBytes, index),
+                                                          64))
+                        .toList();
     }
 
     /// Append and make the event visible at once — the ring has no durability gate of its own. Used by
