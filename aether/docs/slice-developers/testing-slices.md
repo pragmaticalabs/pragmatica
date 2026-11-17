@@ -59,6 +59,8 @@ class MyE2ETest {
 non-overlapping ports per test class — pick a distinct base-port block per class so parallel
 Maven modules don't collide (existing classes use 5050/5150/5250 for formation, 5500/5600/5400
 for deployment, etc. — grep the test directory for the next free block).
+`initialSize` must be at least 3 (`EmberConfig.MINIMUM_NODES`): `start()` fails with a typed
+`InvalidValue` error for a smaller cluster, because one or two nodes never elect a leader.
 
 ## `EmberCluster` — API surface
 
