@@ -24,7 +24,7 @@ class EmberSelfDrainSlotReleaseTest {
     @Test
     @SuppressWarnings("unchecked")
     void selfDrainReclaimsEveryRegistryAndReturnsSlotOnceAfterStop() throws ReflectiveOperationException {
-        var cluster = EmberCluster.emberCluster(1, EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_FIRST + 100, "self-drain");
+        var cluster = EmberCluster.emberCluster(3, EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_FIRST + 100, "self-drain");
         var id = new NodeId("self-drain-worker");
         var stop = Promise.<Unit>promise();
         var stops = new AtomicInteger();

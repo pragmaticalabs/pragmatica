@@ -20,6 +20,7 @@ import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.node.ClusterIncarnation;
 import org.pragmatica.aether.node.ClusterIncarnationRegistrar.RetryScheduler;
+import org.pragmatica.aether.node.backup.BackupRestoreCoordinator.RestoreError.Blocked.Step;
 import org.pragmatica.aether.node.backup.BackupWarning.Code;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BackupRestoreKey;
@@ -82,8 +83,11 @@ import static org.pragmatica.lang.Result.success;
 /// 5. **`[backup] restore = fresh`** → commit `FRESH`.
 /// 6. **Read the backup head**: none → `FRESH` (genesis follows); decodable → restore it; unreadable or
 ///    unreachable → BLOCKED: one `BACKUP_RESTORE_BLOCKED` warning, retry with backoff capped at
-///    [#MAX_BACKOFF], never a silent fresh boot and never a crash loop. The exits are fixing the backup
-///    source, or restarting with `[backup] restore = fresh`.
+///    [#MAX_BACKOFF], never a silent fresh boot and never a crash loop. The warning names the failed step and the exits, and
+///    predicts neither (#3300): with no committed marker, fix what failed (the next retry reads the source again) or restart with
+///    `[backup] restore = fresh`; once an `IN_PROGRESS` marker is committed, step 2 never reads `restore` again, so the restore
+///    resumes once what the failed step names is readable again at the source, and if it cannot be repaired there a whole-cluster
+///    cold start with `fresh` is the exit.
 ///
 /// **The restore.** Every git step runs on the backup worker ([KvBackupService#onWorker]), so a restore
 /// never races a flush on the same working tree. Entries are applied in `LeaderTransaction`s of at most
@@ -111,7 +115,9 @@ public final class BackupRestoreCoordinator {
     private final RetryScheduler scheduler;
     private final AtomicBoolean leader = new AtomicBoolean(false);
     private final AtomicBoolean done = new AtomicBoolean(false);
-    private final AtomicBoolean blocked = new AtomicBoolean(false);
+    /// What the last announced `backup-restore-blocked` warning said, as the pair its text is a function of; none when not blocked.
+    /// A new warning follows any change of the pair, never a repeat.
+    private final AtomicReference<Option<Announced>> blocked = new AtomicReference<>(Option.none());
     private final AtomicBoolean missingReported = new AtomicBoolean(false);
     private final AtomicReference<ScheduledFuture<?>> pendingRetry = new AtomicReference<>();
     private final AtomicReference<TimeSpan> nextBackoff = new AtomicReference<>(INITIAL_BACKOFF);
@@ -124,12 +130,51 @@ public final class BackupRestoreCoordinator {
         }
     }
 
+    /// The facts a blocked warning's text depends on: the failed step, and whether an `IN_PROGRESS` marker is committed (the advice).
+    private record Announced(Step step, boolean marked) {
+        static Announced announced(Step step, boolean marked) {
+            return new Announced(step, marked);
+        }
+    }
+
     /// Why a pass did not finish.
     public sealed interface RestoreError extends Cause {
-        /// The backup source cannot be read: unreachable, undecodable, or its history unreadable. The
-        /// restore waits; see [BackupRestoreCoordinator].
-        record Blocked(Cause origin, String message) implements RestoreError, Cause.Wrapped {
-            static final Fn1<Blocked, Cause> FACTORY = Causes.forOneValue("the backup cannot be read: %s", Blocked::new);
+        /// The restore waits and the cluster stays gated; see [BackupRestoreCoordinator]. Carries the step that failed and the
+        /// underlying cause, and nothing more: whether a retry or a source fix clears it is not knowable here (a missing or
+        /// undecodable object may or may not be repairable at the source), so the warning states the exits without predicting (#3300).
+        record Blocked(Step step, Cause origin, String message) implements RestoreError, Cause.Wrapped {
+            /// The steps of reading a backup, in the order a pass runs them. Each names only what the code can tell apart.
+            public enum Step {
+                SOURCE_UNREACHABLE("source unreachable: preparing the local repository or fetching the backup ref failed"),
+                REF_UNRESOLVED("ref unresolved: the fetched backup ref could not be resolved to a commit"),
+                BACKUP_VANISHED("backup vanished: the source holds no backup branch"),
+                /// `git show` cannot tell a missing object from a git or IO failure, so neither is claimed.
+                COMMIT_UNREADABLE("commit unreadable: the backup document at the commit could not be read"),
+                DOCUMENT_UNDECODABLE("document undecodable: the backup document at the commit does not decode"),
+                /// Read from the backup ref, not from the commit: `git log`, then each backup commit whose subject names no header.
+                HISTORY_UNREADABLE("history unreadable: the backup history reachable from the backup ref could not be read"),
+                INCARNATION_MISSING("incarnation missing: the backup holds no cluster incarnation");
+                private final String label;
+                Step(String label) {
+                    this.label = label;
+                }
+                public String label() {
+                    return label;
+                }
+            }
+
+            static Blocked blocked(Step step, Cause origin) {
+                return new Blocked(step,
+                                   origin,
+                                   "the backup restore is blocked at step " + step.label()
+                                  + " (" + origin.message()
+                                  + ")");
+            }
+
+            /// The mapper for one step: the failure of that step, as a [Blocked] naming it.
+            static Fn1<Blocked, Cause> at(Step step) {
+                return origin -> blocked(step, origin);
+            }
         }
 
         /// A decision or restore transaction was refused (a leader change, or another writer won).
@@ -258,7 +303,7 @@ public final class BackupRestoreCoordinator {
     /// it stops leading, stops, or restarts (a restart is a stop first). The next leader that cannot read the backup raises it again.
     @Contract
     private void recoverRestoreBlocked() {
-        if (blocked.compareAndSet(true, false)) {
+        if (blocked.getAndSet(Option.none()).isPresent()) {
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_UNBLOCKED,
                                                       "this node no longer leads (or is stopping), so its blocked backup restore no longer holds the cluster;"
                                                      + " a leader that still cannot read the backup raises backup-restore-blocked again"));
@@ -333,9 +378,15 @@ public final class BackupRestoreCoordinator {
     }
 
     private Promise<Unit> continueFrom(BackupRestoreValue marker) {
-        return marker.outcome() == BackupRestoreOutcome.IN_PROGRESS
+        return inProgress(marker)
                ? resume(marker)
                : Promise.unitPromise();
+    }
+
+    /// The one condition that makes a committed decision a restore to continue: [#continueFrom] resumes on it and the blocked
+    /// advice speaks of a pinned restore on it, so the two cannot disagree.
+    private static boolean inProgress(BackupRestoreValue marker) {
+        return marker.outcome() == BackupRestoreOutcome.IN_PROGRESS;
     }
 
     private Promise<Unit> decide() {
@@ -401,14 +452,15 @@ public final class BackupRestoreCoordinator {
 
         return repository.prepare()
                          .flatMap(_ -> repository.fetchRestoreRef())
+                         .mapError(RestoreError.Blocked.at(Step.SOURCE_UNREACHABLE))
                          .flatMap(ref -> ref.map(present -> loadRef(service, present).map(Option::some))
-                                            .or(() -> success(Option.none())))
-                         .mapError(RestoreError.Blocked.FACTORY);
+                                            .or(() -> success(Option.none())));
     }
 
     private Result<Loaded> loadRef(KvBackupService service, String ref) {
         return service.repository()
                       .commitOf(ref)
+                      .mapError(RestoreError.Blocked.at(Step.REF_UNRESOLVED))
                       .flatMap(commit -> load(service, commit, ref));
     }
 
@@ -418,19 +470,33 @@ public final class BackupRestoreCoordinator {
 
         return repository.prepare()
                          .flatMap(_ -> repository.fetchRestoreRef())
-                         .flatMap(ref -> ref.toResult(RestoreError.General.BACKUP_VANISHED))
-                         .flatMap(ref -> load(service, commit, ref))
-                         .mapError(RestoreError.Blocked.FACTORY);
+                         .mapError(RestoreError.Blocked.at(Step.SOURCE_UNREACHABLE))
+                         .flatMap(ref -> ref.toResult(RestoreError.Blocked.blocked(Step.BACKUP_VANISHED,
+                                                                                   RestoreError.General.BACKUP_VANISHED)))
+                         .flatMap(ref -> load(service, commit, ref));
     }
 
+    /// Each step maps its own failure, so the [RestoreError.Blocked] names the step that failed, whichever method ran it.
     private Result<Loaded> load(KvBackupService service, String commit, String ref) {
         return service.repository()
                       .documentAt(commit)
-                      .flatMap(service.codec()::decode)
-                      .flatMap(document -> service.highestRecorded(ref,
-                                                                   document.header().lineageId(),
-                                                                   document.header().incarnation())
-                                                  .map(highest -> new Loaded(commit, document, highest)));
+                      .mapError(RestoreError.Blocked.at(Step.COMMIT_UNREADABLE))
+                      .flatMap(text -> decoded(service, text))
+                      .flatMap(document -> loaded(service, commit, ref, document));
+    }
+
+    private static Result<BackupDocument> decoded(KvBackupService service, String text) {
+        return service.codec()
+                      .decode(text)
+                      .mapError(RestoreError.Blocked.at(Step.DOCUMENT_UNDECODABLE));
+    }
+
+    private static Result<Loaded> loaded(KvBackupService service, String commit, String ref, BackupDocument document) {
+        return service.highestRecorded(ref,
+                                       document.header().lineageId(),
+                                       document.header().incarnation())
+                      .mapError(RestoreError.Blocked.at(Step.HISTORY_UNREADABLE))
+                      .map(highest -> new Loaded(commit, document, highest));
     }
 
     @Contract
@@ -600,8 +666,9 @@ public final class BackupRestoreCoordinator {
         return Option.option(loaded.document().entries().get(ClusterIncarnationKey.clusterIncarnationKey()))
                      .filter(ClusterIncarnationValue.class::isInstance)
                      .map(ClusterIncarnationValue.class::cast)
-                     .toResult(RestoreError.Blocked.FACTORY.apply(Causes.cause("the backup at " + loaded.commit()
-                                                                              + " holds no cluster incarnation")));
+                     .toResult(RestoreError.Blocked.blocked(Step.INCARNATION_MISSING,
+                                                            Causes.cause("the backup at " + loaded.commit()
+                                                                        + " holds no cluster incarnation")));
     }
 
     private List<KVCommand<AetherKey>> finalCommands(LeaderValue leaderValue,
@@ -747,7 +814,7 @@ public final class BackupRestoreCoordinator {
         cancelPendingRetry();
         if (done.compareAndSet(false, true)) {
             RestoreGate.decision(kvStore).onPresent(BackupRestoreCoordinator::logDecision);
-            if (blocked.compareAndSet(true, false)) {
+            if (blocked.getAndSet(Option.none()).isPresent()) {
                 warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_UNBLOCKED,
                                                           "the backup restore is no longer blocked: the backup was read and the restore decision committed"));
             }
@@ -764,21 +831,63 @@ public final class BackupRestoreCoordinator {
                  decision.commit());
     }
 
+    /// The decision is read once: the latch key and the advice come from the same read. A failure that lands after a committed decision
+    /// other than `IN_PROGRESS` is stale (the next pass finishes at once), so it announces nothing and leaves the latch alone.
     @Contract
     private void onFailure(Cause cause) {
-        if (cause instanceof RestoreError.Blocked && blocked.compareAndSet(false, true)) {
+        var decision = RestoreGate.decision(kvStore);
+
+        if (cause instanceof RestoreError.Blocked blockedCause && !settled(decision) && announce(blockedCause, decision)) {
             // Also an OperatorWarning cluster event through the node's sink ([BackupWarning.Sink#operatorWarnings]).
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_BLOCKED,
                                                       cause.message()
-                                                     + "; this cluster will not start fresh over a backup it"
-                                                     + " cannot read, and writes to cluster state stay refused until it"
-                                                     + " can. Fix the backup source (" + sourceDescription()
-                                                     + "), or restart with [backup] restore = \"fresh\" to abandon it"));
+                                                     + "; this cluster will not start fresh on its own, and writes to cluster state"
+                                                     + " stay refused while the restore is blocked. " + blockedAdvice(decision)));
         } else {
             LOG.debug("Backup restore: transient failure: {} — will retry", cause.message());
         }
 
         scheduleRetry();
+    }
+
+    /// A committed decision other than `IN_PROGRESS` (`UNKNOWN` included, which is not terminal): there is no restore to continue, so nothing is blocked.
+    private static boolean settled(Option<BackupRestoreValue> decision) {
+        return decision.filter(marker -> !inProgress(marker))
+                       .isPresent();
+    }
+
+    /// True when the pair (failed step, `IN_PROGRESS` marker committed) differs from the last announced one: the warning is
+    /// re-raised exactly when its text would differ, a repeat stays at debug.
+    private boolean announce(RestoreError.Blocked cause, Option<BackupRestoreValue> decision) {
+        var announced = Option.some(Announced.announced(cause.step(), decision.isPresent()));
+
+        return ! blocked.getAndSet(announced)
+                        .equals(announced);
+    }
+
+    /// The advice is a function of one fact, the one [#continueFrom] resumes on: is an `IN_PROGRESS` marker committed? It never depends on the
+    /// step, because the coordinator cannot know whether a failed step is repairable at the source (#3300). No sentence promises
+    /// that a retry will succeed or that nothing can help.
+    private String blockedAdvice(Option<BackupRestoreValue> decision) {
+        return decision.filter(BackupRestoreCoordinator::inProgress)
+                       .fold(this::unmarkedAdvice, this::markedAdvice);
+    }
+
+    /// No marker: the first decision is blocked, `[backup] restore` is still read, and every retry reads the source afresh.
+    private String unmarkedAdvice() {
+        return "No restore marker is committed, so the restore has not started. Fix what the failed step names: the next retry reads"
+             + " the backup source (" + sourceDescription()
+             + ") again. Or restart with [backup] restore = \"fresh\" to skip the restore and abandon the backup";
+    }
+
+    /// A committed `IN_PROGRESS` marker pins its commit, and a resumed restore never reads `[backup] restore` again, so a restart
+    /// with it, on some of the nodes while others keep running, leaves the blocked restore standing.
+    private String markedAdvice(BackupRestoreValue marker) {
+        return "A restore of commit " + marker.commit()
+             + " is in progress and that commit is pinned, so restarting some of the nodes while others keep running with [backup] restore = \"fresh\" does not abandon it."
+             + " It resumes on a retry once what the failed step names is readable again at the backup source (" + sourceDescription()
+             + "). If it cannot be repaired there, the exit is to stop ALL nodes and cold-start them with [backup] restore = \"fresh\":"
+             + " that discards the partly restored state and is a whole-cluster stop";
     }
 
     private String sourceDescription() {

@@ -802,6 +802,8 @@ public final class EmberCluster {
         return Result.unitResult();
     }
 
+    /// Starts the cluster. A cluster below [EmberConfig#MINIMUM_NODES] is refused with the typed
+    /// `EmberConfigError.InvalidValue` before any node is created (#3299).
     public Promise<Unit> start() {
         return start(Set.of());
     }
@@ -831,6 +833,10 @@ public final class EmberCluster {
     }
 
     private Promise<Unit> start(Set<String> heldBackNodeIds, Set<String> excludedFromGenesis) {
+        if (initialClusterSize < EmberConfig.MINIMUM_NODES) {
+            return EmberConfig.tooFewNodes(initialClusterSize).promise();
+        }
+
         return selectedEngine.async()
                              .flatMap(_ -> startNodes(heldBackNodeIds, excludedFromGenesis));
     }

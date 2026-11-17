@@ -297,9 +297,10 @@ class JoinTableTest {
 
     // NT-88 J9
     // Red when: an unmatched combination (injected through the J9 hook, since under MQ-4 no enumerated combination reaches J9) produces a
-    // write, produces no join-unmatched WARN, or is not re-evaluated on the next tick.
+    // write, produces no join-unmatched WARN, or announces it again on the next tick (rule E, design 0: the row is already open, so the CAS pair
+    // of a re-evaluation carries no new opener).
     @Test
-    void j9_unmatchedCombination_warns_writesNothing_andIsRetriedOnTheTick() {
+    void j9_unmatchedCombination_warns_writesNothing_andIsNotAnnouncedAgainOnTheTick() {
         var w = world();
 
         w.directive(CORE_2,
@@ -310,14 +311,14 @@ class JoinTableTest {
         w.h.clearLog();
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, A)));
         assertThat(w.h.submitsBesides(SubmitKind.WARNINGS)).isEmpty();
-        assertThat(w.h.warningPuts()).as("the open join-unmatched warning is persisted (marker write, then clear write, #3160)")
-                  .containsExactly(new FsmWarningKey("join-unmatched", CORE_2.id()), new FsmWarningKey("join-unmatched", CORE_2.id()));
+        assertThat(w.h.warningPuts()).as("the open join-unmatched warning is persisted (one write carries the open row, #3274)")
+                  .containsExactly(new FsmWarningKey("join-unmatched", CORE_2.id()));
         assertThat(w.h.warns("join-unmatched")).hasSize(1);
         var warnsBefore = w.h.warns("join-unmatched").size();
 
         w.h.advance(w.h.settings.timing().tick() + 1);
-        assertThat(w.h.warns("join-unmatched").size() - warnsBefore).as("the tick re-emits the WARN of a join that is still unmatched, once")
-                  .isEqualTo(1);
+        assertThat(w.h.warns("join-unmatched").size() - warnsBefore).as("the tick does not announce a join that is still unmatched again: its row is open (rule E)")
+                  .isZero();
     }
 
     private MbWorld unmatchedCore2() {
@@ -339,8 +340,8 @@ class JoinTableTest {
         var w = unmatchedCore2();
 
         w.h.advance(w.h.settings.timing().tick() + 1);
-        assertThat(w.h.warns("join-unmatched")).as("the tick re-arms the WARN").hasSize(2);
-        assertThat(w.h.warns("join-matched")).as("still unmatched, across the re-arm").isEmpty();
+        assertThat(w.h.warns("join-unmatched")).as("the tick does not re-arm the WARN: the row is open (rule E)").hasSize(1);
+        assertThat(w.h.warns("join-matched")).as("still unmatched, across the tick").isEmpty();
         var model = w.h.model();
 
         model.unforeseenJoins = model.unforeseenJoins.remove(CORE_2);

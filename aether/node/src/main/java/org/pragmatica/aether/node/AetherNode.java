@@ -2477,6 +2477,11 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
+            public boolean isConfiguredWorker() {
+                return AetherNode.configuredWorker(config);
+            }
+
+            @Override
             public boolean hasCompleteClusterView() {
                 return config.workerConfig()
                              .isEmpty()

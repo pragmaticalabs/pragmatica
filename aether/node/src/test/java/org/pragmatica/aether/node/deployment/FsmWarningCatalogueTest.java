@@ -21,6 +21,7 @@ import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.deployment.cluster.fsm2.Warnings;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.WarningLevel;
 
@@ -82,6 +83,9 @@ class FsmWarningCatalogueTest {
     @Test
     void everyCodeTheFsmsRaise_isInTheCatalogue_asADeploymentWarning() {
         var scan = scan(FSM_SOURCES);
+        // WARN-V2 (design §0): the 13 leader-local families are raised from the Warnings family table, not from a ctx.warn site, so the source scan
+        // cannot see them; their opener codes join the scanned set from that table.
+        scan.codes().addAll(Warnings.FAMILIES.keySet());
         var catalogue = Arrays.stream(OperatorWarningCode.values()).collect(Collectors.toMap(OperatorWarningCode::code, code -> code));
 
         assertThat(scan.files()).as("the scan covered the FSM sources").isGreaterThan(40);

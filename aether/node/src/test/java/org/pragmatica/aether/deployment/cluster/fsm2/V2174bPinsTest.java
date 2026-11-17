@@ -376,15 +376,15 @@ class V2174bPinsTest {
         return w;
     }
 
-    /// Red when: the WARN is emitted by every reconcile pass (a KV drain queues one) instead of once per unmatched episode, or the 30 s
-    /// tick does not re-emit it while the node is still unmatched.
+    /// Red when: the WARN is emitted by every reconcile pass (a KV drain queues one) instead of once per closed-to-open transition, or the 30 s
+    /// tick announces it again while the row is still open (rule E, design 0).
     @Test
-    void joinUnmatched_warnsOncePerEpisode_andAgainOnTheTick() {
+    void joinUnmatched_warnsOncePerOpening_andNotAgainOnTheTick() {
         var w = unmatchedWorld();
 
         w.h.clearLog();
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2)));
-        assertThat(w.h.warns("join-unmatched")).as("the episode starts with one WARN").hasSize(1);
+        assertThat(w.h.warns("join-unmatched")).as("the opening carries one WARN").hasSize(1);
         var passes = w.h.metricTotal("aether_deployment_fsm_reconcile_passes_total", t -> true);
 
         for (var i = 1; i <= 5; i++) {
@@ -397,18 +397,19 @@ class V2174bPinsTest {
                   .isGreaterThanOrEqualTo(5L);
         assertThat(w.h.warns("join-unmatched")).as("five KV drains: still the one WARN").hasSize(1);
         w.h.advance(w.h.settings.timing().tick() + 1);
-        assertThat(w.h.warns("join-unmatched")).as("the tick re-emits it once").hasSize(2);
+        assertThat(w.h.warns("join-unmatched")).as("the tick does not announce it again: the row is open").hasSize(1);
     }
 
-    /// Red when: a new join input for a node does not start a new episode: the condition it is in again is never reported.
+    /// Red when: a new join input for a node whose join-unmatched row is already open announces it again (rule E: one opener per closed-to-open
+    /// transition).
     @Test
-    void joinUnmatched_newJoinInput_startsANewEpisode() {
+    void joinUnmatched_newJoinInput_onAnOpenRow_doesNotAnnounceAgain() {
         var w = unmatchedWorld();
 
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2)));
         assertThat(w.h.warns("join-unmatched")).hasSize(1);
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2)));
-        assertThat(w.h.warns("join-unmatched")).as("a new join input starts a new episode").hasSize(2);
+        assertThat(w.h.warns("join-unmatched")).as("a new join input on an open row: no second opener").hasSize(1);
     }
 
     // -- D2: ActivationBlocked withheld while suspended ------------------------------------------------------------------------------
@@ -462,23 +463,23 @@ class V2174bPinsTest {
         assertThat(blockedRoutes(h)).as("not again on the second").isEqualTo(1L);
     }
 
-    /// Red when: `rearmWarnings` leaves `joinWarningsDue` set: every reconcile pass after the first tick re-arms the WARN again, and the
-    /// per-pass storm the ruling removed comes back.
+    /// Red when: reconcile passes after the first tick announce the open join-unmatched row again, and the per-pass storm the ruling removed
+    /// comes back.
     @Test
-    void joinUnmatched_drainsAfterTheTick_addNoWarnBeyondTheTicksOwn() {
+    void joinUnmatched_drainsAfterTheTick_addNoWarn() {
         var w = unmatchedWorld();
 
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2)));
         w.h.advance(w.h.settings.timing().tick() + 1);
         var afterTick = w.h.warns("join-unmatched").size();
 
-        assertThat(afterTick).as("precondition: the tick re-emitted").isEqualTo(2);
+        assertThat(afterTick).as("precondition: the tick did not announce again").isEqualTo(1);
         for (var i = 1; i <= 5; i++) {
             w.h.seed(new SliceTargetKey(ORDERS.base()), SliceTargetValue.sliceTargetValue(ORDERS.version(), i, 1));
             w.h.drain();
         }
 
-        assertThat(w.h.warns("join-unmatched")).as("five drains after the tick: no further WARN").hasSize(afterTick);
+        assertThat(w.h.warns("join-unmatched")).as("five drains after the tick: no WARN beyond the opener").hasSize(afterTick);
     }
 
     // -- E3: the copy rebinds every collection field ------------------------------------------------------------------------------------
