@@ -117,6 +117,10 @@ public final class BackupRestoreCoordinator {
     private final AtomicReference<Option<Announced>> blocked = new AtomicReference<>(Option.none());
     private final AtomicBoolean missingReported = new AtomicBoolean(false);
     private final AtomicReference<ScheduledFuture<?>> pendingRetry = new AtomicReference<>();
+
+    private static final String INCOMPATIBLE_RELEASE_NOTE = "The backup holds a record this release cannot decode; a backup written by an incompatible release"
+                                                          + " (a backup written by rc4 read by rc5 is one) is the known cause. ";
+
     private final AtomicReference<TimeSpan> nextBackoff = new AtomicReference<>(INITIAL_BACKOFF);
 
     /// Where a backup-enabled node restores from: the backup service (its repository, codec and worker)
@@ -826,12 +830,21 @@ public final class BackupRestoreCoordinator {
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_BLOCKED,
                                                       cause.message()
                                                      + "; this cluster will not start fresh on its own, and writes to cluster state"
-                                                     + " stay refused while the restore is blocked. " + blockedAdvice(decision)));
+                                                     + " stay refused while the restore is blocked. " + incompatibleReleaseNote(blockedCause) + blockedAdvice(decision)));
         } else {
             LOG.debug("Backup restore: transient failure: {} — will retry", cause.message());
         }
 
         scheduleRetry();
+    }
+
+    /// #3310: on the decode step the fact held is that a record of the backup does not decode here; a backup written by an incompatible release
+    /// (rc4 into rc5 is one, a flag day with no legacy decoders) is the known cause. The code does not identify the writing release, so none is claimed.
+    /// Other steps carry no such sentence. It is a function of the step, which the announced pair already holds.
+    private static String incompatibleReleaseNote(RestoreError.Blocked cause) {
+        return cause.step() == Step.DOCUMENT_UNDECODABLE
+               ? INCOMPATIBLE_RELEASE_NOTE
+               : "";
     }
 
     /// A committed decision other than `IN_PROGRESS` (`UNKNOWN` included, which is not terminal): there is no restore to continue, so nothing is blocked.
