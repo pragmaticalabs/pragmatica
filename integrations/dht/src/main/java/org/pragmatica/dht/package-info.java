@@ -94,9 +94,10 @@
 /// \* HaltFair: Halt is weakly fair. FALSE is the negative control of DrainCompletes (`nohaltfair`).
 /// \* Flap: which stale-entry flaps happen ("none", "peer": seen by other nodes, "self": also by the entry itself). A flap
 /// \* prunes the entry from the observer's ring until it recovers, which may never happen. Pages reach named nodes only since
-/// \* #3225, so two flap shapes matter there: a drainer that sees its only surviving candidate flap retargets the page away
-/// \* ("ring removal is the only retarget") and halts with the copy (`allnamedflap`, red), and an entry that pruned itself is
-/// \* in no walk of its own ring, so it refuses the page even when the pusher names it (`flap`, red).
+/// \* #3225, so two flap shapes matter there: a drainer that sees its only surviving candidate flap no longer has it in its
+/// \* ring, so it plans no page to it (flap before the plan) or retargets the page away (flap before the send: ring removal is
+/// \* the only retarget), and halts with the copy (`allnamedflap`, red); and an entry that pruned itself is in no walk of its
+/// \* own ring, so it refuses the page even when the pusher names it (`flap`, red).
 /// \* Fixed: the protections the code carries (AllFixes). A config that drops one models the code without it:
 /// \*   drainset  - the leader's drain set exists and reaches nodes (the test's empty-set arm drops it)
 /// \*   codrain   - the push excludes the co-drainers it knows (#1818: DHTRebalancer.leavingSet)
@@ -284,7 +285,8 @@
 /// \* drops a copy in this model, so the copy that made the report true is still there.
 /// ReportTruthful == \A d \in drainers : delivered[d] => \E n \in Nodes \ drainers : store[n]
 ///
-/// \* #1818 L1: a receiver that accepts the sender never refuses the page as a stray, so no page is nacked forever.
+/// \* #1818 L1: a receiver that never drains and accepts the sender never refuses the page as a stray, so no page to a node
+/// \* that stays is nacked forever (a refusing co-drainer halts and the page is retargeted, see Deliver).
 /// ReceiverAgrees == ~strayNack
 ///
 /// AllHalted == \A d \in drainers : phase[d] = "halted"

@@ -1279,7 +1279,9 @@ public final class DHTAntiEntropy {
     /// already holds those partitions legitimately, so its push carries no authority it lacks.
     /// ```tla DHTDepartureDrain:Deliver
     /// \* d sends a page to t (attempt: t is in d's ring) with its leaving set and its ring as the view; t accepts and places it
-    /// \* (stores, acks) or nacks it: the page stays pending and is resent. A nack of an accepted sender is a stray refusal.
+    /// \* (stores, acks) or nacks it: the page stays pending and is resent. A nack of an accepted sender by a node that never
+    /// \* drains is a stray refusal. A co-drainer (a final-primary candidate since #3225) that pruned itself on its own DEPARTING
+    /// \* edge refuses too, but it halts, and the page is retargeted once it leaves d's ring: that refusal costs time only.
     /// \* d records the applied ack (Page#settle); it delivers the key only from a deliverer, or from anyone without `deliverer`.
     /// Deliver(d, t) ==
     ///     /\ Pending(d, t)
@@ -1291,7 +1293,7 @@ public final class DHTAntiEntropy {
     ///             /\ acked' = [acked EXCEPT ![d] = @ \cup {t}]
     ///             /\ delivered' = [delivered EXCEPT ![d] = @ \/ ~Fix("deliverer") \/ t \in deliverers[d]]
     ///             /\ UNCHANGED strayNack
-    ///        ELSE /\ strayNack' = (strayNack \/ Accepted(t, d))
+    ///        ELSE /\ strayNack' = (strayNack \/ (Accepted(t, d) /\ t \notin drainers))
     ///             /\ UNCHANGED <<store, pages, acked, delivered>>
     ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, pruned, flapped, phase, leaving, rfAt, claimed, deliverers>>
     /// ```
