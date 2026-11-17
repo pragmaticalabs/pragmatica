@@ -191,7 +191,7 @@ public record EmberConfig(int nodes,
                                                   int coreMax,
                                                   int startTimeoutSeconds) {
         if (nodes < MINIMUM_NODES) {
-            return EmberConfigError.invalidValue("nodes", nodes, tooFewNodesReason()).result();
+            return tooFewNodes(nodes).result();
         }
 
         if (nodes > 100) {
@@ -343,6 +343,12 @@ public record EmberConfig(int nodes,
                                      .toAbsolutePath()
                                      .toString())
                       .or(path);
+    }
+
+    /// The one refusal of a cluster below [#MINIMUM_NODES], shared by the configuration path and
+    /// [EmberCluster#start()] so every entry point reports the same typed cause and wording.
+    public static Cause tooFewNodes(int nodes) {
+        return EmberConfigError.invalidValue("nodes", nodes, tooFewNodesReason());
     }
 
     private static String tooFewNodesReason() {
