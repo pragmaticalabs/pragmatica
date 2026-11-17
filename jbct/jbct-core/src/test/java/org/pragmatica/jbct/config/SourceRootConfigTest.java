@@ -103,6 +103,22 @@ class SourceRootConfigTest {
     }
 
     @Test
+    void twoSourceRootsUnderDifferentTomls_resolveTheirOwnModes_inOneRun() throws Exception {
+        var repo = repository("repo");
+        var infra = marked(repo.resolve("infra"));
+        var business = marked(repo.resolve("business"));
+        var infraRoot = Files.createDirectories(infra.resolve("src/main/java"));
+        var businessRoot = Files.createDirectories(business.resolve("src/main/java"));
+
+        write(infra, INFRASTRUCTURE);
+        write(business, BUSINESS);
+
+        assertThat(resolve(infraRoot).mode()).isEqualTo(JbctMode.INFRASTRUCTURE);
+        assertThat(resolve(businessRoot).mode()).isEqualTo(JbctMode.BUSINESS);
+        assertThat(resolve(infraRoot).mode()).isEqualTo(JbctMode.INFRASTRUCTURE);
+    }
+
+    @Test
     void testRoot_isJudgedRelativeToTheBoundary_notTheAbsolutePath() throws Exception {
         var checkout = repository("src/test/checkout");
         var module = marked(checkout.resolve("module"));
