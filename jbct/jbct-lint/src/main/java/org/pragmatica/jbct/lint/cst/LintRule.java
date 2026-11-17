@@ -13,10 +13,8 @@ import org.pragmatica.jbct.config.JbctMode;
 public sealed interface LintRule permits CstLintRule, RunRule {
     /// The modes a rule runs in when it declares none: every code-level rule runs for business and infrastructure code.
     Set<JbctMode> CODE_MODES = Set.of(JbctMode.BUSINESS, JbctMode.INFRASTRUCTURE);
-
     /// The modes of a structure rule: it judges the layout of business code and stays silent for infrastructure code.
     Set<JbctMode> BUSINESS_ONLY = Set.of(JbctMode.BUSINESS);
-
     /// Get the rule ID (e.g., "JBCT-RET-01").
     String ruleId();
 

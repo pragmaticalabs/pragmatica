@@ -118,8 +118,7 @@ public class CstLinter {
     private static boolean runsIn(LintRule rule, JbctMode mode) {
         return switch (mode) {
             case BUSINESS -> true;
-            case INFRASTRUCTURE -> rule.modes()
-                                       .contains(JbctMode.INFRASTRUCTURE);
+            case INFRASTRUCTURE -> rule.modes().contains(JbctMode.INFRASTRUCTURE);
             case FORMAT_ONLY, DISABLED -> false;
         };
     }
@@ -137,7 +136,7 @@ public class CstLinter {
 
     /// The rule registry: every rule of the catalog, whichever way it runs.
     public static List<LintRule> defaultRules() {
-        return List.<LintRule>of(
+        return List.<LintRule> of(
         // Return kinds (JBCT-RET-*)
         new CstReturnKindRule(),
 
@@ -335,12 +334,12 @@ public class CstLinter {
         // Typed-error construction pack (JBCT-CAUSE, typed-error-lint-spec).
         // JBCT-CAUSE-01 absorbs JBCT-SEAL-02; JBCT-CAUSE-06 awaits LintContext source-set awareness.
         new CstCauseShapeRule(),
-                       new CstCauseMessageBodyRule(),
-                       new CstMessageComponentLastRule(),
-                       new CstCauseFactoryArityRule(),
-                       new CstWrappedCauseRule(),
-                       new CstAnonymousTemplateRule(),
-                       new CstCauseDirectConstructionRule(),
+                                  new CstCauseMessageBodyRule(),
+                                  new CstMessageComponentLastRule(),
+                                  new CstCauseFactoryArityRule(),
+                                  new CstWrappedCauseRule(),
+                                  new CstAnonymousTemplateRule(),
+                                  new CstCauseDirectConstructionRule(),
 
         // File-type classifier + structural rules (#453)
         // Use-case interface structure (JBCT-UC-02)
