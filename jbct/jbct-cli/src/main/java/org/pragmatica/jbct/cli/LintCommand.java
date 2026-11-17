@@ -193,8 +193,8 @@ public class LintCommand implements Callable<Integer> {
                   ? "],\n"
                   : "\n" + unanalysed.stream().map(this::skippedJson).collect(Collectors.joining(",\n")) + "\n  ],\n");
         sb.append("  \"outcome\": [%s],\n".formatted(outcome.stream()
-                                                              .map(line -> "\"" + escapeJson(line) + "\"")
-                                                              .collect(Collectors.joining(", "))));
+                                                            .map(line -> "\"" + escapeJson(line) + "\"")
+                                                            .collect(Collectors.joining(", "))));
         sb.append("  \"diagnostics\": [\n");
         for (int i = 0; i < diagnostics.size(); i++) {
             var d = diagnostics.get(i);

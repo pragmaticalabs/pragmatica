@@ -45,13 +45,13 @@ public class FormatCheckMojo extends AbstractJbctMojo {
         }
 
         var run = LintRun.lintRun(plan);
-
         var needsFormatting = new ArrayList<Path>();
         var errors = new AtomicInteger(0);
 
         for (var job : formatJobs(plan)) {
             claimAndCheck(job, run, needsFormatting, errors);
         }
+
         var report = finishRun(run);
 
         report.formatCheckLines().forEach(getLog()::info);

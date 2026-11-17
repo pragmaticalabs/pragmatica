@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.maven;
 
 import java.nio.file.Path;
+
 import org.pragmatica.jbct.lint.cst.LintRun;
 import org.pragmatica.jbct.score.DensityGate;
 import org.pragmatica.jbct.score.ScoreCalculator;
@@ -59,11 +60,8 @@ public class ScoreMojo extends AbstractJbctMojo {
 
         var run = LintRun.lintRun(plan);
         var filesToProcess = run.scorable();
-
         // A file the run did not offer for scoring is still routed through it, which records it as skipped by mode.
-        plan.files().stream()
-            .filter(file -> !filesToProcess.contains(file))
-            .forEach(file -> routeUnscored(file, run));
+        plan.files().stream().filter(file -> !filesToProcess.contains(file)).forEach(file -> routeUnscored(file, run));
         if (filesToProcess.isEmpty()) {
             nothingScored(run);
 
@@ -74,7 +72,6 @@ public class ScoreMojo extends AbstractJbctMojo {
                                          run::lint,
                                          message -> getLog().error("Parse error in " + message));
         var score = ScoreCalculator.calculate(scan);
-
         var report = finishRun(run);
 
         report.scoreLines().forEach(getLog()::info);
@@ -111,8 +108,7 @@ public class ScoreMojo extends AbstractJbctMojo {
     }
 
     private void routeUnscored(Path file, LintRun run) {
-        run.lintFile(file)
-           .onFailure(cause -> getLog().error("Error: " + cause.message()));
+        run.lintFile(file).onFailure(cause -> getLog().error("Error: " + cause.message()));
     }
 
     private void outputScore(ScoreResult score) {

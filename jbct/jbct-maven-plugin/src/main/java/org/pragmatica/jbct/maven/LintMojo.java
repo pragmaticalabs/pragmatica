@@ -84,7 +84,7 @@ public class LintMojo extends AbstractJbctMojo {
         run.lintFile(file)
            .onSuccess(allDiagnostics::addAll)
            .onFailure(cause -> {
-                          getLog().error("Parse error in " + file + ": " + cause.message());
-                      });
+               getLog().error("Parse error in " + file + ": " + cause.message());
+           });
     }
 }

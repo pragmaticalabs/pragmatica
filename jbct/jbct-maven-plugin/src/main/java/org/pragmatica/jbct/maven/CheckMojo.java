@@ -47,7 +47,6 @@ public class CheckMojo extends AbstractJbctMojo {
         }
 
         var run = LintRun.lintRun(plan);
-
         var needsFormatting = new ArrayList<Path>();
         var formatErrors = new AtomicInteger(0);
         var allDiagnostics = new ArrayList<Diagnostic>();
@@ -147,7 +146,7 @@ public class CheckMojo extends AbstractJbctMojo {
         run.lintFile(file)
            .onSuccess(allDiagnostics::addAll)
            .onFailure(cause -> {
-                          getLog().error("Parse error in " + file + ": " + cause.message());
-                      });
+               getLog().error("Parse error in " + file + ": " + cause.message());
+           });
     }
 }

@@ -114,7 +114,7 @@ public class CheckCommand implements Callable<Integer> {
             return 2;
         }
 
-        return !needsFormatting.isEmpty() || report.fails()
+        return ! needsFormatting.isEmpty() || report.fails()
                ? 1
                : 0;
     }
@@ -165,7 +165,7 @@ public class CheckCommand implements Callable<Integer> {
                           }
                       })
            .onFailure(cause -> {
-                          System.err.println("  ✗ parse error: " + file + ": " + cause.message());
-                      });
+               System.err.println("  ✗ parse error: " + file + ": " + cause.message());
+           });
     }
 }

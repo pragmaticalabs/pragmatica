@@ -72,7 +72,6 @@ public class ProcessMojo extends AbstractJbctMojo {
 
         var run = LintRun.lintRun(plan);
         var parser = new Java25Parser();
-
         var formatted = new AtomicInteger(0);
         var unchanged = new AtomicInteger(0);
         var formatErrors = new AtomicInteger(0);
@@ -119,6 +118,7 @@ public class ProcessMojo extends AbstractJbctMojo {
                          + " warning(s), " + infosIn(allDiagnostics)
                          + " info(s)");
         }
+
         if (formatErrors.get() > 0) {
             throw new MojoFailureException("Formatting failed for " + formatErrors.get() + " file(s)");
         }
@@ -217,7 +217,6 @@ public class ProcessMojo extends AbstractJbctMojo {
         var tree = parseResult.unwrap();
         // Lint first so diagnostics reference the as-authored source.
         var linted = run.lintParsed(tree, source);
-
         // The run records a lint failure as not parsed; it is not counted here a second time.
         if (linted.isFailure()) {
             linted.onFailure(cause -> getLog().error("Cannot lint " + file + ": " + cause.message()));

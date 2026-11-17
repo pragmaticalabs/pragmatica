@@ -42,7 +42,6 @@ public class FormatMojo extends AbstractJbctMojo {
         }
 
         var run = LintRun.lintRun(plan);
-
         var formatted = new AtomicInteger(0);
         var unchanged = new AtomicInteger(0);
         var errors = new AtomicInteger(0);
@@ -50,6 +49,7 @@ public class FormatMojo extends AbstractJbctMojo {
         for (var job : formatJobs(plan)) {
             claimAndProcess(job, run, formatted, unchanged, errors);
         }
+
         var report = finishRun(run);
 
         getLog().info("Formatted: " + formatted.get() + ", Unchanged: " + unchanged.get() + ", Errors: " + errors.get());

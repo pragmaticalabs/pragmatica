@@ -88,10 +88,7 @@ public class ScoreCommand implements Callable<Integer> {
             return noFiles();
         }
 
-        plan.files()
-            .stream()
-            .filter(file -> !filesToProcess.contains(file))
-            .forEach(file -> routeUnscored(file, run));
+        plan.files().stream().filter(file -> !filesToProcess.contains(file)).forEach(file -> routeUnscored(file, run));
         if (filesToProcess.isEmpty()) {
             return nothingScored(run);
         }
@@ -141,8 +138,7 @@ public class ScoreCommand implements Callable<Integer> {
 
     /// A file the run did not offer for scoring is still routed through the run, which records it as skipped by mode.
     private static void routeUnscored(Path file, LintRun run) {
-        run.lintFile(file)
-           .onFailure(cause -> System.err.println("Error: " + cause.message()));
+        run.lintFile(file).onFailure(cause -> System.err.println("Error: " + cause.message()));
     }
 
     /// Exit codes match `jbct lint`: `2` when the tool could not read what it was pointed at, `1`
