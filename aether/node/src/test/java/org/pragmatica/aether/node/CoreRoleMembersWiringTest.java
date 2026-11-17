@@ -39,8 +39,8 @@ class CoreRoleMembersWiringTest {
     void assembly_feedsTheSeamFromTheRoleCoreMembership_notTheInstalledVoters() {
         var code = AssemblySource.stripped();
 
-        assertThat(code).containsOnlyOnce("Set::of,()->deploymentMemberSources(membershipFsm),Map::of,()->coreRoleMembers(membershipFsm.memberDescriptors()),()->membershipFsm.memberDescriptors().keySet(),");
-        assertThat(code).doesNotContain("Map::of,()->installedVoterIds(clusterNode),()->membershipFsm.memberDescriptors()");
+        assertThat(code).containsOnlyOnce("Set::of,()->deploymentMemberSources(membershipFsm),()->coreRoleMembers(membershipFsm.memberDescriptors()),()->membershipFsm.memberDescriptors().keySet(),");
+        assertThat(code).doesNotContain("()->installedVoterIds(clusterNode),()->membershipFsm.memberDescriptors()");
     }
 
     @Test

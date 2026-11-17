@@ -3820,7 +3820,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                               () -> Option.some(communityHealthRuntime.aliveNodes(membershipFsm.dhtRoutableMembers())),
                                                                                                               Set::of,
                                                                                                               () -> deploymentMemberSources(membershipFsm),
-                                                                                                              Map::of,
                                                                                                               () -> coreRoleMembers(membershipFsm.memberDescriptors()),
                                                                                                               () -> membershipFsm.memberDescriptors()
                                                                                                                                  .keySet(),

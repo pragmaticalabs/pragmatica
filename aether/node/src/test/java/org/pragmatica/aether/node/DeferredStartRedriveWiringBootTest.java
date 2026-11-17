@@ -15,6 +15,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.AppHttpConfig;
@@ -190,6 +191,8 @@ class DeferredStartRedriveWiringBootTest {
                                 .environment(Option.none())
                                 .managementHttpProtocol(HttpProtocol.H1)
                                 .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
-                                .build();
+                                .build()
+                                // LEGACY on purpose (#2767): the subject is the legacy NDM routes (B1.ndm, bound only under LEGACY).
+                                .withDeploymentEngine(DeploymentEngine.LEGACY);
     }
 }

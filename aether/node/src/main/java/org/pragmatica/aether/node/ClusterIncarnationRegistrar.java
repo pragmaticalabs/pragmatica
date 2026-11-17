@@ -79,8 +79,9 @@ public final class ClusterIncarnationRegistrar {
     /// The genesis leg against a live node: mint when absent (the incarnation and the engine marker in ONE leader transaction, witnessed by the
     /// committed leader read on THIS pass), then confirm by re-reading the committed incarnation.
     ///
-    /// Confirmation succeeds as soon as **the incarnation is present**, whoever wrote it: a restore of a pre-phase-3 backup leaves "incarnation
-    /// present, marker absent", and that counts as done (LEGACY), never as "retry forever". A pass never mints the marker alone.
+    /// Confirmation succeeds as soon as **the incarnation is present**, whoever wrote it: a pre-phase-3 cluster reads "incarnation present,
+    /// marker absent", and that counts as done (LEGACY), never as "retry forever". A pass never mints the marker alone; a restore's finish
+    /// writes its marker with the incarnation (FSM replacement plan 3.2 delta (a)).
     public static Supplier<Promise<Unit>> genesisLeg(Supplier<KVStore<AetherKey, AetherValue>> kvStore,
                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                      ClusterIncarnation.Mint mint) {
