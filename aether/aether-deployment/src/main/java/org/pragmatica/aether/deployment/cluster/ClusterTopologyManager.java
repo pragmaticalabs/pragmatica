@@ -126,6 +126,17 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// value until then. Absent key means enabled (the pre-#685 default).
     boolean isAutoHealEnabled();
 
+    /// Spec §8.4 — whether `subject` may NOT act on its own now because the operator disabled auto-heal: a worker source/role, a
+    /// community, or the core surplus ([#coreSubject], #3324). Held while the subject's committed scaling value equals the one recorded
+    /// at disable time; a hold is raised once as an operator warning and announced as resumed when it ends. Abstract, not defaulted: an
+    /// implementation that answered "never held" by default would silently lift the gate.
+    boolean scalingHeld(String subject);
+
+    /// #3324 — the subject the auto-heal hold of the core surplus drain is asked and raised for; its scaling value is the committed core count.
+    static String coreSubject() {
+        return "core";
+    }
+
     /// Whether a node of `role` from the source named `sourceName` is CLOUD-backed in the committed configuration. Cloud node ids carry no
     /// cluster (the server name `<cluster>-<nodeId>` does), Docker ids do: the id shape of a replacement follows the source of the node
     /// being replaced, never the cluster as a whole. A blank or unknown source name falls back to the first cloud source declaring `role`.

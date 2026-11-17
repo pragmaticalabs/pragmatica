@@ -983,17 +983,23 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     /// The scaling value of every subject the auto-heal hold is raised for, as `config` commits it: the desired count of each worker
-    /// source/role ([#workerSubject]) and the `target_size` of each declared community ([CommunityPlacementReconciler#holdSubject]).
-    /// A duplicated (source, role) keeps its first entry, as [ClusterConfigValue#desiredCountFor] does.
+    /// source/role ([#workerSubject]), the `target_size` of each declared community ([CommunityPlacementReconciler#holdSubject]) and
+    /// the committed core count ([ClusterTopologyManager#coreSubject], #3324). A duplicated (source, role) keeps its first entry, as
+    /// [ClusterConfigValue#desiredCountFor] does.
     static Map<String, Integer> scalingOf(Option<ClusterConfigValue> config) {
         return config.map(ClusterTopologyManagerRecord::scalingOf)
                      .or(Map::of);
     }
 
     private static Map<String, Integer> scalingOf(ClusterConfigValue config) {
-        return Stream.concat(workerScaling(config), communityScaling(config)).collect(Collectors.toMap(Map.Entry::getKey,
-                                                                                                       Map.Entry::getValue,
-                                                                                                       (first, _) -> first));
+        return Stream.of(workerScaling(config),
+                         communityScaling(config),
+                         Stream.of(Map.entry(ClusterTopologyManager.coreSubject(),
+                                             config.coreCount())))
+                     .flatMap(Function.identity())
+                     .collect(Collectors.toMap(Map.Entry::getKey,
+                                               Map.Entry::getValue,
+                                               (first, _) -> first));
     }
 
     private static Stream<Map.Entry<String, Integer>> workerScaling(ClusterConfigValue config) {
@@ -1020,13 +1026,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return "worker " + sourceName + "/" + role;
     }
 
-    /// Spec §8.4 — whether the worker and community paths may NOT act on their own now. Auto-heal enabled: they may, and every hold raised
+    /// Spec §8.4 — whether the worker, community and core surplus (#3324) paths may NOT act on their own now. Auto-heal enabled: they may, and every hold raised
     /// earlier is announced as resumed. Disabled: `subject` is held while its own committed scaling value (count or community `target_size`)
     /// equals the one recorded at disable time ([AutoHealStateValue#disabledAtScaling]); a commit that leaves it unchanged releases
     /// nothing. A value an operator committed after the disable differs: that is explicit intent, the subject is released (its hold, if
     /// raised, is announced as resumed) and acted on. An operator-directed retirement never asks here. The hold is raised once per
     /// `subject` for the run of holds (the set is the flood guard; a release or resume removes the subject).
-    boolean scalingHeld(String subject) {
+    @Override
+    public boolean scalingHeld(String subject) {
         var state = autoHealStateReader.get();
 
         if (state.map(AutoHealStateValue::enabled).or(true)) {
@@ -1057,7 +1064,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                    warningSink.get(),
                                    OperatorWarningCode.AUTO_HEAL_SCALING_HELD,
                                    subject,
-                                   "Auto-heal is disabled: {} is not provisioned or terminated on the cluster's own initiative; commit a new count, or enable auto-heal",
+                                   "Auto-heal is disabled: {} is not provisioned, drained or terminated on the cluster's own initiative; commit a new count, or enable auto-heal",
                                    subject);
         }
     }

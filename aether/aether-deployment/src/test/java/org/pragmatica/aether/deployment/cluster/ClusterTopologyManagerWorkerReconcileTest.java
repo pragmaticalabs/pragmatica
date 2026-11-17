@@ -327,6 +327,26 @@ class ClusterTopologyManagerWorkerReconcileTest {
         assertThat(manager.scalingHeld("community stable")).as("target_size changed while disabled").isFalse();
     }
 
+    /// #3324: the core surplus subject is recorded by the disable from the committed core count, as every other subject is. Unchanged it
+    /// stays held and raises the same held warning; a core count the operator commits after the disable is explicit intent and releases it.
+    @Test
+    void scalingHeld_core_followsTheCommittedCoreCount() {
+        var manager = (ClusterTopologyManagerRecord) ctm;
+        var core = ClusterTopologyManager.coreSubject();
+        seedTopology(entry("pool", "core", 3), entry("pool", "worker", 1));
+        var recorded = ClusterTopologyManagerRecord.scalingOf(configRef.get());
+        autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, recorded)));
+
+        assertThat(recorded).as("the disable records the committed core count").containsEntry(core, 3);
+        assertThat(manager.scalingHeld(core)).as("core count unchanged").isTrue();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 1);
+        assertThat(warnings).containsExactly("auto-heal-scaling-held");
+
+        commitConfigVersion(2L, entry("pool", "core", 2), entry("pool", "worker", 1));
+
+        assertThat(manager.scalingHeld(core)).as("core count committed after the disable").isFalse();
+    }
+
     /// v2711 survivor 9 (c34): with no auto-heal record at all, auto-heal is enabled, and every subject held earlier is announced as resumed
     /// by the one call, not only the subject asked about.
     @Test

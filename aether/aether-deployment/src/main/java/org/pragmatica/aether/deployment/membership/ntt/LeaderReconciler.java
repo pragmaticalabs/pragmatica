@@ -1518,7 +1518,9 @@ public final class LeaderReconciler {
         var floorHeadroom = Math.max(0, currentMembers.size() - configuredCoreCount);
         var drainCount = Math.min(nominalExcess, floorHeadroom);
 
-        if (drainCount == 0) {
+        // #3324: with auto-heal disabled a surplus core member is not drained on the cluster's own initiative. Asked only when there is a
+        // surplus to drain, through the accessor the worker and community gates use, so the hold is raised as the same operator warning.
+        if (drainCount == 0 || ctm.scalingHeld(ClusterTopologyManager.coreSubject())) {
             return Set.of();
         }
 
