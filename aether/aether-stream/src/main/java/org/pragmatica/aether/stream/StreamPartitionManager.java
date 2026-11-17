@@ -2893,9 +2893,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #2981 step 2 (design §2.2 check 3, F-1a-6): nor does an owner whose lease is not valid now (confirmation factor 1 and a
     /// manager with both lease seams unwired excepted): its local `committed` event is visibility too and pauses with it. The tick
     /// ([#repeatVisible]) announces again once a renewal lands.
+    ///
+    /// #3307 (F-a3): nor does an owner whose ownership has not activated: the gate is [#ownerRoleHolds], the predicate that lets it
+    /// advance visible as owner. A replica that heard a mark from a not-yet-activated owner would read itself caught up
+    /// ([#behindCommittedOwner]) and serve its own stale copy for as long as activation stays blocked; hearing nothing, it forwards.
     @Contract
     private void announceVisible(String streamName, int partition, long visible) {
-        if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER && announcementLeased(streamName)) {
+        if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER && ownerRoleHolds(streamName,
+                                                                                                 partition,
+                                                                                                 confirmationFactorFor(streamName))) {
             partitionLogEvents.committed(streamName, partition, visible);
             replicationManager.announceCommitted(streamName,
                                                  partition,
@@ -5036,10 +5042,6 @@ public final class StreamPartitionManager implements AutoCloseable {
                   .resolve(new StreamError.OwnerLeaseLapsedBeforeAck(parked.waiter().streamName(),
                                                                      parked.waiter().partition()).result());
         }
-    }
-
-    private boolean announcementLeased(String streamName) {
-        return ownerChecksBypassed(confirmationFactorFor(streamName)) || ownerLease.valid();
     }
 
     /// #2981 step 2 (design §2.2, §2.4): this node's lease went from invalid to valid. The owner re-derives `visible` of every

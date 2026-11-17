@@ -17,9 +17,14 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipV
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
+import org.pragmatica.aether.stream.replication.ReplicationMessage;
+import org.pragmatica.aether.stream.replication.ReplicationMessage.CommitAdvance;
+import org.pragmatica.aether.stream.replication.ReplicationTransport;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -65,11 +70,14 @@ class OwnerAdvanceLeaseTest {
     private final AtomicBoolean activated = new AtomicBoolean(true);
     private final AtomicReference<Option<StreamPartitionOwnershipValue>> record = new AtomicReference<>(Option.some(RECORD));
     private final AtomicReference<Option<NodeId>> remoteOwner = new AtomicReference<>(Option.none());
+    private final List<CommitAdvance> announced = new CopyOnWriteArrayList<>();
     private StreamPartitionManager manager;
+    private StreamPartitionManager replica;
 
     @AfterEach
     void closeManager() {
         Option.option(manager).onPresent(StreamPartitionManager::close);
+        Option.option(replica).onPresent(StreamPartitionManager::close);
     }
 
     // ---- one test per non-replica entry path ------------------------------------------------------------------------------
@@ -278,6 +286,36 @@ class OwnerAdvanceLeaseTest {
         assertThat(committed).as("control: under a valid lease the tick announces visible").containsExactly(0L);
     }
 
+    /// #3307 (F-a3): an owner holding the OWNER role and a valid lease whose ownership has NOT activated announces nothing,
+    /// neither from the append listener (the ack raised its visible to 0 through the replica-life mark) nor from any tick. A
+    /// replica that holds the record durably therefore hears no mark, so [StreamPartitionManager#behindCommittedOwner] reads
+    /// `true` (no mark announced in its life: the `or(true)` arm) and its GOVERNOR reads go to the owner instead of its own copy.
+    @Test
+    void notActivatedOwner_announcesNothingOverSeveralTicks_soAReplicaHoldingTheRecordStillForwards() {
+        ownerVisibleAtZero(false);
+        replicaHoldingOneRecord();
+        manager.repeatVisible();
+        manager.repeatVisible();
+        manager.repeatVisible();
+        deliverAnnouncementsToTheReplica();
+        assertThat(announced).as("a not-yet-activated owner announces no visible mark").isEmpty();
+        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("the replica heard nothing: it forwards").isTrue();
+    }
+
+    /// Control for the test above: the same owner, activated, announces its visible mark on the tick, and the same replica then
+    /// reads itself caught up (`false`) and serves locally -- the outcome the not-activated owner must not cause.
+    @Test
+    void activatedOwner_announcesItsVisibleMark_andTheReplicaHoldingTheRecordServesLocally() {
+        ownerVisibleAtZero(true);
+        replicaHoldingOneRecord();
+        manager.repeatVisible();
+        deliverAnnouncementsToTheReplica();
+        assertThat(announced).as("an activated owner announces visible on the tick")
+                             .extracting(CommitAdvance::committedThrough)
+                             .contains(0L);
+        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("the replica heard the mark: it serves locally").isFalse();
+    }
+
     // ---- structural rule ----------------------------------------------------------------------------------------------------
 
     /// Design §8 (R3-S1): in `StreamPartitionManager`, `advanceVisible(` is called only inside `ownerAdvance` and the REPLICA
@@ -291,6 +329,50 @@ class OwnerAdvanceLeaseTest {
     }
 
     // ---- fixture ------------------------------------------------------------------------------------------------------------
+
+    /// An owner (CF 2, lease valid, record naming it) whose visible reaches 0 with or without activation: a mark of 5 from its
+    /// replica life bounds the not-activated fallback `min(bound, durable, mark)` above the acked record, so both arms expose it.
+    private void ownerVisibleAtZero(boolean ownerActivated) {
+        var role = new AtomicReference<>(ReplicaSetController.Role.OWNER);
+        var replication = replicationWithPeer(this::recordAnnouncement);
+
+        manager = wired(streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication));
+        manager.placementRoleSupplier((_, _) -> role.get());
+        createStream(2);
+        role.set(ReplicaSetController.Role.NONE);
+        manager.commitAdvanced(STREAM, PARTITION, 5L, Epoch.ZERO);
+        role.set(ReplicaSetController.Role.OWNER);
+        publish("e0");
+        activated.set(ownerActivated);
+        replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 0L));
+        assertThat(visible()).as("control: the owner's visible reached the acked record").isEqualTo(0L);
+    }
+
+    private void replicaHoldingOneRecord() {
+        replica = streamPartitionManager(Long.MAX_VALUE);
+        replica.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
+        replica.createStream(streamConfig(2))
+               .onFailure(cause -> fail(cause.message()));
+        replica.appendRecovered(STREAM, PARTITION, "r0".getBytes(UTF_8), 1L)
+               .onFailure(cause -> fail("recovered append failed: " + cause.message()));
+        assertThat(replica.partitionBuffer(STREAM, PARTITION).map(OffHeapRingBuffer::durableOffset)
+                          .or(Long.MIN_VALUE)).as("control: the replica holds the record durably")
+                                              .isEqualTo(0L);
+    }
+
+    private Promise<WriteOutcome> recordAnnouncement(NodeId target, ReplicationMessage message) {
+        if (message instanceof CommitAdvance advance) {
+            announced.add(advance);
+        }
+        return Promise.success(new WriteOutcome.Sent(target));
+    }
+
+    private void deliverAnnouncementsToTheReplica() {
+        announced.forEach(advance -> replica.commitAdvanced(advance.streamName(),
+                                                            advance.partition(),
+                                                            advance.committedThrough(),
+                                                            advance.ownerEpoch()));
+    }
 
     private long visibleAfterAnAck(Runnable condition) {
         var replication = replicationWithPeer();
@@ -357,17 +439,21 @@ class OwnerAdvanceLeaseTest {
     }
 
     private void createStream(int confirmationFactor) {
-        manager.createStream(StreamConfig.streamConfig(STREAM,
-                                                       1,
-                                                       RetentionPolicy.retentionPolicy(),
-                                                       "earliest",
-                                                       1_048_576L,
-                                                       ConsistencyMode.EVENTUAL,
-                                                       3,
-                                                       confirmationFactor,
-                                                       StreamCompression.NONE,
-                                                       Option.none()))
+        manager.createStream(streamConfig(confirmationFactor))
                .onFailure(cause -> fail(cause.message()));
+    }
+
+    private static StreamConfig streamConfig(int confirmationFactor) {
+        return StreamConfig.streamConfig(STREAM,
+                                         1,
+                                         RetentionPolicy.retentionPolicy(),
+                                         "earliest",
+                                         1_048_576L,
+                                         ConsistencyMode.EVENTUAL,
+                                         3,
+                                         confirmationFactor,
+                                         StreamCompression.NONE,
+                                         Option.none());
     }
 
     private void publish(String payload) {
@@ -389,11 +475,15 @@ class OwnerAdvanceLeaseTest {
     }
 
     private static ReplicationManager replicationWithPeer() {
+        return replicationWithPeer(ReplicationTransport.NOOP);
+    }
+
+    private static ReplicationManager replicationWithPeer(ReplicationTransport transport) {
         ReplicaRegistry registry = replicaRegistry();
 
         registry.registerReplica(STREAM, PARTITION, SELF);
         registry.registerReplica(STREAM, PARTITION, PEER);
-        return replicationManager(SELF, registry);
+        return replicationManager(SELF, registry, transport);
     }
 
     /// The name of the method enclosing every line of the manager's source that contains `call`.
