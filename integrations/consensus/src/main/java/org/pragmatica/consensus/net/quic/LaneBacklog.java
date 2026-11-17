@@ -86,7 +86,6 @@ final class LaneBacklog<F, K> {
         if (retired) {
             return Admission.RETIRED;
         }
-
         // A backlog that owes a key has a drainer still passing: the frame joins behind it, never starts a second one.
         var first = held.isEmpty() && owed.isEmpty();
 
@@ -117,7 +116,6 @@ final class LaneBacklog<F, K> {
         }
 
         retired = held.isEmpty() && (owed.isEmpty() || writable.getAsBoolean());
-
         if (retired) {
             settleOwed(settle);
         }
@@ -133,7 +131,6 @@ final class LaneBacklog<F, K> {
         held.forEach(frame -> discardOwing(frame, discard));
         held.clear();
         retired = true;
-
         if (writable.getAsBoolean()) {
             settleOwed(settle);
         }

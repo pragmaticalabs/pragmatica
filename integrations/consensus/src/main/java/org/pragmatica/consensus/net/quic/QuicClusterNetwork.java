@@ -2796,7 +2796,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return new WriteOutcome.Sent(peerId);
         }
 
-        var fresh = LaneBacklog.<HeldFrame, StreamType>laneBacklog(HeldFrame::lane);
+        var fresh = LaneBacklog.<HeldFrame, StreamType> laneBacklog(HeldFrame::lane);
         var backlog = option(laneBacklogs.putIfAbsent(ch, fresh)).or(fresh);
 
         return hold(backlog, ch, HeldFrame.heldFrame(bytes, peerId, streamType, resendVia), true);
@@ -2818,7 +2818,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         };
     }
 
-    private WriteOutcome retiredBacklogRewrite(LaneBacklog<HeldFrame, StreamType> backlog, QuicStreamChannel ch, HeldFrame frame) {
+    private WriteOutcome retiredBacklogRewrite(LaneBacklog<HeldFrame, StreamType> backlog,
+                                               QuicStreamChannel ch,
+                                               HeldFrame frame) {
         laneBacklogs.remove(ch, backlog);
 
         return writeInOrder(ch, frame.bytes(), frame.peerId(), frame.lane(), frame.resendVia());
@@ -2892,7 +2894,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @Contract
     private void drainPass(LaneBacklog<HeldFrame, StreamType> backlog, QuicStreamChannel ch, NodeId peerId) {
         if (isPeerRemoved(peerId)) {
-            abandonBacklog(backlog, ch, peerId, Causes.cause("stream dropped: peer " + peerId + " is REMOVED (terminal)"));
+            abandonBacklog(backlog,
+                           ch,
+                           peerId,
+                           Causes.cause("stream dropped: peer " + peerId + " is REMOVED (terminal)"));
 
             return;
         }
@@ -2931,7 +2936,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// drain-fault path, where a throw would escape the drain tick; recovery is FER (degrade forward): a check that
     /// throws reads as "not writable", so the episodes are left exactly as for an unwritable stream.
     @Contract
-    private void abandonBacklog(LaneBacklog<HeldFrame, StreamType> backlog, QuicStreamChannel ch, NodeId peerId, Cause cause) {
+    private void abandonBacklog(LaneBacklog<HeldFrame, StreamType> backlog,
+                                QuicStreamChannel ch,
+                                NodeId peerId,
+                                Cause cause) {
         backlog.discardAll(frame -> giveUpHeld(frame, cause),
                            () -> streamTakesWrites(ch),
                            lane -> endBackpressureEpisode(peerId, lane));
@@ -2939,8 +2947,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private static boolean streamTakesWrites(QuicStreamChannel ch) {
-        return Result.lift(() -> ch.isActive() && ch.isWritable())
-                     .or(false);
+        return Result.lift(() -> ch.isActive() && ch.isWritable()).or(false);
     }
 
     /// D3: a held frame, already reported `Sent`, is given up: it leaves the pressure count of its OWN lane (a DHT frame
