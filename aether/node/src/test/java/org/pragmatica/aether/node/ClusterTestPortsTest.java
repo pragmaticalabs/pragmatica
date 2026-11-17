@@ -47,7 +47,13 @@ class ClusterTestPortsTest {
     /// positives; telling them apart needs data flow (the port came from a closed socket), which this scan cannot see.
     private static final java.util.regex.Pattern RESERVES = java.util.regex.Pattern.compile("ServerSocket\\(\\s*0|ServerSocketChannel\\.open\\(\\s*(?:\\)|(?:java\\.net\\.)?StandardProtocolFamily\\.INET)|\\.bind\\(\\s*new (?:java\\.net\\.)?InetSocketAddress\\([^()]*(?:\\([^()]*\\))?[^()]*\\b0\\s*\\)\\s*\\)");
     private final List<int[]> reservations = new ArrayList<>();
-    private static final String TCP_ONLY_MANAGEMENT_TEST = "ManagementServerDhtCatchUpGaugeTest.java";
+    /// TCP-only holders: the first holds a management port for an HTTP/1 server; the three TLS fail-closed tests (#3321) hold the
+    /// app or management HTTP port so that a bind attempt by the subject would surface as a bind error, never as the TLS refusal.
+    /// No node binds UDP on any of those ports.
+    private static final java.util.Set<String> TCP_ONLY_TESTS = java.util.Set.of("ManagementServerDhtCatchUpGaugeTest.java",
+                                                                                 "AetherNodeBrokenTlsBootTest.java",
+                                                                                 "ManagementServerTlsFailClosedTest.java",
+                                                                                 "AppHttpServerTlsFailClosedTest.java");
 
     @AfterEach
     void dropLeftoverReservations() {
@@ -331,7 +337,7 @@ class ClusterTestPortsTest {
 
         try (Stream<Path> files = Files.walk(testRoot)) {
             var offenders = files.filter(p -> p.toString().endsWith(".java"))
-                                 .filter(p -> !p.getFileName().toString().equals(TCP_ONLY_MANAGEMENT_TEST))
+                                 .filter(p -> !TCP_ONLY_TESTS.contains(p.getFileName().toString()))
                                  .filter(p -> !p.getFileName().toString().equals("ClusterTestPortsTest.java"))
                                  .filter(ClusterTestPortsTest::reservesWithTcpServerSocket)
                                  .map(Path::toString)
