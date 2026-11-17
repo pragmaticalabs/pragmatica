@@ -238,7 +238,6 @@ class RootResolverTest {
 
         var report = finished(run);
 
-        assertTrue(report.ranNoRule());
         assertEquals(List.of(0, 0), report.roots().stream().map(RootCounts::examined).toList());
         assertEquals(List.of(1, 1), report.roots().stream().map(RootCounts::skipped).toList());
         assertFalse(report.fails());

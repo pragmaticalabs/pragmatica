@@ -161,12 +161,6 @@ public final class LintRun {
             return failure.isPresent();
         }
 
-        /// Whether no root ran a rule: a run in which this holds must not print a compliance pass.
-        public boolean ranNoRule() {
-            return roots.stream()
-                        .allMatch(root -> root.examined() == 0);
-        }
-
         /// The outcome lines of a lint activity: how many files were linted and how many did not parse, or why nothing
         /// was linted, per root. A front end prints these; it never reads a mode to word them.
         public List<String> lintLines() {
