@@ -28,10 +28,17 @@ public class CstLinter {
     private final List<CstLintRule> rules;
     private final Java25Parser parser;
 
-    private CstLinter(LintContext context, List<CstLintRule> rules) {
+    private CstLinter(LintContext context, List<LintRule> registry) {
         this.context = context;
-        this.rules = rules;
+        this.rules = fileRules(registry);
         this.parser = new Java25Parser();
+    }
+
+    private static List<CstLintRule> fileRules(List<LintRule> registry) {
+        return registry.stream()
+                       .filter(CstLintRule.class::isInstance)
+                       .map(CstLintRule.class::cast)
+                       .toList();
     }
 
     /// Create linter with default rules.
@@ -106,12 +113,13 @@ public class CstLinter {
     /// live rules without duplicating the ID list.
     public static List<String> defaultRuleIds() {
         return defaultRules().stream()
-                           .map(CstLintRule::ruleId)
+                           .map(LintRule::ruleId)
                            .toList();
     }
 
-    private static List<CstLintRule> defaultRules() {
-        return List.of(
+    /// The rule registry: every rule of the catalog, whichever way it runs.
+    public static List<LintRule> defaultRules() {
+        return List.<LintRule>of(
         // Return kinds (JBCT-RET-*)
         new CstReturnKindRule(),
 
