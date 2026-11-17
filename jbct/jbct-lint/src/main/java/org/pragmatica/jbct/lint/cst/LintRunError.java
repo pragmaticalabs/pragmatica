@@ -19,7 +19,8 @@ public sealed interface LintRunError extends Cause {
     /// Failures that name no value: a call after [LintRun#finish()], when the run's diagnostics and summary were
     /// already handed out, so a later file or a second finish would be counted nowhere.
     enum General implements LintRunError {
-        RUN_FINISHED("The lint run is already finished: build a new run for another pass");
+        RUN_FINISHED("The lint run is already finished: build a new run for another pass"),
+        FORMAT_ACTION_REQUIRED("The format command needs a format action: CHECK, DRY_RUN or WRITE, not NONE");
         private final String message;
         General(String message) {
             this.message = message;

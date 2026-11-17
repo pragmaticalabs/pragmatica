@@ -14,6 +14,7 @@ import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import org.pragmatica.jbct.config.ConfigLoader;
+import org.pragmatica.jbct.config.FilesConfig;
 import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.lint.LintContext;
@@ -164,7 +165,14 @@ public sealed interface RootResolver permits RootResolver.unused {
     }
 
     /// The roots of one run, in path order, with the invocation facts the run needs to judge it.
-    record RootPlan(List<ResolvedRoot> roots, boolean failOnWarning, String testRootRule, List<String> messages) {
+    ///
+    /// `uncollectedTestFiles` counts the Java files under the declared test roots that no handed-over path reaches
+    /// (Maven without `jbct.includeTests`): files the plan did not collect because tests were not asked for.
+    record RootPlan(List<ResolvedRoot> roots,
+                    boolean failOnWarning,
+                    String testRootRule,
+                    List<String> messages,
+                    int uncollectedTestFiles) {
         public RootPlan {
             roots = List.copyOf(roots);
             messages = List.copyOf(messages);
@@ -173,8 +181,9 @@ public sealed interface RootResolver permits RootResolver.unused {
         public static RootPlan rootPlan(List<ResolvedRoot> roots,
                                         boolean failOnWarning,
                                         String testRootRule,
-                                        List<String> messages) {
-            return new RootPlan(roots, failOnWarning, testRootRule, messages);
+                                        List<String> messages,
+                                        int uncollectedTestFiles) {
+            return new RootPlan(roots, failOnWarning, testRootRule, messages, uncollectedTestFiles);
         }
 
         /// Every collected file of the plan, each once, in root order.
@@ -241,7 +250,24 @@ public sealed interface RootResolver permits RootResolver.unused {
                                                                                       .isEmpty()
                                                                                ? SRC_TEST_RULE
                                                                                : DECLARED_TEST_RULE,
-                                                                               messages));
+                                                                               messages,
+                                                                               uncollectedTestFiles(request,
+                                                                                                    directories,
+                                                                                                    messages)));
+    }
+
+    /// The Java files under declared test roots that none of the handed-over directories reaches.
+    private static int uncollectedTestFiles(Request request, List<Path> directories, List<String> messages) {
+        var reached = directories.stream().map(directory -> directory.toAbsolutePath()
+                                                                     .normalize()).toList();
+        var unreached = request.declaredTestRoots()
+                               .stream()
+                               .filter(Files::isDirectory)
+                               .filter(root -> reached.stream()
+                                                      .noneMatch(root::startsWith))
+                               .toList();
+
+        return FileCollector.collectJavaFiles(unreached, FilesConfig.DEFAULT, messages::add).size();
     }
 
     private static Map<Path, List<Path>> ownedFiles(Request request,

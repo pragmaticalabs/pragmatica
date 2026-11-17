@@ -154,6 +154,24 @@ class RootResolverTest {
     }
 
     @Test
+    void resolve_declaredTestRootNotHandedOver_isCountedAsUncollectedTestFiles() throws IOException {
+        var main = Files.createDirectories(temp.resolve("m/src/main/java/com/example"));
+        var tests = Files.createDirectories(temp.resolve("m/src/test/java/com/example"));
+
+        Files.writeString(main.resolve("A.java"), "class A {}\n");
+        Files.writeString(tests.resolve("ATest.java"), "class ATest {}\n");
+        Files.writeString(tests.resolve("BTest.java"), "class BTest {}\n");
+        var mainRoot = temp.resolve("m/src/main/java");
+        var testRoot = temp.resolve("m/src/test/java");
+        var withoutTests = plan(Request.request(List.of(mainRoot)).withDeclared(Set.of(mainRoot), Set.of(testRoot)));
+        var withTests = plan(Request.request(List.of(mainRoot, testRoot)).withDeclared(Set.of(mainRoot), Set.of(testRoot)));
+
+        assertEquals(2, withoutTests.uncollectedTestFiles());
+        assertEquals(1, withoutTests.files().size());
+        assertEquals(0, withTests.uncollectedTestFiles());
+    }
+
+    @Test
     void resolve_dotSlashArgumentAndItsSubdirectory_examineEachFileOnce() throws IOException {
         var x = Files.createDirectories(temp.resolve("x/sub"));
 
