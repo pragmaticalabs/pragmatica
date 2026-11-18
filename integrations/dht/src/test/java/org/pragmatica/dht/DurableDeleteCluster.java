@@ -68,6 +68,13 @@ final class DurableDeleteCluster {
         members.put(id, member(id, old.node().ring(), old.storage(), config, OwnerEpochSource.zero()));
     }
 
+    /// A process restart that lost its disk (#3347): a new node over a NEW empty store and the current ring.
+    void restartEmpty(NodeId id, DHTConfig config) {
+        var old = members.get(id);
+
+        members.put(id, member(id, old.node().ring(), memoryStorageEngine(OwnerEpochGate.noOp()), config, OwnerEpochSource.zero()));
+    }
+
     private Member member(NodeId id,
                           ConsistentHashRing<NodeId> ring,
                           MemoryStorageEngine storage,
@@ -78,6 +85,7 @@ final class DurableDeleteCluster {
         var antiEntropy = dhtAntiEntropy(node, network, _ -> true);
 
         node.useWallClock(clock::get);
+        node.useMonotonicClock(clock::get);
 
         return new Member(id,
                           node,
