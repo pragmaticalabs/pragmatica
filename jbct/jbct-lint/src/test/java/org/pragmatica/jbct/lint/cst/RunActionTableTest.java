@@ -20,6 +20,7 @@ import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Kind;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Linted;
 import org.pragmatica.jbct.lint.cst.RunOutcome.NotAsked;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Notification;
 import org.pragmatica.jbct.lint.cst.RunOutcome.ParseFailed;
 import org.pragmatica.jbct.lint.cst.RunOutcome.ReadFailed;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Rewritten;
@@ -601,6 +602,12 @@ class RunActionTableTest {
         assertEquals(1, result.skippedByMode());
         assertTrue(result.executionSuccessful());
         assertEquals("note", result.notificationLevel());
+        assertEquals(List.of(), result.unanalysed());
+        assertEquals(List.of(Notification.notification("note",
+                                                       "Nothing was linted: " + formatOnly.resolve("src/main/java")
+                                                       + " (mode format-only skips it)",
+                                                       Option.none())),
+                     result.notifications());
     }
 
     @Test
@@ -616,6 +623,7 @@ class RunActionTableTest {
         assertEquals(0, result.skippedByMode());
         assertTrue(result.executionSuccessful());
         assertEquals("note", result.notificationLevel());
+        assertEquals(List.of(), result.notifications());
     }
 
     @Test
@@ -631,6 +639,11 @@ class RunActionTableTest {
         assertEquals(1, result.examined());
         assertFalse(result.executionSuccessful());
         assertEquals("error", result.notificationLevel());
+        assertEquals(1, result.unanalysed().size());
+        assertEquals(1, result.notifications().size());
+        assertEquals("error", result.notifications().getFirst().level());
+        assertTrue(result.notifications().getFirst().text().startsWith("Not analysed: Parse failed: "));
+        assertTrue(result.notifications().getFirst().file().map(file -> file.endsWith("Broken.java")).or(false));
     }
 
     @Test
@@ -642,6 +655,9 @@ class RunActionTableTest {
         assertEquals(0, result.collected());
         assertFalse(result.executionSuccessful());
         assertEquals("error", result.notificationLevel());
+        // As released: the run's closing sentences are empty here (the no-files sentence is a `before` line), so the
+        // notification text is empty; the level and the absence of a file are what the SARIF note carries.
+        assertEquals(List.of(Notification.notification("error", "", Option.none())), result.notifications());
     }
 
     @Test

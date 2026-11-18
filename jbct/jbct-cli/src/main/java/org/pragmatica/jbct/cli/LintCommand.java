@@ -1,7 +1,6 @@
 package org.pragmatica.jbct.cli;
 
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Callable;
@@ -10,14 +9,11 @@ import java.util.stream.Collectors;
 
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
-import org.pragmatica.jbct.lint.cst.RunOutcome.FileResult;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
-import org.pragmatica.jbct.lint.cst.RunOutcome.Line;
-import org.pragmatica.jbct.lint.cst.RunOutcome.LintOutcome;
-import org.pragmatica.jbct.lint.cst.RunOutcome.ParseFailed;
-import org.pragmatica.jbct.lint.cst.RunOutcome.ReadFailed;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Notification;
 import org.pragmatica.jbct.lint.cst.RunOutcome.RunResult;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Surface;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Unanalysed;
 import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -93,46 +89,12 @@ public class LintCommand implements Callable<Integer> {
         }
     }
 
-    /// A collected file the linter could not read or parse, with the reason the run recorded.
-    private record Unanalysed(Path file, String reason) {
-        static Unanalysed unanalysed(Path file, String reason) {
-            return new Unanalysed(file, reason);
-        }
-    }
-
-    private static List<Unanalysed> unanalysedOf(RunResult result) {
-        return result.files()
-                     .stream()
-                     .flatMap(file -> unanalysedOf(file).stream())
-                     .toList();
-    }
-
-    private static Option<Unanalysed> unanalysedOf(FileResult file) {
-        return reasonOf(file.lint()).map(reason -> Unanalysed.unanalysed(file.file(), reason));
-    }
-
-    private static Option<String> reasonOf(LintOutcome outcome) {
-        return switch (outcome) {
-            case ReadFailed read -> Option.some(read.message());
-            case ParseFailed parse -> Option.some(parse.message());
-            default -> Option.none();
-        };
-    }
-
-    private static List<String> outcomeOf(RunResult result) {
-        return result.after()
-                     .stream()
-                     .map(Line::text)
-                     .filter(text -> !text.isEmpty())
-                     .toList();
-    }
-
     /// One object: `collected` files found, `examined` of them analysed, `skipped` the rest with the reason,
     /// and `diagnostics`. A clean scan is `examined > 0 and skipped == [] and diagnostics == []`.
     private void printJsonResults(RunResult result) {
         var diagnostics = result.findings();
-        var unanalysed = unanalysedOf(result);
-        var outcome = outcomeOf(result);
+        var unanalysed = result.unanalysed();
+        var outcome = result.outcome();
         var sb = new StringBuilder();
 
         sb.append("{\n");
@@ -226,28 +188,21 @@ public class LintCommand implements Callable<Integer> {
         sb.append("    \"invocations\": [{\n");
         sb.append("      \"executionSuccessful\": %s,\n".formatted(result.executionSuccessful()));
         sb.append("      \"toolExecutionNotifications\": [");
-        var notifications = new ArrayList<String>();
-        var unanalysed = unanalysedOf(result);
-        // As released: a file not analysed is its own notification and the run's sentence is only for a run with no such file
-        // (nothing collected); the run's coverage-gap text then rides in the stderr lines, not in the SARIF list.
-        if (!result.executionSuccessful() && unanalysed.isEmpty()) {
-            notifications.add("        { \"level\": \"%s\", \"message\": { \"text\": \"%s\" } }".formatted(result.notificationLevel(),
-                                                                                                           escapeJson(String.join(" ",
-                                                                                                                                  outcomeOf(result)))));
-        }
-
-        for (var skipped : unanalysed) {
-            notifications.add(("        { \"level\": \"%s\", \"message\": { \"text\": \"Not analysed: %s\" }, "
-                              + "\"locations\": [{ \"physicalLocation\": { \"artifactLocation\": { \"uri\": \"%s\" } } }] }").formatted(result.notificationLevel(),
-                                                                                                                                        escapeJson(skipped.reason()),
-                                                                                                                                        escapeJson(skipped.file()
-                                                                                                                                                          .toString())));
-        }
+        var notifications = result.notifications().stream().map(this::notificationJson).toList();
 
         sb.append(notifications.isEmpty()
                   ? "]\n"
                   : "\n" + String.join(",\n", notifications) + "\n      ]\n");
         sb.append("    }]\n");
+    }
+
+    private String notificationJson(Notification notification) {
+        return notification.file()
+                           .map(file -> "        { \"level\": \"%s\", \"message\": { \"text\": \"%s\" }, \"locations\": [{ \"physicalLocation\": { \"artifactLocation\": { \"uri\": \"%s\" } } }] }".formatted(notification.level(),
+                                                                                                                                                                                                               escapeJson(notification.text()),
+                                                                                                                                                                                                               escapeJson(file.toString())))
+                           .or(() -> "        { \"level\": \"%s\", \"message\": { \"text\": \"%s\" } }".formatted(notification.level(),
+                                                                                                                  escapeJson(notification.text())));
     }
 
     private String sarifLevel(DiagnosticSeverity severity) {

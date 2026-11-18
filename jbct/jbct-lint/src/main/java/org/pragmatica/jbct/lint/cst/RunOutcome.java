@@ -379,6 +379,69 @@ public sealed interface RunOutcome permits RunOutcome.unused {
                    ? "note"
                    : "error";
         }
+
+        /// Each collected file the linter could not read or parse, in file order, with the reason the run recorded.
+        public List<Unanalysed> unanalysed() {
+            return files.stream()
+                        .flatMap(file -> unanalysedOf(file).stream())
+                        .toList();
+        }
+
+        /// The run's own sentences of its closing lines, the non-empty `after` texts in order.
+        public List<String> outcome() {
+            return after.stream()
+                        .map(Line::text)
+                        .filter(text -> !text.isEmpty())
+                        .toList();
+        }
+
+        /// The machine-format notifications, as values a renderer copies: one per unanalysed file (`Not analysed: ` and the
+        /// reason, at the file) when any file was not analysed; else, for a run that did not execute successfully, the
+        /// run's own sentences; else, for a run in which every collected file was skipped by mode, the same sentences as a
+        /// `note`; else none.
+        public List<Notification> notifications() {
+            var unanalysed = unanalysed();
+
+            return unanalysed.isEmpty()
+                   ? runNotifications()
+                   : unanalysed.stream()
+                               .map(skipped -> Notification.notification(notificationLevel(),
+                                                                         "Not analysed: " + skipped.reason(),
+                                                                         some(skipped.file())))
+                               .toList();
+        }
+
+        private List<Notification> runNotifications() {
+            return ! executionSuccessful() || allSkippedByMode()
+                   ? List.of(Notification.notification(notificationLevel(), String.join(" ", outcome()), none()))
+                   : List.of();
+        }
+
+        private boolean allSkippedByMode() {
+            return collected() > 0 && skippedByMode() == collected();
+        }
+
+        private static Option<Unanalysed> unanalysedOf(FileResult file) {
+            return switch (file.lint()) {
+                case ReadFailed read -> some(Unanalysed.unanalysed(file.file(), read.message()));
+                case ParseFailed parse -> some(Unanalysed.unanalysed(file.file(), parse.message()));
+                default -> none();
+            };
+        }
+    }
+
+    /// A collected file the linter could not read or parse, with the reason the run recorded.
+    record Unanalysed(Path file, String reason) {
+        public static Unanalysed unanalysed(Path file, String reason) {
+            return new Unanalysed(file, reason);
+        }
+    }
+
+    /// One SARIF tool-execution notification: its `level`, its `text` and the file it is about, when it is about one.
+    record Notification(String level, String text, Option<Path> file) {
+        public static Notification notification(String level, String text, Option<Path> file) {
+            return new Notification(level, text, file);
+        }
     }
 
     /// The severity of a printed line.

@@ -263,7 +263,10 @@ class CliSharedRunTest {
 
         assertThat(run(new LintCommand(), "--format", "sarif", off.toString())).isZero();
         assertThat(out.toString()).contains("\"executionSuccessful\": " + captured.result().executionSuccessful())
-                                  .doesNotContain("No Java files found");
+                                  .doesNotContain("No Java files found")
+                                  .contains("\"toolExecutionNotifications\": [\n"
+                                            + "        { \"level\": \"note\", \"message\": { \"text\": \"" + String.join(" ", captured.afterBody()) + "\" } }\n"
+                                            + "      ]");
         assertThat(captured.result().skippedByMode()).isOne();
         assertThat(run(new LintCommand(), "--format", "json", off.toString())).isZero();
         assertThat(out.toString()).contains("\"outcome\": [\"" + captured.afterBody().getFirst() + "\"]")
