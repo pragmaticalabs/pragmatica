@@ -89,8 +89,13 @@ class PartitionBackfillJoinedRerunTest {
         /// Flight #1 never answers, a second call joins, flight #1 lands READ_FORWARD_TIMEOUT -> exactly one more pull. The
         /// re-run, with no joiner of its own, lands failed too and starts nothing: no loop without new triggers.
         @Test
-        void joinedFlight_landsWithReadForwardTimeout_rerunsExactlyOnce_andAnUnjoinedRerunDoesNotLoop() {
+        void joinedFlight_landsWithReadForwardTimeout_rerunsExactlyOnce_andAnUnjoinedRerunDoesNotLoop() throws InterruptedException {
             var backfill = sourceBackfill();
+            // #3384: a landing releases the slot on the run's own chain, not before `fail` returns: wait for the two
+            // releases (the flight's, the re-run's) instead of a sleep.
+            var bothReleased = new CountDownLatch(2);
+
+            backfill.releaseWindowHook(bothReleased::countDown);
             var first = backfill.backfill(STREAM, PARTITION);
             var joined = backfill.backfill(STREAM, PARTITION);
 
@@ -103,6 +108,8 @@ class PartitionBackfillJoinedRerunTest {
             assertThat(pulls).as("the failed joined flight re-ran exactly once").hasSize(2);
 
             pulls.get(1).fail(StreamForwardError.General.READ_FORWARD_TIMEOUT);
+
+            assertThat(bothReleased.await(10, TimeUnit.SECONDS)).as("the re-run's landing released the slot").isTrue();
             sleep(100L);
 
             assertThat(pulls).as("the re-run had no joiner: it does not re-run, never a loop").hasSize(2);
@@ -222,13 +229,17 @@ class PartitionBackfillJoinedRerunTest {
         }
 
         @Test
-        void refusedFlight_withoutAJoiner_releasesTheSlotAtTheHoldsEnd_withoutARerun() {
+        void refusedFlight_withoutAJoiner_releasesTheSlotAtTheHoldsEnd_withoutARerun() throws InterruptedException {
             var backfill = sourceBackfill();
+            // #3384: the hold ends on the shared scheduler's timer: wait for the release itself, with a deadline.
+            var released = new CountDownLatch(1);
+
+            backfill.releaseWindowHook(released::countDown);
             var first = backfill.backfill(STREAM, PARTITION);
 
             pulls.getFirst().fail(refusal());
             assertThat(first.await(AWAIT).isFailure()).isTrue();
-            sleep(FIRST_HOLD_MAX_MS + 200L);
+            assertThat(released.await(10, TimeUnit.SECONDS)).as("the hold's end released the slot").isTrue();
 
             assertThat(pulls).as("nothing joined, so nothing re-ran").hasSize(1);
 
@@ -357,7 +368,12 @@ class PartitionBackfillJoinedRerunTest {
     }
 
     private static void sleep(long millis) {
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(millis));
+        var deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
+
+        // parkNanos may return early (spurious wakeup, or an interrupt flag left set): park until the deadline (#3384).
+        for (var left = deadline - System.nanoTime(); left > 0L; left = deadline - System.nanoTime()) {
+            LockSupport.parkNanos(left);
+        }
     }
 
     /// Pin (1): a landing with no joiner never re-runs, failed or succeeded.
