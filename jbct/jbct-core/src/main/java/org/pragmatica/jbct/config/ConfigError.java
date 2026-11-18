@@ -35,16 +35,6 @@ public sealed interface ConfigError extends Cause {
         }
     }
 
-    /// A mode that exists but that no lint or format entry point honours yet (`format-only`, `disabled`): accepted in
-    /// the same change that honours it, so no build ever accepts a mode it does not apply.
-    record ModeNotYetSupported(JbctMode mode, String message) implements ConfigError {
-        public static ModeNotYetSupported modeNotYetSupported(JbctMode mode) {
-            return new ModeNotYetSupported(mode,
-                                           "JBCT mode \"" + mode.token()
-                                          + "\" is not yet supported: use \"business\" or \"infrastructure\"");
-        }
-    }
-
     /// A source root whose root-reading structure rules are enabled but whose configuration names no
     /// `[project] basePackage`. Declared here; raised by the structure rules' run (#2526).
     ///

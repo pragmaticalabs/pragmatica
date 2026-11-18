@@ -9,6 +9,9 @@ import java.nio.file.Path;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Kind;
+import org.pragmatica.jbct.lint.cst.RunOutcome.ParseFailed;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Tally;
 import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine;
 
@@ -93,11 +96,17 @@ class LintCommandTest {
         Files.writeString(sources.resolve(name), content);
     }
 
+    private final CapturedRun run = new CapturedRun();
+
     private int lint() {
         out.reset();
         err.reset();
 
-        return new CommandLine(new LintCommand()).execute(sources.toString());
+        var command = new LintCommand();
+
+        command.runSeam = run;
+
+        return new CommandLine(command).execute(sources.toString());
     }
 
     private String stdout() {
@@ -108,7 +117,23 @@ class LintCommandTest {
         return err.toString(UTF_8);
     }
 
-    /// The ticket's own reproduction. One file of two was analysable; the summary claimed both.
+    private Tally lintTally() {
+        return run.result().totals().lint().unwrap();
+    }
+
+    private long parseFailedFiles() {
+        return run.result().files().stream().filter(file -> file.lint() instanceof ParseFailed).count();
+    }
+
+    /// What the command printed is the run's own lines and findings, nothing else; the exit status is the verdict's.
+    private void assertPrintsTheRun(int exitCode, Kind kind) {
+        assertThat(stdout()).isEqualTo(run.expectedStdout(false));
+        assertThat(stderr().lines().toList()).isEqualTo(run.expectedStderrLines());
+        assertThat(run.result().verdict().kind()).isEqualTo(kind);
+        assertThat(exitCode).isEqualTo(CliRoots.exitCode(run.result().verdict(), LintCommand.NOTHING_COLLECTED_EXIT));
+    }
+
+    /// The ticket's own reproduction. One file of two was analysable; the run records the other as not parsed.
     @Test
     void lint_refusesToReportAPass_whenAFileCannotBeParsed() throws IOException {
         write("Pure.java", CLEAN);
@@ -116,36 +141,29 @@ class LintCommandTest {
 
         var exitCode = lint();
 
-        // The fixture reached the parser and was rejected by it. Without this, "no pass line" and
-        // "the linter never ran" are the same observation.
-        assertThat(stderr()).contains("Ell.java")
-                            .contains("Parse failed:");
-        // The forbidden values: the inflated denominator, and any claim of a pass.
-        assertThat(stdout()).doesNotContain("All 2 file(s)")
-                            .doesNotContain("passed JBCT compliance check")
-                            .doesNotContain("Checked 2 file(s)");
-        assertThat(stdout()).contains("1 of 2 file(s), 1 UNPARSEABLE")
-                            .contains("COVERAGE GAP")
-                            .contains("not evidence about those file(s)");
+        assertPrintsTheRun(exitCode, Kind.INCOMPLETE);
+        assertThat(parseFailedFiles()).isOne();
+        assertThat(lintTally().notParsed()).isOne();
+        assertThat(run.result().collected()).isEqualTo(2);
+        assertThat(run.result().examined()).isOne();
         assertThat(exitCode).isEqualTo(2);
     }
 
-    /// Positive control for every `doesNotContain` above: the pass line is reachable, and this is the
-    /// state that earns it.
+    /// Positive control for the test above: the clean state is reachable and exits 0.
     @Test
     void lint_reportsAPass_whenEveryCollectedFileParses() throws IOException {
         write("Pure.java", CLEAN);
 
         var exitCode = lint();
 
-        assertThat(stdout()).contains("✓ All 1 file(s) passed JBCT compliance check.")
-                            .doesNotContain("UNPARSEABLE")
-                            .doesNotContain("COVERAGE GAP");
+        assertPrintsTheRun(exitCode, Kind.CLEAN);
+        assertThat(parseFailedFiles()).isZero();
+        assertThat(run.result().examined()).isOne();
+        assertThat(run.result().findings()).isEmpty();
         assertThat(exitCode).isZero();
     }
 
-    /// The other output branch #977 names. Findings are real, but they were collected over one file,
-    /// not two, and the line has to say so.
+    /// Findings are real, but they were collected over one file, not two; the run records the second as not parsed.
     @Test
     void lint_countsOnlyAnalysedFiles_whenFindingsArePresentToo() throws IOException {
         write("Warny.java", VIOLATING);
@@ -153,54 +171,50 @@ class LintCommandTest {
 
         var exitCode = lint();
 
-        assertThat(stderr()).contains("Parse failed:");
-        assertThat(stdout()).doesNotContain("Checked 2 file(s)");
-        assertThat(stdout()).contains("Checked 1 of 2 file(s), 1 UNPARSEABLE:")
-                            .contains("2 error(s)");
+        assertPrintsTheRun(exitCode, Kind.INCOMPLETE);
+        assertThat(run.result().findings()).isNotEmpty();
+        assertThat(run.result().examined()).isOne();
+        assertThat(lintTally().notParsed()).isOne();
         assertThat(exitCode).isEqualTo(2);
     }
 
-    /// Pointed at nothing but the unparseable file, the tool used to award it full marks. Kept as its
-    /// own case because it is the degenerate one — every file in the set unexamined — and the one
-    /// where an inflated denominator is impossible to notice by eye.
+    /// Pointed at nothing but the unparseable file: every file in the set unexamined, never a pass.
     @Test
     void lint_refusesToReportAPass_whenNothingAtAllCouldBeParsed() throws IOException {
         write("Ell.java", UNPARSEABLE);
 
         var exitCode = lint();
 
-        assertThat(stderr()).contains("Parse failed:");
-        assertThat(stdout()).doesNotContain("All 1 file(s)")
-                            .doesNotContain("passed JBCT compliance check");
-        assertThat(stdout()).contains("0 of 1 file(s), 1 UNPARSEABLE");
+        assertPrintsTheRun(exitCode, Kind.INCOMPLETE);
+        assertThat(run.result().examined()).isZero();
+        assertThat(lintTally().notParsed()).isOne();
         assertThat(exitCode).isEqualTo(2);
     }
 
-    /// The exit-code split. A complete run that found real errors is a different event from a run that
-    /// could not read its input, and both used to be `2` — so a job could not tell "your code is
-    /// wrong" from "I never read your code". Rule violations are now `1`, matching `jbct check`.
+    /// The exit-code split: a complete run that found real errors exits `1`, matching `jbct check`.
     @Test
     void lint_exitsOne_forRuleViolations_whenCoverageIsComplete() throws IOException {
         write("Warny.java", VIOLATING);
 
         var exitCode = lint();
 
-        assertThat(stdout()).contains("Checked 1 file(s): 2 error(s)")
-                            .doesNotContain("UNPARSEABLE");
+        assertPrintsTheRun(exitCode, Kind.FINDINGS);
+        assertThat(run.result().findings()).isNotEmpty();
+        assertThat(run.result().examined()).isOne();
         assertThat(exitCode).isOne();
     }
 
-    /// The complete-coverage summary strings are unchanged by this fix, deliberately: every difference
-    /// a reader sees lands in the case that was lying. Pinned so a later edit cannot quietly move the
-    /// clean-run wording and break readers that never had a reason to change.
+    /// A clean file beside a violating one: both examined, findings from one, exit 1.
     @Test
-    void lint_leavesCompleteCoverageSummariesByteIdentical() throws IOException {
+    void lint_examinesEveryParsedFile_andPrintsTheRunsFindings() throws IOException {
         write("Pure.java", CLEAN);
         write("Warny.java", VIOLATING);
 
         var exitCode = lint();
 
-        assertThat(stdout()).contains("Checked 2 file(s): 2 error(s), 0 warning(s), 0 info(s)");
+        assertPrintsTheRun(exitCode, Kind.FINDINGS);
+        assertThat(run.result().examined()).isEqualTo(2);
+        assertThat(run.result().collected()).isEqualTo(2);
         assertThat(exitCode).isOne();
     }
 }

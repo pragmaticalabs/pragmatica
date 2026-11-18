@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Properties;
 
 import org.pragmatica.jbct.config.JbctMode;
+import org.pragmatica.jbct.lint.cst.RootResolver.ResolvedRoot;
 import org.pragmatica.lang.Option;
 
 import org.apache.maven.execution.DefaultMavenExecutionRequest;
@@ -26,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// #2525, C7: only a session user property (`-Djbct.mode`, or a `-D` line of `.mvn/maven.config`) overrides `jbct.toml`.
 /// A pom `<jbct.mode>` and a `jbct.mode` system property (`MAVEN_OPTS`) override nothing and each warns, naming
-/// `jbct.toml`. `format-only` and `disabled` stay refused as not yet supported.
+/// `jbct.toml`. All four modes are accepted; an unknown value is refused naming it.
 class ModeOverrideMojoTest {
     private static final String USER_HOME = "user.home";
     private static final String MODE = "jbct.mode";
@@ -81,6 +82,13 @@ class ModeOverrideMojoTest {
         return probe;
     }
 
+    /// The root the goal's shared resolver decides for the module's main directory: the live path every goal takes.
+    private ResolvedRoot rootOf(Probe probe) throws Exception {
+        probe.sourceDirectory = Files.createDirectories(module.resolve("src/main/java")).toFile();
+
+        return probe.resolvePlan(false).roots().getFirst();
+    }
+
     private static Properties with(String value) {
         var properties = new Properties();
 
@@ -90,24 +98,24 @@ class ModeOverrideMojoTest {
     }
 
     @Test
-    void loadConfig_userPropertyOverridesJbctToml_withoutWarning() throws Exception {
-        var config = probe(with("business"), new Properties()).loadConfig();
+    void resolvePlan_userPropertyOverridesJbctToml_withoutWarning() throws Exception {
+        var config = rootOf(probe(with("business"), new Properties())).config();
 
         assertThat(config.mode()).isEqualTo(JbctMode.BUSINESS);
         assertThat(warnings).isEmpty();
     }
 
     @Test
-    void loadConfig_keepsTheTomlMode_withoutWarning_whenNothingIsGiven() throws Exception {
-        var config = probe(new Properties(), new Properties()).loadConfig();
+    void resolvePlan_keepsTheTomlMode_withoutWarning_whenNothingIsGiven() throws Exception {
+        var config = rootOf(probe(new Properties(), new Properties())).config();
 
         assertThat(config.mode()).isEqualTo(JbctMode.INFRASTRUCTURE);
         assertThat(warnings).isEmpty();
     }
 
     @Test
-    void loadConfig_ignoresPomPropertyAndWarnsNamingJbctToml() throws Exception {
-        var config = probe(new Properties(), with("business")).loadConfig();
+    void resolvePlan_ignoresPomPropertyAndWarnsNamingJbctToml() throws Exception {
+        var config = rootOf(probe(new Properties(), with("business"))).config();
 
         assertThat(config.mode()).isEqualTo(JbctMode.INFRASTRUCTURE);
         assertThat(warnings).hasSize(1);
@@ -115,10 +123,10 @@ class ModeOverrideMojoTest {
     }
 
     @Test
-    void loadConfig_ignoresSystemPropertyAndWarnsNamingJbctToml() throws Exception {
+    void resolvePlan_ignoresSystemPropertyAndWarnsNamingJbctToml() throws Exception {
         System.setProperty(MODE, "business");
 
-        var config = probe(new Properties(), new Properties()).loadConfig();
+        var config = rootOf(probe(new Properties(), new Properties())).config();
 
         assertThat(config.mode()).isEqualTo(JbctMode.INFRASTRUCTURE);
         assertThat(warnings).hasSize(1);
@@ -126,8 +134,8 @@ class ModeOverrideMojoTest {
     }
 
     @Test
-    void loadConfig_userPropertyWinsOverPomProperty_andOnlyThePomPropertyWarns() throws Exception {
-        var config = probe(with("business"), with("infrastructure")).loadConfig();
+    void resolvePlan_userPropertyWinsOverPomProperty_andOnlyThePomPropertyWarns() throws Exception {
+        var config = rootOf(probe(with("business"), with("infrastructure"))).config();
 
         assertThat(config.mode()).isEqualTo(JbctMode.BUSINESS);
         assertThat(warnings).hasSize(1);
@@ -135,45 +143,52 @@ class ModeOverrideMojoTest {
     }
 
     @Test
-    void loadConfig_doesNotWarnAboutTheSystemPropertyMavenMirrorsFromAUserProperty() throws Exception {
+    void resolvePlan_doesNotWarnAboutTheSystemPropertyMavenMirrorsFromAUserProperty() throws Exception {
         System.setProperty(MODE, "business");
 
-        var config = probe(with("business"), new Properties()).loadConfig();
+        var config = rootOf(probe(with("business"), new Properties())).config();
 
         assertThat(config.mode()).isEqualTo(JbctMode.BUSINESS);
         assertThat(warnings).isEmpty();
     }
 
     @Test
-    void loadConfig_refusesUnknownUserPropertyValue_namingIt() {
-        assertThatThrownBy(() -> probe(with("strict"), new Properties()).loadConfig()).isInstanceOf(MojoExecutionException.class)
+    void resolvePlan_refusesUnknownUserPropertyValue_namingIt() {
+        assertThatThrownBy(() -> rootOf(probe(with("strict"), new Properties()))).isInstanceOf(MojoExecutionException.class)
                                                                                       .hasMessageContaining("strict");
     }
 
     @Test
-    void loadConfig_refusesFormatOnlyAndDisabledAsNotYetSupported() {
-        assertThatThrownBy(() -> probe(with("format-only"), new Properties()).loadConfig()).isInstanceOf(MojoExecutionException.class)
-                                                                                           .hasMessageContaining("\"format-only\" is not yet supported");
-        assertThatThrownBy(() -> probe(with("disabled"), new Properties()).loadConfig()).isInstanceOf(MojoExecutionException.class)
-                                                                                         .hasMessageContaining("\"disabled\" is not yet supported");
+    void resolvedRoot_acceptsFormatOnlyAndDisabledUserPropertyValues() throws Exception {
+        var formatOnly = probe(with("format-only"), new Properties());
+        var disabled = probe(with("disabled"), new Properties());
+
+        assertThat(rootOf(formatOnly).mode()).isEqualTo(JbctMode.FORMAT_ONLY);
+        assertThat(rootOf(disabled).mode()).isEqualTo(JbctMode.DISABLED);
     }
 
     @Test
-    void createLintContext_carriesTheTomlModeAndBasePackage() throws Exception {
+    void resolvePlan_refusalOfAnUnknownValue_listsAllFourModes() {
+        assertThatThrownBy(() -> rootOf(probe(with("strict"), new Properties())))
+            .hasMessageContaining("business", "infrastructure", "format-only", "disabled");
+    }
+
+    @Test
+    void resolvedRoot_carriesTheTomlModeAndBasePackage() throws Exception {
         Files.writeString(module.resolve("jbct.toml"),
                           "[lint]\nmode = \"infrastructure\"\n[project]\nbasePackage = \"org.acme.billing\"\n");
 
         var probe = probe(new Properties(), new Properties());
-        var context = probe.createLintContext(probe.loadConfig());
+        var context = rootOf(probe).context();
 
         assertThat(context.mode()).isEqualTo(JbctMode.INFRASTRUCTURE);
         assertThat(context.basePackage()).isEqualTo(Option.some("org.acme.billing"));
     }
 
     @Test
-    void createLintContext_carriesTheUserPropertyModeOverride() throws Exception {
+    void resolvedRoot_carriesTheUserPropertyModeOverride() throws Exception {
         var probe = probe(with("business"), new Properties());
 
-        assertThat(probe.createLintContext(probe.loadConfig()).mode()).isEqualTo(JbctMode.BUSINESS);
+        assertThat(rootOf(probe).mode()).isEqualTo(JbctMode.BUSINESS);
     }
 }

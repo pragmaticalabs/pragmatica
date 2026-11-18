@@ -77,7 +77,23 @@ class LintCommandMachineFormatTest {
 
         args.add(sources.toString());
 
-        return new CommandLine(new LintCommand()).execute(args.toArray(String[]::new));
+        var command = new LintCommand();
+
+        command.runSeam = run;
+
+        return new CommandLine(command).execute(args.toArray(String[]::new));
+    }
+
+    private final CapturedRun run = new CapturedRun();
+
+    /// stderr carries exactly the run's lines (all levels; DETAIL only when verbose); stdout is the document alone.
+    private void assertStderrIsTheRunsLines(boolean verbose) {
+        var expected = java.util.stream.Stream.concat(run.result().before().stream().filter(line -> line.channel() != org.pragmatica.jbct.lint.cst.RunOutcome.Channel.WITH_FINDINGS), run.result().after().stream())
+                           .filter(line -> verbose || line.level() != org.pragmatica.jbct.lint.cst.RunOutcome.Level.DETAIL)
+                           .map(org.pragmatica.jbct.lint.cst.RunOutcome.Line::text)
+                           .toList();
+
+        assertThat(err.toString(UTF_8).lines().toList()).isEqualTo(expected);
     }
 
     private JsonNode parsedStdout() {
@@ -94,9 +110,13 @@ class LintCommandMachineFormatTest {
 
         assertThat(doc.isObject()).as("stdout must parse as the one result document and nothing more: " + out).isTrue();
         assertThat(doc.path("diagnostics").size()).isPositive();
-        assertThat(err.toString(UTF_8)).as("the summary is operator-facing and belongs on stderr")
-                  .contains("Checked 1 file(s)");
-        assertThat(out.toString(UTF_8)).doesNotContain("Checked");
+        assertStderrIsTheRunsLines(false);
+        assertThat(java.util.stream.StreamSupport.stream(doc.path("outcome").spliterator(), false).map(JsonNode::asText).toList())
+                  .isEqualTo(run.afterBody());
+        assertThat(doc.path("collected").asInt()).isEqualTo(run.result().collected());
+        assertThat(doc.path("examined").asInt()).isEqualTo(run.result().examined());
+        assertThat(doc.path("skippedByMode").asInt()).isEqualTo(run.result().skippedByMode());
+        assertThat(doc.path("diagnostics").size()).isEqualTo(run.result().findings().size());
     }
 
     @Test
@@ -109,7 +129,7 @@ class LintCommandMachineFormatTest {
                   .isTrue();
         assertThat(parsedStdout().path("diagnostics").size()).isZero();
         assertThat(jsonIsClean(parsedStdout())).as("a complete clean run IS a clean scan: " + out).isTrue();
-        assertThat(err.toString(UTF_8)).contains("passed JBCT compliance check");
+        assertStderrIsTheRunsLines(false);
     }
 
     @Test
@@ -120,7 +140,7 @@ class LintCommandMachineFormatTest {
 
         assertThat(doc.path("version").asText()).isEqualTo("2.1.0");
         assertThat(doc.path("runs").get(0).path("results").size()).isPositive();
-        assertThat(err.toString(UTF_8)).contains("Checked 1 file(s)");
+        assertStderrIsTheRunsLines(false);
     }
 
     @Test
@@ -128,7 +148,7 @@ class LintCommandMachineFormatTest {
         write("Pure.java", CLEAN);
         lint("--format", "json", "-v");
         assertThat(parsedStdout().isObject()).as("-v must not corrupt the document: " + out).isTrue();
-        assertThat(err.toString(UTF_8)).contains("Found 1 Java file(s) to lint.");
+        assertStderrIsTheRunsLines(true);
     }
 
     @Test
@@ -140,7 +160,8 @@ class LintCommandMachineFormatTest {
         assertThat(parsedStdout().path("examined").asInt(-1)).isZero();
         assertThat(jsonIsClean(parsedStdout())).as("#1100: a run that examined nothing is not a clean scan: " + out)
                   .isFalse();
-        assertThat(err.toString(UTF_8)).contains("No Java files found: nothing was examined");
+        assertStderrIsTheRunsLines(false);
+        assertThat(run.result().verdict().kind()).isEqualTo(org.pragmatica.jbct.lint.cst.RunOutcome.Kind.NOTHING_COLLECTED);
     }
 
     /// #1100 — a coverage-gap run (exit 2) must say so IN the document: most CI SARIF uploaders never read
@@ -171,11 +192,17 @@ class LintCommandMachineFormatTest {
 
         assertThat(exitCode).isEqualTo(2);
         assertThat(invocation.path("executionSuccessful").asBoolean(true)).isFalse();
-        assertThat(invocation.path("toolExecutionNotifications").size()).isOne();
-        assertThat(invocation.path("toolExecutionNotifications").get(0).path("level").asText()).isEqualTo("error");
-        assertThat(invocation.path("toolExecutionNotifications").get(0)
-                             .path("locations").get(0).path("physicalLocation").path("artifactLocation")
-                             .path("uri").asText()).endsWith("Broken.java");
+        assertThat(invocation.path("executionSuccessful").asBoolean(true)).isEqualTo(run.result().executionSuccessful());
+        var notifications = invocation.path("toolExecutionNotifications");
+
+        // The release's list, as released: one entry per file not analysed and no run-level "Parse errors" entry in front of it.
+        assertThat(notifications.size()).as("exactly one notification per file not analysed: " + notifications).isEqualTo(1);
+        assertThat(notifications.get(0).path("level").asText()).isEqualTo(run.result().notificationLevel());
+        assertThat(notifications.get(0).path("level").asText()).isEqualTo("error");
+        assertThat(notifications.get(0).path("message").path("text").asText()).startsWith("Not analysed: Parse failed: ");
+        assertThat(notifications.get(0)
+                                .path("locations").get(0).path("physicalLocation").path("artifactLocation")
+                                .path("uri").asText()).endsWith("Broken.java");
         assertThat(sarifIsClean(parsedStdout())).isFalse();
     }
 
@@ -220,6 +247,6 @@ class LintCommandMachineFormatTest {
     void text_summaryStaysOnStdout() throws IOException {
         write("Warny.java", VIOLATING);
         lint();
-        assertThat(out.toString(UTF_8)).contains("Checked 1 file(s)");
+        assertThat(out.toString(UTF_8)).isEqualTo(run.expectedStdout(false));
     }
 }
