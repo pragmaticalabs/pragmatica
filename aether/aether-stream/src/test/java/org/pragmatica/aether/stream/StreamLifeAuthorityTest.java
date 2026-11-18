@@ -148,7 +148,8 @@ class StreamLifeAuthorityTest {
         assertThat(StreamPartitionManager.notAppliedReason(enforced.withIncarnation(COMMITTED_LIFE + 1).withReplication(new ReplicationFactors(3, 1)), enforced).isEmpty())
             .as("another life is a recreate").isTrue();
         var morePartitions = new StreamConfig(STREAM, enforced.partitions() * 2, enforced.retention(), enforced.autoOffsetReset(), enforced.maxEventSizeBytes(),
-                                              enforced.consistencyMode(), 5, 4, enforced.compression(), enforced.encryptionKeyId(), COMMITTED_LIFE);
+                                              enforced.consistencyMode(), 5, 4, enforced.compression(), enforced.encryptionKeyId(), COMMITTED_LIFE,
+                                              enforced.declaration());
 
         assertThat(StreamPartitionManager.notAppliedReason(morePartitions, enforced).or("")).as("a stronger config with another partition count is not adopted")
                                                                                           .startsWith("partition count of an existing stream cannot change");
