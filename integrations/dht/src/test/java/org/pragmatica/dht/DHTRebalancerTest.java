@@ -552,6 +552,7 @@ class DHTRebalancerTest {
             assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 0));
             assertThat(run.report().soleCopyAtRisk()).isZero();
             assertThat(run.report().replicatedAtRisk()).isEqualTo(1);
+            assertThat(run.elapsedMillis()).as("ends at its own window, never a sole extra").isLessThan(10_000);
         }
 
         /// T4 (H1): five nodes at RF 3, a key with a newcomer: two survivors, replicated.
@@ -567,10 +568,12 @@ class DHTRebalancerTest {
             assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 0));
             assertThat(run.report().soleCopyAtRisk()).isZero();
             assertThat(run.report().replicatedAtRisk()).isEqualTo(1);
+            assertThat(run.elapsedMillis()).as("ends at its own window, never a sole extra").isLessThan(10_000);
         }
 
         /// T4b: self already pruned. RF 1: sole (1 - 1 = 0). RF 3 on 5 nodes pruned to 4: replicated (3 - 1 = 2). The class shows
-        /// in the report and the incomplete event; no AT_RISK either way, because every key has a deliverer (#3345).
+        /// in the report and the incomplete event; the sole key, still owed at the deadline, raises AT_RISK there, the replicated
+        /// one never does.
         @Test
         @Timeout(20)
         void classify_pruneAhead_usesHolderLowerBound() {
@@ -583,7 +586,7 @@ class DHTRebalancerTest {
             assertThat(sole.report().soleCopyAtRisk()).isEqualTo(1);
             assertThat(sole.report().replicatedAtRisk()).isZero();
             assertThat(sole.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
-            assertThat(sole.recorder().atRisk()).isEmpty();
+            assertThat(sole.recorder().atRisk()).as("a sole key owed at the deadline").containsExactly(1);
 
             var ring = fiveNodeRing();
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF3);
@@ -598,8 +601,8 @@ class DHTRebalancerTest {
         }
 
         /// E1: self is in the ring, RF 2, the co-drainer B already pruned. The ring put a node that never held the key into B's slot,
-        /// so `currentSet \ leaving` names one "survivor"; the bound subtracts the pruned B: sole. The key has a deliverer, so the
-        /// class shows in the report and the incomplete event, not as AT_RISK (#3345).
+        /// so `currentSet \ leaving` names one "survivor"; the bound subtracts the pruned B: sole. Never acked, it is still owed at
+        /// the deadline: AT_RISK fires there, then the incomplete report.
         @Test
         @Timeout(20)
         void classify_coDrainerPruned_selfInRing_isSole() {
@@ -611,11 +614,11 @@ class DHTRebalancerTest {
 
             assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
             assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
-            assertThat(run.recorder().atRisk()).isEmpty();
+            assertThat(run.recorder().atRisk()).as("a sole key owed at the deadline").containsExactly(1);
         }
 
-        /// T5: a sole page never acked is resent until the deadline and the operator is told ONCE, by the incomplete report, that the
-        /// sole copy is owed. It has a deliverer, so no AT_RISK is raised at plan time (#3345) and nothing claims it delivered.
+        /// T5: a sole page never acked is resent until the deadline. It has a deliverer, so no AT_RISK at plan time (#3345); still
+        /// owed at the deadline, it raises AT_RISK once there, then the incomplete report, and nothing claims it delivered.
         @Test
         @Timeout(20)
         void pushOnDeparture_soleNeverAcked_atRiskOnceThenIncomplete() {
@@ -626,7 +629,7 @@ class DHTRebalancerTest {
             var run = push(node, network, T(200, 1_000, 50), Set.of());
 
             assertThat(network.sends()).hasSizeGreaterThanOrEqualTo(2);
-            assertThat(run.recorder().atRisk()).isEmpty();
+            assertThat(run.recorder().atRisk()).as("raised once, at the deadline").containsExactly(1);
             assertThat(run.recorder().delivered()).isEmpty();
             assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
             assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
@@ -754,7 +757,7 @@ class DHTRebalancerTest {
             var run = push(node, network, tuning, Set.of());
 
             assertThat(network.sends()).hasSizeBetween(2, 12);
-            assertThat(run.recorder().atRisk()).as("a deliverer exists: told through the report (#3345)").isEmpty();
+            assertThat(run.recorder().atRisk()).as("a sole key owed at the deadline").containsExactly(1);
             assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
             assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
         }
@@ -799,7 +802,8 @@ class DHTRebalancerTest {
         }
 
         /// T12 (N2): one target owed a sole key and a replicated key. Every sole page is lost; the replicated page travels in its own
-        /// chain, so it is acked within the base window.
+        /// chain, so it is acked within the base window. Never probed (no exit while the sole key is owed), it still counts owed at
+        /// the deadline close (I2).
         @Test
         @Timeout(20)
         void pushOnDeparture_stuckSolePage_doesNotStarveReplicatedChain() {
@@ -813,13 +817,14 @@ class DHTRebalancerTest {
             var run = push(node, network, T(300, 1_000, 50), Set.of(PEER_C));
 
             assertThat(network.ackedKeys()).contains(new String(shape.replicated(), StandardCharsets.UTF_8));
-            assertThat(run.report().replicatedAtRisk()).isZero();
-            assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
+            assertThat(run.report().replicatedAtRisk()).as("acked, never probed: owed at the deadline close (I2)").isEqualTo(1);
+            assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(2, 1));
         }
 
         /// #3345 P1 (bound): one page of 8 keys bound for the same target, one of which the receiver nacks every time (a whole-page
         /// nack, as the receiver gives for one entry it cannot take). The page is split in halves down to single keys: every
-        /// good key is acked, the bad key alone stays owed and is reported. Bound: sends other than the bad key's single-key page
+        /// good key is acked, the bad key alone stays unacked; no exit probe runs while it is owed, so at the deadline close every
+        /// key counts owed (I2). Bound: sends other than the bad key's single-key page
         /// <= 2 * log2(N) = 6 for N = 8 (the first page, two halves on each of the log2(N) - 1 levels above the leaf, and the bad
         /// key's good sibling leaf), and the bad key's own resends back off.
         @Test
@@ -840,8 +845,8 @@ class DHTRebalancerTest {
             assertThat(network.ackedKeys()).doesNotContain("p1-5");
             assertThat(otherThanTheBadKey).as("at most log2(8) split levels, two pages each, plus the first page").isLessThanOrEqualTo(6);
             assertThat(network.sends().size() - otherThanTheBadKey).as("the bad key alone backs off").isBetween(1L, 12L);
-            assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
-            assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
+            assertThat(run.recorder().incomplete()).as("acked keys never probed are owed at the deadline close (I2)").containsExactly(new Incomplete(8, 4));
+            assertThat(run.report().soleCopyAtRisk()).isEqualTo(4);
         }
 
         /// #3345 P1 (transient): the first page of 4 keys is nacked once, then every page is acked. The nack carries no reason
@@ -1763,7 +1768,8 @@ class DHTRebalancerTest {
             }
 
             /// EncodeFailed splits the page once into single-key pages; the key whose own page still fails is undeliverable, counted
-            /// apart and still owed; the other key is delivered.
+            /// apart and still owed; the other key is acked, and, never probed (no exit while a key is owed), counts owed at the
+            /// deadline close (I2).
             @Test
             @Timeout(20)
             void encodeFailedSplitsThenUndeliverable() {
@@ -1783,7 +1789,7 @@ class DHTRebalancerTest {
                 assertThat(network.sends()).filteredOn(sent -> isOnly(sent, badText)).hasSize(1);
                 assertThat(network.ackedKeys()).containsExactly(new String(good, StandardCharsets.UTF_8));
                 assertThat(run.report().undeliverable()).isEqualTo(1);
-                assertThat(run.report().owed()).isEqualTo(1);
+                assertThat(run.report().owed()).as("the acked key, never probed, is owed at the deadline close (I2)").isEqualTo(2);
             }
 
             /// Acks and nacks never re-plan: reconciles = start + view changes + holder losses + exit attempts.
