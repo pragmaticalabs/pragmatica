@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 
 import java.util.List;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.dht.DurableDeleteCluster.bytes;
@@ -19,6 +20,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///   stale value it meets (`DHTNode.applyReplica`, `DHTNode.java:1402-1411`), so C's live copy dies at the heal.
 ///
 /// Control arm: healed before the expiry, the block stays deleted on every replica.
+///
+/// The "never creates an entry" half of the second rule is pinned by
+/// `expiredTombstoneRejoin_neverCreatesAnEntryOnAReplicaThatNeverHeldTheBlock`.
 class DHTExpiredTombstoneRejoinTest {
     private static final DHTConfig RF3 = new DHTConfig(3, 2, 2, timeSpan(2).seconds());
     private static final byte[] BLOCK = bytes("block");
@@ -52,11 +56,38 @@ class DHTExpiredTombstoneRejoinTest {
                            .allMatch(id -> cluster.holdsTombstone(id, key));
 
         healAndRunOneRound(cluster, cutOff);
+        cluster.synchronizeAll();
 
-        assertThat(holders).as("holders: A and B do not take C's stale value back after the heal")
+        assertThat(holders).as("holders: A and B do not take C's stale value back after the heal (two rounds: the first keeps or collects, the second would let a surviving live copy propagate)")
                            .noneMatch(id -> cluster.holdsLive(id, key));
-        assertThat(cluster.holdsLive(cutOff, key)).as("C: the expired tombstone supersedes C's stale value after one round")
+        assertThat(cluster.holdsLive(cutOff, key)).as("C: the expired tombstone supersedes C's stale value after the heal")
                                                   .isFalse();
+    }
+
+    @Test
+    void expiredTombstoneRejoin_neverCreatesAnEntryOnAReplicaThatNeverHeldTheBlock() {
+        var cluster = new DurableDeleteCluster(3, RF3);
+        var key = bytes("t06-never-held");
+        var replicas = cluster.replicasOf(key);
+        var cutOff = replicas.getLast();
+        var holders = otherThan(replicas, cutOff);
+        var companion = keyInPartitionOf(cluster, key);
+
+        cluster.unreachable.add(cutOff);
+        cluster.member(replicas.getFirst()).client().put(key, BLOCK).await().unwrap();
+        cluster.member(replicas.getFirst()).client().put(companion, BLOCK).await().unwrap();
+        cluster.member(replicas.getFirst()).client().remove(key).await().unwrap();
+        cluster.advanceClockBy(retentionMillis(cluster) + ONE_MINUTE);
+
+        assertThat(holders).as("A and B hold the expired tombstone while C never held the block")
+                           .allMatch(id -> isExpiredTombstone(cluster, id, key));
+        assertThat(cluster.entryAt(cutOff, key).isPresent()).as("C holds no entry before the heal").isFalse();
+
+        healAndRunOneRound(cluster, cutOff);
+
+        assertThat(cluster.holdsLive(cutOff, companion)).as("positive control: the heal pulled the partition's page to C, which carries the expired tombstone")
+                                                        .isTrue();
+        assertThat(cluster.entryAt(cutOff, key).isPresent()).as("C: a copied expired tombstone does not create an entry (judged after one round: a second round would collect a created one)").isFalse();
     }
 
     /// Writes the block to all three replicas, cuts replica C off, and deletes the block on A and B (CF 2).
@@ -73,6 +104,19 @@ class DHTExpiredTombstoneRejoinTest {
         assertThat(otherThan(replicas, cutOff)).as("A and B hold the tombstone").allMatch(id -> cluster.holdsTombstone(id, key));
 
         return cutOff;
+    }
+
+    /// A second block in the same partition as `key`, so that a live entry keeps the partition digests of A, B and C apart
+    /// (an expired tombstone is excluded from the digest) and the heal pulls the partition's page, expired tombstone included.
+    private static byte[] keyInPartitionOf(DurableDeleteCluster cluster, byte[] key) {
+        var node = cluster.members().getFirst().node();
+        var partition = node.partitionFor(key);
+
+        return IntStream.range(0, 100_000)
+                        .mapToObj(i -> bytes("t06-companion-" + i))
+                        .filter(candidate -> node.partitionFor(candidate).equals(partition))
+                        .findFirst()
+                        .orElseThrow();
     }
 
     private static void healAndRunOneRound(DurableDeleteCluster cluster, NodeId cutOff) {
