@@ -1651,15 +1651,28 @@ class DHTRebalancerTest {
     }
 
     /// What a [ScriptedNetwork] does with one departure push.
-    private record Reply(String kind, boolean async, Function<NodeId, WriteOutcome> refusal) {
-        static final Reply DROP = new Reply("drop", false, null);
-        static final Reply ACK = new Reply("ack", false, null);
-        static final Reply NACK = new Reply("nack", false, null);
-        static final Reply ASYNC_ACK = new Reply("ack", true, null);
-        static final Reply ASYNC_NACK = new Reply("nack", true, null);
+    /// An ack or nack carries the receiver's boot token, store generation and "draining" flag (#3345: token 0, generation 0, not
+    /// draining unless a test scripts otherwise).
+    private record Reply(String kind, boolean async, Function<NodeId, WriteOutcome> refusal, long token, long generation, boolean draining) {
+        static final Reply DROP = new Reply("drop", false, null, 0L, 0L, false);
+        static final Reply ACK = new Reply("ack", false, null, 0L, 0L, false);
+        static final Reply NACK = new Reply("nack", false, null, 0L, 0L, false);
+        static final Reply ASYNC_ACK = new Reply("ack", true, null, 0L, 0L, false);
+        static final Reply ASYNC_NACK = new Reply("nack", true, null, 0L, 0L, false);
+        static final Reply DRAINING_NACK = new Reply("nack", false, null, 0L, 0L, true);
 
         static Reply refuse(Function<NodeId, WriteOutcome> refusal) {
-            return new Reply("refuse", false, refusal);
+            return new Reply("refuse", false, refusal, 0L, 0L, false);
+        }
+
+        /// An applied ack from a process whose boot token is `token`.
+        static Reply ackWithToken(long token) {
+            return new Reply("ack", false, null, token, 0L, false);
+        }
+
+        /// The same answer, delivered later from another thread.
+        Reply later() {
+            return new Reply(kind, true, refusal, token, generation, draining);
         }
     }
 
@@ -1673,6 +1686,7 @@ class DHTRebalancerTest {
         private final CopyOnWriteArrayList<String> ackedKeys = new CopyOnWriteArrayList<>();
         private final AtomicReference<Consumer<DHTMessage.MigrationDataAck>> ackSink = new AtomicReference<>(ack -> {});
         private final AtomicReference<Runnable> viewChangeSink = new AtomicReference<>(() -> {});
+        private final AtomicReference<Function<TimedSend, Reply>> probeScript = new AtomicReference<>(_ -> Reply.ACK);
         private final java.util.function.BiFunction<Integer, TimedSend, Reply> script;
         private final Option<ConsistentHashRing<NodeId>> watchedRing;
         private final AtomicReference<Set<NodeId>> lastView;
@@ -1699,6 +1713,11 @@ class DHTRebalancerTest {
             ackSink.set(sink);
         }
 
+        /// How the pre-exit probes (EMPTY pages) are answered; by default an ack at once with token 0.
+        void probesAnswer(Function<TimedSend, Reply> answer) {
+            probeScript.set(answer);
+        }
+
         void viewChangeVia(Runnable sink) {
             viewChangeSink.set(sink);
         }
@@ -1716,9 +1735,10 @@ class DHTRebalancerTest {
             }
             var sent = new TimedSend(target, response, System.nanoTime());
             if (response.entries().isEmpty()) {
-                // #3345: an EMPTY page is the pre-exit probe of a holder: kept apart from the data pages and answered at once.
+                // #3345: an EMPTY page is the pre-exit probe of a holder: kept apart from the data pages, answered as scripted
+                // (by default an ack at once).
                 probes.add(sent);
-                answer(sent, true, false);
+                respond(probeScript.get().apply(sent), sent);
                 return Promise.success(new WriteOutcome.Sent(target));
             }
             int index;
@@ -1728,23 +1748,32 @@ class DHTRebalancerTest {
             }
             var reply = script.apply(index, sent);
             signalViewChange();
-            switch (reply.kind()) {
-                case "ack" -> answer(sent, true, reply.async());
-                case "nack" -> answer(sent, false, reply.async());
-                case "refuse" -> {
-                    return Promise.success(reply.refusal().apply(target));
-                }
-                default -> { }
+            if (reply.kind().equals("refuse")) {
+                return Promise.success(reply.refusal().apply(target));
             }
+            respond(reply, sent);
             return Promise.success(new WriteOutcome.Sent(target));
         }
 
-        private void answer(TimedSend sent, boolean applied, boolean async) {
-            var ack = new DHTMessage.MigrationDataAck(sent.response().requestId(), sent.target(), applied);
+        private void respond(Reply reply, TimedSend sent) {
+            switch (reply.kind()) {
+                case "ack" -> answer(sent, true, reply);
+                case "nack" -> answer(sent, false, reply);
+                default -> { }
+            }
+        }
+
+        private void answer(TimedSend sent, boolean applied, Reply reply) {
+            var ack = new DHTMessage.MigrationDataAck(sent.response().requestId(),
+                                                      sent.target(),
+                                                      applied,
+                                                      reply.token(),
+                                                      reply.generation(),
+                                                      reply.draining());
             if (applied) {
                 sent.response().entries().forEach(kv -> ackedKeys.add(new String(kv.key(), StandardCharsets.UTF_8)));
             }
-            if (async) {
+            if (reply.async()) {
                 CompletableFuture.runAsync(() -> ackSink.get().accept(ack),
                                            CompletableFuture.delayedExecutor(5, TimeUnit.MILLISECONDS));
             } else {
