@@ -1064,7 +1064,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                    warningSink.get(),
                                    OperatorWarningCode.AUTO_HEAL_SCALING_HELD,
                                    subject,
-                                   "Auto-heal is disabled: {} is not provisioned, drained or terminated on the cluster's own initiative; commit a new count, or enable auto-heal",
+                                   "Auto-heal is disabled: {} is not provisioned, drained or terminated on the cluster's own initiative; commit a new count, drain a node explicitly (aether nodes drain <nodeId>), or enable auto-heal (aether cluster topology auto-heal enable)",
                                    subject);
         }
     }

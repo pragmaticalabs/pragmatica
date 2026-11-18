@@ -1438,6 +1438,38 @@ class LeaderReconcilerTest {
             assertThat(ctm.drainNodeCalls()).as("an operator-committed core count is explicit intent: the drain goes ahead").hasSize(1);
         }
 
+        /// #3324: the held surplus re-runs the follow-up pass for as long as the hold lasts (re-enabling must take effect); its pass line is
+        /// not repeated on each one. The positive control is the same line after the release: the instrument sees a follow-up pass line.
+        @Test
+        void heldSurplus_followUpPassesDoNotRepeatThePassLine_oncePerEpisode() {
+            var followUpDelay = timeSpan(EXPECTED_DEBOUNCE_WINDOW.nanos() + DEBOUNCE_DELAY.nanos()).nanos();
+            ctm.setAutoHealEnabled(false, "test: operator disabled auto-heal");
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            try (var capture = LogCapture.capture(LeaderReconciler.class, Level.INFO, false)) {
+                runFollowUpPass(followUpDelay, 0);
+                runFollowUpPass(followUpDelay, 1);
+
+                assertThat(capture.messages()).as("held: the follow-up passes repeat no pass line")
+                                              .noneMatch(line -> line.contains("trigger=SURPLUS_FOLLOW_UP"));
+                assertThat(ctm.drainNodeCalls()).as("still held").isEmpty();
+
+                ctm.setAutoHealEnabled(true, "test: operator enabled auto-heal");
+                runFollowUpPass(followUpDelay, 2);
+                runFollowUpPass(followUpDelay, 3);
+
+                assertThat(ctm.drainNodeCalls()).as("released: the surplus is drained").isNotEmpty();
+                assertThat(capture.messages()).as("control: after the hold ends the follow-up pass line is logged again")
+                                              .anyMatch(line -> line.contains("trigger=SURPLUS_FOLLOW_UP"));
+            }
+        }
+
+        private void runFollowUpPass(TimeSpan delay, int ordinal) {
+            scheduler.tasksByDelay(delay).get(ordinal).runIfLive();
+            fireDebouncedReconcile();
+        }
+
         @Test
         void noSurplus_autoHealDisabled_neverAsksTheHold() {
             configuredCoreCount.set(4);

@@ -856,6 +856,12 @@ public sealed interface TopologyAssembly {
                                                                   .isEmpty())
                                        .toList();
 
+        return retireSurplusCores(victims, topology);
+    }
+
+    /// #3324: the production wiring of the voter-excluded core retirement: the hold asked is `topology`'s own, for the subject `core`,
+    /// and every victim leaves as an `OVERPROVISION_SCALE_DOWN` drain (the reason that keeps the retirement refusal and the grace re-check).
+    static Promise<Unit> retireSurplusCores(List<NodeId> victims, ClusterTopologyManager topology) {
         return drainSurplusCores(victims,
                                  () -> topology.scalingHeld(ClusterTopologyManager.coreSubject()),
                                  node -> topology.drainNode(node, DrainReason.OVERPROVISION_SCALE_DOWN));

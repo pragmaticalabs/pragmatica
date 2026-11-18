@@ -138,6 +138,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
     private ClusterTopologyManager ctm;
     private final AtomicReference<Option<AetherValue.AutoHealStateValue>> autoHealRef = new AtomicReference<>(Option.none());
     private final java.util.List<String> warnings = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final java.util.List<String> warningTexts = new java.util.concurrent.CopyOnWriteArrayList<>();
     private TopologyObserver observer;
     private StubSnapshotSource snapshotSource;
 
@@ -169,7 +170,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                                             _ -> {},
                                                             autoHealRef::get,
                                                             liveness);
-        built.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warning -> warnings.add(warning.code().code())));
+        built.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(this::addWarning));
         var placements = new java.util.concurrent.ConcurrentHashMap<AetherKey, AetherValue>();
         built.setHierarchyStateWriter(HierarchyStateWriter.hierarchyStateWriter(
             () -> Option.some(new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)),
@@ -221,6 +222,12 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                                                                              AetherValue.TopologyEntry::count)))
                                .or(Map.of());
         autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", version, scaling)));
+    }
+
+    /// The text is stored before the code, so a test that awaited the code reads the text.
+    private void addWarning(org.pragmatica.utility.warning.OperatorWarning warning) {
+        warningTexts.add(warning.message());
+        warnings.add(warning.code().code());
     }
 
     private static AetherValue.TopologyEntry entry(String source, String role, int count) {
@@ -341,6 +348,9 @@ class ClusterTopologyManagerWorkerReconcileTest {
         assertThat(manager.scalingHeld(core)).as("core count unchanged").isTrue();
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 1);
         assertThat(warnings).containsExactly("auto-heal-scaling-held");
+        assertThat(warningTexts.getFirst()).as("the held warning names both exits: an explicit drain and re-enabling auto-heal")
+                                           .contains("aether nodes drain <nodeId>")
+                                           .contains("aether cluster topology auto-heal enable");
 
         commitConfigVersion(2L, entry("pool", "core", 2), entry("pool", "worker", 1));
 
