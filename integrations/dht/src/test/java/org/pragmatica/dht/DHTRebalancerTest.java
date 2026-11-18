@@ -63,22 +63,30 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.dht.ConsistentHashRing.consistentHashRing;
 import static org.pragmatica.dht.DHTNode.dhtNode;
 import static org.pragmatica.dht.DHTRebalancer.dhtRebalancer;
+import static org.pragmatica.dht.DepartureDirectRuns.bystander;
+import static org.pragmatica.dht.DepartureDirectRuns.delivererOf;
+import static org.pragmatica.dht.DepartureDirectRuns.direct;
+import static org.pragmatica.dht.DepartureDirectRuns.fiveNodeRing;
+import static org.pragmatica.dht.DepartureDirectRuns.sameDeliverer;
+import static org.pragmatica.dht.DepartureDirectRuns.sameRequest;
+import static org.pragmatica.dht.DepartureDirectRuns.soleKey;
+import static org.pragmatica.dht.DepartureDirectRuns.takeover;
 import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class DHTRebalancerTest {
-    private static final NodeId LOCAL = new NodeId("local");
-    private static final NodeId PEER_A = new NodeId("peer-a");
-    private static final NodeId PEER_B = new NodeId("peer-b");
-    private static final NodeId PEER_C = new NodeId("peer-c");
-    private static final NodeId PEER_D = new NodeId("peer-d");
+    static final NodeId LOCAL = new NodeId("local");
+    static final NodeId PEER_A = new NodeId("peer-a");
+    static final NodeId PEER_B = new NodeId("peer-b");
+    static final NodeId PEER_C = new NodeId("peer-c");
+    static final NodeId PEER_D = new NodeId("peer-d");
     private static final NodeId REMOVED = new NodeId("removed");
 
-    private static byte[] key(String s) {
+    static byte[] key(String s) {
         return s.getBytes(StandardCharsets.UTF_8);
     }
 
-    private static byte[] value(String s) {
+    static byte[] value(String s) {
         return s.getBytes(StandardCharsets.UTF_8);
     }
 
@@ -2008,89 +2016,6 @@ class DHTRebalancerTest {
                 }
                 return Reply.DROP;
             }
-
-            // --- direct run ---
-
-            private record Direct(DeparturePushRun run, DeparturePushReport report) {}
-
-            private Direct direct(DHTNode node, ScriptedNetwork network, long windowMs, long resendMs, Supplier<Set<NodeId>> drainSet) {
-                return direct(node, network, windowMs, resendMs, drainSet, new AtomicReference<>());
-            }
-
-            /// A run over RF 1 with a `windowMs` attempts window; acks are routed by correlation id as [DHTRebalancer] does.
-            private Direct direct(DHTNode node,
-                                  ScriptedNetwork network,
-                                  long windowMs,
-                                  long resendMs,
-                                  Supplier<Set<NodeId>> drainSet,
-                                  AtomicReference<DeparturePushRun> handle) {
-                return direct(node, network, windowMs, resendMs, drainSet, handle, () -> false);
-            }
-
-            /// As above, with the node's halt flag `halted`.
-            private Direct direct(DHTNode node,
-                                  ScriptedNetwork network,
-                                  long windowMs,
-                                  long resendMs,
-                                  Supplier<Set<NodeId>> drainSet,
-                                  AtomicReference<DeparturePushRun> handle,
-                                  BooleanSupplier halted) {
-                var registry = new ConcurrentHashMap<String, DeparturePushRun.Page>();
-                var tuning = new DeparturePushTuning(ms(resendMs), ms(4 * resendMs), DeparturePushTuning.DEFAULT.reportAfter(), ms(200));
-                var t0 = System.nanoTime();
-                var window = DepartureWindow.departureWindow(t0 + ms(windowMs).nanos() + tuning.eventDeliveryWait().nanos(), halted);
-                var run = DeparturePushRun.departurePushRun(node, network, registry, 1, drainSet, t0, window, tuning, new EventRecorder(() -> {}));
-                handle.set(run);
-                network.ackVia(ack -> Option.option(registry.get(ack.requestId())).onPresent(page -> page.onAck(ack)));
-                network.viewChangeVia(run::onViewChange);
-                return new Direct(run, run.run().await().unwrap());
-            }
-
-            private static boolean sameRequest(TimedSend sent, TimedSend other) {
-                return other != null && sent.response().requestId().equals(other.response().requestId());
-            }
-
-            private static NodeId delivererOf(ConsistentHashRing<NodeId> ring, byte[] key, Set<NodeId> leaving) {
-                return ring.nodesFor(key, 1, candidate -> !leaving.contains(candidate)).getFirst();
-            }
-
-            /// A node that, once added to `ring`, becomes `key`'s deliverer.
-            private static NodeId takeover(ConsistentHashRing<NodeId> ring, byte[] key) {
-                return IntStream.range(0, 20_000)
-                                .mapToObj(i -> new NodeId("joiner-" + i))
-                                .filter(candidate -> delivererOf(ringPlus(ring, candidate), key, Set.of(LOCAL)).equals(candidate))
-                                .findFirst()
-                                .orElseThrow();
-            }
-
-            /// A node that, once added to `ring`, leaves `key`'s deliverer unchanged.
-            private static NodeId bystander(ConsistentHashRing<NodeId> ring, byte[] key) {
-                var deliverer = delivererOf(ring, key, Set.of(LOCAL));
-                return IntStream.range(0, 20_000)
-                                .mapToObj(i -> new NodeId("bystander-" + i))
-                                .filter(candidate -> delivererOf(ringPlus(ring, candidate), key, Set.of(LOCAL)).equals(deliverer))
-                                .findFirst()
-                                .orElseThrow();
-            }
-
-            private static ConsistentHashRing<NodeId> ringPlus(ConsistentHashRing<NodeId> ring, NodeId extra) {
-                var copy = ConsistentHashRing.<NodeId>consistentHashRing();
-                ring.nodes().forEach(copy::addNode);
-                copy.addNode(extra);
-                return copy;
-            }
-
-            /// A second RF-1 key of LOCAL with the same deliverer as `key`.
-            private byte[] sameDeliverer(ConsistentHashRing<NodeId> ring, byte[] key, String prefix) {
-                var deliverer = delivererOf(ring, key, Set.of(LOCAL));
-                for (int i = 0; i < 20_000; i++) {
-                    var candidate = soleKey(ring, prefix + "-" + i);
-                    if (delivererOf(ring, candidate, Set.of(LOCAL)).equals(deliverer)) {
-                        return candidate;
-                    }
-                }
-                throw new AssertionError("no second key delivered to " + deliverer);
-            }
         }
 
         // --- fixtures ---
@@ -2204,23 +2129,6 @@ class DHTRebalancerTest {
                 throw e.getCause();
             }
         }
-
-        private ConsistentHashRing<NodeId> fiveNodeRing() {
-            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
-            List.of(LOCAL, PEER_A, PEER_B, PEER_C, PEER_D).forEach(ring::addNode);
-            return ring;
-        }
-
-        /// A key LOCAL alone is responsible for at RF 1.
-        private byte[] soleKey(ConsistentHashRing<NodeId> ring, String prefix) {
-            for (int i = 0; i < 20_000; i++) {
-                var candidate = key(prefix + "-" + i);
-                if (ring.nodesFor(candidate, 1).equals(List.of(LOCAL))) {
-                    return candidate;
-                }
-            }
-            throw new AssertionError("no RF-1 key held by LOCAL");
-        }
     }
 
     // --- Test infrastructure ---
@@ -2279,7 +2187,7 @@ class DHTRebalancerTest {
     /// What a [ScriptedNetwork] does with one departure push.
     /// An ack or nack carries the receiver's boot token, store generation and "draining" flag (#3345: token 0, generation 0, not
     /// draining unless a test scripts otherwise).
-    private record Reply(String kind, boolean async, Function<NodeId, WriteOutcome> refusal, long token, long generation, boolean draining) {
+    record Reply(String kind, boolean async, Function<NodeId, WriteOutcome> refusal, long token, long generation, boolean draining) {
         static final Reply DROP = new Reply("drop", false, null, 0L, 0L, false);
         static final Reply ACK = new Reply("ack", false, null, 0L, 0L, false);
         static final Reply NACK = new Reply("nack", false, null, 0L, 0L, false);
@@ -2302,11 +2210,11 @@ class DHTRebalancerTest {
         }
     }
 
-    private record TimedSend(NodeId target, DHTMessage.MigrationDataResponse response, long atNanos) {}
+    record TimedSend(NodeId target, DHTMessage.MigrationDataResponse response, long atNanos) {}
 
     /// A network double whose answer to the n-th departure push (0-based, across all targets) is scripted. An ack or nack is routed
     /// to the sink synchronously inside `send` unless the reply is async. Non-departure messages are captured and dropped.
-    private static final class ScriptedNetwork implements DHTNetwork {
+    static final class ScriptedNetwork implements DHTNetwork {
         private final CopyOnWriteArrayList<TimedSend> sends = new CopyOnWriteArrayList<>();
         private final CopyOnWriteArrayList<TimedSend> probes = new CopyOnWriteArrayList<>();
         private final CopyOnWriteArrayList<String> ackedKeys = new CopyOnWriteArrayList<>();
@@ -2429,10 +2337,10 @@ class DHTRebalancerTest {
         }
     }
 
-    private record Incomplete(int keys, int sole) {}
+    record Incomplete(int keys, int sole) {}
 
     /// Records the #2034 departure events; every event's promise settles at once. `onAtRisk` runs inside the at-risk callback.
-    private static final class EventRecorder implements DeparturePushObserver {
+    static final class EventRecorder implements DeparturePushObserver {
         private final CopyOnWriteArrayList<Integer> atRisk = new CopyOnWriteArrayList<>();
         private final CopyOnWriteArrayList<Integer> delivered = new CopyOnWriteArrayList<>();
         private final CopyOnWriteArrayList<Incomplete> incomplete = new CopyOnWriteArrayList<>();
