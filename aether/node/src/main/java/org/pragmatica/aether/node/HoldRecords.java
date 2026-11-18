@@ -58,7 +58,6 @@ public interface HoldRecords {
     /// The event layer's awaited raises (`ClusterEventAggregator#raiseLanded`, `#raiseClosing`): `true` only when the event landed.
     interface WarningRaiser {
         Promise<Boolean> raiseLanded(OperatorWarning warning);
-
         Promise<Boolean> raiseClosing(OperatorWarning warning, OperatorWarning closer);
     }
 
@@ -179,17 +178,13 @@ public interface HoldRecords {
     /// New leader: latch every episode whose `dht-departure-sole-copy-at-risk` landed in the retained log with no closer of the same
     /// subject. Completes with the number of latches seeded; fails when the log cannot be read (then latches come from reports only).
     Promise<Integer> seedFromLog();
-
     /// The operator override: check the FAN's latest report for `nodeId` against `episode` and `confirmation`, record
     /// `dht-departure-loss-accepted`, and only once it landed relay `AcceptLoss`. Fails with a [HoldRefusal].
     Promise<LossAccepted> acceptLoss(NodeId nodeId, String episode, LossConfirmation confirmation);
-
     /// The decision to relay to `nodeId` on the ping: `EndRecorded` once the closer landed, else `AcceptLoss` once its record landed.
     Option<HoldDecision> decisionFor(NodeId nodeId);
-
     /// Whether an episode of `nodeId` is latched HELD. Never read from a live answer.
     boolean heldLatched(NodeId nodeId);
-
     /// The last held report the latched episode carried, kept past the FAN sweep.
     Option<HeldReport> lastReport(NodeId nodeId);
 
@@ -207,8 +202,7 @@ public interface HoldRecords {
             @Override
             @Contract
             public void onPong(NodeId nodeId) {
-                reports.latestHeldReport(nodeId)
-                       .onPresent(report -> observe(nodeId, report));
+                reports.latestHeldReport(nodeId).onPresent(report -> observe(nodeId, report));
                 raiseDue(nodeId);
             }
 
@@ -241,7 +235,7 @@ public interface HoldRecords {
             @Override
             public Promise<LossAccepted> acceptLoss(NodeId nodeId, String episode, LossConfirmation confirmation) {
                 return claimAcceptance(nodeId, episode, confirmation).async()
-                                                                     .flatMap(this::recordAcceptance);
+                                      .flatMap(this::recordAcceptance);
             }
 
             @Override
@@ -252,7 +246,7 @@ public interface HoldRecords {
             @Override
             public boolean heldLatched(NodeId nodeId) {
                 return hold(nodeId).filter(Hold::latched)
-                                   .isPresent();
+                           .isPresent();
             }
 
             @Override
@@ -277,7 +271,11 @@ public interface HoldRecords {
                 var now = clock.getAsLong();
 
                 synchronized (holds) {
-                    holds.put(nodeId, Hold.observed(Option.option(holds.get(nodeId)), nodeId, report, now));
+                    holds.put(nodeId,
+                              Hold.observed(Option.option(holds.get(nodeId)),
+                                            nodeId,
+                                            report,
+                                            now));
                 }
             }
 
@@ -285,9 +283,7 @@ public interface HoldRecords {
             @Contract
             private void update(NodeId nodeId, Fn1<Hold, Hold> change) {
                 synchronized (holds) {
-                    Option.option(holds.get(nodeId))
-                          .map(change::apply)
-                          .onPresent(this::store);
+                    Option.option(holds.get(nodeId)).map(change::apply).onPresent(this::store);
                 }
             }
 
@@ -311,10 +307,10 @@ public interface HoldRecords {
                 var now = clock.getAsLong();
 
                 synchronized (holds) {
-                    var raise = Option.option(holds.get(nodeId))
-                                      .flatMap(hold -> hold.dueRaise(now, reportAfterMs));
+                    var raise = Option.option(holds.get(nodeId)).flatMap(hold -> hold.dueRaise(now, reportAfterMs));
 
                     raise.onPresent(_ -> holds.computeIfPresent(nodeId, (_, hold) -> hold.raising(true)));
+
                     return raise;
                 }
             }
@@ -327,7 +323,8 @@ public interface HoldRecords {
             private Promise<Boolean> raiseOf(Raise raise) {
                 return raise.closer()
                             .fold(() -> raiser.raiseLanded(raise.warning()),
-                                  closer -> raiser.raiseClosing(raise.warning(), closer));
+                                  closer -> raiser.raiseClosing(raise.warning(),
+                                                                closer));
             }
 
             /// A raise that did not land only clears the in-flight mark: the next pong or tick raises it again (re-raised until landed).
@@ -344,9 +341,10 @@ public interface HoldRecords {
                     var before = holds.size();
 
                     open.stream()
-                        .flatMap(episode -> Hold.seeded(episode, now)
-                                                .stream())
-                        .forEach(hold -> holds.putIfAbsent(hold.nodeId(), hold));
+                        .flatMap(episode -> Hold.seeded(episode, now).stream())
+                        .forEach(hold -> holds.putIfAbsent(hold.nodeId(),
+                                                           hold));
+
                     return holds.size() - before;
                 }
             }
@@ -358,7 +356,8 @@ public interface HoldRecords {
                                  .flatMap(Hold::acceptable)
                                  .flatMap(_ -> liveReport(nodeId))
                                  .flatMap(report -> Hold.confirmed(nodeId, report, episode, confirmation))
-                                 .onSuccess(_ -> holds.computeIfPresent(nodeId, (_, hold) -> hold.accepting(true)));
+                                 .onSuccess(_ -> holds.computeIfPresent(nodeId,
+                                                                        (_, hold) -> hold.accepting(true)));
                 }
             }
 
@@ -375,10 +374,10 @@ public interface HoldRecords {
 
             private Result<LossAccepted> settleAcceptance(LossAccepted accepted, boolean landed) {
                 update(accepted.nodeId(), hold -> hold.acceptanceSettled(accepted, landed));
+
                 return landed
                        ? Result.success(accepted)
-                       : HoldRefusal.RecordNotLanded.FACTORY.apply(accepted.episode())
-                                                            .result();
+                       : HoldRefusal.RecordNotLanded.FACTORY.apply(accepted.episode()).result();
             }
         }
 
@@ -387,7 +386,10 @@ public interface HoldRecords {
 
     /// One raise to perform: the at-risk warning alone, or the warning and its closer.
     record Raise(NodeId nodeId, String episode, OperatorWarning warning, Option<OperatorWarning> closer) {
-        public static Raise raise(NodeId nodeId, String episode, OperatorWarning warning, Option<OperatorWarning> closer) {
+        public static Raise raise(NodeId nodeId,
+                                  String episode,
+                                  OperatorWarning warning,
+                                  Option<OperatorWarning> closer) {
             return new Raise(nodeId, episode, warning, closer);
         }
     }
@@ -486,6 +488,7 @@ public interface HoldRecords {
             if (episode.equals(report.episode())) {
                 return withReport(report);
             }
+
             return closerLanded || lastReport.isEmpty()
                    ? first(reporter, report, now)
                    : this;
@@ -579,8 +582,8 @@ public interface HoldRecords {
             if (!episode.equals(raise.episode())) {
                 return this;
             }
-            var closing = raise.closer()
-                               .isPresent();
+
+            var closing = raise.closer().isPresent();
 
             return hold(nodeId,
                         episode,
@@ -601,7 +604,7 @@ public interface HoldRecords {
         Hold acceptanceSettled(LossAccepted record, boolean landed) {
             var decision = landed && episode.equals(record.episode())
                            ? Option.some(HoldDecision.AcceptLoss.acceptLoss(record.episode(), record.confirmation()))
-                           : Option.<HoldDecision.AcceptLoss>none();
+                           : Option.<HoldDecision.AcceptLoss> none();
 
             return hold(nodeId,
                         episode,
@@ -634,6 +637,7 @@ public interface HoldRecords {
             if (raising) {
                 return Option.none();
             }
+
             return closer.filter(_ -> !closerLanded)
                          .map(this::closing)
                          .orElse(() -> opening(now, reportAfterMs));
@@ -651,7 +655,9 @@ public interface HoldRecords {
                              .filter(report -> reportable(report, now, reportAfterMs))
                              .map(report -> Raise.raise(nodeId,
                                                         episode,
-                                                        HoldTexts.atRisk(nodeId, episode, Option.some(report)),
+                                                        HoldTexts.atRisk(nodeId,
+                                                                         episode,
+                                                                         Option.some(report)),
                                                         Option.none()));
         }
 
@@ -662,17 +668,16 @@ public interface HoldRecords {
         /// The override applies to a latched hold with no end in sight and no acceptance recorded or in flight.
         Result<Hold> acceptable() {
             if (closer.isPresent() || closerLanded) {
-                return HoldRefusal.Ended.FACTORY.apply(episode)
-                                                .result();
+                return HoldRefusal.Ended.FACTORY.apply(episode).result();
             }
+
             if (accepted.isPresent() || accepting) {
-                return HoldRefusal.AlreadyAccepted.FACTORY.apply(episode)
-                                                          .result();
+                return HoldRefusal.AlreadyAccepted.FACTORY.apply(episode).result();
             }
+
             return latched
                    ? Result.success(this)
-                   : HoldRefusal.NotHeld.FACTORY.apply(nodeId)
-                                                .result();
+                   : HoldRefusal.NotHeld.FACTORY.apply(nodeId).result();
         }
 
         /// The check against the FAN's latest report: same episode, still open, and the digest of an enumerated inventory
@@ -681,25 +686,24 @@ public interface HoldRecords {
                                               HeldReport report,
                                               String episode,
                                               LossConfirmation confirmation) {
-            if (!report.episode()
-                       .equals(episode)) {
-                return HoldRefusal.OtherEpisode.FACTORY.apply(episode, report)
-                                                       .result();
+            if (!report.episode().equals(episode)) {
+                return HoldRefusal.OtherEpisode.FACTORY.apply(episode, report).result();
             }
+
             if (ended(report)) {
-                return HoldRefusal.Ended.FACTORY.apply(episode)
-                                                .result();
+                return HoldRefusal.Ended.FACTORY.apply(episode).result();
             }
+
             return matches(report, confirmation)
                    ? Result.success(LossAccepted.lossAccepted(nodeId, episode, confirmation, report))
-                   : HoldRefusal.StaleDigest.FACTORY.apply(confirmation.render(), report)
+                   : HoldRefusal.StaleDigest.FACTORY.apply(confirmation.render(),
+                                                           report)
                                                     .result();
         }
 
         private static boolean matches(HeldReport report, LossConfirmation confirmation) {
             return switch (confirmation) {
-                case LossConfirmation.Digest digest -> report.owedCount() >= 0 && report.owedDigest()
-                                                                                        .equals(digest.value());
+                case LossConfirmation.Digest digest -> report.owedCount() >= 0 && report.owedDigest().equals(digest.value());
                 case LossConfirmation.InventoryUnknown _ -> report.owedCount() < 0;
             };
         }
@@ -725,6 +729,7 @@ public interface HoldRecords {
                   .flatMap(event -> warningOf(event).stream())
                   .forEach(warning -> classify(warning, opened, closed));
             opened.removeAll(closed);
+
             return opened.stream()
                          .sorted()
                          .toList();
@@ -737,12 +742,13 @@ public interface HoldRecords {
                          ? Option.some(opened)
                          : CLOSERS.contains(code)
                            ? Option.some(closed)
-                           : Option.<Set<String>>none();
+                           : Option.<Set<String>> none();
 
             target.onPresent(subjects -> detail(warning, "subject").onPresent(subjects::add));
         }
 
         private static final String OPENER = OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK.code();
+
         private static final Set<String> CLOSERS = Set.of(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED.code(),
                                                           OperatorWarningCode.DHT_DEPARTURE_HOLD_ENDED.code());
 
@@ -753,16 +759,14 @@ public interface HoldRecords {
         }
 
         private static Option<String> detail(ClusterEvent.OperatorWarning warning, String key) {
-            return Option.option(warning.details()
-                                        .get(key));
+            return Option.option(warning.details().get(key));
         }
 
         /// The node of an episode `<nodeId>@<drainStartMillis>`.
         static Option<NodeId> episodeNode(String episode) {
             return Option.some(episode.lastIndexOf('@'))
                          .filter(at -> at > 0)
-                         .flatMap(at -> NodeId.nodeId(episode.substring(0, at))
-                                              .option());
+                         .flatMap(at -> NodeId.nodeId(episode.substring(0, at)).option());
         }
     }
 
@@ -781,21 +785,13 @@ public interface HoldRecords {
             return switch (kind) {
                 case DELIVERED -> OperatorWarning.operatorWarning(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED,
                                                                   episode,
-                                                                  "Draining node " + nodeId.id() + " (episode " + episode
-                                                                  + "): every sole-copy DHT chunk acknowledged by a current holder"
-                                                                  + report.map(held -> " as of " + at(held))
-                                                                          .or(""));
+                                                                  "Draining node " + nodeId.id() + " (episode " + episode + "): every sole-copy DHT chunk acknowledged by a current holder" + report.map(held -> " as of " + at(held)).or(""));
                 case LOSS_ACCEPTED -> OperatorWarning.operatorWarning(OperatorWarningCode.DHT_DEPARTURE_HOLD_ENDED,
                                                                       episode,
-                                                                      "Draining node " + nodeId.id() + " (episode " + episode
-                                                                      + "): hold ended, loss accepted by an operator; "
-                                                                      + owed(report)
-                                                                      + " may be lost; restore them from the source of truth");
+                                                                      "Draining node " + nodeId.id() + " (episode " + episode + "): hold ended, loss accepted by an operator; " + owed(report) + " may be lost; restore them from the source of truth");
                 case DEATH -> OperatorWarning.operatorWarning(OperatorWarningCode.DHT_DEPARTURE_HOLD_ENDED,
                                                               episode,
-                                                              "Draining node " + nodeId.id() + " (episode " + episode
-                                                              + "): declared dead by failure detection while held; " + owed(report)
-                                                              + " may be lost; restore them from the source of truth");
+                                                              "Draining node " + nodeId.id() + " (episode " + episode + "): declared dead by failure detection while held; " + owed(report) + " may be lost; restore them from the source of truth");
             };
         }
 
@@ -805,24 +801,33 @@ public interface HoldRecords {
             return OperatorWarning.operatorWarning(OperatorWarningCode.DHT_DEPARTURE_LOSS_ACCEPTED,
                                                    accepted.episode(),
                                                    "Operator accepted the loss of draining node " + accepted.nodeId()
-                                                                                                           .id()
-                                                   + " (episode " + accepted.episode() + "): " + count(report)
-                                                   + " as of " + at(report) + " (" + accepted.confirmation()
-                                                                                           .render()
-                                                   + "); first keys: " + String.join(",", report.sampleKeys()));
+                                                                                                            .id()
+                                                  + " (episode " + accepted.episode()
+                                                  + "): " + count(report)
+                                                  + " as of " + at(report)
+                                                  + " (" + accepted.confirmation()
+                                                                   .render()
+                                                  + "); first keys: " + String.join(",", report.sampleKeys()));
         }
 
         private static String atRiskText(NodeId nodeId, String episode, HeldReport report) {
-            return "Draining node " + nodeId.id() + " (episode " + episode + ") is held: " + heldClause(report)
-                   + undeliverableClause(report) + ". First keys: " + String.join(",", report.sampleKeys())
-                   + "; full list in the node's WARN log; live count: `aether node lifecycle " + nodeId.id() + "`. "
-                   + EXITS + exitCommand(nodeId, episode, report) + "`.";
+            return "Draining node " + nodeId.id()
+                 + " (episode " + episode
+                 + ") is held: " + heldClause(report) + undeliverableClause(report)
+                 + ". First keys: " + String.join(",", report.sampleKeys())
+                 + "; full list in the node's WARN log; live count: `aether node lifecycle " + nodeId.id()
+                 + "`. " + EXITS + exitCommand(nodeId, episode, report)
+                 + "`.";
         }
 
         private static String unreportedText(NodeId nodeId, String episode) {
-            return "Draining node " + nodeId.id() + " (episode " + episode
-                   + ") is held: its last report did not reach this leader; live count: `aether node lifecycle " + nodeId.id()
-                   + "`. " + EXITS + "aether node drain accept-loss " + nodeId.id() + " --episode " + episode + "` with the digest it reports.";
+            return "Draining node " + nodeId.id()
+                 + " (episode " + episode
+                 + ") is held: its last report did not reach this leader; live count: `aether node lifecycle " + nodeId.id()
+                 + "`. " + EXITS
+                 + "aether node drain accept-loss " + nodeId.id()
+                 + " --episode " + episode
+                 + "` with the digest it reports.";
         }
 
         private static final String EXITS = "Exits: a holder acknowledges them (a target returns or stops refusing), or, while a leader is reachable, `";
@@ -840,10 +845,11 @@ public interface HoldRecords {
         }
 
         private static String exitCommand(NodeId nodeId, String episode, HeldReport report) {
-            return "aether node drain accept-loss " + nodeId.id() + " --episode " + episode + " " + (report.owedCount() < 0
-                                                                                                    ? LossConfirmation.InventoryUnknown.INVENTORY_UNKNOWN.render()
-                                                                                                    : LossConfirmation.Digest.digest(report.owedDigest())
-                                                                                                                            .render());
+            return "aether node drain accept-loss " + nodeId.id()
+                 + " --episode " + episode
+                 + " " + (report.owedCount() < 0
+                          ? LossConfirmation.InventoryUnknown.INVENTORY_UNKNOWN.render()
+                          : LossConfirmation.Digest.digest(report.owedDigest()).render());
         }
 
         private static String owed(Option<HeldReport> report) {
@@ -858,8 +864,7 @@ public interface HoldRecords {
         }
 
         private static String at(HeldReport report) {
-            return Instant.ofEpochMilli(report.asOfMillis())
-                          .toString();
+            return Instant.ofEpochMilli(report.asOfMillis()).toString();
         }
     }
 }
