@@ -65,6 +65,8 @@ import java.time.Instant;
 import java.util.concurrent.TimeUnit;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -3011,6 +3013,8 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER_RETURNED,
                 OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED,
                 OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED,
+                // the hold closer of #3345
+                OperatorWarningCode.DHT_DEPARTURE_HOLD_ENDED,
                 // the unpublish-bound recovery of #3174 (H3b)
                 OperatorWarningCode.ROUTE_UNPUBLISH_AWAIT_SETTLED,
                 // the datasource recoveries of #2973: demand back within the server limit, a refused server answering again
@@ -3531,6 +3535,28 @@ class ClusterEventAggregatorTest {
             return OperatorWarning.operatorWarning(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK, subject, "at risk " + subject);
         }
 
+        /// #3345: a recovery raised while the node replays is held until the first tick after the replay, and the wait ends with
+        /// its final outcome there, never at the hold.
+        @Test
+        @Timeout(10)
+        void replayHeldRecovery_completesOnlyOnceItLands() {
+            var replaying = new AtomicBoolean(false);
+            var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get);
+            var published = new CopyOnWriteArrayList<String>();
+            h.aggregator().interceptPublish(event -> recordThen(published, event, Promise.success(Unit.unit())));
+
+            assertThat(h.aggregator().raiseAwaited(atRisk("n1@1")).await(SETTLE).isSuccess()).as("control: opened before the replay")
+                                                                                                .isTrue();
+            replaying.set(true);
+            var delivered = h.aggregator().raiseAwaited(delivered("n1@1"));
+
+            assertThat(delivered.isResolved()).as("held during replay: the wait does not end at the hold").isFalse();
+            replaying.set(false);
+            h.aggregator().redeliverDue();
+            assertThat(delivered.await(SETTLE).isSuccess()).as("ends once it lands on the first tick after the replay").isTrue();
+            assertThat(published).containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-sole-copy-delivered");
+        }
+
         private static OperatorWarning delivered(String subject) {
             return OperatorWarning.operatorWarning(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED, subject, "delivered " + subject);
         }
@@ -3545,6 +3571,425 @@ class ClusterEventAggregatorTest {
             published.add(event);
 
             return gate;
+        }
+    }
+
+    /// #3345: [ClusterEventAggregator#raiseLanded] completes `true` iff the event is in the log, so a leader can re-raise a hold record
+    /// until it lands; [ClusterEventAggregator#raiseClosing] closes a warning this aggregator never saw open (a new leader).
+    @Nested
+    class RaiseLanded {
+        private static final TimeSpan SETTLE = TimeSpan.timeSpan(2).seconds();
+
+        @Test
+        @Timeout(10)
+        void raiseLandedTrueWhenLanded() {
+            var h = Harness.create();
+
+            assertThat(landed(h.aggregator().raiseLanded(atRisk("n1@1")))).isTrue();
+            assertThat(codes(h)).containsExactly("dht-departure-sole-copy-at-risk");
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLandedFalseWhenThrottled() {
+            var h = Harness.create();
+
+            assertThat(landed(h.aggregator().raiseLanded(atRisk("n1@1")))).as("control: the first lands").isTrue();
+            assertThat(landed(h.aggregator().raiseLanded(atRisk("n1@1")))).as("the repeat is throttled").isFalse();
+            assertThat(codes(h)).containsExactly("dht-departure-sole-copy-at-risk");
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLandedFalseWhenSuppressedByReplay() {
+            var h = Harness.create(Harness.defaultRetention(), OWNER, () -> true);
+
+            assertThat(landed(h.aggregator().raiseLanded(atRisk("n1@1")))).isFalse();
+            assertThat(h.events()).isEmpty();
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLandedFalseWhenGivenUp() {
+            var clock = new AtomicLong(1_000_000L);
+            var h = clocked(clock);
+            h.aggregator().interceptPublish(_ -> Causes.cause("refused").promise());
+
+            var landed = h.aggregator().raiseLanded(atRisk("n1@1"));
+
+            assertThat(landed.isResolved()).as("control: held for redelivery").isFalse();
+            expireRedelivery(h, clock);
+            assertThat(h.aggregator().redeliveryDropped()).as("control: given up").containsEntry("expired", 1L);
+            assertThat(landed(landed)).isFalse();
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLandedFalseOnThrow() {
+            var h = Harness.create();
+            h.aggregator().interceptPublish(ClusterEventAggregatorTest::throwingPublish);
+
+            assertThat(landed(h.aggregator().raiseLanded(atRisk("n1@1")))).isFalse();
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLandedFalseWhenRecoveryRefused() {
+            var h = Harness.create();
+
+            assertThat(landed(h.aggregator().raiseLanded(delivered("n1@1")))).as("no open warning on this aggregator").isFalse();
+            assertThat(h.events()).isEmpty();
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLandedFalseWhenDroppedByTheOpenCap() {
+            var h = clocked(new AtomicLong(1_000_000L));
+
+            for (var i = 0; i < ClusterEventAggregator.MAX_OPEN_RECOVERABLE_PER_CODE; i++) {
+                assertThat(landed(h.aggregator().raiseLanded(gossipKeyUnknown("10.0.0." + i + ":7000")))).as("control: under the cap").isTrue();
+            }
+
+            assertThat(landed(h.aggregator().raiseLanded(gossipKeyUnknown("10.0.1.0:7000")))).isFalse();
+            assertThat(h.aggregator().openCapDropped()).as("control: dropped by the cap").isEqualTo(1L);
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseClosingOpensThenCloses() {
+            var control = Harness.create();
+
+            assertThat(landed(control.aggregator().raiseLanded(holdEnded("n1@1")))).as("control: the closer alone is refused").isFalse();
+            assertThat(control.events()).as("control").isEmpty();
+
+            var h = Harness.create();
+
+            assertThat(landed(h.aggregator().raiseClosing(atRisk("n1@1"), holdEnded("n1@1")))).isTrue();
+            assertThat(codes(h)).containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-hold-ended");
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseClosing_warningOpenHere_raisesOnlyTheCloser() {
+            var h = Harness.create();
+
+            assertThat(landed(h.aggregator().raiseLanded(atRisk("n1@1")))).as("control: opened here").isTrue();
+            assertThat(landed(h.aggregator().raiseClosing(atRisk("n1@1"), holdEnded("n1@1")))).isTrue();
+            assertThat(codes(h)).containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-hold-ended");
+        }
+
+        /// The `landed` guard alone keeps the closer back: the warning's delivery is given up after an UNKNOWN outcome, which opens
+        /// the mark (the closer WOULD land, see the control) yet answers `false`, so `raiseClosing` must not attempt the closer.
+        @Test
+        @Timeout(10)
+        void raiseClosing_warningNotLanded_raisesNoCloser() {
+            var clock = new AtomicLong(1_000_000L);
+            var h = clocked(clock);
+            var unknown = PublishOutcomeUnknown.FACTORY.apply(Causes.cause("owner died"));
+            var attempted = new CopyOnWriteArrayList<String>();
+            h.aggregator().interceptPublish(event -> attemptThen(attempted, event, unknown.promise()));
+
+            var closing = h.aggregator().raiseClosing(atRisk("n1@1"), holdEnded("n1@1"));
+
+            expireRedelivery(h, clock);
+            assertThat(h.aggregator().redeliveryDropped()).as("control: the warning was given up on").containsEntry("expired", 1L);
+            assertThat(answer(closing)).isFalse();
+            h.aggregator().interceptPublish(event -> attemptThen(attempted, event, h.publisher().get().publish(event)));
+            clock.addAndGet(ClusterEventRedelivery.MAX_BACKOFF_MS);
+            h.aggregator().redeliverDue();
+            assertThat(attempted).as("the closer was never attempted").doesNotContain("dht-departure-hold-ended").contains("dht-departure-sole-copy-at-risk");
+            assertThat(landed(h.aggregator().raiseLanded(holdEnded("n1@1")))).as("control: in this state the closer lands").isTrue();
+        }
+
+        private static Promise<Unit> attemptThen(List<String> attempted, ClusterEvent event, Promise<Unit> outcome) {
+            attempted.add(event.details().get("code"));
+
+            return outcome;
+        }
+
+        @Test
+        @Timeout(10)
+        void lossAcceptedIsStandalone() {
+            var h = Harness.create();
+
+            assertThat(landed(h.aggregator().raiseLanded(lossAccepted("n1@1")))).as("no open warning: lands").isTrue();
+            assertThat(landed(h.aggregator().raiseLanded(atRisk("n2@1")))).as("control").isTrue();
+            assertThat(landed(h.aggregator().raiseLanded(lossAccepted("n2@1")))).isTrue();
+            assertThat(landed(h.aggregator().raiseLanded(holdEnded("n2@1")))).as("the warning is still open: it closed nothing").isTrue();
+            assertThat(codes(h)).containsExactly("dht-departure-loss-accepted",
+                                                 "dht-departure-sole-copy-at-risk",
+                                                 "dht-departure-loss-accepted",
+                                                 "dht-departure-hold-ended");
+        }
+
+        @Test
+        @Timeout(10)
+        void holdEndedClosesAtRisk() {
+            var h = Harness.create();
+
+            assertThat(landed(h.aggregator().raiseLanded(holdEnded("n1@1")))).as("no open warning: refused").isFalse();
+            assertThat(landed(h.aggregator().raiseLanded(atRisk("n1@1")))).as("control").isTrue();
+            assertThat(landed(h.aggregator().raiseLanded(holdEnded("n1@1")))).as("closes the open warning").isTrue();
+            assertThat(landed(h.aggregator().raiseLanded(holdEnded("n1@1")))).as("closed: a second closer is refused").isFalse();
+            assertThat(landed(h.aggregator().raiseLanded(atRisk("n1@1")))).as("the closer ended the throttle window").isTrue();
+            assertThat(codes(h)).containsExactly("dht-departure-sole-copy-at-risk",
+                                                 "dht-departure-hold-ended",
+                                                 "dht-departure-sole-copy-at-risk");
+        }
+
+        /// A closer raised while the node replays is held until the first tick after the replay; the caller's answer is its
+        /// final outcome, so the promise stays pending at the hold and completes `true` when the closer lands.
+        @Test
+        @Timeout(10)
+        void raiseLanded_closerDuringReplay_pendingAtTheHold_trueWhenItLands() {
+            var replaying = new AtomicBoolean(false);
+            var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get);
+
+            assertThat(landed(h.aggregator().raiseLanded(atRisk("n1@1")))).as("control: opened before the replay").isTrue();
+            replaying.set(true);
+            var closer = h.aggregator().raiseLanded(holdEnded("n1@1"));
+
+            assertThat(closer.isResolved()).as("held during replay: not answered at the hold").isFalse();
+            h.aggregator().redeliverDue();
+            assertThat(closer.isResolved()).as("control: still replaying, still held").isFalse();
+            replaying.set(false);
+            h.aggregator().redeliverDue();
+            assertThat(landed(closer)).as("lands on the first tick after the replay").isTrue();
+            assertThat(codes(h)).containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-hold-ended");
+        }
+
+        /// Retries during the replay hold (a plain `raiseLanded` and a `raiseClosing`) replace the held closer rather than add one:
+        /// each superseded promise completes `false` (its event is never published), the last one `true`, and the log shows the
+        /// warning and its closer once each.
+        @Test
+        @Timeout(10)
+        void raiseLanded_retriesDuringReplayHold_raiseNoSecondEvent() {
+            var replaying = new AtomicBoolean(false);
+            var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get);
+
+            assertThat(landed(h.aggregator().raiseLanded(atRisk("n1@1")))).as("control: opened before the replay").isTrue();
+            replaying.set(true);
+            var first = h.aggregator().raiseLanded(holdEnded("n1@1"));
+            var retry = h.aggregator().raiseLanded(holdEnded("n1@1"));
+
+            assertThat(answer(first)).as("superseded by the retry: never published").isFalse();
+            assertThat(retry.isResolved()).as("the retry is held in its place").isFalse();
+            var closing = h.aggregator().raiseClosing(atRisk("n1@1"), holdEnded("n1@1"));
+
+            assertThat(answer(retry)).as("superseded by raiseClosing: never published").isFalse();
+            assertThat(closing.isResolved()).as("raiseClosing's closer is held in its place").isFalse();
+            replaying.set(false);
+            h.aggregator().redeliverDue();
+            assertThat(landed(closing)).isTrue();
+            assertThat(codes(h)).containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-hold-ended");
+        }
+
+        /// The held-recovery arms of one invariant: a held closer's promise completes with its final outcome on every path that
+        /// releases or drops it.
+        @Test
+        @Timeout(10)
+        void raiseLanded_closerHeldBehindItsWarning_trueWhenReleasedAndLanded() {
+            var h = Harness.create();
+            Promise<Unit> gate = Promise.promise();
+            h.aggregator().interceptPublish(_ -> gate);
+
+            var warning = h.aggregator().raiseLanded(atRisk("n1@1"));
+            var closer = h.aggregator().raiseLanded(holdEnded("n1@1"));
+
+            assertThat(closer.isResolved()).as("held behind the warning in flight").isFalse();
+            gate.succeed(Unit.unit());
+            assertThat(landed(warning)).as("control: the warning landed").isTrue();
+            assertThat(landed(closer)).as("released and landed").isTrue();
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLanded_closerHeldBehindAWarningNotDelivered_falseWhenDropped() {
+            var clock = new AtomicLong(1_000_000L);
+            var h = clocked(clock);
+            h.aggregator().interceptPublish(_ -> Causes.cause("refused").promise());
+
+            var warning = h.aggregator().raiseLanded(atRisk("n1@1"));
+            var held = h.aggregator().raiseLanded(holdEnded("n1@1"));
+
+            assertThat(held.isResolved()).as("held behind the warning in flight").isFalse();
+            expireRedelivery(h, clock);
+            assertThat(h.aggregator().redeliveryDropped()).as("control: the warning was given up on").containsEntry("expired", 1L);
+            assertThat(answer(warning)).as("control: the warning did not land").isFalse();
+            assertThat(answer(held)).as("dropped with its warning").isFalse();
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLanded_heldCloserReplaced_falseAndTheReplacementTrue() {
+            var h = Harness.create();
+            Promise<Unit> gate = Promise.promise();
+            h.aggregator().interceptPublish(_ -> gate);
+
+            h.aggregator().raiseLanded(atRisk("n1@1"));
+            var replaced = h.aggregator().raiseLanded(holdEnded("n1@1"));
+            var replacement = h.aggregator().raiseLanded(holdEnded("n1@1"));
+
+            assertThat(answer(replaced)).as("superseded: never published").isFalse();
+            assertThat(replacement.isResolved()).as("control: the replacement is held").isFalse();
+            gate.succeed(Unit.unit());
+            assertThat(landed(replacement)).isTrue();
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLanded_heldCloserOfAnExpiredSpoofableMark_false() {
+            var clock = new AtomicLong(1_000_000L);
+            var h = clocked(clock);
+            Promise<Unit> gate = Promise.promise();
+            h.aggregator().interceptPublish(_ -> gate);
+
+            h.aggregator().raiseLanded(gossipKeyUnknown("10.0.0.1:7000"));
+            var held = h.aggregator().raiseLanded(gossipKeyDecrypted("10.0.0.1:7000"));
+
+            assertThat(held.isResolved()).as("control: held behind the warning in flight").isFalse();
+            clock.addAndGet(ClusterEventAggregator.SPOOFABLE_OPEN_TTL_MS + 1);
+            h.aggregator().raiseLanded(gossipKeyUnknown("10.0.0.2:7000"));
+            assertThat(answer(held)).as("its mark expired: never published").isFalse();
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLanded_closerDuringReplayWithNoOpenWarning_falseAtOnce() {
+            var h = Harness.create(Harness.defaultRetention(), OWNER, () -> true);
+
+            assertThat(answer(h.aggregator().raiseLanded(holdEnded("n1@1")))).as("nothing would ever publish it").isFalse();
+            assertThat(h.events()).isEmpty();
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLanded_replayHeldCloserOfARecurringCondition_false() {
+            var replaying = new AtomicBoolean(false);
+            var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get);
+
+            assertThat(landed(h.aggregator().raiseLanded(atRisk("n1@1")))).as("control: opened before the replay").isTrue();
+            replaying.set(true);
+            var held = h.aggregator().raiseLanded(holdEnded("n1@1"));
+
+            replaying.set(false);
+            h.aggregator().raiseLanded(atRisk("n1@1"));
+            h.aggregator().redeliverDue();
+            assertThat(answer(held)).as("stale behind the recurrence: never published").isFalse();
+            assertThat(codes(h)).containsExactly("dht-departure-sole-copy-at-risk");
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLanded_replayHeldCloserSupersededAfterTheReplay_falseAndTheNewOneTrue() {
+            var replaying = new AtomicBoolean(false);
+            var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get);
+
+            assertThat(landed(h.aggregator().raiseLanded(atRisk("n1@1")))).as("control: opened before the replay").isTrue();
+            replaying.set(true);
+            var held = h.aggregator().raiseLanded(holdEnded("n1@1"));
+
+            replaying.set(false);
+            var newer = h.aggregator().raiseLanded(holdEnded("n1@1"));
+
+            assertThat(answer(held)).as("superseded before the tick: never published").isFalse();
+            assertThat(landed(newer)).isTrue();
+            h.aggregator().redeliverDue();
+            assertThat(codes(h)).containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-hold-ended");
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLanded_replayHeldCloserWhoseMarkExpired_false() {
+            var replaying = new AtomicBoolean(false);
+            var clock = new AtomicLong(1_000_000L);
+            var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get, LEADER,
+                                   HlcClock.hlcClock(SELF, clock::get, Long.MAX_VALUE));
+
+            assertThat(landed(h.aggregator().raiseLanded(gossipKeyUnknown("10.0.0.1:7000")))).as("control: opened before the replay").isTrue();
+            replaying.set(true);
+            var held = h.aggregator().raiseLanded(gossipKeyDecrypted("10.0.0.1:7000"));
+
+            assertThat(held.isResolved()).as("control: held during replay").isFalse();
+            clock.addAndGet(ClusterEventAggregator.SPOOFABLE_OPEN_TTL_MS + 1);
+            h.aggregator().raiseLanded(gossipKeyUnknown("10.0.0.2:7000"));
+            replaying.set(false);
+            h.aggregator().redeliverDue();
+            assertThat(answer(held)).as("its mark expired: never published").isFalse();
+            assertThat(codes(h)).containsExactly("gossip-key-unknown-from-peer");
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLanded_replayHeldCloserOfAKeyTheOpenCapRefused_settlesFalseAtTheTick() {
+            var replaying = new AtomicBoolean(false);
+            var clock = new AtomicLong(1_000_000L);
+            var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get, LEADER,
+                                   HlcClock.hlcClock(SELF, clock::get, Long.MAX_VALUE));
+
+            assertThat(landed(h.aggregator().raiseLanded(gossipKeyUnknown("10.0.0.1:7000")))).as("control: opened before the replay").isTrue();
+            replaying.set(true);
+            var held = h.aggregator().raiseLanded(gossipKeyDecrypted("10.0.0.1:7000"));
+
+            assertThat(held.isResolved()).as("control: held during replay").isFalse();
+            replaying.set(false);
+            clock.addAndGet(ClusterEventAggregator.SPOOFABLE_OPEN_TTL_MS + 1);
+            for (var i = 0; i < ClusterEventAggregator.MAX_OPEN_RECOVERABLE_PER_CODE; i++) {
+                assertThat(landed(h.aggregator().raiseLanded(gossipKeyUnknown("10.1.0." + i + ":7000")))).as("control: the expired mark freed its slot").isTrue();
+            }
+
+            assertThat(answer(h.aggregator().raiseLanded(gossipKeyUnknown("10.0.0.1:7000")))).as("the recurrence is refused by the full cap").isFalse();
+            assertThat(h.aggregator().openCapDropped()).as("control: refused by the cap").isEqualTo(1L);
+            h.aggregator().redeliverDue();
+            assertThat(answer(held)).as("the repair kept behind the refusal settles at the tick, never published").isFalse();
+            assertThat(codes(h)).doesNotContain("gossip-key-peer-decrypted");
+        }
+
+        /// For a `false` expectation: an answer still pending after [#SETTLE] reads `true`, so only a completed `false` passes.
+        private static boolean answer(Promise<Boolean> raised) {
+            return raised.await(SETTLE)
+                         .fold(_ -> true, landed -> landed);
+        }
+
+        /// The resolved answer; a promise still pending after [#SETTLE] (or failed) fails the test, so a `false` assertion cannot pass on a promise that never resolved.
+        private static boolean landed(Promise<Boolean> raised) {
+            return raised.await(SETTLE)
+                         .fold(RaiseLanded::unresolved, landed -> landed);
+        }
+
+        private static boolean unresolved(Cause cause) {
+            throw new AssertionError("the promise did not resolve to an answer: " + cause.message());
+        }
+
+        private static List<String> codes(Harness h) {
+            return h.events()
+                    .stream()
+                    .map(event -> event.details().get("code"))
+                    .toList();
+        }
+
+        private static OperatorWarning atRisk(String subject) {
+            return OperatorWarning.operatorWarning(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK, subject, "at risk " + subject);
+        }
+
+        private static OperatorWarning delivered(String subject) {
+            return OperatorWarning.operatorWarning(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED, subject, "delivered " + subject);
+        }
+
+        private static OperatorWarning holdEnded(String subject) {
+            return OperatorWarning.operatorWarning(OperatorWarningCode.DHT_DEPARTURE_HOLD_ENDED, subject, "hold ended " + subject);
+        }
+
+        private static OperatorWarning lossAccepted(String subject) {
+            return OperatorWarning.operatorWarning(OperatorWarningCode.DHT_DEPARTURE_LOSS_ACCEPTED, subject, "loss accepted " + subject);
+        }
+
+        private static OperatorWarning gossipKeyUnknown(String subject) {
+            return OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER, subject, "unknown key " + subject);
+        }
+
+        private static OperatorWarning gossipKeyDecrypted(String subject) {
+            return OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED, subject, "decrypted " + subject);
         }
     }
 
