@@ -165,7 +165,7 @@ class DHTStrayCurrencyTripwireTest {
         }
 
         List<DurableDeleteCluster.Member> reachable() {
-            return cluster.members().stream().filter(m -> cluster.unreachable.contains(m.id()) == false).toList();
+            return cluster.members().stream().filter(m -> !cluster.unreachable.contains(m.id())).toList();
         }
 
         List<NodeId> liveAtEnd() {
@@ -213,6 +213,12 @@ class DHTStrayCurrencyTripwireTest {
     /// T3 on rv F1's schedule: t0 write and agreed round; C cut off; t_d = t0 + 1 min delete on A, B; t1 = t_d + 20 min
     /// D joins and C leaves; past max(t_d, t1) + R (today's departed-holder guard counts from C's leaving) the tombstone expires; A, B, D restart empty in turn; t1 + 45 min C regains.
     private static final class MissedDeleteRoute extends Route {
+        private void restartEmptyAndCheck(NodeId id, byte[] sentinel) {
+            cluster.restartEmpty(id, RF3);
+            assertThat(cluster.holdsLive(id, sentinel)).as("restarted " + id.id() + " lost its disk: the sentinel is gone").isFalse();
+            assertThat(cluster.entryAt(id, key).isPresent()).as("restarted " + id.id() + " holds an empty store").isFalse();
+        }
+
         @Override
         void run() {
             var replicas = cluster.replicasOf(key);
@@ -256,11 +262,7 @@ class DHTStrayCurrencyTripwireTest {
 
             cluster.member(a).client().put(sentinel, BLOCK).await().unwrap();
             assertThat(holders).as("sentinel entry live on A, B, D before the restarts").allMatch(id -> cluster.holdsLive(id, sentinel));
-            holders.forEach(id -> {
-                cluster.restartEmpty(id, RF3);
-                assertThat(cluster.holdsLive(id, sentinel)).as("restarted " + id.id() + " lost its disk: the sentinel is gone").isFalse();
-                assertThat(cluster.entryAt(id, key).isPresent()).as("restarted " + id.id() + " holds an empty store").isFalse();
-            });
+            holders.forEach(id -> restartEmptyAndCheck(id, sentinel));
             snapshot("restarted-empty");
 
             cluster.advanceClockBy(Math.max(t1 + 45 * ONE_MINUTE, cluster.clock.get() + ONE_MINUTE) - cluster.clock.get());
