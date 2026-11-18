@@ -1,0 +1,6 @@
+class Trivia 3:1-20:1
+  field first: int 4:5-4:22
+  method second(): void 9:5-10:5
+  method third(): void 16:5-16:19
+  method fourth(): void 16:39-16:54
+  field fifth: int 18:5-18:14

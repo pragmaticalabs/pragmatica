@@ -1,0 +1,7 @@
+class Docs 6:1-29:1 doc@3
+  field one: int 8:5-8:12 doc@7
+  method three(): void 13:5-13:19 doc@10
+  method block(): void 16:5-16:19 doc@15
+  method plain(): void 19:5-19:19
+  method annotated(): void 24:5-25:23 doc@21 @Deprecated
+  record R 28:5-28:22 doc@27
