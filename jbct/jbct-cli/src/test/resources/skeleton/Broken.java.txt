@@ -1,0 +1,8 @@
+package fixtures;
+
+class Broken {
+    void fine() {}
+
+    void bad( {
+    }
+}

@@ -93,7 +93,7 @@ public final class Skeletons {
                 case ANNOTATION_DECL -> type(Kind.ANNOTATION, wrapper, core);
                 case METHOD_DECL -> single(Kind.METHOD, wrapper, methodName(core), methodSignature(core));
                 case CONSTRUCTOR_DECL -> single(Kind.CONSTRUCTOR, wrapper, constructorName(core), "(" + paramList(core) + ")");
-                case COMPACT_CONSTRUCTOR -> single(Kind.CONSTRUCTOR, wrapper, firstName(core), "(compact)");
+                case COMPACT_CONSTRUCTOR -> single(Kind.CONSTRUCTOR, wrapper, compactName(core), "(compact)");
                 case ANNOTATION_ELEM_DECL -> single(Kind.METHOD, wrapper, methodName(core), "(): " + typeOf(core));
                 case INITIALIZER_BLOCK -> single(Kind.INITIALIZER, wrapper, initializerName(core), "");
                 case FIELD_DECL, INTERFACE_FIELD_DECL, RECORD_STATIC_FIELD -> fieldsOf(wrapper, core);
@@ -177,6 +177,13 @@ public final class Skeletons {
 
         private String firstName(Cursor core) {
             return nameAt(core.firstTokenIdx());
+        }
+
+        /// The identifier right before the body: a compact constructor's modifiers and annotations belong to its core.
+        private String compactName(Cursor core) {
+            return nameAt(CstNodes.childByRule(core, RuleKind.BLOCK)
+                                  .map(block -> backward(block.firstTokenIdx() - 1))
+                                  .or(core.firstTokenIdx()));
         }
 
         private String methodName(Cursor core) {
