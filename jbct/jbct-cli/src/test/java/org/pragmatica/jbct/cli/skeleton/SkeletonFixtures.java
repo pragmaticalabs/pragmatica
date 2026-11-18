@@ -1,7 +1,10 @@
 package org.pragmatica.jbct.cli.skeleton;
 
 import java.io.IOException;
+import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -9,22 +12,22 @@ import java.util.stream.Stream;
 /// Fixture access for the skeleton tests. Fixtures live in `src/test/resources/skeleton`; a golden file is the
 /// `--fields` output of the same name.
 final class SkeletonFixtures {
-    static final List<String> NAMES = List.of("Nested",
-                                              "Records",
-                                              "Enums",
-                                              "Annotated",
-                                              "Trivia",
-                                              "TwoAnnotations",
-                                              "Sealed",
-                                              "Defaults",
-                                              "Anonymous",
-                                              "Generics",
-                                              "Docs");
-
     private SkeletonFixtures() {}
 
+    /// Every `*.java` file of the fixture directory, so a new fixture is covered without being listed anywhere.
     static Stream<String> names() {
-        return NAMES.stream();
+        return fixtureFiles().map(file -> file.getFileName().toString())
+                             .filter(file -> file.endsWith(".java"))
+                             .map(file -> file.substring(0, file.length() - ".java".length()))
+                             .sorted();
+    }
+
+    private static Stream<Path> fixtureFiles() {
+        try (var files = Files.list(Path.of(SkeletonFixtures.class.getResource("/skeleton").toURI()))) {
+            return files.toList().stream();
+        } catch (IOException | URISyntaxException e) {
+            throw new AssertionError("fixture directory unreadable", e);
+        }
     }
 
     static String resource(String name) {
@@ -55,10 +58,10 @@ final class SkeletonFixtures {
                              declaration.children().stream().flatMap(SkeletonFixtures::flatten));
     }
 
-    /// The source text of a range, computed from the line structure of the source alone (rows split on `\n`, a
-    /// trailing `\r` dropped, columns counted in characters), so a wrong coordinate cannot agree with itself.
+    /// The source text of a range, computed from the line structure of the source alone (rows split on CRLF, CR or
+    /// LF as the Java compiler does, columns counted in characters), so a wrong coordinate cannot agree with itself.
     static String cut(String source, Range range) {
-        var lines = source.split("\n", -1);
+        var lines = source.split("\r\n|\r|\n", -1);
         var first = lines[range.startRow() - 1].stripTrailing();
         var last = lines[range.endRow() - 1];
 

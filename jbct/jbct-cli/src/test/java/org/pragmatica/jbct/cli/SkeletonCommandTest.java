@@ -20,7 +20,7 @@ class SkeletonCommandTest {
     @TempDir
     Path dir;
 
-    private record Run(int exit, String out, String err) {}
+    record Run(int exit, String out, String err) {}
 
     @Test
     void skeleton_isWiredIntoTheJbctCommand() {
@@ -97,7 +97,7 @@ class SkeletonCommandTest {
         }
     }
 
-    private static Run run(String... args) {
+    static Run run(String... args) {
         var out = new ByteArrayOutputStream();
         var err = new ByteArrayOutputStream();
         var oldOut = System.out;

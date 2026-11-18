@@ -1,6 +1,8 @@
 package org.pragmatica.jbct.cli.skeleton;
 
+import java.util.Comparator;
 import java.util.List;
+import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -27,6 +29,8 @@ import org.pragmatica.peg.token.TokenArray;
 /// member wrapper instead. A doc comment is outside the range; its first row is reported as `docRow`.
 public final class Skeletons {
     private static final int NO_TOKEN = -1;
+    /// One line terminator as the Java compiler counts them: CRLF is one, a lone CR or LF is one.
+    private static final Pattern LINE_BREAK = Pattern.compile("\r\n|\r|\n");
 
     private Skeletons() {}
 
@@ -162,11 +166,39 @@ public final class Skeletons {
                                            children);
         }
 
+        /// Every annotation of the declaration in source order: those before the modifiers sit on the wrapper, those
+        /// after a modifier on the member or on the declaration itself.
         private List<String> annotations(Cursor wrapper) {
-            return CstNodes.childrenByRule(wrapper, RuleKind.ANNOTATION)
+            return annotationsIn(wrapper).sorted(Comparator.comparingInt(Cursor::firstTokenIdx))
+                                         .map(annotation -> "@" + CstNodes.annotationSimpleName(annotation))
+                                         .toList();
+        }
+
+        private Stream<Cursor> annotationsIn(Cursor node) {
+            return CstNodes.children(node)
                            .stream()
-                           .map(annotation -> "@" + CstNodes.annotationSimpleName(annotation))
-                           .toList();
+                           .flatMap(child -> child.kindIs(RuleKind.ANNOTATION)
+                                             ? Stream.of(child)
+                                             : holdsModifiers(child)
+                                               ? annotationsIn(child)
+                                               : Stream.empty());
+        }
+
+        private boolean holdsModifiers(Cursor node) {
+            return node.kindIsAny(RuleKind.MEMBER,
+                                  RuleKind.TYPE_KIND,
+                                  RuleKind.CLASS_DECL,
+                                  RuleKind.INTERFACE_DECL,
+                                  RuleKind.ENUM_DECL,
+                                  RuleKind.RECORD_DECL,
+                                  RuleKind.ANNOTATION_DECL,
+                                  RuleKind.METHOD_DECL,
+                                  RuleKind.CONSTRUCTOR_DECL,
+                                  RuleKind.COMPACT_CONSTRUCTOR,
+                                  RuleKind.FIELD_DECL,
+                                  RuleKind.INTERFACE_FIELD_DECL,
+                                  RuleKind.RECORD_STATIC_FIELD,
+                                  RuleKind.ANNOTATION_ELEM_DECL);
         }
 
         // ===== Names and signatures =====
@@ -329,10 +361,9 @@ public final class Skeletons {
         }
 
         private boolean singleNewline(int index) {
-            return tokens.kindAt(index) == TokenArray.KIND_WHITESPACE && tokens.textAt(index)
-                                                                               .chars()
-                                                                               .filter(character -> character == '\n')
-                                                                               .count() == 1;
+            return tokens.kindAt(index) == TokenArray.KIND_WHITESPACE && LINE_BREAK.matcher(tokens.textAt(index))
+                                                                                  .results()
+                                                                                  .count() == 1;
         }
     }
 }

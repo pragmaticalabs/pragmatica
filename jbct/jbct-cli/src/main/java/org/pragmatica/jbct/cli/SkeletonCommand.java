@@ -1,15 +1,19 @@
 package org.pragmatica.jbct.cli;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.stream.Collectors;
 
+import org.pragmatica.jbct.cli.skeleton.Skeleton;
 import org.pragmatica.jbct.cli.skeleton.SkeletonJson;
 import org.pragmatica.jbct.cli.skeleton.SkeletonText;
 import org.pragmatica.jbct.cli.skeleton.Skeletons;
+import org.pragmatica.jbct.cli.skeleton.SourceNotParsed;
+import org.pragmatica.jbct.cli.skeleton.SourceNotRead;
 import org.pragmatica.jbct.config.FilesConfig;
 import org.pragmatica.jbct.shared.FileCollector;
-import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
@@ -30,8 +34,10 @@ import picocli.CommandLine.Parameters;
 /// lambdas are not listed; they lie inside the range of the method that holds them.
 ///
 /// **A file that does not parse** gets its error and position on stderr and no skeleton, never a partial one; the
-/// other files still print and the exit code is 2, as for the other commands that could not analyse a file.
-@Command(name = "skeleton", description = "Print the types and members of Java files with exact ranges: rows and columns are 1-based, the end is inclusive (the closing brace or semicolon)", mixinStandardHelpOptions = true)
+/// other files still print and the exit code is 2, as for the other commands that could not analyse a file. A file
+/// that cannot be read gets one line, `<path>: <reason>`. With `--json` the output is always one valid JSON array on
+/// stdout: a failed file is an entry with an `error` object, and no Java files at all is `[]`.
+@Command(name = "skeleton", description = "Print the types and members of Java files with exact ranges: rows and columns are 1-based, the end is inclusive (the closing brace or semicolon)", footerHeading = "%nNotes:%n", footer = {"  Columns count UTF-16 code units (a tab is 1, an emoji is 2); a leading BOM is one column on row 1.", "  doc@<row> is the first row of the NEAREST preceding doc comment.", "  Legacy array forms (int f()[], int a[]) are reported as written before the name: the brackets after it are not in the signature.", "  Annotation arguments are not printed.", "  Exit codes: 0 every file printed; 2 no Java files found, or a file could not be read or parsed (its error goes to stderr, the other files still print)."}, mixinStandardHelpOptions = true)
 public class SkeletonCommand implements Callable<Integer> {
     static final int FAILURE = 2;
     private static final FilesConfig EVERYTHING = new FilesConfig(0L, List.of());
@@ -39,7 +45,7 @@ public class SkeletonCommand implements Callable<Integer> {
     @Parameters(paramLabel = "<file>", description = "Java files, or directories searched recursively", arity = "1..*")
     List<Path> paths;
 
-    @picocli.CommandLine.Option(names = {"--json"}, description = "Print JSON: an array with one {file, declarations} object per file")
+    @picocli.CommandLine.Option(names = {"--json"}, description = "Print JSON: an array with one {file, declarations} object per file, {file, error} for a file that failed; [] when no Java files are found")
     boolean json;
 
     @picocli.CommandLine.Option(names = {"--fields"}, description = "Also list fields and enum constants")
@@ -51,47 +57,64 @@ public class SkeletonCommand implements Callable<Integer> {
 
         return files.isEmpty()
                ? noFiles()
-               : print(files,
-                       files.stream().map(file -> skeletonOf(file, files.size() > 1)).toList());
+               : print(files.stream().map(this::outcome).toList());
     }
 
     private Integer noFiles() {
         System.err.println("No Java files found");
+        System.out.print(json
+                         ? SkeletonJson.document(List.of())
+                         : "");
 
         return FAILURE;
     }
 
-    private Result<String> skeletonOf(Path file, boolean withHeader) {
-        return SourceFile.sourceFile(file)
-                         .flatMap(source -> Skeletons.skeleton(source.content(),
-                                                               fields))
-                         .map(skeleton -> json
-                                          ? SkeletonJson.file(file.toString(),
-                                                              skeleton)
-                                          : header(file, withHeader) + SkeletonText.render(skeleton))
-                         .mapError(cause -> failure(file, cause));
+    private Outcome outcome(Path file) {
+        return Outcome.outcome(file, read(file).flatMap(content -> Skeletons.skeleton(content, fields)));
     }
 
-    private static String header(Path file, boolean withHeader) {
-        return withHeader
-               ? file + "\n"
-               : "";
+    private static Result<String> read(Path file) {
+        return Result.lift(SourceNotRead::sourceNotRead, () -> Files.readString(file));
     }
 
-    private static Cause failure(Path file, Cause cause) {
-        return () -> file + ":" + cause.message();
-    }
-
-    private Integer print(List<Path> files, List<Result<String>> results) {
-        var rendered = results.stream().flatMap(Result::stream).toList();
-
-        results.forEach(result -> result.onFailure(cause -> System.err.println(cause.message())));
+    private Integer print(List<Outcome> outcomes) {
+        outcomes.forEach(outcome -> outcome.result().onFailure(cause -> System.err.println(failureLine(outcome.file(), cause))));
         System.out.print(json
-                         ? SkeletonJson.document(rendered)
-                         : String.join("", rendered));
+                         ? SkeletonJson.document(outcomes.stream().map(Outcome::asJson).toList())
+                         : outcomes.stream().map(outcome -> outcome.asText(outcomes.size() > 1)).collect(Collectors.joining()));
 
-        return rendered.size() == files.size()
+        return outcomes.stream().allMatch(outcome -> outcome.result().isSuccess())
                ? 0
                : FAILURE;
+    }
+
+    /// `<path>:<row>:<column>: <detail>` for a source that does not parse, `<path>: <reason>` for one that cannot be read.
+    private static String failureLine(Path file, Cause cause) {
+        return switch (cause) {
+            case SourceNotParsed _ -> file + ":" + cause.message();
+            default -> file + ": " + cause.message();
+        };
+    }
+
+    /// What became of one file: its skeleton or the reason it has none.
+    private record Outcome(Path file, Result<Skeleton> result) {
+        static Outcome outcome(Path file, Result<Skeleton> result) {
+            return new Outcome(file, result);
+        }
+
+        String asJson() {
+            return result.fold(cause -> SkeletonJson.failure(file.toString(), cause),
+                               skeleton -> SkeletonJson.file(file.toString(), skeleton));
+        }
+
+        String asText(boolean withHeader) {
+            return result.map(skeleton -> header(withHeader) + SkeletonText.render(skeleton)).or("");
+        }
+
+        private String header(boolean withHeader) {
+            return withHeader
+                   ? file + "\n"
+                   : "";
+        }
     }
 }

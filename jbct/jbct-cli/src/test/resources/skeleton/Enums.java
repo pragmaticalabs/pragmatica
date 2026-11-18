@@ -19,7 +19,7 @@ interface Enums {
 
     enum Level {
         LOW,
-        @Deprecated MEDIUM(2),
+        @Deprecated @Other MEDIUM(2),
         HIGH(3) {
             @Override
             int weight() {
