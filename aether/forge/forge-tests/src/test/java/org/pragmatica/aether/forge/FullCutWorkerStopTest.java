@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -68,6 +69,7 @@ class FullCutWorkerStopTest {
     private static final Duration STOP_WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final String FENCE_CODE = "core-absence-fence";
     private final EmberCluster cluster = EmberCluster.emberCluster(3, 33700, 33750, 33780, "full-cut");
+    private Set<NodeId> coreIds = Set.of();
 
     @AfterEach void stop() {
         LifecycleAwait.bestEffort("stop full-cut fixture", cluster, cluster.stop());
@@ -85,7 +87,7 @@ class FullCutWorkerStopTest {
                .pollInterval(Duration.ofMillis(20))
                .until(() -> fenceRaised(events));
         var delay = Duration.ofNanos(System.nanoTime() - cutAt);
-        var coresDeadAtStop = cores(id).stream().filter(node -> isDead(node, id)).count();
+        var coresDeadAtStop = cores().stream().filter(node -> isDead(node, id)).count();
 
         log.info("FULL-CUT-STOP path={} delayMs={} coresDeadAtStop={}", FENCE_CODE, delay.toMillis(), coresDeadAtStop);
         assertThat(delay).as("the fence fired within coreAbsence + ping interval + tick + margin of the cut")
@@ -93,10 +95,11 @@ class FullCutWorkerStopTest {
         assertNothingKeepsRunningOn(id);
     }
 
-    /// Targets the echo slice (blueprint minimum: 3 instances) at WORKERS_ONLY placement, which puts an instance on the only
-    /// worker, and waits until it is ACTIVE there and visible in the cluster's slice status, so the after-fence check has a subject.
+    /// Admits two peer workers (a WORKERS_ONLY slice needs at least its minimum of 2 instances placeable), targets the echo
+    /// slice (blueprint minimum: 3 instances) at WORKERS_ONLY placement, and waits until an instance is ACTIVE on the worker and visible in the cluster's slice status, so the after-fence check has a subject.
     private void deploySliceOnWorker(NodeId worker) {
         var artifact = Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap();
+        IntStream.range(0, 2).forEach(_ -> LifecycleAwait.nodeSettled("admit full-cut peer worker", cluster, cluster.addWorkerNode()));
         var key = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
         var blueprint = """
             id = "forge.test:full-cut:1.0.0"
@@ -166,8 +169,8 @@ class FullCutWorkerStopTest {
                      .isPresent();
     }
 
-    private List<AetherNode> cores(NodeId worker) {
-        return cluster.allNodes().stream().filter(node -> !node.self().equals(worker)).toList();
+    private List<AetherNode> cores() {
+        return cluster.allNodes().stream().filter(node -> coreIds.contains(node.self())).toList();
     }
 
     private static boolean isDead(AetherNode node, NodeId peer) {
@@ -177,6 +180,7 @@ class FullCutWorkerStopTest {
     private NodeId bootWorker() {
         LifecycleAwait.settled("start full-cut fixture", cluster, cluster.start());
         await().atMost(BUDGET.duration()).until(() -> cluster.currentLeader().isPresent());
+        coreIds = cluster.allNodes().stream().map(AetherNode::self).collect(Collectors.toSet());
         // Set after the cores started: only the worker created next gets the fence window under test.
         cluster.withCoreAbsenceForNewNodes(CORE_ABSENCE);
         cluster.withCommunityAbsenceForNewNodes(COMMUNITY_ABSENCE);
@@ -194,16 +198,16 @@ class FullCutWorkerStopTest {
                .until(() -> worker.coreAbsenceSnapshot().map(snapshot -> snapshot.armed()).or(false));
         await().alias("every core has observed the worker SWIM-HEALTHY before the cut")
                .atMost(BUDGET.duration())
-               .until(() -> cores(id).stream().allMatch(node -> swimHealthy(node, id)));
+               .until(() -> cores().stream().allMatch(node -> swimHealthy(node, id)));
         return id;
     }
 
     /// Cuts SWIM and QUIC between the worker and every core, in both directions (`partitionFrom` installs the QUIC inbound
     /// filter too; it is not lifted here), and returns the moment the cut was made.
     private long cutEveryLink(NodeId worker) {
-        var cores = cores(worker).stream().map(AetherNode::self).collect(Collectors.toSet());
+        var cores = cores().stream().map(AetherNode::self).collect(Collectors.toSet());
 
-        cluster.allNodes().forEach(node -> node.partitionFrom(node.self().equals(worker) ? cores : Set.of(worker)));
+        cluster.allNodes().stream().filter(node -> cores.contains(node.self()) || node.self().equals(worker)).forEach(node -> node.partitionFrom(node.self().equals(worker) ? cores : Set.of(worker)));
         return System.nanoTime();
     }
 
