@@ -1,10 +1,8 @@
 package org.pragmatica.jbct.maven;
 
-import java.nio.file.Path;
-import java.util.concurrent.atomic.AtomicInteger;
-
-import org.pragmatica.jbct.format.JbctFormatter;
-import org.pragmatica.jbct.shared.SourceFile;
+import org.pragmatica.jbct.lint.cst.RunOutcome.FormatAction;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Surface;
 
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
@@ -32,57 +30,6 @@ public class FormatMojo extends AbstractJbctMojo {
             return;
         }
 
-        var config = loadConfig();
-        var formatter = JbctFormatter.jbctFormatter(config.formatter());
-        var filesToProcess = collectJavaFiles(config.files(), includeTests);
-
-        if (filesToProcess.isEmpty()) {
-            reportNothingToCheck("format", includeTests);
-
-            return;
-        }
-
-        getLog().info("Formatting " + filesToProcess.size() + " Java file(s)");
-        var formatted = new AtomicInteger(0);
-        var unchanged = new AtomicInteger(0);
-        var errors = new AtomicInteger(0);
-
-        for (var file : filesToProcess) {
-            processFile(file, formatter, formatted, unchanged, errors);
-        }
-
-        getLog().info("Formatted: " + formatted.get() + ", Unchanged: " + unchanged.get() + ", Errors: " + errors.get());
-        if (errors.get() > 0) {
-            throw new MojoFailureException("Formatting failed for " + errors.get() + " file(s)");
-        }
-    }
-
-    private void processFile(Path file,
-                             JbctFormatter formatter,
-                             AtomicInteger formatted,
-                             AtomicInteger unchanged,
-                             AtomicInteger errors) {
-        SourceFile.sourceFile(file)
-                  .flatMap(source -> formatter.isFormatted(source)
-                                              .flatMap(isFormatted -> {
-                                                           if (isFormatted) {
-                                                               unchanged.incrementAndGet();
-
-                                                               return org.pragmatica.lang.Result.success(source);
-                                                           }
-
-                                                           return formatter.format(source)
-                                                                           .flatMap(formattedSource -> formattedSource.write()
-                                                                                                                      .map(written -> {
-                                                                                                                               formatted.incrementAndGet();
-                                                                                                                               getLog().warn("Formatted: " + file);
-
-                                                                                                                               return written;
-                                                                                                                           }));
-                                                       }))
-                  .onFailure(cause -> {
-                                 errors.incrementAndGet();
-                                 getLog().error("Error formatting " + file + ": " + cause.message());
-                             });
+        perform(resolvePlan(includeTests), Invocation.format(Surface.MAVEN, FormatAction.WRITE));
     }
 }

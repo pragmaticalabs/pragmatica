@@ -4,19 +4,19 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Callable;
-import java.util.function.Function;
+import java.util.function.BiFunction;
 
-import org.pragmatica.jbct.config.JbctConfig;
-import org.pragmatica.jbct.lint.JbctLinter;
-import org.pragmatica.jbct.lint.LintContext;
-import org.pragmatica.jbct.lint.layer.LayerCoverage;
+import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
+import org.pragmatica.jbct.lint.cst.RunOutcome.DensityLimit;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
+import org.pragmatica.jbct.lint.cst.RunOutcome.RunResult;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Surface;
 import org.pragmatica.jbct.score.DensityGate;
-import org.pragmatica.jbct.score.ScoreCalculator;
 import org.pragmatica.jbct.score.ScoreReport;
 import org.pragmatica.jbct.score.ScoreResult;
-import org.pragmatica.jbct.score.SourceScan;
-import org.pragmatica.jbct.shared.FileCollector;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
@@ -27,11 +27,6 @@ import picocli.CommandLine.Parameters;
 public class ScoreCommand implements Callable<Integer> {
     /// Exit code for a usage error, matching picocli's own.
     static final int USAGE_ERROR = 2;
-    /// Exit code when some collected file could not be read or parsed, so the density cannot speak
-    /// for the file set. Shares the value with [#USAGE_ERROR] deliberately: both mean "this run
-    /// produced no usable measurement", as distinct from `1`, which means the measurement is sound
-    /// and breached.
-    static final int COVERAGE_GAP = 2;
     /// Output formats the command knows. Anything else is rejected rather than quietly rendered
     /// as a terminal box — `--format badge` used to be real, so silently substituting a different
     /// format for it would hand a CI job the wrong bytes with a zero exit code.
@@ -55,11 +50,16 @@ public class ScoreCommand implements Callable<Integer> {
     @picocli.CommandLine.Option(names = {"--config"}, description = "Path to configuration file")
     Path configPath;
 
-    @picocli.CommandLine.Option(names = {"--mode"}, description = "JBCT mode for this run, overriding jbct.toml and --config: business or infrastructure")
+    @picocli.CommandLine.Option(names = {"--mode"}, description = "JBCT mode for this run, overriding jbct.toml and --config: business, infrastructure, format-only or disabled")
     String mode;
 
-    /// The one place the resolved context is handed to the linter; tests replace it to observe the context (#2525).
-    Function<LintContext, JbctLinter> linterFactory = JbctLinter::jbctLinter;
+    /// The exit status when the plan holds no file: unchanged ("No Java files found" exits 1, not 2).
+    static final int NOTHING_COLLECTED_EXIT = 1;
+    /// The flag the density limit came from, named in the run's sentences.
+    static final String MAX_DENSITY_FLAG = "--max-density";
+
+    /// The one place the resolved plan and the invocation reach the run; a test replaces it to capture the result the command received (#2525).
+    BiFunction<RootPlan, Invocation, Result<RunResult>> runSeam = CliRoots.PERFORM;
 
     @Override
     public Integer call() {
@@ -76,74 +76,32 @@ public class ScoreCommand implements Callable<Integer> {
             return USAGE_ERROR;
         }
 
-        var loadedConfig = CliConfig.load(Option.option(configPath), Option.option(mode), paths.getFirst(), System.err);
+        var planned = CliRoots.plan(Option.option(configPath), Option.option(mode), paths, false, System.err);
 
-        if (loadedConfig.isEmpty()) {
+        if (planned.isEmpty()) {
             return CliConfig.CONFIG_ERROR_EXIT;
         }
 
-        var config = loadedConfig.unwrap();
-        var context = createContext(config);
-        var linter = linterFactory.apply(context);
-        var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
+        var limit = Option.option(maxDensity).map(max -> DensityLimit.densityLimit(max, MAX_DENSITY_FLAG));
 
-        if (filesToProcess.isEmpty()) {
-            System.err.println("No Java files found");
-
-            return 1;
-        }
-
-        var scan = SourceScan.sourceScan(filesToProcess, linter::lint, message -> System.err.println("  ✗ " + message));
-        var score = ScoreCalculator.calculate(scan);
-
-        LayerCoverage.coverage(filesToProcess, context).map(LayerCoverage::render).onPresent(System.err::println);
-        outputScore(score);
-
-        return gateExitCode(score);
+        return runSeam.apply(planned.unwrap(),
+                             Invocation.score(Surface.CLI, limit))
+                      .fold(CliRoots::refused, this::printed);
     }
 
-    LintContext createContext(JbctConfig jbctConfig) {
-        return CliConfig.lintContext(jbctConfig, false);
+    /// stdout carries only the score document; the run's own lines and findings go to stderr.
+    private int printed(RunResult result) {
+        CliRoots.printToStderr(result, false);
+        result.score().onPresent(this::outputScore);
+
+        return CliRoots.exitCode(result.verdict(), NOTHING_COLLECTED_EXIT);
     }
 
-    /// Exit codes match `jbct lint`: `2` when the tool could not read what it was pointed at, `1`
-    /// for a real breach, `0` clean.
-    ///
-    /// A coverage gap outranks the density check and fails even with no `--max-density`, because the
-    /// number this command exists to report is a ratio over the files it managed to read. Measured
-    /// over 1 of 2 files it is not the project's density, and the command used to return **exit 0**
-    /// beside a header saying `1 files` under an announcement of two — a gate reporting clean over a
-    /// file it never opened (#977).
-    private int gateExitCode(ScoreResult score) {
-        var coverage = score.coverage();
-
-        if (coverage.isPartial()) {
-            coverage.gapReport("score").onPresent(System.err::println);
-
-            return COVERAGE_GAP;
-        }
-
-        if (maxDensity != null && DensityGate.exceeds(score.totalDensityPerKloc(), maxDensity)) {
-            System.err.println("\n" + DensityGate.breachMessage(score.totalDensityPerKloc(), maxDensity));
-
-            return 1;
-        }
-
-        return 0;
-    }
-
+    @Contract
     private void outputScore(ScoreResult score) {
         switch (format.toLowerCase(Locale.ROOT)) {
-            case "json" -> outputJson(score);
-            default -> outputTerminal(score);
+            case "json" -> ScoreReport.jsonLines(score).forEach(System.out::println);
+            default -> ScoreReport.terminalLines(score).forEach(System.out::println);
         }
-    }
-
-    private void outputTerminal(ScoreResult score) {
-        ScoreReport.terminalLines(score).forEach(System.out::println);
-    }
-
-    private void outputJson(ScoreResult score) {
-        ScoreReport.jsonLines(score).forEach(System.out::println);
     }
 }

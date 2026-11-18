@@ -41,7 +41,8 @@ class OversizedLaneFrameTest {
                                               codec,
                                               QuicTransportMetrics.quicTransportMetrics(),
                                               (_, message) -> delivered.add(message),
-                                              LoggerFactory.getLogger(OversizedLaneFrameTest.class));
+                                              LoggerFactory.getLogger(OversizedLaneFrameTest.class),
+                                              QuicLaneDataHandler.BackpressureSettler.NONE);
 
         return new EmbeddedChannel(new LengthFieldBasedFrameDecoder(QuicClusterServer.MAX_FRAME_LENGTH, 0, 4, 0, 4),
                                    handler);

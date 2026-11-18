@@ -1397,6 +1397,91 @@ class LeaderReconcilerTest {
         }
     }
 
+    /// #3324: with auto-heal disabled a surplus CORE member is not drained on the cluster's own initiative. Every test seeds SELF plus
+    /// three mature peers against a configured core count of 3: a surplus of one, which the enabled control drains. The engine is the
+    /// legacy membership reconciler; FSM2 has no core surplus drain of its own (it serves both engines unchanged).
+    @Nested
+    class AutoHealCoreSurplusHold {
+        @BeforeEach
+        void seedOneSurplusCore() {
+            configuredCoreCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+        }
+
+        @Test
+        void surplusDrain_autoHealDisabled_drainsNothing_askedThroughTheCoreHold() {
+            ctm.setAutoHealEnabled(false, "test: operator disabled auto-heal");
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(ctm.drainNodeCalls()).as("a held surplus core member must not be drained").isEmpty();
+            assertThat(ctm.scalingHeldAsked()).as("the hold is asked through the worker/community accessor").contains(ClusterTopologyManager.coreSubject());
+        }
+
+        @Test
+        void surplusDrain_autoHealEnabled_drainsTheSurplusMember() {
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(ctm.drainNodeCalls()).as("control: enabled, the surplus member is drained").hasSize(1);
+        }
+
+        @Test
+        void surplusDrain_autoHealDisabled_operatorCommittedCount_drainsTheSurplusMember() {
+            ctm.setAutoHealEnabled(false, "test: operator disabled auto-heal");
+            ctm.releaseScaling();
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(ctm.drainNodeCalls()).as("an operator-committed core count is explicit intent: the drain goes ahead").hasSize(1);
+        }
+
+        /// #3324: the held surplus re-runs the follow-up pass for as long as the hold lasts (re-enabling must take effect); its pass line is
+        /// not repeated on each one. The positive control is the same line after the release: the instrument sees a follow-up pass line.
+        @Test
+        void heldSurplus_followUpPassesDoNotRepeatThePassLine_oncePerEpisode() {
+            var followUpDelay = timeSpan(EXPECTED_DEBOUNCE_WINDOW.nanos() + DEBOUNCE_DELAY.nanos()).nanos();
+            ctm.setAutoHealEnabled(false, "test: operator disabled auto-heal");
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            try (var capture = LogCapture.capture(LeaderReconciler.class, Level.INFO, false)) {
+                runFollowUpPass(followUpDelay, 0);
+                runFollowUpPass(followUpDelay, 1);
+
+                assertThat(capture.messages()).as("held: the follow-up passes repeat no pass line")
+                                              .noneMatch(line -> line.contains("trigger=SURPLUS_FOLLOW_UP"));
+                assertThat(ctm.drainNodeCalls()).as("still held").isEmpty();
+
+                ctm.setAutoHealEnabled(true, "test: operator enabled auto-heal");
+                runFollowUpPass(followUpDelay, 2);
+                runFollowUpPass(followUpDelay, 3);
+
+                assertThat(ctm.drainNodeCalls()).as("released: the surplus is drained").isNotEmpty();
+                assertThat(capture.messages()).as("control: after the hold ends the follow-up pass line is logged again")
+                                              .anyMatch(line -> line.contains("trigger=SURPLUS_FOLLOW_UP"));
+            }
+        }
+
+        private void runFollowUpPass(TimeSpan delay, int ordinal) {
+            scheduler.tasksByDelay(delay).get(ordinal).runIfLive();
+            fireDebouncedReconcile();
+        }
+
+        @Test
+        void noSurplus_autoHealDisabled_neverAsksTheHold() {
+            configuredCoreCount.set(4);
+            ctm.setAutoHealEnabled(false, "test: operator disabled auto-heal");
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(ctm.scalingHeldAsked()).as("no surplus: no hold is raised").doesNotContain(ClusterTopologyManager.coreSubject());
+        }
+    }
+
     /// Drain-safety grace (Wave 2 defense in depth at the drain authority) — narrowed by the
     /// Approach-3 victim-selection rewrite to apply to CONFIGURED SEEDS only. A just-joined
     /// configured seed whose role labels may still be propagating is never picked as a surplus
@@ -4849,6 +4934,28 @@ class LeaderReconcilerTest {
         @Override
         public Promise<Boolean> setAutoHealEnabled(boolean enabled, String reason) {
             return Promise.success(autoHealEnabled.getAndSet(enabled));
+        }
+
+        private final List<String> scalingHeldAsked = new CopyOnWriteArrayList<>();
+
+        /// Stands for an operator's value committed after the disable, which releases the hold as the real one does.
+        private final AtomicBoolean scalingReleased = new AtomicBoolean(false);
+
+        /// #3324: answers as the real hold does: held while auto-heal is disabled, unless a value committed after the disable released
+        /// it. Records each subject asked, so a test can see the reconciler asked through this accessor.
+        @Override
+        public boolean scalingHeld(String subject) {
+            scalingHeldAsked.add(subject);
+
+            return !autoHealEnabled.get() && !scalingReleased.get();
+        }
+
+        void releaseScaling() {
+            scalingReleased.set(true);
+        }
+
+        List<String> scalingHeldAsked() {
+            return List.copyOf(scalingHeldAsked);
         }
 
         @Override

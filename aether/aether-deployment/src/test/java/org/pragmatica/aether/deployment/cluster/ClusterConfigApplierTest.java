@@ -428,6 +428,11 @@ class ClusterConfigApplierTest {
         }
 
         @Override
+        public boolean scalingHeld(String subject) {
+            return false;
+        }
+
+        @Override
         public Promise<Boolean> setAutoHealEnabled(boolean enabled, String reason) {
             return Promise.success(true);
         }

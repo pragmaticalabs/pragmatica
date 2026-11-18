@@ -1,13 +1,18 @@
 package org.pragmatica.jbct.maven;
 
+import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.pragmatica.jbct.lint.cst.RunOutcome.Level;
+
 import org.apache.maven.plugin.logging.SystemStreamLog;
 import org.apache.maven.project.MavenProject;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -27,6 +32,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// announce itself as uncovered, and a genuinely empty source tree must stay quiet so aggregator
 /// modules do not cry wolf.
 class NothingToCheckReportingTest {
+    private static final String USER_HOME = "user.home";
+
+    @TempDir
+    Path home;
+
+    private String savedUserHome;
+
+    @BeforeEach
+    void redirectUserHome() {
+        savedUserHome = System.getProperty(USER_HOME);
+        System.setProperty(USER_HOME, home.resolve("home").toString());
+    }
+
+    @AfterEach
+    void restoreUserHome() {
+        System.setProperty(USER_HOME, savedUserHome);
+    }
 
     /// Captures what the goal actually told the reader, which is the whole subject here.
     private static final class CapturingLog extends SystemStreamLog {
@@ -44,14 +66,16 @@ class NothingToCheckReportingTest {
         }
     }
 
-    private static CheckMojo mojoFor(Path mainDir, Path testDir) {
+    private static CheckMojo mojoFor(Path mainDir, Path testDir, boolean includeTests) {
         var mojo = new CheckMojo();
         var project = new MavenProject();
 
         project.setArtifactId("forge-tests");
+        project.setFile(new File(mainDir.getParent().toFile(), "pom.xml"));
         mojo.project = project;
         mojo.sourceDirectory = mainDir.toFile();
         mojo.testSourceDirectory = testDir.toFile();
+        mojo.includeTests = includeTests;
         mojo.setLog(new CapturingLog());
 
         return mojo;
@@ -70,15 +94,17 @@ class NothingToCheckReportingTest {
         return dir;
     }
 
-    /// The forge-tests shape: files exist, policy excluded them, so the goal covered nothing.
+    /// The forge-tests shape: files exist, policy excluded them, so the goal covered nothing. The expected text is the run's own.
     @Test
-    void reportNothingToCheck_warnsThatNothingWasExamined_whenTestsWereExcluded(@TempDir Path dir) throws Exception {
-        var mojo = mojoFor(dir.resolve("main"), withJavaFiles(dir.resolve("test"), 41));
+    void check_warnsThatNothingWasExamined_whenTestsWereExcluded(@TempDir Path dir) throws Exception {
+        var capture = new RunCapture();
+        var mojo = capture.on(mojoFor(dir.resolve("main"), withJavaFiles(dir.resolve("test"), 41), false));
 
-        mojo.reportNothingToCheck("check", false);
+        mojo.execute();
 
         var warnings = logOf(mojo).warnings;
 
+        assertThat(warnings).isEqualTo(capture.texts(Level.WARN));
         assertThat(warnings).hasSize(1);
         assertThat(warnings.getFirst()).contains("examined NOTHING")
                                        .contains("forge-tests")
@@ -90,10 +116,10 @@ class NothingToCheckReportingTest {
     /// It must not claim there are no Java files when there are 41 of them — that was the actual
     /// falsehood, and the reason a reader trusted the green.
     @Test
-    void reportNothingToCheck_doesNotClaimAbsence_whenFilesWereMerelyExcluded(@TempDir Path dir) throws Exception {
-        var mojo = mojoFor(dir.resolve("main"), withJavaFiles(dir.resolve("test"), 41));
+    void check_doesNotClaimAbsence_whenFilesWereMerelyExcluded(@TempDir Path dir) throws Exception {
+        var mojo = new RunCapture().on(mojoFor(dir.resolve("main"), withJavaFiles(dir.resolve("test"), 41), false));
 
-        mojo.reportNothingToCheck("check", false);
+        mojo.execute();
 
         assertThat(logOf(mojo).infos).noneMatch(line -> line.contains("No Java files found"));
     }
@@ -101,36 +127,39 @@ class NothingToCheckReportingTest {
     /// A genuinely empty module — an aggregator pom, say — must stay quiet, or the warning becomes
     /// noise and stops being read.
     @Test
-    void reportNothingToCheck_staysQuiet_whenThereIsGenuinelyNothing(@TempDir Path dir) {
-        var mojo = mojoFor(dir.resolve("main"), dir.resolve("test"));
+    void check_staysQuiet_whenThereIsGenuinelyNothing(@TempDir Path dir) throws Exception {
+        var capture = new RunCapture();
+        var mojo = capture.on(mojoFor(dir.resolve("main"), dir.resolve("test"), false));
 
-        mojo.reportNothingToCheck("check", false);
+        mojo.execute();
 
         assertThat(logOf(mojo).warnings).isEmpty();
-        assertThat(logOf(mojo).infos).containsExactly("No Java files found.");
+        assertThat(capture.texts(Level.INFO)).containsExactly("No Java files found.");
+        assertThat(logOf(mojo).infos).contains("No Java files found.");
     }
 
     /// With tests already included, an empty set really does mean nothing was there — nothing was
     /// excluded, so there is nothing to disclose.
     @Test
-    void reportNothingToCheck_staysQuiet_whenTestsWereIncludedAndStillEmpty(@TempDir Path dir) throws Exception {
-        var mojo = mojoFor(dir.resolve("main"), withJavaFiles(dir.resolve("test"), 41));
+    void check_staysQuiet_whenTestsWereIncludedAndStillEmpty(@TempDir Path dir) throws Exception {
+        var capture = new RunCapture();
+        var mojo = capture.on(mojoFor(dir.resolve("main"), dir.resolve("test"), true));
 
-        mojo.reportNothingToCheck("check", true);
+        mojo.execute();
 
         assertThat(logOf(mojo).warnings).isEmpty();
-        assertThat(logOf(mojo).infos).containsExactly("No Java files found.");
+        assertThat(capture.texts(Level.INFO)).containsExactly("No Java files found.");
     }
 
     /// Counting walks the tree, because sources sit in package directories rather than at the root.
     @Test
-    void reportNothingToCheck_countsNestedSources(@TempDir Path dir) throws Exception {
+    void check_countsNestedSources(@TempDir Path dir) throws Exception {
         var nested = dir.resolve("test").resolve("org").resolve("example");
-        var mojo = mojoFor(dir.resolve("main"), dir.resolve("test"));
+        var mojo = new RunCapture().on(mojoFor(dir.resolve("main"), dir.resolve("test"), false));
 
         withJavaFiles(nested, 3);
 
-        mojo.reportNothingToCheck("check", false);
+        mojo.execute();
 
         assertThat(logOf(mojo).warnings.getFirst()).contains("3 test file(s)");
     }

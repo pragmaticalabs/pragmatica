@@ -1,0 +1,89 @@
+package org.pragmatica.jbct.cli;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.BiFunction;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Channel;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Level;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Line;
+import org.pragmatica.jbct.lint.cst.RunOutcome.RunResult;
+import org.pragmatica.lang.Result;
+
+/// The seam of a front-end fixture (#2525): it performs the run the way the command would and keeps the result the command
+/// received, so a test compares what the command printed with that very result and never with a second `perform` over the
+/// same tree, and never with a sentence of its own (the sentences live in `RunLinesTest`).
+final class CapturedRun implements BiFunction<RootPlan, Invocation, Result<RunResult>> {
+    private final List<RunResult> received = new ArrayList<>();
+
+    @Override
+    public Result<RunResult> apply(RootPlan plan, Invocation invocation) {
+        return CliRoots.PERFORM.apply(plan, invocation)
+                               .onSuccess(received::add);
+    }
+
+    /// The one result the command received.
+    RunResult result() {
+        return received.getFirst();
+    }
+
+    /// How many times the command asked the run.
+    int performs() {
+        return received.size();
+    }
+
+    /// The sentences of the lines after the findings, without the blank line that frames them.
+    List<String> afterBody() {
+        return result().after().stream().map(Line::text).filter(text -> !text.isEmpty()).toList();
+    }
+
+    /// What the command prints to stdout: the lines before the findings, the findings, the lines after them; DETAIL lines only when `verbose`.
+    String expectedStdout(boolean verbose) {
+        return Stream.of(textOf(result().before(), verbose),
+                         result().findings()
+                                 .stream()
+                                 .map(finding -> finding.toHumanReadable())
+                                 .collect(Collectors.joining()),
+                         textOf(result().after(), verbose))
+                     .collect(Collectors.joining());
+    }
+
+    /// The lines the command prints to stderr (the lines whose channel is stderr), in order.
+    List<String> expectedStderrLines() {
+        return Stream.concat(result().before().stream(), result().after().stream())
+                     .filter(line -> line.channel() == Channel.STDERR && line.level() != Level.DETAIL)
+                     .map(Line::text)
+                     .toList();
+    }
+
+    /// The text of every line printed to stdout, one entry per line, in order, findings excluded.
+    List<String> stdoutLines(boolean verbose) {
+        return Stream.concat(result().before().stream(), result().after().stream())
+                     .filter(line -> toStdout(line, verbose))
+                     .map(Line::text)
+                     .toList();
+    }
+
+    /// Every line and finding the machine-format and score commands print to stderr, in order: lines (DETAIL hidden) around the findings when asked.
+    List<String> stderrLinesOfAll() {
+        return Stream.concat(result().before().stream().filter(line -> line.channel() != Channel.WITH_FINDINGS), result().after().stream())
+                     .filter(line -> line.level() != Level.DETAIL)
+                     .map(Line::text)
+                     .toList();
+    }
+
+    private static String textOf(List<Line> lines, boolean verbose) {
+        return lines.stream()
+                    .filter(line -> toStdout(line, verbose))
+                    .map(line -> line.text() + System.lineSeparator())
+                    .collect(Collectors.joining());
+    }
+
+    private static boolean toStdout(Line line, boolean verbose) {
+        return line.channel() != Channel.STDERR && (line.level() != Level.DETAIL || verbose);
+    }
+}

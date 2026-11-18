@@ -1,23 +1,16 @@
 package org.pragmatica.jbct.cli;
 
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
-import java.util.function.Function;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiFunction;
 
-import org.pragmatica.jbct.config.JbctConfig;
-import org.pragmatica.jbct.format.JbctFormatter;
-import org.pragmatica.jbct.lint.Diagnostic;
-import org.pragmatica.jbct.lint.DiagnosticSeverity;
-import org.pragmatica.jbct.lint.JbctLinter;
-import org.pragmatica.jbct.lint.LintContext;
-import org.pragmatica.jbct.lint.layer.LayerCoverage;
-import org.pragmatica.jbct.shared.AnalysisCoverage;
-import org.pragmatica.jbct.shared.FileCollector;
-import org.pragmatica.jbct.shared.SourceFile;
+import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
+import org.pragmatica.jbct.lint.cst.RunOutcome.RunResult;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Surface;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
@@ -38,140 +31,25 @@ public class CheckCommand implements Callable<Integer> {
     @picocli.CommandLine.Option(names = {"--config"}, description = "Path to configuration file")
     Path configPath;
 
-    @picocli.CommandLine.Option(names = {"--mode"}, description = "JBCT mode for this run, overriding jbct.toml and --config: business or infrastructure")
+    @picocli.CommandLine.Option(names = {"--mode"}, description = "JBCT mode for this run, overriding jbct.toml and --config: business, infrastructure, format-only or disabled")
     String mode;
 
-    /// The one place the resolved context is handed to the linter; tests replace it to observe the context (#2525).
-    Function<LintContext, JbctLinter> linterFactory = JbctLinter::jbctLinter;
+    /// The exit status when the plan holds no file: unchanged from before the run printed its own lines.
+    static final int NOTHING_COLLECTED_EXIT = 0;
+
+    /// The one place the resolved plan and the invocation reach the run; a test replaces it to capture the result the command received (#2525).
+    BiFunction<RootPlan, Invocation, Result<RunResult>> runSeam = CliRoots.PERFORM;
 
     @Override
     public Integer call() {
-        // Load configuration
-        var loadedConfig = CliConfig.load(Option.option(configPath), Option.option(mode), paths.getFirst(), System.err);
+        var planned = CliRoots.plan(Option.option(configPath), Option.option(mode), paths, failOnWarning, System.err);
 
-        if (loadedConfig.isEmpty()) {
+        if (planned.isEmpty()) {
             return CliConfig.CONFIG_ERROR_EXIT;
         }
 
-        var config = loadedConfig.unwrap();
-        var formatter = JbctFormatter.jbctFormatter(config.formatter());
-        var context = createContext(config);
-        var linter = linterFactory.apply(context);
-        var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
+        var performed = runSeam.apply(planned.unwrap(), Invocation.check(Surface.CLI));
 
-        if (filesToProcess.isEmpty()) {
-            System.out.println("No Java files found.");
-
-            return 0;
-        }
-
-        if (verbose) {
-            System.out.println("Checking " + filesToProcess.size() + " Java file(s)...");
-        }
-        // Format check
-        var needsFormatting = new ArrayList<Path>();
-        var formatErrors = new AtomicInteger(0);
-        // Lint check
-        var allDiagnostics = new ArrayList<Diagnostic>();
-        var lintErrors = new AtomicInteger(0);
-        var warnings = new AtomicInteger(0);
-        var parseErrors = new AtomicInteger(0);
-
-        for (var file : filesToProcess) {
-            checkFormat(file, formatter, needsFormatting, formatErrors);
-            checkLint(file, linter, allDiagnostics, lintErrors, warnings, parseErrors);
-        }
-
-        LayerCoverage.coverage(filesToProcess, context).map(LayerCoverage::render).onPresent(System.err::println);
-        var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), parseErrors.get());
-        // Report format issues
-        if (!needsFormatting.isEmpty()) {
-            System.out.println();
-            System.out.println("Files not properly formatted:");
-            for (var file : needsFormatting) {
-                System.out.println("  " + file);
-            }
-        }
-        // Report lint issues
-        if (!allDiagnostics.isEmpty()) {
-            System.out.println();
-            for (var d : allDiagnostics) {
-                System.out.print(d.toHumanReadable());
-            }
-        }
-        // Summary. The counts are meaningless without the denominator they were taken over: a file
-        // that could not be read or parsed contributes zero of everything, so an unqualified
-        // `0 lint error(s)` reads as clean when it means unexamined (#977).
-        System.out.println();
-        coverage.gapReport("check").onPresent(System.out::println);
-        System.out.println("Check results (checked " + coverage.render()
-                          + "): " + needsFormatting.size()
-                          + " format issue(s), " + lintErrors.get()
-                          + " lint error(s), " + warnings.get()
-                          + " warning(s)");
-        // Determine exit code
-        if (formatErrors.get() > 0 || coverage.isPartial()) {
-            return 2;
-        }
-
-        if (!needsFormatting.isEmpty() || lintErrors.get() > 0) {
-            return 1;
-        }
-
-        if (failOnWarning && warnings.get() > 0) {
-            return 1;
-        }
-
-        System.out.println("✓ All checks passed.");
-
-        return 0;
-    }
-
-    LintContext createContext(JbctConfig jbctConfig) {
-        return CliConfig.lintContext(jbctConfig, failOnWarning);
-    }
-
-    private void checkFormat(Path file, JbctFormatter formatter, List<Path> needsFormatting, AtomicInteger errors) {
-        SourceFile.sourceFile(file)
-                  .flatMap(formatter::isFormatted)
-                  .onSuccess(isFormatted -> {
-                                 if (!isFormatted) {
-                                     needsFormatting.add(file);
-                                 } else if (verbose) {
-                                     System.out.println("  ✓ format: " + file.getFileName());
-                                 }
-                             })
-                  .onFailure(cause -> {
-                                 errors.incrementAndGet();
-                                 System.err.println("  ✗ format error: " + file + ": " + cause.message());
-                             });
-    }
-
-    private void checkLint(Path file,
-                           JbctLinter linter,
-                           List<Diagnostic> allDiagnostics,
-                           AtomicInteger errors,
-                           AtomicInteger warnings,
-                           AtomicInteger parseErrors) {
-        SourceFile.sourceFile(file)
-                  .flatMap(linter::lint)
-                  .onSuccess(diagnostics -> {
-                                 allDiagnostics.addAll(diagnostics);
-                                 for (var d : diagnostics) {
-                                     switch (d.severity()) {
-                                         case ERROR -> errors.incrementAndGet();
-                                         case WARNING -> warnings.incrementAndGet();
-                                         default -> {}
-                                     }
-                                 }
-
-                                 if (verbose && diagnostics.isEmpty()) {
-                                     System.out.println("  ✓ lint: " + file.getFileName());
-                                 }
-                             })
-                  .onFailure(cause -> {
-                                 parseErrors.incrementAndGet();
-                                 System.err.println("  ✗ parse error: " + file + ": " + cause.message());
-                             });
+        return CliRoots.finish(performed, verbose, NOTHING_COLLECTED_EXIT);
     }
 }

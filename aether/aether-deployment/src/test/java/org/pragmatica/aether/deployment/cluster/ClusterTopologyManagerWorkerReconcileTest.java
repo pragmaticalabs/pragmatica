@@ -138,6 +138,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
     private ClusterTopologyManager ctm;
     private final AtomicReference<Option<AetherValue.AutoHealStateValue>> autoHealRef = new AtomicReference<>(Option.none());
     private final java.util.List<String> warnings = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final java.util.List<String> warningTexts = new java.util.concurrent.CopyOnWriteArrayList<>();
     private TopologyObserver observer;
     private StubSnapshotSource snapshotSource;
 
@@ -169,7 +170,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                                             _ -> {},
                                                             autoHealRef::get,
                                                             liveness);
-        built.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warning -> warnings.add(warning.code().code())));
+        built.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(this::addWarning));
         var placements = new java.util.concurrent.ConcurrentHashMap<AetherKey, AetherValue>();
         built.setHierarchyStateWriter(HierarchyStateWriter.hierarchyStateWriter(
             () -> Option.some(new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)),
@@ -221,6 +222,12 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                                                                              AetherValue.TopologyEntry::count)))
                                .or(Map.of());
         autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", version, scaling)));
+    }
+
+    /// The text is stored before the code, so a test that awaited the code reads the text.
+    private void addWarning(org.pragmatica.utility.warning.OperatorWarning warning) {
+        warningTexts.add(warning.message());
+        warnings.add(warning.code().code());
     }
 
     private static AetherValue.TopologyEntry entry(String source, String role, int count) {
@@ -325,6 +332,48 @@ class ClusterTopologyManagerWorkerReconcileTest {
         seedConfig(communityToml(2), entry("pool", "core", 3));
 
         assertThat(manager.scalingHeld("community stable")).as("target_size changed while disabled").isFalse();
+    }
+
+    /// #3324: the core surplus subject is recorded by the disable from the committed core count, as every other subject is. Unchanged it
+    /// stays held and raises the same held warning; a core count the operator commits after the disable is explicit intent and releases it.
+    @Test
+    void scalingHeld_core_followsTheCommittedCoreCount() {
+        var manager = (ClusterTopologyManagerRecord) ctm;
+        var core = ClusterTopologyManager.coreSubject();
+        seedTopology(entry("pool", "core", 3), entry("pool", "worker", 1));
+        var recorded = ClusterTopologyManagerRecord.scalingOf(configRef.get());
+        autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, recorded)));
+
+        assertThat(recorded).as("the disable records the committed core count").containsEntry(core, 3);
+        assertThat(manager.scalingHeld(core)).as("core count unchanged").isTrue();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 1);
+        assertThat(warnings).containsExactly("auto-heal-scaling-held");
+        assertThat(warningTexts.getFirst()).as("the held warning names both exits: an explicit drain and re-enabling auto-heal")
+                                           .contains("aether nodes drain <nodeId>")
+                                           .contains("aether cluster topology auto-heal enable");
+
+        commitConfigVersion(2L, entry("pool", "core", 2), entry("pool", "worker", 1));
+
+        assertThat(manager.scalingHeld(core)).as("core count committed after the disable").isFalse();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 2);
+        assertThat(warnings).as("the release of the core subject is announced").containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
+    }
+
+    /// #3324: re-enabling auto-heal announces the held core subject as resumed, as it does every other held subject.
+    @Test
+    void scalingHeld_core_resumedWhenAutoHealIsReEnabled() {
+        var manager = (ClusterTopologyManagerRecord) ctm;
+        var core = ClusterTopologyManager.coreSubject();
+        seedTopology(entry("pool", "core", 3), entry("pool", "worker", 1));
+        autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, ClusterTopologyManagerRecord.scalingOf(configRef.get()))));
+
+        assertThat(manager.scalingHeld(core)).as("held while disabled").isTrue();
+
+        autoHealRef.set(Option.none());
+
+        assertThat(manager.scalingHeld(core)).as("auto-heal enabled again").isFalse();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 2);
+        assertThat(warnings).containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
     }
 
     /// v2711 survivor 9 (c34): with no auto-heal record at all, auto-heal is enabled, and every subject held earlier is announced as resumed

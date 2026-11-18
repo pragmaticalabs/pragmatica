@@ -88,6 +88,12 @@ public record LayerCoverage(int evaluated, int unclassified, int excluded) {
                       ctx);
     }
 
+    /// Census over package names the caller already read (see [#packageOf]) -- the run's entry point: it reads each
+    /// file once and hands the declared packages over, so no front end reads a file for the census.
+    public static Option<LayerCoverage> coverageOfPackages(Collection<String> packageNames, LintContext ctx) {
+        return census(packageNames.stream(), ctx);
+    }
+
     private static Option<LayerCoverage> census(Stream<String> packageNames, LintContext ctx) {
         if (!ctx.layers().isExplicitlyConfigured()) {
             return Option.none();
@@ -127,7 +133,7 @@ public record LayerCoverage(int evaluated, int unclassified, int excluded) {
 
     /// The file's declared package, or `""` when it declares none — the same string the CST-based
     /// classification yields for a default-package file.
-    private static String packageOf(String content) {
+    public static String packageOf(String content) {
         var inBlockComment = false;
 
         for (var rawLine : content.split("\n")) {

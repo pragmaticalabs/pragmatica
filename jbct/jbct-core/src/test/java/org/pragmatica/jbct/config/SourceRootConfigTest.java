@@ -195,6 +195,43 @@ class SourceRootConfigTest {
                                      "true");
     }
 
+    @Test
+    void modeLayer_isTheNearestFileThatWritesTheKey() throws Exception {
+        var repo = repository("repo");
+        var module = marked(repo.resolve("module"));
+        var sourceRoot = Files.createDirectories(module.resolve("src/main/java"));
+
+        write(repo, INFRASTRUCTURE);
+        write(module, FAIL_ON_WARNING);
+
+        assertThat(modeLayer(Option.none(), sourceRoot)).isEqualTo(Option.some(repo.resolve("jbct.toml")));
+
+        write(module, BUSINESS);
+
+        assertThat(modeLayer(Option.none(), sourceRoot)).isEqualTo(Option.some(module.resolve("jbct.toml")));
+    }
+
+    @Test
+    void modeLayer_noFileWritesTheKey_isNone_andExplicitConfigWinsWhenItWritesIt() throws Exception {
+        var repo = repository("repo");
+        var module = marked(repo.resolve("module"));
+        var sourceRoot = Files.createDirectories(module.resolve("src/main/java"));
+        var explicit = tempDir.resolve("explicit.toml");
+
+        write(module, FAIL_ON_WARNING);
+
+        assertThat(modeLayer(Option.none(), sourceRoot)).isEqualTo(Option.none());
+
+        Files.writeString(explicit, BUSINESS);
+        write(module, INFRASTRUCTURE);
+
+        assertThat(modeLayer(Option.some(explicit), sourceRoot)).isEqualTo(Option.some(explicit));
+    }
+
+    private static Option<Path> modeLayer(Option<Path> explicit, Path sourceRoot) {
+        return ConfigLoader.modeLayer(explicit, sourceRoot).unwrap();
+    }
+
     private static JbctConfig resolve(Path path) {
         return ConfigLoader.loadForSourceRoot(Option.none(), path).unwrap();
     }
