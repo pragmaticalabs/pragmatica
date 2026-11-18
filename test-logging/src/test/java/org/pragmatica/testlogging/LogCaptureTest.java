@@ -12,11 +12,15 @@ package org.pragmatica.testlogging;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.LoggingException;
+import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.LoggerContext;
 import org.apache.logging.log4j.core.config.LoggerConfig;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class LogCaptureTest {
     private static final String NAME = "org.pragmatica.testlogging.LogCaptureTest.subject";
@@ -96,6 +100,37 @@ class LogCaptureTest {
 
             assertThat(seen).containsExactly("one", "two");
             assertThat(capture.messages()).containsExactly("one", "two");
+        }
+    }
+
+    /// The fault-injection contract: what the observer throws reaches the code that logged, and that event is not
+    /// captured; a later event is captured as usual.
+    @Test
+    void captureRethrowing_observerThrows_theThrowReachesTheLoggingCaller_andTheEventIsNotCaptured() {
+        try (var capture = LogCapture.captureRethrowing(NAME, Level.INFO, false, LogCaptureTest::faultOnBoom)) {
+            assertThatThrownBy(() -> LogManager.getLogger(NAME).warn("boom"))
+                .isInstanceOf(LoggingException.class)
+                .hasStackTraceContaining("injected fault");
+
+            LogManager.getLogger(NAME).warn("after");
+
+            assertThat(capture.messages()).containsExactly("after");
+        }
+    }
+
+    /// The contrast that makes the test above mean something: the plain capture swallows the same throw.
+    @Test
+    void capture_observerThrows_theThrowIsSwallowed() {
+        try (var capture = LogCapture.capture(NAME, Level.INFO, false, LogCaptureTest::faultOnBoom)) {
+            assertThatCode(() -> LogManager.getLogger(NAME).warn("boom")).doesNotThrowAnyException();
+
+            assertThat(capture.messages()).isEmpty();
+        }
+    }
+
+    private static void faultOnBoom(LogEvent event) {
+        if ("boom".equals(event.getMessage().getFormattedMessage())) {
+            throw new IllegalStateException("injected fault");
         }
     }
 

@@ -78,6 +78,85 @@ def collect(roots, base):
     return frags
 
 
+# Names a module may use without defining them: keywords and the operators of the standard modules the models extend
+# (Naturals, Integers, Sequences, FiniteSets, TLC). WF_/SF_ subscripts are matched by prefix.
+BUILTIN = set('''TRUE FALSE BOOLEAN STRING ENABLED UNCHANGED SUBSET UNION DOMAIN EXCEPT CHOOSE LET IN IF THEN ELSE CASE
+OTHER LAMBDA EXTENDS CONSTANT CONSTANTS VARIABLE VARIABLES RECURSIVE ASSUME THEOREM INSTANCE LOCAL MODULE WITH
+Nat Int Seq Len Head Tail Append SubSeq SelectSeq IsFiniteSet Cardinality Print PrintT Assert JavaTime TLCGet TLCSet
+Permutations SortSeq RandomElement Any ToString TLCEval'''.split())
+IDENT = r'[A-Za-z_][A-Za-z0-9_]*'
+NAMES = rf'{IDENT}(?:\s*,\s*{IDENT})*'
+
+
+def code_lines(body):
+    """(source line, text) of a fragment with comments and string literals blanked; `(* *)` may span lines."""
+    out, depth = [], 0
+    for src, text in body:
+        res, i = [], 0
+        while i < len(text):
+            if depth:
+                if text.startswith('*)', i):
+                    depth -= 1
+                    i += 2
+                elif text.startswith('(*', i):
+                    depth += 1
+                    i += 2
+                else:
+                    i += 1
+                continue
+            if text.startswith('(*', i):
+                depth += 1
+                i += 2
+            elif text.startswith('\\*', i):
+                break
+            elif text[i] == '"':
+                j = text.find('"', i + 1)
+                i = len(text) if j < 0 else j + 1
+                res.append('""')
+            else:
+                res.append(text[i])
+                i += 1
+        out.append((src, ''.join(res)))
+    return out
+
+
+def undefined_refs(parts, module):
+    """Every operator application `Name(` and every capitalised bare name that no fragment of the module defines, declares
+    (CONSTANT, VARIABLE), binds (operator parameter, quantifier, CHOOSE, set or function constructor) or takes from a
+    standard module. Lexical, not scoped: a name bound anywhere counts as bound everywhere, so the check can miss a
+    reference (never reports a defined one). Returns [(rel, line, part, name)]."""
+    code = {part: (rel, code_lines(body)) for part, (rel, _, body) in parts.items()}
+    text = '\n'.join(t for _, (_, lines) in code.items() for _, t in lines)
+    flat = re.sub(r'\\[A-Za-z_]+', lambda m: ' ' + m.group(0) + ' ', text)
+    known = set(BUILTIN)
+    for m in re.finditer(rf'(?<![A-Za-z0-9_.!])({IDENT})\s*(?:\(([^()]*(?:\([^()]*\)[^()]*)*)\))?\s*==', flat):
+        known.add(m.group(1))
+        for p in (m.group(2) or '').split(','):
+            p = re.sub(r'\(.*', '', p).strip()
+            if re.fullmatch(IDENT, p):
+                known.add(p)
+    for m in re.finditer(rf'(?<![A-Za-z0-9_.!])({IDENT})\s*\[[^\]]*\]\s*==', flat):   # recursive function: F[x \in S] ==
+        known.add(m.group(1))
+    for m in re.finditer(rf'\b(?:CONSTANTS?|VARIABLES?|EXTENDS)\s+({NAMES})', flat):
+        known |= {n.strip() for n in m.group(1).split(',')}
+    for pat in (rf'(?:\\A|\\E|CHOOSE)\s+({NAMES})\s*(?:\\in|:)', rf'[{{\[:,]\s*({NAMES})\s*\\in',
+                rf'<<\s*({NAMES})\s*>>\s*\\in'):
+        for m in re.finditer(pat, flat):
+            known |= {n.strip() for n in m.group(1).split(',')}
+    bad = []
+    for part, (rel, lines) in code.items():
+        for src, t in lines:
+            t = re.sub(r'\\[A-Za-z_]+', ' ', t)
+            for m in re.finditer(rf'(?<![A-Za-z0-9_.!])({IDENT})(\s*\()?', t):
+                name, applied = m.group(1), bool(m.group(2))
+                if name in known or re.match(r'^(WF|SF)_', name) or name[0].isdigit():
+                    continue
+                if not applied and (not name[0].isupper() or re.match(r'\s*(\|->|:(?![>=:]))', t[m.end():])):
+                    continue
+                bad.append((rel, src, part, name))
+    return bad
+
+
 def assemble(frags, module):
     mine = [f for f in frags if f[1] == module]
     if not mine:
@@ -102,6 +181,10 @@ def assemble(frags, module):
             raise Fail(f'{rel}:{line}: action fragment {module}:{part} does not define an operator {part}')
         if not re.search(rf'\b{re.escape(part)}\b', tail_text):
             raise Fail(f'{rel}:{line}: action {part} is never referenced by {module}:tail (Next or fairness)')
+    bad = undefined_refs(parts, module)
+    if bad:
+        raise Fail('\n'.join(f'{rel}:{src}: {module}:{part} references {name}, which no {module} fragment defines'
+                             for rel, src, part, name in bad))
     out, srcmap = [], []
 
     def emit(text, src):

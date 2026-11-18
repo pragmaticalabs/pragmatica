@@ -56,7 +56,8 @@ class QuicLaneDataHandlerUnknownTagTest {
                                               codec,
                                               metrics,
                                               (_, message) -> delivered.add(message),
-                                              LoggerFactory.getLogger(QuicLaneDataHandlerUnknownTagTest.class));
+                                              LoggerFactory.getLogger(QuicLaneDataHandlerUnknownTagTest.class),
+                                              QuicLaneDataHandler.BackpressureSettler.NONE);
 
         return new Harness(new EmbeddedChannel(handler), metrics, delivered);
     }
