@@ -25,9 +25,9 @@
   stream, DHT on its own lane, a drain racing the opening, frames held on an old stream, a refused write whose stream
   turned writable before it was counted, a throwing writability check), `QuicConsensusBackpressureTest` (a refused
   write ended by the writability event alone; a stream that dies while its connection lives; peer close and
-  departure; no episode on a closed stream) and `QuicWritabilityEventWiringTest` (every construction site, and the
+  departure; no episode on a closed stream; the "cleared" line is logged while the episode is still open) and `QuicWritabilityEventWiringTest` (every construction site, and the
   certificate-rotation rebuild, delivers the event). Each of the six triggers, and the "no frame of the lane held"
   condition, was removed in turn: every removal turns at least one of these tests red. At this head the four classes
-  ran 85 test cases, all green. `EmberConsensusLaneHoldTest` states what closes its episodes
+  ran 86 test cases, all green. `EmberConsensusLaneHoldTest` states what closes its episodes
   and, when its books do not balance, names the episodes still open; it ran 5 of 5 green at this head and 0 of 5 green
   with `settleUnderMonitor`'s body emptied, so it now also pins the closer.
