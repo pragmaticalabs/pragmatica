@@ -3750,16 +3750,157 @@ class ClusterEventAggregatorTest {
             var first = h.aggregator().raiseLanded(holdEnded("n1@1"));
             var retry = h.aggregator().raiseLanded(holdEnded("n1@1"));
 
-            assertThat(landed(first)).as("superseded by the retry: never published").isFalse();
+            assertThat(answer(first)).as("superseded by the retry: never published").isFalse();
             assertThat(retry.isResolved()).as("the retry is held in its place").isFalse();
             var closing = h.aggregator().raiseClosing(atRisk("n1@1"), holdEnded("n1@1"));
 
-            assertThat(landed(retry)).as("superseded by raiseClosing: never published").isFalse();
+            assertThat(answer(retry)).as("superseded by raiseClosing: never published").isFalse();
             assertThat(closing.isResolved()).as("raiseClosing's closer is held in its place").isFalse();
             replaying.set(false);
             h.aggregator().redeliverDue();
             assertThat(landed(closing)).isTrue();
             assertThat(codes(h)).containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-hold-ended");
+        }
+
+        /// The held-recovery arms of one invariant: a held closer's promise completes with its final outcome on every path that
+        /// releases or drops it.
+        @Test
+        @Timeout(10)
+        void raiseLanded_closerHeldBehindItsWarning_trueWhenReleasedAndLanded() {
+            var h = Harness.create();
+            Promise<Unit> gate = Promise.promise();
+            h.aggregator().interceptPublish(_ -> gate);
+
+            var warning = h.aggregator().raiseLanded(atRisk("n1@1"));
+            var closer = h.aggregator().raiseLanded(holdEnded("n1@1"));
+
+            assertThat(closer.isResolved()).as("held behind the warning in flight").isFalse();
+            gate.succeed(Unit.unit());
+            assertThat(landed(warning)).as("control: the warning landed").isTrue();
+            assertThat(landed(closer)).as("released and landed").isTrue();
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLanded_closerHeldBehindAWarningNotDelivered_falseWhenDropped() {
+            var clock = new AtomicLong(1_000_000L);
+            var h = clocked(clock);
+            h.aggregator().interceptPublish(_ -> Causes.cause("refused").promise());
+
+            var warning = h.aggregator().raiseLanded(atRisk("n1@1"));
+            var held = h.aggregator().raiseLanded(holdEnded("n1@1"));
+
+            assertThat(held.isResolved()).as("held behind the warning in flight").isFalse();
+            expireRedelivery(h, clock);
+            assertThat(h.aggregator().redeliveryDropped()).as("control: the warning was given up on").containsEntry("expired", 1L);
+            assertThat(answer(warning)).as("control: the warning did not land").isFalse();
+            assertThat(answer(held)).as("dropped with its warning").isFalse();
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLanded_heldCloserReplaced_falseAndTheReplacementTrue() {
+            var h = Harness.create();
+            Promise<Unit> gate = Promise.promise();
+            h.aggregator().interceptPublish(_ -> gate);
+
+            h.aggregator().raiseLanded(atRisk("n1@1"));
+            var replaced = h.aggregator().raiseLanded(holdEnded("n1@1"));
+            var replacement = h.aggregator().raiseLanded(holdEnded("n1@1"));
+
+            assertThat(answer(replaced)).as("superseded: never published").isFalse();
+            assertThat(replacement.isResolved()).as("control: the replacement is held").isFalse();
+            gate.succeed(Unit.unit());
+            assertThat(landed(replacement)).isTrue();
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLanded_heldCloserOfAnExpiredSpoofableMark_false() {
+            var clock = new AtomicLong(1_000_000L);
+            var h = clocked(clock);
+            Promise<Unit> gate = Promise.promise();
+            h.aggregator().interceptPublish(_ -> gate);
+
+            h.aggregator().raiseLanded(gossipKeyUnknown("10.0.0.1:7000"));
+            var held = h.aggregator().raiseLanded(gossipKeyDecrypted("10.0.0.1:7000"));
+
+            assertThat(held.isResolved()).as("control: held behind the warning in flight").isFalse();
+            clock.addAndGet(ClusterEventAggregator.SPOOFABLE_OPEN_TTL_MS + 1);
+            h.aggregator().raiseLanded(gossipKeyUnknown("10.0.0.2:7000"));
+            assertThat(answer(held)).as("its mark expired: never published").isFalse();
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLanded_closerDuringReplayWithNoOpenWarning_falseAtOnce() {
+            var h = Harness.create(Harness.defaultRetention(), OWNER, () -> true);
+
+            assertThat(landed(h.aggregator().raiseLanded(holdEnded("n1@1")))).as("nothing would ever publish it").isFalse();
+            assertThat(h.events()).isEmpty();
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLanded_replayHeldCloserOfARecurringCondition_false() {
+            var replaying = new AtomicBoolean(false);
+            var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get);
+
+            assertThat(landed(h.aggregator().raiseLanded(atRisk("n1@1")))).as("control: opened before the replay").isTrue();
+            replaying.set(true);
+            var held = h.aggregator().raiseLanded(holdEnded("n1@1"));
+
+            replaying.set(false);
+            h.aggregator().raiseLanded(atRisk("n1@1"));
+            h.aggregator().redeliverDue();
+            assertThat(answer(held)).as("stale behind the recurrence: never published").isFalse();
+            assertThat(codes(h)).containsExactly("dht-departure-sole-copy-at-risk");
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLanded_replayHeldCloserSupersededAfterTheReplay_falseAndTheNewOneTrue() {
+            var replaying = new AtomicBoolean(false);
+            var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get);
+
+            assertThat(landed(h.aggregator().raiseLanded(atRisk("n1@1")))).as("control: opened before the replay").isTrue();
+            replaying.set(true);
+            var held = h.aggregator().raiseLanded(holdEnded("n1@1"));
+
+            replaying.set(false);
+            var newer = h.aggregator().raiseLanded(holdEnded("n1@1"));
+
+            assertThat(answer(held)).as("superseded before the tick: never published").isFalse();
+            assertThat(landed(newer)).isTrue();
+            h.aggregator().redeliverDue();
+            assertThat(codes(h)).containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-hold-ended");
+        }
+
+        @Test
+        @Timeout(10)
+        void raiseLanded_replayHeldCloserWhoseMarkExpired_false() {
+            var replaying = new AtomicBoolean(false);
+            var clock = new AtomicLong(1_000_000L);
+            var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get, LEADER,
+                                   HlcClock.hlcClock(SELF, clock::get, Long.MAX_VALUE));
+
+            assertThat(landed(h.aggregator().raiseLanded(gossipKeyUnknown("10.0.0.1:7000")))).as("control: opened before the replay").isTrue();
+            replaying.set(true);
+            var held = h.aggregator().raiseLanded(gossipKeyDecrypted("10.0.0.1:7000"));
+
+            assertThat(held.isResolved()).as("control: held during replay").isFalse();
+            clock.addAndGet(ClusterEventAggregator.SPOOFABLE_OPEN_TTL_MS + 1);
+            h.aggregator().raiseLanded(gossipKeyUnknown("10.0.0.2:7000"));
+            replaying.set(false);
+            h.aggregator().redeliverDue();
+            assertThat(answer(held)).as("its mark expired: never published").isFalse();
+            assertThat(codes(h)).containsExactly("gossip-key-unknown-from-peer");
+        }
+
+        /// For a `false` expectation: an answer still pending after [#SETTLE] reads `true`, so only a completed `false` passes.
+        private static boolean answer(Promise<Boolean> raised) {
+            return raised.await(SETTLE)
+                         .fold(_ -> true, landed -> landed);
         }
 
         private static boolean landed(Promise<Boolean> raised) {
@@ -3792,6 +3933,10 @@ class ClusterEventAggregatorTest {
 
         private static OperatorWarning gossipKeyUnknown(String subject) {
             return OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER, subject, "unknown key " + subject);
+        }
+
+        private static OperatorWarning gossipKeyDecrypted(String subject) {
+            return OperatorWarning.operatorWarning(OperatorWarningCode.GOSSIP_KEY_PEER_DECRYPTED, subject, "decrypted " + subject);
         }
     }
 
