@@ -158,6 +158,14 @@ class EmberReplicaReadVisibleTripwireTest {
         var replica = cluster.getNode(replicas.getFirst().id()).unwrap();
 
         replicaId.set(replica.self().id());
+        // Each node adopts the committed stream config from its own KV notification, so the owner's and R's local views
+        // lag the committed ISR on a loaded runner (0 = "stream unknown here"): wait for both, then judge.
+        awaitUntil(() -> owner.streamPartitionManager().confirmationFactorFor(ENGINE_KEY) == CONFIRMATION_FACTOR,
+                   REPLICA_BUDGET_MS,
+                   "CF of the stream under test on the owner " + owner.self().id());
+        awaitUntil(() -> replica.streamPartitionManager().confirmationFactorFor(ENGINE_KEY) == CONFIRMATION_FACTOR,
+                   REPLICA_BUDGET_MS,
+                   "CF of the stream under test on R " + replica.self().id());
         assertThat(owner.streamPartitionManager().confirmationFactorFor(ENGINE_KEY)).as("CF of the stream under test")
                                                                                    .isEqualTo(CONFIRMATION_FACTOR);
 
@@ -193,6 +201,10 @@ class EmberReplicaReadVisibleTripwireTest {
             .as("control: R's copy holds more than its learned visible offset %d", learnedAtStall)
             .isEqualTo((long) (FIRST + SECOND - 1))
             .isGreaterThan(learnedAtStall);
+        awaitUntil(() -> owner.streamPartitionManager().visibleBounds(ENGINE_KEY, PARTITION).map(bounds -> bounds.visibleHead()).or(-2L)
+                         == FIRST + SECOND - 1,
+                   REPLICA_BUDGET_MS,
+                   "the owner makes the second batch visible");
         assertThat(owner.streamPartitionManager().visibleBounds(ENGINE_KEY, PARTITION).map(bounds -> bounds.visibleHead()).or(-2L))
             .as("control: the owner made the second batch visible, so R's stalled mark is genuinely behind")
             .isEqualTo((long) (FIRST + SECOND - 1));
