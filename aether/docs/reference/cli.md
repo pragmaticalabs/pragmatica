@@ -1283,7 +1283,9 @@ aether nodes lifecycle <nodeId>
 # Drain a node (READY → DRAINING via the membership-v2 DRAIN-command heartbeat;
 # the target self-drains, finishing in-flight requests, respecting the disruption budget
 # and every hosted slice's minAvailable floor: a drain that would take a slice below it
-# is refused with 409 naming the slice)
+# is refused with 409 naming the slice). Draining the current leader is refused with 409;
+# the CLI prints the server's text: stop the leader's process from outside the cluster so a
+# new leader is elected, then drain the node
 aether nodes drain <nodeId>
 
 # Override the slice minAvailable floor (the cluster raises an operator warning)
@@ -1291,6 +1293,7 @@ aether nodes drain <nodeId> --override-floor
 
 # Shut down a node (self-drain then halt via the DRAIN-command heartbeat; CTM
 # grace-terminate backstop reaps the container). Same floor, same --override-floor.
+# Shutting down the current leader is refused with 409 (the server's text is printed).
 aether nodes shutdown <nodeId>
 
 # Check an already matching immutable role (CORE, WORKER or SPOT).
