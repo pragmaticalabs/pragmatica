@@ -203,10 +203,17 @@ class QuicWritabilityEventWiringTest {
         assertDelivers(laneOf(rotated, acceptorAt, StreamType.CONSENSUS), eventsAtRotated, "rebuilt client's lane");
     }
 
+    /// The lane stream of the peer's active connection. The dialer's end has every lane when the connect completes, but the
+    /// accepting end registers each lane when the dialer's stream and its preamble arrive, after the peer is CONNECTED
+    /// (`PeerOpenedLaneRouter`), so the lookup waits for exactly this stream, read from this same connection lookup.
     private static QuicStreamChannel laneOf(QuicClusterNetwork network, NodeId peer, StreamType lane) {
-        return network.activeConnectionForTests(peer)
-                      .flatMap(connection -> connection.stream(lane))
-                      .fold(() -> fail("no " + lane + " stream to " + peer), stream -> stream);
+        awaitTrue(() -> laneStream(network, peer, lane).isPresent(), AWAIT, "the " + lane + " stream to " + peer + " is registered");
+
+        return laneStream(network, peer, lane).fold(() -> fail("no " + lane + " stream to " + peer), stream -> stream);
+    }
+
+    private static Option<QuicStreamChannel> laneStream(QuicClusterNetwork network, NodeId peer, StreamType lane) {
+        return network.activeConnectionForTests(peer).flatMap(connection -> connection.stream(lane));
     }
 
     /// Fires the event in the stream's own pipeline (a live idle stream is writable) and waits for its settler.

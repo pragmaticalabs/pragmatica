@@ -35,6 +35,7 @@ import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.util.concurrent.ImmediateEventExecutor;
 import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.core.LogEvent;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -797,6 +798,37 @@ class QuicConsensusBackpressureTest {
             }
 
             assertThat(network.openBackpressureEpisodesForTests()).as("episodes left open for REMOVED peers").isZero();
+        }
+
+        /// #3313 S2: the "cleared" line is logged before the episode leaves the map, so the open-count read (the map's size)
+        /// still sees the episode while its line is written. Goes red when `endEpisode` removes the entry first.
+        @Test
+        void clearedLine_isLoggedWhileTheEpisodeIsStillOpen() throws Exception {
+            var writableNow = new AtomicBoolean(false);
+            var blocked = switchableChannel(writableNow);
+            var network = network();
+            var openWhenLogged = new AtomicLong(-1);
+
+            try (var capture = LogCapture.capture(LOGGER,
+                                                  Level.INFO,
+                                                  false,
+                                                  event -> recordOpenCountAtCleared(network, event, openWhenLogged))) {
+                network.writeIfWritableForTest(blocked, payload(), PEER, StreamType.METRICS);
+                writableNow.set(true);
+                LossAccountingFixtures.fireWritabilityEvent(network, blocked);
+
+                assertThat(capture.messages(Level.INFO)).as("the event ended the episode").filteredOn(message -> message.contains("cleared"))
+                                                        .hasSize(1);
+            }
+
+            assertThat(openWhenLogged.get()).as("open episodes seen at the moment the cleared line was logged").isEqualTo(1);
+            assertThat(network.openBackpressureEpisodesForTests()).as("and the episode is gone afterwards").isZero();
+        }
+
+        private static void recordOpenCountAtCleared(QuicClusterNetwork network, LogEvent event, AtomicLong openWhenLogged) {
+            if (event.getMessage().getFormattedMessage().contains("cleared")) {
+                openWhenLogged.set(network.openBackpressureEpisodesForTests());
+            }
         }
 
         /// Writes counted while another thread closes the episode are reported by exactly one summary each.
