@@ -801,6 +801,9 @@ public interface SystemTags {
         pin(table, 2923, "org.pragmatica.aether.slice.TruncationDeclaration");
         pin(table, 2924, "org.pragmatica.aether.slice.HotWindowDeclaration");
         pin(table, 2925, "org.pragmatica.aether.slice.TruncationPolicy");
+        // #3345: the HELD report carried on the pong. Inside the dht-3345-3347 reservation 2960..2979 of wire-tag-ranges.txt.
+        pin(table, 2960, "org.pragmatica.cluster.metrics.HeldReport");
+        pin(table, 2961, "org.pragmatica.cluster.metrics.HeldEnd");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 

@@ -23,6 +23,7 @@ import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery.DrainRefusal
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.http.security.AuditLog;
+import org.pragmatica.aether.management.route.LeaderRefusal;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.node.ManageableNode;
@@ -101,6 +102,42 @@ public final class NodeLifecycleRoutes implements RouteSource {
         public static SliceFloor sliceFloor(BiFunction<NodeId, Set<NodeId>, List<DrainRefusal>> violations,
                                             OperatorWarningSink warnings) {
             return new SliceFloor(violations, warnings);
+        }
+    }
+
+    /// 409: the operator drain targets the current leader (or the node handling the request, which by construction is the
+    /// believed or just-elected leader). The leader has no row in the readiness view (it never pings itself) and a drain
+    /// commanded on it is not carried out, so a leader is not drained: the operator moves leadership first. The product has
+    /// no step-down command; stopping the leader's process from outside makes the cluster elect another leader.
+    public record LeaderCannotBeDrained(String nodeId) implements HttpStatusAware {
+        @Override
+        public String message() {
+            return "Cannot drain node " + nodeId + LeaderRefusal.DRAIN_REASON
+                 + " Move leadership first: stop this node's process"
+                 + " from outside the cluster (the service manager or the container runtime) so the cluster elects another"
+                 + " leader, then drain this node once it is no longer the leader. `aether nodes shutdown` is refused for the leader too.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// 409: the operator shutdown targets the current leader (or the node handling the request). A shutdown is commanded
+    /// through the same drain channel and half-applies on the leader exactly as a drain does, so it is refused alike.
+    public record LeaderCannotBeShutDown(String nodeId) implements HttpStatusAware {
+        @Override
+        public String message() {
+            return "Cannot shut down node " + nodeId + LeaderRefusal.SHUTDOWN_REASON
+                 + " Move leadership first: stop this"
+                 + " node's process from outside the cluster (the service manager or the container runtime) so the cluster elects"
+                 + " another leader; this node can then be drained or shut down through the API once it is no longer the leader.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
         }
     }
 
@@ -370,12 +407,13 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// pass against one "pending drains" snapshot. Pinned by `NodeLifecycleRoutesSliceFloorTest`'s concurrent
     /// admission test.
     private synchronized Result<TransitionResult> admitOperatorDrain(NodeId node, boolean requireReady, boolean force) {
-        return checkDisruptionBudgetForTarget(node.id(),
-                                              node).flatMap(budget -> checkDrainReadiness(node, requireReady).map(_ -> budget))
-                                             .flatMap(budget -> checkSliceFloor(node, requireReady, force).map(_ -> budget))
-                                             .map(budget -> enqueueOperatorDrain(node,
-                                                                                 budget.message(),
-                                                                                 requireReady));
+        return refuseLeader(node, requireReady).flatMap(_ -> checkDisruptionBudgetForTarget(node.id(),
+                                                                                            node))
+                           .flatMap(budget -> checkDrainReadiness(node, requireReady).map(_ -> budget))
+                           .flatMap(budget -> checkSliceFloor(node, requireReady, force).map(_ -> budget))
+                           .map(budget -> enqueueOperatorDrain(node,
+                                                               budget.message(),
+                                                               requireReady));
     }
 
     /// #1720: refuse, 409, an operator drain or shutdown that would leave a hosted slice below its `minAvailable`
@@ -492,7 +530,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// Whether a drain of `node` is already commanded or reported by the node itself.
     public boolean drainUnderWay(NodeId node) {
         return pendingDrainsSupplier.get()
-                                    .contains(node) || readLifecycleState(node).filter(state -> state == NodeReportedState.DRAINING)
+                                    .contains(node) || readLifecycleState(node).filter(NodeReportedState::isDraining)
                                                                          .isPresent();
     }
 
@@ -548,6 +586,33 @@ public final class NodeLifecycleRoutes implements RouteSource {
                       .noneMatch(entry -> entry.getKey()
                                                .id()
                                                .equals(nodeId) && !MEMBERSHIP_DEAD.equals(entry.getValue()));
+    }
+
+    /// A drain or a shutdown of the current leader, or of the node handling the request, is refused before anything else is
+    /// read or dispatched. Every management request for these routes is forwarded to the node the receiver believes is the
+    /// leader (`ManagementServer.tryForwardIfNotOwner`), so a target equal to the handling node is the leader or a node that
+    /// was just elected and has not yet applied its own election: its `leader()` may still name the old leader. Both are
+    /// decided from state this node holds, so the leader's own route and a follower's route answer alike. With no leader
+    /// elected and a target other than this node, nothing matches and today's answer stands (404 when a drain target has no
+    /// reported state).
+    private Result<org.pragmatica.lang.Unit> refuseLeader(NodeId node, boolean drain) {
+        return isLeaderOrSelf(node)
+               ? refusalOfLeader(node, drain)
+               : Result.success(org.pragmatica.lang.Unit.unit());
+    }
+
+    private static Result<org.pragmatica.lang.Unit> refusalOfLeader(NodeId node, boolean drain) {
+        return drain
+               ? new LeaderCannotBeDrained(node.id()).result()
+               : new LeaderCannotBeShutDown(node.id()).result();
+    }
+
+    private boolean isLeaderOrSelf(NodeId node) {
+        var current = nodeSupplier.get();
+
+        return node.equals(current.self()) || current.leader()
+                                                     .filter(node::equals)
+                                                     .isPresent();
     }
 
     private Result<org.pragmatica.lang.Unit> checkDrainReadiness(NodeId node, boolean requireReady) {
