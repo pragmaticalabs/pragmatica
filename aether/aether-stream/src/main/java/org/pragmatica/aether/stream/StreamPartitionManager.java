@@ -37,11 +37,13 @@ import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.HotWindowDeclaration;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.ReplicationFactorsError;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.StreamDeclaration;
 import org.pragmatica.aether.slice.fence.OwnershipDomain;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -52,6 +54,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReasonKind;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.slice.stream.RingGeometry;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.StreamFootprint;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
@@ -1806,9 +1809,10 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                        cause));
     }
 
-    /// #1549: every retention bound is at least 1, and the count is one the ring can index — refused before
-    /// anything is reserved, instead of throwing out of the ring build (division by zero, a negative
-    /// allocation, or an overflowed allocation size).
+    /// #1549: every retention bound is at least 1, and the ring window ([#ringWindow]) is at least 1 in each dimension with a
+    /// count the ring can index — refused before anything is reserved, instead of throwing out of the ring build (division
+    /// by zero, a negative allocation, or an overflowed allocation size). Retention no longer sizes the ring, so its count
+    /// is not bounded by the index.
     private static Result<Unit> checkRetentionCapacity(StreamConfig config) {
         var retention = config.retention();
 
@@ -1820,8 +1824,20 @@ public final class StreamPartitionManager implements AutoCloseable {
                                   .flatMap(_ -> checkRetentionBound(config.name(),
                                                                     "max_age",
                                                                     retention.maxAgeMs()))
+                                  .flatMap(_ -> checkRingWindow(config));
+    }
+
+    private static Result<Unit> checkRingWindow(StreamConfig config) {
+        var window = ringWindow(config);
+
+        return checkRetentionBound(config.name(),
+                                   "hot.max_count",
+                                   window.count()).flatMap(_ -> checkRetentionBound(config.name(),
+                                                                                    "hot.max_bytes",
+                                                                                    window.bytes()))
                                   .flatMap(_ -> checkIndexable(config.name(),
-                                                               retention.maxCount()));
+                                                               window,
+                                                               config.maxEventSizeBytes()));
     }
 
     private static Result<Unit> checkRetentionBound(String streamName, String bound, long value) {
@@ -1830,10 +1846,15 @@ public final class StreamPartitionManager implements AutoCloseable {
                : new StreamError.RetentionBoundInvalid(streamName, bound, value).result();
     }
 
-    private static Result<Unit> checkIndexable(String streamName, long maxCount) {
-        return maxCount <= OffHeapRingBuffer.MAX_CAPACITY
+    /// The window's count against the index bound of the ring's own first region ([RingGeometry#maxCapacity]).
+    private static Result<Unit> checkIndexable(String streamName, RingWindow window, long maxEventSize) {
+        var first = RingGeometry.firstSegmentBytes(window.bytes(), maxEventSize);
+
+        return RingGeometry.indexable(window.count(), first)
                ? success(unit())
-               : new StreamError.RetentionCountUnindexable(streamName, maxCount, OffHeapRingBuffer.MAX_CAPACITY).result();
+               : new StreamError.RetentionCountUnindexable(streamName,
+                                                           window.count(),
+                                                           RingGeometry.maxCapacity(first)).result();
     }
 
     /// Create-time admission gate (#265 increment 4, spec §7): reject a fresh stream that breaches the
@@ -7898,13 +7919,56 @@ public final class StreamPartitionManager implements AutoCloseable {
         return winner.ring();
     }
 
-    /// Per-partition floor = `OffHeapRingBuffer.floorBytes(maxCount, maxBytes)` = `(header + index +
-    /// first-data-segment)` — the bytes one partition ring allocates at construction. Shared by the
-    /// per-stream held-floor admission and the #265 hydration snapshot's per-materialized-ring byte tally.
+    /// Per-partition floor = `OffHeapRingBuffer.floorBytes(count, bytes, maxEventSize)` over the stream's ring window
+    /// ([#ringWindow]) = `(header + index + first data region)`, the first region holding one maximal event: the bytes one
+    /// partition ring allocates at construction. Shared by the per-stream held-floor admission and the #265 hydration
+    /// snapshot's per-materialized-ring byte tally. At the default window (16 384 entries, 4 MiB) and a 1 MiB event size it
+    /// is 1 441 856 B; an `entity:` ring's is 1 288 640 B.
     private static long perPartitionFloorBytes(StreamConfig config) {
-        var retention = config.retention();
+        var window = ringWindow(config);
 
-        return OffHeapRingBuffer.floorBytes(retention.maxCount(), retention.maxBytes());
+        return OffHeapRingBuffer.floorBytes(window.count(), window.bytes(), config.maxEventSizeBytes());
+    }
+
+    /// The entries and bytes one partition ring of a stream holds: the one function that decides the ring window. Computed
+    /// from the config on every call and held in no per-partition state.
+    /// - `system:` keeps its committed retention (its ring stays sized as it was);
+    /// - `entity:` gets [EntityRingWindow], never the user defaults;
+    /// - any other stream gets its declared `[hot]` values, each absent one taking the default:
+    ///   [RingGeometry#HOT_WINDOW_ENTRIES] entries and [RingGeometry#hotWindowBytes] of the stream's event size.
+    ///
+    /// Retention no longer sizes a user ring: it bounds what is kept, not what is held in memory.
+    static RingWindow ringWindow(StreamConfig config) {
+        return isSystemStream(config.name())
+               ? RingWindow.ringWindow(config.retention()
+                                             .maxCount(),
+                                       config.retention()
+                                             .maxBytes())
+               : userOrEntityWindow(config);
+    }
+
+    private static RingWindow userOrEntityWindow(StreamConfig config) {
+        return config.name()
+                     .startsWith(ENTITY_STREAM_PREFIX)
+               ? RingWindow.ringWindow(EntityRingWindow.CAPACITY, EntityRingWindow.MAX_BYTES)
+               : declaredOrDefaultWindow(config);
+    }
+
+    private static RingWindow declaredOrDefaultWindow(StreamConfig config) {
+        var hot = config.declaration()
+                        .flatMap(StreamDeclaration::hot);
+
+        return RingWindow.ringWindow(hot.flatMap(HotWindowDeclaration::maxCount)
+                                        .or(RingGeometry.HOT_WINDOW_ENTRIES),
+                                     hot.flatMap(HotWindowDeclaration::maxBytes)
+                                        .or(() -> RingGeometry.hotWindowBytes(config.maxEventSizeBytes())));
+    }
+
+    /// A ring window: `count` entries (the index) and `bytes` of data region, per partition copy.
+    record RingWindow(long count, long bytes) {
+        static RingWindow ringWindow(long count, long bytes) {
+            return new RingWindow(count, bytes);
+        }
     }
 
     /// The partition's COMMITTED span as a consumer or operator may see it (#2087): the head is the visible position and the
@@ -8274,12 +8338,13 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                            LongPredicate reserve,
                                                            LongConsumer release,
                                                            LongSupplier budgetFreed) {
-            var retention = config.retention();
+            var window = ringWindow(config);
 
             return OffHeapRingBuffer.offHeapRingBuffer(config.name(),
                                                        partition,
-                                                       retention.maxCount(),
-                                                       retention.maxBytes(),
+                                                       window.count(),
+                                                       window.bytes(),
+                                                       config.maxEventSizeBytes(),
                                                        listener,
                                                        deriveEvictionPolicy(config),
                                                        reserve,
