@@ -51,9 +51,9 @@ class AhseCoversEveryStreamKeyTest {
                                                      "22 Control-log records",
                                                      "23 Control index / tail",
                                                      "24 Divergence quarantine maps",
-                                                     "25 Replica watermarks; WatermarkStore; ReplicaAssignmentStore",
+                                                     "25 Replica watermarks (in-memory registry; the two store seams were deleted in S0-1)",
                                                      "26 Dead letters",
-                                                     "27 PgSegmentSink, PgCursorStore",
+                                                     "27 Postgres segment sink and cursor store (deleted in S0-1)",
                                                      "32 TopicSubscriptionKey",
                                                      "33 TopicPublisherKey",
                                                      "34 StreamRegistrationKey",
@@ -67,7 +67,7 @@ class AhseCoversEveryStreamKeyTest {
                                                                                            IntStream.rangeClosed(32, 39))
                                                                                   .boxed()
                                                                                   .toList();
-    private static final int ROWS_FINGERPRINT = -342844849;
+    private static final int ROWS_FINGERPRINT = -2097458471;
 
     /// The `AetherKey` record behind each key row, with its §5 row number.
     private static final Map<String, Integer> KEY_ROWS = Map.ofEntries(Map.entry("StreamCursorCheckpointKey", 13),
