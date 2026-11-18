@@ -172,6 +172,13 @@ class EmberReplicaReadVisibleTripwireTest {
         // Phase 1: R has learned nothing; records are acknowledged without its visible offset moving.
         publishAll(owner, "first-", FIRST);
         awaitHolds(replica, FIRST);
+        // The phase-1 control reads the owner's visible head through a forward: wait for it, do not assume it is already there.
+        awaitUntil(() -> owner.streamPartitionManager().visibleBounds(ENGINE_KEY, PARTITION).map(bounds -> bounds.visibleHead()).or(-2L)
+                         == FIRST - 1,
+                   REPLICA_BUDGET_MS,
+                   "the owner makes the first batch visible");
+        // Time allowed for a leak to show, not a proof of absence: while stalled, `learned` is written only after the stall check
+        // in passes(), so this assertion is true by construction whatever the product does.
         sleepQuietly(REPAIR_WINDOW_MS);
         assertThat(learned.get()).as("phase 1: R learned no mark while stalled from the start").isEqualTo(NOTHING_LEARNED);
 
@@ -195,6 +202,8 @@ class EmberReplicaReadVisibleTripwireTest {
 
         publishAll(owner, "second-", SECOND);
         awaitHolds(replica, FIRST + SECOND);
+        // Time allowed for a leak to show, not a proof of absence: while stalled, `learned` cannot move (see phase 1), so the
+        // assertion below is true by construction; the product-level assertions after it do not depend on this window.
         sleepQuietly(REPAIR_WINDOW_MS);
         assertThat(learned.get()).as("no mark reached R during the stall").isEqualTo(learnedAtStall);
         assertThat(replica.streamPartitionManager().partitionBuffer(ENGINE_KEY, PARTITION).map(ring -> ring.headOffset()).or(-1L))
