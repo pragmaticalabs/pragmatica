@@ -4,9 +4,11 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Stream;
 
+import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
+import org.pragmatica.jbct.lint.cst.LintRule;
 import org.pragmatica.jbct.lint.layer.Layer;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.lang.Option;
@@ -64,6 +66,11 @@ public class CstArchDirectionRule implements CstLintRule {
     @Override
     public String ruleId() {
         return RULE_ID;
+    }
+
+    @Override
+    public Set<JbctMode> modes() {
+        return LintRule.BUSINESS_ONLY;
     }
 
     @Override
