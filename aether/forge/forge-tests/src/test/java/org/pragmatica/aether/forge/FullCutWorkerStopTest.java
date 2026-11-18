@@ -13,7 +13,6 @@ import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
-import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -126,9 +125,7 @@ class FullCutWorkerStopTest {
         assertThat(node.<Object>apply(List.of(transaction)).await(BUDGET).unwrap())
                 .anyMatch(result -> result instanceof KVCommand.TransactionResult accepted
                                     && accepted.transactionId().equals(txId) && accepted.accepted());
-        await().alias("the slice instance is ACTIVE on the worker").atMost(BUDGET.duration()).until(() -> leader().kvStore()
-                .getTyped(new AetherKey.NodeArtifactKey(worker, artifact), AetherValue.NodeArtifactValue.class)
-                .filter(value -> value.state() == SliceState.ACTIVE).isPresent());
+        await().alias("the slice instance is ACTIVE on the worker").atMost(BUDGET.duration()).until(() -> activeInstancesOn(worker) == 1);
         assertThat(instancesPlacedOn(worker)).as("the instrument sees the deployed instance before the cut").isEqualTo(1);
     }
 
@@ -140,6 +137,13 @@ class FullCutWorkerStopTest {
 
     private AetherNode leader() {
         return cluster.currentLeader().flatMap(cluster::getNode).unwrap();
+    }
+
+    private long activeInstancesOn(NodeId worker) {
+        return cluster.slicesStatus().stream()
+                      .flatMap(slice -> slice.instances().stream())
+                      .filter(instance -> instance.nodeId().equals(worker.id()) && "ACTIVE".equals(instance.state()))
+                      .count();
     }
 
     private long instancesPlacedOn(NodeId worker) {
