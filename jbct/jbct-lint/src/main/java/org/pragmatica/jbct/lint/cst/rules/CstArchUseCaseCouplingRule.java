@@ -7,9 +7,11 @@ import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
+import org.pragmatica.jbct.lint.cst.LintRule;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 
@@ -43,6 +45,11 @@ public class CstArchUseCaseCouplingRule implements CstLintRule {
     @Override
     public String ruleId() {
         return RULE_ID;
+    }
+
+    @Override
+    public Set<JbctMode> modes() {
+        return LintRule.BUSINESS_ONLY;
     }
 
     @Override
