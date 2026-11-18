@@ -42,6 +42,11 @@ class DHTDepartureStaleDrainSetTest {
     /// so the budget only decides how long a stalled host may delay a page before it is abandoned (the 50 ms it replaced let a
     /// CI thread stall past the window lose a page: DeparturePushRun abandons a page whose window ended before its first send).
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(30).seconds();
+    /// Window of the no-drain-set control (#3345): its receivers refuse every key the sender does not replicate, and a refused key
+    /// stays owed and is resent until the window ends, so the control's push runs the whole window; a short one keeps it in time.
+    private static final TimeSpan CONTROL_BUDGET = TimeSpan.timeSpan(1).seconds();
+    /// Trials that run the control: it only has to show the instrument sees a loss.
+    private static final int CONTROL_TRIALS = 3;
     /// The legacy budget, kept to prove the instrument sees a stalled page lost.
     private static final TimeSpan LEGACY_BUDGET = TimeSpan.timeSpan(50).millis();
     /// Every page read delayed past [#LEGACY_BUDGET], injected deterministically: the delay is fixed, never a race.
@@ -86,7 +91,9 @@ class DHTDepartureStaleDrainSetTest {
             trials++;
             lossWithStale += losses(names, drainers, Set.copyOf(staleSet), BUDGET, 0L);
             lossWithExact += losses(names, drainers, drainers, BUDGET, 0L);
-            lossWithEmpty += losses(names, drainers, Set.of(), BUDGET, 0L);
+            lossWithEmpty += trials <= CONTROL_TRIALS
+                             ? losses(names, drainers, Set.of(), CONTROL_BUDGET, 0L)
+                             : 0;
         }
 
         System.out.printf("coDrain trials=%d lossStale=%d lossExact=%d lossEmpty(base behaviour)=%d%n",
