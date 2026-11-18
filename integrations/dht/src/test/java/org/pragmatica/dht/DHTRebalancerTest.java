@@ -751,7 +751,8 @@ class DHTRebalancerTest {
             var run = push(node, network, tuning, Set.of());
 
             assertThat(network.sends()).hasSizeBetween(2, 12);
-            assertThat(run.recorder().atRisk()).containsExactly(1);
+            assertThat(run.recorder().atRisk()).as("a deliverer exists: told through the report (#3345)").isEmpty();
+            assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
             assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
         }
 
@@ -765,10 +766,13 @@ class DHTRebalancerTest {
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
             node.putLocal(key("t11"), value("payload")).await();
             var network = ScriptedNetwork.scripted((_, _) -> Reply.ACK);
-            var run = push(node, network, T(5_000, 30_000, 50), Set.of(PEER_A));
+            var run = push(node, network, T(300, 700, 50), Set.of(PEER_A));
 
             assertThat(network.sends()).isNotEmpty().allSatisfy(sent -> assertThat(sent.target()).isEqualTo(PEER_A));
+            assertThat(network.ackedKeys()).contains("t11");
             assertThat(run.recorder().atRisk()).containsExactly(1);
+            assertThat(run.recorder().delivered()).isEmpty();
+            assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
             assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
         }
 
@@ -810,22 +814,24 @@ class DHTRebalancerTest {
             assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
         }
 
-        /// T13 (F7): the only plan-time survivor E leaves the ring before `baseDeadline`; the replicated key is promoted to sole, raises
-        /// AT_RISK, and its page keeps being resent past base.
+        /// T13: the only plan-time survivor A leaves the ring at the first send. A plan-time survivor is no holder (#3345): without an
+        /// ack the key stays owed, its page keeps being resent after A left, and the report counts it owed (as classed at plan time,
+        /// replicated; the F7 promotion to sole is gone). It has a deliverer, so no AT_RISK.
         @Test
         @Timeout(20)
-        void pushOnDeparture_existingReplicaRemovedBeforeBase_promotedToSole() {
+        void pushOnDeparture_existingReplicaRemovedMidPush_staysOwed() {
             var ring = fiveNodeRing();
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF2);
             var probe = keyHeldBy(ring, 2, Set.of(LOCAL, PEER_A), "t13");
             node.putLocal(probe, value("payload")).await();
-            var network = ScriptedNetwork.scripted((index, _) -> index == 0 ? removeAndDrop(ring, PEER_A) : Reply.DROP);
+            var network = ScriptedNetwork.scriptedOver(ring, (index, _) -> index == 0 ? removeAndDrop(ring, PEER_A) : Reply.DROP);
             var t0 = System.nanoTime();
-            var run = push(node, network, T(1_500, 3_000, 50), Set.of());
+            var run = push(node, network, T(1_500, 500, 50), Set.of());
 
-            assertThat(run.recorder().atRisk()).containsExactly(1);
             assertThat(network.sends()).anyMatch(sent -> sent.atNanos() - t0 > ms(1_500).nanos());
-            assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
+            assertThat(run.recorder().atRisk()).isEmpty();
+            assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 0));
+            assertThat(run.report().replicatedAtRisk()).isEqualTo(1);
         }
 
         /// T14 (F2): a window already used up sends nothing and reports every sole key.
