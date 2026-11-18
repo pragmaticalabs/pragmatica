@@ -35,7 +35,7 @@ import org.slf4j.Logger;
 /// (and, on the CONTROL lane, the Hello handshake) completes.
 ///
 /// Deserializes incoming bytes and routes them via the [MessageReceiver] callback. Also
-/// monitors channel writability to drain backpressure queues. All error attribution is
+/// hands the stream's writability and inactive events to the [BackpressureSettler] (#3313). All error attribution is
 /// lane-scoped so a stalled stream names its lane in the logs.
 ///
 /// Shared by both the dialer ([QuicClusterClient]) and the acceptor ([QuicClusterServer]):
@@ -47,21 +47,18 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final QuicTransportMetrics quicMetrics;
     private final MessageReceiver messageReceiver;
     private final Logger log;
-    private final Runnable onWritable;
+    private final BackpressureSettler settler;
 
-    QuicLaneDataHandler(NodeId peerId,
-                        StreamType lane,
-                        Deserializer deserializer,
-                        QuicTransportMetrics quicMetrics,
-                        MessageReceiver messageReceiver,
-                        Logger log) {
-        this(peerId,
-             lane,
-             deserializer,
-             quicMetrics,
-             messageReceiver,
-             log,
-             () -> {});
+    /// #3313 — what a lane stream's writability event (T-c) and inactive event (T-d) run: the transport's
+    /// backpressure-episode closer for the stream's peer ([QuicClusterNetwork#onLaneStreamEvent]). A required argument,
+    /// with no default: a no-op default is how the event came to be dropped at every production construction. A
+    /// transport with no episode ledger (a bare [QuicClusterServer] / [QuicClusterClient] in tests) passes [#NONE].
+    @FunctionalInterface
+    interface BackpressureSettler {
+        BackpressureSettler NONE = (_, _) -> {};
+
+        @Contract
+        void settleEpisodes(NodeId peerId, QuicStreamChannel stream);
     }
 
     QuicLaneDataHandler(NodeId peerId,
@@ -70,14 +67,14 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
                         QuicTransportMetrics quicMetrics,
                         MessageReceiver messageReceiver,
                         Logger log,
-                        Runnable onWritable) {
+                        BackpressureSettler settler) {
         this.peerId = peerId;
         this.lane = lane;
         this.deserializer = deserializer;
         this.quicMetrics = quicMetrics;
         this.messageReceiver = messageReceiver;
         this.log = log;
-        this.onWritable = onWritable;
+        this.settler = settler;
     }
 
     @Override
@@ -126,8 +123,8 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
     @Override
     @Contract
     public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
-        if (ctx.channel().isWritable()) {
-            onWritable.run();
+        if (ctx.channel().isWritable() && ctx.channel() instanceof QuicStreamChannel stream) {
+            settler.settleEpisodes(peerId, stream);
         }
 
         super.channelWritabilityChanged(ctx);
@@ -147,10 +144,17 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
     }
 
     /// #1578 — the stream ended outright (reset, or the connection closed): the lane must not keep
-    /// resolving to it.
+    /// resolving to it. #3313 T-d: the stream's backpressure episodes are settled too. netty-quic fires no writability
+    /// event when a stream closes, so without this an episode opened by a write the stream refused would outlive a
+    /// stream that died while its connection lives. The settle runs first, so a throw out of `streamEnded` cannot skip
+    /// it (#3313).
     @Override
     @Contract
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+        if (ctx.channel() instanceof QuicStreamChannel stream) {
+            settler.settleEpisodes(peerId, stream);
+        }
+
         streamEnded(ctx);
         super.channelInactive(ctx);
     }

@@ -11,7 +11,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 import io.netty.handler.codec.quic.QuicStreamChannel;
@@ -50,7 +52,9 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///     their durations (each capped at the marker-to-release span) add up to the hold over the held lanes. A lane that turns
 ///     writable for a moment mid-hold splits its episode in two and still passes; the lane flaps while the window fills,
 ///     so shorter episodes also appear. The log line does not name the sender, so per-lane attribution is by count and
-///     summed duration, not by identity. Every `entered` has its `cleared`, read from the same snapshot;
+///     summed duration, not by identity. Every `entered` has its `cleared`, read from the same snapshot; the log capture
+///     opens only while no node has an episode open ([#captureWhenNoEpisodeIsOpen], which names the one window it leaves), so an episode left open by startup
+///     traffic cannot show its `cleared` without its `entered`;
 ///     The physical state is sampled every 100 ms through the hold, per sender (by identity): each sender's lane must be
 ///     unwritable in at least 90% of the samples, so a lane released mid-hold fails by name even when the other absorbs the
 ///     aggregate;
@@ -146,8 +150,7 @@ class EmberConsensusLaneHoldTest {
         var senders = nodes.stream().filter(node -> node != held).toList();
         var arrivals = new CopyOnWriteArrayList<Arrival>();
 
-        try (var capture = LogCapture.capture(LOGGER, Level.INFO, true, event -> arrivals.add(new Arrival(System.nanoTime(),
-                                                                                                          event.getMessage().getFormattedMessage())))) {
+        try (var capture = captureWhenNoEpisodeIsOpen(nodes, arrivals)) {
             var inboundLanes = senders.stream().map(sender -> laneOf(held, sender)).toList();
 
             inboundLanes.forEach(lane -> lane.config().setAutoRead(false));
@@ -174,15 +177,18 @@ class EmberConsensusLaneHoldTest {
             var releasedAt = System.nanoTime();
 
             inboundLanes.forEach(lane -> lane.config().setAutoRead(true));
-            // Traffic after the release closes the episodes (the summary is written by the first write that finds the lane
-            // writable) and gives the held peer something to react to.
+            // Traffic after the release gives the held peer something to react to. It is not what closes the episodes: one
+            // closer ends them (#3313), run when a held frame leaves the backlog (written, given up, abandoned), at the lane
+            // stream's writability event and its inactive event, after a refused write is counted, and when the peer's
+            // connection closes or the peer departs; a successful write does not run it. An episode ends at the first such
+            // run that finds no frame of its (peer, lane) held in any backlog and its latest unwritable stream writable or gone.
             for (var sender : senders) {
                 put(sender, "kick-" + sender.self().id(), "after-release");
             }
             var releasedAtMs = (releasedAt - heldSince) / 1_000_000L;
 
             // The lane flaps while the flow-control window fills (many short episodes); the hold episodes are the ones that
-            // span the marker phase. Their summary is written by the first write after the release.
+            // span the marker phase. Their summary is written once the lane is writable after the release (see above).
             var holdMs = (releasedAt - markersAt) / 1_000_000L - SLACK_MS;
 
             var spanMs = (releasedAt - markersAt) / 1_000_000L;
@@ -217,9 +223,20 @@ class EmberConsensusLaneHoldTest {
             assertThat(gaveUp).as("held frames older than the frame budget are counted as RETRY_GAVE_UP").isPositive();
             awaitTrue("no backlog and no retry in flight after the release",
                       () -> senders.stream().allMatch(sender -> backlogCount(sender) == 0 && network(sender).consensusRetriesInFlight() == 0));
-            // An episode opened by a post-release flap is closed by the next write that finds the lane writable, which the
-            // catch-up traffic supplies: wait for the books to balance, each evaluation reading ONE snapshot.
-            awaitTrue("every episode that entered also cleared (none lost)", () -> balanced(List.copyOf(arrivals), heldId));
+            // A CONSENSUS episode on an open stream is ended by the closer (#3313): a held frame's write ends it, and an
+            // episode whose frames were all given up while the stream took no writes is ended by the stream's writability
+            // event when it turns writable. So the books balance without later traffic, and the test sends nothing after
+            // the kicks above. The wait covers a flap after this read (its frame's exit, or the writability event, ends it
+            // the same way) and a stream that closed with frames held, whose episode the drain's abandon or the peer's
+            // departure ends. Each evaluation reads ONE snapshot; on a timeout the failure names both counts and the
+            // episodes each sender still holds open.
+            var booksAtEmpty = List.copyOf(arrivals);
+            System.out.printf("LANE-HOLD-BOOKS at empty backlogs: entered=%d cleared=%d%n",
+                              enteredFor(booksAtEmpty, heldId).size(),
+                              clearedFor(booksAtEmpty, heldId).size());
+            awaitTrue(() -> unbalancedBooks(List.copyOf(arrivals), heldId, senders),
+                      60_000L,
+                      () -> balanced(List.copyOf(arrivals), heldId));
             // (3) THE #3194 ASSERTION.
             var releaseNanos = releasedAt;
 
@@ -299,6 +316,14 @@ class EmberConsensusLaneHoldTest {
         return enteredFor(snapshot, peer).size() == clearedFor(snapshot, peer).size();
     }
 
+    /// The failure message of the books wait: both counts from one snapshot, and each sender's still-open (peer, lane)
+    /// episodes.
+    private static String unbalancedBooks(List<Arrival> snapshot, NodeId peer, List<AetherNode> senders) {
+        return "every episode that entered also cleared (none lost): entered=" + enteredFor(snapshot, peer).size()
+               + " cleared=" + clearedFor(snapshot, peer).size()
+               + " still open " + senders.stream().map(sender -> sender.self() + "=" + openEpisodes(sender)).toList();
+    }
+
     /// At least one episode per sender and, summing each episode capped at the marker-to-release span, the hold on every sender.
     private static boolean coversHold(List<Arrival> episodes, int senders, long spanMs, long holdMs) {
         var covered = episodes.stream().mapToLong(a -> Math.min(spanMs, durationMs(a))).sum();
@@ -354,6 +379,64 @@ class EmberConsensusLaneHoldTest {
         }
     }
 
+    /// #3313: opens the capture only at a point where no node has a backpressure episode open, so every episode whose
+    /// `cleared` line the capture sees also had its `entered` line seen (an episode open at the attach, left by startup
+    /// traffic, once showed 15 `cleared` against 14 `entered`). Each attempt reads every node's open episodes, attaches,
+    /// and reads them again; it keeps the capture only if both reads found none and the capture has seen no backpressure
+    /// line, else it closes the capture, drops what it saw and tries again on the next poll. Not closed: the network logs
+    /// `entered` just before it stores the episode, so an episode whose line is logged before the attach and whose record
+    /// is stored after the second read passes both reads unseen; that needs the opening thread to stall between two adjacent
+    /// statements for the whole attach.
+    private static LogCapture captureWhenNoEpisodeIsOpen(List<AetherNode> nodes, List<Arrival> arrivals) {
+        var kept = new AtomicReference<LogCapture>();
+
+        awaitTrue(() -> "a log capture opened while no node had a backpressure episode open; still open "
+                        + nodes.stream().map(node -> node.self() + "=" + openEpisodes(node)).toList(),
+                  60_000L,
+                  () -> attachedWithNoEpisodeOpen(nodes, arrivals, kept));
+        return kept.get();
+    }
+
+    private static boolean attachedWithNoEpisodeOpen(List<AetherNode> nodes, List<Arrival> arrivals, AtomicReference<LogCapture> kept) {
+        if (!noEpisodeOpen(nodes)) {
+            return false;
+        }
+        var capture = LogCapture.capture(LOGGER, Level.INFO, true, event -> arrivals.add(new Arrival(System.nanoTime(),
+                                                                                                      event.getMessage().getFormattedMessage())));
+
+        if (noEpisodeOpen(nodes) && arrivals.stream().noneMatch(arrival -> arrival.message().startsWith("Backpressure on peer"))) {
+            kept.set(capture);
+            return true;
+        }
+        capture.close();
+        arrivals.clear();
+        return false;
+    }
+
+    private static boolean noEpisodeOpen(List<AetherNode> nodes) {
+        return nodes.stream().allMatch(node -> openEpisodeCount(node) == 0);
+    }
+
+    /// `node`'s open backpressure episode count (the size of the episode map).
+    @SuppressWarnings("JBCT-EX-01")
+    private static int openEpisodeCount(AetherNode node) {
+        try {
+            return ((Map<?, ?>) field(QuicClusterNetwork.class, "backpressureEpisodes").get(network(node))).size();
+        } catch (IllegalAccessException e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    /// `node`'s open backpressure episodes, as (peer, lane) pairs.
+    @SuppressWarnings({"unchecked", "JBCT-EX-01"})
+    private static String openEpisodes(AetherNode node) {
+        try {
+            return ((Map<?, ?>) field(QuicClusterNetwork.class, "backpressureEpisodes").get(network(node))).keySet().toString();
+        } catch (IllegalAccessException e) {
+            throw new AssertionError(e);
+        }
+    }
+
     private static long gaveUp(AetherNode node) {
         return network(node).quicMetrics().droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP);
     }
@@ -394,11 +477,16 @@ class EmberConsensusLaneHoldTest {
     }
 
     private static void awaitTrue(String what, long budgetMs, BooleanSupplier condition) {
+        awaitTrue(() -> what, budgetMs, condition);
+    }
+
+    /// `what` is read only on a timeout, so it can report the state the wait gave up on.
+    private static void awaitTrue(Supplier<String> what, long budgetMs, BooleanSupplier condition) {
         var deadline = System.currentTimeMillis() + budgetMs;
 
         while (!condition.getAsBoolean()) {
             if (System.currentTimeMillis() > deadline) {
-                throw new AssertionError("timed out waiting: " + what);
+                throw new AssertionError("timed out waiting: " + what.get());
             }
             pause(250L);
         }

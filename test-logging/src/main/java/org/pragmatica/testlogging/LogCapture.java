@@ -66,10 +66,25 @@ public final class LogCapture implements AutoCloseable {
     /// As [#capture(String, Level, boolean)], and `observer` is also called synchronously, on the logging thread, for
     /// every captured event (arrival order is preserved).
     public static LogCapture capture(String loggerName, Level threshold, boolean additive, Consumer<LogEvent> observer) {
+        return capture(loggerName, threshold, additive, observer, true);
+    }
+
+    /// As [#capture(String, Level, boolean, Consumer)], except that what `observer` throws reaches the code that
+    /// logged (the appender does not ignore exceptions; log4j rethrows a `LoggingException` as is and wraps any other):
+    /// for a test of what a throwing logger does to its caller. An event whose observer threw is not captured.
+    public static LogCapture captureRethrowing(String loggerName, Level threshold, boolean additive, Consumer<LogEvent> observer) {
+        return capture(loggerName, threshold, additive, observer, false);
+    }
+
+    private static LogCapture capture(String loggerName,
+                                      Level threshold,
+                                      boolean additive,
+                                      Consumer<LogEvent> observer,
+                                      boolean ignoreExceptions) {
         var context = (LoggerContext) LogManager.getContext(false);
         var configuration = context.getConfiguration();
         var displaced = configuration.getLoggers().get(loggerName);
-        var appender = new CapturingAppender("LogCapture-" + loggerName, observer);
+        var appender = new CapturingAppender("LogCapture-" + loggerName, observer, ignoreExceptions);
         var installed = new LoggerConfig(loggerName, threshold, additive);
 
         appender.start();
@@ -85,7 +100,7 @@ public final class LogCapture implements AutoCloseable {
     /// detaches the capture from that root.
     public static LogCapture captureRoot(Configuration configuration) {
         var root = configuration.getRootLogger();
-        var appender = new CapturingAppender("LogCapture-root", _ -> {});
+        var appender = new CapturingAppender("LogCapture-root", _ -> {}, true);
         var context = (LoggerContext) LogManager.getContext(false);
 
         appender.start();
@@ -142,8 +157,8 @@ public final class LogCapture implements AutoCloseable {
         private final List<LogEvent> events = new CopyOnWriteArrayList<>();
         private final Consumer<LogEvent> observer;
 
-        private CapturingAppender(String name, Consumer<LogEvent> observer) {
-            super(name, (Filter) null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY);
+        private CapturingAppender(String name, Consumer<LogEvent> observer, boolean ignoreExceptions) {
+            super(name, (Filter) null, PatternLayout.createDefaultLayout(), ignoreExceptions, Property.EMPTY_ARRAY);
             this.observer = observer;
         }
 

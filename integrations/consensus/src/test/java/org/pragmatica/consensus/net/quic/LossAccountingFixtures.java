@@ -19,15 +19,20 @@ package org.pragmatica.consensus.net.quic;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.handler.codec.quic.QuicStreamChannelConfig;
+import io.netty.util.Attribute;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterFormationConfig;
 import org.pragmatica.consensus.net.quic.TransportTripwireFixtures.TripwireTopology;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.messaging.StreamType;
+import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.slf4j.LoggerFactory;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -107,6 +112,45 @@ final class LossAccountingFixtures {
         when(stream.config()).thenReturn(mock(QuicStreamChannelConfig.class));
 
         return stream;
+    }
+
+    /// #3313: fires `stream`'s writability event through a data handler built the way every production construction
+    /// builds one ([PeerOpenedLaneRouter#dataHandler]), with the settler `network` gives its server and client. The event
+    /// is the only thing that runs the closer here: no write is made.
+    static void fireWritabilityEvent(QuicClusterNetwork network, QuicStreamChannel stream) throws Exception {
+        productionDataHandler(network).channelWritabilityChanged(contextOf(stream));
+    }
+
+    /// #3313 T-d: fires `stream`'s inactive event (a reset, or the stream closed while its connection lives) through a
+    /// data handler built the way every production construction builds one, with the settler `network` gives its server
+    /// and client. netty-quic fires no writability event when a stream closes, so this event is the only thing that runs
+    /// the closer here: no write is made, no connection closes, no peer departs. The stream's connection carries no
+    /// bound peer connection, so the handler's #1578 lane release finds nothing to release.
+    static void fireStreamInactive(QuicClusterNetwork network, QuicStreamChannel stream) throws Exception {
+        var connection = mock(QuicChannel.class);
+        Attribute<QuicPeerConnection> unbound = mock();
+
+        when(connection.attr(PeerOpenedLaneRouter.PEER_CONNECTION)).thenReturn(unbound);
+        when(stream.parent()).thenReturn(connection);
+        productionDataHandler(network).channelInactive(contextOf(stream));
+    }
+
+    private static QuicLaneDataHandler productionDataHandler(QuicClusterNetwork network) {
+        var router = new PeerOpenedLaneRouter(mock(Deserializer.class),
+                                              QuicTransportMetrics.quicTransportMetrics(),
+                                              (_, _) -> {},
+                                              LoggerFactory.getLogger(LossAccountingFixtures.class),
+                                              network.backpressureSettler());
+
+        return router.dataHandler(PEER, StreamType.CONSENSUS);
+    }
+
+    private static ChannelHandlerContext contextOf(QuicStreamChannel stream) {
+        var ctx = mock(ChannelHandlerContext.class);
+
+        when(ctx.channel()).thenReturn(stream);
+
+        return ctx;
     }
 
     static QuicPeerConnection connection(NodeId peerId, QuicPeerConnection.LaneOpener opener) {
