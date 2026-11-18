@@ -1029,20 +1029,11 @@ public sealed interface WorkerHierarchyAssembly {
                                            java.util.function.BooleanSupplier ready,
                                            Logger log) {
         synchronized (governorAnnouncerHolder) {
-            // #3330: a worker runtime, once started, is the process's only one. A put naming the community it runs in is a
-            // repeated activation; a put naming another community cannot reach a live worker (its own directive is removed
-            // first, and that removal halts it or a running drain ends it; a worker changes community only by retirement and
-            // a fresh WorkerJoin).
-            var running = Option.option(governorAnnouncerHolder.get());
-
-            if (running.isPresent()) {
-                running.filter(announcer -> !announcer.communityId()
-                                                      .equals(communityId))
-                       .onPresent(announcer -> log.warn("Worker {} ignores a directive for community {}: it runs in {}, and a worker changes community only by retirement and a fresh join",
-                                                        selfId.id(),
-                                                        communityId,
-                                                        announcer.communityId()));
-
+            // #3330: a worker runtime, once started, is the process's only one, so any later own WORKER directive starts
+            // nothing here. A put naming the same community is a repeat. A put naming another community is a move, which a
+            // worker never makes in place: OwnDirectiveRetirement.onPut halts the node on that same delivery (unless a
+            // drain already runs and ends the process), so this runtime is left as it is until the drain stops it.
+            if (Option.option(governorAnnouncerHolder.get()).isPresent()) {
                 return;
             }
 

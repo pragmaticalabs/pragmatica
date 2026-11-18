@@ -54,6 +54,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// supplied the right drain probe and worker flag; the halt reads no store (#3330). The halt is the real local drain, submitted as an undo.
 class OwnDirectiveWiringTest {
     private static final NodeId SELF = new NodeId("worker-self");
+    private static final NodeId OTHER = new NodeId("worker-other");
     private static final ActivationDirectiveValue WORKER_DIRECTIVE = new ActivationDirectiveValue(ActivationDirectiveValue.WORKER, "", "");
     private static final ActivationDirectiveValue OTHER_COMMUNITY_DIRECTIVE = new ActivationDirectiveValue(ActivationDirectiveValue.WORKER,
                                                                                                           "community-2",
@@ -123,6 +124,48 @@ class OwnDirectiveWiringTest {
         assertTrue(retirement.halted());
         assertEquals(List.of(DrainReason.DIRECTIVE_RETIRED), reasons);
         assertEquals(List.of(OperatorWarningCode.OWN_DIRECTIVE_RETIRED), ownWarningCodes());
+    }
+
+    /// #3330 put edge: a remove + re-create inside one install gap reaches the worker as ONE put naming another community
+    /// (KVStore install diff). Through the registered put edge that put halts the node like a removal.
+    @Test
+    void ownDirectivePutForAnotherCommunity_throughTheAssembledRouter_startsTheLocalDrain_andRaisesTheEvent() throws InterruptedException {
+        var retirement = arm(workerConfig());
+
+        apply(new KVCommand.Put<>(ownKey(), WORKER_DIRECTIVE));
+        apply(new KVCommand.Put<>(ownKey(), OTHER_COMMUNITY_DIRECTIVE));
+
+        assertTrue(drained.await(5, TimeUnit.SECONDS), "a put naming another community must reach the halt through the registered put edge");
+        assertTrue(retirement.halted());
+        assertEquals(List.of(DrainReason.DIRECTIVE_RETIRED), reasons);
+        assertEquals(List.of(OperatorWarningCode.OWN_DIRECTIVE_RETIRED), ownWarningCodes());
+    }
+
+    @Test
+    void ownDirectivePutForTheSameCommunity_isARepeat_andDoesNotHalt() {
+        var retirement = arm(workerConfig());
+
+        apply(new KVCommand.Put<>(ownKey(), WORKER_DIRECTIVE));
+        apply(new KVCommand.Put<>(ownKey(), new ActivationDirectiveValue(ActivationDirectiveValue.WORKER, "", "governor-hint")));
+        flushHalts();
+
+        assertFalse(retirement.halted());
+        assertEquals(List.of(), reasons);
+        assertEquals(List.of(), ownWarningCodes());
+    }
+
+    /// Mutant D of v3350 (own-key check removed on the remove edge) was noticed only by the unit test; this pins it here.
+    @Test
+    void anotherNodesDirectiveRemove_afterOwnPut_doesNotHalt() {
+        var retirement = arm(workerConfig());
+
+        apply(new KVCommand.Put<>(ownKey(), WORKER_DIRECTIVE));
+        apply(new KVCommand.Put<>(ActivationDirectiveKey.activationDirectiveKey(OTHER), WORKER_DIRECTIVE));
+        apply(new KVCommand.Remove<>(ActivationDirectiveKey.activationDirectiveKey(OTHER)));
+        flushHalts();
+
+        assertFalse(retirement.halted());
+        assertEquals(List.of(), reasons);
     }
 
     @Test
