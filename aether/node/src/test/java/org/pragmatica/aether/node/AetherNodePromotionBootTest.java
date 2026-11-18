@@ -127,6 +127,8 @@ class AetherNodePromotionBootTest {
     }
 
     private void awaitActive() throws InterruptedException {
+        LoneNodeGenesis.mintAsTheLeader(node);
+
         var deadline = System.currentTimeMillis() + ACTIVE_BOUND_MS;
 
         while (node.nodeLifecycle().currentState() != NodeState.ACTIVE && System.currentTimeMillis() < deadline) {

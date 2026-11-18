@@ -55,7 +55,7 @@ class HierarchicalMovementTakeoverTest {
         changeDestination("east");
         await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).untilAsserted(() ->
             assertThat(operation().filter(value -> value.phase() == AetherValue.PlacementOperationPhase.COMPLETE).isPresent())
-                .as("initial provisioning: %s", operation()).isTrue());
+                .as("initial provisioning: %s", PlacementGateDiagnostics.describe(leader(), "stable")).isTrue());
         var original = operation().unwrap().targetNode();
         assertAssignmentAndSource(original, "east");
         assertThat(cluster.getNode(original.id()).isPresent()).isTrue();

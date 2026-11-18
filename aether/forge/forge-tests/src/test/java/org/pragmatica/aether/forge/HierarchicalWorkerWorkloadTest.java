@@ -19,7 +19,6 @@ import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
-import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -83,9 +82,7 @@ class HierarchicalWorkerWorkloadTest {
         assertThat(node.<Object>apply(List.of(transaction)).await(BUDGET).unwrap())
             .anyMatch(result -> result instanceof KVCommand.TransactionResult accepted && accepted.transactionId().equals(id) && accepted.accepted());
         await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).untilAsserted(() -> {
-            var active = cluster.allNodes().stream().filter(candidate -> leader().kvStore()
-                .getTyped(new AetherKey.NodeArtifactKey(candidate.self(), artifact), AetherValue.NodeArtifactValue.class)
-                .filter(value -> value.state() == SliceState.ACTIVE).isPresent()).map(AetherNode::self).toList();
+            var active = cluster.allNodes().stream().filter(candidate -> SliceStates.isActive(leader(), candidate.self(), artifact)).map(AetherNode::self).toList();
             assertThat(active).hasSize(3).allMatch(workers::contains);
         });
         var core = cluster.status().nodes().stream().filter(status -> !workers.stream().anyMatch(worker -> worker.id().equals(status.id()))).findFirst().orElseThrow();

@@ -625,8 +625,8 @@ class JoinTableTest {
              .record(gone, DepartureState.DEPARTED, 1L, 0x77L, DepartureCause.WORKER_LEAVE);
         }
 
-        w.seams(s -> s.withCommunityPolicies(policies())
-                      .withMemberSource(Map.of(fresh, "pool"))).activate();
+        w.placements(policies())
+         .seams(s -> s.withMemberSource(Map.of(fresh, "pool"))).activate();
         w.h.deliver(new ClusterInput.WorkerJoin(fresh, w.admit(fresh, 0x55L)));
 
         return w.stored(new ActivationDirectiveKey(fresh))
@@ -661,8 +661,8 @@ class JoinTableTest {
                     Fixtures.worker("a"))
          .directive(node("b1"),
                     Fixtures.worker("b"));
-        w.seams(s -> s.withCommunityPolicies(policies())
-                      .withMemberSource(Map.of(fresh, "pool"))).activate();
+        w.placements(policies())
+         .seams(s -> s.withMemberSource(Map.of(fresh, "pool"))).activate();
         w.h.deliver(new ClusterInput.WorkerJoin(fresh, w.admit(fresh, 0x55L)));
         assertThat(w.stored(new ActivationDirectiveKey(fresh)).map(v -> ((ActivationDirectiveValue) v).communityId())).isEqualTo(Option.some("b"));
     }
