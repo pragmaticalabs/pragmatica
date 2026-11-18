@@ -34,14 +34,16 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///
 /// The issue claims (read from code, not run) that the leader marks ITSELF DEPARTING while its own
 /// `DrainProcedure` never leaves INACTIVE (the ping that carries the drain command skips the sender). This test
-/// RECORDS what happens (`T3348` lines on stdout, one per observable change) and asserts the expected behaviour
-/// of the issue: "the drain either works or is refused at the route; it never half-applies".
+/// pins that the leader drain is REFUSED at the route and nothing is half-applied: the answer is `404 Node lifecycle not
+/// found` (asserted, status and body), on the leader's port, on a follower's port, and on the NEW leader after a leader
+/// change; and at no 100 ms sample over a window longer than the departure timeout is the leader DEPARTING on itself while
+/// its own `DrainProcedure` is INACTIVE (`T3348` lines on stdout, one per observable change).
 ///
-/// Observed at `98e479c8c6` (3 cores, default engine, 5 runs): the route REFUSES with `404 Node lifecycle not found`, on the
-/// leader's port and on a follower's, because no node's readiness view carries the leader (the leader's own view is built from
-/// pongs and omits itself); nothing is dispatched, so the leader stays Member/INACTIVE and keeps leadership. The claim's
-/// DEPARTING path is therefore not reached through the route. This is a positive pin of "never half-applies"; the refusal's
-/// status and wording are NOT pinned (a 404 that names no remedy is a separate documentation/typed-error question).
+/// Why the 404 is pinned and not only the samples: the refusal comes from the readiness view, which never carries the leader's
+/// own row (the leader's view is built from pongs and the leader never pings itself). The latent half-apply is REAL: with a
+/// route that treats self as READY (verifier mutant, v3356) the leader goes DEPARTING with an INACTIVE drain at 149 of 150
+/// samples and returns to Member at the departure timeout. The 404 is the ONLY guard; a future fix that adds the leader's own
+/// row to the view must ship together with a drain that runs on the leader, and must keep this test.
 ///
 /// The `DrainProcedure` is not reachable through the `AetherNode` interface (it is a local of the node
 /// assembly), so the test finds it by walking the node's object graph (instrumentation only, no production change).
@@ -61,6 +63,8 @@ class EmberLeaderDrainTest {
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final long LEADER_BUDGET_MS = 90_000L;
     private static final long READY_BUDGET_MS = 90_000L;
+    private static final int LEADER_CHANGE_SIZE = 4;
+    private static final String REFUSAL_BODY = "Node lifecycle not found";
     // membership departure timeout = MembershipConfig.DEFAULT_SPLIT_TIMEOUT (15 s); the window covers it with margin
     private static final long OBSERVE_WINDOW_MS = 60_000L;
     private static final long SAMPLE_MS = 100L;
@@ -78,18 +82,18 @@ class EmberLeaderDrainTest {
     @Test
     @Timeout(600)
     void followerDrain_control_drainRunsAndNodeExits() {
-        start();
+        start(CLUSTER_SIZE);
         var leaderId = cluster.currentLeader().unwrap();
         var follower = cluster.allNodes().stream().map(n -> n.self().id()).filter(id -> !id.equals(leaderId)).findFirst().orElseThrow();
         var drainee = cluster.getNode(follower).unwrap();
         var procedure = drainProcedureOf(drainee);
 
-        awaitReady(follower);
+        awaitFollowersReady(cluster.getNode(leaderId).unwrap(), List.of(follower));
 
         var answer = postDrain(follower, cluster.getLeaderManagementPort().or(-1));
 
         System.out.println("T3348 control size=" + CLUSTER_SIZE + " route=" + answer);
-        assertThat(answer).as("control: the follower drain is admitted by the route").startsWith("2");
+        assertThat(answer.status()).as("control: the follower drain is admitted by the route (200), answered: " + answer).isEqualTo(200);
 
         var deadline = System.currentTimeMillis() + OBSERVE_WINDOW_MS;
 
@@ -107,42 +111,79 @@ class EmberLeaderDrainTest {
         assertThat(cluster.getNode(follower).isEmpty()).as("control: the drained follower exited").isTrue();
     }
 
-    /// The claim of #3348. Records the timeline, then asserts the expected behaviour: at no sample is the leader
+    /// The claim of #3348. The route REFUSES (404, `Node lifecycle not found`) and at no sample is the leader
     /// DEPARTING on itself while its own drain procedure is INACTIVE.
     @Test
     @Timeout(600)
-    void leaderDrain_throughTheLeadersRoute_neverHalfApplies() {
-        leaderDrainScenario(false);
+    void leaderDrain_throughTheLeadersRoute_refusedAndNeverHalfApplies() {
+        start(CLUSTER_SIZE);
+        var leaderId = cluster.currentLeader().unwrap();
+        var followers = followersOf(leaderId);
+
+        awaitFollowersReady(cluster.getNode(leaderId).unwrap(), idsOf(followers));
+        drainLeaderAndObserve(leaderId, cluster.getLeaderManagementPort().or(-1), followers, "leader");
     }
 
     /// The same drain posted to a FOLLOWER's management port: an operator may address any node.
     @Test
     @Timeout(600)
-    void leaderDrain_throughAFollowersRoute_neverHalfApplies() {
-        leaderDrainScenario(true);
+    void leaderDrain_throughAFollowersRoute_refusedAndNeverHalfApplies() {
+        start(CLUSTER_SIZE);
+        var leaderId = cluster.currentLeader().unwrap();
+        var followers = followersOf(leaderId);
+        var viaNode = followers.getFirst();
+        var port = cluster.status().nodes().stream().filter(n -> n.id().equals(viaNode.self().id())).findFirst().orElseThrow().mgmtPort();
+
+        awaitFollowersReady(cluster.getNode(leaderId).unwrap(), idsOf(followers));
+        awaitFollowersReady(viaNode, idsOf(followers.stream().filter(n -> n != viaNode).toList()));
+        drainLeaderAndObserve(leaderId, port, followers, "follower");
     }
 
-    private void leaderDrainScenario(boolean viaFollower) {
-        start();
-        var leaderId = cluster.currentLeader().unwrap();
+    /// After a leader change the NEW leader is refused the same way: its readiness view omits itself too.
+    @Test
+    @Timeout(900)
+    void leaderDrain_afterLeaderChange_newLeaderRefusedAndNeverHalfApplies() {
+        start(LEADER_CHANGE_SIZE);
+        var firstLeader = cluster.currentLeader().unwrap();
+
+        assertThat(cluster.killNode(firstLeader, false).await(STOP_BOUND).isSuccess()).as("the first leader was killed").isTrue();
+
+        var newLeader = awaitNewLeader(firstLeader);
+        var followers = followersOf(newLeader);
+
+        awaitFollowersReady(cluster.getNode(newLeader).unwrap(), idsOf(followers));
+        drainLeaderAndObserve(newLeader, cluster.getLeaderManagementPort().or(-1), followers, "new-leader");
+    }
+
+    private List<AetherNode> followersOf(String leaderId) {
+        return cluster.allNodes().stream().filter(n -> !n.self().id().equals(leaderId)).toList();
+    }
+
+    private static List<String> idsOf(List<AetherNode> nodes) {
+        return nodes.stream().map(n -> n.self().id()).toList();
+    }
+
+    private String awaitNewLeader(String previous) {
+        var deadline = System.currentTimeMillis() + LEADER_BUDGET_MS;
+
+        while (System.currentTimeMillis() < deadline
+               && !cluster.currentLeader().filter(id -> !id.equals(previous) && cluster.getNode(id).isPresent()).isPresent()) {
+            sleepQuietly(500L);
+        }
+
+        var found = cluster.currentLeader().filter(id -> !id.equals(previous));
+
+        assertThat(found.isPresent()).as("a new leader after " + previous + " was killed").isTrue();
+        return found.unwrap();
+    }
+
+    private void drainLeaderAndObserve(String leaderId, int port, List<AetherNode> followers, String via) {
         var leader = cluster.getNode(leaderId).unwrap();
         var leaderNodeId = nodeId(leaderId);
         var procedure = drainProcedureOf(leader);
-        var followers = cluster.allNodes().stream().filter(n -> !n.self().id().equals(leaderId)).toList();
-
-        awaitReady(leaderId);
-
-        var port = viaFollower
-                   ? cluster.status().nodes().stream().filter(n -> !n.id().equals(leaderId)).findFirst().orElseThrow().mgmtPort()
-                   : cluster.getLeaderManagementPort().or(-1);
-
-        if (viaFollower) {
-            awaitViewOf(followers.getFirst(), leaderId);
-        }
-
         var answer = postDrain(leaderId, port);
 
-        System.out.println("T3348 leader size=" + CLUSTER_SIZE + " via=" + (viaFollower ? "follower" : "leader") + " port=" + port + " leader=" + leaderId + " route=" + answer);
+        System.out.println("T3348 leader size=" + cluster.allNodes().size() + " via=" + via + " port=" + port + " leader=" + leaderId + " route=" + answer);
 
         var halfApplied = new ArrayList<String>();
         var last = "";
@@ -175,11 +216,13 @@ class EmberLeaderDrainTest {
         assertThat(halfApplied)
             .as("#3348: the leader was DEPARTING on itself while its own DrainProcedure was INACTIVE; route answered " + answer)
             .isEmpty();
+        assertThat(answer.status()).as("the route answered with an HTTP status (a connection failure is -1): " + answer).isEqualTo(404);
+        assertThat(answer.body()).as("the refusal is the lifecycle-not-found answer: " + answer).contains(REFUSAL_BODY);
     }
 
-    private void start() {
+    private void start(int size) {
         cluster = EmberTestPorts.startedCluster(PORTS,
-                                                basePort -> emberCluster(CLUSTER_SIZE,
+                                                basePort -> emberCluster(size,
                                                                          basePort,
                                                                          basePort + MGMT_OFFSET,
                                                                          basePort + APP_HTTP_OFFSET,
@@ -194,33 +237,35 @@ class EmberLeaderDrainTest {
         assertThat(cluster.getLeaderManagementPort().isPresent()).as("a leader is elected").isTrue();
     }
 
-    /// The route answers 404 "Node lifecycle not found" until the leader's readiness view reports the target READY
-    /// (see EmberPlannedDepartureAlertsTest#drain). For the leader's own id the view may never carry it: wait the
-    /// budget, record the outcome, and POST once either way.
-    private void awaitReady(String nodeId) {
-        var leader = cluster.getNode(cluster.currentLeader().unwrap()).unwrap();
-        BooleanSupplier ready = () -> leader.metricsCollector().reportedStates().get(nodeId(nodeId)) == NodeReportedState.READY;
+    /// The route answers 404 "Node lifecycle not found" until the receiving node's readiness view reports the target READY.
+    /// Wait (bounded; failing with a message) for what the drain needs: every given node READY in the viewer's own view.
+    /// The leader's own row is NOT waited for: it never appears (the view is built from pongs and the leader never pongs itself).
+    private static void awaitFollowersReady(AetherNode viewer, List<String> nodeIds) {
+        BooleanSupplier ready = () -> nodeIds.stream()
+                                             .allMatch(id -> viewer.metricsCollector().reportedStates().get(nodeId(id)) == NodeReportedState.READY);
         var deadline = System.currentTimeMillis() + READY_BUDGET_MS;
 
         while (System.currentTimeMillis() < deadline && !ready.getAsBoolean()) {
             sleepQuietly(500L);
         }
 
-        System.out.println("T3348 readiness view of " + nodeId + " on the leader: " + leader.metricsCollector().reportedStates().get(nodeId(nodeId)));
+        System.out.println("T3348 readiness view of " + viewer.self().id() + ": " + viewer.metricsCollector().reportedStates());
+        assertThat(ready.getAsBoolean()).as(nodeIds + " are READY in the view of " + viewer.self().id() + " within " + READY_BUDGET_MS + " ms").isTrue();
     }
 
-    /// A follower's own readiness view of the leader (the route reads the receiving node's view).
-    private static void awaitViewOf(AetherNode viewer, String nodeId) {
-        var deadline = System.currentTimeMillis() + READY_BUDGET_MS;
-
-        while (System.currentTimeMillis() < deadline && viewer.metricsCollector().reportedStates().get(nodeId(nodeId)) != NodeReportedState.READY) {
-            sleepQuietly(500L);
+    /// The HTTP answer of a drain POST; status -1 means no answer was received (connection failure).
+    private record Answer(int status, String body) {
+        static Answer answer(int status, String body) {
+            return new Answer(status, body);
         }
 
-        System.out.println("T3348 readiness view of " + nodeId + " on follower " + viewer.self().id() + ": " + viewer.metricsCollector().reportedStates().get(nodeId(nodeId)));
+        @Override
+        public String toString() {
+            return status + " " + body;
+        }
     }
 
-    private String postDrain(String nodeId, int port) {
+    private Answer postDrain(String nodeId, int port) {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://127.0.0.1:" + port + "/api/v1/nodes/drain/" + nodeId))
                                  .timeout(Duration.ofSeconds(30))
@@ -231,9 +276,9 @@ class EmberLeaderDrainTest {
         try (var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(30)).build()) {
             var response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
-            return response.statusCode() + " " + response.body();
+            return Answer.answer(response.statusCode(), response.body());
         } catch (Exception e) {
-            return "-1 " + e;
+            return Answer.answer(-1, e.toString());
         }
     }
 
