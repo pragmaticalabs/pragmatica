@@ -10,6 +10,7 @@ import java.net.InetAddress;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -50,6 +51,7 @@ class AetherNodeStartSwimTest {
     private static final NodeId PEER = new NodeId("node-2");
     /// Covers the transport bind's own 5 s await plus async callback delivery.
     private static final long WAIT_SECONDS = 10;
+    private static final int BIND_ATTEMPTS = 5;
     private static final Cause SWIM_BIND_FAILED = Causes.cause("SWIM UDP port already bound (test cause)");
     private static final Cause FORMATION_FAILED = Causes.cause("cluster formation failed (test cause)");
 
@@ -108,20 +110,22 @@ class AetherNodeStartSwimTest {
 
     @Test
     void startSwim_swimPortFree_announcesTheJoinAndDoesNotFailTheNode() throws Exception {
-        var detector = detectorWithSwimPort(freeUdpPort());
+        var started = startOnFreePort((detector, failNode) -> AetherNode.startSwim(detector,
+                                                                                   network(),
+                                                                                   encryptor(),
+                                                                                   this::announce,
+                                                                                   failNode,
+                                                                                   this::diverge,
+                                                                                   Promise.promise()));
 
         try {
-            AetherNode.startSwim(detector, network(), encryptor(), this::announce, this::fail, this::diverge, Promise.promise());
-
             assertThat(announced.await(WAIT_SECONDS, TimeUnit.SECONDS))
                 .as("a started SWIM must announce the join")
                 .isTrue();
-            assertThat(failed.await(500, TimeUnit.MILLISECONDS))
-                .as("a started SWIM must not fail the node")
-                .isFalse();
+            assertThat(started.failNodeRuns().get()).as("a started SWIM must not fail the node").isZero();
             assertThat(announcements.get()).isEqualTo(1);
         } finally {
-            detector.stop();
+            started.detector().stop();
         }
     }
 
@@ -210,19 +214,22 @@ class AetherNodeStartSwimTest {
     /// SWIM start failure, and a guard routed to the wrong hook would stop the node with the wrong exit.
     @Test
     void startSwim_gossipKeyDiverges_exitsThroughTheNodesDivergenceHook() throws Exception {
-        var swimPort = freeUdpPort();
-        var detector = detectorWithSwimPort(swimPort);
         var gateClock = new AtomicLong();
+        var detectors = new CopyOnWriteArrayList<CoreSwimHealthDetector>();
 
         try (var sender = new DatagramSocket()) {
-            AetherNode.startSwim(detector,
-                                 network(),
-                                 RotatingGossipEncryptor.rotatingGossipEncryptor(aesGcm(NODE_KEY, NODE_KEY_ID)),
-                                 this::announce,
-                                 this::fail,
-                                 this::diverge,
-                                 gateClock::get,
-                                 Promise.promise());
+            var started = startOnFreePort((detector, failNode) -> AetherNode.startSwim(detector,
+                                                                                       network(),
+                                                                                       RotatingGossipEncryptor.rotatingGossipEncryptor(aesGcm(NODE_KEY,
+                                                                                                                                              NODE_KEY_ID)),
+                                                                                       this::announce,
+                                                                                       failNode,
+                                                                                       this::diverge,
+                                                                                       gateClock::get,
+                                                                                       Promise.promise()));
+            var swimPort = started.swimPort();
+
+            detectors.add(started.detector());
             assertThat(announced.await(WAIT_SECONDS, TimeUnit.SECONDS)).as("SWIM started").isTrue();
             gateClock.set(GossipKeyDivergenceGuard.ARMING_DELAY_NANOS + 1);
 
@@ -237,9 +244,9 @@ class AetherNodeStartSwimTest {
                 .as("gossip under an unheld key epoch must exit through the node's divergence hook")
                 .isTrue();
             assertThat(divergences.get()).as("the gate fires once").isEqualTo(1);
-            assertThat(failures.get()).as("divergence is not a SWIM start failure").isZero();
+            assertThat(started.failNodeRuns().get()).as("divergence is not a SWIM start failure").isZero();
         } finally {
-            detector.stop();
+            detectors.forEach(CoreSwimHealthDetector::stop);
         }
     }
 
@@ -248,20 +255,14 @@ class AetherNodeStartSwimTest {
     /// here (the observer itself is covered where it lives). A datagram it CAN open then closes it with the recovery.
     @Test
     void startSwim_peerGossipsUnderAnUnheldKey_raisesTheOperatorEvent_andTheRecoveryWhenItDecrypts() throws Exception {
-        var swimPort = freeUdpPort();
-        var detector = detectorWithSwimPort(swimPort);
         var published = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
-
-        detector.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(published::add));
+        var detectors = new CopyOnWriteArrayList<CoreSwimHealthDetector>();
 
         try (var sender = new DatagramSocket()) {
-            AetherNode.startSwim(detector,
-                                 network(),
-                                 RotatingGossipEncryptor.rotatingGossipEncryptor(aesGcm(NODE_KEY, NODE_KEY_ID)),
-                                 this::announce,
-                                 this::fail,
-                                 this::diverge,
-                                 Promise.promise());
+            var started = startOnFreePort((detector, failNode) -> startPublishingTo(published, detector, failNode));
+            var swimPort = started.swimPort();
+
+            detectors.add(started.detector());
             assertThat(announced.await(WAIT_SECONDS, TimeUnit.SECONDS)).as("SWIM started").isTrue();
 
             send(sender, swimPort, aesGcm(ROTATED_KEY, ROTATED_KEY_ID).encrypt("probe".getBytes(StandardCharsets.UTF_8)).unwrap());
@@ -284,7 +285,7 @@ class AetherNodeStartSwimTest {
             assertThat(published.get(1).code().level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.INFO);
             assertThat(published.get(1).subject()).as("the recovery closes the same subject").isEqualTo(published.get(0).subject());
         } finally {
-            detector.stop();
+            detectors.forEach(CoreSwimHealthDetector::stop);
         }
     }
 
@@ -399,6 +400,54 @@ class AetherNodeStartSwimTest {
         formation.fail(FORMATION_FAILED);
 
         assertThat(outcome.await(timeSpan(1).seconds())).isEqualTo(FORMATION_FAILED.result());
+    }
+
+    /// The SWIM port is chosen by probing a free UDP port and releasing it, so another socket in the same host
+    /// (a sibling test class's sender, another module's reactor under `-T 1C`) can take it before `startSwim` binds
+    /// (#3365: `BindException: Address already in use` at the start, the fail hook ran, and the test then waited its
+    /// whole budget on the join announcement that could never come). A bind collision is therefore the environment
+    /// moving the port, not the behaviour under test: start again on a fresh port, up to [#BIND_ATTEMPTS] times, and
+    /// fail loudly naming the attempts if every one collides. The product's reaction to a taken port stays pinned by
+    /// the tests that hold the port themselves. `startSwim` runs its callbacks inline (start() returns a resolved
+    /// promise), so by the time `start` returns the attempt's outcome is already in the returned counter.
+    private StartedSwim startOnFreePort(SwimStart start) throws SocketException {
+        for (var attempt = 1; attempt <= BIND_ATTEMPTS; attempt++) {
+            var swimPort = freeUdpPort();
+            var detector = detectorWithSwimPort(swimPort);
+            var failNodeRuns = new AtomicInteger();
+
+            start.start(detector, failNodeRuns::incrementAndGet);
+
+            if (failNodeRuns.get() == 0) {
+                return startedSwim(detector, swimPort, failNodeRuns);
+            }
+            detector.stop();
+        }
+        throw new AssertionError("SWIM start failed on " + BIND_ATTEMPTS + " consecutive free UDP ports; not a bind collision");
+    }
+
+    private void startPublishingTo(List<org.pragmatica.utility.warning.OperatorWarning> published,
+                                   CoreSwimHealthDetector detector,
+                                   Runnable failNode) {
+        detector.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(published::add));
+        AetherNode.startSwim(detector,
+                             network(),
+                             RotatingGossipEncryptor.rotatingGossipEncryptor(aesGcm(NODE_KEY, NODE_KEY_ID)),
+                             this::announce,
+                             failNode,
+                             this::diverge,
+                             Promise.promise());
+    }
+
+    @FunctionalInterface
+    private interface SwimStart {
+        void start(CoreSwimHealthDetector detector, Runnable failNode);
+    }
+
+    private record StartedSwim(CoreSwimHealthDetector detector, int swimPort, AtomicInteger failNodeRuns) {}
+
+    private static StartedSwim startedSwim(CoreSwimHealthDetector detector, int swimPort, AtomicInteger failNodeRuns) {
+        return new StartedSwim(detector, swimPort, failNodeRuns);
     }
 
     private void announce() {
