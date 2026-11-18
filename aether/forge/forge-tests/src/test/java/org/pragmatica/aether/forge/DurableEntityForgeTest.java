@@ -299,7 +299,7 @@ class DurableEntityForgeTest {
     void get_returnsTheCreatedState_onTheSameNode() {
         var owner = createOnOwner("order-get", "placed", 250).port();
 
-        var response = get(owner, "order-get");
+        var response = getReadable(owner, "order-get");
 
         assertThat(outcome(response)).isEqualTo("found");
         assertThat(text(response, "status")).isEqualTo("placed");
@@ -318,7 +318,7 @@ class DurableEntityForgeTest {
         assertThat(outcome(updated)).isEqualTo("updated");
         assertThat(number(updated, "amount")).isEqualTo(999);
         assertThat(text(updated, "status")).describedAs("the mutator changes amount only").isEqualTo("placed");
-        assertThat(number(get(owner, "order-update"), "amount")).describedAs("the mutation is committed, not just returned")
+        assertThat(number(getReadable(owner, "order-update"), "amount")).describedAs("the mutation is committed, not just returned")
                                                                  .isEqualTo(999);
     }
 
@@ -329,7 +329,7 @@ class DurableEntityForgeTest {
         var owner = createOnOwner("order-delete", "placed", 5).port();
 
         assertThat(outcome(delete(owner, "order-delete"))).isEqualTo("deleted");
-        assertThat(outcome(get(owner, "order-delete"))).isEqualTo("absent");
+        assertThat(outcome(getReadable(owner, "order-delete"))).isEqualTo("absent");
     }
 
     // --- typed failures are real, not decorative -------------------------------
@@ -630,7 +630,7 @@ class DurableEntityForgeTest {
     void state_survivesTheLossOfTheNodeThatOwnedIt() {
         var ownerPort = createOnOwner("order-durability", "placed", 77).port();
 
-        assertThat(outcome(get(ownerPort, "order-durability"))).isEqualTo("found");
+        assertThat(outcome(getReadable(ownerPort, "order-durability"))).isEqualTo("found");
 
         var ownerNodeId = nodeIdForAppPort(ownerPort);
 
@@ -779,6 +779,26 @@ class DurableEntityForgeTest {
 
     private String get(int port, String key) {
         return httpPost(port, "/api/entity/get", "{\"orderId\":\"" + key + "\"}");
+    }
+
+    /// A read answered by the node that ACCEPTED the create, which is not necessarily the owner: a non-owner that holds the
+    /// partition serves the bounded-stale read from its own replica fold, and while that fold is being rebuilt (the log was cut)
+    /// it refuses with the typed transient `FoldInProgress` (or `NotYetCommitted`), whose shape carries `amount` 0 like an absent key
+    /// (#3398). The assertions that follow read the answer, so they wait for a settled one: found or absent, never a transient refusal.
+    private String getReadable(int port, String key) {
+        var last = new java.util.concurrent.atomic.AtomicReference<String>();
+
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> {
+                          last.set(get(port, key));
+                          return !isTransientRefusal(last.get());
+                      });
+        return last.get();
+    }
+
+    private static boolean isTransientRefusal(String response) {
+        return response.contains("\"failureType\":\"FoldInProgress\"") || response.contains("\"failureType\":\"NotYetCommitted\"");
     }
 
     private String update(int port, String key, int amount) {
