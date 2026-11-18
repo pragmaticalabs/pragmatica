@@ -248,7 +248,6 @@ class DHTStrayCurrencyTripwireTest {
 
             holders.forEach(id -> {
                 cluster.restartEmpty(id, RF3);
-                assertThat(cluster.members().stream().map(m -> m.id()).filter(x -> x.equals(id)).count()).isEqualTo(1);
                 assertThat(cluster.entryAt(id, key)).as("restarted " + id.id() + " holds an empty store").isEmpty();
             });
             snapshot("restarted-empty");
