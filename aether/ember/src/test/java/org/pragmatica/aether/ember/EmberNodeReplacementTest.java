@@ -319,17 +319,23 @@ class EmberNodeReplacementTest {
         return crashOldNodeWhileTheReplacementIsJoining(prefix, settled, _ -> {}, _ -> {});
     }
 
-    /// "Settled" is the state the tests that ask for it assert on: every live node's SWIM has observed the victim healthy (its
-    /// membership FSM counts it, which is the first HEALTHY edge, so cold-boot suppression no longer hides its death). A fixed park
-    /// stood in for it (#3391). No capacity reservation is awaited: the originals are bootstrapped by Ember outside the capacity
-    /// lifecycle, which commits a reservation only for an instance a provider listing or create observes, so none ever appears here.
+    /// "Settled" is the state the tests that ask for it assert on: every other live node's SWIM has observed the victim healthy
+    /// (`SwimProtocol.healthOf` is HEALTHY), so the cold-boot suppression (`everSeenHealthy`) no longer hides the victim's death. The
+    /// membership FSM cannot say this: it counts every configured core node as a member from boot (`MembershipFsm.seed`), before SWIM
+    /// has seen anything. A fixed park stood in for it (#3391). No capacity reservation is awaited: the originals are bootstrapped by
+    /// Ember outside the capacity lifecycle, which commits a reservation only for an instance a provider listing or create observes,
+    /// so none appeared in these runs.
     private void awaitSettled(NodeId victimId) {
-        awaitCondition("every live node's membership FSM counts " + victimId.id() + " as a member (SWIM saw it healthy)",
-                       () -> notCountingOn(victimId).isEmpty());
+        awaitCondition("every other live node's SWIM sees " + victimId.id() + " HEALTHY (cold-boot suppression over)",
+                       () -> notSeenHealthyOn(victimId).isEmpty());
     }
 
-    private List<String> notCountingOn(NodeId victimId) {
-        return live().stream().filter(node -> !node.membershipFsm().isCountedMember(victimId)).map(node -> node.self().id()).toList();
+    private List<String> notSeenHealthyOn(NodeId victimId) {
+        return live().stream()
+                     .filter(node -> !node.self().equals(victimId))
+                     .filter(node -> !node.metricsCollector().peerLocallyAlive(victimId))
+                     .map(node -> node.self().id())
+                     .toList();
     }
 
     /// As above, with a hook run on the victim before the replacement begins and another run just before the crash.

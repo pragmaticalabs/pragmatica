@@ -104,7 +104,8 @@ class PerSliceDecisionSnapshotProbeTest {
     // #3391 item 8, SAFE: this waits only for both slices to be LISTED (`/slices/status` names a slice in any state, so it
     // does not mean ACTIVE), and nothing asserted below reads that listing. The asserted state is the controller's decision
     // snapshot, which `awaitBothArtifactsInDecisionSnapshot` waits for on the same endpoint and the same leader port with the
-    // same predicate the assertions check (`ControllerRoutes.buildDecisionsResponse` reads the node's own control loop).
+    // same artifact-presence predicate (the assertions read more of the snapshot than the presence of both artifacts;
+    // `ControllerRoutes.buildDecisionsResponse` reads the node's own control loop).
     private void awaitBothSlicesActive() {
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> {
             var slices = getSlices();

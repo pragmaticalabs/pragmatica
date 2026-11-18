@@ -218,7 +218,8 @@ class DurableEntityForgeTest {
     /// #3391 item 4. `/api/v1/ownership/stream` reads the committed records of the ONE node it is asked (the node's own applied
     /// KV store), and the convergence probe above is satisfied by a create accepted on ANY node's app port, so it proves an owner
     /// exists, not that this node has applied every arc. The tests assert on [#entityArcOwners] read from [#anyMgmtPort]; wait
-    /// for that view itself. The slice-host view needs no such wait: [#awaitFullSlicePlacement] polls the same node and the
+    /// for that view itself. It reads [#anyMgmtPort], the node the assertions read, not the routing nodes, so it can pass while another node
+    /// still lacks an arc; the all-port probe in [#awaitOwnershipConvergence] is what covers the owner. The slice-host view needs no such wait: [#awaitFullSlicePlacement] polls the same node and the
     /// same endpoint the assertions read.
     private void awaitOwnershipViewComplete() {
         try {
