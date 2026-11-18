@@ -1060,11 +1060,10 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
         Promise<Boolean> settled = Promise.promise();
         var settle = settleLandedOnce(settled);
 
-        Result.lift(Causes::fromThrowable, () -> onOperatorWarning(warning, replayingCheck, settle))
-              .onFailure(cause -> settleAfterThrow(warning.code()
-                                                          .code(),
-                                                   cause,
-                                                   settle::lost));
+        Result.lift(Causes::fromThrowable, () -> onOperatorWarning(warning, replayingCheck, settle)).onFailure(cause -> settleAfterThrow(warning.code()
+                                                                                                                                                .code(),
+                                                                                                                                         cause,
+                                                                                                                                         settle::lost));
 
         return settled;
     }
