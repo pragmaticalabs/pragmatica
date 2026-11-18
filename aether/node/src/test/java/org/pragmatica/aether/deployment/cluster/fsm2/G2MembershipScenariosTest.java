@@ -226,8 +226,7 @@ class G2MembershipScenariosTest {
     void workerJoin_commitLost_assigned() {
         var worker = node("worker-2");
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3)
-                       .seams(seams -> seams.withCommunityPolicies(Map.of())
-                                            .withMemberSource(Map.of(worker, "east")))
+                       .seams(seams -> seams.withMemberSource(Map.of(worker, "east")))
                        .activate();
 
         w.h.policy = FsmHarness.SettlePolicy.LOSE;

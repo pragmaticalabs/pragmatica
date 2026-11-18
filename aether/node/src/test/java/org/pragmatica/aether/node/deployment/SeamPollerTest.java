@@ -17,7 +17,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.config.cluster.CommunityPlacement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
 import org.pragmatica.aether.deployment.cluster.fsm2.Seams;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
@@ -69,7 +68,6 @@ class SeamPollerTest {
                                                             localAlive::get,
                                                             Set::of,
                                                             memberSources::get,
-                                                            Map::of,
                                                             Set::of,
                                                             counted::get,
                                                             node -> tokens.getOrDefault(node, 0L)),
@@ -146,7 +144,6 @@ class SeamPollerTest {
         var drainingSet = Set.of(OTHER);
         var supersededSet = Set.of(SELF, OTHER);
         var sources = Map.of(PEER, "source-of-peer");
-        var policies = Map.of("c1", CommunityPlacement.communityPlacement("c1", 3, List.of(new CommunityPlacement.Location("hetzner", Option.none(), 0, 1))).unwrap());
         var poller = SeamPoller.seamPoller(new SeamPoller.Sources(() -> countedSet,
                                                                   () -> readySet,
                                                                   () -> drainingSet,
@@ -154,7 +151,6 @@ class SeamPollerTest {
                                                                   () -> Option.some(Set.of(PEER, OTHER)),
                                                                   () -> supersededSet,
                                                                   () -> sources,
-                                                                  () -> policies,
                                                                   () -> Set.of(PEER),
                                                                   () -> Set.of(SELF),
                                                                   node -> 0L),
@@ -169,7 +165,6 @@ class SeamPollerTest {
         assertThat(seams.localAlive()).isEqualTo(Option.some(Set.of(PEER, OTHER)));
         assertThat(seams.superseded()).isEqualTo(supersededSet);
         assertThat(seams.memberSource()).isEqualTo(sources);
-        assertThat(seams.communityPolicies()).isEqualTo(policies);
         assertThat(seams.coreRoleMembers()).isEqualTo(Set.of(PEER));
     }
 
@@ -182,7 +177,7 @@ class SeamPollerTest {
             order.add("sample");
 
             return Set.of(SELF);
-        }, Set::of, Set::of, coreView::get, localAlive::get, Set::of, Map::of, Map::of, Set::of, Set::of, node -> 0L), sink, clock);
+        }, Set::of, Set::of, coreView::get, localAlive::get, Set::of, Map::of, Set::of, Set::of, node -> 0L), sink, clock);
         var inputs = MembershipInputs.membershipInputs(input -> order.add("deliver:" + input.getClass().getSimpleName()),
                                                        AdmissionSeam.admissionSeam(node -> 0L, node -> 0L),
                                                        poller);
@@ -200,7 +195,7 @@ class SeamPollerTest {
         var release = new CountDownLatch(1);
         var calls = new AtomicInteger();
         Supplier<Set<NodeId>> slowFirst = () -> sampleSlowFirst(calls, entered, release);
-        var poller = SeamPoller.seamPoller(new SeamPoller.Sources(slowFirst, Set::of, Set::of, coreView::get, localAlive::get, Set::of, Map::of, Map::of, Set::of, Set::of, node -> 0L), sink, clock);
+        var poller = SeamPoller.seamPoller(new SeamPoller.Sources(slowFirst, Set::of, Set::of, coreView::get, localAlive::get, Set::of, Map::of, Set::of, Set::of, node -> 0L), sink, clock);
         var older = Thread.ofPlatform().start(poller::poll);
 
         assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();

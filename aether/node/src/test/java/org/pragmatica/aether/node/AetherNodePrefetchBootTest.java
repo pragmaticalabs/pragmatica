@@ -105,6 +105,7 @@ class AetherNodePrefetchBootTest {
         assertThat(node.prefetchGossipStats().isEmpty()).as("control: SWIM is not running before start, so there is nothing to report").isTrue();
 
         node.start().await(timeSpan(30).seconds()).onFailure(cause -> fail("start must succeed: " + cause.message()));
+        LoneNodeGenesis.mintAsTheLeader(node);
 
         await().atMost(Duration.ofSeconds(90))
                .untilAsserted(() -> assertThat(managers.values()).allSatisfy(manager -> assertThat(manager.isActive()).isTrue()));

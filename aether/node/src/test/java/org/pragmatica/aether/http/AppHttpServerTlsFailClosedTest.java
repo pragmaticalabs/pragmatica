@@ -6,8 +6,7 @@
 package org.pragmatica.aether.http;
 
 import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.net.Socket;
+import java.net.ServerSocket;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -31,21 +30,19 @@ class AppHttpServerTlsFailClosedTest {
 
     @Test
     @Timeout(60)
-    void start_unbuildableAppTls_failsAndOpensNoListener() throws Exception {
-        var port = freeTcpPort();
-        var server = appHttpServerWithMissingCertificate(port, HttpProtocol.H1);
+    void start_unbuildableAppTls_failsBeforeAnyBind() throws Exception {
+        try (var held = new ServerSocket(0)) {
+            var server = appHttpServerWithMissingCertificate(held.getLocalPort(), HttpProtocol.H1);
 
-        var outcome = server.start().await(timeSpan(30).seconds());
+            var outcome = server.start().await(timeSpan(30).seconds());
 
-        var listening = connects(port);
-
-        server.stop().await(timeSpan(30).seconds());
-        assertThat(listening).as("nothing listens on the app port after the refusal").isFalse();
-        assertThat(outcome.isFailure()).as("start must fail, not serve plain HTTP").isTrue();
-        outcome.onFailure(cause -> {
-            assertThat(cause).isInstanceOf(HttpServerError.TlsFailed.class);
-            assertThat(cause.message()).contains("TLS").contains("app-http");
-        });
+            server.stop().await(timeSpan(30).seconds());
+            assertThat(outcome.isFailure()).as("start must fail, not serve plain HTTP").isTrue();
+            outcome.onFailure(cause -> {
+                assertThat(cause).as("the refused port is held by the test, so a bind attempt would surface as a bind error, not as the TLS refusal (#3321)").isInstanceOf(HttpServerError.TlsFailed.class);
+                assertThat(cause.message()).contains("TLS").contains("app-http");
+            });
+        }
     }
 
     @Test
@@ -87,15 +84,6 @@ class AppHttpServerTlsFailClosedTest {
                                            Option.none(),
                                            Option.none(),
                                            Option.<DeploymentManager> none());
-    }
-
-    private static boolean connects(int port) {
-        try (var socket = new Socket()) {
-            socket.connect(new InetSocketAddress("127.0.0.1", port), 2_000);
-            return true;
-        } catch (IOException refused) {
-            return false;
-        }
     }
 
     private static int freeTcpPort() throws IOException {

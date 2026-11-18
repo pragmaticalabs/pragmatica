@@ -7,8 +7,7 @@ package org.pragmatica.aether.api;
 
 import java.io.IOException;
 import java.lang.reflect.Modifier;
-import java.net.InetSocketAddress;
-import java.net.Socket;
+import java.net.ServerSocket;
 import java.util.Map;
 import java.util.Set;
 
@@ -59,21 +58,19 @@ class ManagementServerTlsFailClosedTest {
 
     @Test
     @Timeout(60)
-    void start_unbuildableTls_failsAndOpensNoListener() throws IOException {
-        var port = freeTcpPort();
-        var server = managementServerWithMissingCertificate(port, HttpProtocol.H1);
+    void start_unbuildableTls_failsBeforeAnyBind() throws IOException {
+        try (var held = new ServerSocket(0)) {
+            var server = managementServerWithMissingCertificate(held.getLocalPort(), HttpProtocol.H1);
 
-        var outcome = server.start().await(START_BOUND);
+            var outcome = server.start().await(START_BOUND);
 
-        var listening = connects(port);
-
-        server.stop().await(START_BOUND);
-        assertThat(listening).as("nothing listens on the management port after the refusal").isFalse();
-        assertThat(outcome.isFailure()).as("start must fail, not serve plain HTTP").isTrue();
-        outcome.onFailure(cause -> {
-            assertThat(cause).isInstanceOf(HttpServerError.TlsFailed.class);
-            assertThat(cause.message()).contains("TLS").contains("management");
-        });
+            server.stop().await(START_BOUND);
+            assertThat(outcome.isFailure()).as("start must fail, not serve plain HTTP").isTrue();
+            outcome.onFailure(cause -> {
+                assertThat(cause).as("the refused port is held by the test, so a bind attempt would surface as a bind error, not as the TLS refusal (#3321)").isInstanceOf(HttpServerError.TlsFailed.class);
+                assertThat(cause.message()).contains("TLS").contains("management");
+            });
+        }
     }
 
     /// HTTP/3-only: the QUIC context cannot be built, and `start()` used to SUCCEED with no listener at all.
@@ -132,15 +129,6 @@ class ManagementServerTlsFailClosedTest {
                                                  Set::of,
                                                  org.pragmatica.aether.api.routes.NodeLifecycleRoutes.SliceFloor.sliceFloor((_, _) -> java.util.List.of(),
                                                                                                                          org.pragmatica.utility.warning.OperatorWarningSink.logOnly()));
-    }
-
-    private static boolean connects(int port) {
-        try (var socket = new Socket()) {
-            socket.connect(new InetSocketAddress("127.0.0.1", port), 2_000);
-            return true;
-        } catch (IOException refused) {
-            return false;
-        }
     }
 
     private static int freeTcpPort() throws IOException {

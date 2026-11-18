@@ -32,39 +32,45 @@ import static org.pragmatica.net.tcp.ServerConfig.serverConfig;
 
 /// A server whose TLS configuration cannot be built refuses to start instead of silently serving (or dialling) in plain
 /// text. Ports come from the OS so the tests do not collide with other modules running concurrently (#939).
+///
+/// "Nothing listens after the refusal" is evidenced by the subject, not by probing a port another process can take (#3321):
+/// the refusing tests HOLD the port themselves, so a server that reached its bind step would fail with a bind error instead
+/// of the typed TLS refusal, and no rival can change the verdict. A refusal that precedes the bind leaves no listener to find.
 class ServerTlsFailClosedTest {
     private static TlsConfig missingCertificate() {
         return TlsConfig.server(Path.of("/missing/server-cert.pem"), Path.of("/missing/server-key.pem"));
     }
 
     @Test
-    void start_unbuildableServerTls_failsTypedAndOpensNoListener() {
-        var port = freeTcpPort();
-        var config = serverConfig("tls-server", port, missingCertificate());
-        var outcome = Server.server(config, List::of).await(timeSpan(10).seconds());
+    void start_unbuildableServerTls_failsTypedBeforeAnyBind() throws IOException {
+        try (var held = new ServerSocket(0)) {
+            var config = serverConfig("tls-server", held.getLocalPort(), missingCertificate());
+            var outcome = Server.server(config, List::of).await(timeSpan(10).seconds());
 
-        outcome.onSuccess(server -> server.stop(() -> org.pragmatica.lang.Promise.success(org.pragmatica.lang.Unit.unit())));
-        assertThat(outcome.isFailure()).as("startup must fail, not run in plain text").isTrue();
-        outcome.onFailure(cause -> {
-            assertThat(cause).isInstanceOf(TlsError.ServerTlsRefused.class);
-            assertThat(cause.message()).contains("TLS").contains("tls-server").contains("server");
-        });
-        assertThat(connects(port)).as("nothing listens on the TLS port after the refusal").isFalse();
+            outcome.onSuccess(server -> server.stop(() -> org.pragmatica.lang.Promise.success(org.pragmatica.lang.Unit.unit())));
+            assertThat(outcome.isFailure()).as("startup must fail, not run in plain text").isTrue();
+            outcome.onFailure(cause -> {
+                assertThat(cause).as("a bind attempt on the held port would surface as a bind error, not as this refusal")
+                                 .isInstanceOf(TlsError.ServerTlsRefused.class);
+                assertThat(cause.message()).contains("TLS").contains("tls-server").contains("server");
+            });
+        }
     }
 
     @Test
-    void start_unbuildableClientTls_failsTyped() {
-        var port = freeTcpPort();
-        var broken = serverConfig("tls-client", port).withClientTls(TlsConfig.clientWithCa(Path.of("/missing/ca.pem")));
-        var outcome = Server.server(broken, List::of).await(timeSpan(10).seconds());
+    void start_unbuildableClientTls_failsTypedBeforeAnyBind() throws IOException {
+        try (var held = new ServerSocket(0)) {
+            var broken = serverConfig("tls-client", held.getLocalPort()).withClientTls(TlsConfig.clientWithCa(Path.of("/missing/ca.pem")));
+            var outcome = Server.server(broken, List::of).await(timeSpan(10).seconds());
 
-        outcome.onSuccess(server -> server.stop(() -> org.pragmatica.lang.Promise.success(org.pragmatica.lang.Unit.unit())));
-        assertThat(outcome.isFailure()).as("outgoing TLS that cannot be built must not fall back to plain text").isTrue();
-        outcome.onFailure(cause -> {
-            assertThat(cause).isInstanceOf(TlsError.ServerTlsRefused.class);
-            assertThat(cause.message()).contains("client");
-        });
-        assertThat(connects(port)).as("nothing listens after the refusal").isFalse();
+            outcome.onSuccess(server -> server.stop(() -> org.pragmatica.lang.Promise.success(org.pragmatica.lang.Unit.unit())));
+            assertThat(outcome.isFailure()).as("outgoing TLS that cannot be built must not fall back to plain text").isTrue();
+            outcome.onFailure(cause -> {
+                assertThat(cause).as("a bind attempt on the held port would surface as a bind error, not as this refusal")
+                                 .isInstanceOf(TlsError.ServerTlsRefused.class);
+                assertThat(cause.message()).contains("client");
+            });
+        }
     }
 
     /// Control, so the refusal is not "TLS never works": a buildable TLS configuration starts and listens.

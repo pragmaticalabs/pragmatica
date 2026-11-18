@@ -209,8 +209,7 @@ class Rc5ParityTripwireTest {
     // commits `<source>-w-0` with the node-level `Settings.communityTargetSize()`.
     private static MbWorld workersOfEastUnder(String policy) {
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3)
-                       .seams(seams -> seams.withCommunityPolicies(Map.of())
-                                            .withMemberSource(Map.of(W1, "east", W2, "east", W3, "east", W4, "east")));
+                       .seams(seams -> seams.withMemberSource(Map.of(W1, "east", W2, "east", W3, "east", W4, "east")));
 
         w.h.seedQuietly(ClusterConfigKey.CURRENT,
                         new ClusterConfigValue(Option.some(CLUSTER + policy), "test", "1.0.0", List.of(), 3, 3, "forge", 1L, 0L));

@@ -16,7 +16,7 @@ and constants, e.g. "SharedPools `code`, 2 keys, 2 scopes, MaxAcquires 3: no vio
 | `SharedPools` | node-shared resource pools: acquire, release, `closeAll` (#2978) | `aether/resource/api/.../resource/package-info.java` | `SharedPools.java`, `SpiResourceProvider.java` |
 | `Stalled` | owner catch-up all-stalled warning, level-triggered (#2967) | `aether/aether-stream/.../replication/package-info.java` | `PartitionBackfill.java` |
 | `RabiaSlot`, `RabiaEpoch`, `RabiaAdopt` | Rabia: slot sequence, in-log reconfiguration, state adoption (#3164) | `integrations/consensus/.../rabia/package-info.java` | `RabiaEngine.java`, `PhaseData.java` |
-| `Fsm2Leader` | FSM2 leader: open-warning set, leader fence, `Rebuild` inherit, publish after commit (#2763, #2834, #3085; finding #3160) | `aether/aether-deployment/.../cluster/fsm2/package-info.java` | `Lifecycle.java`, `Warnings.java`, `Reconcile.java`, `Failures.java`, `Outbox.java`, `ClusterFsm.java` |
+| `Fsm2Leader` | FSM2 leader: open-warning set, leader fence, `Rebuild` inherit and rule O, publish after commit (#2763, #2834, #3085, #3274) | `aether/aether-deployment/.../cluster/fsm2/package-info.java` | `Lifecycle.java`, `Warnings.java`, `Reconcile.java`, `Failures.java`, `Outbox.java`, `ClusterFsm.java` |
 
 Scope (owner ruling 2026-11-13): protocols with a written race or ordering ruling (consensus, FSM2 leader and
 reconcile, stream ownership, catch-up and ISR, SharedPools, quorum re-admission). Not mandated elsewhere.
@@ -60,9 +60,14 @@ reconcile, stream ownership, catch-up and ISR, SharedPools, quorum re-admission)
 - a tag that is not `<Module>:<Part>`;
 - a duplicate `Part` or config variant (both positions are named);
 - a missing `head` or `tail`, or no config;
-- an action fragment that does not define its own name, or that `tail` never references.
+- an action fragment that does not define its own name, or that `tail` never references;
+- a reference no fragment of the module defines (#3311): an operator application `Name(`, or a capitalised bare name,
+  that is not defined (`==`), declared (`CONSTANT`, `VARIABLE`, `EXTENDS`), bound (a parameter, `\A`, `\E`, `CHOOSE`,
+  a set or function constructor) or a keyword or standard-module operator. Every such reference is named with its
+  Java line. The check is lexical, not scoped: a name bound anywhere in the module counts as bound everywhere, so it
+  can miss a reference but never reports a defined one; a lowercase bare name is left to SANY.
 
-Syntax and semantic errors are SANY's and TLC's. `check.sh` annotates every `line N, col M ... of module <Module>`
+Other syntax and semantic errors are SANY's and TLC's. `check.sh` annotates every `line N, col M ... of module <Module>`
 position in TLC's output with the Java source line it came from (`<Module>.map.tsv`), so a counterexample reads as
 a sequence of Java locations.
 

@@ -18,10 +18,10 @@
 package org.pragmatica.http;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.UnreachablePort;
 
 import java.io.IOException;
 import java.net.ConnectException;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.net.UnknownHostException;
 import java.net.http.HttpRequest;
@@ -146,21 +146,17 @@ class HttpClientErrorTest {
     /// failure. Feeding `fromException` a raw ConnectException (above) cannot see that; a real refused socket can.
     @Test
     void send_toAPortNothingListensOn_failsWithConnectionFailedCarryingTheConnectException() throws IOException {
-        int port;
+        try (var closed = UnreachablePort.hold()) {
+            var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + closed.port() + "/")).GET().build();
+            var result = JdkHttpOperations.jdkHttpOperations().sendString(request).await();
 
-        try (var socket = new ServerSocket(0)) {
-            port = socket.getLocalPort();
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> {
+                assertInstanceOf(HttpClientError.ConnectionFailed.class, cause, cause.getClass().getName() + ": " + cause.message());
+                assertThat(((HttpClientError.ConnectionFailed) cause).cause().map(ConnectException.class::isInstance).or(false)).isTrue();
+                assertThat(cause.message()).isEqualTo("Connection failed: Connection refused");
+            });
         }
-
-        var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/")).GET().build();
-        var result = JdkHttpOperations.jdkHttpOperations().sendString(request).await();
-
-        assertThat(result.isFailure()).isTrue();
-        result.onFailure(cause -> {
-            assertInstanceOf(HttpClientError.ConnectionFailed.class, cause, cause.getClass().getName() + ": " + cause.message());
-            assertThat(((HttpClientError.ConnectionFailed) cause).cause().map(ConnectException.class::isInstance).or(false)).isTrue();
-            assertThat(cause.message()).isEqualTo("Connection failed: Connection refused");
-        });
     }
 
     @Test
