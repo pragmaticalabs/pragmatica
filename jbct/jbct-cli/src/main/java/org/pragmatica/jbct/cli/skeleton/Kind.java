@@ -12,17 +12,13 @@ public enum Kind {
     INITIALIZER("initializer"),
     FIELD("field"),
     ENUM_CONSTANT("enum-constant");
-
     private final String label;
-
     Kind(String label) {
         this.label = label;
     }
-
     public String label() {
         return label;
     }
-
     /// True for the kinds that are listed only with `--fields`.
     public boolean isFieldLike() {
         return this == FIELD || this == ENUM_CONSTANT;

@@ -4,6 +4,7 @@ import java.util.List;
 
 import org.pragmatica.lang.Option;
 
+
 /// One declaration of a skeleton: what it is, its name, its signature as written in the source, the range from
 /// its first annotation or modifier to its last character, the row where its doc comment starts (the comment is
 /// not inside the range), its annotations as written, `@Name`, and the declarations nested in it.

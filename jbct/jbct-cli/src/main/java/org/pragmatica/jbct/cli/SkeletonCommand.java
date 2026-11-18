@@ -51,9 +51,8 @@ public class SkeletonCommand implements Callable<Integer> {
 
         return files.isEmpty()
                ? noFiles()
-               : print(files, files.stream()
-                                   .map(file -> skeletonOf(file, files.size() > 1))
-                                   .toList());
+               : print(files,
+                       files.stream().map(file -> skeletonOf(file, files.size() > 1)).toList());
     }
 
     private Integer noFiles() {
@@ -64,9 +63,11 @@ public class SkeletonCommand implements Callable<Integer> {
 
     private Result<String> skeletonOf(Path file, boolean withHeader) {
         return SourceFile.sourceFile(file)
-                         .flatMap(source -> Skeletons.skeleton(source.content(), fields))
+                         .flatMap(source -> Skeletons.skeleton(source.content(),
+                                                               fields))
                          .map(skeleton -> json
-                                          ? SkeletonJson.file(file.toString(), skeleton)
+                                          ? SkeletonJson.file(file.toString(),
+                                                              skeleton)
                                           : header(file, withHeader) + SkeletonText.render(skeleton))
                          .mapError(cause -> failure(file, cause));
     }
@@ -82,9 +83,7 @@ public class SkeletonCommand implements Callable<Integer> {
     }
 
     private Integer print(List<Path> files, List<Result<String>> results) {
-        var rendered = results.stream()
-                              .flatMap(Result::stream)
-                              .toList();
+        var rendered = results.stream().flatMap(Result::stream).toList();
 
         results.forEach(result -> result.onFailure(cause -> System.err.println(cause.message())));
         System.out.print(json

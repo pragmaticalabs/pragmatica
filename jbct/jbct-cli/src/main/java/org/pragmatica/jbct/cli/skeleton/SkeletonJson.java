@@ -3,6 +3,7 @@ package org.pragmatica.jbct.cli.skeleton;
 import java.util.List;
 import java.util.stream.Collectors;
 
+
 /// The JSON rendering of a skeleton. A declaration is an object with `kind`, `name`, `signature`, `startRow`,
 /// `startColumn`, `endRow`, `endColumn` (1-based, the end inclusive), `docRow` (null when there is no doc comment),
 /// `annotations` and `children`; a file is an object with `file` and `declarations`.
@@ -28,10 +29,19 @@ public final class SkeletonJson {
     private static String declaration(Declaration declaration) {
         var range = declaration.range();
 
-        return "{\"kind\": " + string(declaration.kind()
-                                                 .label()) + ", \"name\": " + string(declaration.name()) + ", \"signature\": " + string(declaration.signature()) + ", \"startRow\": " + range.startRow() + ", \"startColumn\": " + range.startColumn() + ", \"endRow\": " + range.endRow() + ", \"endColumn\": " + range.endColumn() + ", \"docRow\": " + declaration.docRow()
-                                                                                                                                                                                                                                                                                                                                                                                                                                  .map(String::valueOf)
-                                                                                                                                                                                                                                                                                                                                                                                                                                  .or("null") + ", \"annotations\": " + strings(declaration.annotations()) + ", \"children\": " + array(declaration.children()) + "}";
+        return "{\"kind\": " + string(declaration.kind().label())
+             + ", \"name\": " + string(declaration.name())
+             + ", \"signature\": " + string(declaration.signature())
+             + ", \"startRow\": " + range.startRow()
+             + ", \"startColumn\": " + range.startColumn()
+             + ", \"endRow\": " + range.endRow()
+             + ", \"endColumn\": " + range.endColumn()
+             + ", \"docRow\": " + declaration.docRow()
+                                             .map(String::valueOf)
+                                             .or("null")
+             + ", \"annotations\": " + strings(declaration.annotations())
+             + ", \"children\": " + array(declaration.children())
+             + "}";
     }
 
     private static String strings(List<String> values) {

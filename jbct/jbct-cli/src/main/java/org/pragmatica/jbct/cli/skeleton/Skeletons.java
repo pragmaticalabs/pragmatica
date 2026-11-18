@@ -13,6 +13,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.peg.token.TokenArray;
 
+
 /// Reads the skeleton of a Java source: its types and their members, each with the exact range it occupies.
 ///
 /// A pure function of the source text, built on the JBCT parser tree. What is listed: classes, interfaces, records,
@@ -38,8 +39,7 @@ public final class Skeletons {
 
     private static Reader reader(String source, Cursor root, boolean fields) {
         return new Reader(source,
-                          root.cst()
-                              .tokens(),
+                          root.cst().tokens(),
                           new LineIndex(source),
                           fields);
     }
@@ -63,23 +63,20 @@ public final class Skeletons {
 
         private Stream<Declaration> member(Cursor wrapper) {
             return core(wrapper).stream()
-                                .flatMap(core -> describe(wrapper, core));
+                       .flatMap(core -> describe(wrapper, core));
         }
 
         private Option<Cursor> core(Cursor wrapper) {
             return Option.from(CstNodes.children(wrapper)
                                        .stream()
                                        .filter(child -> !child.kindIs(RuleKind.ANNOTATION))
-                                       .findFirst())
-                         .flatMap(this::unwrap);
+                                       .findFirst()).flatMap(this::unwrap);
         }
 
         private Option<Cursor> unwrap(Cursor node) {
             return switch (node.kind()) {
                 case MEMBER, TYPE_KIND -> core(node);
-                case CLASS_DECL, INTERFACE_DECL, ENUM_DECL, RECORD_DECL, ANNOTATION_DECL, METHOD_DECL,
-                     CONSTRUCTOR_DECL, COMPACT_CONSTRUCTOR, INITIALIZER_BLOCK, FIELD_DECL, INTERFACE_FIELD_DECL,
-                     RECORD_STATIC_FIELD, ANNOTATION_ELEM_DECL -> Option.some(node);
+                case CLASS_DECL, INTERFACE_DECL, ENUM_DECL, RECORD_DECL, ANNOTATION_DECL, METHOD_DECL, CONSTRUCTOR_DECL, COMPACT_CONSTRUCTOR, INITIALIZER_BLOCK, FIELD_DECL, INTERFACE_FIELD_DECL, RECORD_STATIC_FIELD, ANNOTATION_ELEM_DECL -> Option.some(node);
                 default -> Option.none();
             };
         }
@@ -92,7 +89,10 @@ public final class Skeletons {
                 case RECORD_DECL -> type(Kind.RECORD, wrapper, core);
                 case ANNOTATION_DECL -> type(Kind.ANNOTATION, wrapper, core);
                 case METHOD_DECL -> single(Kind.METHOD, wrapper, methodName(core), methodSignature(core));
-                case CONSTRUCTOR_DECL -> single(Kind.CONSTRUCTOR, wrapper, constructorName(core), "(" + paramList(core) + ")");
+                case CONSTRUCTOR_DECL -> single(Kind.CONSTRUCTOR,
+                                                wrapper,
+                                                constructorName(core),
+                                                "(" + paramList(core) + ")");
                 case COMPACT_CONSTRUCTOR -> single(Kind.CONSTRUCTOR, wrapper, compactName(core), "(compact)");
                 case ANNOTATION_ELEM_DECL -> single(Kind.METHOD, wrapper, methodName(core), "(): " + typeOf(core));
                 case INITIALIZER_BLOCK -> single(Kind.INITIALIZER, wrapper, initializerName(core), "");
@@ -147,14 +147,19 @@ public final class Skeletons {
             return CstNodes.children(core)
                            .stream()
                            .flatMap(child -> child.kindIs(RuleKind.VAR_DECLS)
-                                             ? CstNodes.children(child)
-                                                       .stream()
+                                             ? CstNodes.children(child).stream()
                                              : Stream.of(child))
                            .filter(child -> child.kindIsAny(RuleKind.VAR_DECL, RuleKind.INTERFACE_VAR_DECL));
         }
 
         private Declaration make(Kind kind, Cursor wrapper, String name, String signature, List<Declaration> children) {
-            return Declaration.declaration(kind, name, signature, range(wrapper), docRow(wrapper), annotations(wrapper), children);
+            return Declaration.declaration(kind,
+                                           name,
+                                           signature,
+                                           range(wrapper),
+                                           docRow(wrapper),
+                                           annotations(wrapper),
+                                           children);
         }
 
         private List<String> annotations(Cursor wrapper) {
@@ -228,7 +233,8 @@ public final class Skeletons {
         private String paramList(Cursor core) {
             return CstNodes.childByRule(core, RuleKind.PARAMS)
                            .map(params -> CstNodes.findAll(params,
-                                                           node -> node.kindIsAny(RuleKind.PLAIN_PARAM, RuleKind.LAST_PARAM))
+                                                           node -> node.kindIsAny(RuleKind.PLAIN_PARAM,
+                                                                                  RuleKind.LAST_PARAM))
                                                   .stream()
                                                   .map(this::paramType)
                                                   .toList())
@@ -245,7 +251,8 @@ public final class Skeletons {
         }
 
         private boolean isVarargs(Cursor param) {
-            return IntStream.rangeClosed(param.firstTokenIdx(), param.lastTokenIdx())
+            return IntStream.rangeClosed(param.firstTokenIdx(),
+                                         param.lastTokenIdx())
                             .anyMatch(index -> "...".contentEquals(tokens.textAt(index)));
         }
 
@@ -253,12 +260,14 @@ public final class Skeletons {
         /// collapsed to one space. Never resolved.
         private String typeOf(Cursor node) {
             return CstNodes.childByRule(node, RuleKind.TYPE)
-                           .map(type -> cut(type.firstTokenIdx(), type.lastTokenIdx()))
+                           .map(type -> cut(type.firstTokenIdx(),
+                                            type.lastTokenIdx()))
                            .or("");
         }
 
         private String cut(int first, int last) {
-            return text.substring(tokens.startAt(forward(first)), tokens.endAt(backward(last)))
+            return text.substring(tokens.startAt(forward(first)),
+                                  tokens.endAt(backward(last)))
                        .replaceAll("\\s+", " ");
         }
 
@@ -301,8 +310,7 @@ public final class Skeletons {
         }
 
         private boolean isDoc(int index) {
-            return tokens.kindAt(index) == TokenArray.KIND_DOC_LINE_COMMENT
-                   || tokens.kindAt(index) == TokenArray.KIND_DOC_BLOCK_COMMENT;
+            return tokens.kindAt(index) == TokenArray.KIND_DOC_LINE_COMMENT || tokens.kindAt(index) == TokenArray.KIND_DOC_BLOCK_COMMENT;
         }
 
         /// A run of `///` lines is one comment: its first row is the doc row.
@@ -315,15 +323,16 @@ public final class Skeletons {
         }
 
         private boolean continuesLineDoc(int before, int index) {
-            return before >= 0 && tokens.kindAt(before) == TokenArray.KIND_DOC_LINE_COMMENT && singleNewline(index - 1);
+            return before >= 0
+                   && tokens.kindAt(before) == TokenArray.KIND_DOC_LINE_COMMENT
+                   && singleNewline(index - 1);
         }
 
         private boolean singleNewline(int index) {
-            return tokens.kindAt(index) == TokenArray.KIND_WHITESPACE
-                   && tokens.textAt(index)
-                            .chars()
-                            .filter(character -> character == '\n')
-                            .count() == 1;
+            return tokens.kindAt(index) == TokenArray.KIND_WHITESPACE && tokens.textAt(index)
+                                                                               .chars()
+                                                                               .filter(character -> character == '\n')
+                                                                               .count() == 1;
         }
     }
 }

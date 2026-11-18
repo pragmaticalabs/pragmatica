@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+
 /// The text rendering of a skeleton: one line per declaration, two spaces of indentation per nesting level,
 ///
 /// `<kind> <name><signature> <startRow>:<startCol>-<endRow>:<endCol>[ doc@<row>][ @Annotation ...]`
@@ -22,13 +23,16 @@ public final class SkeletonText {
     private static Stream<String> lines(List<Declaration> declarations, int depth) {
         return declarations.stream()
                            .flatMap(declaration -> Stream.concat(Stream.of(line(declaration, depth)),
-                                                                 lines(declaration.children(), depth + 1)));
+                                                                 lines(declaration.children(),
+                                                                       depth + 1)));
     }
 
     private static String line(Declaration declaration, int depth) {
         return INDENT.repeat(depth) + declaration.kind()
-                                                 .label() + label(declaration) + " " + declaration.range()
-                                                                                                  .render() + doc(declaration) + annotations(declaration) + "\n";
+                                                 .label() + label(declaration)
+             + " " + declaration.range()
+                                .render() + doc(declaration) + annotations(declaration)
+             + "\n";
     }
 
     private static String label(Declaration declaration) {
