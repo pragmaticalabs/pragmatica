@@ -59,7 +59,8 @@ class QuicLaneEndMarkerTest {
                                               codec,
                                               QuicTransportMetrics.quicTransportMetrics(),
                                               (_, message) -> delivered.add(message),
-                                              LoggerFactory.getLogger(QuicLaneEndMarkerTest.class));
+                                              LoggerFactory.getLogger(QuicLaneEndMarkerTest.class),
+                                              QuicLaneDataHandler.BackpressureSettler.NONE);
         var connection = mock(QuicPeerConnection.class);
         var attribute = (Attribute<QuicPeerConnection>) mock(Attribute.class);
         var parent = mock(QuicChannel.class);
@@ -208,7 +209,7 @@ class QuicLaneEndMarkerTest {
         when(path.harness().stream().parent()).thenReturn(parent);
         when(parent.attr(PeerOpenedLaneRouter.PEER_CONNECTION)).thenReturn(noConnection);
 
-        new PeerOpenedLaneRouter(LaneProbe.codec(), QuicTransportMetrics.quicTransportMetrics(), (_, message) -> {}, LoggerFactory.getLogger(QuicLaneEndMarkerTest.class))
+        new PeerOpenedLaneRouter(LaneProbe.codec(), QuicTransportMetrics.quicTransportMetrics(), (_, message) -> {}, LoggerFactory.getLogger(QuicLaneEndMarkerTest.class), QuicLaneDataHandler.BackpressureSettler.NONE)
             .attach(ctx, mock(io.netty.channel.ChannelHandler.class), LANE);
 
         verify(ctx).writeAndFlush(org.mockito.ArgumentMatchers.argThat(QuicLaneEndMarkerTest::isLaneEnd));
