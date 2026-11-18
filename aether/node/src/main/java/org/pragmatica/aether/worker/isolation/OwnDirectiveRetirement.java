@@ -67,7 +67,6 @@ import static org.pragmatica.utility.warning.OperatorWarningCode.OWN_DIRECTIVE_R
 /// code: the halt ends the process, so nothing is left to report the condition as cleared.
 public final class OwnDirectiveRetirement {
     private static final Logger log = LoggerFactory.getLogger(OwnDirectiveRetirement.class);
-
     private static final String REMOVED = "removed";
     private static final String MOVED = "moved to another community";
 
@@ -105,7 +104,8 @@ public final class OwnDirectiveRetirement {
     /// halts the node once when a later one names a different community (the condition in the class header).
     @Contract
     public void onPut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> put) {
-        if (isOwnWorkerDirective(put.cause().key(), put.cause().value())) {
+        if (isOwnWorkerDirective(put.cause().key(),
+                                 put.cause().value())) {
             onOwnWorkerDirective(put.cause().value().communityId());
         }
     }
@@ -131,7 +131,9 @@ public final class OwnDirectiveRetirement {
     }
 
     private boolean isOwnWorkerDirective(ActivationDirectiveKey key, ActivationDirectiveValue value) {
-        return configuredWorker && isOwn(key) && ActivationDirectiveValue.WORKER.equals(value.role());
+        return configuredWorker
+               && isOwn(key)
+               && ActivationDirectiveValue.WORKER.equals(value.role());
     }
 
     private boolean isOwn(ActivationDirectiveKey key) {
