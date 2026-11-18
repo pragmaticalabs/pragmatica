@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.blueprint.StreamEventLimits;
+import org.pragmatica.aether.slice.stream.RingGeometry;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -128,6 +129,30 @@ class ClusterEventsLimitsTest {
     @Test
     void clusterEventsLimits_countPastTheIndexableCapacity_refusesTheBoot() {
         assertRefused(ClusterEventsLimits.MAX_COUNT_VARIABLE, String.valueOf(OffHeapRingBuffer.MAX_CAPACITY + 1));
+    }
+
+    /// T-267 (cluster-events arm): the count bound follows the configured event size. At the 64 KiB default a count of
+    /// `MAX_CAPACITY` passes the ring bound (the read window refuses it, so the refusal names the window, not the ring bound);
+    /// with a 1 MiB event size it is refused naming `maxCapacity(1 MiB)`. Mutant: read the default event size in the bound.
+    @Test
+    void clusterEventsLimits_countAtTheConstantCapacity_isRefusedNamingTheBoundOfTheConfiguredEventSize() {
+        var oneMiB = 1024L * 1024;
+        var bound = RingGeometry.maxCapacity(RingGeometry.firstSegmentBytes(ClusterEventsLimits.DEFAULT_MAX_BYTES, oneMiB));
+
+        limitsFrom(Map.of(ClusterEventsLimits.MAX_COUNT_VARIABLE, String.valueOf(OffHeapRingBuffer.MAX_CAPACITY),
+                          ClusterEventsLimits.MAX_EVENT_SIZE_BYTES_VARIABLE, String.valueOf(oneMiB)))
+                .onSuccess(limits -> fail("expected a refusal, bound " + limits))
+                .onFailure(cause -> assertThat(cause.message()).contains(ClusterEventsLimits.MAX_COUNT_VARIABLE + "='" + OffHeapRingBuffer.MAX_CAPACITY
+                                                                         + "' is not a whole number from 1 to " + bound));
+        assertThat(bound).isEqualTo(OffHeapRingBuffer.MAX_CAPACITY - 32_768L);
+    }
+
+    @Test
+    void clusterEventsLimits_countPastTheConstantCapacity_atTheDefaultEventSize_isRefused_boundIsTheConstant() {
+        assertRefused(ClusterEventsLimits.MAX_COUNT_VARIABLE, String.valueOf(OffHeapRingBuffer.MAX_CAPACITY + 1));
+        assertThat(RingGeometry.maxCapacity(RingGeometry.firstSegmentBytes(ClusterEventsLimits.DEFAULT_MAX_BYTES,
+                                                                           ClusterEventsLimits.DEFAULT_MAX_EVENT_SIZE_BYTES)))
+                .isEqualTo(OffHeapRingBuffer.MAX_CAPACITY);
     }
 
     /// #1571 — this used to assert that a count AT the ring's indexable capacity was accepted. It was
