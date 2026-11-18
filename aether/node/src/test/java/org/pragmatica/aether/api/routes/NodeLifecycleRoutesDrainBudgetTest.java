@@ -405,7 +405,8 @@ class NodeLifecycleRoutesDrainBudgetTest {
                 assertThat(((NodeLifecycleRoutes.LeaderCannotBeDrained) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
                 assertThat(cause.message()).isEqualTo(
                     "Cannot drain node node-1: it is the current leader, and a leader is not drained. Move leadership first:"
-                    + " stop this node's process so the cluster elects another leader, then drain this node once it is no longer the leader.");
+                    + " stop this node's process from outside the cluster (the service manager or the container runtime) so the cluster elects another"
+                    + " leader, then drain this node once it is no longer the leader. `aether nodes shutdown` is refused for the leader too.");
             });
             assertThat(pendingDrains).isEmpty();
         }
@@ -498,11 +499,51 @@ class NodeLifecycleRoutesDrainBudgetTest {
             assertThat(pendingDrains).isEmpty();
         }
 
+        /// #3348 (R-b, R-c): an API shutdown of the leader, or of the handling node, is refused with its own typed text
+        /// and nothing is dispatched; a shutdown of a follower handled on the leader is still admitted (control).
         @Test
-        void shutdownOfTheLeader_isNotRefusedByTheLeaderRule() {
+        void shutdownOfTheLeader_isRefusedWithItsOwnTextAndNothingDispatched() {
+            currentLeader = Option.some(node(1));
+            handlingNode = node(1);
+
+            routes().shutdownNodeForTest(node(1).id()).await()
+                    .onSuccess(_ -> fail("a shutdown of the leader must not be admitted"))
+                    .onFailure(cause -> {
+                        assertThat(cause).isInstanceOf(NodeLifecycleRoutes.LeaderCannotBeShutDown.class);
+                        assertThat(((NodeLifecycleRoutes.LeaderCannotBeShutDown) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
+                        assertThat(cause.message()).startsWith("Cannot shut down node node-1: it is the current leader")
+                                                   .contains("the service manager or the container runtime");
+                    });
+            assertThat(pendingDrains).isEmpty();
+        }
+
+        @Test
+        void shutdownOfTheHandlingNode_whileLeaderStateNamesAnother_isRefused() {
+            currentLeader = Option.some(node(1));
+            handlingNode = node(3);
+
+            routes().shutdownNodeForTest(node(3).id()).await()
+                    .onSuccess(_ -> fail("a shutdown of the handling node must not be admitted"))
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(NodeLifecycleRoutes.LeaderCannotBeShutDown.class));
+            assertThat(pendingDrains).isEmpty();
+        }
+
+        @Test
+        void shutdownOfAFollowerHandledOnTheLeader_isAdmitted() {
+            currentLeader = Option.some(node(1));
+            handlingNode = node(1);
+
+            assertThat(routes().shutdownNodeForTest(node(2).id()).await().isSuccess()).isTrue();
+            assertThat(pendingDrains).containsExactly(node(2));
+        }
+
+        @Test
+        void drainRefusalNamesOnlySafeExits_andRefusesShutdownToo() {
             currentLeader = Option.some(node(1));
 
-            assertThat(routes().shutdownNodeForTest(node(1).id()).await().isSuccess()).isTrue();
+            routes().drainNodeForTest(node(1).id()).await()
+                    .onFailure(cause -> assertThat(cause.message()).contains("the service manager or the container runtime")
+                                                                     .contains("`aether nodes shutdown` is refused for the leader too"));
         }
     }
 }
