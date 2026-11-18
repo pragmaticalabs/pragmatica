@@ -28,6 +28,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -242,6 +243,9 @@ final class DeparturePushRun {
     private boolean atRiskRaised;
     private int atRiskCount;
 
+    // The deadline task, cancelled when the run resolves.
+    private final AtomicReference<Option<ScheduledFuture<?>>> deadlineTimer = new AtomicReference<>(Option.none());
+
     // --- counters (tests and logs) ---
     private final AtomicInteger reconciles = new AtomicInteger();
     private final AtomicInteger viewChanges = new AtomicInteger();
@@ -293,7 +297,14 @@ final class DeparturePushRun {
             .timeout(remainingUntil(attemptsDeadline))
             .onResult(enumerated -> enumerated.fold(this::notEnumerated, this::start));
 
-        return result;
+        return result.onResultRun(this::cancelDeadlineTimer);
+    }
+
+    /// A resolved run releases its deadline task at once, so nothing the run references (its observer) stays reachable until
+    /// the deadline.
+    @Contract
+    private void cancelDeadlineTimer() {
+        deadlineTimer.get().onPresent(timer -> timer.cancel(false));
     }
 
     int reconciles() {
@@ -331,7 +342,10 @@ final class DeparturePushRun {
         transition(() -> enumerate(stamps));
         reconcile();
         transition(this::raiseAtPlan);
-        SharedScheduler.schedule(this::onDeadline, remainingUntil(attemptsDeadline));
+        deadlineTimer.set(Option.some(SharedScheduler.schedule(this::onDeadline, remainingUntil(attemptsDeadline))));
+        if (result.isResolved()) {
+            cancelDeadlineTimer();
+        }
         maybeExit();
 
         return Unit.unit();
@@ -771,7 +785,12 @@ final class DeparturePushRun {
             onHalt();
         }
 
-        return page.cancelled.get() || !registry.containsKey(page.correlationId()) || isClosed();
+        return page.cancelled.get() || !registry.containsKey(page.correlationId()) || isClosed() || pastAttemptsDeadline();
+    }
+
+    /// No attempt starts once the attempts window is used up: the deadline resolves the run, so a send then is never counted.
+    private boolean pastAttemptsDeadline() {
+        return System.nanoTime() >= attemptsDeadline;
     }
 
     private boolean isClosed() {
