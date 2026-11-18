@@ -67,6 +67,7 @@ class KvBackupGracefulStopTest {
 
     private final HttpOperations http = jdkHttpOperations();
     private EmberCluster cluster;
+    private Path remote;
 
     @AfterEach
     void tearDown() {
@@ -125,11 +126,83 @@ class KvBackupGracefulStopTest {
                                                        .as("revision " + revision + " seen on " + byNode.keySet()).isEqualTo(1L));
     }
 
+    private void awaitBackupSettled() {
+        var deadline = System.nanoTime() + WAIT_TIMEOUT.toNanos();
+        var last = "no sample";
+
+        while (System.nanoTime() < deadline) {
+            last = backupDifference();
+            if (last.isEmpty()) {
+                return;
+            }
+            LockSupport.parkNanos(POLL_INTERVAL.toNanos());
+        }
+        throw new AssertionError("the KV backup did not settle within " + WAIT_TIMEOUT + ": " + last);
+    }
+
+    /// Empty when the remote document names exactly the backed-up keys of the leader's store; otherwise what differs.
+    private String backupDifference() {
+        var leader = cluster.currentLeader();
+        var node = cluster.allNodes().stream().filter(candidate -> leader.map(id -> id.equals(candidate.self().id())).or(false)).findFirst();
+
+        if (node.isEmpty()) {
+            return "no leader node";
+        }
+
+        var store = node.get().kvStore();
+        java.util.Map<AetherKey, AetherValue> stored;
+
+        synchronized (store) {
+            stored = backedUpEntries(store.snapshot());
+        }
+
+        var document = remoteDocument();
+
+        if (document.isEmpty()) {
+            return "the remote has no backup document yet";
+        }
+
+        var lines = document.lines().toList();
+        var missing = stored.keySet().stream().map(AetherKey::asString).filter(key -> lines.stream().noneMatch(line -> line.endsWith(" " + key))).toList();
+        var declared = lines.stream().filter(line -> line.startsWith("entries=")).findFirst().orElse("entries=?");
+
+        return missing.isEmpty() && declared.equals("entries=" + stored.size())
+               ? ""
+               : "store has " + stored.size() + " backed-up keys, remote document says " + declared + ", keys missing from it: " + missing;
+    }
+
+    private String remoteDocument() {
+        var refs = gitOutput("for-each-ref", "--format=%(refname)", "refs/heads").lines().findFirst();
+
+        return refs.isPresent() ? gitOutput("show", refs.get() + ":kv-backup.txt") : "";
+    }
+
+    private String gitOutput(String... args) {
+        var command = new ArrayList<String>();
+
+        command.add("git");
+        command.add("--git-dir=" + remote);
+        command.addAll(List.of(args));
+        try {
+            var process = new ProcessBuilder(command).redirectErrorStream(true).start();
+            var output = new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+
+            return process.waitFor() == 0 ? output : "";
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "";
+        }
+    }
+
     private record Created(long incarnation, long startedNanos) {}
 
     private Created createStreamAfterTheBackupSettled(StreamConfigKey key) {
-        // control 1: the backup settles, so the only unflushed change is the one made below
-        LockSupport.parkNanos(Duration.ofSeconds(12).toNanos());
+        // control 1: the backup settles, so the only unflushed change is the one made below. Settled = the remote's backup document
+        // holds exactly the backed-up keys of the leader's store: the debounced flush (KvBackupService.tick, quiet 500 ms / cap 5 s)
+        // has landed, so no pending flush can carry the change made below and mask a missing stop flush.
+        awaitBackupSettled();
         assertThat(committedIncarnation(key)).as("control: the stream does not exist yet").isEqualTo(-1L);
 
         var response = httpPost(cluster.getLeaderManagementPort().or(anyMgmtPort()), "/api/v1/streams/probe/quiet/1.0.0", "{\"partitions\":1}");
@@ -185,7 +258,7 @@ class KvBackupGracefulStopTest {
 
     private void startCluster(Path dir) {
         var configProvider = ConfigurationProvider.builder().withSystemProperties("aether.").withEnvironment("AETHER_").build();
-        var remote = dir.resolve("kv-backup-remote.git");
+        remote = dir.resolve("kv-backup-remote.git");
 
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "scd", Option.some(configProvider));
         cluster.withDataBaseDir(dir);
