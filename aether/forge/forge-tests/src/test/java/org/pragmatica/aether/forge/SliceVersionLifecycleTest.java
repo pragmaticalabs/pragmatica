@@ -119,9 +119,11 @@ class SliceVersionLifecycleTest {
     /// Do NOT "fix" a failure here by sleeping or by retrying one port: that lowers the failure rate
     /// of a test asking the wrong node and buys back the same bug. Poll every port instead.
     ///
-    /// The gate is keyed on the ARTIFACT COORDINATE, deliberately nothing this test asserts, so it
-    /// establishes *which node hosts the slice* without being able to confirm the assertions about
-    /// what that node reports.
+    /// The gate is keyed on the ARTIFACT COORDINATE, and that is enough for the fields asserted next (#3391 item 5, SAFE: they
+    /// cannot lag the coordinate). A node lists an artifact here only when its `SliceRouter` is installed and that router's
+    /// `SliceVersionRegistry` is versioned; the registry is an immutable record built with the router, and `deprecated`,
+    /// `sunset` and `defaultIfMissing` are rendered from that same record. The body this gate returns is the very body the
+    /// assertions read, so the coordinate and the fields come from one snapshot.
     private String awaitVersionsFromHostingNode() {
         return await().atMost(WAIT_TIMEOUT)
                       .pollInterval(POLL_INTERVAL)
