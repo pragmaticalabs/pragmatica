@@ -1293,34 +1293,37 @@ class DHTRebalancerTest {
             return max;
         }
 
-        /// A replicated page stops at `baseDeadline` (its key still has a survivor), and the push ends with it rather than at the later
-        /// backstop: an attempt's wait is clipped to the page's remaining time, however long `resendAfter` is.
+        /// The push ends at its deadline (400 ms) with the key owed, although the unanswered page would be resent only after 3 s: the
+        /// run's one deadline (#3345) does not wait for the page's resend interval.
         @Test
         @Timeout(20)
-        void pushOnDeparture_unackedAttemptWait_isClippedToThePageDeadline() {
-            var run = replicatedPageUnder(Reply.DROP, "b-wait");
+        void pushOnDeparture_unackedAttemptWait_endsAtTheDeadline() {
+            var network = ScriptedNetwork.scripted((_, _) -> Reply.DROP);
+            var run = replicatedPageUnder(network, "b-wait");
 
             assertThat(run.elapsedMillis()).isLessThan(1_500);
+            assertThat(network.sends()).hasSize(1);
             assertThat(run.report().replicatedAtRisk()).isEqualTo(1);
         }
 
-        /// The pause after a nack is clipped the same way.
+        /// The same for the 3 s pause after a nack.
         @Test
         @Timeout(20)
-        void pushOnDeparture_nackPause_isClippedToThePageDeadline() {
-            var run = replicatedPageUnder(Reply.NACK, "b-pause");
+        void pushOnDeparture_nackPause_endsAtTheDeadline() {
+            var network = ScriptedNetwork.scripted((_, _) -> Reply.NACK);
+            var run = replicatedPageUnder(network, "b-pause");
 
             assertThat(run.elapsedMillis()).isLessThan(1_500);
+            assertThat(network.sends()).hasSize(1);
             assertThat(run.report().replicatedAtRisk()).isEqualTo(1);
         }
 
-        private Run replicatedPageUnder(Reply reply, String prefix) {
+        private Run replicatedPageUnder(ScriptedNetwork network, String prefix) {
             var ring = fiveNodeRing();
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF2);
             node.putLocal(keyHeldBy(ring, 2, Set.of(LOCAL, PEER_A), prefix), value("payload")).await();
-            var network = ScriptedNetwork.scripted((_, _) -> reply);
 
-            return push(node, network, timing(400, 5_000, 3_000, 3_000, 200), Set.of());
+            return push(node, network, timing(400, 0, 3_000, 3_000, 200), Set.of());
         }
 
         /// A clean sole ack raises no event at all: DELIVERED is the recovery of an AT_RISK that was never raised.
@@ -1339,12 +1342,14 @@ class DHTRebalancerTest {
         }
 
         /// An observer that throws loses its own event only: the push still resolves, and the later events still reach the observer.
+        /// The key has no deliverer (the drainer is the ring's only node), so AT_RISK is raised at plan time (#3345) and throws.
         @Test
         @Timeout(20)
         void pushOnDeparture_throwingObserver_isIsolated() {
-            var ring = fiveNodeRing();
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            ring.addNode(LOCAL);
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
-            node.putLocal(soleKey(ring, "b-throw"), value("payload")).await();
+            node.putLocal(key("b-throw"), value("payload")).await();
             var recorder = new EventRecorder(SoleCopyDeparture::boom);
             var run = push(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(200, 300, 50), Set.of(), recorder);
 
@@ -1381,13 +1386,15 @@ class DHTRebalancerTest {
         }
 
         /// After the node halted nothing more is reported or awaited: the AT_RISK call halts the node and its event never settles;
-        /// the push resolves at once, without the incomplete report and without waiting for that event.
+        /// the push resolves at once, without the incomplete report and without waiting for that event. The key has no deliverer
+        /// (the drainer is the ring's only node), so AT_RISK is raised at plan time (#3345).
         @Test
         @Timeout(20)
         void pushOnDeparture_haltedByTheAtRiskCall_reportsAndAwaitsNothingMore() {
-            var ring = fiveNodeRing();
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            ring.addNode(LOCAL);
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
-            node.putLocal(soleKey(ring, "b-halt"), value("payload")).await();
+            node.putLocal(key("b-halt"), value("payload")).await();
             var halted = new AtomicBoolean(false);
             var recorder = new EventRecorder(() -> halted.set(true), () -> Promise.promise());
             var started = System.nanoTime();
