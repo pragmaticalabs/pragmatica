@@ -207,6 +207,7 @@ class NodeLifecycleRoutesSliceFloorTest {
                 case "initialTopology" -> presentMembers().stream().toList();
                 case "membershipFsm" -> fsm;
                 case "kvStore" -> kvStore;
+                case "leader" -> Option.none();
                 case "route" -> recordRoute(args);
                 default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
             });

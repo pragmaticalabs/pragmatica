@@ -104,6 +104,24 @@ public final class NodeLifecycleRoutes implements RouteSource {
         }
     }
 
+    /// 409: the operator drain targets the current leader. The leader has no row in the readiness view (it never pings
+    /// itself) and a drain commanded on it is not carried out, so a leader is not drained: the operator moves
+    /// leadership first. The product has no step-down command; stopping the leader's process makes the cluster elect
+    /// another leader.
+    public record LeaderCannotBeDrained(String nodeId) implements HttpStatusAware {
+        @Override
+        public String message() {
+            return "Cannot drain node " + nodeId
+                 + ": it is the current leader, and a leader is not drained. Move leadership first: stop this node's process"
+                 + " so the cluster elects another leader, then drain this node once it is no longer the leader.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
     /// 409: the operator drain/shutdown would leave a hosted slice below its `minAvailable` ACTIVE instances
     /// (#1720). Names every slice and its counts; `force` overrides it and is then reported as an operator
     /// warning rather than done silently.
@@ -370,8 +388,8 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// pass against one "pending drains" snapshot. Pinned by `NodeLifecycleRoutesSliceFloorTest`'s concurrent
     /// admission test.
     private synchronized Result<TransitionResult> admitOperatorDrain(NodeId node, boolean requireReady, boolean force) {
-        return checkDisruptionBudgetForTarget(node.id(),
-                                              node).flatMap(budget -> checkDrainReadiness(node, requireReady).map(_ -> budget))
+        return refuseLeaderDrain(node, requireReady).flatMap(_ -> checkDisruptionBudgetForTarget(node.id(), node))
+                                                    .flatMap(budget -> checkDrainReadiness(node, requireReady).map(_ -> budget))
                                              .flatMap(budget -> checkSliceFloor(node, requireReady, force).map(_ -> budget))
                                              .map(budget -> enqueueOperatorDrain(node,
                                                                                  budget.message(),
@@ -548,6 +566,15 @@ public final class NodeLifecycleRoutes implements RouteSource {
                       .noneMatch(entry -> entry.getKey()
                                                .id()
                                                .equals(nodeId) && !MEMBERSHIP_DEAD.equals(entry.getValue()));
+    }
+
+    /// A drain of the current leader is refused before anything else is read or dispatched. Decided from the leadership
+    /// state this node holds (`leader()`), so the leader's own route and a follower's route answer alike. With no leader
+    /// elected at this instant nothing matches and today's answer for the target stands (404 when it has no reported state).
+    private Result<org.pragmatica.lang.Unit> refuseLeaderDrain(NodeId node, boolean requireReady) {
+        return requireReady && nodeSupplier.get().leader().filter(node::equals).isPresent()
+               ? new LeaderCannotBeDrained(node.id()).result()
+               : Result.success(org.pragmatica.lang.Unit.unit());
     }
 
     private Result<org.pragmatica.lang.Unit> checkDrainReadiness(NodeId node, boolean requireReady) {

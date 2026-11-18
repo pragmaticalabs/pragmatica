@@ -34,15 +34,16 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///
 /// The issue claims (read from code, not run) that the leader marks ITSELF DEPARTING while its own
 /// `DrainProcedure` never leaves INACTIVE (the ping that carries the drain command skips the sender). This test
-/// pins that the leader drain is REFUSED at the route and nothing is half-applied: the answer is `404 Node lifecycle not
-/// found` (asserted, status and body), on the leader's port, on a follower's port, and on the NEW leader after a leader
+/// pins that the leader drain is REFUSED at the route and nothing is half-applied: the answer is the typed
+/// `409` leader-cannot-be-drained refusal (asserted, status and body text), on the leader's port, on a follower's port, and on the NEW leader after a leader
 /// change; and at no 100 ms sample over a window longer than the departure timeout is the leader DEPARTING on itself while
 /// its own `DrainProcedure` is INACTIVE (`T3348` lines on stdout, one per observable change).
 ///
-/// Why the 404 is pinned and not only the samples: the refusal comes from the readiness view, which never carries the leader's
-/// own row (the leader's view is built from pongs and the leader never pings itself). The latent half-apply is REAL: with a
+/// Why the refusal is pinned and not only the samples: the readiness view never carries the leader's own row (the view is
+/// built from pongs and the leader never pings itself), so before the typed refusal the route answered `404 Node lifecycle
+/// not found` for the leader. The latent half-apply is REAL: with a
 /// route that treats self as READY (verifier mutant, v3356) the leader goes DEPARTING with an INACTIVE drain at 149 of 150
-/// samples and returns to Member at the departure timeout. The 404 is the ONLY guard; a future fix that adds the leader's own
+/// samples and returns to Member at the departure timeout. The leader check in front of the readiness lookup is the ONLY guard; a future fix that adds the leader's own
 /// row to the view must ship together with a drain that runs on the leader, and must keep this test.
 ///
 /// The `DrainProcedure` is not reachable through the `AetherNode` interface (it is a local of the node
@@ -64,7 +65,7 @@ class EmberLeaderDrainTest {
     private static final long LEADER_BUDGET_MS = 90_000L;
     private static final long READY_BUDGET_MS = 90_000L;
     private static final int LEADER_CHANGE_SIZE = 4;
-    private static final String REFUSAL_BODY = "Node lifecycle not found";
+    private static final String REFUSAL_BODY_FORMAT = "Cannot drain node %s: it is the current leader, and a leader is not drained. Move leadership first: stop this node's process so the cluster elects another leader, then drain this node once it is no longer the leader.";
     // membership departure timeout = MembershipConfig.DEFAULT_SPLIT_TIMEOUT (15 s); the window covers it with margin
     private static final long OBSERVE_WINDOW_MS = 60_000L;
     private static final long SAMPLE_MS = 100L;
@@ -111,7 +112,7 @@ class EmberLeaderDrainTest {
         assertThat(cluster.getNode(follower).isEmpty()).as("control: the drained follower exited").isTrue();
     }
 
-    /// The claim of #3348. The route REFUSES (404, `Node lifecycle not found`) and at no sample is the leader
+    /// The claim of #3348. The route REFUSES (409, typed leader-cannot-be-drained) and at no sample is the leader
     /// DEPARTING on itself while its own drain procedure is INACTIVE.
     @Test
     @Timeout(600)
@@ -216,8 +217,9 @@ class EmberLeaderDrainTest {
         assertThat(halfApplied)
             .as("#3348: the leader was DEPARTING on itself while its own DrainProcedure was INACTIVE; route answered " + answer)
             .isEmpty();
-        assertThat(answer.status()).as("the route answered with an HTTP status (a connection failure is -1): " + answer).isEqualTo(404);
-        assertThat(answer.body()).as("the refusal is the lifecycle-not-found answer: " + answer).contains(REFUSAL_BODY);
+        assertThat(answer.status()).as("the route answered with an HTTP status (a connection failure is -1): " + answer).isEqualTo(409);
+        assertThat(answer.body()).as("the refusal is the typed leader-cannot-be-drained answer: " + answer)
+                                 .contains(REFUSAL_BODY_FORMAT.formatted(leaderId));
     }
 
     private void start(int size) {
@@ -237,7 +239,7 @@ class EmberLeaderDrainTest {
         assertThat(cluster.getLeaderManagementPort().isPresent()).as("a leader is elected").isTrue();
     }
 
-    /// The route answers 404 "Node lifecycle not found" until the receiving node's readiness view reports the target READY.
+    /// A follower target is answered 404 "Node lifecycle not found" until the receiving node's readiness view reports the target READY.
     /// Wait (bounded; failing with a message) for what the drain needs: every given node READY in the viewer's own view.
     /// The leader's own row is NOT waited for: it never appears (the view is built from pongs and the leader never pongs itself).
     private static void awaitFollowersReady(AetherNode viewer, List<String> nodeIds) {

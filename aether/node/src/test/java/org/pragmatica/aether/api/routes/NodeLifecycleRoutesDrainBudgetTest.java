@@ -63,6 +63,7 @@ class NodeLifecycleRoutesDrainBudgetTest {
     private MembershipFsm fsm;
     private Set<NodeId> allPresent;
     private Set<NodeId> installedVoters;
+    private Option<NodeId> currentLeader = Option.none();
 
     @BeforeEach
     void setUp() {
@@ -146,6 +147,7 @@ class NodeLifecycleRoutesDrainBudgetTest {
                 case "initialTopology" -> presentMembers().stream().toList();
                 case "membershipFsm" -> fsm;
                 case "kvStore" -> kvStore;
+                case "leader" -> currentLeader;
                 case "route" -> recordRoute(args);
                 default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
             });
@@ -381,6 +383,82 @@ class NodeLifecycleRoutesDrainBudgetTest {
 
             assertThat(result.isSuccess()).isTrue();
             result.onSuccess(transition -> assertThat(transition.message()).contains("core-guard applied (role=core"));
+        }
+    }
+
+    /// #3348: an operator drain of the current leader is a typed 409 decided before the readiness lookup and before
+    /// anything is dispatched; the leader has no row in the readiness view, so without it the answer is the 404.
+    @Nested
+    class LeaderDrain {
+        @Test
+        void leaderTarget_refusedWithTypedConflictAndNothingDispatched() {
+            currentLeader = Option.some(node(1));
+            allPresent = Set.of(node(2), node(3), node(4), node(5));
+
+            var failure = routes().drainNodeForTest(node(1).id()).await();
+
+            assertThat(failure.isFailure()).isTrue();
+            failure.onFailure(cause -> {
+                assertThat(cause).isInstanceOf(NodeLifecycleRoutes.LeaderCannotBeDrained.class);
+                assertThat(((NodeLifecycleRoutes.LeaderCannotBeDrained) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
+                assertThat(cause.message()).isEqualTo(
+                    "Cannot drain node node-1: it is the current leader, and a leader is not drained. Move leadership first:"
+                    + " stop this node's process so the cluster elects another leader, then drain this node once it is no longer the leader.");
+            });
+            assertThat(pendingDrains).isEmpty();
+        }
+
+        @Test
+        void leaderTargetRefusedEvenWhenViewReportsItReady() {
+            currentLeader = Option.some(node(1));
+
+            var failure = routes().drainNodeForTest(node(1).id()).await();
+
+            failure.onSuccess(_ -> fail("the leader must not be admitted"))
+                   .onFailure(cause -> assertThat(cause).isInstanceOf(NodeLifecycleRoutes.LeaderCannotBeDrained.class));
+            assertThat(pendingDrains).isEmpty();
+        }
+
+        @Test
+        void nonLeaderTargetUnknownToTheView_stillLifecycleNotFound() {
+            currentLeader = Option.some(node(1));
+            allPresent = Set.of(node(1), node(2), node(3), node(4));
+
+            var answer = routes().drainNodeForTest(node(5).id()).await();
+
+            answer.onSuccess(_ -> fail("a target with no reported state must not be admitted"))
+                  .onFailure(cause -> {
+                      assertThat(cause).isInstanceOf(HttpError.class);
+                      assertThat(((HttpError) cause).status()).isEqualTo(HttpStatus.NOT_FOUND);
+                      assertThat(cause.message()).contains("Node lifecycle not found");
+                  });
+            assertThat(pendingDrains).isEmpty();
+        }
+
+        @Test
+        void noLeaderKnown_targetUnknownToTheView_keepsLifecycleNotFound() {
+            currentLeader = Option.none();
+            allPresent = Set.of(node(2), node(3), node(4), node(5));
+
+            routes().drainNodeForTest(node(1).id()).await()
+                    .onSuccess(_ -> fail("a target with no reported state must not be admitted"))
+                    .onFailure(cause -> assertThat(cause.message()).contains("Node lifecycle not found"));
+            assertThat(pendingDrains).isEmpty();
+        }
+
+        @Test
+        void followerTargetReady_isAdmitted() {
+            currentLeader = Option.some(node(1));
+
+            assertThat(routes().drainNodeForTest(node(2).id()).await().isSuccess()).isTrue();
+            assertThat(pendingDrains).containsExactly(node(2));
+        }
+
+        @Test
+        void shutdownOfTheLeader_isNotRefusedByTheLeaderRule() {
+            currentLeader = Option.some(node(1));
+
+            assertThat(routes().shutdownNodeForTest(node(1).id()).await().isSuccess()).isTrue();
         }
     }
 }
