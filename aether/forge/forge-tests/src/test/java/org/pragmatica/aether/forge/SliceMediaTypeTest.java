@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.awaitility.core.ConditionTimeoutException;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 
@@ -43,8 +44,12 @@ class SliceMediaTypeTest {
     private static final String BLUEPRINT_ID = "forge.test:slice-media-type:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
     private static final int BINARY_SEED = 65;
+    private static final String CSV_PATH = "/csv/widget";
+    private static final String BINARY_PATH = "/binary/" + BINARY_SEED;
 
     private EmberCluster cluster;
+    private volatile int servingPort;
+    private volatile String lastProbe = "none";
     private final HttpOperations http = jdkHttpOperations();
 
     @BeforeAll
@@ -69,7 +74,7 @@ class SliceMediaTypeTest {
     @Test
     void csvRoute_returnsTextCsvContentType() {
         var port = appPort();
-        var response = http.sendString(getRequest(port, "/csv/widget"))
+        var response = http.sendString(getRequest(port, CSV_PATH))
                            .await()
                            .onFailure(cause -> {
                                throw new AssertionError("CSV request failed: " + cause.message());
@@ -90,7 +95,7 @@ class SliceMediaTypeTest {
                                   (byte) (BINARY_SEED + 2),
                                   (byte) (BINARY_SEED + 3)};
 
-        var response = http.sendBytes(getRequest(port, "/binary/" + BINARY_SEED))
+        var response = http.sendBytes(getRequest(port, BINARY_PATH))
                            .await()
                            .onFailure(cause -> {
                                throw new AssertionError("Binary request failed: " + cause.message());
@@ -111,24 +116,52 @@ class SliceMediaTypeTest {
             .doesNotContain("\"error\"")
             .contains("\"status\":\"applied\"");
 
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(() -> {
-                   if (sliceHasFailed()) {
-                       throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
-                   }
-               })
-               .until(this::routesReady);
+        awaitRoutesServing();
     }
 
-    private boolean routesReady() {
-        return getSlices().contains("echo-slice") && !cluster.getAvailableAppHttpPorts().isEmpty();
+    // #3387: the slice list (`/slices/status`) names a slice in ANY state, LOAD included, and a node publishes a
+    // slice's HTTP routes only inside its activation chain, so "echo-slice is listed" is earlier than "the route
+    // answers". The wait is for the state the tests assert: both routes answer 200 on the port the tests will use.
+    private void awaitRoutesServing() {
+        try {
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .failFast(() -> {
+                       if (sliceHasFailed()) {
+                           throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
+                       }
+                   })
+                   .until(this::routesServe);
+        } catch (ConditionTimeoutException e) {
+            throw new AssertionError("Routes " + CSV_PATH + " and " + BINARY_PATH + " did not answer 200 within "
+                                     + WAIT_TIMEOUT + "; last probe: " + lastProbe, e);
+        }
+    }
+
+    private boolean routesServe() {
+        var ports = cluster.getAvailableAppHttpPorts();
+
+        if (ports.isEmpty()) {
+            lastProbe = "no available app HTTP port";
+            return false;
+        }
+        servingPort = ports.getFirst();
+        return answers200(servingPort, CSV_PATH) && answers200(servingPort, BINARY_PATH);
+    }
+
+    private boolean answers200(int port, String path) {
+        var status = http.sendBytes(getRequest(port, path))
+                         .await()
+                         .map(HttpResult::statusCode)
+                         .or(-1);
+
+        lastProbe = "GET " + path + " on port " + port + " -> " + status;
+        return status == 200;
     }
 
     private int appPort() {
-        var ports = cluster.getAvailableAppHttpPorts();
-        assertThat(ports).describedAs("available app HTTP ports").isNotEmpty();
-        return ports.getFirst();
+        assertThat(servingPort).describedAs("app HTTP port that served both routes").isPositive();
+        return servingPort;
     }
 
     private HttpRequest getRequest(int port, String path) {
