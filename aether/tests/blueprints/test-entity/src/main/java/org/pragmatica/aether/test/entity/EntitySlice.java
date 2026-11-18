@@ -220,7 +220,15 @@ public interface EntitySlice {
         }
 
         private static EntityResponse succeeded(String instance, String outcome, OrderState state) {
-            return new EntityResponse(instance, outcome, "", "", false, state.status(), state.amount(), state.expiries(), "");
+            return new EntityResponse(instance,
+                                      outcome,
+                                      "",
+                                      "",
+                                      false,
+                                      state.status(),
+                                      state.amount(),
+                                      state.expiries(),
+                                      "");
         }
     }
 
