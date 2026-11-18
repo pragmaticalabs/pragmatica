@@ -1852,9 +1852,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         return RingGeometry.indexable(window.count(), first)
                ? success(unit())
-               : new StreamError.RetentionCountUnindexable(streamName,
-                                                           window.count(),
-                                                           RingGeometry.maxCapacity(first)).result();
+               : new StreamError.RetentionCountUnindexable(streamName, window.count(), RingGeometry.maxCapacity(first)).result();
     }
 
     /// Create-time admission gate (#265 increment 4, spec §7): reject a fresh stream that breaches the
@@ -7940,10 +7938,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Retention no longer sizes a user ring: it bounds what is kept, not what is held in memory.
     static RingWindow ringWindow(StreamConfig config) {
         return isSystemStream(config.name())
-               ? RingWindow.ringWindow(config.retention()
-                                             .maxCount(),
-                                       config.retention()
-                                             .maxBytes())
+               ? RingWindow.ringWindow(config.retention().maxCount(),
+                                       config.retention().maxBytes())
                : userOrEntityWindow(config);
     }
 
@@ -7955,11 +7951,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private static RingWindow declaredOrDefaultWindow(StreamConfig config) {
-        var hot = config.declaration()
-                        .flatMap(StreamDeclaration::hot);
+        var hot = config.declaration().flatMap(StreamDeclaration::hot);
 
-        return RingWindow.ringWindow(hot.flatMap(HotWindowDeclaration::maxCount)
-                                        .or(RingGeometry.HOT_WINDOW_ENTRIES),
+        return RingWindow.ringWindow(hot.flatMap(HotWindowDeclaration::maxCount).or(RingGeometry.HOT_WINDOW_ENTRIES),
                                      hot.flatMap(HotWindowDeclaration::maxBytes)
                                         .or(() -> RingGeometry.hotWindowBytes(config.maxEventSizeBytes())));
     }
