@@ -88,6 +88,9 @@ class CliPrintOrderTest {
         assertThat(found).as("finding printed").isGreaterThan(head);
         assertThat(summary).as("after-line comes after the findings").isGreaterThan(found);
         assertThat(stdout).as("blank line frames the after-lines").contains("\n\nCheck results (");
+        assertThat(stdout).as("DETAIL lines stay hidden without verbose (C4)")
+                          .isEqualTo(captured.expectedStdout(false))
+                          .doesNotContain("Checking ");
     }
 
     @Test

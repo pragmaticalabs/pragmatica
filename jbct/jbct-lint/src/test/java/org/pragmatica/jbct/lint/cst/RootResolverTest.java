@@ -153,6 +153,31 @@ class RootResolverTest {
     }
 
     @Test
+    void perform_aFileHeldByTwoRootsOfAHandBuiltPlan_isActedOnOnceInTheFirstRoot() throws IOException {
+        var business = module("biz", BUSINESS);
+        var infrastructure = module("infra", INFRASTRUCTURE);
+        var shared = source(business, "Pricing.java", BOTH);
+
+        source(infrastructure, "Other.java", BOTH);
+        var resolved = plan(business, infrastructure);
+        var businessRoot = rootOf(resolved, business.resolve("src/main/java"));
+        var infrastructureRoot = rootOf(resolved, infrastructure.resolve("src/main/java"));
+        var handBuilt = RootPlan.rootPlan(List.of(holding(businessRoot, shared), holding(infrastructureRoot, shared)),
+                                          false,
+                                          RootResolver.SRC_TEST_RULE,
+                                          List.of(),
+                                          0);
+        var result = performed(handBuilt);
+
+        assertEquals(1, result.files().size());
+        assertEquals(Set.of(ARCH_02, RET_03, NAM_07), reported(result, shared));
+    }
+
+    private static ResolvedRoot holding(ResolvedRoot root, Path file) {
+        return ResolvedRoot.resolvedRoot(root.path(), root.config(), root.modeSource(), root.testRoot(), List.of(file));
+    }
+
+    @Test
     void resolve_aPackageDirectoryArgumentInsideALayout_isOwnedByTheModulesLayoutRoot() throws IOException {
         var business = module("biz", BUSINESS);
         var file = source(business, "Pricing.java", BOTH);
@@ -257,6 +282,19 @@ class RootResolverTest {
         var plan = plan(Request.request(List.of(below)).withDeclared(Set.of(below), Set.of(declared)));
 
         assertTrue(rootOf(plan, below).testRoot());
+    }
+
+    @Test
+    void resolve_rootUnderTheDefaultSrcTestLayout_isATestRootWithNoDeclaredTestRoots() throws IOException {
+        var tests = Files.createDirectories(temp.resolve("mod/src/test/java"));
+        var main = Files.createDirectories(temp.resolve("mod/src/main/java"));
+
+        Files.writeString(tests.resolve("A.java"), "class A {}\n");
+        Files.writeString(main.resolve("B.java"), "class B {}\n");
+        var plan = plan(tests, main);
+
+        assertTrue(rootOf(plan, tests).testRoot());
+        assertFalse(rootOf(plan, main).testRoot());
     }
 
     @Test
