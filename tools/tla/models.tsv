@@ -36,17 +36,13 @@ RabiaSlot	integrations/consensus/src/main/java	nopastcur	fail	NoRedecide	-	D9 gu
 RabiaSlot	integrations/consensus/src/main/java	nocurslot	fail	NoRedecide	-	current-slot gates dropped: a decision for a collected slot is applied again through Learn
 RabiaSlot	integrations/consensus/src/main/java	nomarkerfirst	fail	VotedImpliesMarker	-	D11: activation before the participation marker is durable lets a node vote without one
 RabiaSlot	integrations/consensus/src/main/java	noemptyprop	fail	Live	-	D8: a voter with an empty queue stays silent and the slot never reaches a proposal quorum
-RabiaSlot	integrations/consensus/src/main/java	code_r2	pass	-	-	the code at two rounds and two batch ids (carry-forward and the coin, D1): OWED, run unfinished at the 06:40Z cutoff, no violation in 20.5M distinct states seen; expected verdict not yet observed
-RabiaSlot	integrations/consensus/src/main/java	code_obs	pass	-	-	the code with a rogue observer whose Decisions are learned (trusted peer): OWED, run unfinished at the 06:40Z cutoff, no violation in 25.7M distinct states seen; expected verdict not yet observed
-RabiaSlot	integrations/consensus/src/main/java	nopastguard2	pass	-	-	D9 past-slot guard dropped alone at two slots, no GC: OWED, run unfinished at the 06:40Z cutoff, no violation in 24.9M distinct states seen; expected verdict not yet observed
-RabiaSlot	integrations/consensus/src/main/java	norosterballot	fail	Agreement,NoRedecide,Validity,LogPrefix,VotedImpliesMarker	-	D11 receiver-side roster check dropped with a rogue observer voting: OWED, run unfinished at the 06:40Z cutoff with NO violation in 28.9M distinct states; the fail expectation is the intent, not an observation
-RabiaSlot	integrations/consensus/src/main/java	live	pass	-	-	positive control for noemptyprop, every fix on, Live holds: OWED, run unfinished at the 06:40Z cutoff; expected verdict not yet observed
+RabiaSlot	integrations/consensus/src/main/java	live	pass	-	-	positive control for noemptyprop, every fix on, Live holds; exhaustive, 16,453,616 distinct, depth 36
 RabiaSlot	integrations/consensus/src/main/java	ctl_byz_agree	fail	Agreement	-	negative control: a Byzantine voter (equivocation, forged Decision) breaks Agreement
 RabiaSlot	integrations/consensus/src/main/java	ctl_byz_valid	fail	Validity	-	negative control: a Byzantine voter's forged Decision breaks Validity
 RabiaSlot	integrations/consensus/src/main/java	ctl_logprefix	fail	LogPrefix	-	negative control: current-slot gates dropped at two slots, a later slot is applied before an earlier one
 RabiaEpoch	integrations/consensus/src/main/java	code	pass	-	-	in-order commit (prefix) abstraction, not the code: one reconfiguration, 4 nodes, 2 slots (the code-shaped Jump is codesync_*)
 RabiaEpoch	integrations/consensus/src/main/java	live	pass	-	-	the code: progress under a reconfiguration
-RabiaEpoch	integrations/consensus/src/main/java	codesync_live	pass	-	-	the code without prefix, LIVE and COLD responses: progress under a reconfiguration
+RabiaEpoch	integrations/consensus/src/main/java	codesync_live	pass	-	-	the code without prefix, LIVE responses only (applyRestoredState carries slot and roster together): GovernedVote holds; exhaustive, 15,710,785 distinct, depth 23
 RabiaEpoch	integrations/consensus/src/main/java	noexactepoch	pass	-	-	D6 exact-epoch counting dropped, in-order commit: stays green (redundant on the in-log path)
 RabiaEpoch	integrations/consensus/src/main/java	norelayepoch	pass	-	-	D2 relay epoch check dropped, in-order commit: stays green (redundant on the in-log path)
 RabiaEpoch	integrations/consensus/src/main/java	noprefixsafe	pass	-	-	all fixes, a replica may enter a slot without committing its predecessor (sync adoption): Agreement holds

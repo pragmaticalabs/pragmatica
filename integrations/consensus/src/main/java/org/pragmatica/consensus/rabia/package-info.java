@@ -55,6 +55,13 @@
 /// \*                 handleDecision drops a Decision below the current slot and buffers one above it. Modelled as a
 /// \*                 member because D9's safety claim rests on it too.
 /// \*   rosterballot- D11: acceptsBallot counts only installed roster members (isVoter(sender)).
+/// \*                 NOT PINNED by a row: dropped, it breaks Agreement when a rogue observer and the three
+/// \*                 voters split into two disjoint two-node quorums (one decides a batch, the other the empty
+/// \*                 value); a hand count puts the shortest such run near 28 steps. Exhaustive search did not
+/// \*                 reach it (stopped at depth 21, 20.8M distinct states, NVals = 1, GcDepth = 1); a random
+/// \*                 simulation of `code` with Observers = {o}, NVals = 2 and "rosterballot" dropped (`-simulate
+/// \*                 -depth 40`) reaches it in 30 s (Agreement violated, 41-state trace); with the check kept, the
+/// \*                 same simulation found no violation in 300 s (455,777 traces). Sampled evidence, not a row.
 /// \*   markerfirst - D11/#1212: activate refuses unless the participation marker is durably recorded first.
 /// \*   emptyprop   - D8 (liveness): a voter with an empty queue joins (or opens, after activation) a slot with an
 /// \*                 empty proposal instead of staying silent.
@@ -63,6 +70,10 @@
 /// \* controls for Agreement and Validity); every cfg fixes CommonCoin = TRUE, so the FALSE coin arm is never checked:
 /// \*   RogueVoter  - the observer runs the voter logic: a non-roster node whose stale local roster says it votes
 /// \*                 (RabiaVoterReconfigurationTest.removedVoter_ballotAtCurrentEpoch_isNotCounted). Adversity, not a fix.
+/// \*                 NOT CHECKED with every fix on: the arm code_obs (a rogue observer whose Decisions are learned
+/// \*                 as a trusted peer's) has no config: exhaustive search (NVals = 1, GcDepth = 1) was stopped at
+/// \*                 depth 23 with 20.3M distinct states and 9.9M on the queue, no violation seen (incomplete).
+/// \*                 So no row covers Learn from an observer; the only row with an observer is nomarkerfirst (red).
 /// \*   CommonCoin  - D1: TRUE = coinFlip, a function of (slot, epoch, round) only; FALSE = any coin per replica (control).
 /// \*   Byz         - voters that may equivocate (send two values for one ballot) or send a Decision nobody decided.
 /// \*                 The code assumes Byz = {}.
@@ -716,82 +727,6 @@
 ///     Voters = {n1, n2, n3}
 ///     Observers = {}
 ///     MaxSlot = 1
-///     MaxRound = 1
-///     GcDepth = 0
-///     NVals = 1
-///     Fixed = {"curslot", "rosterballot", "markerfirst", "emptyprop"}
-///     RogueVoter = TRUE
-///     CommonCoin = TRUE
-///     Byz = {}
-/// INVARIANTS Agreement NoRedecide Validity LogPrefix VotedImpliesMarker
-/// SYMMETRY Sym
-/// ```
-///
-/// ```tlacfg RabiaSlot:code_r2
-/// \* RabiaSlot config code_r2: the expected verdict is its row in tools/tla/models.tsv
-/// \* the code at two rounds and two batch ids: carry-forward and the coin (D1) are exercised
-/// SPECIFICATION Spec
-/// CONSTANTS
-///     Voters = {n1, n2, n3}
-///     Observers = {}
-///     MaxSlot = 1
-///     MaxRound = 2
-///     GcDepth = 0
-///     NVals = 2
-///     Fixed = {"pastguard", "curslot", "rosterballot", "markerfirst", "emptyprop"}
-///     RogueVoter = TRUE
-///     CommonCoin = TRUE
-///     Byz = {}
-/// INVARIANTS Agreement NoRedecide Validity LogPrefix VotedImpliesMarker
-/// SYMMETRY Sym
-/// ```
-///
-/// ```tlacfg RabiaSlot:code_obs
-/// \* RabiaSlot config code_obs: the expected verdict is its row in tools/tla/models.tsv
-/// \* the code with a rogue observer whose Decisions are learned (trusted peer)
-/// SPECIFICATION Spec
-/// CONSTANTS
-///     Voters = {n1, n2, n3}
-///     Observers = {o}
-///     MaxSlot = 1
-///     MaxRound = 1
-///     GcDepth = 0
-///     NVals = 2
-///     Fixed = {"pastguard", "curslot", "rosterballot", "markerfirst", "emptyprop"}
-///     RogueVoter = TRUE
-///     CommonCoin = TRUE
-///     Byz = {}
-/// INVARIANTS Agreement NoRedecide Validity LogPrefix VotedImpliesMarker
-/// SYMMETRY Sym
-/// ```
-///
-/// ```tlacfg RabiaSlot:norosterballot
-/// \* RabiaSlot config norosterballot: the expected verdict is its row in tools/tla/models.tsv
-/// \* D11 receiver-side roster check dropped, with a rogue observer voting
-/// SPECIFICATION Spec
-/// CONSTANTS
-///     Voters = {n1, n2, n3}
-///     Observers = {o}
-///     MaxSlot = 1
-///     MaxRound = 1
-///     GcDepth = 0
-///     NVals = 2
-///     Fixed = {"pastguard", "curslot", "markerfirst", "emptyprop"}
-///     RogueVoter = TRUE
-///     CommonCoin = TRUE
-///     Byz = {}
-/// INVARIANTS Agreement NoRedecide Validity LogPrefix VotedImpliesMarker
-/// SYMMETRY Sym
-/// ```
-///
-/// ```tlacfg RabiaSlot:nopastguard2
-/// \* RabiaSlot config nopastguard2: the expected verdict is its row in tools/tla/models.tsv
-/// \* D9 past-slot guard dropped alone, two slots, no GC
-/// SPECIFICATION Spec
-/// CONSTANTS
-///     Voters = {n1, n2, n3}
-///     Observers = {}
-///     MaxSlot = 2
 ///     MaxRound = 1
 ///     GcDepth = 0
 ///     NVals = 1
