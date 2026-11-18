@@ -10,7 +10,6 @@ import java.util.Set;
 import java.util.function.Supplier;
 import java.util.function.ToLongFunction;
 
-import org.pragmatica.aether.config.cluster.CommunityPlacement;
 import org.pragmatica.aether.deployment.cluster.fsm2.Seams;
 import org.pragmatica.aether.deployment.wiring.FsmTimers.TimerService;
 import org.pragmatica.consensus.NodeId;
@@ -52,7 +51,6 @@ public final class SeamPoller {
                           Supplier<Option<Set<NodeId>>> localAlive,
                           Supplier<Set<NodeId>> superseded,
                           Supplier<Map<NodeId, String>> memberSource,
-                          Supplier<Map<String, CommunityPlacement>> communityPolicies,
                           Supplier<Set<NodeId>> coreRoleMembers,
                           Supplier<Set<NodeId>> members,
                           ToLongFunction<NodeId> tokenOf) {}
@@ -100,7 +98,6 @@ public final class SeamPoller {
                            sources.localAlive().get(),
                            sources.superseded().get(),
                            sources.memberSource().get(),
-                           sources.communityPolicies().get(),
                            sources.coreRoleMembers().get());
     }
 

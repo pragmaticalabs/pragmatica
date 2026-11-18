@@ -13,10 +13,11 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
-/// F1 #2643 kill test for mutant u09 (`EmberCluster.deploymentEngine` fallback `selectedEngine.or(LEGACY)` -> FSM2).
+/// F1 #2643 kill test for mutant u09 (`EmberCluster.deploymentEngine` fallback `selectedEngine.or(...)` -> the other engine); since the F6 flip
+/// (#2767) the fallback is FSM2, the production default.
 ///
-/// An absent selector property is `Result.success(LEGACY)` (see `EngineSelector.engine`), so the fallback is NOT read on any started cluster: a
-/// started-cluster assertion on "default engine is LEGACY" stays green under the mutant (measured, `EmberClusterDefaultEngineTest` first form,
+/// An absent selector property is `Result.success(FSM2)` (see `EngineSelector.engine`), so the fallback is NOT read on any started cluster: a
+/// started-cluster assertion on "default engine is FSM2" stays green under the mutant (measured, `EmberClusterDefaultEngineTest` first form,
 /// 1 case green on the mutant). The fallback is read exactly when the selector FAILED (a value naming no engine); `start` then refuses, so the field
 /// is observable only on a constructed, never-started cluster. The field is private and has no accessor, so it is read by reflection.
 @PortBudget
@@ -26,7 +27,7 @@ class EmberClusterDefaultEngineTest {
     private static final int APP_HTTP_OFFSET = 80;
 
     @Test
-    void fallbackEngine_whenTheSelectorNamesNoEngine_isLegacy() throws Exception {
+    void fallbackEngine_whenTheSelectorNamesNoEngine_isFsm2() throws Exception {
         var previous = System.getProperty(EngineSelector.PROPERTY);
 
         System.setProperty(EngineSelector.PROPERTY, "no-such-engine");
@@ -39,7 +40,7 @@ class EmberClusterDefaultEngineTest {
                                                                         APP_HTTP_OFFSET));
             var cluster = emberCluster(NODES, base, base + MGMT_OFFSET, base + APP_HTTP_OFFSET, "eng-fallback");
 
-            assertThat(engineField(cluster).get()).isEqualTo(DeploymentEngine.LEGACY);
+            assertThat(engineField(cluster).get()).isEqualTo(DeploymentEngine.FSM2);
         } finally {
             restore(previous);
         }
