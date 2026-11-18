@@ -17,9 +17,7 @@
 package org.pragmatica.http.server;
 
 import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.ServerSocket;
-import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -66,17 +64,19 @@ class HttpServerTlsStartupTest {
         });
     }
 
-    /// RED at rc4 (the plain-HTTP listener answers): nothing listens on the configured port after the refusal.
+    /// RED at rc4 (the plain-HTTP listener answers): the refusal precedes the bind. The test HOLDS the port, so a server that
+    /// reached its bind step would fail with a bind error instead of the typed TLS failure, and no rival can change the verdict
+    /// (#3321: probing a guessed port for "nothing listens" was a false red whenever another process took it).
     @Test
-    void start_unbuildableTls_opensNoListener() throws Exception {
-        var port = freeTcpPort();
-        var outcome = HttpServer.httpServer(brokenTls("no-listener", port), (_, writer) -> writer.okText("plain"))
-                                .await(timeSpan(WAIT_MS).millis());
+    void start_unbuildableTls_failsBeforeAnyBind() throws Exception {
+        try (var held = new ServerSocket(0)) {
+            var outcome = HttpServer.httpServer(brokenTls("no-listener", held.getLocalPort()), (_, writer) -> writer.okText("plain"))
+                                    .await(timeSpan(WAIT_MS).millis());
 
-        outcome.onSuccess(HttpServer::stop);
-        assertThat(outcome.isFailure()).as("control: startup refused").isTrue();
-        try (var socket = new Socket()) {
-            assertThat(connects(socket, port)).as("no plain-text listener on the TLS port").isFalse();
+            outcome.onSuccess(HttpServer::stop);
+            assertThat(outcome.isFailure()).as("startup refused").isTrue();
+            outcome.onFailure(cause -> assertThat(cause).as("a bind attempt on the held port would surface as a bind error")
+                                                        .isInstanceOf(HttpServerError.TlsFailed.class));
         }
     }
 
@@ -155,15 +155,6 @@ class HttpServerTlsStartupTest {
                                                                             .unwrap()
                                                                             .issueCertificate(nodeId, "localhost")
                                                                             .unwrap();
-    }
-
-    private static boolean connects(Socket socket, int port) {
-        try {
-            socket.connect(new InetSocketAddress("127.0.0.1", port), 2_000);
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
     }
 
     private static int freeTcpPort() {

@@ -11,13 +11,13 @@ import org.pragmatica.http.HttpClientError;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Result;
+import org.pragmatica.testlogging.UnreachablePort;
 
 import com.sun.net.httpserver.HttpServer;
 
 import java.io.IOException;
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 
@@ -171,17 +171,13 @@ class ClusterHttpClientDrainStateTest {
     /// predicate as a generic `Failure` (a CompletionException wrapper), so the target's halt never completed a wait.
     @Test
     void await_realClosedPort_completes() throws IOException {
-        int port;
+        try (var closed = UnreachablePort.hold()) {
+            ClusterHttpClient.HTTP_OPS_REF.set(JdkHttpOperations.jdkHttpOperations());
 
-        try (var socket = new ServerSocket(0)) {
-            port = socket.getLocalPort();
+            var result = ClusterHttpClient.awaitDrainComplete("http", "127.0.0.1", closed.port(), NODE, 5_000, POLL_MS);
+
+            assertTrue(result.isSuccess(), () -> "a halted target's refused port must complete the wait: " + result);
         }
-
-        ClusterHttpClient.HTTP_OPS_REF.set(JdkHttpOperations.jdkHttpOperations());
-
-        var result = ClusterHttpClient.awaitDrainComplete("http", "127.0.0.1", port, NODE, 5_000, POLL_MS);
-
-        assertTrue(result.isSuccess(), () -> "a halted target's refused port must complete the wait: " + result);
     }
 
     @Test
