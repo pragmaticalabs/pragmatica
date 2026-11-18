@@ -327,6 +327,25 @@ public sealed interface Warnings {
         return m;
     }
 
+    /// ```tla Fsm2Leader:OnPut
+    /// \* A committed FsmWarningKey put reaches the node (Indexer -> onPut, Warnings.java): the mirror follows (abstracted to a
+    /// \* whole-set sync) and the set is marked dirty. Rule O on a row this incarnation did not write (its writer stamp kvW is not
+    /// \* <<n, inc[n]>>, Warnings.own): an open row joins the family set (applied / joined); a closed row changes no family set
+    /// \* (its effect is on the recovery text, abstracted).
+    /// \* No notification here (#3274: rule E at the settlement is the only emitter). pend: the put has now reached the node.
+    /// \* Mutants: "emitonput" also notifies the changed rows' newest transitions; "nomirror" leaves the mirror unchanged.
+    /// OnPut(n) ==
+    ///   /\ fsm[n] = "Active" /\ (rows[n] # kv \/ pend[n])
+    ///   /\ pend' = [pend EXCEPT ![n] = FALSE]
+    ///   /\ LET P == {s \in Subjects : rows[n][s] # kv[s] /\ kv[s] # Nil}
+    ///          ad == IF MODE = "code" /\ MUT # "noruleo" THEN {s \in P : kv[s].open /\ kvW[s] # <<n, inc[n]>>} ELSE {}
+    ///          ch == {s \in Subjects : rows[n][s].open # kv[s].open /\ \E t \in trans : t.s = s}
+    ///      IN /\ notes' = IF MUT = "emitonput" THEN notes \cup {Note(notes, Last(x).c, x, kv[x].open) : x \in ch} ELSE notes
+    ///         /\ Apply(n, warned[n] \cup ad, IF MUT = "nomirror" THEN rows[n] ELSE kv, IF MODE = "code" THEN TRUE ELSE dirty[n], wInfl[n], gInfl[n], gIntent[n],
+    ///               FALSE, flushQ[n], shown, held[n], lnd[n], view[n])
+    ///   /\ UNCHANGED <<trans, ncommit, kvW, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, net,
+    ///                  settles, condBudget, faultBudget, redo>>
+    /// ```
     /// #3274: a committed row put: `indexRow`, then rule O per member. Every row indexed while Active marks the set dirty, own or not.
     static ClusterModel onPut(ClusterModel m, Ctx ctx, FsmWarningKey key, FsmWarningValue value) {
         indexRow(m, key, value);
