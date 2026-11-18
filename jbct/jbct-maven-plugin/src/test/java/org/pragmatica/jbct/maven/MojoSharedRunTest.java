@@ -9,6 +9,7 @@ import java.util.Optional;
 import java.util.Properties;
 import java.util.regex.Pattern;
 
+import org.pragmatica.jbct.lint.cst.RunOutcome.Level;
 import org.apache.maven.execution.DefaultMavenExecutionRequest;
 import org.apache.maven.execution.DefaultMavenExecutionResult;
 import org.apache.maven.execution.MavenSession;
@@ -42,6 +43,7 @@ class MojoSharedRunTest {
     Path tempDir;
 
     private final List<String> logs = new ArrayList<>();
+    private final RunCapture capture = new RunCapture();
     private String savedUserHome;
     private Path repo;
 
@@ -97,6 +99,7 @@ class MojoSharedRunTest {
         mavenProject.setFile(new File(repo.toFile(), "pom.xml"));
         request.setUserProperties(userProperties);
         mojo.project = mavenProject;
+        capture.on(mojo);
         mojo.session = new MavenSession(null, null, request, new DefaultMavenExecutionResult());
         mojo.sourceDirectory = sourceDirectory.toFile();
         mojo.testSourceDirectory = testDirectory == null
@@ -238,8 +241,8 @@ class MojoSharedRunTest {
         var infra = module("infra", "mode = \"format-only\"\n");
         var text = text(run(wire(new ProcessMojo(), infra, infra, new Properties()), false));
 
-        assertThat(logs).anyMatch(line -> line.equals("1 file(s) formatted"));
-        assertThat(text).contains(NOTHING_LINTED + root(infra) + " (mode format-only skips it)")
+        assertThat(logs).containsAll(capture.texts(Level.INFO)).contains("Processing 1 Java file(s)");
+        assertThat(text).contains("1 file(s) skipped by mode: " + root(infra) + " (mode format-only)")
                         .doesNotContain("file(s) linted")
                         .doesNotContain("Findings:");
     }
@@ -248,13 +251,14 @@ class MojoSharedRunTest {
     void t4_oneRootRanARule_countsExcludeTheSkippedRootsFiles_inEveryGoal() throws Exception {
         var biz = module("biz", "mode = \"business\"\n");
         var off = module("off", "mode = \"disabled\"\n");
-        var skipped = "root=" + root(off) + " basePackage=org.acme.off: 0 examined by rules, 0 formatted or format-checked, 1 skipped by mode";
+        var skipped = "root=" + root(off) + " basePackage=org.acme.off: 1 files;";
+        var lintSkipped = "root=" + root(off) + " basePackage=org.acme.off: 0 examined by rules, 0 formatted or format-checked, 1 skipped by mode";
 
-        assertThat(text(run(lint(biz, off), true))).contains("1 file(s) linted").contains(skipped).doesNotContain(NOTHING_LINTED);
-        assertThat(text(run(wire(new ProcessMojo(), biz, off, new Properties()), true))).contains("Processing 1 Java file(s)").contains(skipped);
-        assertThat(text(run(wire(new FormatMojo(), biz, off, new Properties()), true))).contains("1 file(s) formatted").contains(skipped);
-        assertThat(text(run(wire(new FormatCheckMojo(), biz, off, new Properties()), true))).contains("1 file(s) format-checked").contains(skipped);
-        assertThat(text(run(wire(new CheckMojo(), biz, off, new Properties()), true))).contains("Running JBCT check on 1 Java file(s)").contains("1 file(s) format-checked").contains("1 file(s) linted").contains(skipped);
+        assertThat(text(run(lint(biz, off), true))).contains("1 file(s) linted").contains(lintSkipped).doesNotContain(NOTHING_LINTED);
+        assertThat(text(run(wire(new ProcessMojo(), biz, off, new Properties()), true))).contains("Processing 1 Java file(s)").contains(skipped).contains("1 skipped by mode");
+        assertThat(text(run(wire(new FormatMojo(), biz, off, new Properties()), true))).contains("Formatting 1 Java file(s)").contains(skipped).contains("1 skipped by mode");
+        assertThat(text(run(wire(new FormatCheckMojo(), biz, off, new Properties()), true))).contains("Checking format of 1 Java file(s)").contains(skipped).contains("1 skipped by mode");
+        assertThat(text(run(wire(new CheckMojo(), biz, off, new Properties()), true))).contains("Running JBCT check on 1 Java file(s)").contains("1 file(s) format-checked").contains("1 file(s) linted").contains(lintSkipped);
     }
 
     // ---- T5: the summary line per mode with where it came from, in every goal; one line per root

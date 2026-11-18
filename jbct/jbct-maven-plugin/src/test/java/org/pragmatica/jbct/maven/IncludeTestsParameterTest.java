@@ -90,7 +90,7 @@ class IncludeTestsParameterTest {
 
         assertThat(summaryOf(goal, main, test, false)).noneMatch(line -> line.contains("root=" + test));
         assertThat(summaryOf(goal, main, test, true)).anyMatch(line -> line.contains("root=" + test)
-                                                                       && line.contains("1 test-root files"));
+                                                                       && (line.contains("1 test-root files") || line.contains(": 1 files;")));
     }
 
     private List<String> summaryOf(Class<?> goal, Path main, Path test, boolean includeTests) throws Exception {

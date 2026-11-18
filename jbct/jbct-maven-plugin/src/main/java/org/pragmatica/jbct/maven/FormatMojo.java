@@ -1,11 +1,8 @@
 package org.pragmatica.jbct.maven;
 
-import java.nio.file.Path;
-import java.util.concurrent.atomic.AtomicInteger;
-
-import org.pragmatica.jbct.format.JbctFormatter;
-import org.pragmatica.jbct.lint.cst.LintRun;
-import org.pragmatica.jbct.shared.SourceFile;
+import org.pragmatica.jbct.lint.cst.RunOutcome.FormatAction;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Surface;
 
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
@@ -33,79 +30,6 @@ public class FormatMojo extends AbstractJbctMojo {
             return;
         }
 
-        var plan = resolvePlan(includeTests);
-
-        if (plan.files().isEmpty()) {
-            reportNothingToCheck("format", includeTests);
-
-            return;
-        }
-
-        var run = LintRun.lintRun(plan);
-        var formatted = new AtomicInteger(0);
-        var unchanged = new AtomicInteger(0);
-        var errors = new AtomicInteger(0);
-
-        for (var job : formatJobs(plan)) {
-            claimAndProcess(job, run, formatted, unchanged, errors);
-        }
-
-        var report = finishRun(run);
-
-        getLog().info("Formatted: " + formatted.get() + ", Unchanged: " + unchanged.get() + ", Errors: " + errors.get());
-        report.formatLines().forEach(getLog()::info);
-        if (errors.get() > 0) {
-            throw new MojoFailureException("Formatting failed for " + errors.get() + " file(s)");
-        }
-    }
-
-    private void claimAndProcess(FormatJob job,
-                                 LintRun run,
-                                 AtomicInteger formatted,
-                                 AtomicInteger unchanged,
-                                 AtomicInteger errors) {
-        run.claimFormat(job.file())
-           .onSuccess(claimed -> {
-                          if (claimed) {
-                              processFile(job.file(),
-                                          job.formatter(),
-                                          formatted,
-                                          unchanged,
-                                          errors);
-                          }
-                      })
-           .onFailure(cause -> {
-                          errors.incrementAndGet();
-                          getLog().error("Error formatting " + job.file() + ": " + cause.message());
-                      });
-    }
-
-    private void processFile(Path file,
-                             JbctFormatter formatter,
-                             AtomicInteger formatted,
-                             AtomicInteger unchanged,
-                             AtomicInteger errors) {
-        SourceFile.sourceFile(file)
-                  .flatMap(source -> formatter.isFormatted(source)
-                                              .flatMap(isFormatted -> {
-                                                           if (isFormatted) {
-                                                               unchanged.incrementAndGet();
-
-                                                               return org.pragmatica.lang.Result.success(source);
-                                                           }
-
-                                                           return formatter.format(source)
-                                                                           .flatMap(formattedSource -> formattedSource.write()
-                                                                                                                      .map(written -> {
-                                                                                                                               formatted.incrementAndGet();
-                                                                                                                               getLog().warn("Formatted: " + file);
-
-                                                                                                                               return written;
-                                                                                                                           }));
-                                                       }))
-                  .onFailure(cause -> {
-                                 errors.incrementAndGet();
-                                 getLog().error("Error formatting " + file + ": " + cause.message());
-                             });
+        perform(resolvePlan(includeTests), Invocation.format(Surface.MAVEN, FormatAction.WRITE));
     }
 }

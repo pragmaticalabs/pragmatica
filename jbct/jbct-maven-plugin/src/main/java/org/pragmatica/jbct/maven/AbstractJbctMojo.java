@@ -6,6 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
+import java.util.function.BiFunction;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -19,14 +20,20 @@ import org.pragmatica.jbct.lint.cst.RootResolver;
 import org.pragmatica.jbct.lint.cst.RootResolver.ModeOverride;
 import org.pragmatica.jbct.lint.cst.RootResolver.ResolvedRoot;
 import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Line;
+import org.pragmatica.jbct.lint.cst.RunOutcome.MavenModule;
+import org.pragmatica.jbct.lint.cst.RunOutcome.RunResult;
 import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
+import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.project.MavenProject;
 
@@ -115,6 +122,70 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
         plan.messages().forEach(getLog()::info);
 
         return plan;
+    }
+
+    /// The seam every run-driven goal starts with: a function from the plan and the invocation to the run's result,
+    /// defaulting to the plan's own run. A test replaces it to capture the invocation and to return a result of its own.
+    protected BiFunction<RootPlan, Invocation, Result<RunResult>> performer = (plan, invocation) -> LintRun.lintRun(plan)
+                                                                                                         .perform(invocation);
+
+    /// Perform the invocation and print what the run returned: a refused run is a [MojoExecutionException]; otherwise the
+    /// run's lines and findings are logged and a verdict that carries a failure text fails the build with that text.
+    @Contract
+    protected void perform(RootPlan plan, Invocation invocation) throws MojoExecutionException, MojoFailureException {
+        finish(performer.apply(plan, invocation.withModule(module())));
+    }
+
+    /// As [#perform(RootPlan, Invocation)] for an invocation that may itself be refused.
+    @Contract
+    protected void perform(RootPlan plan, Result<Invocation> invocation) throws MojoExecutionException, MojoFailureException {
+        finish(invocation.map(asked -> asked.withModule(module()))
+                         .flatMap(asked -> performer.apply(plan, asked)));
+    }
+
+    @Contract
+    private void finish(Result<RunResult> performed) throws MojoExecutionException, MojoFailureException {
+        var refusal = performed.fold(cause -> Option.some(cause.message()),
+                                     _ -> Option.<String> none());
+
+        if (refusal.isPresent()) {
+            throw new MojoExecutionException(refusal.unwrap());
+        }
+
+        var result = performed.unwrap();
+        var failure = result.verdict()
+                            .failure();
+
+        result.before().forEach(this::log);
+        reportDiagnostics(result.findings());
+        result.after().forEach(this::log);
+        if (failure.isPresent()) {
+            throw new MojoFailureException(failure.unwrap());
+        }
+    }
+
+    /// A line is logged at its own level; the channel is read only by the CLI.
+    @Contract
+    private void log(Line line) {
+        switch (line.level()) {
+            case ERROR -> getLog().error(line.text());
+            case WARN -> getLog().warn(line.text());
+            case INFO -> getLog().info(line.text());
+            case DETAIL -> getLog().debug(line.text());
+        }
+    }
+
+    private MavenModule module() {
+        return MavenModule.mavenModule(project.getArtifactId(),
+                                       pathOf(sourceDirectory),
+                                       pathOf(testSourceDirectory),
+                                       "jbct.includeTests");
+    }
+
+    private static Path pathOf(File directory) {
+        return Option.option(directory)
+                     .map(File::toPath)
+                     .or(Path.of(""));
     }
 
     private static List<Path> declared(File directory) {

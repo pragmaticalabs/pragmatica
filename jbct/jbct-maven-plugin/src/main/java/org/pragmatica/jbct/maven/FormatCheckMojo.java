@@ -1,13 +1,7 @@
 package org.pragmatica.jbct.maven;
 
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
-
-import org.pragmatica.jbct.format.JbctFormatter;
-import org.pragmatica.jbct.lint.cst.LintRun;
-import org.pragmatica.jbct.shared.SourceFile;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Surface;
 
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
@@ -36,70 +30,6 @@ public class FormatCheckMojo extends AbstractJbctMojo {
             return;
         }
 
-        var plan = resolvePlan(includeTests);
-
-        if (plan.files().isEmpty()) {
-            reportNothingToCheck("format check", includeTests);
-
-            return;
-        }
-
-        var run = LintRun.lintRun(plan);
-        var needsFormatting = new ArrayList<Path>();
-        var errors = new AtomicInteger(0);
-
-        for (var job : formatJobs(plan)) {
-            claimAndCheck(job, run, needsFormatting, errors);
-        }
-
-        var report = finishRun(run);
-
-        report.formatCheckLines().forEach(getLog()::info);
-        if (!needsFormatting.isEmpty()) {
-            var fileList = new StringBuilder();
-
-            for (var file : needsFormatting) {
-                getLog().error("  " + file);
-                fileList.append("\n  ").append(file);
-            }
-
-            throw new MojoFailureException(needsFormatting.size()
-                                          + " file(s) are not properly formatted:" + fileList
-                                          + "\nRun 'mvn jbct:format' to fix.");
-        }
-
-        if (errors.get() > 0) {
-            throw new MojoFailureException("Format check failed for " + errors.get() + " file(s)");
-        }
-    }
-
-    private void claimAndCheck(FormatJob job, LintRun run, List<Path> needsFormatting, AtomicInteger errors) {
-        run.claimFormat(job.file())
-           .onSuccess(claimed -> {
-               if (claimed) {
-                   checkFile(job.file(),
-                             job.formatter(),
-                             needsFormatting,
-                             errors);
-               }
-           })
-           .onFailure(cause -> {
-                          errors.incrementAndGet();
-                          getLog().error("Error checking " + job.file() + ": " + cause.message());
-                      });
-    }
-
-    private void checkFile(Path file, JbctFormatter formatter, List<Path> needsFormatting, AtomicInteger errors) {
-        SourceFile.sourceFile(file)
-                  .flatMap(formatter::isFormatted)
-                  .onSuccess(isFormatted -> {
-                      if (!isFormatted) {
-                          needsFormatting.add(file);
-                      }
-                  })
-                  .onFailure(cause -> {
-                                 errors.incrementAndGet();
-                                 getLog().error("Error checking " + file + ": " + cause.message());
-                             });
+        perform(resolvePlan(includeTests), Invocation.formatCheck(Surface.MAVEN));
     }
 }

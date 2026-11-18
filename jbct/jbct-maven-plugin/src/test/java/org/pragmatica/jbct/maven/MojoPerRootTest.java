@@ -10,6 +10,7 @@ import java.util.Properties;
 import java.util.regex.Pattern;
 
 import org.pragmatica.jbct.config.JbctMode;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Level;
 
 import org.apache.maven.execution.DefaultMavenExecutionRequest;
 import org.apache.maven.execution.DefaultMavenExecutionResult;
@@ -67,6 +68,7 @@ class MojoPerRootTest {
     Path tempDir;
 
     private final List<String> logs = new ArrayList<>();
+    private final RunCapture capture = new RunCapture();
     private String savedUserHome;
     private Path module;
     private Path mainRoot;
@@ -147,6 +149,7 @@ class MojoPerRootTest {
         mavenProject.setFile(new File(module.toFile(), "pom.xml"));
         request.setUserProperties(userProperties);
         mojo.project = mavenProject;
+        capture.on(mojo);
         mojo.session = new MavenSession(null, null, request, new DefaultMavenExecutionResult());
         mojo.sourceDirectory = sourceDirectory.toFile();
         mojo.testSourceDirectory = testDirectory.toFile();
@@ -381,8 +384,9 @@ class MojoPerRootTest {
         var outcome = attempt(formatCheck());
 
         assertThat(outcome).isEmpty();
-        assertThat(logs).anyMatch(line -> line.equals("4 file(s) format-checked"))
-                        .noneMatch(line -> line.contains("properly formatted"));
+        assertThat(logs).containsAll(capture.texts(Level.INFO))
+                        .contains("Checking format of 4 Java file(s)")
+                        .noneMatch(line -> line.contains("not properly formatted"));
     }
 
     @Test
@@ -410,7 +414,7 @@ class MojoPerRootTest {
         assertThat(logs).anyMatch(line -> line.contains("mode=disabled (from ") && line.contains("root=" + sideTestRoot)
                                           && line.contains("2 skipped by mode"));
         assertThat(count(text, "mode=disabled (from ")).isEqualTo(1);
-        assertThat(logs).contains("2 file(s) formatted");
+        assertThat(logs).containsAll(capture.texts(Level.INFO)).contains("Formatting 2 Java file(s)");
     }
 
     @Test
