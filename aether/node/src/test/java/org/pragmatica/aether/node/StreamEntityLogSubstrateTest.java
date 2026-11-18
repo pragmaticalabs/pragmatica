@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.resource.entity.EntityLogError;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.EvictionListener;
@@ -107,6 +108,32 @@ class StreamEntityLogSubstrateTest {
         assertThat(substrate.ensureLog("orders", 8, new org.pragmatica.aether.slice.ReplicationFactors(3, 2)).isSuccess())
             .as("the same declaration must keep re-ensuring cleanly — every node hosting the keyspace calls it")
             .isTrue();
+    }
+
+    /// Pins the entity ring window as BUILT: the config a created entity log enforces carries the literals of
+    /// `EntityRingWindow` (10 000 entries, 64 MiB, 365 days, 1 MiB record), so a drift of any one constant goes red here.
+    /// `CAPACITY` is also pinned, in one direction, by sizing in `append_failsWithEventDropped_whenFrozenRingCannotFitRecord...`; `MAX_BYTES`
+    /// and `MAX_AGE_MS` have no other pin.
+    @Test
+    void ensureLog_buildsTheEntityRingWindowFromTheDeclaredLiterals() {
+        var partitionManager = StreamPartitionManager.streamPartitionManager(64L * 1024 * 1024);
+        var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
+                                                                                                                                          false),
+                                                 null,
+                                                 null,
+                                                 EvictionListener.NOOP,
+                                                 null,
+                                                 null,
+                                                 null);
+
+        substrate.ensureLog("orders", 8, new org.pragmatica.aether.slice.ReplicationFactors(3, 2)).unwrap();
+
+        var config = partitionManager.enforcedConfig(EntityPartitionArc.arcName("orders")).unwrap();
+
+        assertThat(config.retention().maxCount()).as("ring capacity").isEqualTo(10_000L);
+        assertThat(config.retention().maxBytes()).as("ring data-region cap").isEqualTo(67_108_864L);
+        assertThat(config.retention().maxAgeMs()).as("ring age bound").isEqualTo(31_536_000_000L);
+        assertThat(config.maxEventSizeBytes()).as("entity max event size").isEqualTo(1_048_576L);
     }
 
     /// #1230: the stream's owner admission can refuse an entity append in the race after
