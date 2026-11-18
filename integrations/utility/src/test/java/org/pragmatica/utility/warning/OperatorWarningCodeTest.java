@@ -89,6 +89,25 @@ class OperatorWarningCodeTest {
         assertThat(resumed.recoveryOf()).isEqualTo(Option.none());
     }
 
+    /// #3345: the hold's closer is a recovery of the at-risk warning, raised by the leader (its event layer opens the warning first, so
+    /// it does not close across nodes); the loss-accepted record is a standalone INFO event that closes nothing and that nothing closes.
+    @Test
+    void dhtDepartureHoldCodes_arePinned() {
+        var holdEnded = OperatorWarningCode.DHT_DEPARTURE_HOLD_ENDED;
+        var lossAccepted = OperatorWarningCode.DHT_DEPARTURE_LOSS_ACCEPTED;
+
+        assertThat(holdEnded.code()).isEqualTo("dht-departure-hold-ended");
+        assertThat(holdEnded.subsystem()).isEqualTo("dht");
+        assertThat(holdEnded.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(holdEnded.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK));
+        assertThat(holdEnded.closesAcrossNodes()).isFalse();
+        assertThat(lossAccepted.code()).isEqualTo("dht-departure-loss-accepted");
+        assertThat(lossAccepted.subsystem()).isEqualTo("dht");
+        assertThat(lossAccepted.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(lossAccepted.recoveryOf()).isEqualTo(Option.none());
+        assertThat(lossAccepted.hasRecovery()).isFalse();
+    }
+
     /// #2062: the operator clear is a RECOVERY of the unconfirmed warning, announced at INFO; a higher level would open a new alert while closing one.
     @Test
     void instanceTerminationCleared_isAnInfoRecoveryThatClosesAcrossNodes() {
