@@ -97,6 +97,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 final class DeparturePushRun {
     private static final Logger log = LoggerFactory.getLogger(DeparturePushRun.class);
     private static final int SAMPLE_LIMIT = 16;
+    private static final long MIN_HALT_WATCH_NANOS = 1_000_000L;
     private static final HexFormat HEX = HexFormat.of();
     private static final long FNV_OFFSET = 0xcbf29ce484222325L;
     private static final long FNV_PRIME = 0x100000001b3L;
@@ -245,6 +246,8 @@ final class DeparturePushRun {
 
     // The deadline task, cancelled when the run resolves.
     private final AtomicReference<Option<ScheduledFuture<?>>> deadlineTimer = new AtomicReference<>(Option.none());
+    // The halt watch (#3345 P2), cancelled when the run resolves.
+    private final AtomicReference<Option<ScheduledFuture<?>>> haltWatch = new AtomicReference<>(Option.none());
 
     // --- counters (tests and logs) ---
     private final AtomicInteger reconciles = new AtomicInteger();
@@ -297,14 +300,15 @@ final class DeparturePushRun {
             .timeout(remainingUntil(attemptsDeadline))
             .onResult(enumerated -> enumerated.fold(this::notEnumerated, this::start));
 
-        return result.onResultRun(this::cancelDeadlineTimer);
+        return result.onResultRun(this::cancelTimers);
     }
 
-    /// A resolved run releases its deadline task at once, so nothing the run references (its observer) stays reachable until
-    /// the deadline.
+    /// A resolved run releases its deadline task and its halt watch at once, so nothing the run references (its observer) stays
+    /// reachable until the deadline.
     @Contract
-    private void cancelDeadlineTimer() {
+    private void cancelTimers() {
         deadlineTimer.get().onPresent(timer -> timer.cancel(false));
+        haltWatch.get().onPresent(timer -> timer.cancel(false));
     }
 
     int reconciles() {
@@ -343,8 +347,9 @@ final class DeparturePushRun {
         reconcile();
         transition(this::raiseAtPlan);
         deadlineTimer.set(Option.some(SharedScheduler.schedule(this::onDeadline, remainingUntil(attemptsDeadline))));
+        haltWatch.set(Option.some(SharedScheduler.scheduleAtFixedRate(this::onHaltWatch, haltWatchPeriod())));
         if (result.isResolved()) {
-            cancelDeadlineTimer();
+            cancelTimers();
         }
         maybeExit();
 
@@ -1013,6 +1018,20 @@ final class DeparturePushRun {
     @Contract
     private void onHalt() {
         transition(() -> closeUnder(true));
+    }
+
+    /// #3345 P2: the run observes the halt itself, every resend interval, so a run with nothing in flight (no page send polls
+    /// the window) resolves within one interval of the halt, not at its deadline.
+    @Contract
+    private void onHaltWatch() {
+        if (window.halted().getAsBoolean()) {
+            onHalt();
+        }
+    }
+
+    /// The resend interval, floored at 1 ms: a fixed-rate period must be positive.
+    private TimeSpan haltWatchPeriod() {
+        return timeSpan(Math.max(tuning.resendAfter().nanos(), MIN_HALT_WATCH_NANOS)).nanos();
     }
 
     /// Under `transitions`, once: report what is owed, raise the closing events (not after a halt), drop every page of the run.
