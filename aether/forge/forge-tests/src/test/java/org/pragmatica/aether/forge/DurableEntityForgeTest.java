@@ -212,6 +212,24 @@ class DurableEntityForgeTest {
         // throwaway key rather than sleeping: a sleep would either flake on a slow tick or hide a driver
         // that never ran at all.
         awaitOwnershipConvergence();
+        awaitOwnershipViewComplete();
+    }
+
+    /// #3391 item 4. `/api/v1/ownership/stream` reads the committed records of the ONE node it is asked (the node's own applied
+    /// KV store), and the convergence probe above is satisfied by a create accepted on ANY node's app port, so it proves an owner
+    /// exists, not that this node has applied every arc. The tests assert on [#entityArcOwners] read from [#anyMgmtPort]; wait
+    /// for that view itself. The slice-host view needs no such wait: [#awaitFullSlicePlacement] polls the same node and the
+    /// same endpoint the assertions read.
+    private void awaitOwnershipViewComplete() {
+        try {
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .failFast(this::failIfSliceFailed)
+                   .until(() -> entityArcOwners().size() == ENTITY_PARTITIONS);
+        } catch (ConditionTimeoutException e) {
+            throw new AssertionError("The ownership view of the node on port " + anyMgmtPort() + " never carried all " + ENTITY_PARTITIONS
+                                     + " entity arcs; arcs seen: " + entityArcOwners(), e);
+        }
     }
 
     /// Wait until the blueprint's full instance count is ACTIVE cluster-wide, reporting WHICH hosts were
