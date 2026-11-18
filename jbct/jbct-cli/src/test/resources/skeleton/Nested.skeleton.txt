@@ -1,0 +1,16 @@
+class Nested 8:1-51:1 doc@5
+  field LIMIT: int 9:5-9:52
+  field OTHER: int 9:5-9:52
+  class Middle 12:5-30:5 doc@11
+    field counter: int 13:9-13:20
+    class Inner 16:9-27:9 doc@15
+      field label: String 17:13-17:31
+      constructor Inner(String) 19:13-21:13
+      method toString(): String 23:13-26:13 @Override
+    constructor Middle() 29:9-29:19
+  initializer static 32:5-34:5
+  initializer 36:5-38:5
+  method pick(List<? extends U>, T...): List<U> 40:5-42:5
+  class Shape 44:5-46:5
+    method area(): double 45:9-45:31
+  method array(): int[] 48:5-50:5

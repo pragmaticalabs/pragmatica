@@ -1,0 +1,12 @@
+interface Records 4:1-42:1 doc@3
+  method area(): double 5:5-5:18
+  record Circle 8:5-21:5 doc@7
+    constructor public(compact) 9:9-13:9
+    method area(): double 15:9-18:9 @Override
+    record Center 20:9-20:44
+  record Square 23:5-30:5
+    field UNIT: Square 24:9-24:49
+    method area(): double 26:9-29:9 @Override
+  record Named 32:5-41:5
+    constructor Named(String) 33:9-35:9
+    method area(): double 37:9-40:9 @Override

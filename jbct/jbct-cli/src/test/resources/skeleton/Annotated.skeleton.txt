@@ -1,0 +1,6 @@
+class Annotated 7:1-63:1 doc@6 @SuppressWarnings
+  method generic(K, List<? super V>): Function<K, V> 12:5-23:5 doc@10 @Deprecated @SuppressWarnings
+  method withAnonymousAndLambda(String): void 26:5-41:5
+  method unnamed(Object): void 43:5-56:5
+  method task(): void 58:5-58:18
+  field text: String 60:5-62:22

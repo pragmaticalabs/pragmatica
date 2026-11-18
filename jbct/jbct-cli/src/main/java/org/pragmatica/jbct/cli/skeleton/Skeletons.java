@@ -107,7 +107,7 @@ public final class Skeletons {
         }
 
         private Stream<Declaration> type(Kind kind, Cursor wrapper, Cursor core) {
-            return Stream.of(make(kind, wrapper, firstNameAfterKeyword(core), "", bodyDeclarations(core)));
+            return Stream.of(make(kind, wrapper, typeName(core), "", bodyDeclarations(core)));
         }
 
         private List<Declaration> bodyDeclarations(Cursor core) {
@@ -137,7 +137,7 @@ public final class Skeletons {
             return fields
                    ? variables(core).map(variable -> make(Kind.FIELD,
                                                           wrapper,
-                                                          identifierFrom(variable.firstTokenIdx(), variable.lastTokenIdx()),
+                                                          firstName(variable),
                                                           ": " + typeOf(core),
                                                           List.of()))
                    : Stream.empty();
@@ -165,16 +165,22 @@ public final class Skeletons {
         }
 
         // ===== Names and signatures =====
-        private String firstNameAfterKeyword(Cursor core) {
-            return identifierFrom(core.firstTokenIdx() + 1, core.lastTokenIdx());
+        // A name is located by position (the first real token after what precedes it), never by token kind: a
+        // contextual keyword such as `value` or `record` is a legal name and has a kind of its own.
+        private String typeName(Cursor core) {
+            var afterKeyword = forward(core.firstTokenIdx()) + 1;
+
+            return nameAt("@".contentEquals(tokens.textAt(core.firstTokenIdx()))
+                          ? afterKeyword + 1
+                          : afterKeyword);
         }
 
         private String firstName(Cursor core) {
-            return identifierFrom(core.firstTokenIdx(), core.lastTokenIdx());
+            return nameAt(core.firstTokenIdx());
         }
 
         private String methodName(Cursor core) {
-            return identifierFrom(afterType(core), core.lastTokenIdx());
+            return nameAt(afterType(core));
         }
 
         private int afterType(Cursor core) {
@@ -184,10 +190,9 @@ public final class Skeletons {
         }
 
         private String constructorName(Cursor core) {
-            return identifierFrom(CstNodes.childByRule(core, RuleKind.TYPE_PARAMS)
-                                          .map(params -> backward(params.lastTokenIdx()) + 1)
-                                          .or(core.firstTokenIdx()),
-                                  core.lastTokenIdx());
+            return nameAt(CstNodes.childByRule(core, RuleKind.TYPE_PARAMS)
+                                  .map(params -> backward(params.lastTokenIdx()) + 1)
+                                  .or(core.firstTokenIdx()));
         }
 
         private String initializerName(Cursor core) {
@@ -197,21 +202,16 @@ public final class Skeletons {
         }
 
         private String enumConstantName(Cursor constant) {
-            return identifierFrom(CstNodes.childrenByRule(constant, RuleKind.ANNOTATION)
-                                          .stream()
-                                          .mapToInt(annotation -> backward(annotation.lastTokenIdx()) + 1)
-                                          .max()
-                                          .orElse(constant.firstTokenIdx()),
-                                  constant.lastTokenIdx());
+            return nameAt(CstNodes.childrenByRule(constant, RuleKind.ANNOTATION)
+                                  .stream()
+                                  .mapToInt(annotation -> backward(annotation.lastTokenIdx()) + 1)
+                                  .max()
+                                  .orElse(constant.firstTokenIdx()));
         }
 
-        private String identifierFrom(int from, int to) {
-            return IntStream.rangeClosed(from, to)
-                            .filter(index -> "Identifier".equals(tokens.kindName(index)))
-                            .mapToObj(index -> tokens.textAt(index)
-                                                     .toString())
-                            .findFirst()
-                            .orElse("");
+        private String nameAt(int index) {
+            return tokens.textAt(forward(index))
+                         .toString();
         }
 
         private String methodSignature(Cursor core) {
