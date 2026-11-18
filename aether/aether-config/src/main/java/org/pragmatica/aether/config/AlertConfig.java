@@ -143,7 +143,7 @@ public record AlertConfig(boolean enabled,
     /// cluster holds none, so an operator's `/api/v1/thresholds` value always wins.
     ///
     /// **Why 5,000 / 10,000.** An entity partition's ring holds 10,000 records
-    /// (`StreamEntityLogSubstrate.ENTITY_RING_CAPACITY`). A recovery whose checkpoint lags the head by
+    /// (`EntityRingWindow.CAPACITY`). A recovery whose checkpoint lags the head by
     /// less than that replays from the ring; past it, the replay must read sealed storage (#1240) and
     /// recovery slows. CRITICAL therefore sits AT the ring capacity — recovery has left the ring — and
     /// WARNING at half of it, the headroom to act before it does. At the 30s checkpoint interval a
