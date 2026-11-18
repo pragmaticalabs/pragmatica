@@ -112,10 +112,13 @@ public final class RedisClient implements RedisCommands {
                : acquire().flatMap(connection -> connection.execute(command));
     }
 
-    /// Number of connections that are open right now.
+    /// Number of connections that are open right now: a pooled connection whose channel already closed
+    /// (and is dropped by the next acquire) is not counted.
     int openConnections() {
         synchronized (lock) {
-            return ready.size();
+            return (int) ready.stream()
+                              .filter(RedisConnection::isActive)
+                              .count();
         }
     }
 
