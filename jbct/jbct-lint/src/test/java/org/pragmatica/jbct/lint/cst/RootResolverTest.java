@@ -40,6 +40,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 class RootResolverTest {
     private static final String ARCH_02 = "JBCT-ARCH-02";
     private static final String RET_03 = "JBCT-RET-03";
+    private static final String NAM_07 = "JBCT-NAM-07";
     private static final String BOTH = """
         package com.example.domain.pricing;
         class Pricing {
@@ -147,7 +148,7 @@ class RootResolverTest {
         assertEquals(2, plan.roots().size());
         assertEquals(JbctMode.BUSINESS, rootOf(plan, business.resolve("src/main/java")).mode());
         assertEquals(JbctMode.INFRASTRUCTURE, rootOf(plan, infrastructure.resolve("src/main/java")).mode());
-        assertEquals(Set.of(ARCH_02, RET_03), reported(result, businessFile));
+        assertEquals(Set.of(ARCH_02, RET_03, NAM_07), reported(result, businessFile));
         assertEquals(Set.of(RET_03), reported(result, infrastructureFile));
     }
 
