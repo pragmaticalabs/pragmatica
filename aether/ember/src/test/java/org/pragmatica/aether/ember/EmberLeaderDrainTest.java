@@ -37,6 +37,12 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// RECORDS what happens (`T3348` lines on stdout, one per observable change) and asserts the expected behaviour
 /// of the issue: "the drain either works or is refused at the route; it never half-applies".
 ///
+/// Observed at `98e479c8c6` (3 cores, default engine, 5 runs): the route REFUSES with `404 Node lifecycle not found`, on the
+/// leader's port and on a follower's, because no node's readiness view carries the leader (the leader's own view is built from
+/// pongs and omits itself); nothing is dispatched, so the leader stays Member/INACTIVE and keeps leadership. The claim's
+/// DEPARTING path is therefore not reached through the route. This is a positive pin of "never half-applies"; the refusal's
+/// status and wording are NOT pinned (a 404 that names no remedy is a separate documentation/typed-error question).
+///
 /// The `DrainProcedure` is not reachable through the `AetherNode` interface (it is a local of the node
 /// assembly), so the test finds it by walking the node's object graph (instrumentation only, no production change).
 @PortBudget
