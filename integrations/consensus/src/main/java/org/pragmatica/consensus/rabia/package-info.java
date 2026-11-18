@@ -51,6 +51,14 @@
 /// \* known-bad config that must fail on the property it protects:
 /// \*   pastguard   - D9: a ballot for a slot below the current one is answered by repair, never tallied
 /// \*                 (isPastPhase keyed on `< current`); the known-bad keys it on the slot's data being present.
+/// \*                 NOT PINNED: with "curslot" on, the guard is redundant at every bound, not only at these. Dropping
+/// \*                 it only lets Receive (and then Gc) touch reg, has, rnd, dflag and capped at a slot below cur;
+/// \*                 every other reader of those is gated on the current slot (VoteSlots for Round1, Round2 and
+/// \*                 Decide, s = cur in Propose and Learn), and cur never decreases, so no observable variable
+/// \*                 (msgs, logv, napp, cur) can differ. No config can turn its removal alone red; nopastcur (both
+/// \*                 dropped) is red, so the pair is needed but this member is not separately pinned. The two-slot
+/// \*                 arm nopastguard2 has no config: exhaustive search stopped at depth 29 with 23.1M distinct states
+/// \*                 and no violation (incomplete), and the argument above already settles it.
 /// \*   curslot     - the current-slot gates: canVoteRound1/canVoteRound2/canMakeDecision require currentPhase = phase,
 /// \*                 handleDecision drops a Decision below the current slot and buffers one above it. Modelled as a
 /// \*                 member because D9's safety claim rests on it too.
@@ -242,6 +250,13 @@
 /// \* Fixed (each fix a member; every cfg assigns it):
 /// \*   "exactepoch" acceptsBallot counts a ballot only at epoch == voterEpoch() (known-bad: epoch <= current)
 /// \*   "relayepoch" handleDecision refuses a current-slot Decision whose epoch != voterEpoch()
+/// \*                NOT PINNED: no config turns its removal alone red. Dropped, it stays green in order
+/// \*                (norelayepoch), under the free jump (norelayepoch_noprefix) and on the code's sync path
+/// \*                (codesync_agree with it dropped explores the same 15,710,785 distinct states as with it, so
+/// \*                the guard never refuses a relay there). norelayexact_noprefix is red, but exact-epoch counting
+/// \*                dropped alone is already red (noexactepoch_noprefix), so that red is not this fix's. Reason:
+/// \*                under "crashstop" a relayed value is one some replica decided at that slot, and the epoch
+/// \*                governing a slot follows from the applied prefix or arrives with the slot (Jump).
 /// \*   "retainmaj"  ReconfigurationCommand.retainsTargetMajority in admission and in appliesTo (liveness guard)
 /// \*   "coldconfig" (#3213) a COLD answer carries the configuration its responder persisted (coldAnswerState); dropped,
 /// \*                it carries none (withoutConfiguration, the pre-#3216 code). The code keeps the configuration only
@@ -1078,6 +1093,30 @@
 /// SPECIFICATION Spec
 /// CONSTANTS
 ///     Fixed = {"exactepoch", "relayepoch", "retainmaj", "coldconfig"}
+///     Assume = {"crashstop"}
+///     Paper = {}
+///     Roster0 = {"A", "B", "C"}
+///     TargetSet = {{"A", "B", "D"}, {"A", "C", "D"}}
+///     Batches = {"b1", "b2"}
+///     MaxSlot = 2
+///     MaxRequests = 2
+///     RequestEpochs = {0, 1}
+///     MaxJump = 2
+///     MaxForge = 1
+///     Slow = {}
+///     JumpShape = "code"
+///     ColdShapes = {FALSE, TRUE}
+/// INVARIANTS
+///     TypeOK
+///     Agreement
+/// ```
+///
+/// ```tlacfg RabiaEpoch:codesync_agree_norelayepoch
+/// \* RabiaEpoch config codesync_agree_norelayepoch: the expected verdict is its row in tools/tla/models.tsv
+/// \* D2 relay epoch check dropped on the code's sync path (otherwise codesync_agree)
+/// SPECIFICATION Spec
+/// CONSTANTS
+///     Fixed = {"exactepoch", "retainmaj", "coldconfig"}
 ///     Assume = {"crashstop"}
 ///     Paper = {}
 ///     Roster0 = {"A", "B", "C"}

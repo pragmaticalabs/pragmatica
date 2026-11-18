@@ -30,7 +30,7 @@ Stalled	aether/aether-stream/src/main/java	settledweak	fail	SettledIsBacked	-	a 
 Stalled	aether/aether-stream/src/main/java	early	pass	-	-	#3156 fixed: the stall counter is dropped on destroy
 Stalled	aether/aether-stream/src/main/java	earlynoreset	fail	NoEarlyRaise	-	#3156 negative control: without the reset the counter survives destroy and recreate
 RabiaSlot	integrations/consensus/src/main/java	code	pass	-	-	the code: one slot, 3 voters, every safety invariant
-RabiaSlot	integrations/consensus/src/main/java	nopastguard	pass	-	-	D9 past-slot guard dropped alone stays green: the current-slot gates make it redundant at this bound
+RabiaSlot	integrations/consensus/src/main/java	nopastguard	pass	-	-	D9 past-slot guard dropped alone stays green: with the current-slot gates on it is redundant at every bound, so it is not pinned (RabiaSlot head)
 RabiaSlot	integrations/consensus/src/main/java	paper_d9	pass	-	-	D9 paper rule (no guard, log retained): safe at one slot
 RabiaSlot	integrations/consensus/src/main/java	nopastcur	fail	NoRedecide	-	D9 guards both dropped: a garbage-collected slot is decided and applied twice
 RabiaSlot	integrations/consensus/src/main/java	nocurslot	fail	NoRedecide	-	current-slot gates dropped: a decision for a collected slot is applied again through Learn
@@ -56,12 +56,13 @@ RabiaEpoch	integrations/consensus/src/main/java	noretainmaj	fail	Progress	-	D6 t
 RabiaEpoch	integrations/consensus/src/main/java	noprefix	fail	GovernedVote	-	in-order commit assumption removed: a ballot carries an epoch that does not govern its slot
 RabiaEpoch	integrations/consensus/src/main/java	codesync_gov	pass	-	-	the code with "coldconfig" (#3216): a COLD answer is eligible only as a LIVE answer at the same epoch and roster, so no ungoverned ballot is cast (the pre-fix behaviour is codesync_gov_nocoldconfig); exhaustive, 15,710,785 distinct, depth 23
 RabiaEpoch	integrations/consensus/src/main/java	codesync_agree	pass	-	-	the code with "coldconfig" (#3216): a COLD answer never installs a later phase at epoch 0 (the pre-fix behaviour is codesync_agree_nocoldconfig); exhaustive, 15,710,785 distinct, depth 23
+RabiaEpoch	integrations/consensus/src/main/java	codesync_agree_norelayepoch	pass	-	-	D2 relay epoch check dropped on the code's sync path: stays green; exhaustive, 15,710,785 distinct, depth 23, the same count as codesync_agree, so the guard never refuses a relay there (D2 not pinned)
 RabiaEpoch	integrations/consensus/src/main/java	codesync_gov_nocoldconfig	fail	GovernedVote	-	#3213 mutant ("coldconfig" dropped, the pre-#3216 COLD answer): the phase arrives without the roster
 RabiaEpoch	integrations/consensus/src/main/java	codesync_agree_nocoldconfig	fail	Agreement	-	#3213 mutant ("coldconfig" dropped): two lagging replicas re-decide at epoch 0 a slot the new roster decided at epoch 1
 RabiaEpoch	integrations/consensus/src/main/java	nocrashstop	fail	Agreement	-	crash-stop assumption removed (relay without vote evidence): two values committed
 RabiaEpoch	integrations/consensus/src/main/java	noexactepoch_noprefix	fail	Agreement	-	D6 exact-epoch counting dropped under sync adoption: two values committed
 RabiaEpoch	integrations/consensus/src/main/java	paper_d6_np	fail	Agreement	-	D6 paper rule under sync adoption: two values committed (the paper rule is unsafe against sync adoption)
-RabiaEpoch	integrations/consensus/src/main/java	norelayexact_noprefix	fail	Agreement	-	D2 relay epoch check and D6 exact-epoch counting both dropped under sync adoption: two values committed
+RabiaEpoch	integrations/consensus/src/main/java	norelayexact_noprefix	fail	Agreement	-	D2 relay epoch check and D6 exact-epoch counting both dropped under sync adoption: two values committed. Not attributable to D2: noexactepoch_noprefix (D6 alone) is already red
 RabiaEpoch	integrations/consensus/src/main/java	ctl_oldtally	fail	NoOldEpochTally	-	negative control for NoOldEpochTally: exact-epoch counting dropped under sync adoption
 RabiaEpoch	integrations/consensus/src/main/java	ctl_oneroster	pass	-	-	FINDING: intended negative control for OneRosterPerEpoch (exact-epoch counting dropped under sync adoption) does NOT go red; OneRosterPerEpoch holds where Agreement fails (noexactepoch_noprefix), so this control does not discriminate
 RabiaEpoch	integrations/consensus/src/main/java	ctl_oneroster_mj2	fail	OneRosterPerEpoch	-	negative control for OneRosterPerEpoch: two replicas jump slot 1 (MaxJump=2) and apply a second command at epoch 0 in slot 2 while another installs a different roster for epoch 1 (TLC: OneRosterPerEpoch violated at 2,034,638 distinct)
