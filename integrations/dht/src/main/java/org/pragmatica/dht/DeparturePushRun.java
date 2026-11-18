@@ -511,7 +511,7 @@ final class DeparturePushRun {
                  .stream()
                  .filter(key -> !key.absent && !key.undeliverable)
                  .forEach(key -> desire(key, desired));
-        pages.stream().filter(DeparturePushRun::isLive).forEach(page -> keepOrCancel(page, desired));
+        pages.stream().filter(this::isLive).forEach(page -> keepOrCancel(page, desired));
 
         return new Plan(desired.entrySet()
                                .stream()
@@ -524,22 +524,26 @@ final class DeparturePushRun {
 
     /// Under `transitions`, I1: the ring is read ONCE per re-plan, as one snapshot; V, L, the tenures and every target of the
     /// re-plan come from it, so a node that enters the ring after the snapshot gets no page (and no tenure tag) until the next
-    /// re-plan observes it. Tenures start at entry into V; at a removal edge the node's pages leave the registry, so its earlier
-    /// tenure never counts again.
+    /// re-plan observes it. Tenures start at entry into V; a page of an earlier tenure, or of a node no longer in V, is not
+    /// [#current(Page)], so it never counts again.
     private void observeView() {
         var ring = node.ring()
                        .snapshot();
         var now = Set.copyOf(ring.nodes());
 
-        view.stream().filter(member -> !now.contains(member)).forEach(this::removalEdge);
         now.stream().filter(member -> !view.contains(member)).forEach(member -> tenures.merge(member, 1, Integer::sum));
         observed = ring;
         view = now;
         observedLeaving = leavingSet();
     }
 
-    private void removalEdge(NodeId member) {
-        pages.stream().filter(page -> page.target.equals(member)).forEach(this::drop);
+    /// Under `transitions`, P4: a page lives in ONE tenure of its target. It is current iff its target is in V, the last
+    /// observation, and its tenure tag is the target's tenure there. This is the one answer to "does this page still count":
+    /// re-plan (`keepOrCancel`), send and resend (`probeStopped`), split (`halvePage`, `splitPage`) and ack (`inTenure`) ask it.
+    /// A page that is not current is dead from the observation on: never counted live, sent, split or acked, so its keys are
+    /// desired again and paged in the current tenure.
+    private boolean current(Page page) {
+        return view.contains(page.target) && tenures.getOrDefault(page.target, 0) == page.tenure;
     }
 
     private void drop(Page page) {
@@ -561,14 +565,17 @@ final class DeparturePushRun {
         }
     }
 
-    private static boolean isLive(Page page) {
+    /// Under `transitions`.
+    private boolean isLive(Page page) {
         return ! page.isProbe()
                && !page.cancelled.get()
-               && !page.finished.get();
+               && !page.finished.get()
+               && current(page);
     }
 
     /// Under `transitions`: a live page stays when one of its pairs is still desired (those pairs need no new page); otherwise it is
-    /// cancelled and stays registered, so a late ack still counts.
+    /// cancelled and stays registered, so a late ack still counts. Only a page that is [#current(Page)] gets here (P4, `isLive`): one
+    /// that is not covers nothing, so its keys are desired again; it is not cancelled, as the predicate keeps it from every send.
     private void keepOrCancel(Page page, Map<NodeId, List<DepartureKey>> desired) {
         var wanted = desired.getOrDefault(page.target, List.of());
         var covered = page.keys.stream().filter(wanted::contains).toList();
@@ -691,7 +698,12 @@ final class DeparturePushRun {
 
     /// Under `transitions`.
     private Page registerPage(NodeId target, List<DepartureKey> keys, boolean split) {
-        var page = new Page(this, target, tenures.getOrDefault(target, 0), keys, split);
+        return registerPage(target, tenures.getOrDefault(target, 0), keys, split);
+    }
+
+    /// Under `transitions`.
+    private Page registerPage(NodeId target, int tenure, List<DepartureKey> keys, boolean split) {
+        var page = new Page(this, target, tenure, keys, split);
 
         registry.put(page.correlationId(), page);
         pages.add(page);
@@ -886,16 +898,20 @@ final class DeparturePushRun {
     }
 
     /// Under `transitions`: the page is cancelled and its keys not yet safe at its target (I2: a late ack of an earlier page may
-    /// have made some safe) go to at most two pages on the same target; none when every key is safe.
+    /// have made some safe) go to at most two pages on the same target, in the page's tenure; none when every key is safe or the
+    /// page is not [#current(Page)] (P4: its keys are desired again at the next re-plan, in the current tenure).
     private List<Page> halvePage(Page page) {
         page.cancelled.set(true);
-        var open = page.keys.stream().filter(key -> !safe(key, page.target, false)).toList();
+        var open = current(page)
+                   ? page.keys.stream().filter(key -> !safe(key, page.target, false)).toList()
+                   : List.<DepartureKey>of();
         var middle = open.size() / 2;
 
         return Stream.of(open.subList(0, middle),
                          open.subList(middle, open.size()))
                      .filter(half -> !half.isEmpty())
                      .map(half -> registerPage(page.target,
+                                               page.tenure,
                                                List.copyOf(half),
                                                false))
                      .toList();
@@ -922,15 +938,18 @@ final class DeparturePushRun {
         return Unit.unit();
     }
 
-    /// Under `transitions`.
+    /// Under `transitions`: single-key pages in the page's tenure; none when the page is not [#current(Page)] (P4).
     private List<Page> splitPage(Page page) {
         page.cancelled.set(true);
 
-        return page.keys.stream()
-                        .map(key -> registerPage(page.target,
-                                                 List.of(key),
-                                                 true))
-                        .toList();
+        return current(page)
+               ? page.keys.stream()
+                          .map(key -> registerPage(page.target,
+                                                   page.tenure,
+                                                   List.of(key),
+                                                   true))
+                          .toList()
+               : List.of();
     }
 
     /// No data page or exit probe starts once the attempts window is used up: the deadline resolves the run (P3: after its own
@@ -939,14 +958,15 @@ final class DeparturePushRun {
         return probeStopped(page, attemptsDeadline) || isSettled(page);
     }
 
-    /// A page (a probe: any page) is not sent once the node halted, the page is cancelled or retired, the run closed, or `until`
-    /// passed.
+    /// A page (a probe: any page) is not sent once the node halted, the page is cancelled, retired or not [#current(Page)] (P4),
+    /// the run closed, or `until` passed.
     private boolean probeStopped(Page page, long until) {
         if (window.halted().getAsBoolean()) {
             onHalt();
         }
 
-        return page.cancelled.get() || !registry.containsKey(page.correlationId()) || isClosed() || System.nanoTime() >= until;
+        return page.cancelled.get() || !registry.containsKey(page.correlationId()) || !underTransitions(() -> current(page))
+               || isClosed() || System.nanoTime() >= until;
     }
 
     /// I2: a data page every key of which is already safe at its target is not sent (nor resent).
@@ -1029,14 +1049,13 @@ final class DeparturePushRun {
                      .or(() -> Holder.holder(ack.bootToken(), page.tenure));
     }
 
-    /// Under `transitions`: registered, its target in V now, and the tenure it was registered in is the target's current one.
+    /// Under `transitions`: registered, its target in the ring now, and [#current(Page)] (P4).
     private boolean inTenure(Page page) {
         return registry.containsKey(page.correlationId())
                && node.ring()
                       .nodes()
                       .contains(page.target)
-               && view.contains(page.target)
-               && tenures.getOrDefault(page.target, 0) == page.tenure;
+               && current(page);
     }
 
     // --- exit ---
