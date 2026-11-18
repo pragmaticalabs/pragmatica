@@ -71,7 +71,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// **Re-plan.** One serial [#reconcile] on exactly three triggers: a change of V ([#onViewChange], called after each ring change),
 /// a holder lost (a token mismatch, a "draining" nack, a failed probe), and the start and each exit attempt. Acks and nacks never
 /// trigger it: an ack records a holder and settles its page, a nack splits a page of several keys in halves after a backoff and
-/// resends a single-key page after a growing one (P1). A reconcile re-reads `L = self + drainSet`, computes the desired pages
+/// resends a single-key page after a growing one, and an attempt timed out splits likewise without the backoff (P1). A reconcile re-reads `L = self + drainSet`, computes the desired pages
 /// {(t, k): k owed, t a target of k, t not a holder of k}, cancels every live page none of whose pairs is desired (it stays
 /// registered, so its late ack still counts), and registers the missing ones.
 ///
@@ -754,8 +754,17 @@ final class DeparturePushRun {
         return switch (result) {
             case ACKED, FAILED, IGNORED -> Promise.unitPromise();
             case NACKED -> pause(nackBackoff).flatMap(_ -> afterNackPause(page, entries, nackBackoff));
-            case TIMED_OUT -> attempt(page, entries, nackBackoff);
+            case TIMED_OUT -> afterSilence(page, entries, nackBackoff);
         };
+    }
+
+    /// #3345 P1, silence: a page whose ack does not come within `resendAfter` is split like a nacked one (a receiver that cannot
+    /// decode one entry drops the whole message, so silence can be one key's as well); a single key is resent unchanged. Cost on
+    /// a silent target: N - 1 sends of inner pages, then each key resent once per `resendAfter`, all ending at the deadline.
+    private Promise<Unit> afterSilence(Page page, List<DHTMessage.KeyValue> entries, TimeSpan nackBackoff) {
+        return page.keys.size() > 1
+               ? runHalves(transition(() -> halvePage(page)))
+               : attempt(page, entries, nackBackoff);
     }
 
     /// #3345 P1: a receiver nacks a whole page when one entry fails its check, and the nack names no key, so a nacked page of

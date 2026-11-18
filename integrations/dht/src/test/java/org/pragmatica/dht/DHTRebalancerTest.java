@@ -816,8 +816,9 @@ class DHTRebalancerTest {
 
         /// #3345 P1 (bound): one page of 8 keys bound for the same target, one of which the receiver nacks every time (a whole-page
         /// nack, as the receiver gives for one entry it cannot take). The page is split in halves down to single keys: every
-        /// good key is acked, the bad key alone stays owed and is reported; the pages other than the bad key's own resends are at
-        /// most 2 x log2(8) = 6 (one per half on the bad key's path, plus the first page), and the bad key's own resends back off.
+        /// good key is acked, the bad key alone stays owed and is reported. Bound: sends other than the bad key's single-key page
+        /// <= 2 * log2(N) = 6 for N = 8 (the first page, two halves on each of the log2(N) - 1 levels above the leaf, and the bad
+        /// key's good sibling leaf), and the bad key's own resends back off.
         @Test
         @Timeout(20)
         void pushOnDeparture_nackedPageWithOneBadKey_splitsDownToTheKey_boundedSends() {
@@ -861,7 +862,57 @@ class DHTRebalancerTest {
             assertThat(run.report().owed()).isZero();
         }
 
-        /// T13: the only plan-time survivor A leaves the ring at the first send. A plan-time survivor is no holder (#3345): without an
+        /// #3345 P1 (cost of the split): a target that nacks every page. As no ack field tells a refusal from a back-off nack, every
+        /// nack splits; the cost stays bounded. Bound: sends of several keys = N - 1 = 7 for N = 8 (each inner page of the split
+        /// tree is sent once, never resent), and each key's single-key sends <= 1 + log2(cap / b0) + ceil(W / cap) = 1 + 3 + 4 = 8
+        /// (b0 = 50 ms first pause, cap = 400 ms, W = 1300 ms window): no storm, and every key stays owed.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_targetNacksEverything_innerPagesNMinus1_singleKeySendsBackOff() {
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            List.of(LOCAL, PEER_A).forEach(ring::addNode);
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+            var keys = IntStream.range(0, 8).mapToObj(i -> "p1n-" + i).toList();
+            keys.forEach(text -> node.putLocal(key(text), value("payload")).await());
+            var network = ScriptedNetwork.scripted((_, _) -> Reply.NACK);
+            var run = push(node, network, timing(100, 1_200, 50, 400, 200), Set.of());
+
+            var multiKey = network.sends().stream().filter(sent -> sent.response().entries().size() > 1).count();
+
+            assertThat(network.sends().getFirst().response().entries()).as("control: the 8 keys travel in one page").hasSize(8);
+            assertThat(multiKey).as("each inner page of the split tree sent once: N - 1").isEqualTo(7);
+            keys.forEach(text -> assertThat(network.sends().stream().filter(sent -> isOnly(sent, text)).count())
+                                     .as("single-key sends of %s", text)
+                                     .isBetween(1L, 8L));
+            assertThat(network.ackedKeys()).isEmpty();
+            assertThat(run.report().owed()).isEqualTo(8);
+        }
+
+        /// #3345 P1 (cost of splitting on silence): a target that never answers. A timed-out page of several keys splits like a
+        /// nacked one. Bound: sends of several keys = N - 1 = 7 for N = 8, and each key's single-key sends <= 1 + ceil(W / resend)
+        /// = 1 + 26 = 27 (W = 1300 ms window, resend = 50 ms): every key stays owed.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_silentTarget_innerPagesNMinus1_singleKeySendsBoundedByWindowOverResend() {
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            List.of(LOCAL, PEER_A).forEach(ring::addNode);
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+            var keys = IntStream.range(0, 8).mapToObj(i -> "p1s-" + i).toList();
+            keys.forEach(text -> node.putLocal(key(text), value("payload")).await());
+            var network = ScriptedNetwork.scripted((_, _) -> Reply.DROP);
+            var run = push(node, network, timing(100, 1_200, 50, 400, 200), Set.of());
+
+            var multiKey = network.sends().stream().filter(sent -> sent.response().entries().size() > 1).count();
+
+            assertThat(network.sends().getFirst().response().entries()).as("control: the 8 keys travel in one page").hasSize(8);
+            assertThat(multiKey).as("each inner page of the split tree sent once: N - 1").isEqualTo(7);
+            keys.forEach(text -> assertThat(network.sends().stream().filter(sent -> isOnly(sent, text)).count())
+                                     .as("single-key sends of %s", text)
+                                     .isBetween(1L, 27L));
+            assertThat(run.report().owed()).isEqualTo(8);
+        }
+
+        /// T13:the only plan-time survivor A leaves the ring at the first send. A plan-time survivor is no holder (#3345): without an
         /// ack the key stays owed, its page keeps being resent after A left, and the report counts it owed (as classed at plan time,
         /// replicated; the F7 promotion to sole is gone). It has a deliverer, so no AT_RISK.
         @Test
