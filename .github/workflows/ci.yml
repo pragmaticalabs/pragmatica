@@ -139,12 +139,13 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.m2/repository
-          key: m2-full-v2-${{ hashFiles('**/pom.xml') }}
+          key: m2-full-v3-${{ hashFiles('**/pom.xml') }}
           # Fallback order: newest m2-full (any pom generation), then the newest setup-java maven cache of the base branch (the
           # pre-#3297 key; GitHub caches are scoped by ref, so a merge-group run reads only its own ref and the base branch, and an
           # m2-full saved on a PR ref is invisible to it). If neither exists (first run ever, or after eviction: 7 days unused or
           # the 10 GB limit) the job resolves from Central with the #3280 retries; that case is not hidden, it is the residual exposure.
           restore-keys: |
+            m2-full-v3-
             m2-full-v2-
             m2-full-
             setup-java-Linux-x64-maven-
@@ -210,16 +211,23 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.m2/repository
-          key: m2-full-v2-${{ hashFiles('**/pom.xml') }}
+          key: m2-full-v3-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
+            m2-full-v3-
             m2-full-v2-
             m2-full-
             setup-java-Linux-x64-maven-
 
-      - name: Report whether the restored cache holds the surefire provider
+      # One probe per provider set (#3338): each missing artifact is a Central fetch at test time.
+      - name: Report whether the restored cache holds the test-time dependencies
         run: |
-          p=~/.m2/repository/org/apache/maven/surefire/surefire-junit-platform/3.5.4/surefire-junit-platform-3.5.4.pom
-          if [ -f "$p" ]; then echo "::notice::restored cache holds surefire-junit-platform 3.5.4"; else echo "::warning::restored cache lacks surefire-junit-platform 3.5.4 (Central needed)"; fi
+          r=~/.m2/repository
+          for a in org/apache/maven/surefire/surefire-junit-platform/3.5.1/surefire-junit-platform-3.5.1.jar \
+                   org/apache/maven/surefire/surefire-junit-platform/3.5.4/surefire-junit-platform-3.5.4.jar \
+                   org/junit/vintage/junit-vintage-engine/5.13.4/junit-vintage-engine-5.13.4.jar \
+                   org/apache/maven/plugins/maven-failsafe-plugin/3.5.4/maven-failsafe-plugin-3.5.4.jar; do
+            if [ -f "$r/$a" ]; then echo "::notice::restored cache holds $(basename "$a")"; else echo "::warning::restored cache lacks $(basename "$a") (Central needed)"; fi
+          done
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
@@ -345,8 +353,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.m2/repository
-          key: m2-full-v2-${{ hashFiles('**/pom.xml') }}
+          key: m2-full-v3-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
+            m2-full-v3-
             m2-full-v2-
             m2-full-
             setup-java-Linux-x64-maven-
@@ -383,22 +392,38 @@ jobs:
           -Dfailsafe.forkedProcessTimeoutInSeconds=1800
         timeout-minutes: 30
 
-      # #3338: `install -DskipTests` never runs surefire, so the provider (surefire-junit-platform) and the junit launcher it
-      # resolves at test time were absent from this cache and every test job fetched them from Central (429). Run one real test
-      # here, with the same plugin versions, so they are saved. Key bumped to m2-full-v2 because an existing key is immutable.
-      - name: Prime test-time dependencies (surefire provider, junit launcher)
-        run: mvn test -B -pl core -Dtest=TimeSpanTest -Dsurefire.failIfNoSpecifiedTests=false
+      # #3338, the class: a Maven plugin resolves its runtime dependencies at EXECUTION time, per module, so `install -DskipTests`
+      # never caches the surefire/failsafe provider, the junit launcher or the vintage engine, and a test job then fetches them from
+      # Central (429). Priming one module or naming artifacts covers one provider set only: the set differs per module (surefire
+      # 3.5.1, 3.5.2 and 3.5.4 are in use; junit 4 on a module's test classpath adds the vintage engine). The rule is instead: run
+      # every module's own test and integration-test goals once, with a JUnit tag filter that matches nothing. Surefire and failsafe
+      # then scan the module, resolve its provider and fork the platform launcher, and run no test (a `-Dtest=` filter that matches
+      # no class skips provider resolution, so it would prime nothing). Run once without and once with -Pwith-e2e (the profile
+      # brings failsafe 3.5.2 into e2e-tests). Measured on a build host: 59-61 s each on top of the install. Priming happens only
+      # where the cache is saved (push), so PR and queue runs are neither slowed nor exposed. A failed prime (Central 429) must not
+      # fail the release branch, and must not be saved as a complete set: the save step requires the prime to have succeeded.
+      - name: Prime test-time dependencies of every module (provider, launcher, vintage engine)
+        id: prime
+        if: success() && github.event_name == 'push'
+        continue-on-error: true
+        run: |
+          flags="-B -fae -Dgroups=PrimeNoSuchTag__ -Dmaven.test.failure.ignore=true -Dsurefire.failIfNoSpecifiedTests=false -Dfailsafe.failIfNoSpecifiedTests=false"
+          mvn verify $flags
+          mvn verify -Pwith-e2e $flags
+          mvn verify -B -f examples/pom.xml -Dgroups=PrimeNoSuchTag__ -Dmaven.test.failure.ignore=true
+        timeout-minutes: 15
 
       # Saved only on success: the key is exact and immutable, so a save from a partial run would pin an incomplete set.
       # Saved only on a push to the release branch (#3338): every PR and merge-group ref saved its own 700 MB copy, the repository
       # sat at its 10 GB cache limit with 16 entries, and the v2 entry saved on this PR's ref was evicted within two hours,
       # together with the release branches' entries. PR and queue runs restore the branch's entry through the base-branch scope.
+      # Key m2-full-v3: an existing key is immutable, and v2 holds the one-module prime only.
       - name: Save Maven repository (full-set cache)
-        if: success() && github.event_name == 'push'
+        if: success() && github.event_name == 'push' && steps.prime.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: ~/.m2/repository
-          key: m2-full-v2-${{ hashFiles('**/pom.xml') }}
+          key: m2-full-v3-${{ hashFiles('**/pom.xml') }}
 
       - name: Upload Forge test results
         uses: actions/upload-artifact@v6
@@ -442,8 +467,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.m2/repository
-          key: m2-full-v2-${{ hashFiles('**/pom.xml') }}
+          key: m2-full-v3-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
+            m2-full-v3-
             m2-full-v2-
             m2-full-
             setup-java-Linux-x64-maven-
@@ -511,8 +537,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.m2/repository
-          key: m2-full-v2-${{ hashFiles('**/pom.xml') }}
+          key: m2-full-v3-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
+            m2-full-v3-
             m2-full-v2-
             m2-full-
             setup-java-Linux-x64-maven-
@@ -584,8 +611,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.m2/repository
-          key: m2-full-v2-${{ hashFiles('**/pom.xml') }}
+          key: m2-full-v3-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
+            m2-full-v3-
             m2-full-v2-
             m2-full-
             setup-java-Linux-x64-maven-
