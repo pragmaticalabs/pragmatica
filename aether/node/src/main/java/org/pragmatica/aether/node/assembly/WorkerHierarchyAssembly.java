@@ -1042,6 +1042,7 @@ public sealed interface WorkerHierarchyAssembly {
                                                         selfId.id(),
                                                         communityId,
                                                         announcer.communityId()));
+
                 return;
             }
 

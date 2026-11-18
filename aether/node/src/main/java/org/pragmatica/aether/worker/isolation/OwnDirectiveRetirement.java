@@ -83,11 +83,7 @@ public final class OwnDirectiveRetirement {
                                                                 BooleanSupplier draining,
                                                                 Runnable halt,
                                                                 OperatorWarningSink operatorWarningSink) {
-        return new OwnDirectiveRetirement(self,
-                                          configuredWorker,
-                                          draining,
-                                          halt,
-                                          operatorWarningSink);
+        return new OwnDirectiveRetirement(self, configuredWorker, draining, halt, operatorWarningSink);
     }
 
     /// Latches DIRECTED on a `WORKER` directive for this node, on a configured worker only.
