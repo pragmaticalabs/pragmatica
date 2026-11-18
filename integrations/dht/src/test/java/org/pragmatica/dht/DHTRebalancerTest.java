@@ -27,6 +27,7 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 
 import java.lang.ref.WeakReference;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -39,10 +40,12 @@ import java.lang.reflect.Proxy;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.pragmatica.dht.storage.StorageEngine;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.locks.LockSupport;
@@ -1467,6 +1470,509 @@ class DHTRebalancerTest {
             return Reply.DROP;
         }
 
+        /// #3345 rule (I) and its triggers, against [DeparturePushRun] run directly (its counters are read after the run): a key is
+        /// delivered only by an applied ack from a holder in its current tenure at its stamp, after a passed pre-exit probe.
+        @Nested
+        class DepartureHolder {
+            /// Red first. The target leaves V and returns (a new tenure); an ack for the page of its earlier tenure arrives after the
+            /// re-entry and never counts: the key stays owed and is paged again in the new tenure.
+            @Test
+            @Timeout(20)
+            void ackFromAnEarlierTenureNeverCounts() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var k = soleKey(ring, "h1");
+                node.putLocal(k, value("payload")).await();
+                var target = delivererOf(ring, k, Set.of(LOCAL));
+                var earlier = new AtomicReference<TimedSend>();
+                var delivered = new AtomicBoolean();
+                var self = new AtomicReference<ScriptedNetwork>();
+                var network = ScriptedNetwork.scriptedOver(ring, (_, sent) -> earlierTenure(ring, target, sent, earlier, delivered, self));
+                self.set(network);
+                var run = direct(node, network, 1_500, 100, Set::of);
+
+                assertThat(delivered).as("the earlier tenure's ack arrived after the re-entry").isTrue();
+                assertThat(network.sends()).as("paged again in the new tenure")
+                                           .anyMatch(sent -> sent.target().equals(target) && !sameRequest(sent, earlier.get()));
+                assertThat(run.report().owed()).isEqualTo(1);
+            }
+
+            private Reply earlierTenure(ConsistentHashRing<NodeId> ring,
+                                        NodeId target,
+                                        TimedSend sent,
+                                        AtomicReference<TimedSend> earlier,
+                                        AtomicBoolean delivered,
+                                        AtomicReference<ScriptedNetwork> self) {
+                if (sent.target().equals(target) && earlier.compareAndSet(null, sent)) {
+                    ring.removeNode(target);
+                } else if (!sent.target().equals(target) && !ring.nodes().contains(target)) {
+                    ring.addNode(target);
+                } else if (sent.target().equals(target) && !sameRequest(sent, earlier.get()) && delivered.compareAndSet(false, true)) {
+                    self.get().deliver(earlier.get(), Reply.ACK);
+                }
+                return Reply.DROP;
+            }
+
+            /// Red first (R4): a key anti-entropy brought to the drainer after the fence came from a current holder; the exit re-read
+            /// finds it and does not owe it.
+            @Test
+            @Timeout(20)
+            void keyAfterTheFenceIsNotOwed() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                node.putLocal(soleKey(ring, "h2"), value("payload")).await();
+                var late = key("h2-late");
+                var written = new AtomicBoolean();
+                var network = ScriptedNetwork.scripted((_, sent) -> carries(sent, "h2-late")
+                                                                    ? Reply.DROP
+                                                                    : writeOnceThenAck(node, late, written));
+                var run = direct(node, network, 1_000, 100, Set::of);
+
+                assertThat(written).as("the late key was written during the drain").isTrue();
+                assertThat(node.storage().stamps().await().unwrap()).anyMatch(stamp -> Arrays.equals(stamp.key(), late));
+                assertThat(network.sends()).noneMatch(sent -> carries(sent, "h2-late"));
+                assertThat(run.report().enumeratedKeys()).isEqualTo(1);
+                assertThat(run.report().owed()).isZero();
+            }
+
+            private static Reply writeOnceThenAck(DHTNode node, byte[] key, AtomicBoolean written) {
+                if (written.compareAndSet(false, true)) {
+                    write(node, key, "rewritten");
+                }
+                return Reply.ACK;
+            }
+
+            private static final AtomicInteger LOGICAL = new AtomicInteger();
+
+            /// A local write stamped with the wall clock now (HLC), as a client write is.
+            private static void write(DHTNode node, byte[] key, String text) {
+                node.putLocalVersioned(key, value(text), HlcTimestamp.pack(System.currentTimeMillis(), LOGICAL.incrementAndGet())).await();
+            }
+
+            /// A key the first inventory missed whose stamp predates the fence is found by the exit re-read and owed.
+            @Test
+            @Timeout(20)
+            void preExitReReadFindsALateKey() {
+                var ring = fiveNodeRing();
+                var late = key("h3-late");
+                var reads = new AtomicInteger();
+                var storage = stampsVia(memory -> memory.stamps()
+                                                        .map(stamps -> reads.getAndIncrement() == 0
+                                                                       ? stamps.stream().filter(stamp -> !Arrays.equals(stamp.key(), late)).toList()
+                                                                       : stamps));
+                var node = dhtNode(LOCAL, storage, ring, RF1);
+                node.putLocal(soleKey(ring, "h3"), value("payload")).await();
+                write(node, late, "late");
+                LockSupport.parkNanos(ms(5).nanos());
+                var network = ScriptedNetwork.scripted((_, _) -> Reply.ACK);
+                var run = direct(node, network, 1_500, 100, Set::of);
+
+                assertThat(reads.get()).as("the inventory was re-read").isGreaterThanOrEqualTo(2);
+                assertThat(network.sends()).anyMatch(sent -> carries(sent, "h3-late"));
+                assertThat(run.report().enumeratedKeys()).isEqualTo(2);
+                assertThat(run.report().owed()).isZero();
+            }
+
+            /// Within one tenure, an ack for a page a re-plan cancelled (a joiner took the key over, then left) still counts.
+            @Test
+            @Timeout(20)
+            void lateAckWithinOneTenureCounts() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var k = soleKey(ring, "h4");
+                node.putLocal(k, value("payload")).await();
+                var target = delivererOf(ring, k, Set.of(LOCAL));
+                var joiner = takeover(ring, k);
+                var cancelled = new AtomicReference<TimedSend>();
+                var delivered = new AtomicBoolean();
+                var self = new AtomicReference<ScriptedNetwork>();
+                var network = ScriptedNetwork.scriptedOver(ring,
+                                                           (_, sent) -> cancelledThenLate(ring, target, joiner, sent, cancelled, delivered, self, Reply.ACK));
+                self.set(network);
+                var run = direct(node, network, 1_500, 100, Set::of);
+
+                assertThat(delivered).as("the cancelled page's ack arrived late").isTrue();
+                assertThat(network.sends()).anyMatch(sent -> sent.target().equals(joiner));
+                assertThat(run.report().owed()).isZero();
+            }
+
+            /// The first page to `target` is cancelled by `joiner` taking the key over; the joiner leaves at its first page; at the
+            /// target's next page the cancelled page is answered with `late`.
+            private Reply cancelledThenLate(ConsistentHashRing<NodeId> ring,
+                                            NodeId target,
+                                            NodeId joiner,
+                                            TimedSend sent,
+                                            AtomicReference<TimedSend> cancelled,
+                                            AtomicBoolean delivered,
+                                            AtomicReference<ScriptedNetwork> self,
+                                            Reply late) {
+                if (sent.target().equals(target) && cancelled.compareAndSet(null, sent)) {
+                    ring.addNode(joiner);
+                } else if (sent.target().equals(joiner)) {
+                    ring.removeNode(joiner);
+                } else if (sent.target().equals(target) && !sameRequest(sent, cancelled.get()) && delivered.compareAndSet(false, true)) {
+                    self.get().deliver(cancelled.get(), late);
+                }
+                return Reply.DROP;
+            }
+
+            /// Safe is per (key, stamp): the key is rewritten locally after its page was read; the ack counts for the old stamp and
+            /// the exit re-read owes the newer one again.
+            @Test
+            @Timeout(20)
+            void newerLocalStampIsOwedAgain() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var k = soleKey(ring, "h5");
+                write(node, k, "v1");
+                var written = new AtomicBoolean();
+                var network = ScriptedNetwork.scripted((_, _) -> writeOnceThenAck(node, k, written));
+                var run = direct(node, network, 1_500, 100, Set::of);
+
+                assertThat(network.sends()).as("the newer stamp was paged again").hasSizeGreaterThanOrEqualTo(2);
+                assertThat(network.sends()).allMatch(sent -> isOnly(sent, new String(k, StandardCharsets.UTF_8)));
+                assertThat(run.report().owed()).isZero();
+            }
+
+            /// A probe unanswered past `resendAfter` is a holder lost: the key is paged again and the run closes before its deadline.
+            @Test
+            @Timeout(20)
+            void probeSilencePastResendIsHolderLost() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                node.putLocal(soleKey(ring, "h6"), value("payload")).await();
+                var network = ScriptedNetwork.scripted((_, _) -> Reply.ACK);
+                var probes = new AtomicInteger();
+                network.probesAnswer(_ -> probes.getAndIncrement() == 0 ? Reply.DROP : Reply.ACK);
+                var started = System.nanoTime();
+                var run = direct(node, network, 3_000, 100, Set::of);
+
+                assertThat(run.run().holderLosses()).isEqualTo(1);
+                assertThat(network.probes()).hasSizeGreaterThanOrEqualTo(2);
+                assertThat(network.sends()).hasSizeGreaterThanOrEqualTo(2);
+                assertThat(run.report().owed()).isZero();
+                assertThat(System.nanoTime() - started).as("closed before the deadline").isLessThan(ms(3_000).nanos());
+            }
+
+            /// A holder lost between a passed probe and the close (here a draining nack for a cancelled page of a node that holds
+            /// nothing) re-opens the run: a second exit attempt probes again before the close.
+            @Test
+            @Timeout(20)
+            void holderLostAfterProbeReopens() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var k = soleKey(ring, "h7");
+                node.putLocal(k, value("payload")).await();
+                var target = delivererOf(ring, k, Set.of(LOCAL));
+                var joiner = takeover(ring, k);
+                var cancelled = new AtomicReference<TimedSend>();
+                var self = new AtomicReference<ScriptedNetwork>();
+                var network = ScriptedNetwork.scriptedOver(ring, (_, sent) -> joinerTakesOver(ring, target, joiner, sent, cancelled));
+                self.set(network);
+                var probes = new AtomicInteger();
+                network.probesAnswer(probe -> lossDuringFirstProbe(probes, cancelled, self));
+                var run = direct(node, network, 3_000, 100, Set::of);
+
+                assertThat(cancelled.get()).isNotNull();
+                assertThat(run.run().holderLosses()).isEqualTo(1);
+                assertThat(network.probes()).as("re-opened: probed again").hasSize(2);
+                assertThat(run.report().owed()).isZero();
+            }
+
+            private static Reply joinerTakesOver(ConsistentHashRing<NodeId> ring,
+                                                 NodeId target,
+                                                 NodeId joiner,
+                                                 TimedSend sent,
+                                                 AtomicReference<TimedSend> cancelled) {
+                if (sent.target().equals(target) && cancelled.compareAndSet(null, sent)) {
+                    ring.addNode(joiner);
+                    return Reply.DROP;
+                }
+                return sent.target().equals(joiner) ? Reply.ACK : Reply.DROP;
+            }
+
+            private static Reply lossDuringFirstProbe(AtomicInteger probes,
+                                                      AtomicReference<TimedSend> cancelled,
+                                                      AtomicReference<ScriptedNetwork> self) {
+                if (probes.getAndIncrement() == 0) {
+                    self.get().deliver(cancelled.get(), Reply.DRAINING_NACK);
+                }
+                return Reply.ACK;
+            }
+
+            /// A nack that says "draining" is a holder lost: the run re-plans with the target now in L and pages the next node.
+            @Test
+            @Timeout(20)
+            void drainingNackIsHolderLost() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var k = soleKey(ring, "h8");
+                node.putLocal(k, value("payload")).await();
+                var target = delivererOf(ring, k, Set.of(LOCAL));
+                var next = delivererOf(ring, k, Set.of(LOCAL, target));
+                var drainSet = new AtomicReference<Set<NodeId>>(Set.of());
+                var network = ScriptedNetwork.scripted((_, sent) -> drainingAt(target, sent, drainSet));
+                var run = direct(node, network, 1_500, 100, drainSet::get);
+
+                assertThat(run.run().holderLosses()).isEqualTo(1);
+                assertThat(network.sends()).anyMatch(sent -> sent.target().equals(next));
+                assertThat(run.report().owed()).isZero();
+            }
+
+            private static Reply drainingAt(NodeId target, TimedSend sent, AtomicReference<Set<NodeId>> drainSet) {
+                if (sent.target().equals(target)) {
+                    drainSet.set(Set.of(target));
+                    return Reply.DRAINING_NACK;
+                }
+                return Reply.ACK;
+            }
+
+            /// No target outside L: the co-drainer gets the page as a named-prefix target and acks it, yet it is no deliverer, so the
+            /// key stays owed.
+            @Test
+            @Timeout(20)
+            void emptyTargetSetIsOwed() {
+                var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+                List.of(LOCAL, PEER_A).forEach(ring::addNode);
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                node.putLocal(soleKey(ring, "h9"), value("payload")).await();
+                var network = ScriptedNetwork.scripted((_, _) -> Reply.ACK);
+                var run = direct(node, network, 500, 100, () -> Set.of(PEER_A));
+
+                assertThat(network.ackedKeys()).as("the co-drainer acked the key").isNotEmpty();
+                assertThat(run.report().owed()).isEqualTo(1);
+            }
+
+            /// A key removed after the inventory is read is never sent and never counted delivered; with no exit re-read (another
+            /// key stays owed to the deadline) it is still owed in the report.
+            @Test
+            @Timeout(20)
+            void keyRemovedMeanwhileIsNotDelivered() {
+                var ring = fiveNodeRing();
+                var removed = soleKey(ring, "h10-removed");
+                var storage = stampsVia(memory -> memory.stamps().flatMap(stamps -> memory.remove(removed).map(_ -> stamps)));
+                var node = dhtNode(LOCAL, storage, ring, RF1);
+                node.putLocal(removed, value("payload")).await();
+                node.putLocal(soleKey(ring, "h10-kept"), value("payload")).await();
+                var network = ScriptedNetwork.scripted((_, _) -> Reply.DROP);
+                var run = direct(node, network, 800, 100, Set::of);
+
+                assertThat(network.sends()).isNotEmpty().noneMatch(sent -> carries(sent, new String(removed, StandardCharsets.UTF_8)));
+                assertThat(run.report().enumeratedKeys()).isEqualTo(2);
+                assertThat(run.report().owed()).isEqualTo(2);
+            }
+
+            /// EncodeFailed splits the page once into single-key pages; the key whose own page still fails is undeliverable, counted
+            /// apart and still owed; the other key is delivered.
+            @Test
+            @Timeout(20)
+            void encodeFailedSplitsThenUndeliverable() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var good = soleKey(ring, "h11");
+                var bad = sameDeliverer(ring, good, "h11-bad");
+                var badText = new String(bad, StandardCharsets.UTF_8);
+                node.putLocal(good, value("payload")).await();
+                node.putLocal(bad, value("payload")).await();
+                var network = ScriptedNetwork.scripted((_, sent) -> carries(sent, badText)
+                                                                    ? Reply.refuse(id -> new WriteOutcome.EncodeFailed(id, "MigrationDataResponse"))
+                                                                    : Reply.ACK);
+                var run = direct(node, network, 800, 100, Set::of);
+
+                assertThat(network.sends().getFirst().response().entries()).as("one page of both keys first").hasSize(2);
+                assertThat(network.sends()).filteredOn(sent -> isOnly(sent, badText)).hasSize(1);
+                assertThat(network.ackedKeys()).containsExactly(new String(good, StandardCharsets.UTF_8));
+                assertThat(run.report().undeliverable()).isEqualTo(1);
+                assertThat(run.report().owed()).isEqualTo(1);
+            }
+
+            /// Acks and nacks never re-plan: reconciles = start + view changes + holder losses + exit attempts.
+            @Test
+            @Timeout(20)
+            void nackTriggersNoReconcile() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                node.putLocal(soleKey(ring, "h12"), value("payload")).await();
+                var network = ScriptedNetwork.scripted((index, _) -> index < 5 ? Reply.NACK : Reply.ACK);
+                var run = direct(node, network, 2_000, 20, Set::of);
+
+                assertThat(network.sends()).hasSize(6);
+                assertThat(run.report().owed()).isZero();
+                assertReconcilesBounded(run.run());
+            }
+
+            /// 50 flaps of a node outside the key's placement, each page nacked: reconciles stay within view changes + losses +
+            /// attempts + 1 (counted on the run).
+            @Test
+            @Timeout(30)
+            void flapIsBounded() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var k = soleKey(ring, "h13");
+                node.putLocal(k, value("payload")).await();
+                var flapper = bystander(ring, k);
+                var network = ScriptedNetwork.scriptedOver(ring, (index, _) -> index < 50 ? flap(ring, flapper) : Reply.ACK);
+                var run = direct(node, network, 6_000, 10, Set::of);
+
+                assertThat(run.run().viewChanges()).isGreaterThanOrEqualTo(50);
+                assertThat(run.report().owed()).isZero();
+                assertReconcilesBounded(run.run());
+            }
+
+            private static Reply flap(ConsistentHashRing<NodeId> ring, NodeId flapper) {
+                if (ring.nodes().contains(flapper)) {
+                    ring.removeNode(flapper);
+                } else {
+                    ring.addNode(flapper);
+                }
+                return Reply.NACK;
+            }
+
+            private static void assertReconcilesBounded(DeparturePushRun run) {
+                assertThat(run.reconciles()).isPositive()
+                                            .isLessThanOrEqualTo(1 + run.viewChanges() + run.holderLosses() + run.exitAttempts());
+            }
+
+            /// A node entering V that becomes the key's deliverer re-owes a key a former deliverer held: it is paged to the joiner.
+            @Test
+            @Timeout(20)
+            void addEdgeReowes() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var k = soleKey(ring, "h14");
+                node.putLocal(k, value("payload")).await();
+                var joiner = takeover(ring, k);
+                var network = ScriptedNetwork.scripted((_, _) -> Reply.ACK);
+                var probes = new AtomicInteger();
+                var handle = new AtomicReference<DeparturePushRun>();
+                network.probesAnswer(_ -> joinAtFirstProbe(ring, joiner, probes, handle));
+                var run = direct(node, network, 1_500, 100, Set::of, handle);
+
+                assertThat(network.sends()).anyMatch(sent -> sent.target().equals(joiner));
+                assertThat(run.report().owed()).isZero();
+            }
+
+            /// The joiner enters V while the first probe is in flight; the view change reaches the run as `DHTTopologyListener`
+            /// delivers it, after the ring change.
+            private static Reply joinAtFirstProbe(ConsistentHashRing<NodeId> ring,
+                                                  NodeId joiner,
+                                                  AtomicInteger probes,
+                                                  AtomicReference<DeparturePushRun> handle) {
+                if (probes.getAndIncrement() == 0) {
+                    ring.addNode(joiner);
+                    handle.get().onViewChange();
+                }
+                return Reply.ACK;
+            }
+
+            /// L is the drain set read now, not a union: a co-drainer that withdrew is the deliverer again at the next re-plan, so its
+            /// ack (taken while it was only a named-prefix target) makes the key safe; the next node never answers.
+            @Test
+            @Timeout(20)
+            void withdrawnCoDrainerLeavesL() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var k = soleKey(ring, "h15");
+                node.putLocal(k, value("payload")).await();
+                var coDrainer = delivererOf(ring, k, Set.of(LOCAL));
+                var next = delivererOf(ring, k, Set.of(LOCAL, coDrainer));
+                var drainSet = new AtomicReference<Set<NodeId>>(Set.of(coDrainer));
+                var handle = new AtomicReference<DeparturePushRun>();
+                var network = ScriptedNetwork.scripted((_, sent) -> withdrawAtFirstPage(coDrainer, sent, drainSet, handle));
+                var run = direct(node, network, 1_500, 100, drainSet::get, handle);
+
+                assertThat(network.sends()).as("while it drained, the next node was the deliverer").anyMatch(sent -> sent.target().equals(next));
+                assertThat(network.sends()).anyMatch(sent -> sent.target().equals(coDrainer));
+                assertThat(run.report().owed()).isZero();
+            }
+
+            /// The co-drainer withdraws at the first page (to another node) and the ring changes, as the view update delivers it.
+            private static Reply withdrawAtFirstPage(NodeId coDrainer,
+                                                     TimedSend sent,
+                                                     AtomicReference<Set<NodeId>> drainSet,
+                                                     AtomicReference<DeparturePushRun> handle) {
+                if (sent.target().equals(coDrainer)) {
+                    return Reply.ACK;
+                }
+                if (!drainSet.getAndSet(Set.of()).isEmpty()) {
+                    Thread.ofVirtual().start(handle.get()::onViewChange);
+                }
+                return Reply.DROP;
+            }
+
+            // --- direct run ---
+
+            private record Direct(DeparturePushRun run, DeparturePushReport report) {}
+
+            private Direct direct(DHTNode node, ScriptedNetwork network, long windowMs, long resendMs, Supplier<Set<NodeId>> drainSet) {
+                return direct(node, network, windowMs, resendMs, drainSet, new AtomicReference<>());
+            }
+
+            /// A run over RF 1 with a `windowMs` attempts window; acks are routed by correlation id as [DHTRebalancer] does.
+            private Direct direct(DHTNode node,
+                                  ScriptedNetwork network,
+                                  long windowMs,
+                                  long resendMs,
+                                  Supplier<Set<NodeId>> drainSet,
+                                  AtomicReference<DeparturePushRun> handle) {
+                var registry = new ConcurrentHashMap<String, DeparturePushRun.Page>();
+                var tuning = new DeparturePushTuning(ms(resendMs), ms(4 * resendMs), DeparturePushTuning.DEFAULT.reportAfter(), ms(200));
+                var t0 = System.nanoTime();
+                var window = DepartureWindow.departureWindow(t0 + ms(windowMs).nanos() + tuning.eventDeliveryWait().nanos());
+                var run = DeparturePushRun.departurePushRun(node, network, registry, 1, drainSet, t0, window, tuning, new EventRecorder(() -> {}));
+                handle.set(run);
+                network.ackVia(ack -> Option.option(registry.get(ack.requestId())).onPresent(page -> page.onAck(ack)));
+                network.viewChangeVia(run::onViewChange);
+                return new Direct(run, run.run().await().unwrap());
+            }
+
+            private static boolean sameRequest(TimedSend sent, TimedSend other) {
+                return other != null && sent.response().requestId().equals(other.response().requestId());
+            }
+
+            private static NodeId delivererOf(ConsistentHashRing<NodeId> ring, byte[] key, Set<NodeId> leaving) {
+                return ring.nodesFor(key, 1, candidate -> !leaving.contains(candidate)).getFirst();
+            }
+
+            /// A node that, once added to `ring`, becomes `key`'s deliverer.
+            private static NodeId takeover(ConsistentHashRing<NodeId> ring, byte[] key) {
+                return IntStream.range(0, 20_000)
+                                .mapToObj(i -> new NodeId("joiner-" + i))
+                                .filter(candidate -> delivererOf(ringPlus(ring, candidate), key, Set.of(LOCAL)).equals(candidate))
+                                .findFirst()
+                                .orElseThrow();
+            }
+
+            /// A node that, once added to `ring`, leaves `key`'s deliverer unchanged.
+            private static NodeId bystander(ConsistentHashRing<NodeId> ring, byte[] key) {
+                var deliverer = delivererOf(ring, key, Set.of(LOCAL));
+                return IntStream.range(0, 20_000)
+                                .mapToObj(i -> new NodeId("bystander-" + i))
+                                .filter(candidate -> delivererOf(ringPlus(ring, candidate), key, Set.of(LOCAL)).equals(deliverer))
+                                .findFirst()
+                                .orElseThrow();
+            }
+
+            private static ConsistentHashRing<NodeId> ringPlus(ConsistentHashRing<NodeId> ring, NodeId extra) {
+                var copy = ConsistentHashRing.<NodeId>consistentHashRing();
+                ring.nodes().forEach(copy::addNode);
+                copy.addNode(extra);
+                return copy;
+            }
+
+            /// A second RF-1 key of LOCAL with the same deliverer as `key`.
+            private byte[] sameDeliverer(ConsistentHashRing<NodeId> ring, byte[] key, String prefix) {
+                var deliverer = delivererOf(ring, key, Set.of(LOCAL));
+                for (int i = 0; i < 20_000; i++) {
+                    var candidate = soleKey(ring, prefix + "-" + i);
+                    if (delivererOf(ring, candidate, Set.of(LOCAL)).equals(deliverer)) {
+                        return candidate;
+                    }
+                }
+                throw new AssertionError("no second key delivered to " + deliverer);
+            }
+        }
+
         // --- fixtures ---
 
         private record Run(DeparturePushReport report, EventRecorder recorder, long elapsedMillis) {}
@@ -1779,6 +2285,11 @@ class DHTRebalancerTest {
             } else {
                 ackSink.get().accept(ack);
             }
+        }
+
+        /// Answer `sent` now with `reply` (a late or stale answer a test delivers itself).
+        void deliver(TimedSend sent, Reply reply) {
+            respond(reply, sent);
         }
 
         List<TimedSend> sends() {
