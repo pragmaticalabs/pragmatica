@@ -111,6 +111,7 @@ class ManagementStatusCoverageTest {
             entry(ROUTES + "MetricsRoutes$BackfillError#INVALID_WINDOW", "BAD_REQUEST"),
             entry(ROUTES + "MetricsRoutes$BackfillError#MISSING_BODY", "BAD_REQUEST"),
             entry(ROUTES + "MetricsRoutes$BackfillError#MISSING_METRIC", "BAD_REQUEST"),
+            entry(ROUTES + "NodeLifecycleRoutes$LeaderCannotBeDrained", "CONFLICT"),
             entry(ROUTES + "NodeLifecycleRoutes$PromoteError#IMMUTABLE_ROLE", "CONFLICT"),
             entry(ROUTES + "NodeLifecycleRoutes$PromoteError#MISSING_TARGET_ROLE", "BAD_REQUEST"),
             entry(ROUTES + "NodeLifecycleRoutes$PromoteError#UNKNOWN_NODE_ROLE", "CONFLICT"),
