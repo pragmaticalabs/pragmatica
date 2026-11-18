@@ -11,16 +11,19 @@ import org.pragmatica.aether.slice.StreamDeclaration;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
-/// Test helper: a copy of a [StreamConfig] whose declaration carries ONLY a `[hot]` section with the given window, every
-/// other component of the config carried over verbatim. A test that sizes a ring from the hot window declares it
+/// Test helper: a copy of a [StreamConfig] whose `[hot]` section is the given window, every other component of the config
+/// carried over verbatim, and every other section of an existing declaration (`[retention]`, `[truncation]`, expected
+/// ingress) kept as the source declared it. Only `[hot]` is replaced. A test that sizes a ring from the hot window declares it
 /// through this, so it reads the same with and without the ring reading the declaration.
 public final class HotWindowFixture {
     private HotWindowFixture() {}
 
-    /// `config` with a declaration holding only `[hot]` = (`count` entries, `bytes` bytes).
+    /// `config` with `[hot]` = (`count` entries, `bytes` bytes); a source without a declaration gets one holding only `[hot]`.
     public static StreamConfig declaredHot(StreamConfig config, long count, long bytes) {
         var hot = HotWindowDeclaration.hotWindowDeclaration(some(bytes), some(count));
-        var declaration = StreamDeclaration.streamDeclaration(none(), none(), some(hot), none());
+        var declaration = config.declaration()
+                                .fold(() -> StreamDeclaration.streamDeclaration(none(), none(), some(hot), none()),
+                                      existing -> replaceHot(existing, hot));
 
         return new StreamConfig(config.name(),
                                 config.partitions(),
@@ -34,5 +37,12 @@ public final class HotWindowFixture {
                                 config.encryptionKeyId(),
                                 config.incarnation(),
                                 some(declaration));
+    }
+
+    private static StreamDeclaration replaceHot(StreamDeclaration existing, HotWindowDeclaration hot) {
+        return StreamDeclaration.streamDeclaration(existing.retention(),
+                                                   existing.truncation(),
+                                                   some(hot),
+                                                   existing.expectedIngressBytesPerSecond());
     }
 }
