@@ -52,23 +52,27 @@ class DHTDepartureSequentialAbsenceTest {
     private static final NodeId RETURNED = N_A;
     private static final long RESEND_PLUS = 700L;
 
+    /// #3345: the key is Safe once one holder in D(k, V) has it, and D(k, V) is the delta (the live node that gains the key at the
+    /// departure: the other live node already had the drainer's partition in its replica set), so the plan pages only the newcomer.
     @Test
     void control_noAbsence_theKeyIsDeliveredToALiveNode() {
         var h = new Harness(true);
+        var newcomer = h.newcomer();
         var report = h.push().await().or(DeparturePushReport.NOT_ENUMERATED);
 
         h.halt();
         assertThat(report.soleCopyAtRisk()).as("no absence: nothing at risk").isZero();
         assertThat(h.heldByALiveNode()).as("no absence: the key is on a live node").isTrue();
-        assertThat(Set.copyOf(h.pageTargets)).as("instrument: the plan pages the key to both live nodes").containsExactlyInAnyOrder(N_A, N_B);
-        assertThat(h.holds(N_A) && h.holds(N_B)).as("no absence: both pages were applied").isTrue();
+        assertThat(Set.copyOf(h.pageTargets)).as("instrument: the plan pages the key to the newcomer only").containsExactly(newcomer);
+        assertThat(h.holds(newcomer)).as("no absence: the newcomer's page was applied").isTrue();
     }
 
     @Test
     void control_oneAbsenceEpisode_theOtherTargetReceivesTheKey() {
-        var first = RETURNED;
-        var other = other(first);
         var h = new Harness(true);
+        // #3345: the plan pages only the newcomer (see control_noAbsence), so the absent first target is the newcomer.
+        var first = h.newcomer();
+        var other = other(first);
 
         h.absent.add(first);
         var push = h.push();
@@ -206,6 +210,14 @@ class DHTDepartureSequentialAbsenceTest {
             return Option.option(members.get(id))
                          .map(m -> m.node().getLocal(key).await().or(Option.<byte[]>none()).isPresent())
                          .or(false);
+        }
+
+        /// The live node that gains the key when the drainer leaves: of the post-departure set {n-a, n-b} (RF=2), the one outside the
+        /// key's replica set in the drainer's full ring.
+        NodeId newcomer() {
+            var before = members.get(DRAINER).node().ring().nodesFor(key, CONFIG.effectiveReplicationFactor(3));
+
+            return before.contains(N_A) ? N_B : N_A;
         }
 
         boolean heldByALiveNode() {
