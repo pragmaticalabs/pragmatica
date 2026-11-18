@@ -82,6 +82,8 @@ RabiaAdopt	integrations/consensus/src/main/java	paperD4	pass	-	-	D4 paper rule (
 RabiaAdopt	integrations/consensus/src/main/java	paperD5	pass	-	-	D5 paper rule (newer epoch from any single response): stays green
 RabiaAdopt	integrations/consensus/src/main/java	paperD5iso	pass	-	-	D5 paper rule, newer-epoch path only: stays green
 RabiaAdopt	integrations/consensus/src/main/java	rjT_allfixes	pass	-	-	token-memory rejoin with "syncresume" (#3217): a voter paused from Syncing resumes to syncing, not active; exhaustive, 12,784,410 distinct, depth 21
+RabiaAdopt	integrations/consensus/src/main/java	rjT_resync	pass	-	-	the code: token-memory rejoin with D10 Resync on (one crash, one restart, one pause); exhaustive, 9,477,254 distinct, depth 22
+RabiaAdopt	integrations/consensus/src/main/java	rjT_resync_savefail	pass	-	-	the code: rjT_resync with a failing save on Pause; exhaustive, 12,988,622 distinct, depth 22
 RabiaAdopt	integrations/consensus/src/main/java	rjT_nooneconfig	pass	-	-	token-memory rejoin, D5 one-configuration check dropped (vacuous for rejoin)
 RabiaAdopt	integrations/consensus/src/main/java	rjT_noselfvouch	pass	-	-	#3217 fixed, D4 self-vouch dropped: self-vouch is not reached under token rejoin; exhaustive, 12,784,410 distinct (same as rjT_allfixes), depth 21
 RabiaAdopt	integrations/consensus/src/main/java	rjT_allfixes_savefail	pass	-	-	"syncresume" with a failing save on pause: a paused Syncing roster member saves nothing and resumes to syncing; exhaustive, 16,791,658 distinct, depth 21

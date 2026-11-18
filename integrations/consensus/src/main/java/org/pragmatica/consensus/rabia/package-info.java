@@ -499,6 +499,11 @@
 /// \*   SameEpochAdopt  FALSE disables the same-epoch adoption branches, isolating the D5 newer-epoch path (diagnostic)
 /// \*   SaveFails    TRUE lets saveState on Pause fail (doPauseForQuorumLoss logs the failure and stays paused)
 /// \*   ResyncOn     TRUE enables Resync (D10: triggerResync from a far-future ballot or an expired decision-gap timer)
+/// \*                The code's rejoin (Rejoin = "tokens") with Resync is checked by rjT_resync and rjT_resync_savefail at
+/// \*                smaller bounds than rjT_allfixes (one crash, one restart, one pause); every other resync* row runs
+/// \*                under the permanent fence (Rejoin = "none"). At those bounds the #3211 mutant (syncresume dropped)
+/// \*                showed no violation at any depth up to 16 (BFS, 6.9M distinct states, stopped incomplete), so the
+/// \*                composition does not by itself pin syncresume; rjT_nosyncresume (two crashes, two restarts) does.
 /// EXTENDS Naturals, FiniteSets
 ///
 /// CONSTANTS Fixed, Paper, KeepBallots, FaultyResp, SameEpochAdopt, Probe, MaxCrash, MaxRestart, MaxPause, Rejoin, SaveFails, ResyncOn
@@ -2513,6 +2518,48 @@
 ///   Rejoin = "tokens"
 ///   SaveFails = FALSE
 ///   ResyncOn = FALSE
+/// INVARIANTS TypeOK Agreement Held
+/// PROPERTIES DurableDecision
+/// ```
+///
+/// ```tlacfg RabiaAdopt:rjT_resync
+/// \* RabiaAdopt config rjT_resync: the expected verdict is its row in tools/tla/models.tsv
+/// \* the code: token-memory rejoin (the fence) composed with D10 Resync; one crash, one restart, one pause
+/// SPECIFICATION Spec
+/// CONSTANTS
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
+///   Paper = {}
+///   KeepBallots = TRUE
+///   FaultyResp = FALSE
+///   SameEpochAdopt = TRUE
+///   Probe = "none"
+///   MaxCrash = 1
+///   MaxRestart = 1
+///   MaxPause = 1
+///   Rejoin = "tokens"
+///   SaveFails = FALSE
+///   ResyncOn = TRUE
+/// INVARIANTS TypeOK Agreement Held
+/// PROPERTIES DurableDecision
+/// ```
+///
+/// ```tlacfg RabiaAdopt:rjT_resync_savefail
+/// \* RabiaAdopt config rjT_resync_savefail: the expected verdict is its row in tools/tla/models.tsv
+/// \* as rjT_resync with a failing save on pause
+/// SPECIFICATION Spec
+/// CONSTANTS
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
+///   Paper = {}
+///   KeepBallots = TRUE
+///   FaultyResp = FALSE
+///   SameEpochAdopt = TRUE
+///   Probe = "none"
+///   MaxCrash = 1
+///   MaxRestart = 1
+///   MaxPause = 1
+///   Rejoin = "tokens"
+///   SaveFails = TRUE
+///   ResyncOn = TRUE
 /// INVARIANTS TypeOK Agreement Held
 /// PROPERTIES DurableDecision
 /// ```
