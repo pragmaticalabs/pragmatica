@@ -388,12 +388,13 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// pass against one "pending drains" snapshot. Pinned by `NodeLifecycleRoutesSliceFloorTest`'s concurrent
     /// admission test.
     private synchronized Result<TransitionResult> admitOperatorDrain(NodeId node, boolean requireReady, boolean force) {
-        return refuseLeaderDrain(node, requireReady).flatMap(_ -> checkDisruptionBudgetForTarget(node.id(), node))
-                                                    .flatMap(budget -> checkDrainReadiness(node, requireReady).map(_ -> budget))
-                                             .flatMap(budget -> checkSliceFloor(node, requireReady, force).map(_ -> budget))
-                                             .map(budget -> enqueueOperatorDrain(node,
-                                                                                 budget.message(),
-                                                                                 requireReady));
+        return refuseLeaderDrain(node, requireReady).flatMap(_ -> checkDisruptionBudgetForTarget(node.id(),
+                                                                                                 node))
+                                .flatMap(budget -> checkDrainReadiness(node, requireReady).map(_ -> budget))
+                                .flatMap(budget -> checkSliceFloor(node, requireReady, force).map(_ -> budget))
+                                .map(budget -> enqueueOperatorDrain(node,
+                                                                    budget.message(),
+                                                                    requireReady));
     }
 
     /// #1720: refuse, 409, an operator drain or shutdown that would leave a hosted slice below its `minAvailable`
@@ -572,7 +573,10 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// state this node holds (`leader()`), so the leader's own route and a follower's route answer alike. With no leader
     /// elected at this instant nothing matches and today's answer for the target stands (404 when it has no reported state).
     private Result<org.pragmatica.lang.Unit> refuseLeaderDrain(NodeId node, boolean requireReady) {
-        return requireReady && nodeSupplier.get().leader().filter(node::equals).isPresent()
+        return requireReady && nodeSupplier.get()
+                                           .leader()
+                                           .filter(node::equals)
+                                           .isPresent()
                ? new LeaderCannotBeDrained(node.id()).result()
                : Result.success(org.pragmatica.lang.Unit.unit());
     }
