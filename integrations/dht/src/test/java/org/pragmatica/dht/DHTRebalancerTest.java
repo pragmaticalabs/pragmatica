@@ -51,6 +51,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.testlogging.LogCapture;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.LogEvent;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import org.pragmatica.consensus.net.WriteOutcome;
 
@@ -813,6 +814,53 @@ class DHTRebalancerTest {
             assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
         }
 
+        /// #3345 P1 (bound): one page of 8 keys bound for the same target, one of which the receiver nacks every time (a whole-page
+        /// nack, as the receiver gives for one entry it cannot take). The page is split in halves down to single keys: every
+        /// good key is acked, the bad key alone stays owed and is reported; the pages other than the bad key's own resends are at
+        /// most 2 x log2(8) = 6 (one per half on the bad key's path, plus the first page), and the bad key's own resends back off.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_nackedPageWithOneBadKey_splitsDownToTheKey_boundedSends() {
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            List.of(LOCAL, PEER_A).forEach(ring::addNode);
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+            var keys = IntStream.range(0, 8).mapToObj(i -> "p1-" + i).toList();
+            keys.forEach(text -> node.putLocal(key(text), value("payload")).await());
+            var network = ScriptedNetwork.scripted((_, sent) -> carries(sent, "p1-5") ? Reply.NACK : Reply.ACK);
+            var run = push(node, network, timing(100, 1_200, 50, 400, 200), Set.of());
+
+            var otherThanTheBadKey = network.sends().stream().filter(sent -> !isOnly(sent, "p1-5")).count();
+
+            assertThat(network.sends().getFirst().response().entries()).as("control: the 8 keys travel in one page").hasSize(8);
+            assertThat(network.ackedKeys()).as("every good key is safe").containsAll(keys.stream().filter(text -> !text.equals("p1-5")).toList());
+            assertThat(network.ackedKeys()).doesNotContain("p1-5");
+            assertThat(otherThanTheBadKey).as("at most log2(8) split levels, two pages each, plus the first page").isLessThanOrEqualTo(6);
+            assertThat(network.sends().size() - otherThanTheBadKey).as("the bad key alone backs off").isBetween(1L, 12L);
+            assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
+            assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
+        }
+
+        /// #3345 P1 (transient): the first page of 4 keys is nacked once, then every page is acked. The nack carries no reason
+        /// (`MigrationDataAck` has only `applied`), so the push cannot tell a refusal from a passing back-off nack and splits
+        /// once: both halves are accepted and nothing is split further (3 sends: no split storm). Every key is delivered.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_transientNack_oneSplitThenAccepted_noSplitStorm() {
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            List.of(LOCAL, PEER_A).forEach(ring::addNode);
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+            var keys = IntStream.range(0, 4).mapToObj(i -> "p1t-" + i).toList();
+            keys.forEach(text -> node.putLocal(key(text), value("payload")).await());
+            var network = ScriptedNetwork.scripted((index, _) -> index == 0 ? Reply.NACK : Reply.ACK);
+            var run = push(node, network, timing(100, 1_200, 50, 400, 200), Set.of());
+
+            assertThat(network.sends().getFirst().response().entries()).as("control: the 4 keys travel in one page").hasSize(4);
+            assertThat(network.sends()).as("the first page and its two halves, nothing more").hasSize(3);
+            assertThat(network.ackedKeys()).containsExactlyInAnyOrderElementsOf(keys);
+            assertThat(run.recorder().incomplete()).isEmpty();
+            assertThat(run.report().owed()).isZero();
+        }
+
         /// T13: the only plan-time survivor A leaves the ring at the first send. A plan-time survivor is no holder (#3345): without an
         /// ack the key stays owed, its page keeps being resent after A left, and the report counts it owed (as classed at plan time,
         /// replicated; the F7 promotion to sole is gone). It has a deliverer, so no AT_RISK.
@@ -1413,6 +1461,10 @@ class DHTRebalancerTest {
 
         private static TimeSpan ms(long millis) {
             return timeSpan(millis).millis();
+        }
+
+        private static boolean isOnly(TimedSend sent, String keyText) {
+            return sent.response().entries().size() == 1 && carries(sent, keyText);
         }
 
         private static boolean carries(TimedSend sent, String keyText) {

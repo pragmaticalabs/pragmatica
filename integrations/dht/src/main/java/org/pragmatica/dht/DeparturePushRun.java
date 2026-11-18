@@ -70,9 +70,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///
 /// **Re-plan.** One serial [#reconcile] on exactly three triggers: a change of V ([#onViewChange], called after each ring change),
 /// a holder lost (a token mismatch, a "draining" nack, a failed probe), and the start and each exit attempt. Acks and nacks never
-/// trigger it: an ack records a holder and settles its page, a nack resends its page after a backoff. A reconcile re-reads
-/// `L = self + drainSet`, computes the desired pages {(t, k): k owed, t a target of k, t not a holder of k}, cancels every live page
-/// none of whose pairs is desired (it stays registered, so its late ack still counts), and registers the missing ones.
+/// trigger it: an ack records a holder and settles its page, a nack splits a page of several keys in halves after a backoff and
+/// resends a single-key page after a growing one (P1). A reconcile re-reads `L = self + drainSet`, computes the desired pages
+/// {(t, k): k owed, t a target of k, t not a holder of k}, cancels every live page none of whose pairs is desired (it stays
+/// registered, so its late ack still counts), and registers the missing ones.
 ///
 /// **Inventory and the fence (#3345 R4, marked guess G3).** Owed is frozen at the fence: owed keys are the keys of the first
 /// inventory plus keys a later re-read finds whose stamp's HLC wall time is before the window's `drainStartMillis`. Anything else a
@@ -752,9 +753,33 @@ final class DeparturePushRun {
                                        TimeSpan nackBackoff) {
         return switch (result) {
             case ACKED, FAILED, IGNORED -> Promise.unitPromise();
-            case NACKED -> pause(nackBackoff).flatMap(_ -> attempt(page, entries, nextNackBackoff(nackBackoff)));
+            case NACKED -> pause(nackBackoff).flatMap(_ -> afterNackPause(page, entries, nackBackoff));
             case TIMED_OUT -> attempt(page, entries, nackBackoff);
         };
+    }
+
+    /// #3345 P1: a receiver nacks a whole page when one entry fails its check, and the nack names no key, so a nacked page of
+    /// several keys is split in halves that run at once, down to single keys: one key the receiver cannot take never keeps another
+    /// key from becoming safe, at most log2(page size) extra rounds per refused page. A single key still nacked is resent with
+    /// the growing pause, owed until acked and reported at the deadline. A nack that clears on the resend costs one split.
+    private Promise<Unit> afterNackPause(Page page, List<DHTMessage.KeyValue> entries, TimeSpan nackBackoff) {
+        return page.keys.size() > 1
+               ? runHalves(transition(() -> halvePage(page)))
+               : attempt(page, entries, nextNackBackoff(nackBackoff));
+    }
+
+    private Promise<Unit> runHalves(List<Page> halves) {
+        return Promise.allOf(halves.stream().map(half -> runChain(List.of(half), 0)).toList())
+                      .mapToUnit();
+    }
+
+    /// Under `transitions`: the nacked page is cancelled and its keys go to two pages on the same target and tenure.
+    private List<Page> halvePage(Page page) {
+        page.cancelled.set(true);
+        var middle = page.keys.size() / 2;
+
+        return List.of(registerPage(page.target, List.copyOf(page.keys.subList(0, middle)), false),
+                       registerPage(page.target, List.copyOf(page.keys.subList(middle, page.keys.size())), false));
     }
 
     /// A page that cannot be encoded is split once into single-key pages on the same target and tenure; a key whose own page still

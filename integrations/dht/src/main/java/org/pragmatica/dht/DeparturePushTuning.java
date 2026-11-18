@@ -24,7 +24,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///
 /// - `resendAfter`: how long one attempt waits for an ack before the page is resent, the pause after a refused send, and the
 ///   deadline of the pre-exit probe of a holder (silence past it is a failed probe).
-/// - `nackBackoffCap`: a nacked page is resent after `min(resendAfter, nackBackoffCap)`, doubling per nack up to this cap.
+/// - `nackBackoffCap`: a nacked page is split (several keys) or resent (one key) after `min(resendAfter, nackBackoffCap)`; a
+///   single key's pause doubles per nack up to this cap.
 /// - `reportAfter`: how long an unfinished drain runs before it reports what is still owed (used by the hold, a later step).
 /// - `eventDeliveryWait`: the tail of the window reserved for the events the push raises to land before the node halts.
 ///
