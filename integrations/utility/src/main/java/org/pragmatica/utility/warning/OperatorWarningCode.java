@@ -1174,7 +1174,8 @@ public enum OperatorWarningCode {
     /// `<nodeId>@<drainStartMillis>`, one drain episode. Recovery action: restore or re-put the keys named in the event and in the
     /// departing node's WARN log from their source of truth. Closed by [#DHT_DEPARTURE_SOLE_COPY_DELIVERED] when every such key was
     /// acknowledged, or by [#DHT_DEPARTURE_HOLD_ENDED] when the hold ended without that (the loss was accepted, recorded first by
-    /// [#DHT_DEPARTURE_LOSS_ACCEPTED], or the node was declared dead while held).
+    /// [#DHT_DEPARTURE_LOSS_ACCEPTED], or the node was declared dead while held). The hold and both of those codes are raised by the
+    /// later steps of #3345; until they land, a drain still halts at its deadline and the warning stays open after the halt.
     DHT_DEPARTURE_SOLE_COPY_AT_RISK("dht-departure-sole-copy-at-risk", "dht", WarningLevel.CRITICAL),
     /// A node's datasource pools ask more of a PostgreSQL server than it allows (#2973): the sum of this node's pool warm-ups
     /// ("at warm-up") or of their maximums ("under load") exceeds the server's non-superuser connection limit. Raised after
@@ -1242,14 +1243,16 @@ public enum OperatorWarningCode {
     /// The other closer of [#DHT_DEPARTURE_SOLE_COPY_AT_RISK], same subject, the drain episode (#3345): the hold ended without every
     /// sole-copy key acknowledged, because an operator accepted the loss ([#DHT_DEPARTURE_LOSS_ACCEPTED]) or because failure detection
     /// declared the node dead while held. The message names the keys owed as of the last report and their digest; they may be lost.
-    /// INFO: it closes the alarm and opens none. Raised by the leader, which opens the warning on its own event layer first when that
-    /// layer has not seen it (a new leader), so the event log may show the warning twice for one episode.
+    /// INFO: it closes the alarm and opens none. Raised by the later steps of #3345 (the departure hold), which nothing in this
+    /// codebase raises yet; they raise it from the leader, which opens the warning on its own event layer first when that layer has
+    /// not seen it (a new leader), so the event log may show the warning twice for one episode.
     /// Recovery action: restore the keys the event names from their source of truth.
     DHT_DEPARTURE_HOLD_ENDED("dht-departure-hold-ended", "dht", WarningLevel.INFO, DHT_DEPARTURE_SOLE_COPY_AT_RISK),
-    /// An operator accepted the loss of a held drain's unacknowledged DHT keys (#3345): the record of that decision, written by the
-    /// leader before the drainer is told. A standalone event, not a closer: the warning stays open until
-    /// [#DHT_DEPARTURE_HOLD_ENDED]. Subject is the drain episode; the event carries the key count, the digest the operator confirmed,
-    /// a sample of the keys and the time of the report they were read from. INFO: it records a decision and opens no alarm.
+    /// An operator accepted the loss of a held drain's unacknowledged DHT keys (#3345): the record of that decision, raised by the
+    /// later steps of #3345 (nothing raises it yet), written by the leader before the drainer is told. A standalone event, not a
+    /// closer: the warning stays open until [#DHT_DEPARTURE_HOLD_ENDED]. Subject is the drain episode; the event carries the key
+    /// count, the digest the operator confirmed, a sample of the keys and the time of the report they were read from. INFO: it
+    /// records a decision and opens no alarm.
     DHT_DEPARTURE_LOSS_ACCEPTED("dht-departure-loss-accepted", "dht", WarningLevel.INFO),
     /// A `PUBLISH_ROUTES` went ahead after waiting its whole bound (100 s) for the artifact's earlier `SUSPEND` route removal, which had not settled
     /// (#3174, H3b): the removal's cluster write may still land late and delete the fresh routes. Raised once per unsettled removal, on the
