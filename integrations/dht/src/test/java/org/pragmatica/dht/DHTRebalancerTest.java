@@ -393,12 +393,11 @@ class DHTRebalancerTest {
         }
 
         @Test
-        void pushOnDeparture_selfAlreadyPruned_pushesToWholeNewSet() {
+        void pushOnDeparture_selfAlreadyPruned_deliversWithinTheWholeNewSet() {
             var ring = fiveNodeRing();
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, CONFIG);
             var replicationFactor = CONFIG.effectiveReplicationFactor(ring.nodeCount());
             var probe = findKeyWithNewcomer(ring, LOCAL, replicationFactor);
-            var origReplicas = existingReplicas(ring, probe, LOCAL, replicationFactor);
 
             node.putLocal(probe, value("payload")).await();
 
@@ -412,11 +411,11 @@ class DHTRebalancerTest {
 
             DeparturePushes.push(rebalancer, new RecordingObserver()).await().onFailure(cause -> Assertions.fail(cause.message()));
 
-            // With self no longer identifiable in the ring, push to the WHOLE post-departure responsible
-            // set: newcomers get the chunk, and existing replicas tolerate the idempotent versioned
-            // re-put (the storm guard cannot apply without self in the ring).
-            assertThat(network.targets()).containsExactlyInAnyOrderElementsOf(postSet);
-            assertThat(network.targets()).containsAll(origReplicas);
+            // With self no longer identifiable in the ring, every node of the WHOLE post-departure responsible set is a target
+            // (the storm guard cannot apply without self in the ring). #3345: one acked holder among them makes the key safe, so
+            // the pages to the others are cancelled at the exit's re-plan and need not all be sent.
+            assertThat(network.targets()).isNotEmpty();
+            assertThat(postSet).containsAll(network.targets());
             assertThat(network.targets()).doesNotContain(LOCAL);
         }
 
@@ -1641,12 +1640,14 @@ class DHTRebalancerTest {
                            .map(CapturedMessage::message)
                            .filter(m -> m instanceof DHTMessage.MigrationDataResponse)
                            .map(m -> (DHTMessage.MigrationDataResponse) m)
+                           .filter(response -> !response.entries().isEmpty())
                            .toList();
         }
 
         List<NodeId> targets() {
             return captured.stream()
-                           .filter(m -> m.message() instanceof DHTMessage.MigrationDataResponse)
+                           .filter(m -> m.message() instanceof DHTMessage.MigrationDataResponse response
+                                        && !response.entries().isEmpty())
                            .map(CapturedMessage::target)
                            .toList();
         }
@@ -1671,6 +1672,7 @@ class DHTRebalancerTest {
     /// to the sink synchronously inside `send` unless the reply is async. Non-departure messages are captured and dropped.
     private static final class ScriptedNetwork implements DHTNetwork {
         private final CopyOnWriteArrayList<TimedSend> sends = new CopyOnWriteArrayList<>();
+        private final CopyOnWriteArrayList<TimedSend> probes = new CopyOnWriteArrayList<>();
         private final CopyOnWriteArrayList<String> ackedKeys = new CopyOnWriteArrayList<>();
         private final AtomicReference<Consumer<DHTMessage.MigrationDataAck>> ackSink = new AtomicReference<>(ack -> {});
         private final java.util.function.BiFunction<Integer, TimedSend, Reply> script;
@@ -1693,6 +1695,12 @@ class DHTRebalancerTest {
                 return Promise.success(new WriteOutcome.Sent(target));
             }
             var sent = new TimedSend(target, response, System.nanoTime());
+            if (response.entries().isEmpty()) {
+                // #3345: an EMPTY page is the pre-exit probe of a holder: kept apart from the data pages and answered at once.
+                probes.add(sent);
+                answer(sent, true, false);
+                return Promise.success(new WriteOutcome.Sent(target));
+            }
             int index;
             synchronized (sends) {
                 index = sends.size();
@@ -1725,6 +1733,10 @@ class DHTRebalancerTest {
 
         List<TimedSend> sends() {
             return List.copyOf(sends);
+        }
+
+        List<TimedSend> probes() {
+            return List.copyOf(probes);
         }
 
         List<NodeId> targets() {
