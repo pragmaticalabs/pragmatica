@@ -112,18 +112,14 @@ class DepartureTenureTest {
         assertThat(run.report().owed()).isZero();
     }
 
-    /// The stale-tag half: page [a, b, c] to the target is silent; meanwhile the target leaves V (observed) and re-enters the
-    /// ring unobserved, so the silence splits the page into halves [a] and [b, c] registered under the target's earlier tenure (a
-    /// split takes the tenure the run holds for the target, and only an observed entry advances it). The re-entry is observed at
-    /// the halves' first send; the silent [b, c] half is then split again, now in the current tenure, and [b] and [c] are acked,
-    /// so the target's holder record is of its current tenure and holds b and c. The stale [a] half is silent until then and acked
-    /// at every resend after: an ack of an earlier tenure never counts, so it never replaces the current holder record and b and c stay safe (with the
-    /// tenure clause of the ack check off, it replaces the record and b and c are owed again).
-    /// At this head a itself stays owed: the acks of its stale half never count, so that page never settles and keeps a covered
-    /// at every re-plan until the deadline.
+    /// A stale ack: page [a, b, c] to the target is silent; meanwhile the target leaves V (observed) and re-enters the ring. The
+    /// re-entry is observed at the next send; a, b and c are paged in the current tenure and acked, and right after each such ack
+    /// the target acks the silent page of its earlier tenure too. That page is not current (P4), so its ack never counts: it never
+    /// replaces the current holder record, and a, b and c stay safe (with the tenure clause of `current` off it replaces the
+    /// record after every current ack, and a, b and c are owed).
     @Test
     @Timeout(20)
-    void staleTagHalfAckedBesideACurrentTenureHolder_currentHolderKeepsItsCopies() {
+    void staleTenureAckAfterACurrentTenureAck_currentHolderKeepsItsCopies() {
         var ring = fiveNodeRing();
         var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
         var a = soleKey(ring, "sh");
@@ -131,61 +127,45 @@ class DepartureTenureTest {
         var target = delivererOf(ring, a, Set.of(LOCAL));
         keys.forEach(key -> node.putLocal(key, value("payload")).await());
         var handle = new AtomicReference<DeparturePushRun>();
-        var script = new StaleHalfScript(ring, target, handle, new AtomicBoolean(), new AtomicReference<>(), new AtomicInteger());
-        var network = ScriptedNetwork.scripted((_, sent) -> staleHalfSchedule(sent, script));
+        var script = new StaleAckScript(ring, target, handle, new AtomicReference<>(), new AtomicReference<>(), new AtomicBoolean());
+        var network = ScriptedNetwork.scripted((_, sent) -> staleAckSchedule(sent, script));
+        script.network().set(network);
         var run = direct(node, network, 1_500, 100, Set::of, handle);
 
-        assertThat(network.sends().getFirst().response().entries()).as("one page of a, b and c first").hasSize(3);
-        assertThat(script.observed()).as("the re-entry was observed at a half's send").isTrue();
-        assertThat(network.sends().stream()
-                          .filter(sent -> sent.target().equals(target) && sent.response().entries().size() == 1)
-                          .map(sent -> sent.response().requestId())
-                          .distinct()
-                          .count()).as("pages of one key: [a], then [b] and [c] of the second split").isGreaterThanOrEqualTo(3);
-        assertThat(run.report().owed()).as("b and c, acked in the current tenure, are not owed").isLessThanOrEqualTo(1);
+        assertThat(script.observed()).as("the re-entry was observed").isTrue();
+        assertThat(network.sends()).as("[a, b, c] in each tenure, acked in the current one")
+                                   .filteredOn(sent -> sent.target().equals(target) && sent.response().entries().size() == 3)
+                                   .hasSizeGreaterThanOrEqualTo(2);
+        assertThat(run.report().owed()).as("a, b and c, acked in the current tenure, are not owed").isZero();
     }
 
-    private record StaleHalfScript(ConsistentHashRing<NodeId> ring,
-                                   NodeId target,
-                                   AtomicReference<DeparturePushRun> handle,
-                                   AtomicBoolean observed,
-                                   AtomicReference<String> staleHalf,
-                                   AtomicInteger currentAcks) {}
+    private record StaleAckScript(ConsistentHashRing<NodeId> ring,
+                                  NodeId target,
+                                  AtomicReference<DeparturePushRun> handle,
+                                  AtomicReference<ScriptedNetwork> network,
+                                  AtomicReference<TimedSend> stale,
+                                  AtomicBoolean observed) {}
 
-    /// Sends elsewhere are silent. The first page to the target leaves V and re-enters the ring; the first half observes the
-    /// re-entry; a half of two keys is silent; the first single-key page (the stale [a] half) is silent until both pages of the
-    /// current tenure are acked, and acked after; the other single keys and the probes are acked.
-    private static Reply staleHalfSchedule(TimedSend sent, StaleHalfScript script) {
-        var size = sent.response().entries().size();
-        if (!sent.target().equals(script.target())) {
-            return Reply.DROP;
-        }
-        if (size == 3) {
+    /// The target's first page leaves V (observed) and re-enters the ring, silent; the first send after the return observes the
+    /// re-entry.
+    /// The target acks every later page, then acks the stale one; sends elsewhere are silent.
+    private static Reply staleAckSchedule(TimedSend sent, StaleAckScript script) {
+        if (sent.target().equals(script.target()) && script.stale().compareAndSet(null, sent)) {
             script.ring().removeNode(script.target());
             script.handle().get().onViewChange();
             script.ring().addNode(script.target());
             return Reply.DROP;
         }
-        if (script.observed().compareAndSet(false, true)) {
+        if (script.stale().get() != null
+            && script.ring().nodes().contains(script.target())
+            && script.observed().compareAndSet(false, true)) {
             script.handle().get().onViewChange();
         }
-        return switch (size) {
-            case 2 -> Reply.DROP;
-            case 1 -> singleKey(sent, script);
-            default -> Reply.ACK;
-        };
-    }
-
-    private static Reply singleKey(TimedSend sent, StaleHalfScript script) {
-        var id = sent.response().requestId();
-        script.staleHalf().compareAndSet(null, id);
-        if (id.equals(script.staleHalf().get())) {
-            return script.currentAcks().get() >= 2
-                   ? Reply.ACK
-                   : Reply.DROP;
+        if (sent.target().equals(script.target())) {
+            script.network().get().deliver(sent, Reply.ACK);
+            script.network().get().deliver(script.stale().get(), Reply.ACK);
         }
-        script.currentAcks().incrementAndGet();
-        return Reply.ACK;
+        return Reply.DROP;
     }
 
     /// The drain set is read inside the re-plan's observation, right after its ring snapshot: the joiner enters there, once.
