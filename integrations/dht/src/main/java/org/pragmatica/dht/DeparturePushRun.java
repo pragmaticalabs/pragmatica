@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import org.pragmatica.consensus.NodeId;
@@ -91,8 +92,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// **Undeliverable.** A page that cannot be encoded is split once into single-key pages; a key whose own page still fails is
 /// UNDELIVERABLE: it stays owed (it is in the owed digest) and is counted apart.
 ///
-/// **Deadline and events.** The run resolves at the window deadline less `eventDeliveryWait` with its current owed set, the one
-/// resolve point of this step besides a passed exit. Classification (S) of a key as SOLE (`|currentSet \ L| - |L \ ring| <= 0` at
+/// **Deadline and events.** At the window deadline less `eventDeliveryWait` (the attempts deadline) no data page or exit starts;
+/// unless the node halted (then it sends nothing), the run sends ONE probe round to every holder whose counted ack for a key owed
+/// at the close no passed probe covers yet, waits at most `resendAfter`, and resolves with its owed set: a key whose holder passed
+/// that probe is delivered, any other is owed ([#onDeadline], P3). The cost: a deadline close may resolve up to one `resendAfter`
+/// after the attempts deadline. This is the one resolve point of this step besides a passed exit. Classification (S) of a key as SOLE (`|currentSet \ L| - |L \ ring| <= 0` at
 /// the time it entered the inventory) only shapes the events: `onSoleCopyAtRisk` once, at plan time when a sole key has no
 /// deliverer or the window is already used up (or the inventory was not enumerated), else at the deadline when a sole key is
 /// owed; `onSoleCopyDelivered` at the end iff it was raised and no sole key is owed, `onIncompleteReport` at the end iff anything
@@ -264,6 +268,8 @@ final class DeparturePushRun {
     // Orders counted acks against probes: a probe passed with mark m covers the acks numbered below m.
     private long sequence;
     private boolean closed;
+    // The attempts deadline passed (P3): no exit starts, and the deadline probe round owns the close.
+    private boolean closing;
     private boolean exitInFlight;
     private int liveChains;
     private int enumeratedKeys;
@@ -834,9 +840,14 @@ final class DeparturePushRun {
     }
 
     private Promise<AttemptResult> awaitAttempt(Dispatched dispatched) {
+        return awaitAttempt(dispatched, attemptsDeadline);
+    }
+
+    /// FER: an attempt unanswered within `resendAfter` or by `until` is TIMED_OUT (a page split, a probe failed), never awaited on.
+    private Promise<AttemptResult> awaitAttempt(Dispatched dispatched, long until) {
         return dispatched.attempt()
                          .timeout(timeSpan(Math.min(tuning.resendAfter().nanos(),
-                                                    remainingNanos(attemptsDeadline))).nanos())
+                                                    remainingNanos(until))).nanos())
                          .recover(_ -> AttemptResult.TIMED_OUT);
     }
 
@@ -922,24 +933,26 @@ final class DeparturePushRun {
                         .toList();
     }
 
+    /// No data page or exit probe starts once the attempts window is used up: the deadline resolves the run (P3: after its own
+    /// probe round), so a send then is never counted.
     private boolean shouldStop(Page page) {
+        return probeStopped(page, attemptsDeadline) || isSettled(page);
+    }
+
+    /// A page (a probe: any page) is not sent once the node halted, the page is cancelled or retired, the run closed, or `until`
+    /// passed.
+    private boolean probeStopped(Page page, long until) {
         if (window.halted().getAsBoolean()) {
             onHalt();
         }
 
-        return page.cancelled.get() || !registry.containsKey(page.correlationId()) || isClosed() || pastAttemptsDeadline()
-               || isSettled(page);
+        return page.cancelled.get() || !registry.containsKey(page.correlationId()) || isClosed() || System.nanoTime() >= until;
     }
 
     /// I2: a data page every key of which is already safe at its target is not sent (nor resent).
     private boolean isSettled(Page page) {
         return ! page.isProbe() && underTransitions(() -> page.keys.stream()
                                                                    .allMatch(key -> safe(key, page.target, false)));
-    }
-
-    /// No attempt starts once the attempts window is used up: the deadline resolves the run, so a send then is never counted.
-    private boolean pastAttemptsDeadline() {
-        return System.nanoTime() >= attemptsDeadline;
     }
 
     private boolean isClosed() {
@@ -1037,7 +1050,7 @@ final class DeparturePushRun {
 
     /// Under `transitions`.
     private boolean claimExit() {
-        var ready = !closed && !exitInFlight && liveChains == 0 && owed(false).stream().allMatch(key -> key.absent);
+        var ready = !closed && !closing && !exitInFlight && liveChains == 0 && owed(false).stream().allMatch(key -> key.absent);
 
         exitInFlight = exitInFlight || ready;
 
@@ -1099,29 +1112,38 @@ final class DeparturePushRun {
     private Unit probe(Set<NodeId> reliedOn) {
         var lossesAtStart = holderLosses.get();
         var mark = transition(this::nextMark);
-        var probes = transition(() -> reliedOn.stream()
-                                              .map(target -> registerPage(target,
-                                                                          List.of(),
-                                                                          false))
-                                              .toList());
+        var probes = transition(() -> registerProbes(reliedOn));
 
-        Promise.allOf(probes.stream().map(this::probeOne).toList()).onSuccess(results -> afterProbe(probes,
-                                                                                                    results,
-                                                                                                    lossesAtStart,
-                                                                                                    mark));
+        sendProbes(probes, attemptsDeadline).onSuccess(results -> afterProbe(probes, results, lossesAtStart, mark));
 
         return Unit.unit();
     }
 
-    private Promise<AttemptResult> probeOne(Page page) {
-        return shouldStop(page)
-               ? Promise.success(AttemptResult.FAILED)
-               : dispatch(page, List.of()).flatMap(this::probeAnswer);
+    /// Under `transitions`: one EMPTY page per holder, each in the holder's current tenure.
+    private List<Page> registerProbes(Set<NodeId> reliedOn) {
+        return reliedOn.stream()
+                       .map(target -> registerPage(target,
+                                                   List.of(),
+                                                   false))
+                       .toList();
     }
 
-    private Promise<AttemptResult> probeAnswer(Dispatched dispatched) {
+    /// Every probe answers within `resendAfter` and before `until`, or fails.
+    private Promise<List<Result<AttemptResult>>> sendProbes(List<Page> probes, long until) {
+        return Promise.allOf(probes.stream()
+                                   .map(page -> probeOne(page, until))
+                                   .toList());
+    }
+
+    private Promise<AttemptResult> probeOne(Page page, long until) {
+        return probeStopped(page, until)
+               ? Promise.success(AttemptResult.FAILED)
+               : dispatch(page, List.of()).flatMap(dispatched -> probeAnswer(dispatched, until));
+    }
+
+    private Promise<AttemptResult> probeAnswer(Dispatched dispatched, long until) {
         return dispatched.outcome() instanceof WriteOutcome.Sent
-               ? awaitAttempt(dispatched)
+               ? awaitAttempt(dispatched, until)
                : Promise.success(AttemptResult.FAILED);
     }
 
@@ -1133,16 +1155,11 @@ final class DeparturePushRun {
 
     @Contract
     private void afterProbe(List<Page> probes, List<Result<AttemptResult>> results, int lossesAtStart, long mark) {
-        var failed = new ArrayList<NodeId>();
-        var passed = new ArrayList<Page>();
-
-        for (int i = 0; i < probes.size(); i++) {
-            if (results.get(i).fold(_ -> false, DeparturePushRun::probePassed)) {
-                passed.add(probes.get(i));
-            } else {
-                failed.add(probes.get(i).target);
-            }
-        }
+        var passed = passedProbes(probes, results);
+        var failed = probes.stream()
+                           .filter(probe -> !passed.contains(probe))
+                           .map(probe -> probe.target)
+                           .toList();
 
         transition(() -> markProbed(passed, mark));
         transition(() -> retireProbes(probes));
@@ -1150,9 +1167,22 @@ final class DeparturePushRun {
             return;
         }
 
+        // P3: past the deadline the deadline probe round owns the close; a probe the deadline cut short proves no loss.
+        if (underTransitions(() -> closing)) {
+            return;
+        }
+
         transition(this::releaseExit);
         failed.forEach(target -> holderLost(target, "probe failed"));
         maybeExit();
+    }
+
+    private static List<Page> passedProbes(List<Page> probes, List<Result<AttemptResult>> results) {
+        return IntStream.range(0, probes.size())
+                        .filter(i -> results.get(i)
+                                            .fold(_ -> false, DeparturePushRun::probePassed))
+                        .mapToObj(probes::get)
+                        .toList();
     }
 
     private static boolean probePassed(AttemptResult result) {
@@ -1188,8 +1218,52 @@ final class DeparturePushRun {
     }
 
     // --- close ---
+    /// #3345 P3: a halted run closes at once and sends nothing (P2); otherwise ONE probe round goes to every holder of a key owed
+    /// at the close only for want of a probe passed since its ack, it waits at most one `resendAfter`, then the run closes. A holder
+    /// that fails or does not answer covers nothing: its keys stay owed.
     @Contract
     private void onDeadline() {
+        if (window.halted().getAsBoolean()) {
+            onHalt();
+        } else {
+            transition(this::claimDeadline).onPresent(this::probeAtDeadline);
+        }
+    }
+
+    /// Under `transitions`: past the deadline no exit starts; the holders to probe, none once closed.
+    private Option<Set<NodeId>> claimDeadline() {
+        closing = true;
+
+        return closed
+               ? Option.none()
+               : Option.some(uncoveredHolders());
+    }
+
+    /// Under `transitions`: every holder Safe would rely on for a key owed at a close, with an ack for it no passed probe covers.
+    private Set<NodeId> uncoveredHolders() {
+        return owed(true).stream()
+                         .flatMap(key -> drainTargets(key.stamp.key()).deliverers()
+                                                                      .stream()
+                                                                      .filter(target -> safe(key, target, false)))
+                         .collect(Collectors.toSet());
+    }
+
+    /// The pre-exit probe path with the probe deadline as its bound; an empty set closes at once.
+    private Unit probeAtDeadline(Set<NodeId> uncovered) {
+        var until = System.nanoTime() + tuning.resendAfter()
+                                              .nanos();
+        var mark = transition(this::nextMark);
+        var probes = transition(() -> registerProbes(uncovered));
+
+        sendProbes(probes, until).onSuccess(results -> afterDeadlineProbe(probes, results, mark));
+
+        return Unit.unit();
+    }
+
+    @Contract
+    private void afterDeadlineProbe(List<Page> probes, List<Result<AttemptResult>> results, long mark) {
+        transition(() -> markProbed(passedProbes(probes, results), mark));
+        transition(() -> retireProbes(probes));
         transition(() -> closeUnder(window.halted().getAsBoolean()));
     }
 

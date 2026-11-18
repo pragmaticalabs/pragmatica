@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -802,8 +803,7 @@ class DHTRebalancerTest {
         }
 
         /// T12 (N2): one target owed a sole key and a replicated key. Every sole page is lost; the replicated page travels in its own
-        /// chain, so it is acked within the base window. Never probed (no exit while the sole key is owed), it still counts owed at
-        /// the deadline close (I2).
+        /// chain, so it is acked within the base window; the deadline probe (P3) confirms its holder, so only the sole key is owed.
         @Test
         @Timeout(20)
         void pushOnDeparture_stuckSolePage_doesNotStarveReplicatedChain() {
@@ -817,14 +817,14 @@ class DHTRebalancerTest {
             var run = push(node, network, T(300, 1_000, 50), Set.of(PEER_C));
 
             assertThat(network.ackedKeys()).contains(new String(shape.replicated(), StandardCharsets.UTF_8));
-            assertThat(run.report().replicatedAtRisk()).as("acked, never probed: owed at the deadline close (I2)").isEqualTo(1);
-            assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(2, 1));
+            assertThat(run.report().replicatedAtRisk()).as("acked, then confirmed by the deadline probe (P3)").isZero();
+            assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
         }
 
         /// #3345 P1 (bound): one page of 8 keys bound for the same target, one of which the receiver nacks every time (a whole-page
         /// nack, as the receiver gives for one entry it cannot take). The page is split in halves down to single keys: every
-        /// good key is acked, the bad key alone stays unacked; no exit probe runs while it is owed, so at the deadline close every
-        /// key counts owed (I2). Bound: sends other than the bad key's single-key page
+        /// good key is acked, the bad key alone stays unacked; no exit runs while it is owed, so the deadline probe (P3) confirms
+        /// the acked keys' holder and the bad key alone is owed and reported. Bound: sends other than the bad key's single-key page
         /// <= 2 * log2(N) = 6 for N = 8 (the first page, two halves on each of the log2(N) - 1 levels above the leaf, and the bad
         /// key's good sibling leaf), and the bad key's own resends back off.
         @Test
@@ -845,8 +845,8 @@ class DHTRebalancerTest {
             assertThat(network.ackedKeys()).doesNotContain("p1-5");
             assertThat(otherThanTheBadKey).as("at most log2(8) split levels, two pages each, plus the first page").isLessThanOrEqualTo(6);
             assertThat(network.sends().size() - otherThanTheBadKey).as("the bad key alone backs off").isBetween(1L, 12L);
-            assertThat(run.recorder().incomplete()).as("acked keys never probed are owed at the deadline close (I2)").containsExactly(new Incomplete(8, 4));
-            assertThat(run.report().soleCopyAtRisk()).isEqualTo(4);
+            assertThat(run.recorder().incomplete()).as("acked keys confirmed by the deadline probe (P3)").containsExactly(new Incomplete(1, 1));
+            assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
         }
 
         /// #3345 P1 (transient): the first page of 4 keys is nacked once, then every page is acked. The nack carries no reason
@@ -1768,8 +1768,7 @@ class DHTRebalancerTest {
             }
 
             /// EncodeFailed splits the page once into single-key pages; the key whose own page still fails is undeliverable, counted
-            /// apart and still owed; the other key is acked, and, never probed (no exit while a key is owed), counts owed at the
-            /// deadline close (I2).
+            /// apart and still owed; the other key is acked and, confirmed by the deadline probe (P3), delivered.
             @Test
             @Timeout(20)
             void encodeFailedSplitsThenUndeliverable() {
@@ -1789,7 +1788,111 @@ class DHTRebalancerTest {
                 assertThat(network.sends()).filteredOn(sent -> isOnly(sent, badText)).hasSize(1);
                 assertThat(network.ackedKeys()).containsExactly(new String(good, StandardCharsets.UTF_8));
                 assertThat(run.report().undeliverable()).isEqualTo(1);
-                assertThat(run.report().owed()).as("the acked key, never probed, is owed at the deadline close (I2)").isEqualTo(2);
+                assertThat(run.report().owed()).as("the acked key is confirmed by the deadline probe (P3)").isEqualTo(1);
+            }
+
+            /// #3345 P3: a run that ends at its deadline (one key is never acked, so no exit starts) probes the holder of its acked
+            /// key before it reports, and owes exactly the key never acked.
+            @Test
+            @Timeout(20)
+            void deadlineCloseProbesTheAckedKeysHolder_owesOnlyTheUnackedKey() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var acked = soleKey(ring, "h20");
+                var unacked = sameDeliverer(ring, acked, "h20-unacked");
+                var ackedText = new String(acked, StandardCharsets.UTF_8);
+                var unackedText = new String(unacked, StandardCharsets.UTF_8);
+                node.putLocal(acked, value("payload")).await();
+                node.putLocal(unacked, value("payload")).await();
+                var network = ScriptedNetwork.scripted((_, sent) -> carries(sent, unackedText) ? Reply.DROP : Reply.ACK);
+                var run = direct(node, network, 800, 100, Set::of);
+
+                assertThat(run.report().owed()).as("exactly the key never acked").isEqualTo(1);
+                assertThat(network.ackedKeys()).contains(ackedText).doesNotContain(unackedText);
+                assertThat(network.probes()).as("the deadline probe of the acked key's holder")
+                                            .isNotEmpty()
+                                            .allMatch(probe -> probe.target().equals(delivererOf(ring, acked, Set.of(LOCAL))));
+                assertThat(run.run().exitAttempts()).as("no exit: the unacked key stays owed").isZero();
+            }
+
+            /// #3345 P3 (verifier M3): the holder acks, then stops answering probes; the unacked key's chain keeps the exit from
+            /// starting; the deadline probe goes unanswered, so the acked key is owed in the incomplete report.
+            @Test
+            @Timeout(20)
+            void deadlineProbeUnanswered_ackedKeyIsOwed() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var acked = soleKey(ring, "h21");
+                var unacked = sameDeliverer(ring, acked, "h21-unacked");
+                var ackedText = new String(acked, StandardCharsets.UTF_8);
+                var unackedText = new String(unacked, StandardCharsets.UTF_8);
+                node.putLocal(acked, value("payload")).await();
+                node.putLocal(unacked, value("payload")).await();
+                var network = ScriptedNetwork.scripted((_, sent) -> carries(sent, unackedText) ? Reply.DROP : Reply.ACK);
+                network.probesAnswer(_ -> Reply.DROP);
+                var run = direct(node, network, 800, 100, Set::of);
+
+                assertThat(network.ackedKeys()).as("control: the holder acked").contains(ackedText);
+                assertThat(network.probes()).as("control: the deadline probe was sent").isNotEmpty();
+                assertThat(run.report().owed()).as("the acked key, its holder silent at the deadline probe, is owed").isEqualTo(2);
+            }
+
+            /// #3345 P3, the cost: a deadline close ends no later than the window plus one probe deadline (`resendAfter`), here
+            /// with the probe unanswered so the close waits the whole probe deadline.
+            @Test
+            @Timeout(20)
+            void deadlineClose_endsWithinTheWindowPlusOneProbeDeadline() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var acked = soleKey(ring, "h22");
+                var unacked = sameDeliverer(ring, acked, "h22-unacked");
+                var unackedText = new String(unacked, StandardCharsets.UTF_8);
+                node.putLocal(acked, value("payload")).await();
+                node.putLocal(unacked, value("payload")).await();
+                var network = ScriptedNetwork.scripted((_, sent) -> carries(sent, unackedText) ? Reply.DROP : Reply.ACK);
+                network.probesAnswer(_ -> Reply.DROP);
+                var started = System.nanoTime();
+                var run = direct(node, network, 600, 300, Set::of);
+                var elapsed = System.nanoTime() - started;
+
+                assertThat(network.probes()).as("control: probed at the deadline, not before")
+                                            .isNotEmpty()
+                                            .allMatch(probe -> probe.atNanos() - started >= ms(600).nanos());
+                assertThat(run.report().owed()).isEqualTo(2);
+                assertThat(elapsed).as("window 600 ms + probe deadline 300 ms (+ scheduling slack)")
+                                   .isGreaterThanOrEqualTo(ms(600).nanos())
+                                   .isLessThan(ms(600 + 300 + 250).nanos());
+            }
+
+            /// #3345 P3 with P2: a halted run sends no probe; it closes at once with nothing more sent or raised.
+            @Test
+            @Timeout(20)
+            void haltedRun_sendsNoProbe() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var acked = soleKey(ring, "h23");
+                var unacked = sameDeliverer(ring, acked, "h23-unacked");
+                var ackedText = new String(acked, StandardCharsets.UTF_8);
+                var unackedText = new String(unacked, StandardCharsets.UTF_8);
+                node.putLocal(acked, value("payload")).await();
+                node.putLocal(unacked, value("payload")).await();
+                var halted = new AtomicBoolean(false);
+                var unackedSends = new AtomicInteger();
+                var network = ScriptedNetwork.scripted((_, sent) -> haltAtSecondSoloSend(sent, unackedText, unackedSends, halted));
+                var started = System.nanoTime();
+                var run = direct(node, network, 3_000, 100, Set::of, new AtomicReference<>(), halted::get);
+
+                assertThat(halted.get()).as("control: the run was halted").isTrue();
+                assertThat(network.ackedKeys()).as("control: a key was acked, so a probe would be due").contains(ackedText);
+                assertThat(network.probes()).as("a halt sends nothing").isEmpty();
+                assertThat(System.nanoTime() - started).as("closed at the halt, not at the deadline").isLessThan(ms(3_000).nanos());
+            }
+
+            private static Reply haltAtSecondSoloSend(TimedSend sent, String unackedText, AtomicInteger unackedSends, AtomicBoolean halted) {
+                if (isOnly(sent, unackedText) && unackedSends.incrementAndGet() == 2) {
+                    halted.set(true);
+                }
+                return carries(sent, unackedText) ? Reply.DROP : Reply.ACK;
             }
 
             /// Acks and nacks never re-plan: reconciles = start + view changes + holder losses + exit attempts.
@@ -1921,10 +2024,21 @@ class DHTRebalancerTest {
                                   long resendMs,
                                   Supplier<Set<NodeId>> drainSet,
                                   AtomicReference<DeparturePushRun> handle) {
+                return direct(node, network, windowMs, resendMs, drainSet, handle, () -> false);
+            }
+
+            /// As above, with the node's halt flag `halted`.
+            private Direct direct(DHTNode node,
+                                  ScriptedNetwork network,
+                                  long windowMs,
+                                  long resendMs,
+                                  Supplier<Set<NodeId>> drainSet,
+                                  AtomicReference<DeparturePushRun> handle,
+                                  BooleanSupplier halted) {
                 var registry = new ConcurrentHashMap<String, DeparturePushRun.Page>();
                 var tuning = new DeparturePushTuning(ms(resendMs), ms(4 * resendMs), DeparturePushTuning.DEFAULT.reportAfter(), ms(200));
                 var t0 = System.nanoTime();
-                var window = DepartureWindow.departureWindow(t0 + ms(windowMs).nanos() + tuning.eventDeliveryWait().nanos());
+                var window = DepartureWindow.departureWindow(t0 + ms(windowMs).nanos() + tuning.eventDeliveryWait().nanos(), halted);
                 var run = DeparturePushRun.departurePushRun(node, network, registry, 1, drainSet, t0, window, tuning, new EventRecorder(() -> {}));
                 handle.set(run);
                 network.ackVia(ack -> Option.option(registry.get(ack.requestId())).onPresent(page -> page.onAck(ack)));
