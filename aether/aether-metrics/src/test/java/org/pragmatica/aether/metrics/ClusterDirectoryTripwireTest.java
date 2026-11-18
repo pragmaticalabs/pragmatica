@@ -107,8 +107,8 @@ class ClusterDirectoryTripwireTest {
     void clusterSyncMessages_carryTheDirectoryAsTheirLastTwoComponents() {
         assertThat(componentNames(ClusterSyncPing.class)).as("TW-O17 flipped in W2: the directory pair and payload are the LAST two components of the ping (never mid-record)")
                                                           .endsWith("carriesAuthority", "observedDirectoryGeneration", "directory");
-        assertThat(componentNames(ClusterSyncPong.class)).as("TW-O17 flipped in W2: the same two components close the pong")
-                                                          .endsWith("readyCandidate", "observedDirectoryGeneration", "directory");
+        assertThat(componentNames(ClusterSyncPong.class)).as("TW-O17 flipped in W2: the same two components follow the pong's readyCandidate; #3345 D45-1 appends heldReport after them (the pong only)")
+                                                          .endsWith("readyCandidate", "observedDirectoryGeneration", "directory", "heldReport");
     }
 
     // NT-O44 (a member installs the leader's directory from a responder's pong) is ClusterSyncDirectoryTest, which drives a real collector; the

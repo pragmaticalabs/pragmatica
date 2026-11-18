@@ -18,6 +18,8 @@ import org.pragmatica.cluster.metrics.ClusterDirectory.DhtReplication;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
 import org.pragmatica.cluster.metrics.DirectoryVersion;
+import org.pragmatica.cluster.metrics.HeldEnd;
+import org.pragmatica.cluster.metrics.HeldReport;
 import org.pragmatica.cluster.metrics.MetricObservation;
 import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaEntries;
 import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaHeartbeat;
@@ -145,6 +147,20 @@ class ReplicaFeedWireRoundTripTest {
         assertThat(roundTrip(without)).isEqualTo(without);
         assertThat(roundTrip(with)).isEqualTo(with);
         assertThat(roundTrip(with).observedDirectoryGeneration()).isEqualTo(held);
+    }
+
+    /// #3345 D45-1. The pong's `heldReport` (tags 2960 `HeldReport`, 2961 `HeldEnd`) survives the node codec, every field and the end
+    /// verdict included, and an absent report stays absent. Mutation: the codec drops the `heldReport` component (the report arrives empty).
+    @Test
+    void pongCarriesHeldReport() {
+        var observation = MetricObservation.metricObservation(1L, 1L, 1_000L, Map.of());
+        var report = HeldReport.heldReport("episode-7", 12L, 2L, "digest-7", 4_000L, List.of("k1", "k2"), HeldEnd.LOSS_ACCEPTED);
+        var carrying = new ClusterSyncPong(SENDER, observation, 1L, 5L, 1L, 5L, 0L, "HELD", List.of(), List.of(), List.of(), Option.none(), DirectoryVersion.NONE, Option.none(), Option.some(report));
+        var plain = new ClusterSyncPong(SENDER, observation, 1L, 5L, 1L, 5L, 0L, "READY", List.of(), List.of(), List.of(), Option.none(), DirectoryVersion.NONE, Option.none());
+
+        assertThat(roundTrip(carrying)).isEqualTo(carrying);
+        assertThat(roundTrip(carrying).heldReport().unwrap()).isEqualTo(report);
+        assertThat(roundTrip(plain).heldReport()).isEqualTo(Option.none());
     }
 
     /// #2543. The leader's electorate rides the directory to the worker: a directory that carries one survives the codec with the epoch

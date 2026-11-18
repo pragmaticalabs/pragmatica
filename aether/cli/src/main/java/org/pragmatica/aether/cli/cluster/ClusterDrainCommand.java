@@ -90,7 +90,7 @@ class ClusterDrainCommand implements Callable<Integer> {
 
     /// The wire names of the draining node-reported states: `DRAINING`, and `HELD` (a draining node whose
     /// departure push has not resolved). This module does not depend on the metrics module that owns the enum.
-    private static boolean isDrainingState(String state) {
+    static boolean isDrainingState(String state) {
         return state.contains("DRAINING") || state.equals("HELD");
     }
 
