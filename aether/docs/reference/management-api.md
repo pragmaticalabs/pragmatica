@@ -4785,6 +4785,18 @@ Which guard applied — and why — is always visible in `message`, both on succ
 
 **Slice `minAvailable` floor (#1720).** Independently of the budget above, and for workers as well as cores (slices run on workers), a drain is refused with `409 Conflict` when it would leave a slice the target hosts below its `minAvailable` ACTIVE instances on the remaining nodes. The remaining nodes are the cluster's counted members minus the leader's pending drains minus the target, the same rule the automatic drain (leader reconciler) applies. The refusal names every such slice and its counts. Admission is serialised against concurrent operator drains, so two requests cannot both pass against one pending-drains snapshot. Add the query parameter `force=true` (`aether nodes drain <id> --override-floor`) to override: the drain is admitted and an `OPERATOR_WARNING` event with code `slice-floor-breached-by-force` (subject: the node, message: each breached slice and its counts) is raised, so a forced breach is never silent. A REFUSED drain raises `slice-floor-drain-refused` once per target (on entering refusal), and the next admission of that target raises its recovery event `slice-floor-drain-admitted` (severity `INFO`). `aether cluster destroy` passes `force` on every drain and shutdown, because destroying a cluster takes every slice below its floor by definition.
 
+**The current leader is not drained (#3348).** A drain whose target is the current leader is refused with `409 Conflict`, decided from the leadership state the receiving node holds (so the leader's route and a follower's route answer alike) before any readiness lookup, budget read or dispatch, and nothing is commanded. The product has no leadership step-down command: stop the leader's process, the cluster elects another leader, then drain the node once it is no longer the leader. The refusal applies to `drain` only (`shutdown` is unchanged). When no leader is known to the receiving node, the leader rule does not apply and the target is answered as any target is (`404 Node lifecycle not found` if it has no reported state).
+
+**Response (target is the current leader, 409 Conflict):**
+```json
+{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "Cannot drain node node-1: it is the current leader, and a leader is not drained. Move leadership first: stop this node's process so the cluster elects another leader, then drain this node once it is no longer the leader."
+}
+```
+
 **Response (slice floor, 409 Conflict):**
 ```json
 {
