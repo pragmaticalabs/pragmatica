@@ -109,6 +109,11 @@ final class QuicActivityKick {
         return kicksSent.get();
     }
 
+    /// Visible for tests: a kick tick is scheduled (the window is open); false once the window closed by itself, or after stop.
+    boolean isRunning() {
+        return running.get();
+    }
+
     private void schedule() {
         pending = executor.schedule(this::tick, intervalMs, TimeUnit.MILLISECONDS);
     }

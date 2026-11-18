@@ -337,6 +337,13 @@ public final class QuicPeerConnection {
                      .or(false);
     }
 
+    /// Visible for tests: the kick's window is open (a tick is scheduled); false once it closed by itself.
+    boolean activityKickRunning() {
+        return Option.option(activityKick)
+                     .map(QuicActivityKick::isRunning)
+                     .or(false);
+    }
+
     /// Visible for tests: kick frames sent so far.
     long activityKicksSent() {
         return Option.option(activityKick)
