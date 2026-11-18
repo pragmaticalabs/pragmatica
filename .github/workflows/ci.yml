@@ -139,16 +139,22 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.m2/repository
-          key: m2-full-v3-${{ hashFiles('**/pom.xml') }}
+          key: m2-full-v4-${{ hashFiles('**/pom.xml') }}
           # Fallback order: newest m2-full (any pom generation), then the newest setup-java maven cache of the base branch (the
           # pre-#3297 key; GitHub caches are scoped by ref, so a merge-group run reads only its own ref and the base branch, and an
           # m2-full saved on a PR ref is invisible to it). If neither exists (first run ever, or after eviction: 7 days unused or
           # the 10 GB limit) the job resolves from Central with the #3280 retries; that case is not hidden, it is the residual exposure.
           restore-keys: |
+            m2-full-v4-
             m2-full-v3-
             m2-full-v2-
+            m2-full-v1-
             m2-full-
             setup-java-Linux-x64-maven-
+
+      # #3338: a failed-download marker (restored from an older entry) would make this job skip the retry of a 429.
+      - name: Drop failed-download markers from the restored repository
+        run: .github/scripts/drop-failed-download-markers.sh
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
@@ -211,12 +217,18 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.m2/repository
-          key: m2-full-v3-${{ hashFiles('**/pom.xml') }}
+          key: m2-full-v4-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
+            m2-full-v4-
             m2-full-v3-
             m2-full-v2-
+            m2-full-v1-
             m2-full-
             setup-java-Linux-x64-maven-
+
+      # #3338: a failed-download marker (restored from an older entry) would make this job skip the retry of a 429.
+      - name: Drop failed-download markers from the restored repository
+        run: .github/scripts/drop-failed-download-markers.sh
 
       # One probe per provider set (#3338): each missing artifact is a Central fetch at test time.
       - name: Report whether the restored cache holds the test-time dependencies
@@ -225,7 +237,8 @@ jobs:
           for a in org/apache/maven/surefire/surefire-junit-platform/3.5.1/surefire-junit-platform-3.5.1.jar \
                    org/apache/maven/surefire/surefire-junit-platform/3.5.4/surefire-junit-platform-3.5.4.jar \
                    org/junit/vintage/junit-vintage-engine/5.13.4/junit-vintage-engine-5.13.4.jar \
-                   org/apache/maven/plugins/maven-failsafe-plugin/3.5.4/maven-failsafe-plugin-3.5.4.jar; do
+                   org/apache/maven/plugins/maven-failsafe-plugin/3.5.4/maven-failsafe-plugin-3.5.4.jar \
+                   org/junit/jupiter/junit-jupiter/5.11.0/junit-jupiter-5.11.0.jar; do
             if [ -f "$r/$a" ]; then echo "::notice::restored cache holds $(basename "$a")"; else echo "::warning::restored cache lacks $(basename "$a") (Central needed)"; fi
           done
 
@@ -353,12 +366,18 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.m2/repository
-          key: m2-full-v3-${{ hashFiles('**/pom.xml') }}
+          key: m2-full-v4-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
+            m2-full-v4-
             m2-full-v3-
             m2-full-v2-
+            m2-full-v1-
             m2-full-
             setup-java-Linux-x64-maven-
+
+      # #3338: a failed-download marker (restored from an older entry) would make this job skip the retry of a 429.
+      - name: Drop failed-download markers from the restored repository
+        run: .github/scripts/drop-failed-download-markers.sh
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
@@ -411,19 +430,30 @@ jobs:
           mvn verify $flags
           mvn verify -Pwith-e2e $flags
           mvn verify -B -f examples/pom.xml -Dgroups=PrimeNoSuchTag__ -Dmaven.test.failure.ignore=true
+          # Nested builds (#3338, third member): GeneratedProjectsBuildIT runs `mvn verify` on projects it generates, and their
+          # test dependencies (JUnit 5.11.0, AssertJ 3.26.3: versions of the scaffold templates, used by no module) resolve
+          # inside the test. The tag filter above excludes it, so run it for real, by class, with no tag filter. Rule: a test
+          # that runs Maven on other projects is primed by running it. No -Dmaven.test.failure.ignore: a red here must keep
+          # the incomplete set out of the cache.
+          mvn verify -B -pl generated-project-gate -Dit.test=GeneratedProjectsBuildIT -Dfailsafe.failIfNoSpecifiedTests=false
         timeout-minutes: 15
 
       # Saved only on success: the key is exact and immutable, so a save from a partial run would pin an incomplete set.
       # Saved only on a push to the release branch (#3338): every PR and merge-group ref saved its own 700 MB copy, the repository
       # sat at its 10 GB cache limit with 16 entries, and the v2 entry saved on this PR's ref was evicted within two hours,
       # together with the release branches' entries. PR and queue runs restore the branch's entry through the base-branch scope.
-      # Key m2-full-v3: an existing key is immutable, and v2 holds the one-module prime only.
+      # Key m2-full-v4: an existing key is immutable, and v3 lacks the artifacts of nested builds (generated projects).
+      # Markers of failed downloads are removed first: a saved marker would make every later job skip the retry of that artifact.
+      - name: Drop failed-download markers before saving
+        if: success() && github.event_name == 'push' && steps.prime.outcome == 'success'
+        run: .github/scripts/drop-failed-download-markers.sh
+
       - name: Save Maven repository (full-set cache)
         if: success() && github.event_name == 'push' && steps.prime.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: ~/.m2/repository
-          key: m2-full-v3-${{ hashFiles('**/pom.xml') }}
+          key: m2-full-v4-${{ hashFiles('**/pom.xml') }}
 
       - name: Upload Forge test results
         uses: actions/upload-artifact@v6
@@ -467,12 +497,18 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.m2/repository
-          key: m2-full-v3-${{ hashFiles('**/pom.xml') }}
+          key: m2-full-v4-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
+            m2-full-v4-
             m2-full-v3-
             m2-full-v2-
+            m2-full-v1-
             m2-full-
             setup-java-Linux-x64-maven-
+
+      # #3338: a failed-download marker (restored from an older entry) would make this job skip the retry of a 429.
+      - name: Drop failed-download markers from the restored repository
+        run: .github/scripts/drop-failed-download-markers.sh
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
@@ -537,12 +573,18 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.m2/repository
-          key: m2-full-v3-${{ hashFiles('**/pom.xml') }}
+          key: m2-full-v4-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
+            m2-full-v4-
             m2-full-v3-
             m2-full-v2-
+            m2-full-v1-
             m2-full-
             setup-java-Linux-x64-maven-
+
+      # #3338: a failed-download marker (restored from an older entry) would make this job skip the retry of a 429.
+      - name: Drop failed-download markers from the restored repository
+        run: .github/scripts/drop-failed-download-markers.sh
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
@@ -611,12 +653,18 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.m2/repository
-          key: m2-full-v3-${{ hashFiles('**/pom.xml') }}
+          key: m2-full-v4-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
+            m2-full-v4-
             m2-full-v3-
             m2-full-v2-
+            m2-full-v1-
             m2-full-
             setup-java-Linux-x64-maven-
+
+      # #3338: a failed-download marker (restored from an older entry) would make this job skip the retry of a 429.
+      - name: Drop failed-download markers from the restored repository
+        run: .github/scripts/drop-failed-download-markers.sh
 
       - name: Bootstrap annotation processors and Maven plugins
         if: steps.plan.outputs.modules != ''
