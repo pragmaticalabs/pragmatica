@@ -131,6 +131,17 @@ class RedisClientCloseTest {
         assertThat(client.openConnections()).isZero();
     }
 
+    /// A command issued before the client's event loop saw the server's reset legitimately rides the dead
+    /// connection and fails with ConnectionLost; the overlap this test needs starts once the client has seen the loss.
+    private void awaitDropObserved() throws InterruptedException {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (client.liveConnections() != 0) {
+            assertThat(System.nanoTime()).as("client never observed the dropped connection").isLessThan(deadline);
+            Thread.sleep(1);
+        }
+    }
+
     @Test
     void commandsIssuedWhileEveryConnectionIsBeingReopenedWaitInsteadOfSaturating() throws Exception {
         var connectionNumber = new AtomicInteger();
@@ -155,7 +166,7 @@ class RedisClientCloseTest {
         client.open().await(WAIT).unwrap();
         clientOpened.countDown();
         assertThat(firstDropped.await(10, TimeUnit.SECONDS)).isTrue();
-        Thread.sleep(300);
+        awaitDropObserved();
 
         var calls = new ArrayList<Promise<Long>>();
 
