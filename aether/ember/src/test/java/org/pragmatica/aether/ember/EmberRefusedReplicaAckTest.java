@@ -62,6 +62,7 @@ class EmberRefusedReplicaAckTest {
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final long LEADER_BUDGET_MS = 90_000L;
     private static final long ISR_BUDGET_MS = 60_000L;
+    private static final long OWNER_SERVING_BUDGET_MS = 60_000L;
     private static final int REFUSAL_RETRY_ATTEMPTS = 20;
     private static final long REFUSAL_RETRY_BUDGET_MS = 20_000L;
     private static final long REFUSAL_RETRY_PAUSE_MS = 500L;
@@ -92,6 +93,9 @@ class EmberRefusedReplicaAckTest {
                         "{\"partitions\":1}")).as("create %s", NAME)
                   .startsWith("2");
         var owner = awaitFullIsr().owner().id();
+
+        awaitOwnerServing(owner);
+
         var governor = streamingGovernor();
 
         assertThat(publishRetryingRefusal(governor, "ack-0")).as("publish ack-0, before any refusal").startsWith("2");
@@ -156,6 +160,27 @@ class EmberRefusedReplicaAckTest {
                                 + " for " + ENGINE_KEY
                                 + " within " + ISR_BUDGET_MS
                                 + "ms");
+    }
+
+    /// A full ISR record does not mean the owner finished promoting (#3357: the first publish reached an owner that answered
+    /// "not yet promoted" until 1.7 s after it was sent, past the 2.5 s forward hop, so the entry node answered 503 "outcome
+    /// unknown"). The owner serves a read only once it passed the promotion gate, the gate a publish passes too, so the test
+    /// publishes only after the owner serves one. The deadline wait changes no timeout and hides nothing the test pins:
+    /// the refusal-retry of the publishes below is untouched.
+    private void awaitOwnerServing(String owner) {
+        var deadline = System.currentTimeMillis() + OWNER_SERVING_BUDGET_MS;
+        var node = cluster.getNode(owner).unwrap();
+
+        while (System.currentTimeMillis() < deadline) {
+            if (node.streamPartitionManager().readServing(ENGINE_KEY, 0, 0L, 1).isSuccess()) {
+                return;
+            }
+
+            sleepQuietly(50L);
+        }
+
+        throw new AssertionError("owner " + owner + " of " + ENGINE_KEY
+                                + " did not pass the promotion gate within " + OWNER_SERVING_BUDGET_MS + "ms");
     }
 
     /// The record every node agrees on, or none while they differ.
