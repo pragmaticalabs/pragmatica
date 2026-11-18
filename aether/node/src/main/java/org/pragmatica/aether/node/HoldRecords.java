@@ -51,7 +51,8 @@ import org.pragmatica.utility.warning.OperatorWarningCode;
 /// - **Override.** [#acceptLoss] records `dht-departure-loss-accepted` first and relays `AcceptLoss` only once that record landed.
 ///
 /// A new leader seeds its latches from the cluster event log ([#seedFromLog]). Inert until something drives it: the caller (the
-/// leader's pong path) calls [#onPong], [#tick], [#onLeft] and [#onDead] only while this node is the leader.
+/// leader's pong path) calls [#onPong], [#tick], [#onLeft] and [#onDead] only while this node is the leader, and [#reset] when it
+/// stops being the leader.
 public interface HoldRecords {
     /// Default delay before an enumerated, encodable hold becomes reportable.
     long REPORT_AFTER_MS = 15_000L;
@@ -183,6 +184,14 @@ public interface HoldRecords {
     @Contract
     void onDead(NodeId nodeId);
 
+    /// This node lost the leadership: forget every drainer's record, open and closed episodes (tombstones) alike, so a later
+    /// leadership of this node starts from [#seedFromLog] and the next reports instead of from records another leader may have
+    /// closed meanwhile. A raise in flight settles on nothing (its completion finds no record of its episode), unless the same
+    /// episode was latched again before it completed: then it records the landing that did happen. An acceptance in flight whose
+    /// record landed is answered [HoldRefusal.Ended] (its episode is no longer open here).
+    @Contract
+    void reset();
+
     /// New leader: latch every episode whose `dht-departure-sole-copy-at-risk` landed in the retained log with no closer of the same
     /// subject. Completes with the number of latches seeded; fails when the log cannot be read (then latches come from reports only).
     Promise<Integer> seedFromLog();
@@ -242,6 +251,14 @@ public interface HoldRecords {
             public void onDead(NodeId nodeId) {
                 update(nodeId, Drainer::died);
                 raiseDue(nodeId);
+            }
+
+            @Override
+            @Contract
+            public void reset() {
+                synchronized (drainers) {
+                    drainers.clear();
+                }
             }
 
             @Override
