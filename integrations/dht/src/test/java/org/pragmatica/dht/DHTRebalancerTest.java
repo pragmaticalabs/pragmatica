@@ -534,7 +534,8 @@ class DHTRebalancerTest {
         private static final DHTConfig RF2 = new DHTConfig(2, 2, 2, DHTConfig.DEFAULT_TIMEOUT);
         private static final DHTConfig RF3 = new DHTConfig(3, 2, 2, DHTConfig.DEFAULT_TIMEOUT);
 
-        /// T3 (H1): 3 nodes at RF 3, one draining: both survivors hold the key, so it is replicated and never raises AT_RISK.
+        /// T3 (H1): 3 nodes at RF 3, one draining: both survivors hold the key, so a never-acked key is owed as REPLICATED: no
+        /// AT_RISK, and the report counts it apart from the sole copies (#3345: the class only shapes the events and the report).
         @Test
         @Timeout(20)
         void pushOnDeparture_threeNodeRf3_neverAcked_isReplicated() {
@@ -542,13 +543,12 @@ class DHTRebalancerTest {
             List.of(LOCAL, PEER_A, PEER_B).forEach(ring::addNode);
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF3);
             node.putLocal(key("t3"), value("payload")).await();
-            var run = push(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(300, 30_000, 50), Set.of());
+            var run = push(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(300, 0, 50), Set.of());
 
             assertThat(run.recorder().atRisk()).isEmpty();
-            assertThat(run.recorder().incomplete()).hasSize(1);
-            assertThat(run.recorder().incomplete().getFirst().sole()).isZero();
+            assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 0));
             assertThat(run.report().soleCopyAtRisk()).isZero();
-            assertThat(run.elapsedMillis()).as("base window only, never the 30 s sole extra").isLessThan(10_000);
+            assertThat(run.report().replicatedAtRisk()).isEqualTo(1);
         }
 
         /// T4 (H1): five nodes at RF 3, a key with a newcomer: two survivors, replicated.
@@ -558,17 +558,16 @@ class DHTRebalancerTest {
             var ring = fiveNodeRing();
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF3);
             node.putLocal(keyIncluding(ring, 3, LOCAL, "t4"), value("payload")).await();
-            var run = push(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(300, 30_000, 50), Set.of());
+            var run = push(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(300, 0, 50), Set.of());
 
             assertThat(run.recorder().atRisk()).isEmpty();
-            assertThat(run.recorder().incomplete()).hasSize(1);
+            assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 0));
             assertThat(run.report().soleCopyAtRisk()).isZero();
             assertThat(run.report().replicatedAtRisk()).isEqualTo(1);
-            assertThat(run.elapsedMillis()).isLessThan(10_000);
         }
 
-        /// T4b: self already pruned. RF 1: sole (1 - 1 = 0). RF 3 on 5 nodes pruned to 4: replicated (3 - 1 = 2); and (E2) it is
-        /// never promoted at `baseDeadline`, because its plan-time survivors are unknown: no AT_RISK, and the push ends at base.
+        /// T4b: self already pruned. RF 1: sole (1 - 1 = 0). RF 3 on 5 nodes pruned to 4: replicated (3 - 1 = 2). The class shows
+        /// in the report and the incomplete event; no AT_RISK either way, because every key has a deliverer (#3345).
         @Test
         @Timeout(20)
         void classify_pruneAhead_usesHolderLowerBound() {
@@ -579,22 +578,25 @@ class DHTRebalancerTest {
             var sole = push(soleNode, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(200, 300, 50), Set.of());
 
             assertThat(sole.report().soleCopyAtRisk()).isEqualTo(1);
-            assertThat(sole.recorder().atRisk()).containsExactly(1);
+            assertThat(sole.report().replicatedAtRisk()).isZero();
+            assertThat(sole.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
+            assertThat(sole.recorder().atRisk()).isEmpty();
 
             var ring = fiveNodeRing();
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF3);
             node.putLocal(keyIncluding(ring, 3, LOCAL, "t4b-repl"), value("payload")).await();
             ring.removeNode(LOCAL);
-            var replicated = push(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(200, 2_000, 50), Set.of());
+            var replicated = push(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(200, 300, 50), Set.of());
 
             assertThat(replicated.report().soleCopyAtRisk()).isZero();
             assertThat(replicated.report().replicatedAtRisk()).isEqualTo(1);
-            assertThat(replicated.recorder().atRisk()).as("never promoted past base").isEmpty();
-            assertThat(replicated.elapsedMillis()).as("ends at base, not at base + sole extra").isLessThan(1_500);
+            assertThat(replicated.recorder().incomplete()).containsExactly(new Incomplete(1, 0));
+            assertThat(replicated.recorder().atRisk()).isEmpty();
         }
 
         /// E1: self is in the ring, RF 2, the co-drainer B already pruned. The ring put a node that never held the key into B's slot,
-        /// so `currentSet \ leaving` names one "survivor"; the bound subtracts the pruned B: sole, AT_RISK fires.
+        /// so `currentSet \ leaving` names one "survivor"; the bound subtracts the pruned B: sole. The key has a deliverer, so the
+        /// class shows in the report and the incomplete event, not as AT_RISK (#3345).
         @Test
         @Timeout(20)
         void classify_coDrainerPruned_selfInRing_isSole() {
@@ -604,11 +606,13 @@ class DHTRebalancerTest {
             ring.removeNode(PEER_B);
             var run = push(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(200, 300, 50), Set.of(PEER_B));
 
-            assertThat(run.recorder().atRisk()).containsExactly(1);
             assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
+            assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
+            assertThat(run.recorder().atRisk()).isEmpty();
         }
 
-        /// T5: a sole page never acked is resent, raises AT_RISK exactly once, and is reported sole.
+        /// T5: a sole page never acked is resent until the deadline and the operator is told ONCE, by the incomplete report, that the
+        /// sole copy is owed. It has a deliverer, so no AT_RISK is raised at plan time (#3345) and nothing claims it delivered.
         @Test
         @Timeout(20)
         void pushOnDeparture_soleNeverAcked_atRiskOnceThenIncomplete() {
@@ -619,28 +623,36 @@ class DHTRebalancerTest {
             var run = push(node, network, T(200, 1_000, 50), Set.of());
 
             assertThat(network.sends()).hasSizeGreaterThanOrEqualTo(2);
-            assertThat(run.recorder().atRisk()).containsExactly(1);
+            assertThat(run.recorder().atRisk()).isEmpty();
             assertThat(run.recorder().delivered()).isEmpty();
             assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
             assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
         }
 
-        /// T6: the target starts acking once AT_RISK was raised; DELIVERED closes it and nothing is reported.
+        /// T6: a sole key with no deliverer raises AT_RISK at plan time; a node joining from the at-risk callback gives it one, its
+        /// ack makes it safe, DELIVERED closes the at-risk and nothing is reported incomplete.
         @Test
         @Timeout(20)
         void pushOnDeparture_soleAckReleasedOnAtRisk_deliveredRecovers() {
-            var ring = fiveNodeRing();
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            ring.addNode(LOCAL);
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
-            node.putLocal(soleKey(ring, "t6"), value("payload")).await();
-            var gate = new AtomicBoolean(false);
-            var network = ScriptedNetwork.scripted((_, _) -> gate.get() ? Reply.ACK : Reply.DROP);
-            var recorder = new EventRecorder(() -> gate.set(true));
+            node.putLocal(key("t6"), value("payload")).await();
+            var network = ScriptedNetwork.scriptedOver(ring, (_, _) -> Reply.ACK);
+            var recorder = new EventRecorder(() -> join(ring, network, PEER_A));
             var run = push(node, network, T(200, 5_000, 50), Set.of(), recorder);
 
             assertThat(recorder.atRisk()).containsExactly(1);
             assertThat(recorder.delivered()).containsExactly(1);
             assertThat(recorder.incomplete()).isEmpty();
             assertThat(run.report().soleCopyAtRisk()).isZero();
+            assertThat(network.sends()).isNotEmpty().allSatisfy(sent -> assertThat(sent.target()).isEqualTo(PEER_A));
+        }
+
+        /// `member` joins `ring`, followed by the rebalancer's `onViewChange`, as `DHTTopologyListener` does after `changeRing`.
+        private static void join(ConsistentHashRing<NodeId> ring, ScriptedNetwork network, NodeId member) {
+            ring.addNode(member);
+            network.signalViewChange();
         }
 
         /// T7 (H2): a refused send proves nothing about the ring, so the SAME target is retried; the push never carries a stray.
