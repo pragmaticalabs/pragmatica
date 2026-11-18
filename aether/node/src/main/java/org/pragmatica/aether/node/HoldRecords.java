@@ -370,8 +370,7 @@ public interface HoldRecords {
             /// Record first: the decision becomes visible only once `dht-departure-loss-accepted` landed.
             private Promise<LossAccepted> recordAcceptance(LossAccepted accepted) {
                 return raiser.raiseLanded(HoldTexts.lossAccepted(accepted))
-                             .map(landed -> settleAcceptance(accepted, landed))
-                             .flatMap(Result::async);
+                             .flatMap(landed -> settleAcceptance(accepted, landed).async());
             }
 
             private Result<LossAccepted> settleAcceptance(LossAccepted accepted, boolean landed) {
