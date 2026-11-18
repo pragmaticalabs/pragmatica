@@ -49,6 +49,8 @@
 /// \* One Rabia log slot sequence (weak-MVC per slot) at ONE fixed roster and epoch, with our deviations
 /// \* D1 (deterministic coin), D8 (proposal selection, empty proposals), D9 (slot GC and the past-slot guard),
 /// \* D11 (activation marker, receiver-enforced electorate). pragmatica#3164.
+/// \* Unchecked: every config here uses MaxRound = 1, so a slot needing a second round is explored by no row (RabiaEpoch
+/// \* and PhaseData state the same limit).
 /// \*
 /// \* Fixed: the fixes the modelled code carries. The code as it stands carries AllFixes; a config that drops one is a
 /// \* known-bad config that must fail on the property it protects:
