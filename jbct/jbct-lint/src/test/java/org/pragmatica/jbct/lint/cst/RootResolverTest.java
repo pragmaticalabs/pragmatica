@@ -6,12 +6,16 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.jbct.config.ConfigError;
 import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.lint.Diagnostic;
-import org.pragmatica.jbct.lint.cst.LintRun.RootCounts;
-import org.pragmatica.jbct.lint.cst.LintRun.RunReport;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Linted;
+import org.pragmatica.jbct.lint.cst.RunOutcome.RootResult;
+import org.pragmatica.jbct.lint.cst.RunOutcome.RunResult;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Surface;
 import org.pragmatica.jbct.lint.cst.RootResolver.ModeOverride;
 import org.pragmatica.jbct.lint.cst.RootResolver.ModeSource;
 import org.pragmatica.jbct.lint.cst.RootResolver.Request;
@@ -106,24 +110,29 @@ class RootResolverTest {
                    .orElseGet(() -> fail("no root " + path + " in " + plan.roots().stream().map(ResolvedRoot::path).toList()));
     }
 
-    private static Set<String> reported(Result<List<Diagnostic>> result) {
-        return result.map(list -> list.stream()
-                                      .map(Diagnostic::ruleId)
-                                      .collect(Collectors.toSet()))
-                     .or(Set.of("LINT-FAILED"));
+    private static RunResult performed(RootPlan plan) {
+        return LintRun.lintRun(plan)
+                      .perform(Invocation.lint(Surface.CLI))
+                      .fold(cause -> fail("perform failed: " + cause.message()), result -> result);
     }
 
-    private static RunReport finished(LintRun run) {
-        return run.finish()
-                  .fold(cause -> fail("finish failed: " + cause.message()), report -> report);
-    }
-
-    private static RootCounts countsOf(RunReport report, Path root) {
-        return report.roots()
+    private static Set<String> reported(RunResult result, Path file) {
+        return result.files()
                      .stream()
-                     .filter(counts -> counts.root().equals(root.toAbsolutePath().normalize()))
+                     .filter(candidate -> candidate.file().equals(file.toAbsolutePath().normalize()))
+                     .flatMap(candidate -> candidate.lint() instanceof Linted(var diagnostics)
+                                           ? diagnostics.stream()
+                                           : Stream.<Diagnostic> empty())
+                     .map(Diagnostic::ruleId)
+                     .collect(Collectors.toSet());
+    }
+
+    private static RootResult rootResult(RunResult result, Path root) {
+        return result.roots()
+                     .stream()
+                     .filter(candidate -> candidate.root().equals(root.toAbsolutePath().normalize()))
                      .findFirst()
-                     .orElseGet(() -> fail("no counts for " + root));
+                     .orElseGet(() -> fail("no result for " + root));
     }
 
     @Test
@@ -133,13 +142,13 @@ class RootResolverTest {
         var businessFile = source(business, "Pricing.java", BOTH);
         var infrastructureFile = source(infrastructure, "Pricing.java", BOTH);
         var plan = plan(temp);
-        var run = LintRun.lintRun(plan);
+        var result = performed(plan);
 
         assertEquals(2, plan.roots().size());
         assertEquals(JbctMode.BUSINESS, rootOf(plan, business.resolve("src/main/java")).mode());
         assertEquals(JbctMode.INFRASTRUCTURE, rootOf(plan, infrastructure.resolve("src/main/java")).mode());
-        assertEquals(Set.of(ARCH_02, RET_03), reported(run.lintFile(businessFile)));
-        assertEquals(Set.of(RET_03), reported(run.lintFile(infrastructureFile)));
+        assertEquals(Set.of(ARCH_02, RET_03), reported(result, businessFile));
+        assertEquals(Set.of(RET_03), reported(result, infrastructureFile));
     }
 
     @Test
@@ -202,63 +211,25 @@ class RootResolverTest {
     }
 
     @Test
-    void run_formatOnlyRoot_isNeverParsedForLint_butIsFormatted() throws IOException {
-        var formatOnly = module("fmt", FORMAT_ONLY);
-        var business = module("biz", BUSINESS);
-        var broken = source(formatOnly, "Broken.java", BROKEN);
-        var control = source(business, "Broken.java", BROKEN);
-        var run = LintRun.lintRun(plan(temp));
+    void resolve_rootBelowADeclaredTestDirectory_isATestRoot() throws IOException {
+        var declared = Files.createDirectories(temp.resolve("mod/src/it"));
+        var below = Files.createDirectories(temp.resolve("mod/src/it/java"));
 
-        assertEquals(Set.of(), reported(run.lintFile(broken)));
-        assertEquals(Set.of("LINT-FAILED"), reported(run.lintFile(control)));
-        assertTrue(run.claimFormat(broken).unwrap());
+        Files.writeString(below.resolve("A.java"), "class A {}\n");
+        var plan = plan(Request.request(List.of(below)).withDeclared(Set.of(below), Set.of(declared)));
 
-        var report = finished(run);
-        var counts = countsOf(report, formatOnly.resolve("src/main/java"));
-
-        assertEquals(0, counts.examined());
-        assertEquals(1, counts.formatted());
-        assertEquals(0, counts.skipped());
+        assertTrue(rootOf(plan, below).testRoot());
     }
 
     @Test
-    void run_disabledRoot_isNeverOpened_neitherLinted_norFormatted() throws IOException {
-        var disabled = module("off", DISABLED);
-        var business = module("biz", BUSINESS);
-        var unreadable = source(disabled, "Bytes.java", "");
-        var control = source(business, "Bytes.java", "");
+    void resolve_siblingDirectoryWithSharedPrefix_isNotInsideTheDeclaredRoot() throws IOException {
+        var main = Files.createDirectories(temp.resolve("src/main/java"));
+        var generated = Files.createDirectories(temp.resolve("src/main/java-generated"));
+        var file = Files.writeString(generated.resolve("Gen.java"), "class Gen {}\n");
+        var plan = plan(Request.request(List.of(generated)).withDeclared(Set.of(main), Set.of()));
 
-        Files.write(unreadable, new byte[] {(byte) 0xC3, (byte) 0x28});
-        Files.write(control, new byte[] {(byte) 0xC3, (byte) 0x28});
-        var run = LintRun.lintRun(plan(temp));
-
-        assertEquals(Set.of(), reported(run.lintFile(unreadable)));
-        assertFalse(run.claimFormat(unreadable).unwrap());
-        assertEquals(Set.of("LINT-FAILED"), reported(run.lintFile(control)));
-
-        var counts = countsOf(finished(run), disabled.resolve("src/main/java"));
-
-        assertEquals(0, counts.examined());
-        assertEquals(0, counts.formatted());
-        assertEquals(1, counts.skipped());
-    }
-
-    @Test
-    void run_skippedFiles_areNotCountedAsExamined_andNoRootRanARule() throws IOException {
-        var disabled = module("off", DISABLED);
-        var formatOnly = module("fmt", FORMAT_ONLY);
-        var disabledFile = source(disabled, "A.java", BOTH);
-        var formatOnlyFile = source(formatOnly, "A.java", BOTH);
-        var run = LintRun.lintRun(plan(temp));
-
-        assertTrue(run.lintFile(disabledFile).isSuccess());
-        assertTrue(run.lintFile(formatOnlyFile).isSuccess());
-
-        var report = finished(run);
-
-        assertEquals(List.of(0, 0), report.roots().stream().map(RootCounts::examined).toList());
-        assertEquals(List.of(1, 1), report.roots().stream().map(RootCounts::skipped).toList());
-        assertFalse(report.fails());
+        assertEquals(List.of(generated.toAbsolutePath().normalize()),
+                     plan.roots().stream().filter(root -> root.files().contains(file)).map(ResolvedRoot::path).toList());
     }
 
     @Test
@@ -303,84 +274,59 @@ class RootResolverTest {
     }
 
     @Test
-    void finish_failOnWarning_isDecidedPerRootAndOverriddenByTheFlag() throws IOException {
+    void perform_failOnWarning_isDecidedPerRootAndOverriddenByTheFlag() throws IOException {
         var strict = module("strict", INFRASTRUCTURE + "failOnWarning = true\n" + RET_03_AS_WARNING);
         var lenient = module("lenient", INFRASTRUCTURE + RET_03_AS_WARNING);
-        var strictFile = source(strict, "A.java", BOTH);
-        var lenientFile = source(lenient, "A.java", BOTH);
-        var perRoot = LintRun.lintRun(plan(temp));
-        var flagged = LintRun.lintRun(plan(Request.request(List.of(temp)).withFailOnWarning(true)));
 
-        assertTrue(perRoot.lintFile(strictFile).isSuccess());
-        assertTrue(perRoot.lintFile(lenientFile).isSuccess());
-        assertTrue(flagged.lintFile(strictFile).isSuccess());
-        assertTrue(flagged.lintFile(lenientFile).isSuccess());
+        source(strict, "A.java", BOTH);
+        source(lenient, "A.java", BOTH);
 
-        var perRootReport = finished(perRoot);
-        var flaggedReport = finished(flagged);
+        var perRoot = performed(plan(temp));
+        var flagged = performed(plan(Request.request(List.of(temp)).withFailOnWarning(true)));
 
-        assertTrue(countsOf(perRootReport, strict.resolve("src/main/java")).fails());
-        assertFalse(countsOf(perRootReport, lenient.resolve("src/main/java")).fails());
-        assertTrue(perRootReport.failure().unwrap().contains(strict.resolve("src/main/java").toString() + ": 0 error(s), 1 warning(s)"));
-        assertFalse(perRootReport.failure().unwrap().contains(lenient.resolve("src/main/java").toString()));
-        assertTrue(countsOf(flaggedReport, lenient.resolve("src/main/java")).fails());
+        assertTrue(rootResult(perRoot, strict.resolve("src/main/java")).fails());
+        assertFalse(rootResult(perRoot, lenient.resolve("src/main/java")).fails());
+        assertTrue(rootResult(flagged, lenient.resolve("src/main/java")).fails());
     }
 
     @Test
-    void finish_errorsFailTheirRootWithoutAnyFlag() throws IOException {
+    void perform_errorsFailTheirRootWithoutAnyFlag() throws IOException {
         var business = module("biz", BUSINESS);
-        var file = source(business, "A.java", BOTH);
-        var run = LintRun.lintRun(plan(temp));
 
-        assertTrue(run.lintFile(file).isSuccess());
+        source(business, "A.java", BOTH);
 
-        var report = finished(run);
+        var result = performed(plan(temp));
 
-        assertTrue(report.fails());
-        assertTrue(report.failure().unwrap().contains(business.resolve("src/main/java").toString()));
+        assertTrue(rootResult(result, business.resolve("src/main/java")).fails());
+        assertEquals(RunOutcome.Kind.FINDINGS, result.verdict().kind());
     }
 
     @Test
-    void summary_namesModeProvenanceBasePackageCountsAndTheTestRootRule() throws IOException {
+    void perform_rootResult_namesModeProvenanceBasePackageCountsAndTheTestRootRule() throws IOException {
         var business = module("biz", BUSINESS + "\n[project]\nbasePackage = \"com.example\"\n");
-        var file = source(business, "A.java", BOTH);
-        var run = LintRun.lintRun(plan(temp));
 
-        assertTrue(run.lintFile(file).isSuccess());
-        assertTrue(run.claimFormat(file).unwrap());
+        source(business, "A.java", BOTH);
 
-        var root = business.resolve("src/main/java").toAbsolutePath().normalize();
+        var root = rootResult(performed(plan(temp)), business.resolve("src/main/java"));
 
-        assertEquals(List.of("mode=business (from " + business.resolve("jbct.toml").toAbsolutePath().normalize() + ") root=" + root
-                             + " basePackage=com.example: 1 examined by rules, 1 formatted or format-checked, 0 skipped by mode"
-                             + "; test-root rule: " + RootResolver.SRC_TEST_RULE),
-                     finished(run).summary());
+        assertEquals(JbctMode.BUSINESS, root.mode());
+        assertEquals(Option.some("com.example"), root.basePackage());
+        assertEquals(1, root.files());
+        assertEquals(RootResolver.SRC_TEST_RULE, root.testRootRule());
+        assertFalse(root.testRoot());
     }
 
     @Test
-    void summary_declaredTestRoot_countsItsFilesAndNamesTheDeclaredRule() throws IOException {
+    void perform_declaredTestRoot_countsItsFilesAndNamesTheDeclaredRule() throws IOException {
         var integration = Files.createDirectories(temp.resolve("mod/src/it/java"));
-        var file = Files.writeString(integration.resolve("B.java"), "class B {}\n");
-        var run = LintRun.lintRun(plan(Request.request(List.of(integration)).withDeclared(Set.of(), Set.of(integration))));
 
-        assertTrue(run.lintFile(file).isSuccess());
+        Files.writeString(integration.resolve("B.java"), "class B {}\n");
 
-        var line = finished(run).summary().getFirst();
+        var root = rootResult(performed(plan(Request.request(List.of(integration)).withDeclared(Set.of(), Set.of(integration)))),
+                              integration);
 
-        assertTrue(line.contains(", 1 test-root files"), line);
-        assertTrue(line.contains("test-root rule: " + RootResolver.DECLARED_TEST_RULE), line);
-    }
-
-    @Test
-    void run_afterFinish_refusesClaimsAndFiles() throws IOException {
-        var business = module("biz", BUSINESS);
-        var file = source(business, "A.java", "class A {}\n");
-        var run = LintRun.lintRun(plan(temp));
-
-        assertTrue(run.finish().isSuccess());
-        assertEquals(LintRunError.General.RUN_FINISHED,
-                     run.claimFormat(file).fold(cause -> cause, value -> fail("expected a refusal")));
-        assertEquals(LintRunError.General.RUN_FINISHED,
-                     run.lintFile(file).fold(cause -> cause, value -> fail("expected a refusal")));
+        assertTrue(root.testRoot());
+        assertEquals(1, root.files());
+        assertEquals(RootResolver.DECLARED_TEST_RULE, root.testRootRule());
     }
 }

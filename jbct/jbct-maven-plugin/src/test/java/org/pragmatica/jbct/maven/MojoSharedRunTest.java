@@ -20,16 +20,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.pragmatica.jbct.lint.cst.SharedRunTree;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #2525 P2c: what the shared resolver and run decide (roots, modes, counts, summary, verdict, failure message) is what
 /// every Maven goal logs and fails with.
 ///
-/// T1 builds its tree with [SharedRunTree] and compares the goals' lines with its shared expected text, the very text
-/// `CliSharedRunTest` compares the CLI's lines with: the same tree, through either front end, gives the same roots, modes,
-/// test-root count and outcome lines. The tree is a directory holding two modules, both MAIN roots; a goal reaches it as its
+/// T1 builds a business and an infrastructure module and compares the goals' findings with the findings
+/// `CliSharedRunTest` expects for the same tree: through either front end it gives the same roots and modes. The tree is a directory holding two modules, both MAIN roots; a goal reaches it as its
 /// `sourceDirectory` with no declared test directory (the CLI takes the directory as an argument), so each module's own
 /// `src/main/java` is its root and the test-root rule is the module-relative one in both front ends.
 class MojoSharedRunTest {
@@ -63,6 +61,15 @@ class MojoSharedRunTest {
     }
 
     // ---- the fixture, identical to CliSharedRunTest
+
+    private static final List<String> BOTH_MODULES_FINDINGS = List.of("JBCT-ARCH-02@biz", "JBCT-RET-03@biz", "JBCT-RET-03@infra");
+
+    /// A business module `biz` and an infrastructure module `infra` below one repository root.
+    private void bothModules() throws Exception {
+        Files.createDirectories(repo.resolve(".git"));
+        module("biz", "mode = \"business\"\n");
+        module("infra", "mode = \"infrastructure\"\n");
+    }
 
     private Path module(String name, String lintSection) throws Exception {
         var module = Files.createDirectories(repo.resolve(name));
@@ -180,18 +187,18 @@ class MojoSharedRunTest {
 
     @Test
     void t1_aBusinessAndAnInfrastructureModule_giveEachRootItsOwnMode_andLogTheSharedText() throws Exception {
-        SharedRunTree.build(repo);
+        bothModules();
 
         run(wire(new LintMojo(), repo, null, new Properties()), false);
 
-        assertThat(findings()).containsExactlyInAnyOrderElementsOf(SharedRunTree.expectedFindings());
+        assertThat(findings()).containsExactlyInAnyOrderElementsOf(BOTH_MODULES_FINDINGS);
         assertThat(logs).containsAll(capture.lines());
         assertThat(String.join("\n", logs)).doesNotContain("test-root files");
     }
 
     @Test
     void t1_check_countsTheSameFindingsAsTheCliCheck() throws Exception {
-        SharedRunTree.build(repo);
+        bothModules();
         var text = text(run(wire(new CheckMojo(), repo, null, new Properties()), false));
 
         assertThat(count(text, ARCH_02)).isEqualTo(1);

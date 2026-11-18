@@ -16,15 +16,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Kind;
-import org.pragmatica.jbct.lint.cst.SharedRunTree;
 import picocli.CommandLine;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #2525 P2c: what the shared resolver and run decide (roots, modes, counts, summary, verdict) is what every jbct command
-/// prints, tested through `CommandLine.execute`. T1 builds its tree with `SharedRunTree` and expects its text, which
-/// `jbct-maven-plugin`'s `MojoSharedRunTest` uses too (test-jar of `jbct-lint`): one tree, one expected text, two front ends.
+/// prints, tested through `CommandLine.execute`. T1 builds a business and an infrastructure module and expects their findings, the
+/// same tree and findings `jbct-maven-plugin`'s `MojoSharedRunTest` uses; the run's lines are pinned once, in `RunLinesTest`.
 class CliSharedRunTest {
     private static final String USER_HOME_PROPERTY = "user.home";
     private static final String ARCH_02 = "JBCT-ARCH-02";
@@ -60,6 +59,15 @@ class CliSharedRunTest {
         System.setProperty(USER_HOME_PROPERTY, savedUserHome);
         System.setOut(savedOut);
         System.setErr(savedErr);
+    }
+
+    private static final List<String> BOTH_MODULES_FINDINGS = List.of("JBCT-ARCH-02@biz", "JBCT-RET-03@biz", "JBCT-RET-03@infra");
+
+    /// A business module `biz` and an infrastructure module `infra` below one repository root.
+    private void bothModules() throws Exception {
+        Files.createDirectories(repo.resolve(".git"));
+        module("biz", "mode = \"business\"\n");
+        module("infra", "mode = \"infrastructure\"\n");
     }
 
     private Path module(String name, String lintSection) throws Exception {
@@ -151,11 +159,11 @@ class CliSharedRunTest {
 
     @Test
     void t1_oneDirectoryArgument_giveseachModuleItsOwnMode_andPrintsTheSharedText() throws Exception {
-        SharedRunTree.build(repo);
+        bothModules();
 
         run(new LintCommand(), "--format", "json", repo.toString());
 
-        assertThat(findings()).containsExactlyInAnyOrderElementsOf(SharedRunTree.expectedFindings());
+        assertThat(findings()).containsExactlyInAnyOrderElementsOf(BOTH_MODULES_FINDINGS);
         assertThat(lines(runText())).anyMatch(line -> line.startsWith("mode=business (from "))
                                     .anyMatch(line -> line.startsWith("mode=infrastructure (from "));
         assertThat(captured.result().examined()).isEqualTo(2);
@@ -165,7 +173,7 @@ class CliSharedRunTest {
 
     @Test
     void t1_oneDirectoryArgument_check_giveseachModuleItsOwnMode() throws Exception {
-        SharedRunTree.build(repo);
+        bothModules();
 
         run(new CheckCommand(), repo.toString());
 
