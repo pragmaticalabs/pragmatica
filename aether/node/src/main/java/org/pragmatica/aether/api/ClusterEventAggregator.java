@@ -1336,9 +1336,9 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     /// published, so that one settles `false`.
     private void holdDuringReplay(String closedKey, HeldRecovery recovery) {
         if (openRecoverable.contains(closedKey)) {
-            Option.option(replayHeldRecoveries.put(closedKey, recovery))
-                  .onPresent(ClusterEventAggregator::settleReplaced);
-            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — holding {} until it ends", recovery.event());
+            Option.option(replayHeldRecoveries.put(closedKey, recovery)).onPresent(ClusterEventAggregator::settleReplaced);
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — holding {} until it ends",
+                      recovery.event());
         } else {
             recovery.settle().lost();
         }
@@ -1346,8 +1346,7 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
 
     /// A replay-held recovery made stale (a recurrence of its condition, or a newer recovery after replay) is never published.
     private void dropReplayHeld(String closedKey) {
-        Option.option(replayHeldRecoveries.remove(closedKey))
-              .onPresent(ClusterEventAggregator::settleReplaced);
+        Option.option(replayHeldRecoveries.remove(closedKey)).onPresent(ClusterEventAggregator::settleReplaced);
     }
 
     private void releaseReplayHeldRecoveries() {
@@ -1359,8 +1358,8 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     }
 
     private void releaseReplayHeld(String closedKey) {
-        Option.option(replayHeldRecoveries.remove(closedKey))
-              .onPresent(recovery -> publishOrDropReplayHeld(closedKey, recovery));
+        Option.option(replayHeldRecoveries.remove(closedKey)).onPresent(recovery -> publishOrDropReplayHeld(closedKey,
+                                                                                                            recovery));
     }
 
     /// The mark may have closed while the recovery was held (a spoofable mark expired): then it is never published.
