@@ -35,11 +35,12 @@ class SkeletonAnnotationsTest {
 
     private static java.util.List<String> annotationsOf(String name) {
         return declarations(SOURCE, true).getFirst()
-                                         .children()
-                                         .stream()
-                                         .filter(declaration -> declaration.name().equals(name))
-                                         .findFirst()
-                                         .orElseThrow()
-                                         .annotations();
+                           .children()
+                           .stream()
+                           .filter(declaration -> declaration.name()
+                                                             .equals(name))
+                           .findFirst()
+                           .orElseThrow()
+                           .annotations();
     }
 }

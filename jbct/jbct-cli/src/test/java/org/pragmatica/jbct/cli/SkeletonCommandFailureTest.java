@@ -7,8 +7,8 @@ import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.jbct.cli.SkeletonCommandTest.run;
+import static org.assertj.core.api.Assertions.assertThat;
 
 
 /// A file that cannot be read: one line on stderr, no stack trace, exit 2, the other files still print.

@@ -10,13 +10,9 @@ import java.util.stream.Stream;
 /// `<kind> <name><signature> <startRow>:<startCol>-<endRow>:<endCol>[ doc@<row>][ @Annotation ...]`
 ///
 /// Rows and columns are 1-based and the end is inclusive (the position of the closing brace or semicolon).
-public final class SkeletonText {
-    private static final String INDENT = "  ";
-
-    private SkeletonText() {}
-
+public sealed interface SkeletonText {
     /// The lines of `skeleton`, each ended by a newline; empty for a file that declares nothing.
-    public static String render(Skeleton skeleton) {
+    static String render(Skeleton skeleton) {
         return lines(skeleton.declarations(), 0).collect(Collectors.joining());
     }
 
@@ -28,8 +24,8 @@ public final class SkeletonText {
     }
 
     private static String line(Declaration declaration, int depth) {
-        return INDENT.repeat(depth) + declaration.kind()
-                                                 .label() + label(declaration)
+        return "  ".repeat(depth) + declaration.kind()
+                                               .label() + label(declaration)
              + " " + declaration.range()
                                 .render() + doc(declaration) + annotations(declaration)
              + "\n";
@@ -54,4 +50,6 @@ public final class SkeletonText {
                           .map(annotation -> " " + annotation)
                           .collect(Collectors.joining());
     }
+
+    record unused() implements SkeletonText {}
 }

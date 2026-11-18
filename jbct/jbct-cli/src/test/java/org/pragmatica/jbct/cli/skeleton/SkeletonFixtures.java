@@ -16,15 +16,18 @@ final class SkeletonFixtures {
 
     /// Every `*.java` file of the fixture directory, so a new fixture is covered without being listed anywhere.
     static Stream<String> names() {
-        return fixtureFiles().map(file -> file.getFileName().toString())
-                             .filter(file -> file.endsWith(".java"))
-                             .map(file -> file.substring(0, file.length() - ".java".length()))
-                             .sorted();
+        return fixtureFiles().map(file -> file.getFileName()
+                                              .toString())
+                           .filter(file -> file.endsWith(".java"))
+                           .map(file -> file.substring(0,
+                                                       file.length() - ".java".length()))
+                           .sorted();
     }
 
     private static Stream<Path> fixtureFiles() {
         try (var files = Files.list(Path.of(SkeletonFixtures.class.getResource("/skeleton").toURI()))) {
-            return files.toList().stream();
+            return files.toList()
+                        .stream();
         } catch (IOException | URISyntaxException e) {
             throw new AssertionError("fixture directory unreadable", e);
         }

@@ -70,7 +70,8 @@ public class SkeletonCommand implements Callable<Integer> {
     }
 
     private Outcome outcome(Path file) {
-        return Outcome.outcome(file, read(file).flatMap(content -> Skeletons.skeleton(content, fields)));
+        return Outcome.outcome(file,
+                               read(file).flatMap(content -> Skeletons.skeleton(content, fields)));
     }
 
     private static Result<String> read(Path file) {
@@ -78,12 +79,18 @@ public class SkeletonCommand implements Callable<Integer> {
     }
 
     private Integer print(List<Outcome> outcomes) {
-        outcomes.forEach(outcome -> outcome.result().onFailure(cause -> System.err.println(failureLine(outcome.file(), cause))));
+        outcomes.forEach(outcome -> outcome.result()
+                                           .onFailure(cause -> System.err.println(failureLine(outcome.file(),
+                                                                                              cause))));
         System.out.print(json
                          ? SkeletonJson.document(outcomes.stream().map(Outcome::asJson).toList())
-                         : outcomes.stream().map(outcome -> outcome.asText(outcomes.size() > 1)).collect(Collectors.joining()));
+                         : outcomes.stream()
+                                   .map(outcome -> outcome.asText(outcomes.size() > 1))
+                                   .collect(Collectors.joining()));
 
-        return outcomes.stream().allMatch(outcome -> outcome.result().isSuccess())
+        return outcomes.stream()
+                       .allMatch(outcome -> outcome.result()
+                                                   .isSuccess())
                ? 0
                : FAILURE;
     }
@@ -108,7 +115,8 @@ public class SkeletonCommand implements Callable<Integer> {
         }
 
         String asText(boolean withHeader) {
-            return result.map(skeleton -> header(withHeader) + SkeletonText.render(skeleton)).or("");
+            return result.map(skeleton -> header(withHeader) + SkeletonText.render(skeleton))
+                         .or("");
         }
 
         private String header(boolean withHeader) {

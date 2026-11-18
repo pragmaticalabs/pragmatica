@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// as the same declaration. The cut is computed in [SkeletonFixtures] from the line structure alone.
 class SkeletonRangePropertyTest {
     private static final Pattern GOLDEN_RANGE = Pattern.compile(" \\d+:\\d+-(\\d+):(\\d+)");
+
     private static final Pattern DECLARATION_START = Pattern.compile("^(@|[A-Za-z_$<{])");
 
     @ParameterizedTest
@@ -46,8 +47,11 @@ class SkeletonRangePropertyTest {
         var failures = new ArrayList<String>();
 
         assertThat(all).hasSameSizeAs(golden);
-        IntStream.range(0, all.size())
-                 .forEach(index -> endFailure(all.get(index), golden.get(index), source).ifPresent(failures::add));
+        IntStream.range(0,
+                        all.size())
+                 .forEach(index -> endFailure(all.get(index),
+                                              golden.get(index),
+                                              source).ifPresent(failures::add));
         assertThat(failures).isEmpty();
     }
 
@@ -104,10 +108,10 @@ class SkeletonRangePropertyTest {
 
     private static List<String> goldenEnds(String fixture) {
         return resource(fixture + ".skeleton.txt").lines()
-                                                  .map(GOLDEN_RANGE::matcher)
-                                                  .filter(java.util.regex.Matcher::find)
-                                                  .map(range -> range.group(1) + ":" + range.group(2))
-                                                  .toList();
+                       .map(GOLDEN_RANGE::matcher)
+                       .filter(java.util.regex.Matcher::find)
+                       .map(range -> range.group(1) + ":" + range.group(2))
+                       .toList();
     }
 
     private static java.util.Optional<String> endFailure(Declaration declaration, String goldenEnd, String source) {
@@ -116,7 +120,10 @@ class SkeletonRangePropertyTest {
 
         return (range.endRow() + ":" + range.endColumn()).equals(goldenEnd) && endsProperly(declaration, text)
                ? java.util.Optional.empty()
-               : java.util.Optional.of(declaration.label() + " ends at " + range.endRow() + ":" + range.endColumn() + ", golden " + goldenEnd);
+               : java.util.Optional.of(declaration.label()
+                                      + " ends at " + range.endRow()
+                                      + ":" + range.endColumn()
+                                      + ", golden " + goldenEnd);
     }
 
     private static boolean endsProperly(Declaration declaration, String text) {

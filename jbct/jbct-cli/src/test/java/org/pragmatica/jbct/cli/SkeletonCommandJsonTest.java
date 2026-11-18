@@ -10,14 +10,15 @@ import org.junit.jupiter.api.io.TempDir;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
+import static org.pragmatica.jbct.cli.SkeletonCommandTest.run;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
-import static org.pragmatica.jbct.cli.SkeletonCommandTest.run;
 
 
 /// `skeleton --json` through the real command line: the output is parsed, never matched as text.
 class SkeletonCommandJsonTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
+
     private static final String QUOTED = "import java.util.List;\n\nclass Q {\n    List<@Cfg(\"q\\\"x\\\\y\") String> ret() { return null; }\n}\n";
 
     @TempDir
@@ -76,6 +77,9 @@ class SkeletonCommandJsonTest {
     }
 
     private static JsonNode method(JsonNode file) {
-        return file.get("declarations").get(0).get("children").get(0);
+        return file.get("declarations")
+                   .get(0)
+                   .get("children")
+                   .get(0);
     }
 }

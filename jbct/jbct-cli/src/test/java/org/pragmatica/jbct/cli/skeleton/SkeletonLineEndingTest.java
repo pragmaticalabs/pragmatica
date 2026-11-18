@@ -23,10 +23,12 @@ class SkeletonLineEndingTest {
     void crOnly_everyRangeCutAtItsCoordinates_yieldsTheDeclaration() {
         var source = BODY.replace("\n", "\r");
 
-        assertThat(declarations(source, true).stream().flatMap(SkeletonFixtures::flatten)
-                                             .map(declaration -> cut(source, declaration.range()))
-                                             .toList()).hasSize(3)
-                                                       .allSatisfy(text -> assertThat(text).matches("(?s)(class A \\{.*\\}|int f;|void m\\(\\) \\{\\})"));
+        assertThat(declarations(source, true).stream()
+                               .flatMap(SkeletonFixtures::flatten)
+                               .map(declaration -> cut(source,
+                                                       declaration.range()))
+                               .toList()).hasSize(3)
+                  .allSatisfy(text -> assertThat(text).matches("(?s)(class A \\{.*\\}|int f;|void m\\(\\) \\{\\})"));
     }
 
     @Test
