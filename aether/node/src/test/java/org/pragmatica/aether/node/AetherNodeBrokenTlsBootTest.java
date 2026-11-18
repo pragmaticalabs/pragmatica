@@ -4,9 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.net.Socket;
+import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -33,7 +31,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
 /// A node whose HTTP-listener TLS cannot be built refuses to START instead of serving HTTP, through the real assembly
 /// (`AetherNode.aetherNode` then `start()`): the management listener (cluster-level `[tls]`) and the app listener
-/// (`[app-http.tls]`) each fail the node's start with the typed cause, and nothing listens on the configured port.
+/// (`[app-http.tls]`) each fail the node's start with the typed cause, and the refusal precedes any bind (the refused port is held by the test, #3321).
 class AetherNodeBrokenTlsBootTest {
     private AetherNode node;
 
@@ -49,23 +47,25 @@ class AetherNodeBrokenTlsBootTest {
     @Test
     @Timeout(value = 90, unit = SECONDS)
     void start_refuses_whenAppHttpTlsCannotBeBuilt() throws Exception {
-        var appPort = freePort();
-        var base = AppHttpConfig.insecureAppHttpConfig(appPort);
-        var appHttp = new AppHttpConfig(base.enabled(), base.port(), base.apiKeys(), base.maxRequestSize(), base.securityMode(),
-                                        base.jwtConfig(), base.httpProtocol(), base.apiVersioningDetection(),
-                                        base.apiVersionHeaderName(),
-                                        Option.some(new AppHttpConfig.AppTls("/missing/app-cert.pem", "/missing/app-key.pem")));
+        try (var held = new ServerSocket(0)) {
+            var base = AppHttpConfig.insecureAppHttpConfig(held.getLocalPort());
+            var appHttp = new AppHttpConfig(base.enabled(), base.port(), base.apiKeys(), base.maxRequestSize(), base.securityMode(),
+                                            base.jwtConfig(), base.httpProtocol(), base.apiVersioningDetection(),
+                                            base.apiVersionHeaderName(),
+                                            Option.some(new AppHttpConfig.AppTls("/missing/app-cert.pem", "/missing/app-key.pem")));
 
-        assertRefused(appHttp, AetherNodeConfig.MANAGEMENT_DISABLED, Option.none(), HttpProtocol.H1, appPort);
+            assertRefused(appHttp, AetherNodeConfig.MANAGEMENT_DISABLED, Option.none(), HttpProtocol.H1);
+        }
     }
 
     @Test
     @Timeout(value = 90, unit = SECONDS)
     void start_refuses_whenManagementTlsCannotBeBuilt() throws Exception {
-        var managementPort = freePort();
         var brokenTls = Option.some(TlsConfig.server(Path.of("/missing/node-cert.pem"), Path.of("/missing/node-key.pem")));
 
-        assertRefused(AppHttpConfig.insecureAppHttpConfig(freePort()), managementPort, brokenTls, HttpProtocol.H1, managementPort);
+        try (var held = new ServerSocket(0)) {
+            assertRefused(AppHttpConfig.insecureAppHttpConfig(freePort()), held.getLocalPort(), brokenTls, HttpProtocol.H1);
+        }
     }
 
     /// HTTP/3-only: the QUIC context cannot be built and the node used to report a successful start with no listener.
@@ -80,7 +80,7 @@ class AetherNodeBrokenTlsBootTest {
                                        base.jwtConfig(), base.httpProtocol(), base.apiVersioningDetection(),
                                        base.apiVersionHeaderName(), Option.none());
 
-        assertRefused(appOff, freePort(), brokenTls, HttpProtocol.H3, 0);
+        assertRefused(appOff, freePort(), brokenTls, HttpProtocol.H3);
     }
 
     @Test
@@ -92,7 +92,7 @@ class AetherNodeBrokenTlsBootTest {
                                         base.apiVersionHeaderName(), Option.none());
         var brokenTls = Option.some(TlsConfig.server(Path.of("/missing/node-cert.pem"), Path.of("/missing/node-key.pem")));
 
-        assertRefused(appHttp, AetherNodeConfig.MANAGEMENT_DISABLED, brokenTls, HttpProtocol.H1, 0);
+        assertRefused(appHttp, AetherNodeConfig.MANAGEMENT_DISABLED, brokenTls, HttpProtocol.H1);
     }
 
     /// A certificate and key that are each valid but do not belong together build a TLS context and then complete no
@@ -105,22 +105,23 @@ class AetherNodeBrokenTlsBootTest {
 
         java.nio.file.Files.write(dir.resolve("app.crt"), certificateOwner.certificatePem());
         java.nio.file.Files.write(dir.resolve("app.key"), keyOwner.privateKeyPem());
-        var appPort = freePort();
-        var base = AppHttpConfig.insecureAppHttpConfig(appPort);
-        var appHttp = new AppHttpConfig(base.enabled(), base.port(), base.apiKeys(), base.maxRequestSize(), base.securityMode(),
-                                        base.jwtConfig(), base.httpProtocol(), base.apiVersioningDetection(),
-                                        base.apiVersionHeaderName(),
-                                        Option.some(new AppHttpConfig.AppTls(dir.resolve("app.crt").toString(),
-                                                                             dir.resolve("app.key").toString())));
 
-        assertRefused(appHttp, AetherNodeConfig.MANAGEMENT_DISABLED, Option.none(), HttpProtocol.H1, appPort);
+        try (var held = new ServerSocket(0)) {
+            var base = AppHttpConfig.insecureAppHttpConfig(held.getLocalPort());
+            var appHttp = new AppHttpConfig(base.enabled(), base.port(), base.apiKeys(), base.maxRequestSize(), base.securityMode(),
+                                            base.jwtConfig(), base.httpProtocol(), base.apiVersioningDetection(),
+                                            base.apiVersionHeaderName(),
+                                            Option.some(new AppHttpConfig.AppTls(dir.resolve("app.crt").toString(),
+                                                                                 dir.resolve("app.key").toString())));
+
+            assertRefused(appHttp, AetherNodeConfig.MANAGEMENT_DISABLED, Option.none(), HttpProtocol.H1);
+        }
     }
 
     private void assertRefused(AppHttpConfig appHttp,
                                int managementPort,
                                Option<TlsConfig> tls,
-                               HttpProtocol managementProtocol,
-                               int listenerPort) throws Exception {
+                               HttpProtocol managementProtocol) {
         node = AetherNode.aetherNode(minimalConfig(appHttp, managementPort, tls, managementProtocol), () -> {})
                          .fold(cause -> {
                                    throw new AssertionError("assembly failed before start: " + cause.message());
@@ -128,11 +129,10 @@ class AetherNodeBrokenTlsBootTest {
                                booted -> booted);
 
         var started = node.start().await(timeSpan(45).seconds());
-        var listening = managementProtocol == HttpProtocol.H1 && connects(listenerPort);
 
-        assertThat(listening).as("nothing listens on the configured port, TLS or plain").isFalse();
         assertThat(started.isFailure()).as("the node refuses to start").isTrue();
-        started.onFailure(cause -> assertThat(cause).isInstanceOf(HttpServerError.TlsFailed.class));
+        started.onFailure(cause -> assertThat(cause).as("the refused port is held by the test: a bind attempt would surface as a bind error, not as the TLS refusal")
+                                                    .isInstanceOf(HttpServerError.TlsFailed.class));
     }
 
     private static AetherNodeConfig minimalConfig(AppHttpConfig appHttp,
@@ -158,15 +158,6 @@ class AetherNodeBrokenTlsBootTest {
                                 .managementHttpProtocol(managementProtocol)
                                 .storageConfig(Map.of())
                                 .build();
-    }
-
-    private static boolean connects(int port) {
-        try (var socket = new Socket()) {
-            socket.connect(new InetSocketAddress("127.0.0.1", port), 2_000);
-            return true;
-        } catch (IOException refused) {
-            return false;
-        }
     }
 
     private static int freePort() {

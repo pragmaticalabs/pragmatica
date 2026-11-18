@@ -13,11 +13,12 @@ import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Option;
+import org.pragmatica.net.tcp.security.CertificateBundle;
 import org.pragmatica.net.tcp.TlsConfig;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.net.Socket;
+import java.io.ByteArrayInputStream;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -37,10 +38,11 @@ class AppHttpServerRotationRaceTest {
     void rotate_overtakenByQuorumDrop_thenStop_closesTheRotatedListener() throws Exception {
         int port = TlsProbe.freeTcpPort();
         var server = appHttpServer(port);
+        var rotated = TlsProbe.validBundle("rotation-race-node");
 
         try {
             TlsProbe.requireStarted(server.start().await(timeSpan(30).seconds()), "app TLS listener");
-            var rotation = server.rotateCertificate(TlsProbe.validBundle("rotation-race-node"));
+            var rotation = server.rotateCertificate(rotated);
 
             // No assertion between the two calls: the first AssertJ use costs tens of milliseconds, which is longer
             // than the rotation takes, and the quorum drop would then land after the rotation had finished.
@@ -55,7 +57,7 @@ class AppHttpServerRotationRaceTest {
             server.stop().await(timeSpan(30).seconds());
         }
 
-        assertThat(TlsProbe.eventually(() -> !isListening(port), CLOSE_BUDGET_MS))
+        assertThat(TlsProbe.eventually(() -> !servesCertificate(port, rotated), CLOSE_BUDGET_MS))
             .as("after stop(), the listener the rotation bound is closed").isTrue();
     }
 
@@ -64,9 +66,10 @@ class AppHttpServerRotationRaceTest {
     void rotate_overtakenByStop_closesTheRotatedListener() throws Exception {
         int port = TlsProbe.freeTcpPort();
         var server = appHttpServer(port);
+        var rotated = TlsProbe.validBundle("rotation-race-node");
 
         TlsProbe.requireStarted(server.start().await(timeSpan(30).seconds()), "app TLS listener");
-        var rotation = server.rotateCertificate(TlsProbe.validBundle("rotation-race-node"));
+        var rotation = server.rotateCertificate(rotated);
 
         // No assertion before stop(): see the quorum-drop test.
         var unresolved = !rotation.isResolved();
@@ -78,15 +81,20 @@ class AppHttpServerRotationRaceTest {
         assertThat(outcome.isFailure()).as("a rotation whose new listeners were closed is not reported as applied").isTrue();
         outcome.onFailure(cause -> assertThat(cause).isSameAs(AppHttpRotationError.General.ROTATION_DISCARDED));
 
-        assertThat(TlsProbe.eventually(() -> !isListening(port), CLOSE_BUDGET_MS))
+        assertThat(TlsProbe.eventually(() -> !servesCertificate(port, rotated), CLOSE_BUDGET_MS))
             .as("the listener the rotation bound after stop() is closed").isTrue();
     }
 
-    private static boolean isListening(int port) {
-        try (var socket = new Socket()) {
-            socket.connect(new InetSocketAddress("127.0.0.1", port), 500);
-            return true;
-        } catch (IOException notListening) {
+    /// True only while the SUBJECT's rotated listener answers: it must complete a TLS handshake presenting the rotated
+    /// certificate. A bare connect would also succeed against any other process that took the released port (#3321), and
+    /// no such process can present this certificate, so a rival cannot turn the "closed" verdict red.
+    private static boolean servesCertificate(int port, CertificateBundle bundle) {
+        try {
+            var expected = (X509Certificate) CertificateFactory.getInstance("X.509")
+                                                               .generateCertificate(new ByteArrayInputStream(bundle.certificatePem()));
+
+            return TlsProbe.sameCertificate(expected, TlsProbe.presentedCertificate(port));
+        } catch (Exception notTheSubject) {
             return false;
         }
     }
