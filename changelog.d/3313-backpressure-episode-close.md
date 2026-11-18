@@ -6,7 +6,7 @@
   handlers' `onWritable` was a no-op in every production construction.
 - An episode of (peer, lane) is now open exactly while a frame of that (peer, lane) is held in any backlog of the peer,
   or the lane's latest counted write found a stream that is still active and still unwritable. One closer,
-  `settle(peer)`, re-evaluates every open episode of the peer and ends each for which both are false. Six triggers run
+  `settleUnderMonitor`, re-evaluates every open episode of the peer and ends each for which both are false. Six triggers run
   it: a held frame leaving a drain pass (written or given up), an abandoned frame, the lane stream's writability event
   (now wired at all six handler construction sites and at certificate rotation), the lane stream going inactive (a
   stream that dies while its connection lives now ends its episode, also when the lane was moved to a new stream), the
