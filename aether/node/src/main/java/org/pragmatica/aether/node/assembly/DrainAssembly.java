@@ -339,7 +339,7 @@ public sealed interface DrainAssembly {
         initiateDrain(drainProcedure, holder, DrainReason.COMMANDED);
     }
 
-    /// #3193 ruling item 2: the halt a live worker runs when its own activation directive is retired with no replacement
+    /// #3193 ruling item 2: the halt a live worker runs when its own activation directive is retired (#3330: whatever the store holds)
     /// (`OwnDirectiveRetirement`). The same local drain the core-absence fence starts, under its own reason, so the drain
     /// ends in the node's drained exit (`AetherNode.EXIT_DRAINED`, through `jvmExit`) and no second exit route exists.
     static Runnable directiveRetiredHalt(DrainProcedure drainProcedure, NodeReportedStateHolder holder) {
