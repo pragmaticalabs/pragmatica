@@ -794,12 +794,14 @@ class DurableEntityForgeTest {
     private String getReadable(int port, String key) {
         var deadline = System.nanoTime() + WAIT_TIMEOUT.toNanos();
         var backoffMillis = 20L;
+        var retries = 0;
         String last;
 
         while (true) {
             last = get(port, key);
 
             if (!"failed".equals(outcome(last))) {
+                LOG.log(System.Logger.Level.INFO, "getReadable key={0} port={1} transientRetries={2}", key, port, retries);
                 return last;
             }
 
@@ -811,6 +813,7 @@ class DurableEntityForgeTest {
                 throw new AssertionError("read of '" + key + "' on port " + port + " still refused transiently after " + WAIT_TIMEOUT
                                          + "; last response: " + last);
             }
+            retries++;
             LockSupport.parkNanos(Duration.ofMillis(backoffMillis).toNanos());
             backoffMillis = Math.min(backoffMillis * 2, POLL_INTERVAL.toMillis());
         }
