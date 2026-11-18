@@ -42,6 +42,15 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// the put is refused and, with no open apply to re-drive it, only the awaited-target watch (`Blueprints.sweepAwaited`) is left to act,
 /// at its 120 s bound. It then raises the warning and re-sends the put, which commits.
 ///
+/// The batch is committed only after the leader's FSM has rebuilt and run a reconcile pass. A `Rebuild` reads the committed store as ONE
+/// snapshot (`ClusterFsmInterpreter.rebuild`), and a snapshot taken after the batch holds only its final value, the `registerOnly` one, for
+/// which declaring nothing is correct: the leader would be inert and the wait below would time out. Right after the election the rebuild
+/// ran 89 ms before the batch's first put reached the FSM on a quiet host (t3301c, 2026-11-18), so the order was a race, lost under load.
+/// The gate is a fixture need, not a product workaround: a real publish commits an apply record with the blueprint, and the first
+/// reconcile after a `Rebuild` re-declares such a blueprint (`Blueprints.redrive`); this batch has no apply record and ends
+/// `registerOnly`, so only a live put can declare it (t3301d, 2026-11-18: blueprint committed before the rebuild, target committed with
+/// an apply record, never without one).
+///
 /// The assertion is on code AND subject AND origin, so no other producer satisfies it: the node-side FSM raises the same code with the
 /// subject `<artifact>@<node>` (Planner), and the origin of this event must be the leader.
 @PortBudget
@@ -59,6 +68,10 @@ class EmberLeaderAwaitedTargetFsm2Test {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(180).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final TimeSpan APPLY_BOUND = TimeSpan.timeSpan(30).seconds();
+    private static final long SUBMIT_BOUND_MS = 30_000L;
+    private static final long PASS_BOUND_MS = 60_000L;
+    private static final String SUBMISSIONS = "aether_deployment_fsm_submissions_total";
+    private static final String RECONCILE_PASSES = "aether_deployment_fsm_reconcile_passes_total";
     private static final String AWAITING_TARGET = "slice-start-awaiting-target";
     private static final BlueprintId OWNER = BlueprintId.blueprintId("org.example:awaited-app:1.0.0").unwrap();
     private static final Artifact SLICE = Artifact.artifact("org.example:awaited-slice:1.0.0").unwrap();
@@ -83,9 +96,17 @@ class EmberLeaderAwaitedTargetFsm2Test {
 
         assertThat(count(follower, leaderId)).as("control: nothing raised yet").isZero();
 
+        awaitCondition(() -> "the leader FSM never completed a reconcile pass (rebuilt and not suspended); leader " + leaderId,
+                       PASS_BOUND_MS,
+                       () -> leaderReconcilePasses(leader) >= 1.0);
         commitDeployingThenRegisterOnly(leader);
 
-        sleepQuietly(8_000L);
+        awaitCondition(() -> "control: the leader FSM never submitted a target put (kind=TARGETS, outcome=submitted), so it never declared the blueprint: it is inert (suspended, or rebuilt from a snapshot that already held the registerOnly value); leader " + leaderId,
+                       SUBMIT_BOUND_MS,
+                       () -> targetArm(leader, "submitted") >= 1.0);
+        awaitCondition(() -> "control: the leader's target put was never refused (outcome=refused*), so the put committed or was lost; leader " + leaderId,
+                       SUBMIT_BOUND_MS,
+                       () -> refusedTargets(leader) >= 1.0);
         assertThat(leader.kvStore().get(SliceTargetKey.sliceTargetKey(SLICE.base())).isPresent())
             .as("control: the first target put was refused, so the leader is awaiting a committed target")
             .isFalse();
@@ -116,6 +137,40 @@ class EmberLeaderAwaitedTargetFsm2Test {
 
     private static void throwAssertion(String message) {
         throw new AssertionError(message);
+    }
+
+    /// The leader FSM's target-batch submissions of one outcome arm: the leader's own count of what it sent, read from its meters.
+    private static double targetArm(AetherNode leader, String outcome) {
+        return counterSum(leader, SUBMISSIONS, "fsm", "cluster", "kind", "TARGETS", "outcome", outcome);
+    }
+
+    /// Reconcile passes the leader's cluster FSM completed: counted only past `Rebuild` and while not suspended (`Reconcile.run`).
+    private static double leaderReconcilePasses(AetherNode leader) {
+        return counterSum(leader, RECONCILE_PASSES, "fsm", "cluster");
+    }
+
+    private static double counterSum(AetherNode node, String name, String... tags) {
+        return node.deploymentWiring()
+                   .meters()
+                   .find(name)
+                   .tags(tags)
+                   .counters()
+                   .stream()
+                   .mapToDouble(counter -> counter.count())
+                   .sum();
+    }
+
+    /// The target batches the applier refused (any `refused_*` arm: version, mirror lag or witness).
+    private static double refusedTargets(AetherNode leader) {
+        return leader.deploymentWiring()
+                     .meters()
+                     .find(SUBMISSIONS)
+                     .tags("fsm", "cluster", "kind", "TARGETS")
+                     .counters()
+                     .stream()
+                     .filter(counter -> counter.getId().getTag("outcome").startsWith("refused"))
+                     .mapToDouble(counter -> counter.count())
+                     .sum();
     }
 
     /// The warnings of the awaited-target code, for this artifact exactly, that the LEADER originated.
