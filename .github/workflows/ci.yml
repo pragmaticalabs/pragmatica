@@ -390,8 +390,11 @@ jobs:
         run: mvn test -B -pl core -Dtest=TimeSpanTest -Dsurefire.failIfNoSpecifiedTests=false
 
       # Saved only on success: the key is exact and immutable, so a save from a partial run would pin an incomplete set.
+      # Saved only on a push to the release branch (#3338): every PR and merge-group ref saved its own 700 MB copy, the repository
+      # sat at its 10 GB cache limit with 16 entries, and the v2 entry saved on this PR's ref was evicted within two hours,
+      # together with the release branches' entries. PR and queue runs restore the branch's entry through the base-branch scope.
       - name: Save Maven repository (full-set cache)
-        if: success()
+        if: success() && github.event_name == 'push'
         uses: actions/cache/save@v4
         with:
           path: ~/.m2/repository
