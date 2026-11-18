@@ -252,8 +252,13 @@ class DHTStrayCurrencyTripwireTest {
             assertThat(collected(holders)).as("control: the tombstone expired and is collected on A, B, D. Trace: %s", trace).isTrue();
             snapshot("expired");
 
+            var sentinel = bytes("t3347-sentinel");
+
+            cluster.member(a).client().put(sentinel, BLOCK).await().unwrap();
+            assertThat(holders).as("sentinel entry live on A, B, D before the restarts").allMatch(id -> cluster.holdsLive(id, sentinel));
             holders.forEach(id -> {
                 cluster.restartEmpty(id, RF3);
+                assertThat(cluster.holdsLive(id, sentinel)).as("restarted " + id.id() + " lost its disk: the sentinel is gone").isFalse();
                 assertThat(cluster.entryAt(id, key).isPresent()).as("restarted " + id.id() + " holds an empty store").isFalse();
             });
             snapshot("restarted-empty");
