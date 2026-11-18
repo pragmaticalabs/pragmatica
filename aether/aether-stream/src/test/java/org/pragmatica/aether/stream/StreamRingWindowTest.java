@@ -336,14 +336,15 @@ class StreamRingWindowTest {
         var source = withoutComments(rawSource);
         var hits = new ArrayList<String>();
         var imported = staticImports(source);
+        // An import declaration is not a use: the static import of MAX_CAPACITY is counted at its unqualified use only.
+        var body = withoutImports(source);
 
-        QUALIFIED_CAPACITY.matcher(source).results().forEach(_ -> hits.add("OffHeapRingBuffer.MAX_CAPACITY"));
-        QUALIFIED_FACTORY.matcher(source).results().forEach(m -> factoryHit(source, m.end(), hits));
+        QUALIFIED_CAPACITY.matcher(body).results().forEach(_ -> hits.add("OffHeapRingBuffer.MAX_CAPACITY"));
+        QUALIFIED_FACTORY.matcher(body).results().forEach(m -> factoryHit(body, m.end(), hits));
         if (imported.contains("MAX_CAPACITY") || imported.contains("*")) {
-            UNQUALIFIED_CAPACITY.matcher(withoutImports(source)).results().forEach(_ -> hits.add("MAX_CAPACITY (static import)"));
+            UNQUALIFIED_CAPACITY.matcher(body).results().forEach(_ -> hits.add("MAX_CAPACITY (static import)"));
         }
         if (imported.contains("offHeapRingBuffer") || imported.contains("*")) {
-            var body = withoutImports(source);
             UNQUALIFIED_FACTORY.matcher(body).results().forEach(m -> factoryHit(body, m.end(), hits));
         }
         return hits;
@@ -515,8 +516,9 @@ class StreamRingWindowTest {
         }
     }
 
+    /// A `system:` stream is written as its system publisher is (`systemWriter = true`, #1338); any other writer is refused.
     private static void publish(StreamPartitionManager manager, String stream, byte[] payload) {
-        manager.publishLocal(stream, 0, payload, System.currentTimeMillis())
+        manager.publishLocalAtFloor(stream, 0, payload, System.currentTimeMillis(), 0, stream.startsWith("system:"))
                .onFailure(cause -> fail("publish " + payload.length + " B to " + stream + ": " + cause.message()));
     }
 

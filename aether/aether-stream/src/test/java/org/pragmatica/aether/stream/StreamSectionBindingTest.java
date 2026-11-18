@@ -444,15 +444,15 @@ class StreamSectionBindingTest {
                 manager.close();
             }
         }
+    }
 
-        private static void assertDefaultWindow(StreamPartitionManager manager, String stream) {
-            var ring = manager.partitionBuffer(stream, 0)
-                              .onEmpty(() -> fail("no ring for " + stream))
-                              .unwrap();
+    private static void assertDefaultWindow(StreamPartitionManager manager, String stream) {
+        var ring = manager.partitionBuffer(stream, 0)
+                          .onEmpty(() -> fail("no ring for " + stream))
+                          .unwrap();
 
-            assertThat(ring.controlBytes()).as("the index is the default window's")
-                                           .isEqualTo(RingGeometry.HEADER_SIZE + RingGeometry.INDEX_ENTRY_SIZE * RingGeometry.HOT_WINDOW_ENTRIES);
-        }
+        assertThat(ring.controlBytes()).as("the index is the default window's")
+                                       .isEqualTo(RingGeometry.HEADER_SIZE + RingGeometry.INDEX_ENTRY_SIZE * RingGeometry.HOT_WINDOW_ENTRIES);
     }
 
     /// v1557 probed two cases where deploy (TOML text) and activation (flattened provider) disagreed; both views
