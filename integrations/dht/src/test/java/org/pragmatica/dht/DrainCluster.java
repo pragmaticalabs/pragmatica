@@ -149,7 +149,9 @@ final class DrainCluster {
             sentTo.add(target);
             entriesTo.merge(target, response.entries().size(), Integer::sum);
             if (target.equals(removeOnFirstSend)) {
+                // As DHTTopologyListener.removeFromRing: prune the ring, then onViewChange (#3345's re-plan trigger).
                 members.get(from).node().ring().removeNode(target);
+                members.get(from).rebalancer().onViewChange();
                 removeOnFirstSend = null;
             }
         }

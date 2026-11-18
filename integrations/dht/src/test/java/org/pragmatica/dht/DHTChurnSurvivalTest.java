@@ -720,9 +720,12 @@ class DHTChurnSurvivalTest {
             throw new AssertionError("no key whose self-only newcomer is a co-departing node found");
         }
 
+        /// The ring change as `DHTTopologyListener.removeFromRing` makes it: prune the ring, then tell the rebalancer's running
+        /// departure pushes (`onViewChange`, #3345's re-plan trigger).
         void remove(NodeId id) {
             members.remove(id);
             members.values().forEach(existing -> existing.ring().removeNode(id));
+            members.values().forEach(existing -> existing.rebalancer().onViewChange());
         }
 
         Member member(NodeId id) {
