@@ -3693,7 +3693,7 @@ class ClusterEventAggregatorTest {
 
             expireRedelivery(h, clock);
             assertThat(h.aggregator().redeliveryDropped()).as("control: the warning was given up on").containsEntry("expired", 1L);
-            assertThat(landed(closing)).isFalse();
+            assertThat(answer(closing)).isFalse();
             h.aggregator().interceptPublish(event -> attemptThen(attempted, event, h.publisher().get().publish(event)));
             clock.addAndGet(ClusterEventRedelivery.MAX_BACKOFF_MS);
             h.aggregator().redeliverDue();
@@ -3858,7 +3858,7 @@ class ClusterEventAggregatorTest {
         void raiseLanded_closerDuringReplayWithNoOpenWarning_falseAtOnce() {
             var h = Harness.create(Harness.defaultRetention(), OWNER, () -> true);
 
-            assertThat(landed(h.aggregator().raiseLanded(holdEnded("n1@1")))).as("nothing would ever publish it").isFalse();
+            assertThat(answer(h.aggregator().raiseLanded(holdEnded("n1@1")))).as("nothing would ever publish it").isFalse();
             assertThat(h.events()).isEmpty();
         }
 
@@ -3919,15 +3919,46 @@ class ClusterEventAggregatorTest {
             assertThat(codes(h)).containsExactly("gossip-key-unknown-from-peer");
         }
 
+        @Test
+        @Timeout(10)
+        void raiseLanded_replayHeldCloserOfAKeyTheOpenCapRefused_settlesFalseAtTheTick() {
+            var replaying = new AtomicBoolean(false);
+            var clock = new AtomicLong(1_000_000L);
+            var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get, LEADER,
+                                   HlcClock.hlcClock(SELF, clock::get, Long.MAX_VALUE));
+
+            assertThat(landed(h.aggregator().raiseLanded(gossipKeyUnknown("10.0.0.1:7000")))).as("control: opened before the replay").isTrue();
+            replaying.set(true);
+            var held = h.aggregator().raiseLanded(gossipKeyDecrypted("10.0.0.1:7000"));
+
+            assertThat(held.isResolved()).as("control: held during replay").isFalse();
+            replaying.set(false);
+            clock.addAndGet(ClusterEventAggregator.SPOOFABLE_OPEN_TTL_MS + 1);
+            for (var i = 0; i < ClusterEventAggregator.MAX_OPEN_RECOVERABLE_PER_CODE; i++) {
+                assertThat(landed(h.aggregator().raiseLanded(gossipKeyUnknown("10.1.0." + i + ":7000")))).as("control: the expired mark freed its slot").isTrue();
+            }
+
+            assertThat(answer(h.aggregator().raiseLanded(gossipKeyUnknown("10.0.0.1:7000")))).as("the recurrence is refused by the full cap").isFalse();
+            assertThat(h.aggregator().openCapDropped()).as("control: refused by the cap").isEqualTo(1L);
+            h.aggregator().redeliverDue();
+            assertThat(answer(held)).as("the repair kept behind the refusal settles at the tick, never published").isFalse();
+            assertThat(codes(h)).doesNotContain("gossip-key-peer-decrypted");
+        }
+
         /// For a `false` expectation: an answer still pending after [#SETTLE] reads `true`, so only a completed `false` passes.
         private static boolean answer(Promise<Boolean> raised) {
             return raised.await(SETTLE)
                          .fold(_ -> true, landed -> landed);
         }
 
+        /// The resolved answer; a promise still pending after [#SETTLE] (or failed) fails the test, so a `false` assertion cannot pass on a promise that never resolved.
         private static boolean landed(Promise<Boolean> raised) {
             return raised.await(SETTLE)
-                         .fold(_ -> false, landed -> landed);
+                         .fold(RaiseLanded::unresolved, landed -> landed);
+        }
+
+        private static boolean unresolved(Cause cause) {
+            throw new AssertionError("the promise did not resolve to an answer: " + cause.message());
         }
 
         private static List<String> codes(Harness h) {
