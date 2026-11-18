@@ -78,6 +78,21 @@
 
     <build>
         <plugins>
+            <!-- Attach the test sources as a consumable test-jar so the modules whose tests restate a stream ring
+                 (node, ember) reuse HotWindowFixture without copying it. Precedent: the statemachine test-jar.
+                 The jar carries a test HELPER only (it builds a StreamConfig for a test); it holds no second copy of
+                 production behaviour, unlike the test-jar the jbct ruling removed. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
