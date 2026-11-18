@@ -14,7 +14,7 @@ class SkeletonAnnotationsTest {
 
             @One public @Two final @Three int f;
 
-            public @Mid class Inner {}
+            public @Init A() {}
         }
         """;
 
@@ -29,8 +29,8 @@ class SkeletonAnnotationsTest {
     }
 
     @Test
-    void anAnnotationAfterAModifier_isListedOnAType() {
-        assertThat(annotationsOf("Inner")).containsExactly("@Mid");
+    void anAnnotationAfterAModifier_isListedOnAConstructor() {
+        assertThat(annotationsOf("A")).containsExactly("@Init");
     }
 
     private static java.util.List<String> annotationsOf(String name) {

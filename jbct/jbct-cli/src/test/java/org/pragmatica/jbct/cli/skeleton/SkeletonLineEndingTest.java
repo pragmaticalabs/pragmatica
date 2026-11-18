@@ -9,7 +9,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// Rows count a lone CR as a line terminator and CRLF as one, as the Java compiler does.
 class SkeletonLineEndingTest {
-    private static final String BODY = "package p;\n\n/// doc\nclass A {\n    int f;\n\n    void m() {}\n}\n";
+    private static final String BODY = "package p;\n\n/** doc */\nclass A {\n    int f;\n\n    void m() {}\n}\n";
 
     @Test
     void crOnly_aClassOnRowThree_reportsRowThree() {
