@@ -346,6 +346,9 @@ public interface SystemTags {
         pin(table, 707, "org.pragmatica.aether.slice.RetentionPolicy");
         pin(table, 708, "org.pragmatica.aether.slice.SliceState");
         pin(table, 709, "org.pragmatica.aether.slice.StreamCompression");
+        // Known limit of the #3334 flag day: this tag did not move when `StreamConfig` gained `declaration`, so an OLD node decodes a
+        // bare new `StreamConfig` silently (the trailing declaration byte is ignored; probe, v3361). Safe while `StreamConfigValue`
+        // (tag 2920) is the only wire carrier of a `StreamConfig`; a mixed-version cluster is not supported.
         pin(table, 710, "org.pragmatica.aether.slice.StreamConfig");
         pin(table, 711, "org.pragmatica.aether.slice.TierAwareRetention");
         pin(table, 712, "org.pragmatica.aether.slice.RetentionDimensions");
