@@ -141,11 +141,11 @@ class JbctModeFixtureTest {
         logs.clear();
         try {
             mojo.execute();
-            assertThat(logs).containsAll(capture.lines());
+            capture.assertLogged(logs);
 
             return String.join("\n", logs);
         } catch (Exception e) {
-            assertThat(logs).containsAll(capture.lines());
+            capture.assertLogged(logs);
 
             return String.join("\n", logs) + "\n" + e.getMessage();
         }
@@ -154,11 +154,11 @@ class JbctModeFixtureTest {
     private boolean fails(Mojo mojo) {
         try {
             mojo.execute();
-            assertThat(logs).containsAll(capture.lines());
+            capture.assertLogged(logs);
 
             return false;
         } catch (Exception e) {
-            assertThat(logs).containsAll(capture.lines());
+            capture.assertLogged(logs);
             logs.add(e.getMessage());
 
             return true;

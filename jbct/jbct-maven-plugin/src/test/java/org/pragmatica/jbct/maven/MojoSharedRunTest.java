@@ -42,6 +42,7 @@ class MojoSharedRunTest {
     Path tempDir;
 
     private final List<String> logs = new ArrayList<>();
+    private final List<String> entries = new ArrayList<>();
     private final RunCapture capture = new RunCapture();
     private String savedUserHome;
     private Path repo;
@@ -117,16 +118,24 @@ class MojoSharedRunTest {
             @Override
             public void info(CharSequence content) {
                 logs.add(content.toString());
+                entries.add("INFO " + content);
+            }
+
+            @Override
+            public void debug(CharSequence content) {
+                entries.add("DEBUG " + content);
             }
 
             @Override
             public void warn(CharSequence content) {
                 logs.add(content.toString());
+                entries.add("WARN " + content);
             }
 
             @Override
             public void error(CharSequence content) {
                 logs.add(content.toString());
+                entries.add("ERROR " + content);
             }
         });
 
@@ -143,9 +152,10 @@ class MojoSharedRunTest {
     private Optional<Exception> run(AbstractJbctMojo mojo, boolean includeTests) throws Exception {
         includeTests(mojo, includeTests);
         logs.clear();
+        entries.clear();
         var outcome = attempt(mojo);
 
-        assertThat(logs).containsAll(capture.lines());
+        capture.assertLogged(logs);
 
         return outcome;
     }
@@ -193,7 +203,8 @@ class MojoSharedRunTest {
         run(wire(new LintMojo(), repo, null, new Properties()), false);
 
         assertThat(findings()).containsExactlyInAnyOrderElementsOf(BOTH_MODULES_FINDINGS);
-        assertThat(logs).containsAll(capture.lines());
+        capture.assertLogged(logs);
+        assertThat(String.join("\n", logs)).contains("mode=business (from ").contains("mode=infrastructure (from ");
         assertThat(String.join("\n", logs)).doesNotContain("test-root files");
     }
 
@@ -204,7 +215,21 @@ class MojoSharedRunTest {
 
         assertThat(count(text, ARCH_02)).isEqualTo(1);
         assertThat(count(text, RET_03)).isEqualTo(2);
-        assertThat(logs).containsAll(capture.lines());
+        capture.assertLogged(logs);
+        assertThat(text).contains("mode=business (from ").contains("mode=infrastructure (from ");
+    }
+
+    /// The goal's own log lines are the run's, in the run's order, and no others: the plan's messages, then `before`,
+    /// then the findings, then `after`, each at its own level. Exact equality of the sequence, not containment (#2525;
+    /// mutants P1 an extra `getLog()` line, P4 `before` and `after` swapped).
+    @Test
+    void t1_theGoalLogs_exactlyTheRunsLines_inTheRunsOrder() throws Exception {
+        bothModules();
+
+        run(wire(new LintMojo(), repo, null, new Properties()), false);
+
+        assertThat(capture.expectedLog()).as("the run returned lines and findings").hasSizeGreaterThan(BOTH_MODULES_FINDINGS.size());
+        assertThat(entries).containsExactlyElementsOf(capture.expectedLog());
     }
 
     // ---- T2 / F6: identical declared roots are one root, each file once
