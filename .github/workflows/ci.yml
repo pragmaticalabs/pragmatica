@@ -436,9 +436,10 @@ jobs:
           retention-days: 7
 
   # Ember's tests (#1643), split by class across runners. They are serial in one module and took 53 of build-and-test's
-  # 89 minutes. The shard count is the matrix list's length: add an entry to go from 5 shards to 6. The required check
-  # names are ember-shard-1 .. ember-shard-N. Five shards, on weights regenerated from run 41371046891, plan about 15.9 min of
-  # tests each (4 shards planned 19.9 and measured a job of 21-23 min, the critical path), so the job is about 18 min and fits 35 with headroom.
+  # 89 minutes. The shard count is the matrix list's length: add an entry to go from 6 shards to 7. The required check
+  # names are ember-shard-1 .. ember-shard-N. Six shards plan about 21 min of tests each (rc6 with the rc5 tests: 5 shards planned
+  # 24.9-25.4 min against the 25 min budget, over capacity, not unbalanced). Many classes are still at the default weight:
+  # regenerate the weights from a CI run (tools/regen-shard-weights.py) to plan on measured times.
   ember-shard:
     needs: push-dedupe
     if: needs.push-dedupe.outputs.skip != 'true'
@@ -448,7 +449,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6]
     env:
       SHARDS: ${{ strategy.job-total }}
       SHARD: ${{ matrix.shard }}
