@@ -530,7 +530,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// Whether a drain of `node` is already commanded or reported by the node itself.
     public boolean drainUnderWay(NodeId node) {
         return pendingDrainsSupplier.get()
-                                    .contains(node) || readLifecycleState(node).filter(state -> state == NodeReportedState.DRAINING)
+                                    .contains(node) || readLifecycleState(node).filter(NodeReportedState::isDraining)
                                                                          .isPresent();
     }
 

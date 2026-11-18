@@ -116,6 +116,12 @@ class SystemCodecPinningTest {
                                                                  "org.pragmatica.cluster.state.kvstore.ReplicaEntry",
                                                                  "org.pragmatica.cluster.state.kvstore.CommitRing.RefusalReason");
 
+    /// The `HELD` report (#3345) is exempt because no one-byte slot is free (every slot 0..127 is pinned). Its cost, stated: it
+    /// rides the `ClusterSync` pong only while the sending node is `HELD` (a draining node whose departure push has not resolved), never
+    /// in steady state, and costs one extra byte per type occurrence there (the report and its end verdict).
+    private static final Set<String> D45_HELD_REPORT = Set.of("org.pragmatica.cluster.metrics.HeldReport",
+                                                              "org.pragmatica.cluster.metrics.HeldEnd");
+
     @Test
     void hotProtocolTypes_fitInTheOneByteWindow() {
         var hot = SystemTags.TAGS.entrySet()
@@ -130,6 +136,7 @@ class SystemCodecPinningTest {
                                                   && !A6_REPAIR_PLANE.contains(entry.getKey())
                                                   && !CONTROL_LOG_FORWARD.contains(entry.getKey())
                                                   && !W_OBS_REPLICA_FEED.contains(entry.getKey())
+                                                  && !D45_HELD_REPORT.contains(entry.getKey())
                                                   && !entry.getKey().startsWith("org.pragmatica.aether.stream.provenance.")
                                                   && !entry.getKey().startsWith("org.pragmatica.aether.stream.forward.ReadRefusal"))
                                  .filter(entry -> !RETIRED_IN_HOT_PACKAGES.contains(entry.getKey()))
