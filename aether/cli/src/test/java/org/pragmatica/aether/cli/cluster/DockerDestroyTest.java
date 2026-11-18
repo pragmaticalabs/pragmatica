@@ -319,7 +319,7 @@ class DockerDestroyTest {
         assertThat(code(result)).isEqualTo(ExitCode.SUCCESS);
         assertThat(removerCalls).as("the teardown went ahead").containsExactly(CLUSTER.value());
         assertThat(stderr()).doesNotContain("REFUSING");
-        assertThat(stdout()).contains("is the current leader").contains("its instance is deleted below")
+        assertThat(stdout()).contains("is the current leader or the node handling the request").contains("its instance is deleted below")
                             .contains("Outcome: drained 1, held for quorum 0, failed 0, leader held (" + B + ")");
         assertThat(http.requests()).as("a held leader is not sent a shutdown").noneMatch(r -> r.equals("POST /api/v1/nodes/shutdown/" + B));
     }

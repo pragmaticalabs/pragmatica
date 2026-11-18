@@ -131,10 +131,10 @@ class OutputFormatterErrorTest {
     /// (not a "not found"), with the action label the command passes to `checkResponseError`.
     @Test
     void checkResponseError_leaderRefusals_printServerTextForDrainAndShutdown() {
-        var drain = "{\"type\":\"about:blank\",\"title\":\"Conflict\",\"status\":409,\"detail\":\"Cannot drain node node-1: it is the current leader,"
-                    + " and a leader is not drained. `aether nodes shutdown` is refused for the leader too.\"}";
-        var shutdown = "{\"type\":\"about:blank\",\"title\":\"Conflict\",\"status\":409,\"detail\":\"Cannot shut down node node-1: it is the current leader,"
-                       + " and a leader is not shut down through the API.\"}";
+        var drain = "{\"type\":\"about:blank\",\"title\":\"Conflict\",\"status\":409,\"detail\":\"Cannot drain node node-1: it is the current leader or the node handling this request,"
+                    + " and such a node is not drained. `aether nodes shutdown` is refused for the leader too.\"}";
+        var shutdown = "{\"type\":\"about:blank\",\"title\":\"Conflict\",\"status\":409,\"detail\":\"Cannot shut down node node-1: it is the current leader or the node handling this request,"
+                       + " and such a node is not shut down through the API.\"}";
         var options = parseOptions("--format", "table");
 
         var drainExit = OutputFormatter.checkResponseError(drain, options, "Failed to drain node node-1");

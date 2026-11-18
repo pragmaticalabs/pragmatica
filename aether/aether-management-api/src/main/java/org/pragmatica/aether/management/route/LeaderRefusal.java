@@ -8,9 +8,9 @@ package org.pragmatica.aether.management.route;
 /// constants and a client recognises the refusal by the same constants: one definition, two readers.
 public interface LeaderRefusal {
     /// Ends the node id in the refusal of a leader drain: `Cannot drain node <id>` + this text.
-    String DRAIN_REASON = ": it is the current leader, and a leader is not drained.";
+    String DRAIN_REASON = ": it is the current leader or the node handling this request, and such a node is not drained.";
     /// Ends the node id in the refusal of a leader shutdown: `Cannot shut down node <id>` + this text.
-    String SHUTDOWN_REASON = ": it is the current leader, and a leader is not shut down through the API.";
+    String SHUTDOWN_REASON = ": it is the current leader or the node handling this request, and such a node is not shut down through the API.";
 
     /// True when a 409 problem body is the typed refusal of a drain or a shutdown of the leader.
     static boolean isLeaderRefusal(String body) {

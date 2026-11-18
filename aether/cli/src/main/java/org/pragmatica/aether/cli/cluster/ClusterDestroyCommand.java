@@ -1110,7 +1110,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// The typed refusal of a drain or a shutdown of the current leader: HTTP 409 whose problem body carries the wording
     /// the server builds from [LeaderRefusal]. The API has no stop-without-drain for the leader, so a destroy cannot drain
     /// it; like a node held for quorum, it is left to the instance deletion that follows.
-    private static final String LEADER_HELD_REASON = "held: current leader (not drained through the API)";
+    private static final String LEADER_HELD_REASON = "held: current leader or request-handling node (not drained through the API)";
 
     static boolean isLeaderRefusal(Cause cause) {
         return cause instanceof ClusterHttpClient.HttpError.ApiError apiError
@@ -1120,7 +1120,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
     private static NodeResult classifyRefusal(String nodeId, String operation, Cause cause) {
         if (isLeaderRefusal(cause)) {
-            System.out.printf("  Node %s is the current leader: the %s was refused, a leader is not drained or shut down through the API."
+            System.out.printf("  Node %s is the current leader or the node handling the request: the %s was refused, such a node is not drained or shut down through the API."
                              + " It is not shut down by this command; its instance is deleted below.%n",
                               nodeId,
                               operation);

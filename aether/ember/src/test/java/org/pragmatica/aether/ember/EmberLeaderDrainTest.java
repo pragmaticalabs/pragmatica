@@ -65,8 +65,8 @@ class EmberLeaderDrainTest {
     private static final long LEADER_BUDGET_MS = 90_000L;
     private static final long READY_BUDGET_MS = 90_000L;
     private static final int LEADER_CHANGE_SIZE = 4;
-    private static final String REFUSAL_BODY_FORMAT = "Cannot drain node %s: it is the current leader, and a leader is not drained. Move leadership first: stop this node's process from outside the cluster (the service manager or the container runtime) so the cluster elects another leader, then drain this node once it is no longer the leader. `aether nodes shutdown` is refused for the leader too.";
-    private static final String SHUTDOWN_REFUSAL_PREFIX_FORMAT = "Cannot shut down node %s: it is the current leader, and a leader is not shut down through the API. Move leadership first: stop this node's process from outside the cluster (the service manager or the container runtime) so the cluster elects another leader;";
+    private static final String REFUSAL_BODY_FORMAT = "Cannot drain node %s: it is the current leader or the node handling this request, and such a node is not drained. Move leadership first: stop this node's process from outside the cluster (the service manager or the container runtime) so the cluster elects another leader, then drain this node once it is no longer the leader. `aether nodes shutdown` is refused for the leader too.";
+    private static final String SHUTDOWN_REFUSAL_PREFIX_FORMAT = "Cannot shut down node %s: it is the current leader or the node handling this request, and such a node is not shut down through the API. Move leadership first: stop this node's process from outside the cluster (the service manager or the container runtime) so the cluster elects another leader;";
     // membership departure timeout = MembershipConfig.DEFAULT_SPLIT_TIMEOUT (15 s); the window covers it with margin
     private static final long OBSERVE_WINDOW_MS = 60_000L;
     private static final long SAMPLE_MS = 100L;

@@ -406,7 +406,7 @@ class NodeLifecycleRoutesDrainBudgetTest {
                 assertThat(((NodeLifecycleRoutes.LeaderCannotBeDrained) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
                 assertThat(cause.message()).as("the CLI recognises this refusal by the shared wording").contains(LeaderRefusal.DRAIN_REASON);
                 assertThat(cause.message()).isEqualTo(
-                    "Cannot drain node node-1: it is the current leader, and a leader is not drained. Move leadership first:"
+                    "Cannot drain node node-1: it is the current leader or the node handling this request, and such a node is not drained. Move leadership first:"
                     + " stop this node's process from outside the cluster (the service manager or the container runtime) so the cluster elects another"
                     + " leader, then drain this node once it is no longer the leader. `aether nodes shutdown` is refused for the leader too.");
             });

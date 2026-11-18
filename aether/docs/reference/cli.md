@@ -2694,7 +2694,7 @@ aether cluster destroy --cluster=my-cluster --yes
 
 Destroy takes every slice below its `minAvailable` floor by definition (it drains and shuts down every node without undeploying), so it sends `force=true` on every drain and shutdown request. The operator-drain slice floor (`aether nodes drain`, #1720) therefore never refuses it, and each node's breach is reported as a `slice-floor-breached-by-force` operator warning.
 
-The management API refuses a drain or a shutdown of the current leader (409; there is no way to stop a leader through it), so `destroy` cannot drain the leader. It reports the leader as held (`leader held (<id>)` in the outcome line), sends it no shutdown, and does not treat the refusal as a failure: the teardown goes ahead and the leader's instance is deleted with the rest by the cloud cleanup, as for a node held for quorum. Any other refusal still stops the destroy unless `--force-undrained` is given.
+The management API refuses a drain or a shutdown of the current leader or of the node handling the request (409; there is no way to stop a leader through it), so `destroy` cannot drain the leader. It reports that node as held (`leader held (<id>)` in the outcome line), sends it no shutdown, and does not treat the refusal as a failure: the teardown goes ahead and the leader's instance is deleted with the rest by the cloud cleanup, as for a node held for quorum. Any other refusal still stops the destroy unless `--force-undrained` is given.
 
 > **Cleanup failure is loud (#521).** If cloud resource termination fails, `destroy` exits
 > non-zero (`ExitCode.CLEANUP_FAILED`) and deliberately **keeps** the registry entry — the
