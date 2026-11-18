@@ -516,6 +516,23 @@ public final class OwnerActivation {
         this.peerRows = reset;
     }
 
+    /// Told that an activation completed ([#recordActivation]), after the partition is recorded as activated. Late-bound
+    /// ([#activationListener]); the default does nothing.
+    @FunctionalInterface
+    public interface ActivationListener {
+        @Contract
+        void activated(String stream, int partition);
+    }
+
+    private volatile ActivationListener activationListener = (_, _) -> {};
+
+    /// Late-bind the activation listener (#3307): the owner raises `visible` from its trusted acked marker when its ownership
+    /// activates, so the raise never waits for a read, write or snapshot to reach the owner. Set once at wiring.
+    @Contract
+    public void activationListener(ActivationListener listener) {
+        this.activationListener = listener;
+    }
+
     /// The offset up to which `peer`, which answered the probe with `watermark`, is a source for this owner: `watermark` capped at
     /// the committed-lineage end an earlier clipped catch-up learned for it (I-27, #1759), while its tail is still the one observed
     /// then. Late-bound ([#peerLineageEnd]).
@@ -1272,6 +1289,7 @@ public final class OwnerActivation {
                  partition,
                  selfWatermark.localWatermark(stream, partition),
                  record);
+        activationListener.activated(stream, partition);
 
         return Unit.unit();
     }

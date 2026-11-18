@@ -22,6 +22,8 @@ import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.ReadPreference;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage;
@@ -52,16 +54,19 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 /// instant the node object exists (an installer thread polls for new node instances while `start()` runs; the filter is a
 /// transport fault, the ack-persistence gap is not simulated).
 ///
-/// - Acceptance (PR-2f flip; OWNER ruling S2 (a), know `3cde22c5af`): the first read served after the restart -- one consumer
-///   read through the router -- covers the acked tail with the replicas' acks still held off, and the owner's visible head
-///   then reports it. PR-2f's acked marker records the owner's visible position on its tick and at a graceful stop; the
-///   marker is trusted, and raises visible, only at the owner's first admission, which a read triggers. The tripwire that
-///   pinned the bounded stall (visible below the tail for 15 s, then caught up by re-acks) is deleted with this flip.
+/// - Acceptance (PR-2f flip; OWNER ruling S2 (a), know `3cde22c5af`): every read served after the restart covers the acked
+///   tail with the replicas' acks still held off, and the owner's visible head reports it. PR-2f's acked marker records the
+///   owner's visible position on its tick and at a graceful stop; the marker is trusted only on the owner path. Since #3307
+///   the owner's ownership ACTIVATION restores it (`StreamAssembly` binds `OwnerActivation.activationListener` to
+///   `StreamPartitionManager.onOwnerActivated`), so visible reaches the acked tail with no read, write or snapshot reaching
+///   the owner. The tripwire that pinned the bounded stall (visible below the tail for 15 s, then caught up by re-acks) is
+///   deleted with the PR-2f flip.
 /// - #2654: life 2's first ownership record carries an incarnation strictly above life 1's, because no ownership epoch is
 ///   minted before the life's cluster incarnation commits.
-/// - Widened (OWNER ruling `ab33af11c6`, mechanism `e10cf838c9`): the acceptance covers a GOVERNOR read on a NON-owner too,
-///   which forwards to the owner while its copy is stale: (a) no announcement from the current owner in this life, or (b)
-///   its visible position below the announced one. Each arm has its own control and goes red with its condition removed.
+/// - Widened (OWNER ruling `ab33af11c6`, mechanism `e10cf838c9`): the acceptance covers a GOVERNOR read on a NON-owner too.
+///   Arm (a): the first such read after the restart, once the owner's activation has raised its visible head. Arm (b): a read
+///   while the non-owner's visible position is below the announced one, which forwards to the owner; it has its own control
+///   and goes red with that condition removed.
 @PortBudget
 class EmberOwnerRestartAckedTailTripwireTest {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(180).seconds();
@@ -73,11 +78,14 @@ class EmberOwnerRestartAckedTailTripwireTest {
     private static final long REBUILD_BUDGET_MS = 240_000L;
     private static final long BACKUP_QUIET_MS = 10_000L;
     private static final long FIRST_READ_BOUND_MS = 60_000L;
+    private static final long ACTIVATION_RAISE_BOUND_MS = 60_000L;
     private static final TimeSpan READ_BOUND = TimeSpan.timeSpan(15).seconds();
     private static final String STREAM = "b04";
     private static final String ENGINE_KEY = engineKey(STREAM);
 
     private final AtomicBoolean dropAcks = new AtomicBoolean(false);
+    private final AtomicBoolean holdOwnerReads = new AtomicBoolean(false);
+    private final AtomicLong heldOwnerReads = new AtomicLong();
     private final AtomicReference<AetherNode> starved = new AtomicReference<>();
     private final AtomicLong droppedAcks = new AtomicLong();
     private final Set<AetherNode> filtered = ConcurrentHashMap.newKeySet();
@@ -94,13 +102,17 @@ class EmberOwnerRestartAckedTailTripwireTest {
         StreamTripwireSupport.deleteTree(baseDir);
     }
 
-    /// The acceptance (OWNER rulings S2 (a) `3cde22c5af` and WIDEN `ab33af11c6`, mechanism `e10cf838c9`): every read served
-    /// after the restart covers the acked tail with the replicas' acks still held off, including a GOVERNOR read on a
-    /// non-owner. The owner's acked marker is restored at its first owner admission, which is demand-driven; a non-owner never
-    /// raises from the marker (`6665558916` S5), so its GOVERNOR read is forwarded to the owner while its copy is stale.
-    /// - Arm (a): before any announcement from the owner in this life, the non-owner forwards (red with condition (a) of
-    ///   `StreamPartitionManager.behindCommittedOwner` mutated out: its held copy serves `[]`).
-    /// - The owner's visible head reaches the acked tail with replica acks still held off.
+    /// The acceptance (OWNER rulings S2 (a) `3cde22c5af` and WIDEN `ab33af11c6`, mechanism `e10cf838c9`, #3307): every read
+    /// served after the restart covers the acked tail with the replicas' acks still held off, including a GOVERNOR read on a
+    /// non-owner. A non-owner never raises from the marker (`6665558916` S5), so its GOVERNOR read is forwarded to the owner
+    /// while its copy is behind the owner's announcement.
+    /// - Arm (a), #3307: the owner's visible head reaches the acked tail before ANY read is served after the restart -- none
+    ///   through the owner's router, none forwarded to it (the inbound filter drops every `ReadForward` of the stream at the
+    ///   node the committed record names, consumer and catch-up alike), no publish, no on-demand `mayServeAsOwner` -- with the
+    ///   replicas' acks still dropped, so only the owner's ownership activation can have raised it. Red with the
+    ///   `StreamAssembly` binding of `OwnerActivation.activationListener` made a no-op: visible then waits for an admission the
+    ///   hold keeps away. The hold is then released and the first non-owner GOVERNOR read covers the acked tail.
+    /// - The first owner-served read covers the acked tail, and the owner's visible head stays at it with replica acks held off.
     /// - Arm (b): acks flow again, the non-owner's inbound replication data and its backfill catch-up reads are dropped, the
     ///   owner's ISR drops it, and a pressure record plus [#LAGGED] more events are acknowledged by the owner and the third
     ///   node, so the non-owner holds an announcement above its own visible position. Its GOVERNOR read is forwarded (red with condition (b) mutated out: its
@@ -113,9 +125,14 @@ class EmberOwnerRestartAckedTailTripwireTest {
 
         assertThat(ringHead(owner)).as("control: the whole acked tail is in the owner's rebuilt ring").isEqualTo(ACKED_TAIL);
         assertThat(ringHead(nonOwner)).as("control: the non-owner holds the replayed tail in its own ring, so a local read would not fail PARTITION_NOT_LOCAL").isEqualTo(ACKED_TAIL);
-        assertThat(committedThrough(nonOwner)).as("control (arm a): the non-owner has no announcement from the owner in this life").isEqualTo(-1L);
 
-        assertThat(firstServedRead(nonOwner)).as("arm (a): the first non-owner GOVERNOR read after the restart covers the acked tail")
+        awaitUntil(() -> visibleHead(owner) == ACKED_TAIL,
+                   ACTIVATION_RAISE_BOUND_MS,
+                   "arm (a): the owner's activation raises its visible head to the acked tail with no read, write or replica ack reaching it");
+        holdOwnerReads.set(false);
+
+        assertThat(firstServedRead(nonOwner)).as("arm (a): the first non-owner GOVERNOR read after the restart covers the acked tail (%d forwarded reads held from the owner)",
+                                                 heldOwnerReads.get())
                                              .hasSize(ACKED);
         assertThat(firstServedRead(owner)).as("the first owner-served read after the restart covers the acked tail").hasSize(ACKED);
         assertThat(highestVisibleOver(owner, 5_000L)).as("the owner's visible head, with replica acks held off").isEqualTo(ACKED_TAIL);
@@ -204,8 +221,8 @@ class EmberOwnerRestartAckedTailTripwireTest {
     }
 
     /// Life 1: acknowledge [#ACKED] events. Then a whole-cluster stop and start over the same directories with replica acks
-    /// dropped from the moment each node object exists. Returns the node that owns the partition in life 2, once its ring holds
-    /// the replayed tail.
+    /// dropped, and reads forwarded to the owner held ([#isReadForwardedToOwner]), from the moment each node object exists.
+    /// Returns the node that owns the partition in life 2, once its ring holds the replayed tail.
     private AetherNode restartWithAcksHeldOff() {
         baseDir = StreamTripwireSupport.newDataDir("b04-tripwire");
 
@@ -232,6 +249,7 @@ class EmberOwnerRestartAckedTailTripwireTest {
 
         LifecycleSettled.stop(cluster, STOP_BOUND);
         dropAcks.set(true);
+        holdOwnerReads.set(true);
 
         var installer = Thread.ofPlatform().name("b04-filter-installer").start(this::installFilters);
 
@@ -272,8 +290,30 @@ class EmberOwnerRestartAckedTailTripwireTest {
 
             return false;
         }
+        if (holdOwnerReads.get() && isReadForwardedToOwner(receiver, message)) {
+            heldOwnerReads.incrementAndGet();
+
+            return false;
+        }
 
         return true;
+    }
+
+    /// A forwarded read of the stream (consumer or catch-up) arriving at the node its own store names owner, from a node that
+    /// is not named owner in its own store: the reads that would reach an owner admission and restore the acked marker there.
+    /// The owner promotion gate's own peer reads are sent BY the node named owner, so they pass, even to a peer still holding
+    /// life 1's record naming itself.
+    private boolean isReadForwardedToOwner(AetherNode receiver, Object message) {
+        return message instanceof StreamForwardMessage.ReadForward read && ENGINE_KEY.equals(read.streamName())
+               && namesItselfOwner(receiver)
+               && !cluster.getNode(read.sender().id()).filter(EmberOwnerRestartAckedTailTripwireTest::namesItselfOwner).isPresent();
+    }
+
+    private static boolean namesItselfOwner(AetherNode node) {
+        return node.kvStore()
+                   .getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(ENGINE_KEY, PARTITION), StreamPartitionOwnershipValue.class)
+                   .filter(record -> record.owner().equals(node.self()))
+                   .isPresent();
     }
 
     /// Replication data for the stream: what would let a starved copy catch up.
