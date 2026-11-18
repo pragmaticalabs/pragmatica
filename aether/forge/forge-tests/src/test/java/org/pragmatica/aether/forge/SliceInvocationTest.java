@@ -289,6 +289,12 @@ class SliceInvocationTest {
     // The undeploy wait used to be a bare `!getSlices().contains("echo-slice")`: an error body from the
     // status endpoint contains no "echo-slice" either, so a failing query satisfied "undeployed". The
     // shared fail-fast below turns that into a named failure instead of a false green.
+    // #3391 item 1, SAFE unless an unpublish failed: the list does not lag the route. A hosting node's UNPUBLISH step (its `NodeRoutesKey` remove, resolved
+    // only once committed) runs before its unload, and the slice row the list reads is removed after the unload; the list drops
+    // the slice only when every instance's row is gone, and this reader applies the route removals before them (KV apply
+    // order). List and route lookup both go through the same node (`anyMgmtPort`), so the 404 below reads that node's registry.
+    // The unpublish is best-effort: a publisher failure is swallowed and the route may then outlive the row (SliceRuntimeAdapter),
+    // in which case the 404 below can fail where the list already reads absent.
     private void awaitEchoSliceUndeployed() {
         awaitSlices("echo-slice absent from /api/v1/slices/status after blueprint delete",
                     slices -> !slices.contains("echo-slice"),

@@ -153,7 +153,7 @@ class EmberNodeReplacementTest {
     @Disabled("enable when #2021 lands; coldBootCrashOfTheOldNode_endsSafely_whicheverWayDeadnessIsDetected holds the safety invariant meanwhile")
     @Timeout(600)
     void oldNodeKilledWhileTheReplacementIsJoining_stillCompletes_andTheCorpseIsNeverDrained() {
-        var victimId = crashOldNodeWhileTheReplacementIsJoining("rpk", 0L);
+        var victimId = crashOldNodeWhileTheReplacementIsJoining("rpk", false);
 
         assertThat(recordOf(victimId).phase()).as("reason: %s", recordOf(victimId).reason()).isEqualTo(NodeReplacementPhase.DONE);
         assertOldGone_newVotes(victimId);
@@ -175,7 +175,7 @@ class EmberNodeReplacementTest {
         var probe = new SafetyProbe(this);
         var watch = new Watch[1];
         var victimId = crashOldNodeWhileTheReplacementIsJoining("rpk",
-                                                               0L,
+                                                               false,
                                                                victim -> watch[0] = Watch.begin(this, 3).watching(victim),
                                                                probe::begin);
         var result = watch[0].finish();
@@ -290,7 +290,7 @@ class EmberNodeReplacementTest {
     @Test
     @Timeout(600)
     void oldNodeCrashedWhileJoining_onASettledCluster_stillCompletes_andTheCorpseIsNeverDrained() {
-        var victimId = crashOldNodeWhileTheReplacementIsJoining("rpz", 30_000L);
+        var victimId = crashOldNodeWhileTheReplacementIsJoining("rpz", true);
 
         assertThat(recordOf(victimId).phase()).as("reason: %s", recordOf(victimId).reason()).isEqualTo(NodeReplacementPhase.DONE);
         assertOldGone_newVotes(victimId);
@@ -303,7 +303,7 @@ class EmberNodeReplacementTest {
     @Test
     @Timeout(600)
     void oldNodeCrashedWithoutAnObservedReservation_isStillReaped_andLeavesTheProviderListing() {
-        var victimId = crashOldNodeWhileTheReplacementIsJoining("rpz", 30_000L, victim -> forgetReservation(victim), _ -> {});
+        var victimId = crashOldNodeWhileTheReplacementIsJoining("rpz", true, victim -> forgetReservation(victim), _ -> {});
 
         assertThat(recordOf(victimId).phase()).as("reason: %s", recordOf(victimId).reason()).isEqualTo(NodeReplacementPhase.DONE);
         assertOldGone_newVotes(victimId);
@@ -315,13 +315,32 @@ class EmberNodeReplacementTest {
 
     /// Starts a replacement of a follower, crashes (blackholes) that follower while the record is in JOINING, waits for a terminal
     /// phase and returns the follower's id.
-    private NodeId crashOldNodeWhileTheReplacementIsJoining(String prefix, long settleMs) {
-        return crashOldNodeWhileTheReplacementIsJoining(prefix, settleMs, _ -> {}, _ -> {});
+    private NodeId crashOldNodeWhileTheReplacementIsJoining(String prefix, boolean settled) {
+        return crashOldNodeWhileTheReplacementIsJoining(prefix, settled, _ -> {}, _ -> {});
+    }
+
+    /// "Settled" is the state the tests that ask for it assert on: every other live node's SWIM has observed the victim healthy
+    /// (`SwimProtocol.healthOf` is HEALTHY), so the cold-boot suppression (`everSeenHealthy`) no longer hides the victim's death. The
+    /// membership FSM cannot say this: it counts every configured core node as a member from boot (`MembershipFsm.seed`), before SWIM
+    /// has seen anything. A fixed park stood in for it (#3391). No capacity reservation is awaited: the originals are bootstrapped by
+    /// Ember outside the capacity lifecycle, which commits a reservation only for an instance a provider listing or create observes,
+    /// so none appeared in these runs.
+    private void awaitSettled(NodeId victimId) {
+        awaitCondition("every other live node's SWIM sees " + victimId.id() + " HEALTHY (cold-boot suppression over)",
+                       () -> notSeenHealthyOn(victimId).isEmpty());
+    }
+
+    private List<String> notSeenHealthyOn(NodeId victimId) {
+        return live().stream()
+                     .filter(node -> !node.self().equals(victimId))
+                     .filter(node -> !node.metricsCollector().peerLocallyAlive(victimId))
+                     .map(node -> node.self().id())
+                     .toList();
     }
 
     /// As above, with a hook run on the victim before the replacement begins and another run just before the crash.
     private NodeId crashOldNodeWhileTheReplacementIsJoining(String prefix,
-                                                            long settleMs,
+                                                            boolean settled,
                                                             java.util.function.Consumer<NodeId> beforeBegin,
                                                             java.util.function.Consumer<NodeId> beforeKill) {
         start(3, prefix);
@@ -329,7 +348,9 @@ class EmberNodeReplacementTest {
         var victim = followerOf(leader);
         var victimId = victim.self();
 
-        sleep(settleMs);
+        if (settled) {
+            awaitSettled(victimId);
+        }
         beforeBegin.accept(victimId);
         leader.nodeReplacementService().begin(victimId, "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
         awaitCondition("the replacement is JOINING", () -> recordOf(victimId).phase() == NodeReplacementPhase.JOINING);
@@ -337,7 +358,7 @@ class EmberNodeReplacementTest {
         // the test if the window was missed, so a green result can never come from a crash after JOINING finished.
         var phaseAtKill = recordOf(victimId).phase();
 
-        System.out.println("EMBER-REPLACEMENT kill of " + victimId.id() + " at record phase " + phaseAtKill + " (settle " + settleMs + " ms)");
+        System.out.println("EMBER-REPLACEMENT kill of " + victimId.id() + " at record phase " + phaseAtKill + " (settled " + settled + ")");
         assertThat(phaseAtKill).as("the kill window (JOINING) was missed").isEqualTo(NodeReplacementPhase.JOINING);
         beforeKill.accept(victimId);
         blackhole(victimId);
