@@ -116,10 +116,11 @@ class DHTDepartureStaleDrainSetTest {
         }
 
         cluster.departing.addAll(coDeparting);
-        var pushes = new ArrayList<Promise<Unit>>();
-        drainers.forEach(d -> pushes.add(cluster.members.get(d).rebalancer()
-                                                .pushOnDeparture(budget, coDeparting,
-                                                                 DeparturePushObserver.noop())));
+        var pushes = new ArrayList<Promise<DeparturePushReport>>();
+        drainers.forEach(d -> pushes.add(DeparturePushes.push(cluster.members.get(d).rebalancer(),
+                                                              budget,
+                                                              coDeparting,
+                                                              DeparturePushObserver.noop())));
         cluster.flush();
         pushes.forEach(Promise::await);
 

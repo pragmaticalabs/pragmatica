@@ -329,7 +329,7 @@ class DHTRepairPlaneTest {
             var reported = new AtomicInteger(-1);
 
             cluster.departing.add(leaver.id());
-            leaver.rebalancer().pushOnDeparture(timeSpan(60).seconds(), (atRisk, _) -> reported.set(atRisk)).await();
+            DeparturePushes.push(leaver.rebalancer(), timeSpan(60).seconds(), (atRisk, _) -> reported.set(atRisk)).await();
 
             var pushes = cluster.sentOfType(DHTMessage.MigrationDataResponse.class);
             var largest = cluster.repairMessageBytes.stream().mapToInt(Integer::intValue).max().orElse(0);
@@ -358,7 +358,7 @@ class DHTRepairPlaneTest {
             var reported = new AtomicInteger(-1);
 
             cluster.unreachable.add(newcomer.id());
-            leaver.rebalancer().pushOnDeparture(timeSpan(300).millis(), (atRisk, _) -> reported.set(atRisk)).await();
+            DeparturePushes.push(leaver.rebalancer(), timeSpan(300).millis(), (atRisk, _) -> reported.set(atRisk)).await();
 
             var pushes = cluster.sentOfType(DHTMessage.MigrationDataResponse.class);
             assertThat(pushes).as("the first page is resent").hasSizeGreaterThanOrEqualTo(2);

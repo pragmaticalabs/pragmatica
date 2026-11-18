@@ -86,8 +86,10 @@ class DHTDepartureConcurrentJoinTest {
         }
         cluster.departing.addAll(drainers);
         var pushes = drainers.stream()
-                             .map(d -> cluster.members.get(d).rebalancer()
-                                              .pushOnDeparture(TimeSpan.timeSpan(50).millis(), coDeparting, DeparturePushObserver.noop()))
+                             .map(d -> DeparturePushes.push(cluster.members.get(d).rebalancer(),
+                                                         TimeSpan.timeSpan(50).millis(),
+                                                         coDeparting,
+                                                         DeparturePushObserver.noop()))
                              .toList();
         cluster.queueing = false;
         cluster.flush(drainers);

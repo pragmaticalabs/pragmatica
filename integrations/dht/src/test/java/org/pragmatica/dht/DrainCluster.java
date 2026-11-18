@@ -120,8 +120,8 @@ final class DrainCluster {
         };
         drainers.forEach(d -> pushes.add(members.get(d).rebalancer()
                                                 .pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + BUDGET.nanos()),
-                                                                 DeparturePushTuning.forBudget(BUDGET),
-                                                                 drainSet,
+                                                                 DeparturePushes.tuningFor(BUDGET),
+                                                                 () -> drainSet,
                                                                  observer)));
         release().forEach(e -> route(e.getKey(), e.getValue()));
         var bound = BUDGET.plus(TimeSpan.timeSpan(5).seconds());

@@ -91,7 +91,7 @@ class DHTChurnSurvivalTest {
 
         // The fix: the departing node pushes its held chunks to the new replicas before it leaves.
         cluster.markDeparting(departing);
-        cluster.member(departing).rebalancer().pushOnDeparture(DeparturePushObserver.noop()).await();
+        DeparturePushes.push(cluster.member(departing).rebalancer(), DeparturePushObserver.noop()).await();
         cluster.remove(departing);
 
         assertThat(cluster.resolve(uniqueKey)).as("uniquely-held key survives the departure via the ack-gated push").isTrue();
@@ -109,7 +109,7 @@ class DHTChurnSurvivalTest {
 
         cluster.markDeparting(departing);
         cluster.dropNextDeparturePush(_ -> {});
-        cluster.member(departing).rebalancer().pushOnDeparture(DeparturePushObserver.noop()).await();
+        DeparturePushes.push(cluster.member(departing).rebalancer(), DeparturePushObserver.noop()).await();
         cluster.remove(departing);
 
         var responsible = cluster.responsibleFor(soleKey).getFirst();
@@ -130,7 +130,7 @@ class DHTChurnSurvivalTest {
 
         cluster.markDeparting(departing);
         cluster.dropNextDeparturePush(target -> removeOnce(cluster, newcomer, target));
-        cluster.member(departing).rebalancer().pushOnDeparture(DeparturePushObserver.noop()).await();
+        DeparturePushes.push(cluster.member(departing).rebalancer(), DeparturePushObserver.noop()).await();
         cluster.remove(departing);
 
         var nextResponsible = cluster.responsibleFor(soleKey).getFirst();
@@ -396,13 +396,13 @@ class DHTChurnSurvivalTest {
 
         cluster.seedOnly(shape.holder(), shape.key(), value("payload"));
         cluster.markDeparting(shape.holder());
-        cluster.member(shape.holder()).rebalancer().pushOnDeparture(Set.of(), DeparturePushObserver.noop()).await();
+        DeparturePushes.push(cluster.member(shape.holder()).rebalancer(), Set.of(), DeparturePushObserver.noop()).await();
 
         assertThat(cluster.holds(shape.coDeparting(), shape.key())).as("control: the first push landed on the later drainer")
                                                                    .isTrue();
 
         cluster.markDeparting(shape.coDeparting());
-        cluster.member(shape.coDeparting()).rebalancer().pushOnDeparture(leaving, DeparturePushObserver.noop()).await();
+        DeparturePushes.push(cluster.member(shape.coDeparting()).rebalancer(), leaving, DeparturePushObserver.noop()).await();
         cluster.remove(shape.holder());
         cluster.remove(shape.coDeparting());
 
@@ -420,9 +420,9 @@ class DHTChurnSurvivalTest {
 
         before.forEach(holder -> cluster.seedOnly(holder, key, value("payload")));
         cluster.markDeparting(first);
-        cluster.member(first).rebalancer().pushOnDeparture(Set.of(), DeparturePushObserver.noop()).await();
+        DeparturePushes.push(cluster.member(first).rebalancer(), Set.of(), DeparturePushObserver.noop()).await();
         cluster.markDeparting(second);
-        cluster.member(second).rebalancer().pushOnDeparture(Set.of(first, second), DeparturePushObserver.noop()).await();
+        DeparturePushes.push(cluster.member(second).rebalancer(), Set.of(first, second), DeparturePushObserver.noop()).await();
         cluster.remove(first);
         cluster.remove(second);
 
@@ -438,8 +438,8 @@ class DHTChurnSurvivalTest {
         var leaving = Set.of(first, second);
 
         leaving.forEach(cluster::markDeparting);
-        cluster.member(second).rebalancer().pushOnDeparture(leaving, DeparturePushObserver.noop()).await();
-        cluster.member(first).rebalancer().pushOnDeparture(leaving, DeparturePushObserver.noop()).await();
+        DeparturePushes.push(cluster.member(second).rebalancer(), leaving, DeparturePushObserver.noop()).await();
+        DeparturePushes.push(cluster.member(first).rebalancer(), leaving, DeparturePushObserver.noop()).await();
         cluster.remove(first);
         cluster.remove(second);
     }
@@ -462,7 +462,7 @@ class DHTChurnSurvivalTest {
 
     private void departWithPush(DhtCluster cluster, NodeId departing) {
         cluster.markDeparting(departing);
-        cluster.member(departing).rebalancer().pushOnDeparture(DeparturePushObserver.noop()).await();
+        DeparturePushes.push(cluster.member(departing).rebalancer(), DeparturePushObserver.noop()).await();
         cluster.remove(departing);
     }
 

@@ -1,6 +1,5 @@
 package org.pragmatica.dht;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -42,11 +41,10 @@ class DHTDepartureSequentialAbsenceTest {
     private static final NodeId DRAINER = new NodeId("n-d");
     private static final NodeId N_A = new NodeId("n-a");
     private static final NodeId N_B = new NodeId("n-b");
-    /// Short windows so a repeat is quick: 3 s base, 2 s sole extra, a page resent every 300 ms.
-    private static final DeparturePushTuning TUNING = new DeparturePushTuning(TimeSpan.timeSpan(3).seconds(),
-                                                                              TimeSpan.timeSpan(2).seconds(),
-                                                                              TimeSpan.timeSpan(300).millis(),
+    /// Short windows so a repeat is quick: a page resent every 300 ms, the nack pause capped at 1 s.
+    private static final DeparturePushTuning TUNING = new DeparturePushTuning(TimeSpan.timeSpan(300).millis(),
                                                                               TimeSpan.timeSpan(1).seconds(),
+                                                                              DeparturePushTuning.DEFAULT.reportAfter(),
                                                                               TimeSpan.timeSpan(200).millis());
 
     /// Longer than one resend (300 ms): every page still pending is attempted again while the edge is held.
@@ -93,52 +91,23 @@ class DHTDepartureSequentialAbsenceTest {
         assertSurvives(sequentialAbsence(false, true), "drainer primary in the pair ring, in its own ring");
     }
 
-    // ---- RED today (#3345 shape 1): each arm is an ENABLED tripwire on today's behaviour, with the real assertion @Disabled beside it.
+    // ---- #3345 shape 1: the push re-plans when a target is lost and pages the key again, so a later target receives it.
 
-    /// Drainer secondary in the pair ring: the survivor-side rebalance does not run on it, the departure push abandons both pages,
-    /// the push reports the key as "replicated" at risk (no DHT_DEPARTURE_SOLE_COPY_AT_RISK), and the halt leaves no copy.
-    @RepeatedTest(5)
-    void tripwire_3345_secondaryInPair_keyIsOnNoLiveNodeAfterTheHalt() {
-        assertLostToday(sequentialAbsence(false, false), "drainer secondary in the pair ring, in its own ring");
-    }
-
-    @Disabled("#3345: enable when one drain with two absent targets in turn no longer loses the last copy; delete the tripwire beside it")
+    /// Drainer secondary in the pair ring: the survivor-side rebalance does not run on it; the departure push re-pages the key to
+    /// the returned target once the second target is lost, so a live node holds it after the halt.
     @Test
     void twoAbsenceEpisodesInTurn_secondaryInPair_theKeyStillSurvivesTheHalt() {
         assertSurvives(sequentialAbsence(false, false), "drainer secondary in the pair ring, in its own ring");
     }
 
-    /// The drainer pruned from its own ring (the DEPARTING edge on itself): no survivor-side rebalance on either rank.
-    @RepeatedTest(5)
-    void tripwire_3345_primaryInPairPrunedFromOwnRing_keyIsOnNoLiveNodeAfterTheHalt() {
-        assertLostToday(sequentialAbsence(true, true), "drainer primary in the pair ring, pruned from its own ring");
-    }
-
-    @Disabled("#3345: enable when one drain with two absent targets in turn no longer loses the last copy; delete the tripwire beside it")
     @Test
     void twoAbsenceEpisodesInTurn_primaryInPairPrunedFromOwnRing_theKeyStillSurvivesTheHalt() {
         assertSurvives(sequentialAbsence(true, true), "drainer primary in the pair ring, pruned from its own ring");
     }
 
-    @RepeatedTest(5)
-    void tripwire_3345_secondaryInPairPrunedFromOwnRing_keyIsOnNoLiveNodeAfterTheHalt() {
-        assertLostToday(sequentialAbsence(true, false), "drainer secondary in the pair ring, pruned from its own ring");
-    }
-
-    @Disabled("#3345: enable when one drain with two absent targets in turn no longer loses the last copy; delete the tripwire beside it")
     @Test
     void twoAbsenceEpisodesInTurn_secondaryInPairPrunedFromOwnRing_theKeyStillSurvivesTheHalt() {
         assertSurvives(sequentialAbsence(true, false), "drainer secondary in the pair ring, pruned from its own ring");
-    }
-
-    private static void assertLostToday(Run run, String arm) {
-        assertThat(run.heldByALiveNode)
-            .as("#3345 looks fixed [%s]: the key survived; enable the @Disabled twin of this tripwire and delete the tripwire. report=%s",
-                arm, run.report)
-            .isFalse();
-        assertThat(run.report)
-            .as("#3345 [%s]: today the push reports the lost key as replicated-at-risk, never as a sole copy", arm)
-            .isEqualTo(new DeparturePushReport(0, 1, true));
     }
 
     private static void assertSurvives(Run run, String arm) {
@@ -224,7 +193,7 @@ class DHTDepartureSequentialAbsenceTest {
             return members.get(DRAINER).rebalancer()
                           .pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + 5_200_000_000L),
                                            TUNING,
-                                           Set.of(),
+                                           Set::of,
                                            DeparturePushObserver.noop());
         }
 

@@ -322,7 +322,7 @@ class DHTRebalancerTest {
             network.ackVia(rebalancer::onMigrationDataAck);
             var observer = new RecordingObserver();
 
-            rebalancer.pushOnDeparture(observer).await().onFailure(cause -> Assertions.fail(cause.message()));
+            DeparturePushes.push(rebalancer, observer).await().onFailure(cause -> Assertions.fail(cause.message()));
 
             var pushes = network.migrationResponses();
             assertThat(pushes).isNotEmpty();
@@ -356,7 +356,7 @@ class DHTRebalancerTest {
             network.ackVia(rebalancer::onMigrationDataAck);
             var observer = new RecordingObserver();
 
-            rebalancer.pushOnDeparture(observer).await().onFailure(cause -> Assertions.fail(cause.message()));
+            DeparturePushes.push(rebalancer, observer).await().onFailure(cause -> Assertions.fail(cause.message()));
 
             return new WeakReference<>(observer);
         }
@@ -386,7 +386,7 @@ class DHTRebalancerTest {
             var rebalancer = dhtRebalancer(node, network, CONFIG);
             network.ackVia(rebalancer::onMigrationDataAck);
 
-            rebalancer.pushOnDeparture(new RecordingObserver()).await();
+            DeparturePushes.push(rebalancer, new RecordingObserver()).await();
 
             assertThat(network.targets()).doesNotContainAnyElementsOf(existingReplicas);
             assertThat(network.targets()).doesNotContain(LOCAL);
@@ -410,7 +410,7 @@ class DHTRebalancerTest {
             var rebalancer = dhtRebalancer(node, network, CONFIG);
             network.ackVia(rebalancer::onMigrationDataAck);
 
-            rebalancer.pushOnDeparture(new RecordingObserver()).await().onFailure(cause -> Assertions.fail(cause.message()));
+            DeparturePushes.push(rebalancer, new RecordingObserver()).await().onFailure(cause -> Assertions.fail(cause.message()));
 
             // With self no longer identifiable in the ring, push to the WHOLE post-departure responsible
             // set: newcomers get the chunk, and existing replicas tolerate the idempotent versioned
@@ -433,7 +433,7 @@ class DHTRebalancerTest {
             var rebalancer = dhtRebalancer(node, network, CONFIG);
             var observer = new RecordingObserver();
 
-            rebalancer.pushOnDeparture(timeSpan(200).millis(), observer).await().onFailure(cause -> Assertions.fail(cause.message()));
+            DeparturePushes.push(rebalancer, timeSpan(200).millis(), observer).await().onFailure(cause -> Assertions.fail(cause.message()));
 
             assertThat(observer.incompleteCount()).isEqualTo(1);
             assertThat(observer.lastKeysAtRisk()).isGreaterThanOrEqualTo(1);
@@ -449,7 +449,7 @@ class DHTRebalancerTest {
             var rebalancer = dhtRebalancer(node, network, DHTConfig.FULL);
             var observer = new RecordingObserver();
 
-            rebalancer.pushOnDeparture(observer).await().onFailure(cause -> Assertions.fail(cause.message()));
+            DeparturePushes.push(rebalancer, observer).await().onFailure(cause -> Assertions.fail(cause.message()));
 
             assertThat(network.captured).isEmpty();
             assertThat(observer.incompleteCount()).isZero();
@@ -463,7 +463,7 @@ class DHTRebalancerTest {
             var rebalancer = dhtRebalancer(node, network, CONFIG);
             var observer = new RecordingObserver();
 
-            rebalancer.pushOnDeparture(observer).await().onFailure(cause -> Assertions.fail(cause.message()));
+            DeparturePushes.push(rebalancer, observer).await().onFailure(cause -> Assertions.fail(cause.message()));
 
             assertThat(network.captured).isEmpty();
             assertThat(observer.incompleteCount()).isZero();
@@ -524,7 +524,7 @@ class DHTRebalancerTest {
             network.ackVia(rebalancer::onMigrationDataAck);
             var observer = new RecordingObserver();
 
-            rebalancer.pushOnDeparture(timeSpan(2).seconds(), observer).await().onFailure(cause -> Assertions.fail(cause.message()));
+            DeparturePushes.push(rebalancer, timeSpan(2).seconds(), observer).await().onFailure(cause -> Assertions.fail(cause.message()));
 
             assertThat(network.sends()).as("the dropped page was resent").hasSizeGreaterThanOrEqualTo(2);
             assertThat(network.ackedKeys()).contains(new String(probe, StandardCharsets.UTF_8));
@@ -732,7 +732,7 @@ class DHTRebalancerTest {
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
             node.putLocal(soleKey(ring, "t10"), value("payload")).await();
             var network = ScriptedNetwork.scripted((_, _) -> Reply.NACK);
-            var tuning = new DeparturePushTuning(ms(100), ms(1_200), ms(50), ms(400), ms(200));
+            var tuning = timing(100, 1_200, 50, 400, 200);
             var run = push(node, network, tuning, Set.of());
 
             assertThat(network.sends()).hasSizeBetween(2, 12);
@@ -824,8 +824,8 @@ class DHTRebalancerTest {
             var recorder = new EventRecorder(() -> {});
             var started = System.nanoTime();
             var report = dhtRebalancer(node, network, RF1).pushOnDeparture(DepartureWindow.departureWindow(started - ms(1).nanos()),
-                                                                        T(200, 300, 50),
-                                                                        Set.of(),
+                                                                        T(200, 300, 50).tuning(),
+                                                                        Set::of,
                                                                         recorder)
                                                           .await()
                                                           .unwrap();
@@ -845,8 +845,8 @@ class DHTRebalancerTest {
             var recorder = new EventRecorder(() -> {});
             var report = dhtRebalancer(node, ScriptedNetwork.scripted((_, _) -> Reply.ACK), RF1)
                              .pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + ms(300).nanos()),
-                                              T(10_000, 10_000, 50),
-                                              Set.of(),
+                                              T(10_000, 10_000, 50).tuning(),
+                                              Set::of,
                                               recorder)
                              .await()
                              .unwrap();
@@ -866,8 +866,8 @@ class DHTRebalancerTest {
             var started = System.nanoTime();
             var report = dhtRebalancer(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), RF1)
                              .pushOnDeparture(DepartureWindow.departureWindow(started + ms(2_500).nanos()),
-                                              T(10_000, 10_000, 50),
-                                              Set.of(),
+                                              T(10_000, 10_000, 50).tuning(),
+                                              Set::of,
                                               new EventRecorder(() -> {}))
                              .await()
                              .unwrap();
@@ -888,8 +888,8 @@ class DHTRebalancerTest {
             var started = System.nanoTime();
 
             dhtRebalancer(node, network, RF1).pushOnDeparture(DepartureWindow.departureWindow(started + ms(60_000).nanos(), halted::get),
-                                                              T(10_000, 10_000, 50),
-                                                              Set.of(),
+                                                              T(10_000, 10_000, 50).tuning(),
+                                                              Set::of,
                                                               new EventRecorder(() -> {}))
                                              .await();
 
@@ -911,7 +911,7 @@ class DHTRebalancerTest {
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
             node.putLocal(soleKey(ring, "t17"), value("payload")).await();
             var network = ScriptedNetwork.scripted((index, _) -> index == 0 ? Reply.NACK : Reply.ACK);
-            var tuning = new DeparturePushTuning(ms(10_000), ms(10_000), ms(5_000), ms(50), ms(200));
+            var tuning = timing(10_000, 10_000, 5_000, 50, 200);
             var run = push(node, network, tuning, Set.of());
 
             assertThat(network.sends()).hasSize(2);
@@ -935,8 +935,8 @@ class DHTRebalancerTest {
             var recorder = new EventRecorder(() -> holdOpen(entered, release));
             var rebalancer = dhtRebalancer(node, network, RF1);
             var push = rebalancer.pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + ms(60_000).nanos()),
-                                                  new DeparturePushTuning(ms(300), ms(10_000), ms(10_000), ms(10_000), ms(200)),
-                                                  Set.of(),
+                                                  timing(300, 10_000, 10_000, 10_000, 200).tuning(),
+                                                  Set::of,
                                                   recorder);
 
             assertThat(entered.await(10, TimeUnit.SECONDS)).as("control: the re-evaluation's AT_RISK call is in flight").isTrue();
@@ -978,8 +978,8 @@ class DHTRebalancerTest {
 
             try (var _ = LogCapture.capture(DeparturePushRun.class.getName(), Level.WARN, true, holdAtRiskLog(entered, release, _ -> {}))) {
                 var push = rebalancer.pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + ms(60_000).nanos()),
-                                                      new DeparturePushTuning(ms(300), ms(10_000), ms(10_000), ms(10_000), ms(200)),
-                                                      Set.of(),
+                                                      timing(300, 10_000, 10_000, 10_000, 200).tuning(),
+                                                      Set::of,
                                                       recorder);
 
                 assertThat(entered.await(10, TimeUnit.SECONDS)).as("control: the winner is held in its AT_RISK log line").isTrue();
@@ -1030,8 +1030,8 @@ class DHTRebalancerTest {
                                             true,
                                             holdAtRiskLog(entered, release, line -> trace.add(line + ", delivered calls seen: " + recorder.delivered().size())))) {
                 var push = rebalancer.pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + ms(60_000).nanos()),
-                                                      T(300, 10_000, 10_000),
-                                                      Set.of(),
+                                                      T(300, 10_000, 10_000).tuning(),
+                                                      Set::of,
                                                       recorder);
 
                 assertThat(firstSend.await(10, TimeUnit.SECONDS)).as("control: the replicated page was sent").isTrue();
@@ -1104,8 +1104,8 @@ class DHTRebalancerTest {
             var rebalancer = dhtRebalancer(node, network, node.config());
             network.ackVia(rebalancer::onMigrationDataAck);
             var push = rebalancer.pushOnDeparture(DepartureWindow.departureWindow(started + ms(60_000).nanos(), gate),
-                                                  T(300, 5_000, 1_000),
-                                                  Set.of(),
+                                                  T(300, 5_000, 1_000).tuning(),
+                                                  Set::of,
                                                   recorder);
 
             assertThat(firstSend.await(10, TimeUnit.SECONDS)).as("control: the replicated page was sent").isTrue();
@@ -1257,7 +1257,7 @@ class DHTRebalancerTest {
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
             node.putLocal(soleKey(ring, "b-cap"), value("payload")).await();
             var network = ScriptedNetwork.scripted((_, _) -> Reply.NACK);
-            var run = push(node, network, new DeparturePushTuning(ms(2_500), ms(500), ms(25), ms(50), ms(200)), Set.of());
+            var run = push(node, network, timing(2_500, 500, 25, 50, 200), Set.of());
 
             assertThat(network.sends()).hasSizeGreaterThanOrEqualTo(6);
             assertThat(maxGapNanos(network.sends())).isLessThan(ms(600).nanos());
@@ -1299,7 +1299,7 @@ class DHTRebalancerTest {
             node.putLocal(keyHeldBy(ring, 2, Set.of(LOCAL, PEER_A), prefix), value("payload")).await();
             var network = ScriptedNetwork.scripted((_, _) -> reply);
 
-            return push(node, network, new DeparturePushTuning(ms(400), ms(5_000), ms(3_000), ms(3_000), ms(200)), Set.of());
+            return push(node, network, timing(400, 5_000, 3_000, 3_000, 200), Set.of());
         }
 
         /// A clean sole ack raises no event at all: DELIVERED is the recovery of an AT_RISK that was never raised.
@@ -1348,8 +1348,8 @@ class DHTRebalancerTest {
             var started = System.nanoTime();
             var report = dhtRebalancer(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), RF1)
                              .pushOnDeparture(DepartureWindow.departureWindow(started + ms(150).nanos()),
-                                              new DeparturePushTuning(ms(10_000), ms(10_000), ms(50), ms(200), ms(2_000)),
-                                              Set.of(),
+                                              timing(10_000, 10_000, 50, 200, 2_000).tuning(),
+                                              Set::of,
                                               recorder)
                              .await()
                              .unwrap();
@@ -1373,8 +1373,8 @@ class DHTRebalancerTest {
 
             dhtRebalancer(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), RF1)
                 .pushOnDeparture(DepartureWindow.departureWindow(started + ms(3_000).nanos(), halted::get),
-                                 new DeparturePushTuning(ms(300), ms(500), ms(50), ms(200), ms(200)),
-                                 Set.of(),
+                                 timing(300, 500, 50, 200, 200).tuning(),
+                                 Set::of,
                                  recorder)
                 .await();
 
@@ -1395,8 +1395,8 @@ class DHTRebalancerTest {
             var network = ScriptedNetwork.scripted((_, _) -> haltAndDrop(halted));
 
             dhtRebalancer(node, network, RF1).pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + ms(60_000).nanos(), halted::get),
-                                                              T(300, 1_000, 50),
-                                                              Set.of(),
+                                                              T(300, 1_000, 50).tuning(),
+                                                              Set::of,
                                                               recorder)
                                              .await();
             awaitQuietly(new CountDownLatch(1), 800);
@@ -1419,9 +1419,9 @@ class DHTRebalancerTest {
             var hungRecorder = new EventRecorder(() -> {});
             var past = System.nanoTime() - ms(1).nanos();
             var plan = dhtRebalancer(usedUp, ScriptedNetwork.scripted((_, _) -> Reply.ACK), RF1)
-                           .pushOnDeparture(DepartureWindow.departureWindow(past, () -> true), T(200, 300, 50), Set.of(), planRecorder);
+                           .pushOnDeparture(DepartureWindow.departureWindow(past, () -> true), T(200, 300, 50).tuning(), Set::of, planRecorder);
             var enumeration = dhtRebalancer(hung, ScriptedNetwork.scripted((_, _) -> Reply.ACK), RF1)
-                                  .pushOnDeparture(DepartureWindow.departureWindow(past, () -> true), T(200, 300, 50), Set.of(), hungRecorder);
+                                  .pushOnDeparture(DepartureWindow.departureWindow(past, () -> true), T(200, 300, 50).tuning(), Set::of, hungRecorder);
 
             plan.await();
             enumeration.await();
@@ -1480,29 +1480,42 @@ class DHTRebalancerTest {
 
         private record Run(DeparturePushReport report, EventRecorder recorder, long elapsedMillis) {}
 
-        private Run push(DHTNode node, ScriptedNetwork network, DeparturePushTuning tuning, Set<NodeId> coDeparting) {
-            return push(node, network, tuning, coDeparting, new EventRecorder(() -> {}));
+        private Run push(DHTNode node, ScriptedNetwork network, Timing timing, Set<NodeId> coDeparting) {
+            return push(node, network, timing, coDeparting, new EventRecorder(() -> {}));
         }
 
         private Run push(DHTNode node,
                          ScriptedNetwork network,
-                         DeparturePushTuning tuning,
+                         Timing timing,
                          Set<NodeId> coDeparting,
                          EventRecorder recorder) {
             var rebalancer = dhtRebalancer(node, network, node.config());
             network.ackVia(rebalancer::onMigrationDataAck);
             var started = System.nanoTime();
-            var report = rebalancer.pushOnDeparture(DepartureWindow.departureWindow(started + ms(60_000).nanos()),
-                                                    tuning,
-                                                    coDeparting,
+            var report = rebalancer.pushOnDeparture(DepartureWindow.departureWindow(started + timing.windowNanos()),
+                                                    timing.tuning(),
+                                                    () -> coDeparting,
                                                     recorder)
                                    .await()
                                    .unwrap();
             return new Run(report, recorder, (System.nanoTime() - started) / 1_000_000);
         }
 
-        private DeparturePushTuning T(long baseMs, long extraMs, long resendMs) {
-            return new DeparturePushTuning(ms(baseMs), ms(extraMs), ms(resendMs), ms(4 * resendMs), ms(200));
+        /// The legacy (base, sole extra) attempt budget of a push (#2034) as one attempts window (#3345): the push runs until nothing is
+        /// owed or `baseMs + extraMs` has passed, then waits `waitMs` for its events.
+        private record Timing(long attemptsMs, DeparturePushTuning tuning) {
+            long windowNanos() {
+                return ms(attemptsMs).nanos() + tuning.eventDeliveryWait().nanos();
+            }
+        }
+
+        private Timing timing(long baseMs, long extraMs, long resendMs, long capMs, long waitMs) {
+            return new Timing(baseMs + extraMs,
+                              new DeparturePushTuning(ms(resendMs), ms(capMs), DeparturePushTuning.DEFAULT.reportAfter(), ms(waitMs)));
+        }
+
+        private Timing T(long baseMs, long extraMs, long resendMs) {
+            return timing(baseMs, extraMs, resendMs, 4 * resendMs, 200);
         }
 
         private static TimeSpan ms(long millis) {
