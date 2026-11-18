@@ -127,6 +127,26 @@ class OutputFormatterErrorTest {
         assertThat(outCapture.toString(StandardCharsets.UTF_8)).isEmpty();
     }
 
+    /// #3348: the CLI prints the server's leader refusal text for `nodes drain` and for `nodes shutdown`, as an error
+    /// (not a "not found"), with the action label the command passes to `checkResponseError`.
+    @Test
+    void checkResponseError_leaderRefusals_printServerTextForDrainAndShutdown() {
+        var drain = "{\"type\":\"about:blank\",\"title\":\"Conflict\",\"status\":409,\"detail\":\"Cannot drain node node-1: it is the current leader,"
+                    + " and a leader is not drained. `aether nodes shutdown` is refused for the leader too.\"}";
+        var shutdown = "{\"type\":\"about:blank\",\"title\":\"Conflict\",\"status\":409,\"detail\":\"Cannot shut down node node-1: it is the current leader,"
+                       + " and a leader is not shut down through the API.\"}";
+        var options = parseOptions("--format", "table");
+
+        var drainExit = OutputFormatter.checkResponseError(drain, options, "Failed to drain node node-1");
+        var shutdownExit = OutputFormatter.checkResponseError(shutdown, options, "Failed to shutdown node node-1");
+
+        assertThat(drainExit).isEqualTo(ExitCode.ERROR);
+        assertThat(shutdownExit).isEqualTo(ExitCode.ERROR);
+        assertThat(errCapture.toString(StandardCharsets.UTF_8)).contains("Failed to drain node node-1: Cannot drain node node-1: it is the current leader")
+                                                               .contains("`aether nodes shutdown` is refused for the leader too.")
+                                                               .contains("Failed to shutdown node node-1: Cannot shut down node node-1: it is the current leader");
+    }
+
     /// The control: a genuine document with zero rows still renders its header and exits 0 — the
     /// fix distinguishes "could not ask" from "asked, and there are none".
     @Test
