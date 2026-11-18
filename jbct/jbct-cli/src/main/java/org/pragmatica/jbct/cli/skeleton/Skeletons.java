@@ -1,0 +1,322 @@
+package org.pragmatica.jbct.cli.skeleton;
+
+import java.util.List;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
+
+import org.pragmatica.jbct.parser.CstNodes;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.Java25Parser;
+import org.pragmatica.jbct.parser.LineIndex;
+import org.pragmatica.jbct.parser.RuleKind;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.peg.token.TokenArray;
+
+/// Reads the skeleton of a Java source: its types and their members, each with the exact range it occupies.
+///
+/// A pure function of the source text, built on the JBCT parser tree. What is listed: classes, interfaces, records,
+/// enums and annotation types, at any nesting depth, with their methods, constructors and initializers; with
+/// `fields` also fields and enum constants. What is NOT listed: anonymous classes (an enum constant's body is one),
+/// local classes and lambdas, which lie inside the range of the method that holds them.
+///
+/// **Range.** From the first annotation or modifier of the declaration to its last character, the closing brace or
+/// semicolon, inclusive. The parser's node spans reach into the trivia after a declaration and, for a class member,
+/// exclude its annotations and modifiers, so the range is computed from the first and the last real token of the
+/// member wrapper instead. A doc comment is outside the range; its first row is reported as `docRow`.
+public final class Skeletons {
+    private static final int NO_TOKEN = -1;
+
+    private Skeletons() {}
+
+    /// The skeleton of `source`, or the position and text of its first parse error.
+    public static Result<Skeleton> skeleton(String source, boolean fields) {
+        return new Java25Parser().parse(source)
+                                 .mapError(cause -> SourceNotParsed.sourceNotParsed(cause, source))
+                                 .map(root -> Skeleton.skeleton(reader(source, root, fields).declarations(root)));
+    }
+
+    private static Reader reader(String source, Cursor root, boolean fields) {
+        return new Reader(source,
+                          root.cst()
+                              .tokens(),
+                          new LineIndex(source),
+                          fields);
+    }
+
+    private record Reader(String text, TokenArray tokens, LineIndex lines, boolean fields) {
+        List<Declaration> declarations(Cursor container) {
+            return CstNodes.children(container)
+                           .stream()
+                           .flatMap(this::declare)
+                           .toList();
+        }
+
+        private Stream<Declaration> declare(Cursor node) {
+            return switch (node.kind()) {
+                case ROOT, COMPILATION_UNIT, ORDINARY_UNIT, ENUM_CONSTS -> declarations(node).stream();
+                case TYPE_DECL, CLASS_MEMBER, INTERFACE_MEMBER, RECORD_MEMBER, ANNOTATION_MEMBER -> member(node);
+                case ENUM_CONST -> enumConstant(node);
+                default -> Stream.empty();
+            };
+        }
+
+        private Stream<Declaration> member(Cursor wrapper) {
+            return core(wrapper).stream()
+                                .flatMap(core -> describe(wrapper, core));
+        }
+
+        private Option<Cursor> core(Cursor wrapper) {
+            return Option.from(CstNodes.children(wrapper)
+                                       .stream()
+                                       .filter(child -> !child.kindIs(RuleKind.ANNOTATION))
+                                       .findFirst())
+                         .flatMap(this::unwrap);
+        }
+
+        private Option<Cursor> unwrap(Cursor node) {
+            return switch (node.kind()) {
+                case MEMBER, TYPE_KIND -> core(node);
+                case CLASS_DECL, INTERFACE_DECL, ENUM_DECL, RECORD_DECL, ANNOTATION_DECL, METHOD_DECL,
+                     CONSTRUCTOR_DECL, COMPACT_CONSTRUCTOR, INITIALIZER_BLOCK, FIELD_DECL, INTERFACE_FIELD_DECL,
+                     RECORD_STATIC_FIELD, ANNOTATION_ELEM_DECL -> Option.some(node);
+                default -> Option.none();
+            };
+        }
+
+        private Stream<Declaration> describe(Cursor wrapper, Cursor core) {
+            return switch (core.kind()) {
+                case CLASS_DECL -> type(Kind.CLASS, wrapper, core);
+                case INTERFACE_DECL -> type(Kind.INTERFACE, wrapper, core);
+                case ENUM_DECL -> type(Kind.ENUM, wrapper, core);
+                case RECORD_DECL -> type(Kind.RECORD, wrapper, core);
+                case ANNOTATION_DECL -> type(Kind.ANNOTATION, wrapper, core);
+                case METHOD_DECL -> single(Kind.METHOD, wrapper, methodName(core), methodSignature(core));
+                case CONSTRUCTOR_DECL -> single(Kind.CONSTRUCTOR, wrapper, constructorName(core), "(" + paramList(core) + ")");
+                case COMPACT_CONSTRUCTOR -> single(Kind.CONSTRUCTOR, wrapper, firstName(core), "(compact)");
+                case ANNOTATION_ELEM_DECL -> single(Kind.METHOD, wrapper, methodName(core), "(): " + typeOf(core));
+                case INITIALIZER_BLOCK -> single(Kind.INITIALIZER, wrapper, initializerName(core), "");
+                case FIELD_DECL, INTERFACE_FIELD_DECL, RECORD_STATIC_FIELD -> fieldsOf(wrapper, core);
+                default -> Stream.empty();
+            };
+        }
+
+        // ===== Declarations =====
+        private Stream<Declaration> single(Kind kind, Cursor wrapper, String name, String signature) {
+            return Stream.of(make(kind, wrapper, name, signature, List.of()));
+        }
+
+        private Stream<Declaration> type(Kind kind, Cursor wrapper, Cursor core) {
+            return Stream.of(make(kind, wrapper, firstNameAfterKeyword(core), "", bodyDeclarations(core)));
+        }
+
+        private List<Declaration> bodyDeclarations(Cursor core) {
+            return CstNodes.children(core)
+                           .stream()
+                           .filter(this::isBody)
+                           .findFirst()
+                           .map(this::declarations)
+                           .orElse(List.of());
+        }
+
+        private boolean isBody(Cursor node) {
+            return node.kindIsAny(RuleKind.CLASS_BODY,
+                                  RuleKind.INTERFACE_BODY,
+                                  RuleKind.ENUM_BODY,
+                                  RuleKind.RECORD_BODY,
+                                  RuleKind.ANNOTATION_BODY);
+        }
+
+        private Stream<Declaration> enumConstant(Cursor constant) {
+            return fields
+                   ? Stream.of(make(Kind.ENUM_CONSTANT, constant, enumConstantName(constant), "", List.of()))
+                   : Stream.empty();
+        }
+
+        private Stream<Declaration> fieldsOf(Cursor wrapper, Cursor core) {
+            return fields
+                   ? variables(core).map(variable -> make(Kind.FIELD,
+                                                          wrapper,
+                                                          identifierFrom(variable.firstTokenIdx(), variable.lastTokenIdx()),
+                                                          ": " + typeOf(core),
+                                                          List.of()))
+                   : Stream.empty();
+        }
+
+        private Stream<Cursor> variables(Cursor core) {
+            return CstNodes.children(core)
+                           .stream()
+                           .flatMap(child -> child.kindIs(RuleKind.VAR_DECLS)
+                                             ? CstNodes.children(child)
+                                                       .stream()
+                                             : Stream.of(child))
+                           .filter(child -> child.kindIsAny(RuleKind.VAR_DECL, RuleKind.INTERFACE_VAR_DECL));
+        }
+
+        private Declaration make(Kind kind, Cursor wrapper, String name, String signature, List<Declaration> children) {
+            return Declaration.declaration(kind, name, signature, range(wrapper), docRow(wrapper), annotations(wrapper), children);
+        }
+
+        private List<String> annotations(Cursor wrapper) {
+            return CstNodes.childrenByRule(wrapper, RuleKind.ANNOTATION)
+                           .stream()
+                           .map(annotation -> "@" + CstNodes.annotationSimpleName(annotation))
+                           .toList();
+        }
+
+        // ===== Names and signatures =====
+        private String firstNameAfterKeyword(Cursor core) {
+            return identifierFrom(core.firstTokenIdx() + 1, core.lastTokenIdx());
+        }
+
+        private String firstName(Cursor core) {
+            return identifierFrom(core.firstTokenIdx(), core.lastTokenIdx());
+        }
+
+        private String methodName(Cursor core) {
+            return identifierFrom(afterType(core), core.lastTokenIdx());
+        }
+
+        private int afterType(Cursor core) {
+            return CstNodes.childByRule(core, RuleKind.TYPE)
+                           .map(type -> backward(type.lastTokenIdx()) + 1)
+                           .or(core.firstTokenIdx());
+        }
+
+        private String constructorName(Cursor core) {
+            return identifierFrom(CstNodes.childByRule(core, RuleKind.TYPE_PARAMS)
+                                          .map(params -> backward(params.lastTokenIdx()) + 1)
+                                          .or(core.firstTokenIdx()),
+                                  core.lastTokenIdx());
+        }
+
+        private String initializerName(Cursor core) {
+            return "static".contentEquals(tokens.textAt(core.firstTokenIdx()))
+                   ? "static"
+                   : "";
+        }
+
+        private String enumConstantName(Cursor constant) {
+            return identifierFrom(CstNodes.childrenByRule(constant, RuleKind.ANNOTATION)
+                                          .stream()
+                                          .mapToInt(annotation -> backward(annotation.lastTokenIdx()) + 1)
+                                          .max()
+                                          .orElse(constant.firstTokenIdx()),
+                                  constant.lastTokenIdx());
+        }
+
+        private String identifierFrom(int from, int to) {
+            return IntStream.rangeClosed(from, to)
+                            .filter(index -> "Identifier".equals(tokens.kindName(index)))
+                            .mapToObj(index -> tokens.textAt(index)
+                                                     .toString())
+                            .findFirst()
+                            .orElse("");
+        }
+
+        private String methodSignature(Cursor core) {
+            return "(" + paramList(core) + "): " + typeOf(core);
+        }
+
+        private String paramList(Cursor core) {
+            return CstNodes.childByRule(core, RuleKind.PARAMS)
+                           .map(params -> CstNodes.findAll(params,
+                                                           node -> node.kindIsAny(RuleKind.PLAIN_PARAM, RuleKind.LAST_PARAM))
+                                                  .stream()
+                                                  .map(this::paramType)
+                                                  .toList())
+                           .or(List.of())
+                           .stream()
+                           .reduce((left, right) -> left + ", " + right)
+                           .orElse("");
+        }
+
+        private String paramType(Cursor param) {
+            return typeOf(param) + (isVarargs(param)
+                                    ? "..."
+                                    : "");
+        }
+
+        private boolean isVarargs(Cursor param) {
+            return IntStream.rangeClosed(param.firstTokenIdx(), param.lastTokenIdx())
+                            .anyMatch(index -> "...".contentEquals(tokens.textAt(index)));
+        }
+
+        /// The type child of `node` as written: the source between its first and last real token, whitespace runs
+        /// collapsed to one space. Never resolved.
+        private String typeOf(Cursor node) {
+            return CstNodes.childByRule(node, RuleKind.TYPE)
+                           .map(type -> cut(type.firstTokenIdx(), type.lastTokenIdx()))
+                           .or("");
+        }
+
+        private String cut(int first, int last) {
+            return text.substring(tokens.startAt(forward(first)), tokens.endAt(backward(last)))
+                       .replaceAll("\\s+", " ");
+        }
+
+        // ===== Coordinates =====
+        private Range range(Cursor wrapper) {
+            var start = tokens.startAt(forward(wrapper.firstTokenIdx()));
+            var end = tokens.endAt(backward(wrapper.lastTokenIdx())) - 1;
+
+            return Range.range(lines.lineAt(start), lines.columnAt(start), lines.lineAt(end), lines.columnAt(end));
+        }
+
+        private int forward(int index) {
+            return tokens.isTrivia(index)
+                   ? forward(index + 1)
+                   : index;
+        }
+
+        private int backward(int index) {
+            return tokens.isTrivia(index)
+                   ? backward(index - 1)
+                   : index;
+        }
+
+        // ===== Doc comments =====
+        private Option<Integer> docRow(Cursor wrapper) {
+            var doc = docBefore(forward(wrapper.firstTokenIdx()) - 1);
+
+            return doc == NO_TOKEN
+                   ? Option.none()
+                   : Option.some(lines.lineAt(tokens.startAt(blockStart(doc))));
+        }
+
+        /// The nearest doc comment among the trivia directly before a declaration, or [#NO_TOKEN].
+        private int docBefore(int index) {
+            return index < 0 || !tokens.isTrivia(index)
+                   ? NO_TOKEN
+                   : isDoc(index)
+                     ? index
+                     : docBefore(index - 1);
+        }
+
+        private boolean isDoc(int index) {
+            return tokens.kindAt(index) == TokenArray.KIND_DOC_LINE_COMMENT
+                   || tokens.kindAt(index) == TokenArray.KIND_DOC_BLOCK_COMMENT;
+        }
+
+        /// A run of `///` lines is one comment: its first row is the doc row.
+        private int blockStart(int index) {
+            var before = index - 2;
+
+            return tokens.kindAt(index) == TokenArray.KIND_DOC_LINE_COMMENT && continuesLineDoc(before, index)
+                   ? blockStart(before)
+                   : index;
+        }
+
+        private boolean continuesLineDoc(int before, int index) {
+            return before >= 0 && tokens.kindAt(before) == TokenArray.KIND_DOC_LINE_COMMENT && singleNewline(index - 1);
+        }
+
+        private boolean singleNewline(int index) {
+            return tokens.kindAt(index) == TokenArray.KIND_WHITESPACE
+                   && tokens.textAt(index)
+                            .chars()
+                            .filter(character -> character == '\n')
+                            .count() == 1;
+        }
+    }
+}
