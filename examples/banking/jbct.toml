@@ -1,0 +1,5 @@
+[lint]
+mode = "business"
+
+[project]
+basePackage = "org.pragmatica.aether.example.banking"

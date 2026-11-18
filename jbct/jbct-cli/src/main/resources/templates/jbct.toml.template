@@ -11,6 +11,7 @@ alignParameters = true
 organizeImports = true
 
 [lint]
+mode = "business"
 failOnWarning = false
 # excludePackages = ["some.generated.**"]
 
@@ -22,4 +23,5 @@ failOnWarning = false
 # JBCT-VO-01 = "warning"
 
 [project]
+basePackage = "{{basePackage}}"
 sourceDirectories = ["src/main/java"]

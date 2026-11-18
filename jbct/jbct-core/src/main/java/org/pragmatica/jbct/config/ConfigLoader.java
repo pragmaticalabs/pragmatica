@@ -2,6 +2,7 @@ package org.pragmatica.jbct.config;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import org.pragmatica.config.toml.TomlParser;
@@ -12,13 +13,16 @@ import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
 /// Loads JBCT configuration by folding layers per key, lowest priority first:
 /// 1. Built-in defaults - lowest
 /// 2. User config (`~/.jbct/config.toml`)
-/// 3. Every `jbct.toml` from the repository root down to the working directory
+/// 3. Every `jbct.toml` from the repository root down to the working directory, or, for a source root
+///    ([#loadForSourceRoot]), to its module directory
 /// 4. Explicit config (e.g., from CLI args) - highest
 ///
 /// Layers are folded key by key ([PartialConfig#mergeWith]), not section by section, so a nearer
@@ -34,9 +38,14 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
     String PROJECT_CONFIG_NAME = "jbct.toml";
     String USER_CONFIG_DIR = ".jbct";
     String USER_CONFIG_NAME = "config.toml";
-
     /// Repository boundary marker — a directory in a normal clone, a file in a git worktree.
     String REPOSITORY_MARKER = ".git";
+    /// Module marker — the file whose directory a source root's configuration walk starts at.
+    String MODULE_MARKER = "pom.xml";
+    /// Directory segments, consecutive, that make a source root a test root (R2: the CLI's only predicate).
+    String TEST_ROOT_PARENT = "src";
+
+    String TEST_ROOT_NAME = "test";
 
     /// Load configuration with optional explicit config file and working directory.
     ///
@@ -51,6 +60,44 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
     /// asked for exactly that file.
     static Result<JbctConfig> load(Option<Path> explicitConfigPath, Option<Path> workingDirectory) {
         return foldLayers(discoveredLayers(startDirectory(workingDirectory)), explicitConfigPath);
+    }
+
+    /// Load the configuration that applies to a source root (or to any path checked under it, #2525).
+    ///
+    /// One resolver for the CLI and for Maven: the `jbct.toml` chain starts at the path's [#moduleDirectory], never at
+    /// the working directory, so `jbct check <path>` and the module's goal read the same files from any cwd. The
+    /// explicit layer (`--config`) is folded last, as in [#load].
+    ///
+    /// @param explicitConfigPath Optional path to explicit config file (highest priority)
+    /// @param sourceRoot         A source root, a file under it, or the directory a command was given
+    static Result<JbctConfig> loadForSourceRoot(Option<Path> explicitConfigPath, Path sourceRoot) {
+        return load(explicitConfigPath, some(moduleDirectory(sourceRoot)));
+    }
+
+    /// The directory a source root's `jbct.toml` walk starts at: the nearest ancestor holding a [#MODULE_MARKER],
+    /// searched no higher than the first [#REPOSITORY_MARKER] ancestor; with no marker on that path, the source
+    /// root's own directory (R1 (a)), so a `jbct.toml` in `src/` or `src/main/java` is read for such a root only.
+    static Path moduleDirectory(Path sourceRoot) {
+        var start = startOf(sourceRoot);
+
+        return moduleMarkerDirectory(start).or(start);
+    }
+
+    /// The directory a source root's test-root predicate is judged against (O1): the module directory when a
+    /// [#MODULE_MARKER] marks one, otherwise the first [#REPOSITORY_MARKER] ancestor, otherwise the path as given.
+    static Path boundary(Path sourceRoot) {
+        var start = startOf(sourceRoot);
+
+        return moduleMarkerDirectory(start).orElse(() -> repositoryDirectory(start))
+                                    .or(start);
+    }
+
+    /// Whether a source root is a test root: the path relative to its [#boundary] holds the consecutive segments
+    /// `src`, `test`. The absolute path is never read, so a checkout under `~/src/test/<repo>` is not a test root.
+    static boolean isTestRoot(Path sourceRoot) {
+        var start = startOf(sourceRoot);
+
+        return holdsTestSegments(boundary(sourceRoot).relativize(start));
     }
 
     /// Load user-level config from ~/.jbct/config.toml.
@@ -87,6 +134,46 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
     /// Get the default user config file path.
     static Path getUserConfigPath() {
         return getUserConfigDir().resolve(USER_CONFIG_NAME);
+    }
+
+    private static Path startOf(Path sourceRoot) {
+        var absolute = sourceRoot.toAbsolutePath().normalize();
+
+        return FileOps.isRegularFile(absolute)
+               ? absolute.getParent()
+               : absolute;
+    }
+
+    private static Option<Path> moduleMarkerDirectory(Path dir) {
+        return FileOps.isRegularFile(dir.resolve(MODULE_MARKER))
+               ? some(dir)
+               : moduleMarkerAbove(dir);
+    }
+
+    private static Option<Path> moduleMarkerAbove(Path dir) {
+        return isRepositoryRoot(dir)
+               ? none()
+               : option(dir.getParent()).flatMap(ConfigLoader::moduleMarkerDirectory);
+    }
+
+    private static Option<Path> repositoryDirectory(Path dir) {
+        return isRepositoryRoot(dir)
+               ? some(dir)
+               : option(dir.getParent()).flatMap(ConfigLoader::repositoryDirectory);
+    }
+
+    private static boolean holdsTestSegments(Path relative) {
+        return IntStream.range(0,
+                               relative.getNameCount() - 1)
+                        .anyMatch(index -> segmentAt(relative, index, TEST_ROOT_PARENT) && segmentAt(relative,
+                                                                                                     index + 1,
+                                                                                                     TEST_ROOT_NAME));
+    }
+
+    private static boolean segmentAt(Path relative, int index, String name) {
+        return relative.getName(index)
+                       .toString()
+                       .equals(name);
     }
 
     private static Result<JbctConfig> foldLayers(List<Path> discovered, Option<Path> explicit) {

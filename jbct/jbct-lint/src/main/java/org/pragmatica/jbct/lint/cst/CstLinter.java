@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.LintContext;
@@ -28,20 +29,27 @@ public class CstLinter {
     private final List<CstLintRule> rules;
     private final Java25Parser parser;
 
-    private CstLinter(LintContext context, List<CstLintRule> rules) {
+    private CstLinter(LintContext context) {
         this.context = context;
-        this.rules = rules;
+        this.rules = fileRules(rulesFor(context.mode()));
         this.parser = new Java25Parser();
+    }
+
+    private static List<CstLintRule> fileRules(List<LintRule> registry) {
+        return registry.stream()
+                       .filter(CstLintRule.class::isInstance)
+                       .map(CstLintRule.class::cast)
+                       .toList();
     }
 
     /// Create linter with default rules.
     public static CstLinter cstLinter() {
-        return new CstLinter(LintContext.defaultContext(), defaultRules());
+        return new CstLinter(LintContext.defaultContext());
     }
 
     /// Create linter with custom context.
     public static CstLinter cstLinter(LintContext context) {
-        return new CstLinter(context, defaultRules());
+        return new CstLinter(context);
     }
 
     /// Lint a source file.
@@ -99,6 +107,22 @@ public class CstLinter {
                : diagnostics;
     }
 
+    /// The rules that run in a mode, in registration order: `business` runs every rule, `infrastructure` the rules whose
+    /// `modes()` contain it, `format-only` and `disabled` none. The one place a mode selects rules.
+    public static List<LintRule> rulesFor(JbctMode mode) {
+        return defaultRules().stream()
+                           .filter(rule -> runsIn(rule, mode))
+                           .toList();
+    }
+
+    private static boolean runsIn(LintRule rule, JbctMode mode) {
+        return switch (mode) {
+            case BUSINESS -> true;
+            case INFRASTRUCTURE -> rule.modes().contains(JbctMode.INFRASTRUCTURE);
+            case FORMAT_ONLY, DISABLED -> false;
+        };
+    }
+
     /// Rule IDs emitted by the default rule set, in registration order.
     ///
     /// Derived from the actual rule instances so it cannot drift from the registry.
@@ -106,12 +130,13 @@ public class CstLinter {
     /// live rules without duplicating the ID list.
     public static List<String> defaultRuleIds() {
         return defaultRules().stream()
-                           .map(CstLintRule::ruleId)
+                           .map(LintRule::ruleId)
                            .toList();
     }
 
-    private static List<CstLintRule> defaultRules() {
-        return List.of(
+    /// The rule registry: every rule of the catalog, whichever way it runs.
+    public static List<LintRule> defaultRules() {
+        return List.<LintRule> of(
         // Return kinds (JBCT-RET-*)
         new CstReturnKindRule(),
 
@@ -309,12 +334,12 @@ public class CstLinter {
         // Typed-error construction pack (JBCT-CAUSE, typed-error-lint-spec).
         // JBCT-CAUSE-01 absorbs JBCT-SEAL-02; JBCT-CAUSE-06 awaits LintContext source-set awareness.
         new CstCauseShapeRule(),
-                       new CstCauseMessageBodyRule(),
-                       new CstMessageComponentLastRule(),
-                       new CstCauseFactoryArityRule(),
-                       new CstWrappedCauseRule(),
-                       new CstAnonymousTemplateRule(),
-                       new CstCauseDirectConstructionRule(),
+                                  new CstCauseMessageBodyRule(),
+                                  new CstMessageComponentLastRule(),
+                                  new CstCauseFactoryArityRule(),
+                                  new CstWrappedCauseRule(),
+                                  new CstAnonymousTemplateRule(),
+                                  new CstCauseDirectConstructionRule(),
 
         // File-type classifier + structural rules (#453)
         // Use-case interface structure (JBCT-UC-02)
