@@ -9,7 +9,6 @@ package org.pragmatica.aether.management.route;
 public interface LeaderRefusal {
     /// Ends the node id in the refusal of a leader drain: `Cannot drain node <id>` + this text.
     String DRAIN_REASON = ": it is the current leader, and a leader is not drained.";
-
     /// Ends the node id in the refusal of a leader shutdown: `Cannot shut down node <id>` + this text.
     String SHUTDOWN_REASON = ": it is the current leader, and a leader is not shut down through the API.";
 

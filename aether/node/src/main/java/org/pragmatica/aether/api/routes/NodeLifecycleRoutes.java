@@ -112,8 +112,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     public record LeaderCannotBeDrained(String nodeId) implements HttpStatusAware {
         @Override
         public String message() {
-            return "Cannot drain node " + nodeId
-                 + LeaderRefusal.DRAIN_REASON
+            return "Cannot drain node " + nodeId + LeaderRefusal.DRAIN_REASON
                  + " Move leadership first: stop this node's process"
                  + " from outside the cluster (the service manager or the container runtime) so the cluster elects another"
                  + " leader, then drain this node once it is no longer the leader. `aether nodes shutdown` is refused for the leader too.";
@@ -130,8 +129,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     public record LeaderCannotBeShutDown(String nodeId) implements HttpStatusAware {
         @Override
         public String message() {
-            return "Cannot shut down node " + nodeId
-                 + LeaderRefusal.SHUTDOWN_REASON
+            return "Cannot shut down node " + nodeId + LeaderRefusal.SHUTDOWN_REASON
                  + " Move leadership first: stop this"
                  + " node's process from outside the cluster (the service manager or the container runtime) so the cluster elects"
                  + " another leader; this node can then be drained or shut down through the API once it is no longer the leader.";

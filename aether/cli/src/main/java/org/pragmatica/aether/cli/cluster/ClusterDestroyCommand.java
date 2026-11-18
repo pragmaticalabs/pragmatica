@@ -1192,7 +1192,8 @@ class ClusterDestroyCommand implements Callable<Integer> {
             }
 
             if (held.contains(nodeId)) {
-                System.out.printf("Node %s is held (not drained: quorum budget or current leader); not shut down, its VM is deleted below.%n", nodeId);
+                System.out.printf("Node %s is held (not drained: quorum budget or current leader); not shut down, its VM is deleted below.%n",
+                                  nodeId);
                 results.add(NodeResult.held(nodeId, "held for quorum (disruption budget)"));
                 continue;
             }
@@ -1407,10 +1408,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
     /// The leader is held for a different reason than quorum, so the summary names it apart: `, leader held (<id>)`.
     private static String leaderHeldTail(List<NodeResult> results) {
-        var leaders = results.stream()
-                             .filter(ClusterDestroyCommand::isLeaderHold)
-                             .map(NodeResult::nodeId)
-                             .toList();
+        var leaders = results.stream().filter(ClusterDestroyCommand::isLeaderHold).map(NodeResult::nodeId).toList();
 
         return leaders.isEmpty()
                ? ""
