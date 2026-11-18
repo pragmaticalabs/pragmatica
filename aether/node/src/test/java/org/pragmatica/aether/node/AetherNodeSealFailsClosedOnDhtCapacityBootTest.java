@@ -27,6 +27,7 @@ import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
@@ -37,6 +38,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.StorageError;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.TierLevel;
@@ -98,6 +100,9 @@ class AetherNodeSealFailsClosedOnDhtCapacityBootTest {
         node.start()
             .await(START_BOUND)
             .onFailure(cause -> fail("start must succeed: " + cause.message()));
+
+        assertThat(node.deploymentWiring().isFsm2()).as("fixture: the boot ran the LEGACY deployment engine (the config default; this test selects none)")
+                                                    .isFalse();
         node.periodicTasks().cancel();
 
         var instance = node.storageSetups().get(StorageFactory.STREAMS_NAME).instance();
@@ -148,6 +153,8 @@ class AetherNodeSealFailsClosedOnDhtCapacityBootTest {
         IntStream.range(0, EVENTS).forEach(i -> publish(manager, i));
         awaitCondition(() -> sealer.sealFailureCount() > 0, "the sealer attempts a seal and it fails");
 
+        assertThat(partitionWal(manager).sealedThrough()).as(FAILURE_MESSAGE + ": the partition WAL's own sealed bound did not move (no markSealed before the store)")
+                                                          .isEqualTo(-1L);
         assertThat(sealedThrough(manager)).as(FAILURE_MESSAGE + ": the partition's sealed bound did not move").isEqualTo(-1L);
         assertThat(instance.listRefs("")).as(FAILURE_MESSAGE + ": no sealed ref exists").isEmpty();
         assertThat(usedBytes(instance, TierLevel.LOCAL_DISK)).as(FAILURE_MESSAGE + ": the local disk tier holds no sealed copy")
@@ -183,13 +190,43 @@ class AetherNodeSealFailsClosedOnDhtCapacityBootTest {
                .onFailure(cause -> fail("ensureStreamMaterialized: " + cause.message()));
     }
 
+    /// Publishes the way a caller is meant to: `REPLICATION_BEHIND` is a transient capacity refusal raised before the append takes
+    /// an offset ("clears as the replication sends return", `StreamError.General`), so the caller waits and retries within the
+    /// test's deadline. Any other refusal fails at once.
     private static void publish(StreamPartitionManager manager, int i) {
         var payload = new byte[PAYLOAD];
+        var deadline = System.currentTimeMillis() + AWAIT_MS;
 
         payload[0] = (byte) i;
-        manager.publishLocal(STREAM, PARTITION, payload, 1000L + i)
-               .onFailure(cause -> fail("publish " + i + ": " + cause.message()))
+
+        var outcome = manager.publishLocal(STREAM, PARTITION, payload, 1000L + i);
+
+        while (isSendBudgetRefusal(outcome) && System.currentTimeMillis() < deadline) {
+            LockSupport.parkNanos(POLL_NANOS);
+            outcome = manager.publishLocal(STREAM, PARTITION, payload, 1000L + i);
+        }
+
+        outcome.onFailure(cause -> fail("publish " + i + ": " + cause.message()))
                .onSuccess(offset -> assertThat(offset).isEqualTo((long) i));
+    }
+
+    private static boolean isSendBudgetRefusal(Result<Long> outcome) {
+        return outcome.fold(cause -> cause == StreamError.General.REPLICATION_BEHIND, _ -> false);
+    }
+
+    /// The partition's own WAL, the log `StorageSegmentSink` hands to `StorageInstance.seal`. The manager keeps it private and
+    /// exposes only the manager-side sealed watermark, which a premature `markSealed` on the log never moves; the bound this arm
+    /// pins lives on the log itself, so it is read there.
+    private static AppendLog partitionWal(StreamPartitionManager manager) {
+        try {
+            var walFor = StreamPartitionManager.class.getDeclaredMethod("walFor", String.class, int.class);
+
+            walFor.setAccessible(true);
+            return ((Option<?>) walFor.invoke(manager, STREAM, PARTITION)).map(AppendLog.class::cast)
+                                                                          .or(() -> fail("fixture: the partition has a WAL"));
+        } catch (ReflectiveOperationException e) {
+            return fail("fixture: StreamPartitionManager.walFor(String, int) is gone; point this read at the partition WAL: " + e);
+        }
     }
 
     private static void awaitCondition(BooleanSupplier condition, String what) {

@@ -31,6 +31,7 @@ import org.pragmatica.aether.node.ClusterTestPorts;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
@@ -104,6 +105,9 @@ class AetherNodeWalGrowsWhileSealsFailBootTest {
             .await(START_BOUND)
             .onFailure(cause -> fail("start must succeed: " + cause.message()));
 
+        assertThat(node.deploymentWiring().isFsm2()).as("fixture: the boot ran the LEGACY deployment engine (the config default; this test selects none)")
+                                                    .isFalse();
+
         var manager = node.streamPartitionManager();
         var sealer = node.streamSegmentSealer();
 
@@ -148,13 +152,28 @@ class AetherNodeWalGrowsWhileSealsFailBootTest {
                .onFailure(cause -> fail("ensureStreamMaterialized: " + cause.message()));
     }
 
+    /// Publishes the way a caller is meant to: `REPLICATION_BEHIND` is a transient capacity refusal raised before the append takes
+    /// an offset ("clears as the replication sends return", `StreamError.General`), so the caller waits and retries within the
+    /// test's deadline. Any other refusal is the broken property and fails at once.
     private static void publish(StreamPartitionManager manager, int i) {
         var payload = new byte[PAYLOAD];
+        var deadline = System.currentTimeMillis() + AWAIT_MS;
 
         payload[0] = (byte) i;
-        manager.publishLocal(STREAM, PARTITION, payload, 1000L + i)
-               .onFailure(cause -> fail(FAILURE_MESSAGE + ": publish " + i + " refused: " + cause.message()))
+
+        var outcome = manager.publishLocal(STREAM, PARTITION, payload, 1000L + i);
+
+        while (isSendBudgetRefusal(outcome) && System.currentTimeMillis() < deadline) {
+            LockSupport.parkNanos(POLL_NANOS);
+            outcome = manager.publishLocal(STREAM, PARTITION, payload, 1000L + i);
+        }
+
+        outcome.onFailure(cause -> fail(FAILURE_MESSAGE + ": publish " + i + " refused: " + cause.message()))
                .onSuccess(offset -> assertThat(offset).isEqualTo((long) i));
+    }
+
+    private static boolean isSendBudgetRefusal(Result<Long> outcome) {
+        return outcome.fold(cause -> cause == StreamError.General.REPLICATION_BEHIND, _ -> false);
     }
 
     private static void awaitCondition(BooleanSupplier condition, String what) {
