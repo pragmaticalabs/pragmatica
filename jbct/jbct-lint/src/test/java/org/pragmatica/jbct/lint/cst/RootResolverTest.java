@@ -152,6 +152,42 @@ class RootResolverTest {
     }
 
     @Test
+    void resolve_aPackageDirectoryArgumentInsideALayout_isOwnedByTheModulesLayoutRoot() throws IOException {
+        var business = module("biz", BUSINESS);
+        var file = source(business, "Pricing.java", BOTH);
+        var plan = plan(file.getParent());
+
+        assertEquals(List.of(business.resolve("src/main/java").toAbsolutePath().normalize()),
+                     plan.roots().stream().map(ResolvedRoot::path).toList());
+        assertEquals(List.of(file.toAbsolutePath().normalize()), plan.files());
+    }
+
+    @Test
+    void resolve_twoPackageArgumentsOfOneModule_shareOneRoot() throws IOException {
+        var business = module("biz", BUSINESS);
+        var first = source(business, "Pricing.java", BOTH);
+        var otherDirectory = Files.createDirectories(business.resolve("src/main/java/com/other"));
+        var second = Files.writeString(otherDirectory.resolve("Other.java"), BOTH);
+        var plan = plan(first.getParent(), otherDirectory);
+
+        assertEquals(List.of(business.resolve("src/main/java").toAbsolutePath().normalize()),
+                     plan.roots().stream().map(ResolvedRoot::path).toList());
+        assertEquals(Set.of(first.toAbsolutePath().normalize(), second.toAbsolutePath().normalize()),
+                     Set.copyOf(plan.files()));
+    }
+
+    @Test
+    void resolve_aPackageDirectoryArgumentWithoutAPom_isItsOwnRoot() throws IOException {
+        var plain = Files.createDirectories(temp.resolve("plain/src/main/java/com/example"));
+
+        Files.writeString(plain.resolve("Pricing.java"), BOTH);
+        var plan = plan(plain);
+
+        assertEquals(List.of(plain.toAbsolutePath().normalize()),
+                     plan.roots().stream().map(ResolvedRoot::path).toList());
+    }
+
+    @Test
     void resolve_aFileArgument_isOwnedByItsLayoutRoot_notByTheArgument() throws IOException {
         var business = module("biz", BUSINESS);
         var file = source(business, "Pricing.java", BOTH);

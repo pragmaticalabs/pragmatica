@@ -298,8 +298,17 @@ public sealed interface RootResolver permits RootResolver.unused {
 
         return Option.from(Stream.concat(request.declaredRoots().stream().filter(file::startsWith),
                                          layoutRoot(file,
-                                                    argument.or(() -> ConfigLoader.moduleDirectory(file))).stream())
+                                                    searchBase(argument, file)).stream())
                                  .max(Comparator.comparingInt(Path::getNameCount))).or(() -> argument.or(() -> file.getParent()));
+    }
+
+    /// The layout search base of a file: the shallower of the directory argument that reached it and its module
+    /// directory (the nearest `pom.xml` ancestor below the first `.git`); with only one of them, that one; with
+    /// no `pom.xml`, the module directory is the file's own directory, so the argument is the base.
+    private static Path searchBase(Option<Path> argument, Path file) {
+        var module = ConfigLoader.moduleDirectory(file);
+
+        return argument.filter(directory -> directory.getNameCount() <= module.getNameCount()).or(module);
     }
 
     /// The deepest directory argument that contains the file.
