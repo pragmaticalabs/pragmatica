@@ -58,12 +58,13 @@ class RunOutcomesTest {
     }
 
     @Test
-    void resolve_aDirectoryArgumentWrittenWithDots_isOneRootInNormalisedForm() throws IOException {
+    void resolve_aDirectoryArgumentWrittenWithDots_isOneNormalisedRoot_whoseFilePrintsInTheArgumentsForm() throws IOException {
         var business = module("biz", BUSINESS);
         var file = source(business, "A.java", "class A {}\n");
         var plan = plan(temp.resolve("biz/../biz/./src"), business);
 
-        assertEquals(List.of(file.toAbsolutePath().normalize()), plan.files());
+        assertEquals(List.of(temp.resolve("biz/../biz/./src/main/java/com/example/A.java")), plan.files());
+        assertEquals(file.toAbsolutePath().normalize(), temp.resolve("biz/src/main/java/com/example/A.java").toAbsolutePath().normalize());
         assertEquals(1, plan.roots().size());
         assertEquals(business.resolve("src/main/java").toAbsolutePath().normalize(), plan.roots().getFirst().path());
     }

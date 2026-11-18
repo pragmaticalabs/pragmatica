@@ -220,16 +220,29 @@ public sealed interface RootResolver permits RootResolver.unused {
                       .or(() -> Result.success(request));
     }
 
-    record Collected(Path argument, List<Path> files) {
-        static Collected collected(Path argument, List<Path> files) {
-            return new Collected(argument, files);
+    /// One argument with the files it reached. `argument` and `files` are absolute and normalised (resolution,
+    /// ownership and dedupe read them); `display` maps each file to the form the argument gave, which is what a
+    /// printed line shows.
+    record Collected(Path argument, List<Path> files, Map<Path, Path> display) {
+        static Collected collected(Path given, List<Path> files) {
+            var argument = absolute(given);
+
+            return new Collected(argument,
+                                 files,
+                                 files.stream()
+                                      .collect(Collectors.toMap(file -> file,
+                                                                file -> given.resolve(argument.relativize(file)),
+                                                                (first, _) -> first,
+                                                                LinkedHashMap::new)));
         }
     }
 
-    private static Result<Collected> collected(Request request, Path path, List<String> messages) {
+    private static Result<Collected> collected(Request request, Path given, List<String> messages) {
+        var path = absolute(given);
+
         return ConfigLoader.loadForSourceRoot(request.explicitConfig(),
                                               path)
-                           .map(config -> Collected.collected(path,
+                           .map(config -> Collected.collected(given,
                                                               FileCollector.collectJavaFiles(List.of(path),
                                                                                              config.files(),
                                                                                              messages::add)));
@@ -238,12 +251,16 @@ public sealed interface RootResolver permits RootResolver.unused {
     private static Result<RootPlan> plan(Request request, List<Collected> collected, List<String> messages) {
         var directories = collected.stream().map(Collected::argument).filter(Files::isDirectory).toList();
         var owned = ownedFiles(request, directories, collected);
+        var display = displayForms(collected);
 
         return Result.allOf(rootPaths(request, directories, owned).stream()
                                      .map(root -> resolvedRoot(request,
                                                                root,
                                                                owned.getOrDefault(root,
-                                                                                  List.of())))
+                                                                                  List.of())
+                                                                    .stream()
+                                                                    .map(display::get)
+                                                                    .toList()))
                                      .toList()).map(roots -> RootPlan.rootPlan(roots,
                                                                                request.failOnWarning(),
                                                                                request.declaredTestRoots()
@@ -268,6 +285,18 @@ public sealed interface RootResolver permits RootResolver.unused {
                                .toList();
 
         return FileCollector.collectJavaFiles(unreached, FilesConfig.DEFAULT, messages::add).size();
+    }
+
+    /// The form a file prints in: the one its first argument gave.
+    private static Map<Path, Path> displayForms(List<Collected> collected) {
+        return collected.stream()
+                        .flatMap(entry -> entry.display()
+                                               .entrySet()
+                                               .stream())
+                        .collect(Collectors.toMap(Map.Entry::getKey,
+                                                  Map.Entry::getValue,
+                                                  (first, _) -> first,
+                                                  LinkedHashMap::new));
     }
 
     private static Map<Path, List<Path>> ownedFiles(Request request,
@@ -371,9 +400,19 @@ public sealed interface RootResolver permits RootResolver.unused {
                       .anyMatch(root::startsWith) || ConfigLoader.isTestRoot(root);
     }
 
+    private static Path absolute(Path path) {
+        return path.toAbsolutePath()
+                   .normalize();
+    }
+
+    /// The paths in the form they were given, each argument once: two forms naming the same path keep the first.
     private static List<Path> distinct(List<Path> paths) {
-        return List.copyOf(new LinkedHashSet<>(paths.stream().map(path -> path.toAbsolutePath()
-                                                                              .normalize()).toList()));
+        return List.copyOf(paths.stream()
+                                .collect(Collectors.toMap(RootResolver::absolute,
+                                                          path -> path,
+                                                          (first, _) -> first,
+                                                          LinkedHashMap::new))
+                                .values());
     }
 
     private static Set<Path> normalised(Set<Path> paths) {

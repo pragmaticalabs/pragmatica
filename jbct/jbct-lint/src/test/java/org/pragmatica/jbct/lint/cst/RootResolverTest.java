@@ -227,8 +227,9 @@ class RootResolverTest {
 
         assertEquals(2, plan.files().size());
         assertEquals(2, Set.copyOf(plan.files()).size());
-        assertEquals(List.of(temp.resolve("x/A.java")), rootOf(plan, temp.resolve("x")).files());
-        assertEquals(List.of(temp.resolve("x/sub/B.java")), rootOf(plan, x).files());
+        // printed form: the argument as given (the first argument's form for a file both reach)
+        assertEquals(List.of(temp.resolve("./x/A.java")), rootOf(plan, temp.resolve("x")).files());
+        assertEquals(List.of(temp.resolve("./x/sub/B.java")), rootOf(plan, x).files());
     }
 
     @Test
