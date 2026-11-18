@@ -776,7 +776,7 @@ public interface HoldRecords {
         }
 
         Drainer reported(HeldReport report, long now) {
-            return find(report.episode()).map(known -> changed(report.episode(),
+            return find(report.episode()).map(_ -> changed(report.episode(),
                                                                episode -> episode.reported(report)))
                        .or(() -> unknownReported(report, now));
         }
