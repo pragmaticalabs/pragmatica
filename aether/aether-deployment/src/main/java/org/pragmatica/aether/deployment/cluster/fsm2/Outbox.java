@@ -172,9 +172,9 @@ public sealed interface Outbox {
     ///
     /// ```tla Fsm2Leader:Flush
     /// \* Outbox.java flush. Suspended: nothing submitted, intents dropped, Warnings.suspended clears dirty.
-    /// \* Else Warnings.draft (Warnings.java:213): one WARNINGS tx with the difference, unless one is in flight:
+    /// \* Else Warnings.draft (Warnings.java:553): one WARNINGS tx with the difference, unless one is in flight:
     /// \* each mutated row's expected value is the mirror's, its replacement the desired row and the mirror's revision + 1
-    /// \* (Warnings.difference, desired, put; the marker fields stay FALSE: nothing is held); then the goal
+    /// \* (Warnings.difference, desired, put; in the model the marker fields stay FALSE: nothing is held; the code row has none); then the goal
     /// \* draft; Outbox.java submitOne -> Submit effect -> one apply per step (ClusterFsmInterpreter.java).
     /// Flush(n) ==
     ///   /\ fsm[n] = "Active" /\ flushQ[n]

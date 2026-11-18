@@ -196,7 +196,7 @@
 /// \* Under A2834 only the committed, elected, non-suspended leader emits family warnings.
 /// WarnOK(n) == ~A2834 \/ (n = kvLeader /\ n = elected /\ ~Suspended(n))
 ///
-/// \* The held warnings are an ordered list of effects (ClusterModel.warningsHeld): [s |-> subject, up |-> raised or closed].
+/// \* The held warnings are an ordered list of effects (the model variable `held`; the code has no such field): [s |-> subject, up |-> raised or closed].
 /// RECURSIVE SeqOf(_, _)
 ///
 /// SeqOf(S, up) == IF S = {} THEN <<>>

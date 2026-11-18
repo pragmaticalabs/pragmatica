@@ -35,7 +35,7 @@ public sealed interface Lifecycle {
     /// \* CI-1 Activate, then Rebuild(Snapshot) in the same dispatch: ClusterFsm.java; Lifecycle.java:65.
     /// \* The snapshot's leader value is the committed one (m.leader = snapshot.leader()), so a node elected before its
     /// \* LeaderKey commits activates suspended.
-    /// \* code, pre3085: rows from the snapshot (Indexer), Warnings.inherit (Warnings.java:444) seeds the family
+    /// \* code, pre3085: rows from the snapshot (Indexer), Warnings.inherit (Warnings.java:361) seeds the family
     /// \* sets with the open rows and marks dirty (#3274: inherit is rule O over the snapshot). The marker replay (`rp`) is a #3175
     /// \* leftover: no mode sets a marker, so it publishes nothing, and mutant "noreplay" changes no state a code-mode property
     /// \* reads (its row is removed). Mutant "noinherit": family sets start empty. pre2834: Lifecycle.rebuild has no inherit; family
