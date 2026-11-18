@@ -974,7 +974,8 @@ public interface HoldRecords {
                  + "`. " + EXITS
                  + "aether node drain accept-loss " + nodeId.id()
                  + " --episode " + episode
-                 + "` with the digest it reports.";
+                 + "` with the digest it reports, or `" + LossConfirmation.InventoryUnknown.INVENTORY_UNKNOWN.render()
+                 + "` if it reports an inventory not enumerated.";
         }
 
         private static final String EXITS = "Exits: a holder acknowledges them (a target returns or stops refusing), or, while a leader is reachable, `";
@@ -1000,8 +1001,14 @@ public interface HoldRecords {
         }
 
         private static String owed(Option<HeldReport> report) {
-            return report.map(held -> count(held) + " owed as of " + at(held) + " (digest " + held.owedDigest() + ")")
+            return report.map(held -> count(held) + " owed as of " + at(held) + digestClause(held))
                          .or("the key(s) it owed (count unknown to this leader: its last report did not reach it)");
+        }
+
+        private static String digestClause(HeldReport report) {
+            return report.owedCount() < 0
+                   ? ""
+                   : " (digest " + report.owedDigest() + ")";
         }
 
         private static String count(HeldReport report) {
