@@ -13,6 +13,7 @@ import java.util.function.Function;
 import java.util.regex.Pattern;
 
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.management.route.LeaderRefusal;
 import org.pragmatica.aether.environment.NodeAddress;
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.json.JsonMapper;
@@ -1106,7 +1107,27 @@ class ClusterDestroyCommand implements Callable<Integer> {
                           .contains("Disruption budget exceeded: draining");
     }
 
+    /// The typed refusal of a drain or a shutdown of the current leader: HTTP 409 whose problem body carries the wording
+    /// the server builds from [LeaderRefusal]. The API has no stop-without-drain for the leader, so a destroy cannot drain
+    /// it; like a node held for quorum, it is left to the instance deletion that follows.
+    private static final String LEADER_HELD_REASON = "held: current leader (not drained through the API)";
+
+    static boolean isLeaderRefusal(Cause cause) {
+        return cause instanceof ClusterHttpClient.HttpError.ApiError apiError
+               && apiError.statusCode() == 409
+               && LeaderRefusal.isLeaderRefusal(apiError.body());
+    }
+
     private static NodeResult classifyRefusal(String nodeId, String operation, Cause cause) {
+        if (isLeaderRefusal(cause)) {
+            System.out.printf("  Node %s is the current leader: the %s was refused, a leader is not drained or shut down through the API."
+                             + " It is not shut down by this command; its instance is deleted below.%n",
+                              nodeId,
+                              operation);
+
+            return NodeResult.held(nodeId, LEADER_HELD_REASON);
+        }
+
         if (isDisruptionBudgetRefusal(cause)) {
             System.out.printf("  Node %s held for quorum: the %s was refused by the disruption budget, which a destroy can never satisfy for a majority of the cores."
                              + " It is not shut down; its VM is deleted below.%n",
@@ -1171,7 +1192,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
             }
 
             if (held.contains(nodeId)) {
-                System.out.printf("Node %s is held for quorum; not shut down, its VM is deleted below.%n", nodeId);
+                System.out.printf("Node %s is held (not drained: quorum budget or current leader); not shut down, its VM is deleted below.%n", nodeId);
                 results.add(NodeResult.held(nodeId, "held for quorum (disruption budget)"));
                 continue;
             }
@@ -1222,11 +1243,12 @@ class ClusterDestroyCommand implements Callable<Integer> {
                           countSuccesses(shutdownResults),
                           shutdownResults.size(),
                           skippedNote(nodeIds));
-        System.out.printf("  Outcome: drained %d, held for quorum %d%s, failed %d%s%n",
+        System.out.printf("  Outcome: drained %d, held for quorum %d%s, failed %d%s%s%n",
                           countSuccesses(drainResults),
                           heldNames(drainResults).size(),
                           heldSuffix(heldNames(drainResults)),
                           failureCount(drainResults),
+                          leaderHeldTail(drainResults),
                           accounting.summaryTail(nodeIds.size()));
         System.out.printf("  Cloud resource cleanup: %s%n",
                           cleanupSucceeded
@@ -1374,8 +1396,25 @@ class ClusterDestroyCommand implements Callable<Integer> {
     private static List<String> heldNames(List<NodeResult> results) {
         return results.stream()
                       .filter(NodeResult::heldForQuorum)
+                      .filter(r -> !isLeaderHold(r))
                       .map(NodeResult::nodeId)
                       .toList();
+    }
+
+    private static boolean isLeaderHold(NodeResult result) {
+        return result.heldForQuorum() && LEADER_HELD_REASON.equals(result.reason());
+    }
+
+    /// The leader is held for a different reason than quorum, so the summary names it apart: `, leader held (<id>)`.
+    private static String leaderHeldTail(List<NodeResult> results) {
+        var leaders = results.stream()
+                             .filter(ClusterDestroyCommand::isLeaderHold)
+                             .map(NodeResult::nodeId)
+                             .toList();
+
+        return leaders.isEmpty()
+               ? ""
+               : ", leader held (" + String.join(", ", leaders) + ")";
     }
 
     private static String heldSuffix(List<String> held) {

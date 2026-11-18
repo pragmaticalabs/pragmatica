@@ -8,6 +8,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.management.route.LeaderRefusal;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.NodeReportedState;
@@ -403,6 +404,7 @@ class NodeLifecycleRoutesDrainBudgetTest {
             failure.onFailure(cause -> {
                 assertThat(cause).isInstanceOf(NodeLifecycleRoutes.LeaderCannotBeDrained.class);
                 assertThat(((NodeLifecycleRoutes.LeaderCannotBeDrained) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
+                assertThat(cause.message()).as("the CLI recognises this refusal by the shared wording").contains(LeaderRefusal.DRAIN_REASON);
                 assertThat(cause.message()).isEqualTo(
                     "Cannot drain node node-1: it is the current leader, and a leader is not drained. Move leadership first:"
                     + " stop this node's process from outside the cluster (the service manager or the container runtime) so the cluster elects another"
@@ -511,6 +513,7 @@ class NodeLifecycleRoutesDrainBudgetTest {
                     .onFailure(cause -> {
                         assertThat(cause).isInstanceOf(NodeLifecycleRoutes.LeaderCannotBeShutDown.class);
                         assertThat(((NodeLifecycleRoutes.LeaderCannotBeShutDown) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
+                        assertThat(cause.message()).as("the CLI recognises this refusal by the shared wording").contains(LeaderRefusal.SHUTDOWN_REASON);
                         assertThat(cause.message()).startsWith("Cannot shut down node node-1: it is the current leader")
                                                    .contains("the service manager or the container runtime");
                     });

@@ -23,6 +23,7 @@ import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery.DrainRefusal
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.http.security.AuditLog;
+import org.pragmatica.aether.management.route.LeaderRefusal;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.node.ManageableNode;
@@ -112,7 +113,8 @@ public final class NodeLifecycleRoutes implements RouteSource {
         @Override
         public String message() {
             return "Cannot drain node " + nodeId
-                 + ": it is the current leader, and a leader is not drained. Move leadership first: stop this node's process"
+                 + LeaderRefusal.DRAIN_REASON
+                 + " Move leadership first: stop this node's process"
                  + " from outside the cluster (the service manager or the container runtime) so the cluster elects another"
                  + " leader, then drain this node once it is no longer the leader. `aether nodes shutdown` is refused for the leader too.";
         }
@@ -129,7 +131,8 @@ public final class NodeLifecycleRoutes implements RouteSource {
         @Override
         public String message() {
             return "Cannot shut down node " + nodeId
-                 + ": it is the current leader, and a leader is not shut down through the API. Move leadership first: stop this"
+                 + LeaderRefusal.SHUTDOWN_REASON
+                 + " Move leadership first: stop this"
                  + " node's process from outside the cluster (the service manager or the container runtime) so the cluster elects"
                  + " another leader; this node can then be drained or shut down through the API once it is no longer the leader.";
         }
