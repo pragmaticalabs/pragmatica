@@ -26,6 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CliPerRootLintTest {
     private static final String USER_HOME_PROPERTY = "user.home";
     private static final String ARCH_02 = "JBCT-ARCH-02";
+    private static final String NAM_07 = "JBCT-NAM-07";
     private static final String RET_03 = "JBCT-RET-03";
     private static final Pattern JSON_FINDING = Pattern.compile("\"ruleId\": \"([^\"]+)\",\\s+\"severity\": \"[^\"]+\",\\s+\"file\": \"([^\"]+)\"");
 
@@ -129,14 +130,14 @@ class CliPerRootLintTest {
         var exit = execute(new LintCommand(), "--format", "json", business.toString(), infrastructure.toString());
 
         assertThat(exit).isEqualTo(1);
-        assertThat(findings(out.toString())).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz", RET_03 + "@infra");
+        assertThat(findings(out.toString())).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz", NAM_07 + "@biz", RET_03 + "@infra");
     }
 
     @Test
     void lint_reversedArgumentOrder_givesTheSameFindings() {
         execute(new LintCommand(), "--format", "json", infrastructure.toString(), business.toString());
 
-        assertThat(findings(out.toString())).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz", RET_03 + "@infra");
+        assertThat(findings(out.toString())).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz", NAM_07 + "@biz", RET_03 + "@infra");
     }
 
     @Test
@@ -152,7 +153,7 @@ class CliPerRootLintTest {
     @Test
     void lint_singleRoot_keepsItsExitCode() {
         assertThat(execute(new LintCommand(), "--format", "json", business.toString())).isEqualTo(1);
-        assertThat(findings(out.toString())).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz");
+        assertThat(findings(out.toString())).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz", NAM_07 + "@biz");
         assertThat(execute(new LintCommand(), "--format", "json", infrastructure.toString())).isEqualTo(1);
         assertThat(findings(out.toString())).containsExactly(RET_03 + "@infra");
     }
@@ -163,7 +164,7 @@ class CliPerRootLintTest {
 
         execute(new LintCommand(), "--format", "json", business.toString(), infrastructure.toString());
 
-        assertThat(findings(out.toString())).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz");
+        assertThat(findings(out.toString())).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz", NAM_07 + "@biz");
         assertThat(err.toString()).contains(rootOf(infrastructure).toString());
         assertThat(run.result().examined()).isOne();
         assertThat(run.result().skippedByMode()).isOne();

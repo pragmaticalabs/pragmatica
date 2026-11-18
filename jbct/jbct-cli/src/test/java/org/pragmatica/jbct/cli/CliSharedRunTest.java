@@ -27,6 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CliSharedRunTest {
     private static final String USER_HOME_PROPERTY = "user.home";
     private static final String ARCH_02 = "JBCT-ARCH-02";
+    private static final String NAM_07 = "JBCT-NAM-07";
     private static final String RET_03 = "JBCT-RET-03";
     private static final String PASSED_BANNER = "passed JBCT compliance check";
     private static final String NO_RULE_BANNER = "Nothing was linted: ";
@@ -61,7 +62,7 @@ class CliSharedRunTest {
         System.setErr(savedErr);
     }
 
-    private static final List<String> BOTH_MODULES_FINDINGS = List.of("JBCT-ARCH-02@biz", "JBCT-RET-03@biz", "JBCT-RET-03@infra");
+    private static final List<String> BOTH_MODULES_FINDINGS = List.of("JBCT-ARCH-02@biz", "JBCT-RET-03@biz", "JBCT-NAM-07@biz", "JBCT-RET-03@infra");
 
     /// A business module `biz` and an infrastructure module `infra` below one repository root.
     private void bothModules() throws Exception {
@@ -190,7 +191,7 @@ class CliSharedRunTest {
 
         run(new LintCommand(), "--format", "json", biz.toString(), biz.resolve("org").toString(), biz.resolve("./org").toString());
 
-        assertThat(findings()).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz");
+        assertThat(findings()).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz", NAM_07 + "@biz");
         assertThat(count(runText(), "root=" + root(biz))).isEqualTo(1);
         assertThat(captured.result().examined()).isOne();
     }

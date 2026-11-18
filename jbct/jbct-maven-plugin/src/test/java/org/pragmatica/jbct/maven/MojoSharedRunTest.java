@@ -34,6 +34,7 @@ class MojoSharedRunTest {
     private static final String USER_HOME = "user.home";
     private static final String MODE = "jbct.mode";
     private static final String ARCH_02 = "JBCT-ARCH-02";
+    private static final String NAM_07 = "JBCT-NAM-07";
     private static final String RET_03 = "JBCT-RET-03";
     private static final String NOTHING_LINTED = "Nothing was linted: ";
 
@@ -62,7 +63,7 @@ class MojoSharedRunTest {
 
     // ---- the fixture, identical to CliSharedRunTest
 
-    private static final List<String> BOTH_MODULES_FINDINGS = List.of("JBCT-ARCH-02@biz", "JBCT-RET-03@biz", "JBCT-RET-03@infra");
+    private static final List<String> BOTH_MODULES_FINDINGS = List.of("JBCT-ARCH-02@biz", "JBCT-RET-03@biz", "JBCT-NAM-07@biz", "JBCT-RET-03@infra");
 
     /// A business module `biz` and an infrastructure module `infra` below one repository root.
     private void bothModules() throws Exception {
@@ -214,7 +215,7 @@ class MojoSharedRunTest {
 
         run(lint(biz, biz), true);
 
-        assertThat(findings()).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz");
+        assertThat(findings()).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz", NAM_07 + "@biz");
         assertThat(count(String.join("\n", logs), "root=" + root(biz))).isEqualTo(1);
         assertThat(logs).anyMatch(line -> line.contains("root=" + root(biz)) && line.contains("1 files; lint: 1 linted"));
     }
