@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.stream.Stream;
 
+
 /// Fixture access for the skeleton tests. Fixtures live in `src/test/resources/skeleton`; a golden file is the
 /// `--fields` output of the same name.
 final class SkeletonFixtures {
@@ -39,11 +40,10 @@ final class SkeletonFixtures {
     }
 
     static List<Declaration> declarations(String source, boolean fields) {
-        return Skeletons.skeleton(source, fields)
-                        .fold(cause -> {
-                                  throw new AssertionError(cause.message());
-                              },
-                              Skeleton::declarations);
+        return Skeletons.skeleton(source, fields).fold(cause -> {
+                                                           throw new AssertionError(cause.message());
+                                                       },
+                                                       Skeleton::declarations);
     }
 
     static String render(String source, boolean fields) {
@@ -52,9 +52,7 @@ final class SkeletonFixtures {
 
     static Stream<Declaration> flatten(Declaration declaration) {
         return Stream.concat(Stream.of(declaration),
-                             declaration.children()
-                                        .stream()
-                                        .flatMap(SkeletonFixtures::flatten));
+                             declaration.children().stream().flatMap(SkeletonFixtures::flatten));
     }
 
     /// The source text of a range, computed from the line structure of the source alone (rows split on `\n`, a
@@ -66,11 +64,14 @@ final class SkeletonFixtures {
 
         return range.startRow() == range.endRow()
                ? last.substring(range.startColumn() - 1, range.endColumn())
-               : first.substring(range.startColumn() - 1) + "\n" + middle(lines, range) + last.substring(0, range.endColumn());
+               : first.substring(range.startColumn() - 1)
+                + "\n" + middle(lines, range) + last.substring(0, range.endColumn());
     }
 
     private static String middle(String[] lines, Range range) {
-        return String.join("\n", List.of(lines).subList(range.startRow(), range.endRow() - 1))
-               + (range.endRow() - range.startRow() > 1 ? "\n" : "");
+        return String.join("\n",
+                           List.of(lines).subList(range.startRow(), range.endRow() - 1)) + (range.endRow() - range.startRow() > 1
+                                                                                            ? "\n"
+                                                                                            : "");
     }
 }

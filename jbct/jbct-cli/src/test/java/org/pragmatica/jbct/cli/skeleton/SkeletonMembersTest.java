@@ -4,11 +4,12 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.jbct.cli.skeleton.SkeletonFixtures.cut;
 import static org.pragmatica.jbct.cli.skeleton.SkeletonFixtures.declarations;
 import static org.pragmatica.jbct.cli.skeleton.SkeletonFixtures.render;
 import static org.pragmatica.jbct.cli.skeleton.SkeletonFixtures.source;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// What is listed and what is not, and where a range begins and ends when trivia surrounds it.
 class SkeletonMembersTest {
@@ -41,7 +42,8 @@ class SkeletonMembersTest {
     void aRange_startsAtTheFirstAnnotation_evenWhenModifiersFollowOnOtherLines() {
         var source = source("TwoAnnotations");
         var all = declarations(source, false).stream().flatMap(SkeletonFixtures::flatten).toList();
-        var twoLines = all.stream().filter(each -> each.name().equals("twoLines")).findFirst().orElseThrow();
+        var twoLines = all.stream().filter(each -> each.name()
+                                                       .equals("twoLines")).findFirst().orElseThrow();
 
         assertThat(twoLines.range().startRow()).isEqualTo(4);
         assertThat(twoLines.range().startColumn()).isEqualTo(5);
@@ -53,8 +55,14 @@ class SkeletonMembersTest {
     void sealedInterface_listsItsPermittedRecordsAndEnumAsChildren() {
         var sealed = declarations(source("Sealed"), false).getFirst();
 
-        assertThat(sealed.children().stream().map(Declaration::label)).containsExactly("Leaf", "Pair", "Nothing", "size(): int");
-        assertThat(sealed.children().stream().map(Declaration::kind)).containsExactly(Kind.RECORD, Kind.RECORD, Kind.ENUM, Kind.METHOD);
+        assertThat(sealed.children().stream().map(Declaration::label)).containsExactly("Leaf",
+                                                                                       "Pair",
+                                                                                       "Nothing",
+                                                                                       "size(): int");
+        assertThat(sealed.children().stream().map(Declaration::kind)).containsExactly(Kind.RECORD,
+                                                                                      Kind.RECORD,
+                                                                                      Kind.ENUM,
+                                                                                      Kind.METHOD);
     }
 
     @Test
@@ -68,7 +76,9 @@ class SkeletonMembersTest {
     void genericMethods_keepTheirParameterAndReturnTypesAsWritten() {
         var labels = declarations(source("Generics"), false).getFirst().children().stream().map(Declaration::label);
 
-        assertThat(labels).contains("max(List<? extends T>, Map<K, V[]>): T", "rethrow(E): void", "listOf(X...): List<X>");
+        assertThat(labels).contains("max(List<? extends T>, Map<K, V[]>): T",
+                                    "rethrow(E): void",
+                                    "listOf(X...): List<X>");
     }
 
     @Test
@@ -82,10 +92,16 @@ class SkeletonMembersTest {
     }
 
     private static List<String> names(String fixture) {
-        return declarations(source(fixture), true).stream().flatMap(SkeletonFixtures::flatten).map(Declaration::name).toList();
+        return declarations(source(fixture),
+                            true).stream()
+                           .flatMap(SkeletonFixtures::flatten)
+                           .map(Declaration::name)
+                           .toList();
     }
 
     private static String cutOf(String source, List<Declaration> all, String name) {
-        return cut(source, all.stream().filter(each -> each.name().equals(name)).findFirst().orElseThrow().range());
+        return cut(source,
+                   all.stream().filter(each -> each.name()
+                                                   .equals(name)).findFirst().orElseThrow().range());
     }
 }

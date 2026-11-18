@@ -14,6 +14,7 @@ import picocli.CommandLine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+
 /// The `skeleton` subcommand through the real `jbct` command line: wiring, output, exit codes and what goes to stderr.
 class SkeletonCommandTest {
     @TempDir
@@ -32,7 +33,6 @@ class SkeletonCommandTest {
     @Test
     void oneFile_printsTheGoldenWithoutAHeader_andExitsZero() throws IOException {
         var file = copy("Nested.java", "Nested.java");
-
         var run = run("skeleton", "--fields", file.toString());
 
         assertThat(run.exit()).isZero();
@@ -52,14 +52,15 @@ class SkeletonCommandTest {
         var run = run("skeleton", "--json", copy("Records.java", "Records.java").toString());
 
         assertThat(run.exit()).isZero();
-        assertThat(run.out()).startsWith("[{\"file\": \"").contains("\"kind\": \"interface\", \"name\": \"Records\"").contains("\"startRow\": 4");
+        assertThat(run.out()).startsWith("[{\"file\": \"")
+                  .contains("\"kind\": \"interface\", \"name\": \"Records\"")
+                  .contains("\"startRow\": 4");
     }
 
     @Test
     void severalFiles_areEachPrecededByTheirPath() throws IOException {
         var one = copy("Docs.java", "Docs.java");
         var two = copy("Trivia.java", "Trivia.java");
-
         var run = run("skeleton", one.toString(), two.toString());
 
         assertThat(run.out()).contains(one + "\nclass Docs ").contains(two + "\nclass Trivia ");
@@ -69,7 +70,6 @@ class SkeletonCommandTest {
     void aFileThatDoesNotParse_failsWithItsPosition_andPrintsNoSkeletonForIt_whileOthersStillPrint() throws IOException {
         var broken = copy("Broken.java.txt", "Broken.java");
         var good = copy("Docs.java", "Docs.java");
-
         var run = run("skeleton", broken.toString(), good.toString());
 
         assertThat(run.exit()).isEqualTo(2);

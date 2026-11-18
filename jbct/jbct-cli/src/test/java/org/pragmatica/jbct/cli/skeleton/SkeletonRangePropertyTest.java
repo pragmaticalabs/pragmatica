@@ -7,10 +7,11 @@ import java.util.regex.Pattern;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.jbct.cli.skeleton.SkeletonFixtures.cut;
 import static org.pragmatica.jbct.cli.skeleton.SkeletonFixtures.declarations;
 import static org.pragmatica.jbct.cli.skeleton.SkeletonFixtures.source;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// The property that makes the coordinates trustworthy: cutting the source at a reported range yields the declaration
 /// itself, from its first annotation, modifier or token to its closing brace or semicolon, and the cut reads again
@@ -24,12 +25,12 @@ class SkeletonRangePropertyTest {
         var source = source(fixture);
         var failures = new ArrayList<String>();
 
-        every(source, (declaration, text) -> {
-            if (!DECLARATION_START.matcher(text).find()) {
-                failures.add(declaration.label() + " starts with " + first(text));
-            }
-        });
-
+        every(source,
+              (declaration, text) -> {
+                  if (!DECLARATION_START.matcher(text).find()) {
+                      failures.add(declaration.label() + " starts with " + first(text));
+                  }
+              });
         assertThat(failures).isEmpty();
     }
 
@@ -39,12 +40,12 @@ class SkeletonRangePropertyTest {
         var source = source(fixture);
         var failures = new ArrayList<String>();
 
-        every(source, (declaration, text) -> {
-            if (!endsProperly(declaration, text)) {
-                failures.add(declaration.label() + " ends with " + text.substring(Math.max(0, text.length() - 12)));
-            }
-        });
-
+        every(source,
+              (declaration, text) -> {
+                  if (!endsProperly(declaration, text)) {
+                      failures.add(declaration.label() + " ends with " + text.substring(Math.max(0, text.length() - 12)));
+                  }
+              });
         assertThat(failures).isEmpty();
     }
 
@@ -54,12 +55,12 @@ class SkeletonRangePropertyTest {
         var source = source(fixture);
         var failures = new ArrayList<String>();
 
-        every(source, (declaration, text) -> {
-            if (declaration.kind() != Kind.INITIALIZER && !text.contains(declaration.name())) {
-                failures.add(declaration.label() + " is not in " + first(text));
-            }
-        });
-
+        every(source,
+              (declaration, text) -> {
+                  if (declaration.kind() != Kind.INITIALIZER && !text.contains(declaration.name())) {
+                      failures.add(declaration.label() + " is not in " + first(text));
+                  }
+              });
         assertThat(failures).isEmpty();
     }
 
@@ -70,7 +71,6 @@ class SkeletonRangePropertyTest {
         var failures = new ArrayList<String>();
 
         every(source, (declaration, text) -> reread(declaration, text).ifPresent(failures::add));
-
         assertThat(failures).isEmpty();
     }
 
@@ -80,19 +80,22 @@ class SkeletonRangePropertyTest {
             case METHOD, CONSTRUCTOR, INITIALIZER, FIELD -> children(wrap(declaration, text));
             case ENUM_CONSTANT -> List.of(declaration);
         };
-
         // one field declaration with several variables (`int a, b;`) is one range and one line per variable
-        return (found.size() == 1 || declaration.kind() == Kind.FIELD) && found.stream().anyMatch(each -> each.kind() == declaration.kind() && each.label().equals(declaration.label()))
+        return (found.size() == 1 || declaration.kind() == Kind.FIELD) && found.stream()
+                                                                               .anyMatch(each -> each.kind() == declaration.kind() && each.label()
+                                                                                                                                          .equals(declaration.label()))
                ? java.util.Optional.empty()
                : java.util.Optional.of(declaration.label() + " re-read as " + found);
     }
 
     private static List<Declaration> children(String wrapped) {
-        return declarations(wrapped, true).getFirst().children();
+        return declarations(wrapped, true).getFirst()
+                           .children();
     }
 
     private static String wrap(Declaration declaration, String text) {
-        return declaration.signature().equals("(compact)")
+        return declaration.signature()
+                          .equals("(compact)")
                ? "record " + declaration.name() + "(int x) {\n" + text + "\n}\n"
                : "class W {\n" + text + "\n}\n";
     }
@@ -104,7 +107,8 @@ class SkeletonRangePropertyTest {
     }
 
     private static String first(String text) {
-        return text.substring(0, Math.min(20, text.length()));
+        return text.substring(0,
+                              Math.min(20, text.length()));
     }
 
     private static void every(String source, java.util.function.BiConsumer<Declaration, String> check) {
