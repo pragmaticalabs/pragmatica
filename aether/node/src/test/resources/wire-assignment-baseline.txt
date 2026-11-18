@@ -21,6 +21,7 @@ ENUM org.pragmatica.aether.slice.ExecutionMode SINGLE=0,ALL=1,UNKNOWN=2
 ENUM org.pragmatica.aether.slice.RetentionMode ALL=0,ANY=1,UNKNOWN=2
 ENUM org.pragmatica.aether.slice.SliceState LOAD=0,LOADING=1,LOADED=2,ACTIVATE=3,ACTIVATING=4,ROUTING=5,ACTIVE=6,DEACTIVATE=7,DEACTIVATING=8,FAILED=9,UNLOAD=10,UNLOADING=11,UNKNOWN=12
 ENUM org.pragmatica.aether.slice.StreamCompression NONE=0,LZ4=1,ZSTD=2,UNKNOWN=3
+ENUM org.pragmatica.aether.slice.TruncationPolicy WINDOW=0,UNTIL_CONSUMED=1,UNKNOWN=2
 ENUM org.pragmatica.aether.slice.blueprint.SecurityOverridePolicy STRENGTHEN_ONLY=0,FULL=1,NONE=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.delegation.TaskGroup METRICS=0,SCALING=1,STRATEGIES=2,DEPLOYMENT=3,STORAGE=4,STREAMING=5,UNKNOWN=6
 ENUM org.pragmatica.aether.slice.generation.ClusterMode CORE_ONLY=0,HIERARCHICAL=1,UNKNOWN=2
@@ -153,11 +154,15 @@ SHAPE org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityUpdate
 SHAPE org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityUpdateForwardResponse (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,success:boolean,state:byte[],failureType:java.lang.String,errorMessage:java.lang.String)
 SHAPE org.pragmatica.aether.node.prefetch.StoragePrefetchGossip (instance:java.lang.String,hints:java.util.List<org.pragmatica.aether.node.prefetch.StoragePrefetchGossip$Hint>)
 SHAPE org.pragmatica.aether.node.prefetch.StoragePrefetchGossip$Hint (blockIdHex:java.lang.String,accessCount:int)
+SHAPE org.pragmatica.aether.slice.HotWindowDeclaration (maxBytes:org.pragmatica.lang.Option<java.lang.Long>,maxCount:org.pragmatica.lang.Option<java.lang.Long>)
 SHAPE org.pragmatica.aether.slice.MethodName (name:java.lang.String)
+SHAPE org.pragmatica.aether.slice.RetentionDeclaration (maxAgeMs:org.pragmatica.lang.Option<java.lang.Long>,maxBytes:org.pragmatica.lang.Option<java.lang.Long>,maxCount:org.pragmatica.lang.Option<java.lang.Long>,mode:org.pragmatica.lang.Option<org.pragmatica.aether.slice.RetentionMode>)
 SHAPE org.pragmatica.aether.slice.RetentionDimensions (count:boolean,bytes:boolean,age:boolean)
 SHAPE org.pragmatica.aether.slice.RetentionPolicy (maxCount:long,maxBytes:long,maxAgeMs:long,mode:org.pragmatica.aether.slice.RetentionMode,tierAwareRetention:org.pragmatica.lang.Option<org.pragmatica.aether.slice.TierAwareRetention>,declared:org.pragmatica.aether.slice.RetentionDimensions)
-SHAPE org.pragmatica.aether.slice.StreamConfig (name:java.lang.String,partitions:int,retention:org.pragmatica.aether.slice.RetentionPolicy,autoOffsetReset:java.lang.String,maxEventSizeBytes:long,consistencyMode:org.pragmatica.aether.slice.ConsistencyMode,replicationFactor:int,confirmationFactor:int,compression:org.pragmatica.aether.slice.StreamCompression,encryptionKeyId:org.pragmatica.lang.Option<java.lang.String>,incarnation:long)
+SHAPE org.pragmatica.aether.slice.StreamConfig (name:java.lang.String,partitions:int,retention:org.pragmatica.aether.slice.RetentionPolicy,autoOffsetReset:java.lang.String,maxEventSizeBytes:long,consistencyMode:org.pragmatica.aether.slice.ConsistencyMode,replicationFactor:int,confirmationFactor:int,compression:org.pragmatica.aether.slice.StreamCompression,encryptionKeyId:org.pragmatica.lang.Option<java.lang.String>,incarnation:long,declaration:org.pragmatica.lang.Option<org.pragmatica.aether.slice.StreamDeclaration>)
+SHAPE org.pragmatica.aether.slice.StreamDeclaration (retention:org.pragmatica.lang.Option<org.pragmatica.aether.slice.RetentionDeclaration>,truncation:org.pragmatica.lang.Option<org.pragmatica.aether.slice.TruncationDeclaration>,hot:org.pragmatica.lang.Option<org.pragmatica.aether.slice.HotWindowDeclaration>,expectedIngressBytesPerSecond:org.pragmatica.lang.Option<java.lang.Long>)
 SHAPE org.pragmatica.aether.slice.TierAwareRetention (postSealBufferMs:long,postSealMaxCount:long)
+SHAPE org.pragmatica.aether.slice.TruncationDeclaration (policy:org.pragmatica.lang.Option<org.pragmatica.aether.slice.TruncationPolicy>,groupIdleExpiryMs:org.pragmatica.lang.Option<java.lang.Long>)
 SHAPE org.pragmatica.aether.slice.blueprint.Blueprint (id:org.pragmatica.aether.slice.blueprint.BlueprintId,slices:java.util.List<org.pragmatica.aether.slice.blueprint.SliceSpec>,deploymentConfig:org.pragmatica.lang.Option<org.pragmatica.aether.slice.blueprint.DeploymentConfig>,securityOverrides:org.pragmatica.aether.slice.blueprint.SecurityOverrides)
 SHAPE org.pragmatica.aether.slice.blueprint.BlueprintArtifact (blueprint:org.pragmatica.aether.slice.blueprint.Blueprint,resourcesConfig:org.pragmatica.lang.Option<java.lang.String>,schemaMigrations:java.util.Map<java.lang.String, java.util.List<org.pragmatica.aether.slice.blueprint.MigrationEntry>>,roleHints:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.slice.blueprint.BlueprintId (artifact:org.pragmatica.aether.artifact.Artifact)
@@ -597,14 +602,19 @@ TAG  org.pragmatica.aether.node.prefetch.StoragePrefetchGossip 2172
 TAG  org.pragmatica.aether.node.prefetch.StoragePrefetchGossip$Hint 2173
 TAG  org.pragmatica.aether.slice.ConsistencyMode 704
 TAG  org.pragmatica.aether.slice.ExecutionMode 705
+TAG  org.pragmatica.aether.slice.HotWindowDeclaration 2924
 TAG  org.pragmatica.aether.slice.MethodName 103
+TAG  org.pragmatica.aether.slice.RetentionDeclaration 2922
 TAG  org.pragmatica.aether.slice.RetentionDimensions 712
 TAG  org.pragmatica.aether.slice.RetentionMode 706
 TAG  org.pragmatica.aether.slice.RetentionPolicy 707
 TAG  org.pragmatica.aether.slice.SliceState 708
 TAG  org.pragmatica.aether.slice.StreamCompression 709
 TAG  org.pragmatica.aether.slice.StreamConfig 710
+TAG  org.pragmatica.aether.slice.StreamDeclaration 2921
 TAG  org.pragmatica.aether.slice.TierAwareRetention 711
+TAG  org.pragmatica.aether.slice.TruncationDeclaration 2923
+TAG  org.pragmatica.aether.slice.TruncationPolicy 2925
 TAG  org.pragmatica.aether.slice.blueprint.Blueprint 960
 TAG  org.pragmatica.aether.slice.blueprint.BlueprintArtifact 961
 TAG  org.pragmatica.aether.slice.blueprint.BlueprintId 962
@@ -800,7 +810,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SpokesmanStatus 1641
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SpokesmanValue 1642
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StorageStatusValue 1645
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StorageStatusValue$TierStatus 1646
-TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamConfigValue 1647
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamConfigValue 2920
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamCursorCheckpointValue 1648
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionOwnershipValue 1652
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionRecoveryValue 1714

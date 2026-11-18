@@ -6,6 +6,7 @@ package org.pragmatica.aether.slice;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.slice.StreamConfig.streamConfig;
@@ -94,6 +95,71 @@ class StreamConfigTest {
             var config = streamConfig("events", 8, retention, "earliest", 1_048_576L, ConsistencyMode.STRONG);
 
             assertThat(config.consistencyMode()).isEqualTo(ConsistencyMode.STRONG);
+        }
+    }
+
+    /// #3334 S2a1-1: nothing parses a declaration yet, so every `StreamConfig` this release builds carries `none`: each
+    /// factory and `DEFAULT` pass `none`, and the four copy methods carry the receiver's `declaration` over unchanged, as they
+    /// carry every other field (passing `none` there would silently drop a declaration once the parser sets one).
+    @Nested
+    class Declaration {
+        private static final StreamDeclaration DECLARED = StreamDeclaration.streamDeclaration(Option.none(),
+                                                                                             Option.none(),
+                                                                                             Option.none(),
+                                                                                             Option.some(1024L));
+
+        @Test
+        void everyFactoryAndDefault_carryNone() {
+            var retention = RetentionPolicy.retentionPolicy(50, 1024L, 5000L);
+
+            assertThat(StreamConfig.DEFAULT.declaration().isEmpty()).isTrue();
+            assertThat(streamConfig("a").declaration().isEmpty()).isTrue();
+            assertThat(streamConfig("a", 8, retention, "earliest").declaration().isEmpty()).isTrue();
+            assertThat(streamConfig("a", 8, retention, "earliest", 2048L).declaration().isEmpty()).isTrue();
+            assertThat(streamConfig("a", 8, retention, "earliest", 2048L, ConsistencyMode.STRONG).declaration()
+                                                                                                    .isEmpty()).isTrue();
+            assertThat(streamConfig("a", 8, retention, "earliest", 2048L, ConsistencyMode.STRONG, 2).declaration()
+                                                                                                       .isEmpty()).isTrue();
+            assertThat(streamConfig("a", 8, retention, "earliest", 2048L, ConsistencyMode.STRONG, 3, 2,
+                                    StreamCompression.ZSTD, Option.none()).declaration()
+                                                                          .isEmpty()).isTrue();
+        }
+
+        @Test
+        void copyMethods_carryTheDeclarationUnchanged() {
+            var declared = declaring(streamConfig("a"));
+
+            assertThat(declared.withName("b").declaration()).isEqualTo(Option.some(DECLARED));
+            assertThat(declared.withIncarnation(7L).declaration()).isEqualTo(Option.some(DECLARED));
+            assertThat(declared.withPartitions(16).declaration()).isEqualTo(Option.some(DECLARED));
+            assertThat(declared.withReplication(ReplicationFactors.BUILT_IN).declaration()).isEqualTo(Option.some(DECLARED));
+        }
+
+        @Test
+        void copyMethods_ofAFactoryConfig_carryNone() {
+            var config = streamConfig("a");
+
+            assertThat(config.withName("b").declaration().isEmpty()).isTrue();
+            assertThat(config.withIncarnation(7L).declaration().isEmpty()).isTrue();
+            assertThat(config.withPartitions(16).declaration().isEmpty()).isTrue();
+            assertThat(config.withReplication(ReplicationFactors.BUILT_IN).declaration().isEmpty()).isTrue();
+        }
+
+        /// `config` carrying [#DECLARED]. No factory sets a declaration yet (the parser is S2a1-2), so the fixture builds
+        /// the record directly.
+        private static StreamConfig declaring(StreamConfig config) {
+            return new StreamConfig(config.name(),
+                                    config.partitions(),
+                                    config.retention(),
+                                    config.autoOffsetReset(),
+                                    config.maxEventSizeBytes(),
+                                    config.consistencyMode(),
+                                    config.replicationFactor(),
+                                    config.confirmationFactor(),
+                                    config.compression(),
+                                    config.encryptionKeyId(),
+                                    config.incarnation(),
+                                    Option.some(DECLARED));
         }
     }
 }

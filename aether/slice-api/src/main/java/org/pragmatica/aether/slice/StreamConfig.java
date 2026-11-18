@@ -14,6 +14,9 @@ import static org.pragmatica.lang.Option.none;
 /// it is acknowledged. They are stored resolved: a stream's declaration is resolved against the cluster defaults
 /// once, through [ReplicationDeclaration#resolve], before the config is committed. `consistencyMode` remains the
 /// independent READ knob.
+///
+/// `declaration` is the stream's storage declaration (`[retention]`, `[truncation]`, `[hot]`, `expected_ingress`;
+/// #3334). Nothing parses or enforces it yet: every factory passes `none`, and the copy methods carry it over.
 @Codec
 public record StreamConfig(String name,
                            int partitions,
@@ -25,7 +28,8 @@ public record StreamConfig(String name,
                            int confirmationFactor,
                            StreamCompression compression,
                            Option<String> encryptionKeyId,
-                           long incarnation) {
+                           long incarnation,
+                           Option<StreamDeclaration> declaration) {
     /// No incarnation assigned: a config built by a factory, before a cluster create mints one.
     public static final long NO_INCARNATION = 0L;
     private static final int DEFAULT_PARTITIONS = 4;
@@ -58,7 +62,8 @@ public record StreamConfig(String name,
                                                                 DEFAULT_CONFIRMATION_FACTOR,
                                                                 StreamCompression.NONE,
                                                                 none(),
-                                                                NO_INCARNATION);
+                                                                NO_INCARNATION,
+                                                                none());
 
     /// This config under a different `name`, every other field carried over verbatim.
     ///
@@ -79,7 +84,8 @@ public record StreamConfig(String name,
                                 confirmationFactor,
                                 compression,
                                 encryptionKeyId,
-                                incarnation);
+                                incarnation,
+                                declaration);
     }
 
     /// This config as one LIFE of its stream (#1278 review): `incarnation` identifies a cluster create of the name.
@@ -98,7 +104,8 @@ public record StreamConfig(String name,
                                 confirmationFactor,
                                 compression,
                                 encryptionKeyId,
-                                newIncarnation);
+                                newIncarnation,
+                                declaration);
     }
 
     /// This config carrying `newPartitions`, every other field carried over verbatim (#3263: a republish of an existing life
@@ -114,7 +121,8 @@ public record StreamConfig(String name,
                                 confirmationFactor,
                                 compression,
                                 encryptionKeyId,
-                                incarnation);
+                                incarnation,
+                                declaration);
     }
 
     /// The stored factors as a pair. The engine re-checks them with [ReplicationFactors#replicationFactors].
@@ -135,7 +143,8 @@ public record StreamConfig(String name,
                                 factors.confirmationFactor(),
                                 compression,
                                 encryptionKeyId,
-                                incarnation);
+                                incarnation,
+                                declaration);
     }
 
     public static StreamConfig streamConfig(String name) {
@@ -149,7 +158,8 @@ public record StreamConfig(String name,
                                 DEFAULT_CONFIRMATION_FACTOR,
                                 StreamCompression.NONE,
                                 none(),
-                                NO_INCARNATION);
+                                NO_INCARNATION,
+                                none());
     }
 
     public static StreamConfig streamConfig(String name,
@@ -166,7 +176,8 @@ public record StreamConfig(String name,
                                 DEFAULT_CONFIRMATION_FACTOR,
                                 StreamCompression.NONE,
                                 none(),
-                                NO_INCARNATION);
+                                NO_INCARNATION,
+                                none());
     }
 
     public static StreamConfig streamConfig(String name,
@@ -184,7 +195,8 @@ public record StreamConfig(String name,
                                 DEFAULT_CONFIRMATION_FACTOR,
                                 StreamCompression.NONE,
                                 none(),
-                                NO_INCARNATION);
+                                NO_INCARNATION,
+                                none());
     }
 
     public static StreamConfig streamConfig(String name,
@@ -203,7 +215,8 @@ public record StreamConfig(String name,
                                 DEFAULT_CONFIRMATION_FACTOR,
                                 StreamCompression.NONE,
                                 none(),
-                                NO_INCARNATION);
+                                NO_INCARNATION,
+                                none());
     }
 
     public static StreamConfig streamConfig(String name,
@@ -223,7 +236,8 @@ public record StreamConfig(String name,
                                 confirmationFactor,
                                 StreamCompression.NONE,
                                 none(),
-                                NO_INCARNATION);
+                                NO_INCARNATION,
+                                none());
     }
 
     public static StreamConfig streamConfig(String name,
@@ -246,6 +260,7 @@ public record StreamConfig(String name,
                                 confirmationFactor,
                                 compression,
                                 encryptionKeyId,
-                                NO_INCARNATION);
+                                NO_INCARNATION,
+                                none());
     }
 }
