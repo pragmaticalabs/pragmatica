@@ -6,4 +6,7 @@
   draining halts (`EXIT_DRAINED`) and raises `own-directive-retired`.
 - **The in-place move of a live worker's runtime to another community is deleted.** A worker changes community only by
   retirement and a fresh join. A directive naming the community the worker already runs in is still a repeated
-  activation with one runtime owner; one naming another community is ignored with a warning.
+  activation with one runtime owner, even when another field of the directive changed. One naming another community
+  halts the worker like the removal (`EXIT_DRAINED`, `own-directive-retired`, at most once): a removal and a re-create
+  committed while a worker resubscribes reach it as one such put, because a projection install delivers a changed key
+  as a put, never as a remove followed by a put.
