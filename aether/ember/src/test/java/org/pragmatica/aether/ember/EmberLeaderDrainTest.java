@@ -65,7 +65,8 @@ class EmberLeaderDrainTest {
     private static final long LEADER_BUDGET_MS = 90_000L;
     private static final long READY_BUDGET_MS = 90_000L;
     private static final int LEADER_CHANGE_SIZE = 4;
-    private static final String REFUSAL_BODY_FORMAT = "Cannot drain node %s: it is the current leader, and a leader is not drained. Move leadership first: stop this node's process so the cluster elects another leader, then drain this node once it is no longer the leader.";
+    private static final String REFUSAL_BODY_FORMAT = "Cannot drain node %s: it is the current leader, and a leader is not drained. Move leadership first: stop this node's process from outside the cluster (the service manager or the container runtime) so the cluster elects another leader, then drain this node once it is no longer the leader. `aether nodes shutdown` is refused for the leader too.";
+    private static final String SHUTDOWN_REFUSAL_PREFIX_FORMAT = "Cannot shut down node %s: it is the current leader, and a leader is not shut down through the API. Move leadership first: stop this node's process from outside the cluster (the service manager or the container runtime) so the cluster elects another leader;";
     // membership departure timeout = MembershipConfig.DEFAULT_SPLIT_TIMEOUT (15 s); the window covers it with margin
     private static final long OBSERVE_WINDOW_MS = 60_000L;
     private static final long SAMPLE_MS = 100L;
@@ -140,6 +141,55 @@ class EmberLeaderDrainTest {
         drainLeaderAndObserve(leaderId, port, followers, "follower");
     }
 
+    /// R-b (#3348): an API SHUTDOWN of the leader is refused with its own typed text and never half-applies, through the leader's route.
+    @Test
+    @Timeout(600)
+    void leaderShutdown_throughTheLeadersRoute_refusedAndNeverHalfApplies() {
+        start(CLUSTER_SIZE);
+        var leaderId = cluster.currentLeader().unwrap();
+        var followers = followersOf(leaderId);
+
+        awaitFollowersReady(cluster.getNode(leaderId).unwrap(), idsOf(followers));
+        refuseLeaderAndObserve("shutdown", leaderId, cluster.getLeaderManagementPort().or(-1), followers, "leader");
+    }
+
+    /// The same shutdown posted to a FOLLOWER's management port.
+    @Test
+    @Timeout(600)
+    void leaderShutdown_throughAFollowersRoute_refusedAndNeverHalfApplies() {
+        start(CLUSTER_SIZE);
+        var leaderId = cluster.currentLeader().unwrap();
+        var followers = followersOf(leaderId);
+        var viaNode = followers.getFirst();
+        var port = cluster.status().nodes().stream().filter(n -> n.id().equals(viaNode.self().id())).findFirst().orElseThrow().mgmtPort();
+
+        awaitFollowersReady(cluster.getNode(leaderId).unwrap(), idsOf(followers));
+        awaitFollowersReady(viaNode, idsOf(followers.stream().filter(n -> n != viaNode).toList()));
+        refuseLeaderAndObserve("shutdown", leaderId, port, followers, "follower");
+    }
+
+    /// Control for R-b: a shutdown of a FOLLOWER still works (200, the node exits).
+    @Test
+    @Timeout(600)
+    void followerShutdown_control_admittedAndNodeExits() {
+        start(CLUSTER_SIZE);
+        var leaderId = cluster.currentLeader().unwrap();
+        var follower = cluster.allNodes().stream().map(n -> n.self().id()).filter(id -> !id.equals(leaderId)).findFirst().orElseThrow();
+
+        awaitFollowersReady(cluster.getNode(leaderId).unwrap(), List.of(follower));
+
+        var answer = post("shutdown", follower, cluster.getLeaderManagementPort().or(-1));
+        var deadline = System.currentTimeMillis() + OBSERVE_WINDOW_MS;
+
+        while (System.currentTimeMillis() < deadline && cluster.getNode(follower).isPresent()) {
+            sleepQuietly(SAMPLE_MS);
+        }
+
+        System.out.println("T3348 shutdown control route=" + answer + " exited=" + cluster.getNode(follower).isEmpty());
+        assertThat(answer.status()).as("control: the follower shutdown is admitted (200), answered: " + answer).isEqualTo(200);
+        assertThat(cluster.getNode(follower).isEmpty()).as("control: the shut-down follower exited").isTrue();
+    }
+
     /// After a leader change the NEW leader is refused the same way: its readiness view omits itself too.
     @Test
     @Timeout(900)
@@ -179,10 +229,14 @@ class EmberLeaderDrainTest {
     }
 
     private void drainLeaderAndObserve(String leaderId, int port, List<AetherNode> followers, String via) {
+        refuseLeaderAndObserve("drain", leaderId, port, followers, via);
+    }
+
+    private void refuseLeaderAndObserve(String operation, String leaderId, int port, List<AetherNode> followers, String via) {
         var leader = cluster.getNode(leaderId).unwrap();
         var leaderNodeId = nodeId(leaderId);
         var procedure = drainProcedureOf(leader);
-        var answer = postDrain(leaderId, port);
+        var answer = post(operation, leaderId, port);
 
         System.out.println("T3348 leader size=" + cluster.allNodes().size() + " via=" + via + " port=" + port + " leader=" + leaderId + " route=" + answer);
 
@@ -218,8 +272,8 @@ class EmberLeaderDrainTest {
             .as("#3348: the leader was DEPARTING on itself while its own DrainProcedure was INACTIVE; route answered " + answer)
             .isEmpty();
         assertThat(answer.status()).as("the route answered with an HTTP status (a connection failure is -1): " + answer).isEqualTo(409);
-        assertThat(answer.body()).as("the refusal is the typed leader-cannot-be-drained answer: " + answer)
-                                 .contains(REFUSAL_BODY_FORMAT.formatted(leaderId));
+        assertThat(answer.body()).as("the refusal is the typed leader refusal for " + operation + ": " + answer)
+                                 .contains((operation.equals("drain") ? REFUSAL_BODY_FORMAT : SHUTDOWN_REFUSAL_PREFIX_FORMAT).formatted(leaderId));
     }
 
     private void start(int size) {
@@ -268,8 +322,12 @@ class EmberLeaderDrainTest {
     }
 
     private Answer postDrain(String nodeId, int port) {
+        return post("drain", nodeId, port);
+    }
+
+    private Answer post(String operation, String nodeId, int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://127.0.0.1:" + port + "/api/v1/nodes/drain/" + nodeId))
+                                 .uri(URI.create("http://127.0.0.1:" + port + "/api/v1/nodes/" + operation + "/" + nodeId))
                                  .timeout(Duration.ofSeconds(30))
                                  .header("Content-Type", "application/json")
                                  .POST(HttpRequest.BodyPublishers.noBody())
