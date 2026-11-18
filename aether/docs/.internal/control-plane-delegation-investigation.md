@@ -117,7 +117,7 @@ Some components interact heavily and should be delegated as a unit:
 
 **Recommendation:** Delegate at group granularity (5 groups), not individual components. Avoids splitting tightly-coupled components and reduces assignment coordination overhead.
 
-**Note (v0.25.0):** Storage group components already use dormant/active lifecycle and a persistence abstraction (TombstoneStore; the replica watermark and assignment stores were removed unwired, #3333). These are injection points for KV-Store wiring — delegation will be mechanical.
+**Note (v0.25.0):** Storage group components already use dormant/active lifecycle (no persistence abstraction exists in code today: the replica watermark and assignment stores were removed unwired, #3333). Their dormant/active lifecycle is the existing hook for delegation.
 
 ---
 
@@ -205,7 +205,6 @@ All new leader-activated components should use the Dormant/Active sealed interfa
 - `DemotionManager` — dormant/active lifecycle, demote() no-ops when dormant
 - `StorageGarbageCollector` — dormant/active lifecycle, collectGarbage() no-ops when dormant
 - `ReplicaRegistry` — no persistence abstraction (the watermark and assignment stores it once carried were removed unwired, #3333)
-- `TombstoneRegistry` — TombstoneStore abstraction for KV-Store persistence
 - `SegmentIndex` — rebuildFromRefs() for reconstruction from storage metadata
 
 ### 8.2 No New Direct Cross-Component Method Calls
@@ -231,15 +230,7 @@ Any in-memory state held by leader-only components must be reconstructible from 
 
 ## 10. Persistence Abstraction Pattern (v0.25.0)
 
-New components use `@FunctionalInterface` persistence abstractions with NOOP defaults, wired to KV-Store in the node module:
-
-(The pattern's code example, a watermark store with a `NOOP` constant, was removed with that interface, #3333.)
-
-| Abstraction | Component | Purpose |
-|-------------|-----------|---------|
-| `TombstoneStore` | TombstoneRegistry | Persist GC tombstones for grace period tracking |
-
-These abstractions make the components KV-Store-ready without coupling them to the KV-Store implementation. Node module provides the actual KV-Store-backed implementations at wiring time.
+This section described a pattern (not code that exists today): components would take a `@FunctionalInterface` persistence abstraction with a NOOP default, wired to KV-Store in the node module. Two of its instances, the replica watermark and assignment stores, were removed unwired (#3333), and no `TombstoneStore` or `TombstoneRegistry` exists in the code, so no component in the storage group carries such an abstraction at present.
 
 ---
 

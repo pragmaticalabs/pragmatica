@@ -200,7 +200,7 @@ Retention is driven by `RetentionPolicy`: `ANY` evicts when any configured limit
 
 ### 6.2 Cold: SegmentSink implementations
 
-*Carried over; not re-verified except as noted.* `StorageSegmentSink` can compress and encrypt before `putRef`, though the node's instance does neither (re-verified, §2); per-segment metadata lets `SegmentReader` invert the transformations. a Postgres-backed sink that once persisted segments in `aether_stream_segments` had no production caller at `ccba0dba5` and was removed (#3333).
+*Carried over; not re-verified except as noted.* `StorageSegmentSink` can compress and encrypt before `putRef`, though the node's instance does neither (re-verified, §2); per-segment metadata lets `SegmentReader` invert the transformations. A Postgres-backed sink that once persisted segments in `aether_stream_segments` had no production caller at `ccba0dba5` and was removed (#3333).
 
 ### 6.3 Segment sealing runs partly on the evicting thread (re-verified)
 
