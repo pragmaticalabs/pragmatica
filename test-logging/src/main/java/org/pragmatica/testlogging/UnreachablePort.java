@@ -1,4 +1,4 @@
-package org.pragmatica.net.redis;
+package org.pragmatica.testlogging;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -6,8 +6,8 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 
-/// A loopback port nothing listens on, for tests that expect a refused connect. Test-only, so blocking I/O and
-/// checked exceptions are fine here.
+/// A loopback port nothing listens on, for tests that expect a refused connect (shared by the redis, http-client and
+/// aether-cli tests, #3321). Test-only, so blocking I/O and checked exceptions are fine here.
 ///
 /// Why not "bind a [ServerSocket], read its port, close it": between the close and the connect another process
 /// (parallel modules, `-T 1C`) can be handed the same ephemeral port and listen on it, and the connect then
@@ -22,11 +22,11 @@ import java.net.Socket;
 /// macOS does not answer a SYN to a bound, non-listening port with RST: it drops it and the connect times out
 /// (verified on macOS 26). No hold that refuses exists there, so off Linux the port is released at once, as before:
 /// the race remains on a developer machine, where nothing else runs in parallel, and CI is Linux.
-final class UnreachablePort implements AutoCloseable {
+public final class UnreachablePort implements AutoCloseable {
     private final Socket holder;
     private final int port;
 
-    static UnreachablePort hold() throws IOException {
+    public static UnreachablePort hold() throws IOException {
         return System.getProperty("os.name").startsWith("Linux")
                ? held()
                : released();
@@ -52,7 +52,7 @@ final class UnreachablePort implements AutoCloseable {
         this.port = port;
     }
 
-    int port() {
+    public int port() {
         return port;
     }
 

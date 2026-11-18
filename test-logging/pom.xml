@@ -13,7 +13,7 @@
     <packaging>jar</packaging>
 
     <name>Pragmatica Lite Test Logging</name>
-    <description>Shared Log4j2 logging configuration for test scope</description>
+    <description>Shared test-scope support (not only logging; the name is kept to avoid touching every consumer): Log4j2 logging configuration, log capture, and the unreachable-port hold</description>
 
     <dependencies>
         <dependency>
