@@ -170,7 +170,9 @@ final class DeparturePushRun {
         private final boolean split;
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
         private final AtomicBoolean finished = new AtomicBoolean(false);
+
         private final AtomicReference<Promise<AttemptResult>> attempt = new AtomicReference<>(Promise.promise());
+
         private final AtomicReference<List<StampId>> sent = new AtomicReference<>(List.of());
 
         private Page(DeparturePushRun run, NodeId target, int tenure, List<DepartureKey> keys, boolean split) {
@@ -215,7 +217,9 @@ final class DeparturePushRun {
         }
 
         List<KeyStamp> stamps() {
-            return run.underTransitions(() -> keys.stream().map(key -> key.stamp).toList());
+            return run.underTransitions(() -> keys.stream()
+                                                  .map(key -> key.stamp)
+                                                  .toList());
         }
     }
 
@@ -231,7 +235,6 @@ final class DeparturePushRun {
     private final DeparturePushObserver observer;
     private final long attemptsDeadline;
     private final Promise<DeparturePushReport> result = Promise.promise();
-
     // --- run state, guarded by `transitions` ---
     private final Map<String, DepartureKey> inventory = new HashMap<>();
     private final Map<NodeId, Holder> holders = new HashMap<>();
@@ -247,6 +250,7 @@ final class DeparturePushRun {
 
     // The deadline task, cancelled when the run resolves.
     private final AtomicReference<Option<ScheduledFuture<?>>> deadlineTimer = new AtomicReference<>(Option.none());
+
     // The halt watch (#3345 P2), cancelled when the run resolves.
     private final AtomicReference<Option<ScheduledFuture<?>>> haltWatch = new AtomicReference<>(Option.none());
 
@@ -255,7 +259,6 @@ final class DeparturePushRun {
     private final AtomicInteger viewChanges = new AtomicInteger();
     private final AtomicInteger holderLosses = new AtomicInteger();
     private final AtomicInteger exitAttempts = new AtomicInteger();
-
     private final List<Promise<Unit>> events = new CopyOnWriteArrayList<>();
     private final Object transitions = new Object();
     private final ConcurrentLinkedQueue<Runnable> effects = new ConcurrentLinkedQueue<>();
@@ -278,7 +281,8 @@ final class DeparturePushRun {
         this.tuning = tuning;
         this.window = window;
         this.observer = observer;
-        this.attemptsDeadline = Math.max(t0, window.deadlineNanos() - tuning.eventDeliveryWait().nanos());
+        this.attemptsDeadline = Math.max(t0,
+                                         window.deadlineNanos() - tuning.eventDeliveryWait().nanos());
     }
 
     /// `t0` is taken by the caller on entry, before the inventory is enumerated (F2): a slow `stamps()` eats the window.
@@ -338,9 +342,15 @@ final class DeparturePushRun {
             transition(() -> raiseAtRisk(List.of()));
         }
 
-        awaitEvents(DeparturePushReport.NOT_ENUMERATED).onSuccess(result::succeed);
+        succeedAfterEvents(DeparturePushReport.NOT_ENUMERATED);
 
         return Unit.unit();
+    }
+
+    /// Resolves the run with `report` once every event already decided has been delivered; the run's promise carries the outcome.
+    @Contract
+    private void succeedAfterEvents(DeparturePushReport report) {
+        awaitEvents(report).onSuccess(result::succeed);
     }
 
     private Unit start(List<KeyStamp> stamps) {
@@ -352,6 +362,7 @@ final class DeparturePushRun {
         if (result.isResolved()) {
             cancelTimers();
         }
+
         maybeExit();
 
         return Unit.unit();
@@ -362,7 +373,8 @@ final class DeparturePushRun {
         var ringNodes = Set.copyOf(node.ring().nodes());
         var leaving = leavingSet();
 
-        stamps.forEach(stamp -> inventory.put(HEX.formatHex(stamp.key()), classify(stamp, ringNodes, leaving)));
+        stamps.forEach(stamp -> inventory.put(HEX.formatHex(stamp.key()),
+                                              classify(stamp, ringNodes, leaving)));
         enumeratedKeys = inventory.size();
 
         return Unit.unit();
@@ -387,7 +399,8 @@ final class DeparturePushRun {
         var leaving = leavingSet();
         var read = new HashMap<String, KeyStamp>();
 
-        stamps.forEach(stamp -> read.put(HEX.formatHex(stamp.key()), stamp));
+        stamps.forEach(stamp -> read.put(HEX.formatHex(stamp.key()),
+                                         stamp));
         inventory.keySet().retainAll(read.keySet());
         read.forEach((hex, stamp) -> mergeRead(hex, stamp, ringNodes, leaving));
 
@@ -432,9 +445,12 @@ final class DeparturePushRun {
         var lost = underTransitions(() -> holders.remove(holder) != null);
 
         holderLosses.incrementAndGet();
-        log.info("Departure push: holder {} lost ({}){}", holder.id(), why, lost
-                                                                     ? ""
-                                                                     : " before it held anything");
+        log.info("Departure push: holder {} lost ({}){}",
+                 holder.id(),
+                 why,
+                 lost
+                 ? ""
+                 : " before it held anything");
         reconcile();
     }
 
@@ -465,8 +481,10 @@ final class DeparturePushRun {
 
         return new Plan(desired.entrySet()
                                .stream()
-                               .filter(entry -> !entry.getValue().isEmpty())
-                               .map(entry -> registerPages(entry.getKey(), entry.getValue()))
+                               .filter(entry -> !entry.getValue()
+                                                      .isEmpty())
+                               .map(entry -> registerPages(entry.getKey(),
+                                                           entry.getValue()))
                                .toList());
     }
 
@@ -498,12 +516,16 @@ final class DeparturePushRun {
             targets.all()
                    .stream()
                    .filter(target -> !holds(target, key))
-                   .forEach(target -> desired.computeIfAbsent(target, _ -> new ArrayList<>()).add(key));
+                   .forEach(target -> desired.computeIfAbsent(target,
+                                                              _ -> new ArrayList<>())
+                                             .add(key));
         }
     }
 
     private static boolean isLive(Page page) {
-        return !page.isProbe() && !page.cancelled.get() && !page.finished.get();
+        return ! page.isProbe()
+               && !page.cancelled.get()
+               && !page.finished.get();
     }
 
     /// Under `transitions`: a live page stays when one of its pairs is still desired (those pairs need no new page); otherwise it is
@@ -528,7 +550,8 @@ final class DeparturePushRun {
     private boolean holds(NodeId target, DepartureKey key) {
         var holder = holders.get(target);
 
-        return holder != null && holder.copies().contains(key.stampId());
+        return holder != null && holder.copies()
+                                       .contains(key.stampId());
     }
 
     /// Under `transitions`.
@@ -537,7 +560,9 @@ final class DeparturePushRun {
 
         return inventory.values()
                         .stream()
-                        .filter(key -> !isSafe(key, drainTargets(key.stamp.key(), leaving)))
+                        .filter(key -> !isSafe(key,
+                                               drainTargets(key.stamp.key(),
+                                                            leaving)))
                         .toList();
     }
 
@@ -553,7 +578,8 @@ final class DeparturePushRun {
                          ? delta
                          : candidates.stream().filter(candidate -> !excluded.contains(candidate)).toList();
 
-        return new Targets(Stream.concat(delta.stream(), candidates.stream()).distinct().toList(), deliverers);
+        return new Targets(Stream.concat(delta.stream(), candidates.stream()).distinct().toList(),
+                           deliverers);
     }
 
     /// The primary of the key's FINAL replica set, whichever L entries turn out stale (#3208, #3209): the named prefix of the walk
@@ -613,7 +639,9 @@ final class DeparturePushRun {
                    .pageBudget()
                    .pages(keys.stream().map(key -> key.stamp).toList())
                    .stream()
-                   .map(page -> registerPage(target, page.stream().map(byStamp::get).toList(), false))
+                   .map(page -> registerPage(target,
+                                             page.stream().map(byStamp::get).toList(),
+                                             false))
                    .toList();
     }
 
@@ -656,8 +684,9 @@ final class DeparturePushRun {
     private Promise<Unit> runChain(List<Page> chain, int index) {
         return index >= chain.size()
                ? Promise.unitPromise()
-               : runPage(chain.get(index)).onResultRun(() -> chain.get(index).finished.set(true))
-                                          .flatMap(_ -> runChain(chain, index + 1));
+               : runPage(chain.get(index)).onResultRun(() -> chain.get(index).finished
+                                                                  .set(true))
+                        .flatMap(_ -> runChain(chain, index + 1));
     }
 
     /// The page's entries are read once and the same list is resent (N5): every apply is versioned, so a stale resend never
@@ -700,7 +729,9 @@ final class DeparturePushRun {
     }
 
     private Promise<Unit> attempt(Page page, List<DHTMessage.KeyValue> entries, TimeSpan nackBackoff) {
-        return shouldStop(page) || !node.ring().nodes().contains(page.target)
+        return shouldStop(page) || !node.ring()
+                                        .nodes()
+                                        .contains(page.target)
                ? Promise.unitPromise()
                : dispatch(page, entries).flatMap(dispatched -> afterSend(page, entries, dispatched, nackBackoff));
     }
@@ -734,16 +765,21 @@ final class DeparturePushRun {
                                     Dispatched dispatched,
                                     TimeSpan nackBackoff) {
         return switch (dispatched.outcome()) {
-            case WriteOutcome.Sent _ -> awaitAttempt(dispatched).flatMap(result -> afterAttempt(page, entries, result, nackBackoff));
+            case WriteOutcome.Sent _ -> awaitAttempt(dispatched).flatMap(result -> afterAttempt(page,
+                                                                                                entries,
+                                                                                                result,
+                                                                                                nackBackoff));
             case WriteOutcome.EncodeFailed failed -> encodeFailed(page, failed);
-            case WriteOutcome.BackpressureRefused _, WriteOutcome.ConnectionDead _, WriteOutcome.NoPeerState _ ->
-                pause(tuning.resendAfter()).flatMap(_ -> attempt(page, entries, nackBackoff));
+            case WriteOutcome.BackpressureRefused _, WriteOutcome.ConnectionDead _, WriteOutcome.NoPeerState _ -> pause(tuning.resendAfter()).flatMap(_ -> attempt(page,
+                                                                                                                                                                   entries,
+                                                                                                                                                                   nackBackoff));
         };
     }
 
     private Promise<AttemptResult> awaitAttempt(Dispatched dispatched) {
         return dispatched.attempt()
-                         .timeout(timeSpan(Math.min(tuning.resendAfter().nanos(), remainingNanos(attemptsDeadline))).nanos())
+                         .timeout(timeSpan(Math.min(tuning.resendAfter().nanos(),
+                                                    remainingNanos(attemptsDeadline))).nanos())
                          .recover(_ -> AttemptResult.TIMED_OUT);
     }
 
@@ -778,8 +814,7 @@ final class DeparturePushRun {
     }
 
     private Promise<Unit> runHalves(List<Page> halves) {
-        return Promise.allOf(halves.stream().map(half -> runChain(List.of(half), 0)).toList())
-                      .mapToUnit();
+        return Promise.allOf(halves.stream().map(half -> runChain(List.of(half), 0)).toList()).mapToUnit();
     }
 
     /// Under `transitions`: the nacked page is cancelled and its keys go to two pages on the same target and tenure.
@@ -787,8 +822,12 @@ final class DeparturePushRun {
         page.cancelled.set(true);
         var middle = page.keys.size() / 2;
 
-        return List.of(registerPage(page.target, List.copyOf(page.keys.subList(0, middle)), false),
-                       registerPage(page.target, List.copyOf(page.keys.subList(middle, page.keys.size())), false));
+        return List.of(registerPage(page.target,
+                                    List.copyOf(page.keys.subList(0, middle)),
+                                    false),
+                       registerPage(page.target,
+                                    List.copyOf(page.keys.subList(middle, page.keys.size())),
+                                    false));
     }
 
     /// A page that cannot be encoded is split once into single-key pages on the same target and tenure; a key whose own page still
@@ -816,7 +855,11 @@ final class DeparturePushRun {
     private List<Page> splitPage(Page page) {
         page.cancelled.set(true);
 
-        return page.keys.stream().map(key -> registerPage(page.target, List.of(key), true)).toList();
+        return page.keys.stream()
+                        .map(key -> registerPage(page.target,
+                                                 List.of(key),
+                                                 true))
+                        .toList();
     }
 
     private boolean shouldStop(Page page) {
@@ -864,9 +907,10 @@ final class DeparturePushRun {
         }
 
         if (outcome == AttemptResult.FAILED && !page.isProbe()) {
-            holderLost(page.target, ack.draining()
-                                    ? "draining"
-                                    : "token mismatch");
+            holderLost(page.target,
+                       ack.draining()
+                       ? "draining"
+                       : "token mismatch");
         }
     }
 
@@ -880,7 +924,8 @@ final class DeparturePushRun {
             return AttemptResult.FAILED;
         }
 
-        var holder = holders.computeIfAbsent(page.target, _ -> Holder.holder(ack.bootToken()));
+        var holder = holders.computeIfAbsent(page.target,
+                                             _ -> Holder.holder(ack.bootToken()));
 
         if (holder.token() != ack.bootToken()) {
             return AttemptResult.FAILED;
@@ -898,7 +943,9 @@ final class DeparturePushRun {
     /// Under `transitions`: registered, its target in V now, and the tenure it was registered in is the target's current one.
     private boolean inTenure(Page page) {
         return registry.containsKey(page.correlationId())
-               && node.ring().nodes().contains(page.target)
+               && node.ring()
+                      .nodes()
+                      .contains(page.target)
                && view.contains(page.target)
                && tenures.getOrDefault(page.target, 0) == page.tenure;
     }
@@ -940,11 +987,8 @@ final class DeparturePushRun {
     private Unit afterReread(List<KeyStamp> stamps) {
         transition(() -> reread(stamps));
         reconcile();
-        var reliedOn = transition(this::probeTargets);
 
-        reliedOn.fold(this::reopen, this::probe);
-
-        return Unit.unit();
+        return transition(this::probeTargets).fold(this::reopen, this::probe);
     }
 
     /// Under `transitions`: empty when something is still owed (the exit fails and the re-plan's chains carry on), else the distinct
@@ -954,11 +998,12 @@ final class DeparturePushRun {
 
         return owed().isEmpty()
                ? Option.some(inventory.values()
-                                                          .stream()
-                                                          .flatMap(key -> drainTargets(key.stamp.key(), leaving).deliverers()
-                                                                                                                 .stream()
-                                                                                                                 .filter(target -> holds(target, key)))
-                                                          .collect(Collectors.toSet()))
+                                      .stream()
+                                      .flatMap(key -> drainTargets(key.stamp.key(),
+                                                                   leaving).deliverers()
+                                                                  .stream()
+                                                                  .filter(target -> holds(target, key)))
+                                      .collect(Collectors.toSet()))
                : Option.none();
     }
 
@@ -980,10 +1025,15 @@ final class DeparturePushRun {
     /// and no holder was lost meanwhile (a loss between a passed probe and the close re-opens the run).
     private Unit probe(Set<NodeId> reliedOn) {
         var lossesAtStart = holderLosses.get();
-        var probes = transition(() -> reliedOn.stream().map(target -> registerPage(target, List.of(), false)).toList());
+        var probes = transition(() -> reliedOn.stream()
+                                              .map(target -> registerPage(target,
+                                                                          List.of(),
+                                                                          false))
+                                              .toList());
 
-        Promise.allOf(probes.stream().map(this::probeOne).toList())
-               .onSuccess(results -> afterProbe(probes, results, lossesAtStart));
+        Promise.allOf(probes.stream().map(this::probeOne).toList()).onSuccess(results -> afterProbe(probes,
+                                                                                                    results,
+                                                                                                    lossesAtStart));
 
         return Unit.unit();
     }
@@ -1065,7 +1115,8 @@ final class DeparturePushRun {
 
     /// The resend interval, floored at 1 ms: a fixed-rate period must be positive.
     private TimeSpan haltWatchPeriod() {
-        return timeSpan(Math.max(tuning.resendAfter().nanos(), MIN_HALT_WATCH_NANOS)).nanos();
+        return timeSpan(Math.max(tuning.resendAfter().nanos(),
+                                 MIN_HALT_WATCH_NANOS)).nanos();
     }
 
     /// Under `transitions`, once: report what is owed, raise the closing events (not after a halt), drop every page of the run.
@@ -1116,10 +1167,13 @@ final class DeparturePushRun {
         return owed.isEmpty()
                ? 0L
                : owed.stream()
-                     .map(key -> key.stampId().digestText())
+                     .map(key -> key.stampId()
+                                    .digestText())
                      .sorted()
                      .map(text -> text.getBytes(StandardCharsets.UTF_8))
-                     .reduce(FNV_OFFSET, DeparturePushRun::fnv, (left, _) -> left);
+                     .reduce(FNV_OFFSET,
+                             DeparturePushRun::fnv,
+                             (left, _) -> left);
     }
 
     private static long fnv(long hash, byte[] bytes) {
@@ -1138,10 +1192,13 @@ final class DeparturePushRun {
     private Unit raiseAtPlan() {
         var leaving = leavingSet();
         var soleOwed = owed().stream().filter(key -> key.sole).toList();
-        var unpushable = soleOwed.stream().anyMatch(key -> drainTargets(key.stamp.key(), leaving).deliverers().isEmpty());
+        var unpushable = soleOwed.stream()
+                                 .anyMatch(key -> drainTargets(key.stamp.key(),
+                                                               leaving).deliverers()
+                                                              .isEmpty());
 
-        return !closed && !window.halted().getAsBoolean() && !soleOwed.isEmpty()
-               && (unpushable || System.nanoTime() >= attemptsDeadline)
+        return ! closed && !window.halted()
+                                  .getAsBoolean() && !soleOwed.isEmpty() && (unpushable || System.nanoTime() >= attemptsDeadline)
                ? raiseAtRisk(soleOwed)
                : Unit.unit();
     }

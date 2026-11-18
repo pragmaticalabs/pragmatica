@@ -127,7 +127,8 @@ public final class DHTRebalancer {
                : startRun(DeparturePushRun.departurePushRun(node,
                                                             network,
                                                             pendingPushes,
-                                                            config.get().effectiveReplicationFactor(node.ring().nodeCount()),
+                                                            config.get()
+                                                                  .effectiveReplicationFactor(node.ring().nodeCount()),
                                                             drainSet,
                                                             t0,
                                                             window,
