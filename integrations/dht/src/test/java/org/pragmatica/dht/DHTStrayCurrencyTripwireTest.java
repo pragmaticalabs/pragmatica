@@ -211,7 +211,7 @@ class DHTStrayCurrencyTripwireTest {
     }
 
     /// T3 on rv F1's schedule: t0 write and agreed round; C cut off; t_d = t0 + 1 min delete on A, B; t1 = t_d + 20 min
-    /// D joins and C leaves; past t_d + R the tombstone expires; A, B, D restart empty in turn; t1 + 45 min C regains.
+    /// D joins and C leaves; past max(t_d, t1) + R (today's departed-holder guard counts from C's leaving) the tombstone expires; A, B, D restart empty in turn; t1 + 45 min C regains.
     private static final class MissedDeleteRoute extends Route {
         @Override
         void run() {
@@ -246,7 +246,8 @@ class DHTStrayCurrencyTripwireTest {
             assertThat(cluster.holdsTombstone(d, key)).as("t1: D joined the holders with the tombstone").isTrue();
             snapshot("t1");
 
-            cluster.advanceClockBy(tD + retention() + ONE_MINUTE - cluster.clock.get());
+            // today the departed-holder guard (DHTNode.holderLeftAt) keeps the tombstone for the retention after C left (t1), not t_d
+            cluster.advanceClockBy(Math.max(tD, t1) + retention() + ONE_MINUTE - cluster.clock.get());
             collect(holders);
             assertThat(collected(holders)).as("control: the tombstone expired and is collected on A, B, D. Trace: %s", trace).isTrue();
             snapshot("expired");
