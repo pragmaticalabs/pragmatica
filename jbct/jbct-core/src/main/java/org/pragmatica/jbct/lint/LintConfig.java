@@ -9,7 +9,8 @@ import java.util.Set;
 /// Configuration for the JBCT linter.
 public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
                          Set<String> disabledRules,
-                         boolean failOnWarning) {
+                         boolean failOnWarning,
+                         TechnicalWords technicalWords) {
     public LintConfig {
         ruleSeverities = Map.copyOf(ruleSeverities);
         disabledRules = Set.copyOf(disabledRules);
@@ -19,7 +20,15 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     public static LintConfig lintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
                                         Set<String> disabledRules,
                                         boolean failOnWarning) {
-        return new LintConfig(ruleSeverities, disabledRules, failOnWarning);
+        return lintConfig(ruleSeverities, disabledRules, failOnWarning, TechnicalWords.DEFAULT);
+    }
+
+    /// Factory method for creating LintConfig with the word lists of the naming rules (#2529).
+    public static LintConfig lintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
+                                        Set<String> disabledRules,
+                                        boolean failOnWarning,
+                                        TechnicalWords technicalWords) {
+        return new LintConfig(ruleSeverities, disabledRules, failOnWarning, technicalWords);
     }
 
     /// Default lint configuration.
@@ -273,7 +282,14 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     // zone and composition shape are orthogonal axes. DEFAULT-DISABLED after the corpus gate (622
     // hits: 460 orchestration-verb-on-LEAF one-liners are legitimate naming, the noise the FP doc
     // predicted); census-on-demand like SHAPE-02.
-    Map.entry("JBCT-SHAPE-03", DiagnosticSeverity.INFO)),
+    Map.entry("JBCT-SHAPE-03", DiagnosticSeverity.INFO),
+
+    // Technology or pattern word in a type name (#2529). INFO until a corpus run calibrates the word list; Q16 keeps
+    // the naming rules at INFO.
+    Map.entry("JBCT-NAM-06", DiagnosticSeverity.INFO),
+
+    // Technology, pattern or layer word in a package segment (#2529)
+    Map.entry("JBCT-NAM-07", DiagnosticSeverity.INFO)),
 
     // JBCT-SHAPE-02 ships DEFAULT-DISABLED: after the phase-2 preamble reach
     // the aether corpus census returned 3832 UNCLASSIFIED methods (down from
@@ -301,7 +317,7 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
 
         newSeverities.put(ruleId, severity);
 
-        return lintConfig(Map.copyOf(newSeverities), disabledRules, failOnWarning);
+        return lintConfig(Map.copyOf(newSeverities), disabledRules, failOnWarning, technicalWords);
     }
 
     /// Builder-style method to disable a rule.
@@ -310,11 +326,16 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
 
         newDisabled.add(ruleId);
 
-        return lintConfig(ruleSeverities, Set.copyOf(newDisabled), failOnWarning);
+        return lintConfig(ruleSeverities, Set.copyOf(newDisabled), failOnWarning, technicalWords);
     }
 
     /// Builder-style method to set fail on warning.
     public LintConfig withFailOnWarning(boolean failOnWarning) {
-        return lintConfig(ruleSeverities, disabledRules, failOnWarning);
+        return lintConfig(ruleSeverities, disabledRules, failOnWarning, technicalWords);
+    }
+
+    /// Builder-style method to set the word lists of the naming rules.
+    public LintConfig withTechnicalWords(TechnicalWords technicalWords) {
+        return lintConfig(ruleSeverities, disabledRules, failOnWarning, technicalWords);
     }
 }

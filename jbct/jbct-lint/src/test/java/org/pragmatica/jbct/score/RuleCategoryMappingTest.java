@@ -96,6 +96,8 @@ class RuleCategoryMappingTest {
                                                                                      "JBCT-LOG-01",
                                                                                      "JBCT-LOG-02",
                                                                                      "JBCT-NAM-05",
+                                                                                     "JBCT-NAM-06",
+                                                                                     "JBCT-NAM-07",
                                                                                      "JBCT-ZONE-01",
                                                                                      "JBCT-ZONE-02",
                                                                                      "JBCT-ZONE-03");

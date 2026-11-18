@@ -6,11 +6,13 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import javax.lang.model.SourceVersion;
 
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.jbct.format.FormatterConfig;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.LintConfig;
+import org.pragmatica.jbct.lint.TechnicalWords;
 import org.pragmatica.jbct.lint.layer.LayerConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -41,7 +43,11 @@ record PartialConfig(PartialFormatter formatter,
                      PartialBlueprint blueprint,
                      Option<List<String>> sourceDirectories,
                      Option<List<String>> excludePackages,
-                     PartialLayers layers) {
+                     PartialLayers layers,
+                     Option<JbctMode> mode,
+                     Option<String> basePackage) {
+    private static final String BASE_PACKAGE_EXPECTED = "a Java package name, e.g. \"com.example.orders\"";
+
     /// A layer that sets nothing — the identity of [#mergeWith].
     static final PartialConfig EMPTY = new PartialConfig(PartialFormatter.EMPTY,
                                                          PartialLint.EMPTY,
@@ -49,13 +55,18 @@ record PartialConfig(PartialFormatter formatter,
                                                          PartialBlueprint.EMPTY,
                                                          none(),
                                                          none(),
-                                                         PartialLayers.EMPTY);
+                                                         PartialLayers.EMPTY,
+                                                         none(),
+                                                         none());
 
     /// Parse a single layer from a TOML document.
     ///
     /// A key present with the wrong TOML type (`maxLineLength = "120"`) is refused naming section, key
     /// and value (#1455): the typed reads below answer an empty `Option` for it, which this layer
     /// would otherwise capture as "key not set" and let a lower layer or the built-in default win.
+    ///
+    /// An unknown `[lint] mode` is refused the same way, naming the allowed tokens; a known mode that no entry point
+    /// honours yet is refused as [ConfigError.ModeNotYetSupported] (#2525).
     static Result<PartialConfig> partialConfig(TomlDocument toml) {
         var layer = new PartialConfig(PartialFormatter.partialFormatter(toml),
                                       PartialLint.partialLint(toml),
@@ -63,10 +74,46 @@ record PartialConfig(PartialFormatter formatter,
                                       PartialBlueprint.partialBlueprint(toml),
                                       toml.getStringList("project", "sourceDirectories"),
                                       toml.getStringList("lint", "excludePackages"),
-                                      PartialLayers.partialLayers(toml));
+                                      PartialLayers.partialLayers(toml),
+                                      toml.getParsed("lint", "mode", JbctMode.ALLOWED, JbctMode::fromToken),
+                                      basePackage(toml));
 
         return toml.requireNoTypeMismatches()
-                   .map(_ -> layer);
+                   .flatMap(_ -> layer.requireSupportedMode());
+    }
+
+    /// The explicit mode override (`--mode`, `-Djbct.mode`) as a layer of its own, folded after every file layer.
+    static PartialConfig modeOverride(JbctMode mode) {
+        return new PartialConfig(PartialFormatter.EMPTY,
+                                 PartialLint.EMPTY,
+                                 PartialFiles.EMPTY,
+                                 PartialBlueprint.EMPTY,
+                                 none(),
+                                 none(),
+                                 PartialLayers.EMPTY,
+                                 some(mode),
+                                 none());
+    }
+
+    /// `[project] basePackage`: a TOML string holding a dotted Java package name, none of whose segments is a keyword
+    /// or literal. Anything else, a non-string value included (`basePackage = true`), is recorded as a mismatch and
+    /// refused with the file, key and value named.
+    private static Option<String> basePackage(TomlDocument toml) {
+        var isString = toml.rawValue("project", "basePackage").map(String.class::isInstance).or(true);
+
+        return toml.getParsed("project", "basePackage", BASE_PACKAGE_EXPECTED, raw -> packageName(isString, raw));
+    }
+
+    private static Option<String> packageName(boolean isString, String raw) {
+        return isString && SourceVersion.isName(raw)
+               ? some(raw)
+               : none();
+    }
+
+    private Result<PartialConfig> requireSupportedMode() {
+        return mode.map(JbctMode::requireSupported)
+                   .map(supported -> supported.map(_ -> this))
+                   .or(Result.success(this));
     }
 
     /// Fold a nearer (higher priority) layer onto this one — every key it sets wins, key by key.
@@ -77,7 +124,9 @@ record PartialConfig(PartialFormatter formatter,
                                  blueprint.mergeWith(nearer.blueprint),
                                  nearer.sourceDirectories.orElse(sourceDirectories),
                                  nearer.excludePackages.orElse(excludePackages),
-                                 layers.mergeWith(nearer.layers));
+                                 layers.mergeWith(nearer.layers),
+                                 nearer.mode.orElse(mode),
+                                 nearer.basePackage.orElse(basePackage));
     }
 
     /// Apply the built-in defaults to every key still absent after folding.
@@ -88,7 +137,9 @@ record PartialConfig(PartialFormatter formatter,
                                      blueprint.materialize(),
                                      sourceDirectories.or(JbctConfig.DEFAULT.sourceDirectories()),
                                      excludePackages.or(JbctConfig.DEFAULT.excludePackages()),
-                                     layers.materialize());
+                                     layers.materialize(),
+                                     mode.or(JbctConfig.DEFAULT.mode()),
+                                     basePackage);
     }
 
     /// `[format]` section of one layer.
@@ -126,25 +177,76 @@ record PartialConfig(PartialFormatter formatter,
     /// disabled set, because only a single value per rule can be folded unambiguously: a nearer
     /// layer writing `JBCT-STY-01 = "error"` must both raise the severity and lift an inherited
     /// `"off"`.
-    record PartialLint(Option<Boolean> failOnWarning, Map<String, RuleSetting> rules) {
-        static final PartialLint EMPTY = new PartialLint(none(), Map.of());
+    ///
+    /// `[lint.naming] add / remove` (#2529) are two more per-key lists: each folds nearest-wins like every other list
+    /// key, so a parent layer's `add` and a child layer's `remove` both reach the resolved word lists.
+    record PartialLint(Option<Boolean> failOnWarning,
+                       Map<String, RuleSetting> rules,
+                       Option<List<String>> namingAdd,
+                       Option<List<String>> namingRemove) {
+        static final PartialLint EMPTY = new PartialLint(none(), Map.of(), none(), none());
+        private static final String NAMING = "lint.naming";
+        private static final Set<String> NAMING_KEYS = Set.of("add", "remove");
+        private static final String NAMING_KEYS_EXPECTED = "one of the keys: add, remove";
+        private static final String NAMING_WORDS_EXPECTED = "an array of words made of letters and digits, e.g. [\"Saga\"]";
 
         PartialLint {
             rules = Map.copyOf(rules);
         }
 
         static PartialLint partialLint(TomlDocument toml) {
-            return new PartialLint(toml.getBoolean("lint", "failOnWarning"), ruleSettings(toml));
+            return refusingUnknownNamingKeys(toml,
+                                             new PartialLint(toml.getBoolean("lint", "failOnWarning"),
+                                                             ruleSettings(toml),
+                                                             namingWords(toml, "add"),
+                                                             namingWords(toml, "remove")));
         }
 
         PartialLint mergeWith(PartialLint nearer) {
-            return new PartialLint(nearer.failOnWarning.orElse(failOnWarning), mergedRules(nearer.rules));
+            return new PartialLint(nearer.failOnWarning.orElse(failOnWarning),
+                                   mergedRules(nearer.rules),
+                                   nearer.namingAdd.orElse(namingAdd),
+                                   nearer.namingRemove.orElse(namingRemove));
         }
 
         LintConfig materialize() {
             return LintConfig.lintConfig(materializedSeverities(),
                                          materializedDisabledRules(),
-                                         failOnWarning.or(LintConfig.DEFAULT.failOnWarning()));
+                                         failOnWarning.or(LintConfig.DEFAULT.failOnWarning()),
+                                         TechnicalWords.technicalWords(namingAdd.or(List.of()),
+                                                                       namingRemove.or(List.of())));
+        }
+
+        /// A word list holding a word [TechnicalWords#problem(String)] refuses (not letters and digits) is recorded on the document and refused by [PartialConfig#partialConfig] naming the key,
+        /// the value and each such word with its reason; a wrong TOML type is recorded by the typed read.
+        private static Option<List<String>> namingWords(TomlDocument toml, String key) {
+            return toml.getStringList(NAMING, key)
+                       .flatMap(words -> namingProblems(words).isEmpty()
+                                         ? some(words)
+                                         : toml.getParsed(NAMING,
+                                                          key,
+                                                          NAMING_WORDS_EXPECTED + "; " + namingProblems(words),
+                                                          _ -> none()));
+        }
+
+        private static String namingProblems(List<String> words) {
+            return words.stream()
+                        .flatMap(word -> TechnicalWords.problem(word).stream())
+                        .collect(Collectors.joining("; "));
+        }
+
+        /// A key under `[lint.naming]` other than `add` and `remove` is a typo that would otherwise change nothing:
+        /// the read is recorded so the load refuses it naming the key, the value and the allowed keys.
+        private static PartialLint refusingUnknownNamingKeys(TomlDocument toml, PartialLint layer) {
+            toml.keys(NAMING)
+                .stream()
+                .filter(key -> !NAMING_KEYS.contains(key))
+                .forEach(key -> toml.getParsed(NAMING,
+                                               key,
+                                               NAMING_KEYS_EXPECTED,
+                                               _ -> none()));
+
+            return layer;
         }
 
         /// A severity token no rule setting accepts (`JBCT-STY-01 = "eror"`) is recorded on the document and

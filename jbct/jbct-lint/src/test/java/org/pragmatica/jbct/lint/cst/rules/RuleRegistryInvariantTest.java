@@ -3,9 +3,16 @@ package org.pragmatica.jbct.lint.cst.rules;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
+import org.pragmatica.jbct.config.JbctMode;
+import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintConfig;
+import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.lint.cst.CstLinter;
+import org.pragmatica.jbct.lint.cst.LintRule;
+import org.pragmatica.jbct.parser.Cursor;
 
 import org.junit.jupiter.api.Test;
 
@@ -20,6 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// assignment — is owned exhaustively by
 /// `org.pragmatica.jbct.score.RuleCategoryMappingTest` (the mapping↔registry bijection); it is
 /// referenced here, not re-tested, to avoid duplicating that invariant.
+///
+/// The modes invariant (#2525): a rule's `modes()` is a subset of {business, infrastructure} and contains business.
 class RuleRegistryInvariantTest {
     private static final List<String> REGISTRY = CstLinter.defaultRuleIds();
 
@@ -79,5 +88,71 @@ class RuleRegistryInvariantTest {
                               .distinct()
                               .count(),
                      "RuleFixtures contains duplicate rule IDs: " + ids);
+    }
+
+    /// Invariant (d): every rule's modes are a subset of {business, infrastructure} and contain business.
+    @Test
+    void everyRegisteredRule_modesAreValid() {
+        var violations = modeViolations(CstLinter.defaultRules());
+
+        assertTrue(violations.isEmpty(), "Registered rules with invalid modes(): " + violations);
+    }
+
+    /// The structure rules and the naming rules that judge business code only; every other rule runs in both modes.
+    @Test
+    void businessOnlyRules_areTheStructureRules() {
+        var businessOnly = CstLinter.defaultRules()
+                                    .stream()
+                                    .filter(rule -> !rule.modes()
+                                                         .contains(JbctMode.INFRASTRUCTURE))
+                                    .map(LintRule::ruleId)
+                                    .collect(Collectors.toSet());
+
+        assertEquals(Set.of("JBCT-ARCH-01", "JBCT-ARCH-02", "JBCT-ARCH-03", "JBCT-ARCH-04", "JBCT-MIX-01", "JBCT-NAM-06",
+                            "JBCT-NAM-07"),
+                     businessOnly);
+    }
+
+    /// The invariant check itself goes red for a rule declaring `format-only`.
+    @Test
+    void modeCheck_flagsRuleDeclaringFormatOnly() {
+        var rule = new FixtureRule("JBCT-FIXTURE-FORMAT-ONLY", Set.of(JbctMode.BUSINESS, JbctMode.FORMAT_ONLY));
+
+        assertEquals(List.of("JBCT-FIXTURE-FORMAT-ONLY"), modeViolations(List.of(rule)));
+    }
+
+    /// The invariant check itself goes red for a rule whose modes lack `business`.
+    @Test
+    void modeCheck_flagsRuleLackingBusiness() {
+        var rule = new FixtureRule("JBCT-FIXTURE-NO-BUSINESS", Set.of(JbctMode.INFRASTRUCTURE));
+
+        assertEquals(List.of("JBCT-FIXTURE-NO-BUSINESS"), modeViolations(List.of(rule)));
+    }
+
+    /// The invariant check stays green for the two valid declarations.
+    @Test
+    void modeCheck_acceptsValidDeclarations() {
+        var both = new FixtureRule("JBCT-FIXTURE-BOTH", LintRule.CODE_MODES);
+        var businessOnly = new FixtureRule("JBCT-FIXTURE-BUSINESS", LintRule.BUSINESS_ONLY);
+
+        assertTrue(modeViolations(List.of(both, businessOnly)).isEmpty());
+    }
+
+    private static List<String> modeViolations(List<? extends LintRule> rules) {
+        return rules.stream()
+                    .filter(rule -> !validModes(rule.modes()))
+                    .map(LintRule::ruleId)
+                    .toList();
+    }
+
+    private static boolean validModes(Set<JbctMode> modes) {
+        return modes.contains(JbctMode.BUSINESS) && LintRule.CODE_MODES.containsAll(modes);
+    }
+
+    private record FixtureRule(String ruleId, Set<JbctMode> modes) implements CstLintRule {
+        @Override
+        public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+            return Stream.empty();
+        }
     }
 }
