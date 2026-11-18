@@ -24,6 +24,8 @@ import org.pragmatica.jbct.lint.cst.RunOutcome.Tally;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Verdict;
 import org.pragmatica.jbct.score.DensityGate;
 import org.pragmatica.jbct.score.ScoreCalculator;
+import org.pragmatica.jbct.score.ScoreReport;
+import org.pragmatica.jbct.score.ScoreResult;
 import org.pragmatica.jbct.score.SourceScan;
 import org.pragmatica.lang.Option;
 
@@ -385,11 +387,24 @@ class RunLinesTest {
         var lines = run(invocation, Verdict.incomplete("gap"), files);
 
         assertEquals(List.of(line(Level.INFO, "Checking format of 2 Java file(s)"),
-                             line(Level.ERROR, "Error reading " + B + ": denied")),
+                             line(Level.ERROR, "Error reading " + B + ": denied"),
+                             line(Level.ERROR, "  " + A)),
                      bodyBefore(lines));
         assertEquals(List.of(line(Level.ERROR, GAP_FORMAT_CHECK)), bodyAfter(lines));
         assertEquals("1 file(s) are not properly formatted:\n  " + A + "\nRun 'mvn jbct:format' to fix.",
                      failure(invocation, files, 0, false));
+    }
+
+    @Test
+    void formatCheck_maven_logsEachUnformattedFileAsOneErrorLineAfterTheLoop() {
+        var files = List.of(file(A, none(), wouldChange()), file(B, none(), readFailed()), file(C, none(), wouldChange()));
+        var lines = run(Invocation.formatCheck(Surface.MAVEN), FINDINGS, files);
+
+        assertEquals(List.of(line(Level.INFO, "Checking format of 3 Java file(s)"),
+                             line(Level.ERROR, "Error reading " + B + ": denied"),
+                             line(Level.ERROR, "  " + A),
+                             line(Level.ERROR, "  " + C)),
+                     bodyBefore(lines));
     }
 
     // ---------------------------------------------------------------- the pass rule, both ways, per (command, surface)
@@ -625,8 +640,31 @@ class RunLinesTest {
 
         assertEquals(List.of(RunOutcome.Line.line(Level.ERROR, breach, RunOutcome.Channel.STDERR)),
                      bodyAfter(RunLines.runLines(cli, files, List.of(rootOf(cli, ROOT, JbctMode.BUSINESS, files, 0, 0, 0, false)), CLEAN, List.of(), 0, score).lines()));
-        assertEquals(List.of(),
+        assertEquals(tableLines(score.unwrap()),
                      bodyAfter(RunLines.runLines(maven, files, List.of(rootOf(maven, ROOT, JbctMode.BUSINESS, files, 0, 0, 0, false)), CLEAN, List.of(), 0, score).lines()));
+    }
+
+    @Test
+    void score_maven_theTableLeadsTheAfterGroupSoTheCoverageGapIsTheGoalsLastErrorLine() {
+        var score = Option.some(ScoreCalculator.calculate(new SourceScan(List.of(diagnostic()), 1000, 1)));
+        var maven = Invocation.score(Surface.MAVEN, Option.none());
+        var cli = Invocation.score(Surface.CLI, Option.none());
+        var files = List.of(file(ROOT, A, linted(), none()), file(ROOT, B, parseFailed(), none()));
+        var mavenAfter = bodyAfter(scoreLines(maven, files, score));
+        var table = tableLines(score.unwrap());
+
+        assertEquals(table, mavenAfter.subList(0, table.size()));
+        assertEquals(Level.ERROR, mavenAfter.getLast().level());
+        assertTrue(mavenAfter.getLast().text().startsWith("Parse errors:"), mavenAfter.toString());
+        assertFalse(bodyAfter(scoreLines(cli, files, score)).stream().anyMatch(table::contains));
+    }
+
+    private static List<Line> tableLines(ScoreResult score) {
+        return ScoreReport.terminalLines(score).stream().map(text -> line(Level.INFO, text)).toList();
+    }
+
+    private static RunLines.Lines scoreLines(Invocation invocation, List<FileResult> files, Option<ScoreResult> score) {
+        return RunLines.runLines(invocation, files, List.of(rootOf(invocation, ROOT, JbctMode.BUSINESS, files, 0, 0, 0, false)), Verdict.incomplete("gap"), List.of(), 0, score).lines();
     }
 
     // ---------------------------------------------------------------- per-file lines (T20)
@@ -641,13 +679,13 @@ class RunLinesTest {
                      firstFileLine(Invocation.lint(Surface.MAVEN), fileOf(parseFailed(), none())));
         assertEquals(line(Level.ERROR, "Error reading " + A + ": denied"),
                      firstFileLine(Invocation.lint(Surface.MAVEN), fileOf(readFailed(), none())));
-        assertEquals(line(Level.ERROR, "Error checking " + A + ": boom"),
+        assertEquals(line(Level.ERROR, "Error checking " + A + ": Parse error at A.java:1:1 - boom"),
                      firstFileLine(Invocation.formatCheck(Surface.MAVEN), fileOf(none(), parseFailed())));
         assertEquals(line(Level.ERROR, "Parse error in " + A + ": boom"),
                      firstFileLine(Invocation.process(Surface.MAVEN, false), fileOf(linted(), parseFailed())));
         assertEquals(line(Level.ERROR, "Error writing " + A + ": disk"),
                      firstFileLine(Invocation.process(Surface.MAVEN, false), fileOf(linted(), writeFailed())));
-        assertEquals(line(Level.ERROR, "Error formatting " + A + ": boom"),
+        assertEquals(line(Level.ERROR, "Error formatting " + A + ": Parse error at A.java:1:1 - boom"),
                      firstFileLine(format(Surface.MAVEN, FormatAction.WRITE), fileOf(none(), parseFailed())));
         assertEquals(line(Level.ERROR, "Error formatting " + A + ": disk"),
                      firstFileLine(format(Surface.MAVEN, FormatAction.WRITE), fileOf(none(), writeFailed())));
@@ -657,6 +695,14 @@ class RunLinesTest {
                      firstFileLine(format(Surface.CLI, FormatAction.WRITE), fileOf(none(), parseFailed())));
         assertEquals(line(Level.ERROR, "  error: " + A + " - disk"),
                      firstFileLine(format(Surface.CLI, FormatAction.WRITE), fileOf(none(), writeFailed())));
+    }
+
+    @Test
+    void parseFailure_mavenFormatAndFormatCheck_keepTheReleasesParsePosition() {
+        assertEquals(line(Level.ERROR, "Error formatting " + A + ": Parse error at A.java:1:1 - boom"),
+                     firstFileLine(format(Surface.MAVEN, FormatAction.WRITE), fileOf(none(), parseFailed())));
+        assertEquals(line(Level.ERROR, "Error checking " + A + ": Parse error at A.java:1:1 - boom"),
+                     firstFileLine(Invocation.formatCheck(Surface.MAVEN), fileOf(none(), parseFailed())));
     }
 
     // ---------------------------------------------------------------- failure texts (T22, T23)

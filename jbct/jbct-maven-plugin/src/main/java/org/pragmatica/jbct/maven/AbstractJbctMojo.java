@@ -17,8 +17,6 @@ import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Line;
 import org.pragmatica.jbct.lint.cst.RunOutcome.MavenModule;
 import org.pragmatica.jbct.lint.cst.RunOutcome.RunResult;
-import org.pragmatica.jbct.score.ScoreReport;
-import org.pragmatica.jbct.score.ScoreResult;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -153,16 +151,9 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
         result.before().forEach(this::log);
         reportDiagnostics(result.findings());
         result.after().forEach(this::log);
-        result.score().onPresent(this::logScore);
         if (failure.isPresent()) {
             throw new MojoFailureException(failure.unwrap());
         }
-    }
-
-    /// The score table the run returned, one line per row, as the CLI prints it.
-    @Contract
-    private void logScore(ScoreResult score) {
-        ScoreReport.terminalLines(score).forEach(getLog()::info);
     }
 
     /// A line is logged at its own level; the channel is read only by the CLI.

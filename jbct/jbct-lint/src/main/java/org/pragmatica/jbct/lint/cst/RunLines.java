@@ -27,6 +27,7 @@ import org.pragmatica.jbct.lint.cst.RunOutcome.Verdict;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Withheld;
 import org.pragmatica.jbct.lint.cst.RunOutcome.WouldChange;
 import org.pragmatica.jbct.lint.cst.RunOutcome.WriteFailed;
+import org.pragmatica.jbct.score.ScoreReport;
 import org.pragmatica.jbct.score.ScoreResult;
 import org.pragmatica.jbct.shared.AnalysisCoverage;
 import org.pragmatica.lang.Option;
@@ -266,15 +267,23 @@ record RunLines(Invocation invocation,
         };
     }
 
-    /// T13: the files a check found not formatted, before the findings.
+    /// T13: the files a check found not formatted, before the findings; the release's format-check logged them once, one
+    /// error line per file, after its loop (the failure text repeats them).
     private List<Line> unformatted() {
-        return (invocation.command() == Command.CHECK && count(this::wouldChange) > 0)
-               ? Stream.of(blank(),
-                           Stream.of(carried(Level.ERROR, FINDINGS_HEAD, Channel.STDOUT)),
-                           wouldChangeFiles().map(file -> carried(Level.ERROR, "  " + file, Channel.STDOUT)))
-                       .flatMap(stream -> stream)
-                       .toList()
-               : List.of();
+        return switch (invocation.command()) {
+            case CHECK -> count(this::wouldChange) > 0
+                          ? Stream.of(blank(),
+                                      Stream.of(carried(Level.ERROR, FINDINGS_HEAD, Channel.STDOUT)),
+                                      wouldChangeFiles().map(file -> carried(Level.ERROR, "  " + file, Channel.STDOUT)))
+                                  .flatMap(stream -> stream)
+                                  .toList()
+                          : List.of();
+            case FORMAT_CHECK -> invocation.surface() == Surface.MAVEN
+                                 ? wouldChangeFiles().map(file -> line(Level.ERROR, "  " + file))
+                                                     .toList()
+                                 : List.of();
+            default -> List.of();
+        };
     }
 
     /// The release's check and lint printed a blank line in front of their findings, when there were findings.
@@ -388,14 +397,20 @@ record RunLines(Invocation invocation,
     private String formatParseText(FileResult file, String message) {
         return invocation.surface() == Surface.MAVEN
                ? switch (invocation.command()) {
-            case FORMAT_CHECK -> "Error checking " + file.file() + ": " + message;
+            case FORMAT_CHECK -> "Error checking " + file.file() + ": " + positioned(file, message);
             case PROCESS -> "Parse error in " + file.file() + ": " + message;
-            default -> "Error formatting " + file.file() + ": " + message;
+            default -> "Error formatting " + file.file() + ": " + positioned(file, message);
         }
                : invocation.command() == Command.FORMAT
-                 ? "  error: " + file.file() + " - Parse error at " + file.file()
-                                                                          .getFileName() + ":1:1 - " + message
+                 ? "  error: " + file.file() + " - " + positioned(file, message)
                  : cliFailure(file, message);
+    }
+
+    /// The release's formatter reported an unparseable file as `Parse error at <name>:<line>:<column> - <details>`; the
+    /// formatter never read a position out of the parse failure, so the release's text always said 1:1.
+    private static String positioned(FileResult file, String message) {
+        return "Parse error at " + file.file()
+                                       .getFileName() + ":1:1 - " + message;
     }
 
     private String writeText(FileResult file, String message) {
@@ -442,7 +457,8 @@ record RunLines(Invocation invocation,
 
     // ---------------------------------------------------------------- after the findings
     private List<Line> after() {
-        return Stream.of(afterFrame(),
+        return Stream.of(scoreTable(),
+                         afterFrame(),
                          withheldLine().stream(),
                          gap().stream(),
                          scoreBreach().stream(),
@@ -450,6 +466,17 @@ record RunLines(Invocation invocation,
                          summary().stream())
                      .flatMap(stream -> stream)
                      .toList();
+    }
+
+    /// The release's Maven score logged its table before the coverage-gap line, which was the goal's last error line, so the
+    /// table leads the Maven score's after-group. The CLI prints the table from [RunResult#score] to its own stream.
+    private Stream<Line> scoreTable() {
+        return invocation.surface() == Surface.MAVEN && invocation.command() == Command.SCORE
+               ? score.stream()
+                      .flatMap(result -> ScoreReport.terminalLines(result)
+                                                    .stream())
+                      .map(text -> line(Level.INFO, text))
+               : Stream.empty();
     }
 
     /// The release's score printed the density gate's breach to stderr, after a blank line, when nothing was left unexamined;
