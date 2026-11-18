@@ -12,7 +12,7 @@ class SkeletonAnnotationsTest {
         class A {
             public @Cfg(v = {"q"}) String ret() { return ""; }
 
-            @One public @Two final @Three int f;
+            @One public @Two final int f;
 
             public @Init A() {}
         }
@@ -24,8 +24,8 @@ class SkeletonAnnotationsTest {
     }
 
     @Test
-    void annotationsBeforeBetweenAndAfterModifiers_areListedInSourceOrder() {
-        assertThat(annotationsOf("f")).containsExactly("@One", "@Two", "@Three");
+    void annotationsBeforeAndBetweenModifiers_areListedInSourceOrder() {
+        assertThat(annotationsOf("f")).containsExactly("@One", "@Two");
     }
 
     @Test

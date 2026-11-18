@@ -236,7 +236,16 @@ public final class Skeletons {
         private String constructorName(Cursor core) {
             return nameAt(CstNodes.childByRule(core, RuleKind.TYPE_PARAMS)
                                   .map(params -> backward(params.lastTokenIdx()) + 1)
-                                  .or(core.firstTokenIdx()));
+                                  .or(afterAnnotations(core)));
+        }
+
+        /// The first token after the annotations that stand among the modifiers of `core`, or its first token.
+        private int afterAnnotations(Cursor core) {
+            return CstNodes.childrenByRule(core, RuleKind.ANNOTATION)
+                           .stream()
+                           .mapToInt(annotation -> backward(annotation.lastTokenIdx()) + 1)
+                           .max()
+                           .orElse(core.firstTokenIdx());
         }
 
         private String initializerName(Cursor core) {
@@ -246,11 +255,7 @@ public final class Skeletons {
         }
 
         private String enumConstantName(Cursor constant) {
-            return nameAt(CstNodes.childrenByRule(constant, RuleKind.ANNOTATION)
-                                  .stream()
-                                  .mapToInt(annotation -> backward(annotation.lastTokenIdx()) + 1)
-                                  .max()
-                                  .orElse(constant.firstTokenIdx()));
+            return nameAt(afterAnnotations(constant));
         }
 
         private String nameAt(int index) {
