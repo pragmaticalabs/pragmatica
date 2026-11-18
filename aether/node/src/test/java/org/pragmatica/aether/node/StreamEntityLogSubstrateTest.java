@@ -238,6 +238,35 @@ class StreamEntityLogSubstrateTest {
                  .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.EVENT_DROPPED));
     }
 
+    /// T-278 refusal arm (O19 ruled (c)): the entity `max_event_size` is 1 MiB. A record one byte over is refused with the
+    /// typed `EventTooLarge(1_048_577, 1_048_576)` before anything is stored: the head does not move and the refusal is not
+    /// the ring's `EVENT_DROPPED`. A record of exactly 1 MiB is acked and readable.
+    @Test
+    void append_refusesAnEntityRecordOverOneMiB_andAcksOneOfExactlyOneMiB() {
+        var partitionManager = StreamPartitionManager.streamPartitionManager(512L * 1024 * 1024,
+                                                                              EvictionListener.NOOP,
+                                                                              capturingReplicationManager(new AtomicInteger()));
+        var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
+                                                                                                                                          false),
+                                                 null,
+                                                 null,
+                                                 EvictionListener.NOOP,
+                                                 null,
+                                                 null,
+                                                 null);
+
+        substrate.ensureLog("ledger", 1, new org.pragmatica.aether.slice.ReplicationFactors(3, 1)).unwrap();
+
+        substrate.append("ledger", 0, new byte[1_048_577])
+                 .await()
+                 .onSuccess(offset -> fail("an entity record over 1 MiB was acked at offset " + offset))
+                 .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.EventTooLarge(1_048_577, 1_048_576)));
+        assertThat(substrate.headOffset("ledger", 0)).isEqualTo(-1L);
+
+        assertThat(substrate.append("ledger", 0, new byte[1_048_576]).await().unwrap()).isEqualTo(0L);
+        assertThat(substrate.headOffset("ledger", 0)).isEqualTo(0L);
+    }
+
     private static ReplicationManager capturingReplicationManager(AtomicInteger capturedMinAcks) {
         return capturingReplicationManager(capturedMinAcks, Long.MAX_VALUE);
     }

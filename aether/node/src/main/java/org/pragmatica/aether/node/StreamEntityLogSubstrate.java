@@ -25,6 +25,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
+import org.pragmatica.aether.stream.EntityRingWindow;
 import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
@@ -87,24 +88,8 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                                       .attempts(20)
                                                       .strategy(BackoffStrategy.fixed().interval(TimeSpan.timeSpan(100).millis()));
 
-    private static final int ENTITY_MAX_EVENT_SIZE_BYTES = 4 * 1024 * 1024;
+    /// The entity ring window and the entity max event size live in [EntityRingWindow].
     private static final String AUTO_OFFSET_RESET_EARLIEST = "earliest";
-    /// Ring capacity per entity partition — index slots allocated UP FRONT at `INDEX_ENTRY_SIZE` (24)
-    /// bytes each, so this is a direct per-partition memory cost, multiplied by a keyspace's partition
-    /// count (64 by default). At 10k that is ~240 KB per partition and ~15 MB for a default keyspace;
-    /// the `RetentionPolicy` default of 100k would be ~154 MB for the same keyspace, which is why this
-    /// deliberately does not inherit it.
-    ///
-    /// It no longer bounds recovery on the node that sealed the history (#1240): records the ring evicts are
-    /// sealed by the segment sealer and [#read] serves them from there. It still bounds recovery on a node
-    /// taking the partition over, which reads no other node's segments — there the fold refuses once the
-    /// checkpoint lags further behind than this node's ring reaches.
-    private static final long ENTITY_RING_CAPACITY = 10_000L;
-    /// Data-region CAP, not an up-front allocation: the ring grows one segment at a time toward it.
-    private static final long ENTITY_RING_BYTES = 64L * 1024 * 1024;
-    /// Age bound, deliberately far out and deliberately FINITE: entity state has no reason to expire on a
-    /// clock, but `evictByAge` computes `now - maxAgeMs`, so `Long.MAX_VALUE` would underflow.
-    private static final long ENTITY_RING_MAX_AGE_MS = 365L * 24 * 60 * 60 * 1000;
     private static final TimeSpan AT_ONCE = TimeSpan.timeSpan(0).millis();
 
     /// How a writer reclaims the checkpoint blocks its pointer swaps displace (PR-3c, spec 6.4 item 1): how long a displaced block outlives
@@ -280,12 +265,12 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                                    ReplicationFactors replication) {
         return StreamConfig.streamConfig(EntityPartitionArc.arcName(keyspace),
                                          partitionCount,
-                                         RetentionPolicy.retentionPolicy(ENTITY_RING_CAPACITY,
-                                                                         ENTITY_RING_BYTES,
-                                                                         ENTITY_RING_MAX_AGE_MS,
+                                         RetentionPolicy.retentionPolicy(EntityRingWindow.CAPACITY,
+                                                                         EntityRingWindow.MAX_BYTES,
+                                                                         EntityRingWindow.MAX_AGE_MS,
                                                                          TierAwareRetention.tierAwareRetention()),
                                          AUTO_OFFSET_RESET_EARLIEST,
-                                         ENTITY_MAX_EVENT_SIZE_BYTES,
+                                         EntityRingWindow.MAX_EVENT_SIZE_BYTES,
                                          ConsistencyMode.EVENTUAL,
                                          replication.replicationFactor(),
                                          replication.confirmationFactor(),
