@@ -127,7 +127,7 @@ class EngineMarkerGuardTest {
             assertThat(exits).as("not before the window ends").isEmpty();
             var text = mismatchWarnings().getFirst().message();
 
-            assertThat(text).contains("configured for FSM2").contains("engine=LEGACY").contains(MINTER.id()).contains("fresh NodeId").contains("re-genesis");
+            assertThat(text).contains("configured for FSM2").contains("engine=LEGACY").contains(MINTER.id()).contains("not an operator setting").contains("form a new cluster").contains("re-genesis");
             clock.advance(WINDOW_MS - 1);
             assertThat(exits).isEmpty();
             clock.advance(1);

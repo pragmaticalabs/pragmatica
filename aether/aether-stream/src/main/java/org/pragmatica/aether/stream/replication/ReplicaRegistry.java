@@ -23,8 +23,6 @@ import static org.pragmatica.aether.stream.replication.ReplicaDescriptor.replica
 public final class ReplicaRegistry {
     private final ConcurrentHashMap<PartitionKey, ConcurrentHashMap<NodeId, ReplicaDescriptor>> replicas = new ConcurrentHashMap<>();
 
-    private final WatermarkStore watermarkStore;
-    private final ReplicaAssignmentStore assignmentStore;
     private final long caughtUpMaxLagOffsets;
 
     /// How far a `CAUGHT_UP` peer may trail the freshest peer watermark and still be trusted — see
@@ -39,39 +37,18 @@ public final class ReplicaRegistry {
     /// A fence whose signal provenance is never exercised is a fence that does nothing.
     public static final long CAUGHT_UP_LAG_UNBOUNDED = Long.MAX_VALUE;
 
-    private ReplicaRegistry(WatermarkStore watermarkStore,
-                            ReplicaAssignmentStore assignmentStore,
-                            long caughtUpMaxLagOffsets) {
-        this.watermarkStore = watermarkStore;
-        this.assignmentStore = assignmentStore;
+    private ReplicaRegistry(long caughtUpMaxLagOffsets) {
         this.caughtUpMaxLagOffsets = caughtUpMaxLagOffsets;
     }
 
     public static ReplicaRegistry replicaRegistry() {
-        return new ReplicaRegistry(WatermarkStore.NOOP, ReplicaAssignmentStore.NOOP, DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS);
-    }
-
-    public static ReplicaRegistry replicaRegistry(WatermarkStore watermarkStore) {
-        return new ReplicaRegistry(watermarkStore, ReplicaAssignmentStore.NOOP, DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS);
-    }
-
-    public static ReplicaRegistry replicaRegistry(WatermarkStore watermarkStore,
-                                                  ReplicaAssignmentStore assignmentStore) {
-        return new ReplicaRegistry(watermarkStore, assignmentStore, DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS);
-    }
-
-    /// Production wiring for a registry with no persistent stores: the freshness bound comes from
-    /// `StreamingConfig.caughtUpMaxLagOffsets`. Mirrors [#replicaRegistry()], which uses the same NOOP
-    /// stores but falls back to [#DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS].
-    public static ReplicaRegistry replicaRegistry(long caughtUpMaxLagOffsets) {
-        return new ReplicaRegistry(WatermarkStore.NOOP, ReplicaAssignmentStore.NOOP, caughtUpMaxLagOffsets);
+        return new ReplicaRegistry(DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS);
     }
 
     /// Production wiring: the freshness bound comes from `StreamingConfig.caughtUpMaxLagOffsets`.
-    public static ReplicaRegistry replicaRegistry(WatermarkStore watermarkStore,
-                                                  ReplicaAssignmentStore assignmentStore,
-                                                  long caughtUpMaxLagOffsets) {
-        return new ReplicaRegistry(watermarkStore, assignmentStore, caughtUpMaxLagOffsets);
+    /// Mirrors [#replicaRegistry()], which falls back to [#DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS].
+    public static ReplicaRegistry replicaRegistry(long caughtUpMaxLagOffsets) {
+        return new ReplicaRegistry(caughtUpMaxLagOffsets);
     }
 
     public long caughtUpMaxLagOffsets() {
@@ -84,7 +61,6 @@ public final class ReplicaRegistry {
         var descriptor = replicaDescriptor(nodeId, streamName, partition, -1L, ReplicationState.SYNCING);
 
         replicas.computeIfAbsent(key, _ -> new ConcurrentHashMap<>()).put(nodeId, descriptor);
-        assignmentStore.persistAssignment(streamName, partition, nodeId, true);
     }
 
     @Contract
@@ -92,7 +68,6 @@ public final class ReplicaRegistry {
         var key = partitionKey(streamName, partition);
 
         option(replicas.get(key)).onPresent(nodeMap -> nodeMap.remove(nodeId));
-        assignmentStore.persistAssignment(streamName, partition, nodeId, false);
     }
 
     public List<ReplicaDescriptor> replicasFor(String streamName, int partition) {
@@ -247,7 +222,6 @@ public final class ReplicaRegistry {
                                                                                                             confirmedOffset,
                                                                                                             state,
                                                                                                             epoch)));
-        watermarkStore.persistWatermark(streamName, partition, nodeId, confirmedOffset);
     }
 
     /// Evidence that names no replica process ([ReplicateAck#NO_BOOT_TOKEN]), such as the owner's own pull from a survivor: as
@@ -268,8 +242,7 @@ public final class ReplicaRegistry {
     /// OLDER epoch than the row's is refused whatever its offset, so a stale tenure cannot overwrite a newer one. A NEWER epoch
     /// is a new lineage, and an ack of ANOTHER replica process ([#sameProcess]) is a replica that restarted and may hold less:
     /// either replaces the row, lower offset included, so the owner never keeps counting copies a restarted replica lost. An
-    /// equal offset is applied, so a state upgrade at the same offset is not lost. The persisted watermark follows the surviving
-    /// row.
+    /// equal offset is applied, so a state upgrade at the same offset is not lost.
     ///
     /// Not guaranteed: boot tokens are unordered, so an ack of a SUPERSEDED process delivered after the new process's ack
     /// replaces the row too. That residual is an OVER-count (the unsafe direction: the row can name more than the current process
@@ -290,17 +263,13 @@ public final class ReplicaRegistry {
                                  Epoch epoch,
                                  long bootToken) {
         var key = partitionKey(streamName, partition);
-        var surviving = option(replicas.get(key)).flatMap(nodeMap -> advanceRow(nodeMap,
-                                                                                nodeId,
-                                                                                confirmedOffset,
-                                                                                state,
-                                                                                epoch,
-                                                                                bootToken));
 
-        watermarkStore.persistWatermark(streamName,
-                                        partition,
-                                        nodeId,
-                                        surviving.map(ReplicaDescriptor::confirmedOffset).or(confirmedOffset));
+        option(replicas.get(key)).onPresent(nodeMap -> advanceRow(nodeMap,
+                                                                  nodeId,
+                                                                  confirmedOffset,
+                                                                  state,
+                                                                  epoch,
+                                                                  bootToken));
     }
 
     /// Whether an ack of process `bootToken` comes from the process the row was confirmed by (#1697): tokens are compared by
@@ -310,18 +279,14 @@ public final class ReplicaRegistry {
         return bootToken == ReplicateAck.NO_BOOT_TOKEN || bootToken == current.bootToken();
     }
 
-    private static Option<ReplicaDescriptor> advanceRow(ConcurrentHashMap<NodeId, ReplicaDescriptor> nodeMap,
-                                                        NodeId nodeId,
-                                                        long confirmedOffset,
-                                                        ReplicationState state,
-                                                        Epoch epoch,
-                                                        long bootToken) {
-        return option(nodeMap.computeIfPresent(nodeId,
-                                               (_, current) -> monotone(current,
-                                                                        confirmedOffset,
-                                                                        state,
-                                                                        epoch,
-                                                                        bootToken)));
+    @Contract
+    private static void advanceRow(ConcurrentHashMap<NodeId, ReplicaDescriptor> nodeMap,
+                                   NodeId nodeId,
+                                   long confirmedOffset,
+                                   ReplicationState state,
+                                   Epoch epoch,
+                                   long bootToken) {
+        nodeMap.computeIfPresent(nodeId, (_, current) -> monotone(current, confirmedOffset, state, epoch, bootToken));
     }
 
     private static boolean isStale(ReplicaDescriptor current, long confirmedOffset, Epoch epoch, long bootToken) {

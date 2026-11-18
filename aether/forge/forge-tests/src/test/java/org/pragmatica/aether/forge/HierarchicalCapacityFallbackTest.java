@@ -57,7 +57,7 @@ class HierarchicalCapacityFallbackTest {
         await().atMost(BUDGET.duration()).untilAsserted(() ->
             assertThat(operation().filter(value -> value.targetSource().equals("west")
                 && value.phase() == AetherValue.PlacementOperationPhase.COMPLETE).isPresent())
-                .as("real provider fallback completion: %s", operation()).isTrue());
+                .as("real provider fallback completion: %s", PlacementGateDiagnostics.describe(leader(), "stable")).isTrue());
         var completed = operation().unwrap();
         assertThat(preferredAttempts.get()).isPositive();
         assertThat(backupCreates.get()).isEqualTo(1);

@@ -287,13 +287,13 @@ public final class EmberCluster {
     /// Exposed to tests via [#currentClusterSecret].
     private final AtomicReference<byte[]> clusterSecret = new AtomicReference<>(generateClusterSecret());
     /// The engine the global selector names ([EngineSelector], `-Daether.deployment.engine`): read once per cluster. A value that names no
-    /// engine refuses [#start] instead of running LEGACY.
+    /// engine refuses [#start] instead of running the default.
     private final Result<DeploymentEngine> selectedEngine = EngineSelector.fromSystemProperty();
 
-    /// The deployment engine every node of this cluster is constructed with (phase-3 design 8.2): the selector's engine (LEGACY when the
+    /// The deployment engine every node of this cluster is constructed with (phase-3 design 8.2): the selector's engine (FSM2 when the
     /// property is absent) unless a test says otherwise. The committed engine marker, minted by the first leader, then makes the choice
     /// cluster-wide.
-    private final AtomicReference<DeploymentEngine> deploymentEngine = new AtomicReference<>(selectedEngine.or(DeploymentEngine.LEGACY));
+    private final AtomicReference<DeploymentEngine> deploymentEngine = new AtomicReference<>(selectedEngine.or(DeploymentEngine.FSM2));
 
     /// Per-node engine overrides (phase-3 design 8.2, W-29's misconfigured-newcomer arms), by NodeId; a node absent here takes [#deploymentEngine].
     private final Map<String, DeploymentEngine> nodeEngines = new ConcurrentHashMap<>();
@@ -802,6 +802,8 @@ public final class EmberCluster {
         return Result.unitResult();
     }
 
+    /// Starts the cluster. A cluster below [EmberConfig#MINIMUM_NODES] is refused with the typed
+    /// `EmberConfigError.InvalidValue` before any node is created (#3299).
     public Promise<Unit> start() {
         return start(Set.of());
     }
@@ -831,6 +833,10 @@ public final class EmberCluster {
     }
 
     private Promise<Unit> start(Set<String> heldBackNodeIds, Set<String> excludedFromGenesis) {
+        if (initialClusterSize < EmberConfig.MINIMUM_NODES) {
+            return EmberConfig.tooFewNodes(initialClusterSize).promise();
+        }
+
         return selectedEngine.async()
                              .flatMap(_ -> startNodes(heldBackNodeIds, excludedFromGenesis));
     }

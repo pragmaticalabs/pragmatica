@@ -325,6 +325,12 @@ public class CstLinter {
         // Test method naming (JBCT-NAM-05)
         new CstTestMethodNamingRule(),
 
+        // Technology or pattern word in a type name (JBCT-NAM-06)
+        new CstTechnicalTypeNameRule(),
+
+        // Technology, pattern or layer word in a package segment (JBCT-NAM-07)
+        new CstTechnicalPackageSegmentRule(),
+
         // Parameter reassignment (JBCT-MUT-01)
         new CstParameterReassignmentRule(),
 

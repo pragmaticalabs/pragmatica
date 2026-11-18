@@ -100,7 +100,7 @@ class EmberClusterTeardownWiringTest {
     @Test
     @Timeout(30)
     void abortStart_stopsANodeAddedWhileItsStopsAreInFlight() {
-        var harness = Harness.seeded(2);
+        var harness = Harness.seeded(3);
         var lateStops = new AtomicInteger();
         var outcome = harness.cluster().abortStart(START_FAILED, Map.of());
 
@@ -115,7 +115,7 @@ class EmberClusterTeardownWiringTest {
     @Test
     @Timeout(30)
     void stop_stopsANodeAddedWhileItsStopsAreInFlight() {
-        var harness = Harness.seeded(2);
+        var harness = Harness.seeded(3);
         var lateStops = new AtomicInteger();
         var outcome = harness.cluster().stop();
 

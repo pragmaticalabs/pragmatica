@@ -3409,8 +3409,10 @@ public class RabiaEngine<C extends Command> {
                                               : state.lastCommittedPhase());
         state.configuration().onPresent(this::adoptSyncedConfiguration);
         persistRestoredState();
+        // #3274: an adoption, not a completion: the label may move past slots this node never applied (the advance-only max above, the
+        // empty-snapshot branch over untouched content), and the state machine records that.
         runIsolated("phase publish",
-                    () -> stateMachine.onPhaseCompleted(currentPhase.get().value()));
+                    () -> stateMachine.onPhaseAdopted(currentPhase.get().value()));
         log.info("Node {} restored state from persistence. Current phase {}", self, currentPhase.get());
     }
 

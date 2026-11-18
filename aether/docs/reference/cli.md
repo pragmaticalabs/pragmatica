@@ -129,6 +129,14 @@ Cluster Status:
   Healthy: true
 ```
 
+#### warnings
+
+Show the open FSM warnings of the connected core node, with the committed revision it answered at. Refuses (HTTP 503, non-zero exit) when the connected node is a worker, holds no quorum, has committed nothing yet, or has a revision label that is not exact; connect to another core or retry. See `GET /api/v1/warnings` in the Management API reference.
+
+```bash
+aether warnings
+```
+
 #### whoami
 
 Show the authenticated principal, authorization role, and roles attached to the request. Useful for integration-test identity assertions and operator triage — confirms which API key (or anonymous viewer fallback) the management plane resolved for the caller.
@@ -1214,7 +1222,7 @@ Standalone cluster simulator with a REST API for load and chaos testing.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `FORGE_PORT` | Forge REST API port | 8888 |
-| `CLUSTER_SIZE` | Number of simulated nodes | 5 |
+| `CLUSTER_SIZE` | Number of simulated nodes (minimum 3) | 5 |
 | `LOAD_RATE` | Initial requests per second | 1000 |
 
 ### Examples

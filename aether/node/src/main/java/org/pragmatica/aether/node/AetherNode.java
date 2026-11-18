@@ -2477,6 +2477,11 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
+            public boolean isConfiguredWorker() {
+                return AetherNode.configuredWorker(config);
+            }
+
+            @Override
             public boolean hasCompleteClusterView() {
                 return config.workerConfig()
                              .isEmpty()
@@ -3815,7 +3820,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                               () -> Option.some(communityHealthRuntime.aliveNodes(membershipFsm.dhtRoutableMembers())),
                                                                                                               Set::of,
                                                                                                               () -> deploymentMemberSources(membershipFsm),
-                                                                                                              Map::of,
                                                                                                               () -> coreRoleMembers(membershipFsm.memberDescriptors()),
                                                                                                               () -> membershipFsm.memberDescriptors()
                                                                                                                                  .keySet(),

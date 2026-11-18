@@ -84,6 +84,7 @@ final class PromotionBootFixture {
     }
 
     static void awaitActive(AetherNode node) {
+        LoneNodeGenesis.mintAsTheLeader(node);
         await(() -> node.nodeLifecycle().currentState() == NodeState.ACTIVE, "a single-node boot reaches ACTIVE");
     }
 

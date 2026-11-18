@@ -21,8 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class V2174bDeltaTest {
     private static MbWorld twoWorkers(org.pragmatica.consensus.NodeId w1, org.pragmatica.consensus.NodeId w2) {
         return MbWorld.world(CORE_1, CORE_2, CORE_3)
-                      .seams(seams -> seams.withCommunityPolicies(Map.of())
-                                           .withMemberSource(Map.of(w1, "east", w2, "east")))
+                      .seams(seams -> seams.withMemberSource(Map.of(w1, "east", w2, "east")))
                       .activate();
     }
 

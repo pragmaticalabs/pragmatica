@@ -93,8 +93,8 @@ class EmberClusterForeignAdmissionTest {
     @Test
     @Timeout(10)
     void distinctInstances_deriveDistinctClusterSecrets() {
-        clusterA = emberCluster(1, 25300, 25400, 25500, "foreign-a");
-        clusterB = emberCluster(1, 25310, 25410, 25510, "foreign-b");
+        clusterA = emberCluster(3, 25300, 25400, 25500, "foreign-a");
+        clusterB = emberCluster(3, 25310, 25410, 25510, "foreign-b");
 
         assertThat(clusterA.currentClusterSecret())
             .as("#715: two independently-created EmberCluster instances must not share cluster "

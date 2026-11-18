@@ -165,8 +165,9 @@ class EngineMarkerMintTest {
         assertThat(marker().isEmpty()).isTrue();
     }
 
-    /// A restore of a pre-phase-3 backup lands between the pass's read and its apply: the mint is refused (the incarnation is no longer absent), and
-    /// the confirmation sees "incarnation present, marker absent". That is done (LEGACY), never "retry forever".
+    /// An incarnation without a marker lands between the pass's read and its apply: the mint is refused (the incarnation is no longer absent), and
+    /// the confirmation sees "incarnation present, marker absent". That is done (LEGACY), never "retry forever". `[instrument: a constructed
+    /// state; since FSM replacement plan 3.2 delta (a) a restore's finish writes a marker with the incarnation, so it is no longer the writer]`
     @Test
     void aRestoreLandingFirst_leavesIncarnationWithoutMarker_andTheConfirmationCountsItDone() {
         commitLeader(NODE_A, 1L);

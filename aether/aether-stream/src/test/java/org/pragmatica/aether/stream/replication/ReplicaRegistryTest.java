@@ -5,9 +5,6 @@
 
 package org.pragmatica.aether.stream.replication;
 
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -133,56 +130,14 @@ class ReplicaRegistryTest {
         }
     }
 
-    @Nested
-    class WatermarkStoreTests {
+    @Test
+    void updateWatermark_setsConfirmedOffsetOnRegisteredReplica() {
+        var reg = replicaRegistry();
+        reg.registerReplica(STREAM, PARTITION, NODE_A);
 
-        @Test
-        void updateWatermark_callsWatermarkStore() {
-            var callCount = new AtomicInteger(0);
-            var lastOffset = new AtomicLong(-1);
-            var lastNodeId = new AtomicReference<NodeId>();
+        reg.updateWatermark(STREAM, PARTITION, NODE_A, 42L);
 
-            WatermarkStore store = (stream, partition, nodeId, offset) -> {
-                callCount.incrementAndGet();
-                lastOffset.set(offset);
-                lastNodeId.set(nodeId);
-            };
-
-            var reg = replicaRegistry(store);
-            reg.registerReplica(STREAM, PARTITION, NODE_A);
-
-            reg.updateWatermark(STREAM, PARTITION, NODE_A, 77L);
-
-            assertThat(callCount.get()).isEqualTo(1);
-            assertThat(lastOffset.get()).isEqualTo(77L);
-            assertThat(lastNodeId.get()).isEqualTo(NODE_A);
-        }
-
-        @Test
-        void updateWatermark_multipleUpdates_callsStoreEachTime() {
-            var callCount = new AtomicInteger(0);
-            WatermarkStore store = (_, _, _, _) -> callCount.incrementAndGet();
-
-            var reg = replicaRegistry(store);
-            reg.registerReplica(STREAM, PARTITION, NODE_A);
-
-            reg.updateWatermark(STREAM, PARTITION, NODE_A, 10L);
-            reg.updateWatermark(STREAM, PARTITION, NODE_A, 20L);
-            reg.updateWatermark(STREAM, PARTITION, NODE_A, 30L);
-
-            assertThat(callCount.get()).isEqualTo(3);
-        }
-
-        @Test
-        void noopFactory_doesNotCallStore() {
-            var reg = replicaRegistry();
-            reg.registerReplica(STREAM, PARTITION, NODE_A);
-
-            reg.updateWatermark(STREAM, PARTITION, NODE_A, 42L);
-
-            // Just verify the update worked without store — no exception.
-            assertThat(reg.replicasFor(STREAM, PARTITION).getFirst().confirmedOffset()).isEqualTo(42L);
-        }
+        assertThat(reg.replicasFor(STREAM, PARTITION).getFirst().confirmedOffset()).isEqualTo(42L);
     }
 
     /// #12 — `CAUGHT_UP` never downgrades, so a peer that stops acking FREEZES at its last good
