@@ -93,8 +93,8 @@ class FullCutWorkerStopTest {
         assertNothingKeepsRunningOn(id);
     }
 
-    /// Places one echo slice instance on the worker (the only worker, placement WORKERS_ONLY) and waits until it is ACTIVE
-    /// there and visible in the cluster's slice status, so the after-fence check has a subject.
+    /// Targets the echo slice (blueprint minimum: 3 instances) at WORKERS_ONLY placement, which puts an instance on the only
+    /// worker, and waits until it is ACTIVE there and visible in the cluster's slice status, so the after-fence check has a subject.
     private void deploySliceOnWorker(NodeId worker) {
         var artifact = Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap();
         var key = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
@@ -102,7 +102,7 @@ class FullCutWorkerStopTest {
             id = "forge.test:full-cut:1.0.0"
             [[slices]]
             artifact = "%s"
-            instances = 1
+            instances = 3
             """.formatted(TestArtifacts.ECHO_SLICE);
         var applyRequest = HttpRequest.newBuilder(URI.create("http://localhost:" + mgmtPortOfLeader() + "/api/v1/blueprints"))
                                       .header("Content-Type", "application/toml")
