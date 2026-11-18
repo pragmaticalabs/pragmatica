@@ -27,10 +27,10 @@ class SkeletonDocTest {
     }
 
     @Test
-    void aDocComment_belongsToTheDeclarationBelowIt_notToTheNextOnes() {
+    void aDocComment_belongsToTheDeclarationBelowIt_notToTheMembersWithoutOne() {
         var nested = docRows("Nested");
 
-        assertThat(nested).containsEntry("Nested", 5).doesNotContainKeys("Middle", "pick");
+        assertThat(nested).containsEntry("Nested", 5).containsEntry("Middle", 11).containsEntry("Inner", 15).doesNotContainKey("pick");
     }
 
     @Test

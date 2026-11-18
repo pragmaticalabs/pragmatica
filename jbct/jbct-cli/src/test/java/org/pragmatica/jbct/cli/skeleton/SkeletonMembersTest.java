@@ -30,7 +30,7 @@ class SkeletonMembersTest {
         var source = source("Trivia");
         var all = declarations(source, true).stream().flatMap(SkeletonFixtures::flatten).toList();
 
-        assertThat(cutOf(source, all, "second")).isEqualTo("void second() {\n\n    }");
+        assertThat(cutOf(source, all, "second")).isEqualTo("void second() {\n    }");
         assertThat(cutOf(source, all, "third")).isEqualTo("void third() {}");
         assertThat(cutOf(source, all, "fourth")).isEqualTo("void fourth() {}");
         assertThat(cutOf(source, all, "first")).isEqualTo("private int first;");
@@ -45,7 +45,7 @@ class SkeletonMembersTest {
 
         assertThat(twoLines.range().startRow()).isEqualTo(4);
         assertThat(twoLines.range().startColumn()).isEqualTo(5);
-        assertThat(twoLines.annotations()).containsExactly("Deprecated", "SuppressWarnings");
+        assertThat(twoLines.annotations()).containsExactly("@Deprecated", "@SuppressWarnings");
         assertThat(cutOf(source, all, "twoLines")).startsWith("@Deprecated\n    @SuppressWarnings(\"unused\")\n    public static\n    void twoLines");
     }
 
