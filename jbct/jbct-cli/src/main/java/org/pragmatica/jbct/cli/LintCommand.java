@@ -221,20 +221,22 @@ public class LintCommand implements Callable<Integer> {
     }
 
     /// The run's coverage in SARIF's own terms, copied from the run's result: `executionSuccessful`, the notification
-    /// level and the run's own sentences; a file the run recorded as not read or not parsed is one more notification.
+    /// level and, for a run that analysed no file, the run's own sentences; each file not read or not parsed is one notification.
     private void appendSarifInvocation(StringBuilder sb, RunResult result) {
         sb.append("    \"invocations\": [{\n");
         sb.append("      \"executionSuccessful\": %s,\n".formatted(result.executionSuccessful()));
         sb.append("      \"toolExecutionNotifications\": [");
         var notifications = new ArrayList<String>();
-
-        if (!result.executionSuccessful()) {
+        var unanalysed = unanalysedOf(result);
+        // As released: a file not analysed is its own notification and the run's sentence is only for a run with no such file
+        // (nothing collected); the run's coverage-gap text then rides in the stderr lines, not in the SARIF list.
+        if (!result.executionSuccessful() && unanalysed.isEmpty()) {
             notifications.add("        { \"level\": \"%s\", \"message\": { \"text\": \"%s\" } }".formatted(result.notificationLevel(),
                                                                                                            escapeJson(String.join(" ",
                                                                                                                                   outcomeOf(result)))));
         }
 
-        for (var skipped : unanalysedOf(result)) {
+        for (var skipped : unanalysed) {
             notifications.add(("        { \"level\": \"%s\", \"message\": { \"text\": \"Not analysed: %s\" }, "
                               + "\"locations\": [{ \"physicalLocation\": { \"artifactLocation\": { \"uri\": \"%s\" } } }] }").formatted(result.notificationLevel(),
                                                                                                                                         escapeJson(skipped.reason()),

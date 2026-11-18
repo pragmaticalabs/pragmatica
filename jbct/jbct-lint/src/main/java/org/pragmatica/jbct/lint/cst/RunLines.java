@@ -379,7 +379,7 @@ record RunLines(Invocation invocation,
 
     private String cliFailure(FileResult file, String message) {
         return switch (invocation.command()) {
-            case LINT -> "  ✗ " + file.file() + ": " + message;
+            case LINT, SCORE -> "  ✗ " + file.file() + ": " + message;
             case CHECK -> "  ✗ parse error: " + file.file() + ": " + message;
             default -> "  error: " + file.file() + " - " + message;
         };

@@ -210,6 +210,14 @@ class RunLinesTest {
     }
 
     @Test
+    void score_cli_parseFailureLineIsTheReleasesCrossLine_notTheFormatCommandsErrorSentence() {
+        var invocation = Invocation.score(Surface.CLI, Option.none());
+        var lines = run(invocation, Verdict.incomplete("gap"), List.of(file(A, linted(), none()), file(B, parseFailed(), none())));
+
+        assertTrue(bodyBefore(lines).contains(line(Level.ERROR, "  ✗ " + B + ": boom")), bodyBefore(lines).toString());
+    }
+
+    @Test
     void cliLint_partial_printsGapThenTheFailedCheckedLine_andOneErrorLinePerUnparsedFile() {
         var lines = run(Invocation.lint(Surface.CLI),
                         Verdict.incomplete("gap"),

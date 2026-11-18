@@ -193,12 +193,16 @@ class LintCommandMachineFormatTest {
         assertThat(exitCode).isEqualTo(2);
         assertThat(invocation.path("executionSuccessful").asBoolean(true)).isFalse();
         assertThat(invocation.path("executionSuccessful").asBoolean(true)).isEqualTo(run.result().executionSuccessful());
-        assertThat(invocation.path("toolExecutionNotifications").size()).as("the run's sentence and the not-parsed file").isEqualTo(2);
-        assertThat(invocation.path("toolExecutionNotifications").get(0).path("level").asText()).isEqualTo(run.result().notificationLevel());
-        assertThat(invocation.path("toolExecutionNotifications").get(1).path("level").asText()).isEqualTo("error");
-        assertThat(invocation.path("toolExecutionNotifications").get(1)
-                             .path("locations").get(0).path("physicalLocation").path("artifactLocation")
-                             .path("uri").asText()).endsWith("Broken.java");
+        var notifications = invocation.path("toolExecutionNotifications");
+
+        // The release's list, as released: one entry per file not analysed and no run-level "Parse errors" entry in front of it.
+        assertThat(notifications.size()).as("exactly one notification per file not analysed: " + notifications).isEqualTo(1);
+        assertThat(notifications.get(0).path("level").asText()).isEqualTo(run.result().notificationLevel());
+        assertThat(notifications.get(0).path("level").asText()).isEqualTo("error");
+        assertThat(notifications.get(0).path("message").path("text").asText()).startsWith("Not analysed: Parse failed: ");
+        assertThat(notifications.get(0)
+                                .path("locations").get(0).path("physicalLocation").path("artifactLocation")
+                                .path("uri").asText()).endsWith("Broken.java");
         assertThat(sarifIsClean(parsedStdout())).isFalse();
     }
 

@@ -109,6 +109,16 @@ class RunActionTableTest {
     }
 
     @Test
+    void score_runOverLintFindings_returnsNoFinding_yetStillLintsTheFile() throws IOException {
+        var module = module("m", BUSINESS);
+        var file = source(module, "Pricing.java", RET_ERROR);
+        var result = perform(plan(module), Invocation.score(Surface.CLI, Option.none()));
+
+        assertTrue(only(result, file).lint() instanceof Linted(var diagnostics) && !diagnostics.isEmpty());
+        assertTrue(result.findings().isEmpty(), "the release's score printed no finding: " + result.findings());
+    }
+
+    @Test
     void row_W1_changedFileIsRewrittenAndTheDiskHoldsTheFormattedContent() throws IOException {
         var module = module("m", BUSINESS);
         var file = source(module, "Plain.java", UNFORMATTED);

@@ -342,7 +342,7 @@ public final class LintRun {
 
         return RunResult.runResult(files,
                                    roots,
-                                   findings(activities, files),
+                                   findings(invocation, activities, files),
                                    verdict,
                                    lines.before(),
                                    lines.after(),
@@ -398,14 +398,18 @@ public final class LintRun {
                      .toList();
     }
 
-    private List<Diagnostic> findings(Activities activities, List<FileResult> files) {
-        return Stream.concat(files.stream().flatMap(LintRun::diagnosticsOf),
-                             activities.lint()
-                             ? groups.stream()
-                                     .flatMap(group -> group.runFindings()
-                                                            .stream())
-                             : Stream.empty())
-                     .toList();
+    /// The release's `score` printed no finding: the diagnostics feed the score, not the output. The run knows the command, so
+    /// a score run returns none and no front end needs a per-command condition.
+    private List<Diagnostic> findings(Invocation invocation, Activities activities, List<FileResult> files) {
+        return invocation.command() == Command.SCORE
+               ? List.of()
+               : Stream.concat(files.stream().flatMap(LintRun::diagnosticsOf),
+                               activities.lint()
+                               ? groups.stream()
+                                       .flatMap(group -> group.runFindings()
+                                                              .stream())
+                               : Stream.empty())
+                       .toList();
     }
 
     private static Stream<Diagnostic> diagnosticsOf(FileResult file) {
