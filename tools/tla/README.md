@@ -15,6 +15,7 @@ and constants, e.g. "SharedPools `code`, 2 keys, 2 scopes, MaxAcquires 3: no vio
 |---|---|---|---|
 | `SharedPools` | node-shared resource pools: acquire, release, `closeAll` (#2978) | `aether/resource/api/.../resource/package-info.java` | `SharedPools.java`, `SpiResourceProvider.java` |
 | `Stalled` | owner catch-up all-stalled warning, level-triggered (#2967) | `aether/aether-stream/.../replication/package-info.java` | `PartitionBackfill.java` |
+| `DHTDepartureDrain` | DHT departure drain: plan, retarget, halt, receiver acceptance (#3049) | `integrations/dht/.../dht/package-info.java` | `DeparturePushRun.java`, `DHTAntiEntropy.java`, `DHTTopologyListener.java` |
 | `Fsm2Leader` | FSM2 leader: open-warning set, leader fence, `Rebuild` inherit, publish after commit (#2763, #2834, #3085; finding #3160) | `aether/aether-deployment/.../cluster/fsm2/package-info.java` | `Lifecycle.java`, `Warnings.java`, `Reconcile.java`, `Failures.java`, `Outbox.java`, `ClusterFsm.java` |
 
 Scope (owner ruling 2026-11-13): protocols with a written race or ordering ruling (consensus, FSM2 leader and
@@ -92,7 +93,8 @@ tools/tla/check.sh SharedPools leak aether/resource/api/src/main/java
 ```
 
 `small` applies the row's overrides (minutes in total); `full` runs every config as written (hours: liveness at the
-written bounds is the long pole). `sim` runs every config as written under TLC's random simulation
+written bounds is the long pole). `full` is not expected to finish `DHTDepartureDrain` `code`: its config as written (N=5 RF=3 MaxDrain=2
+MaxStale=1) did not finish in 150 minutes even before #3225 added state; the row records that bounded result. `sim` runs every config as written under TLC's random simulation
 (`-simulate num=<SIM_TRACES> -depth <SIM_DEPTH>`, stopped after `SIM_SECONDS` per config by
 `-Dtlc2.TLC.stopAfter`): each row prints its wall time, the trace count and the mean trace length. **Simulation is
 sampling, not a proof**: a `pass` row means no violation among the sampled traces; its gate is that every known-bad

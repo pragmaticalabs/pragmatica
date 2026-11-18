@@ -336,6 +336,24 @@ final class DeparturePushRun {
 
     /// Classify every key, then group its targets into two chains per target (sole pages, replicated pages), so a stuck page of
     /// one kind cannot starve the other (N2).
+    /// ```tla DHTDepartureDrain:Plan
+    /// \* The push is built (DHTRebalancer.pushOnDeparture: rf at the call, leaving = the drain set d received + self) and planned:
+    /// \* one page per initial target (drainTargets), and the key's deliverers recorded. A key with no target sends nothing
+    /// \* (delivered when replicated, at risk when sole).
+    /// Plan(d) ==
+    ///     /\ phase[d] = "draining"
+    ///     /\ LET excl == (IF Fix("codrain") THEN known[d] ELSE {}) \cup {d}
+    ///            rf   == RFOf(Ring(d))
+    ///            tgts == IF store[d] THEN DrainTargets(d, excl, rf) ELSE {}
+    ///        IN /\ leaving' = [leaving EXCEPT ![d] = excl]
+    ///           /\ rfAt' = [rfAt EXCEPT ![d] = rf]
+    ///           /\ claimed' = [claimed EXCEPT ![d] = tgts]
+    ///           /\ pages' = pages \cup {Page(d, t) : t \in tgts}
+    ///           /\ deliverers' = [deliverers EXCEPT ![d] = IF store[d] THEN Deliverers(d, excl, rf) ELSE {}]
+    ///           /\ delivered' = [delivered EXCEPT ![d] = store[d] /\ tgts = {} /\ ~Sole(d, excl, rf)]
+    ///     /\ phase' = [phase EXCEPT ![d] = "pushing"]
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, pruned, flapped, store, strayNack, acked>>
+    /// ```
     private List<Promise<Unit>> plan(List<KeyStamp> stamps) {
         var ringNodes = Set.copyOf(node.ring().nodes());
         var targeted = stamps.stream().map(stamp -> classify(stamp, ringNodes)).flatMap(this::initialTargets).toList();
@@ -621,6 +639,23 @@ final class DeparturePushRun {
         return Option.option(registry.remove(page.correlationId())).fold(Promise::unitPromise, this::replan);
     }
 
+    /// ```tla DHTDepartureDrain:Retarget
+    /// \* An attempt finds its target gone from d's ring: the page is dropped, the target joins leaving, and the key is re-planned
+    /// \* to targets it has not claimed yet (claimTarget). The new deliverers join the old (allowDelivery); one that already
+    /// \* acked delivers the key at once (deliverIfAcked).
+    /// Retarget(d, t) ==
+    ///     /\ Pending(d, t)
+    ///     /\ t \notin Ring(d)
+    ///     /\ LET lv  == leaving[d] \cup {t}
+    ///            new == DrainTargets(d, lv, rfAt[d]) \ claimed[d]
+    ///            dl  == deliverers[d] \cup Deliverers(d, lv, rfAt[d])
+    ///        IN /\ leaving' = [leaving EXCEPT ![d] = lv]
+    ///           /\ claimed' = [claimed EXCEPT ![d] = @ \cup new]
+    ///           /\ pages' = (pages \ {Page(d, t)}) \cup {Page(d, n) : n \in new}
+    ///           /\ deliverers' = [deliverers EXCEPT ![d] = dl]
+    ///           /\ delivered' = [delivered EXCEPT ![d] = @ \/ dl \cap acked[d] # {}]
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, pruned, flapped, store, phase, rfAt, strayNack, acked>>
+    /// ```
     private Promise<Unit> replan(Page page) {
         leaving.add(page.target);
         log.info("Departure push: target {} left the ring; re-planning {} chunk(s)", page.target.id(), page.keys.size());
@@ -645,6 +680,27 @@ final class DeparturePushRun {
                            .map(target -> new TargetedKey(target, key));
     }
 
+    /// ```tla DHTDepartureDrain:Halt
+    /// \* d halts with its in-memory store: once every page is acknowledged, or (Deadline) with pages pending when a window is
+    /// \* used up (window.halted / pastDeadline end every attempt). An applied ack from ANY target ends its page, a named one
+    /// \* included (Page#settle): delivery decides the report, not the halt. The report (`delivered`) outlives d.
+    /// Halt(d) ==
+    ///     /\ phase[d] = "pushing"
+    ///     /\ Deadline \/ \A p \in pages : p.from # d
+    ///     /\ phase' = [phase EXCEPT ![d] = "halted"]
+    ///     /\ store' = [store EXCEPT ![d] = FALSE]
+    ///     /\ pages' = {p \in pages : p.from # d}
+    ///     \* A halted node's local state is gone; resetting it keeps equivalent states equal (nothing reads it again).
+    ///     /\ known' = [known EXCEPT ![d] = {}]
+    ///     /\ pruned' = [pruned EXCEPT ![d] = {}]
+    ///     /\ flapped' = [flapped EXCEPT ![d] = {}]
+    ///     /\ leaving' = [leaving EXCEPT ![d] = {}]
+    ///     /\ rfAt' = [rfAt EXCEPT ![d] = 0]
+    ///     /\ claimed' = [claimed EXCEPT ![d] = {}]
+    ///     /\ deliverers' = [deliverers EXCEPT ![d] = {}]
+    ///     /\ acked' = [acked EXCEPT ![d] = {}]
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, strayNack, delivered>>
+    /// ```
     private boolean shouldStop(Page page) {
         return window.halted()
                      .getAsBoolean() || !registry.containsKey(page.correlationId()) || pastDeadline(page);
