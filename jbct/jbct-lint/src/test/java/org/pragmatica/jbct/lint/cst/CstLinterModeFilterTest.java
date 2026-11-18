@@ -22,11 +22,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// `format-only` and `disabled` are refused by the config parser until the entry points honour them, so the filter
 /// is pinned here at the linter level, where it must answer for them regardless.
 class CstLinterModeFilterTest {
-    private static final Set<String> BUSINESS_ONLY = Set.of("JBCT-ARCH-01",
-                                                            "JBCT-ARCH-02",
-                                                            "JBCT-ARCH-03",
-                                                            "JBCT-ARCH-04",
-                                                            "JBCT-MIX-01");
     private static final String IO_IN_DOMAIN = """
         package com.example.domain.user;
         import java.io.File;
@@ -72,12 +67,26 @@ class CstLinterModeFilterTest {
     }
 
     @Test
-    void rulesFor_infrastructure_omitsBusinessOnlyRules() {
-        var infrastructure = ids(CstLinter.rulesFor(JbctMode.INFRASTRUCTURE));
-        var all = ids(CstLinter.rulesFor(JbctMode.BUSINESS));
+    void rulesFor_everyMode_holdsExactlyTheRulesWhoseModesContainIt() {
+        var registry = CstLinter.rulesFor(JbctMode.BUSINESS);
 
-        assertTrue(BUSINESS_ONLY.stream().noneMatch(infrastructure::contains));
-        assertEquals(all.size() - BUSINESS_ONLY.size(), infrastructure.size());
+        assertFalse(registry.isEmpty());
+        for (var mode : JbctMode.values()) {
+            var expected = registry.stream()
+                                   .filter(rule -> rule.modes().contains(mode))
+                                   .map(LintRule::ruleId)
+                                   .collect(Collectors.toSet());
+
+            assertEquals(expected, ids(CstLinter.rulesFor(mode)), "mode " + mode);
+        }
+    }
+
+    @Test
+    void rulesFor_infrastructure_omitsStructureRules_anchoredOnArch02() {
+        var infrastructure = ids(CstLinter.rulesFor(JbctMode.INFRASTRUCTURE));
+
+        assertFalse(infrastructure.contains("JBCT-ARCH-02"));
+        assertTrue(ids(CstLinter.rulesFor(JbctMode.BUSINESS)).contains("JBCT-ARCH-02"));
         assertTrue(infrastructure.contains("JBCT-RET-03"));
     }
 
