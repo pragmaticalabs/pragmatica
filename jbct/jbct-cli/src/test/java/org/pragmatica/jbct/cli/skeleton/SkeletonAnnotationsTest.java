@@ -18,6 +18,12 @@ class SkeletonAnnotationsTest {
         }
         """;
 
+    private static final String RECORD = """
+        record R(int x) {
+            @Init @Cfg public R {}
+        }
+        """;
+
     @Test
     void anAnnotationAfterAModifier_isListedOnAMethod() {
         assertThat(annotationsOf("ret")).containsExactly("@Cfg");
@@ -31,6 +37,16 @@ class SkeletonAnnotationsTest {
     @Test
     void anAnnotationAfterAModifier_isListedOnAConstructor() {
         assertThat(annotationsOf("A")).containsExactly("@Init");
+    }
+
+    @Test
+    void annotationsOnACompactConstructor_areListedInItsEntry() {
+        var compact = declarations(RECORD, true).getFirst()
+                                                .children()
+                                                .getFirst();
+
+        assertThat(compact.signature()).isEqualTo("(compact)");
+        assertThat(compact.annotations()).containsExactly("@Init", "@Cfg");
     }
 
     private static java.util.List<String> annotationsOf(String name) {
