@@ -368,8 +368,8 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(head()).isEqualTo(10L);
     }
 
-    /// P10 (CTO ruling 2026-11-09), the production probe path: both replicas' registry rows are blind (`-1`, as under
-    /// `WatermarkStore.NOOP`), so their tails are learned by probe. R1 (raw 20, lineage end 10) is probed highest and read first;
+    /// P10 (CTO ruling 2026-11-09), the production probe path: both replicas' registry rows are blind (`-1`: peer watermarks are never
+    /// propagated), so their tails are learned by probe. R1 (raw 20, lineage end 10) is probed highest and read first;
     /// the owner installs through 10 and does NOT activate there, since R2 was probed at 15. The next redrive ranks R1 by its
     /// learned lineage end, reads R2 and activates at 15. At the previous head the owner activated at 10 and R2's committed
     /// 11..15 were never read.

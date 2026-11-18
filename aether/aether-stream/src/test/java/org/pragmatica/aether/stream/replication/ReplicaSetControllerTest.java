@@ -13,8 +13,10 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Option;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -67,18 +69,22 @@ class ReplicaSetControllerTest {
         return new FakeCatalog(List.of(new StreamCatalog.StreamSpec(APP_STREAM, PARTITIONS, replicas, 0)));
     }
 
-    /// Counting assignment store: register => assigned=true, unregister => assigned=false.
-    private static final class CountingStore implements ReplicaAssignmentStore {
-        final AtomicInteger registers = new AtomicInteger();
-        final AtomicInteger unregisters = new AtomicInteger();
+    /// Registry state across every partition of the app stream: partition => assigned replica nodes.
+    private static Map<Integer, Set<NodeId>> assignments(ReplicaRegistry registry) {
+        var result = new HashMap<Integer, Set<NodeId>>();
 
-        @Override public void persistAssignment(String streamName, int partition, NodeId nodeId, boolean assigned) {
-            if (assigned) {
-                registers.incrementAndGet();
-            } else {
-                unregisters.incrementAndGet();
-            }
+        for (var p = 0; p < PARTITIONS; p++) {
+            result.put(p,
+                       registry.replicasFor(APP_STREAM, p)
+                               .stream()
+                               .map(ReplicaDescriptor::nodeId)
+                               .collect(java.util.stream.Collectors.toSet()));
         }
+        return result;
+    }
+
+    private static boolean anyAssigned(Map<Integer, Set<NodeId>> assignments) {
+        return assignments.values().stream().anyMatch(nodes -> !nodes.isEmpty());
     }
 
     private static Set<NodeId> desiredReplicas(String stream, int partition, List<NodeId> members, int rf) {
@@ -163,19 +169,16 @@ class ReplicaSetControllerTest {
 
     @Test
     void secondReconcileWithSameInputsIssuesZeroMutations() {
-        var store = new CountingStore();
-        var registry = ReplicaRegistry.replicaRegistry(WatermarkStore.NOOP, store);
+        var registry = ReplicaRegistry.replicaRegistry();
         var members = new AtomicReference<>(nodes("n0", "n1", "n2", "n3"));
         var ctrl = controller(registry, node("n0"), members, appCatalog(2), (_, _) -> {});
 
         ctrl.reconcile();
-        var registersAfterFirst = store.registers.get();
-        var unregistersAfterFirst = store.unregisters.get();
-        assertThat(registersAfterFirst).isGreaterThan(0);
+        var afterFirst = assignments(registry);
+        assertThat(anyAssigned(afterFirst)).isTrue();
 
         ctrl.reconcile();
-        assertThat(store.registers.get()).isEqualTo(registersAfterFirst);
-        assertThat(store.unregisters.get()).isEqualTo(unregistersAfterFirst);
+        assertThat(assignments(registry)).isEqualTo(afterFirst);
     }
 
     @Test
@@ -297,8 +300,7 @@ class ReplicaSetControllerTest {
 
     @Test
     void passiveStateSuppressesReconcile() {
-        var store = new CountingStore();
-        var registry = ReplicaRegistry.replicaRegistry(WatermarkStore.NOOP, store);
+        var registry = ReplicaRegistry.replicaRegistry();
         var members = new AtomicReference<>(nodes("n0", "n1", "n2", "n3"));
         var ctrl = controller(registry, node("n0"), members, appCatalog(2), (_, _) -> {});
 
@@ -307,12 +309,11 @@ class ReplicaSetControllerTest {
         // membership decision also routes through reconcile, still suppressed.
         ctrl.onMembershipDecision(MembershipDecision.nodeRemoved(node("n3"), members.get()));
 
-        assertThat(store.registers.get()).isZero();
-        assertThat(store.unregisters.get()).isZero();
+        assertThat(anyAssigned(assignments(registry))).isFalse();
 
         // ACTIVE edge re-enables and triggers a reconcile.
         ctrl.onQuorumStateChange(new ClusterStateNotification(ClusterStateNotification.State.ACTIVE, 2L));
-        assertThat(store.registers.get()).isGreaterThan(0);
+        assertThat(anyAssigned(assignments(registry))).isTrue();
     }
 
     @Test
