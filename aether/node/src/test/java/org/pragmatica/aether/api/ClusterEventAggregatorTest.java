@@ -3535,6 +3535,28 @@ class ClusterEventAggregatorTest {
             return OperatorWarning.operatorWarning(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK, subject, "at risk " + subject);
         }
 
+        /// #3345: a recovery raised while the node replays is held until the first tick after the replay, and the wait ends with
+        /// its final outcome there, never at the hold.
+        @Test
+        @Timeout(10)
+        void replayHeldRecovery_completesOnlyOnceItLands() {
+            var replaying = new AtomicBoolean(false);
+            var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get);
+            var published = new CopyOnWriteArrayList<String>();
+            h.aggregator().interceptPublish(event -> recordThen(published, event, Promise.success(Unit.unit())));
+
+            assertThat(h.aggregator().raiseAwaited(atRisk("n1@1")).await(SETTLE).isSuccess()).as("control: opened before the replay")
+                                                                                                .isTrue();
+            replaying.set(true);
+            var delivered = h.aggregator().raiseAwaited(delivered("n1@1"));
+
+            assertThat(delivered.isResolved()).as("held during replay: the wait does not end at the hold").isFalse();
+            replaying.set(false);
+            h.aggregator().redeliverDue();
+            assertThat(delivered.await(SETTLE).isSuccess()).as("ends once it lands on the first tick after the replay").isTrue();
+            assertThat(published).containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-sole-copy-delivered");
+        }
+
         private static OperatorWarning delivered(String subject) {
             return OperatorWarning.operatorWarning(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED, subject, "delivered " + subject);
         }
