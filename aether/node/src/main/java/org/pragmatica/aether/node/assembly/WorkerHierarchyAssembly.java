@@ -190,12 +190,11 @@ public sealed interface WorkerHierarchyAssembly {
         var gossipKeyRotationHandler = in.gossipKeyRotationHandler();
         var react = in.react();
         var drainProcedure = in.drainProcedure();
-        // #3193 ruling item 2: a live worker whose own directive is retired with no replacement halts through the
+        // #3193 ruling item 2, #3330: a live worker whose own directive is retired halts through the
         // core-absence path's local drain (drained exit). The halt is submitted as an undo: an undo is never gated by an
         // engine stop, so the halt cannot be dropped, and it runs off the dispatcher thread like every reaction.
         var ownDirectiveRetirement = ownDirectiveRetirementFor(config,
                                                                selfId,
-                                                               kvStore,
                                                                drainProcedure,
                                                                react,
                                                                in.nodeReportedStateHolder(),
@@ -923,18 +922,15 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                false));
     }
 
-    /// #3193 ruling item 2: this node's own-directive observer, over the committed store, the drain state and the local halt.
+    /// #3193 ruling item 2: this node's own-directive observer, over the drain state and the local halt (#3330: no store read).
     static OwnDirectiveRetirement ownDirectiveRetirementFor(AetherNodeConfig config,
                                                             NodeId selfId,
-                                                            KVStore<AetherKey, AetherValue> kvStore,
                                                             DrainProcedure drainProcedure,
                                                             ReactExecutor react,
                                                             NodeReportedStateHolder nodeReportedStateHolder,
                                                             OperatorWarningSink operatorWarningSink) {
         return OwnDirectiveRetirement.ownDirectiveRetirement(selfId,
                                                              configuredWorker(config),
-                                                             () -> kvStore.getTyped(AetherKey.ActivationDirectiveKey.activationDirectiveKey(selfId),
-                                                                                    AetherValue.ActivationDirectiveValue.class),
                                                              () -> drainProcedure.state() != DrainProcedure.DrainState.INACTIVE,
                                                              haltThrough(react,
                                                                          DrainAssembly.directiveRetiredHalt(drainProcedure,
@@ -1033,14 +1029,14 @@ public sealed interface WorkerHierarchyAssembly {
                                            java.util.function.BooleanSupplier ready,
                                            Logger log) {
         synchronized (governorAnnouncerHolder) {
-            var previous = Option.option(governorAnnouncerHolder.get());
-
-            if (previous.filter(announcer -> announcer.communityId()
-                                                      .equals(communityId)).isPresent()) {
+            // #3330: a worker runtime, once started, is the process's only one, so any later own WORKER directive starts
+            // nothing here. A put naming the same community is a repeat. A put naming another community is a move, which a
+            // worker never makes in place: OwnDirectiveRetirement.onPut halts the node on that same delivery (unless a
+            // drain already runs and ends the process), so this runtime is left as it is until the drain stops it.
+            if (Option.option(governorAnnouncerHolder.get()).isPresent()) {
                 return;
             }
 
-            previous.onPresent(GovernorAnnouncer::stop);
             switchableCluster.switchTo(forwardingClusterNode);
             log.info("Worker {} switched to forwarding mode", selfId.id());
             var workerTcpAddress = resolveSelfTcpAddress(config);

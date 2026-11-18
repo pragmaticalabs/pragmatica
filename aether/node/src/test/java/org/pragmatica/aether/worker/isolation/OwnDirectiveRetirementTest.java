@@ -9,7 +9,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
@@ -28,22 +27,26 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.pragmatica.aether.worker.isolation.OwnDirectiveRetirement.ownDirectiveRetirement;
 
-/// #3193 ruling item 2, the mechanism in isolation: every condition of the class header, both arms. The store read,
-/// the draining probe and the halt are fakes, so each arm names the one input that decides it.
+/// #3193 ruling item 2, the mechanism in isolation: every condition of the class header, both arms. The draining
+/// probe and the halt are fakes, so each arm names the one input that decides it. The store is not an input (#3330):
+/// `OwnDirectiveWiringTest.ownDirectiveRemove_storeAlreadyHoldsALaterDirective_stillHalts` pins that over a real store.
 class OwnDirectiveRetirementTest {
     private static final NodeId SELF = NodeId.nodeId("worker-self").expect("valid id");
     private static final NodeId OTHER = NodeId.nodeId("worker-other").expect("valid id");
     private static final ActivationDirectiveValue WORKER_DIRECTIVE = new ActivationDirectiveValue(ActivationDirectiveValue.WORKER, "", "");
     private static final ActivationDirectiveValue CORE_DIRECTIVE = new ActivationDirectiveValue(ActivationDirectiveValue.CORE, "", "");
 
-    private final AtomicReference<Option<ActivationDirectiveValue>> store = new AtomicReference<>(Option.none());
+    private static final String COMMUNITY_A = "community-a";
+    private static final String COMMUNITY_B = "community-b";
+    private static final String COMMUNITY_C = "community-c";
+
     private final AtomicBoolean draining = new AtomicBoolean();
     private final AtomicInteger halts = new AtomicInteger();
     private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
     private final OperatorWarningSink sink = OperatorWarningSink.handingOffTo(warnings::add);
 
     private OwnDirectiveRetirement observer(boolean configuredWorker) {
-        return ownDirectiveRetirement(SELF, configuredWorker, store::get, draining::get, halts::incrementAndGet, sink);
+        return ownDirectiveRetirement(SELF, configuredWorker, draining::get, halts::incrementAndGet, sink);
     }
 
     @Test
@@ -59,48 +62,110 @@ class OwnDirectiveRetirementTest {
         assertEquals(SELF.id(), ownWarnings().getFirst().subject());
     }
 
+    /// #3327, restated on the #3330 contract: a removal followed by a directive committed in a LATER transaction is a
+    /// retirement then a fresh assignment, never a move. The worker halts on the removal, and a directive delivered right
+    /// after neither cancels the halt nor re-arms the observer.
     @Test
-    void onRemove_replacementPresentInStore_doesNotHalt() {
-        var observer = observer(true);
-
-        observer.onPut(put(SELF, WORKER_DIRECTIVE));
-        store.set(Option.some(WORKER_DIRECTIVE));
-        observer.onRemove(remove(SELF));
-
-        assertEquals(0, halts.get());
-        assertFalse(observer.halted());
-        assertEquals(List.of(), ownWarningCodes());
-    }
-
-    /// #3327: a removal followed by a directive committed in a LATER transaction is a retirement then a fresh assignment,
-    /// never a move. The store is read at handle time; when it holds no directive then, the worker halts, and a directive
-    /// that lands right after neither cancels the halt nor re-arms the observer.
-    @Test
-    void onRemove_storeEmptyAtHandleTimeAndDirectiveCommittedRightAfter_stillHaltsOnce() {
+    void onRemove_directiveDeliveredRightAfter_stillHaltsOnce() {
         var observer = observer(true);
 
         observer.onPut(put(SELF, WORKER_DIRECTIVE));
         observer.onRemove(remove(SELF));
-        store.set(Option.some(new ActivationDirectiveValue(ActivationDirectiveValue.WORKER, "community-2", "")));
         observer.onPut(put(SELF, new ActivationDirectiveValue(ActivationDirectiveValue.WORKER, "community-2", "")));
+        observer.onRemove(remove(SELF));
 
         assertEquals(1, halts.get());
         assertTrue(observer.halted());
         assertEquals(List.of(OperatorWarningCode.OWN_DIRECTIVE_RETIRED), ownWarningCodes());
     }
 
+    /// A put naming the SAME community is a repeat even when another field changed: "same" compares `communityId` only.
     @Test
-    void onPut_rewriteOfOwnDirective_neverHalts_andTheNextRemovalStillDoes() {
+    void onPut_sameCommunityChangedValue_isARepeat_andTheNextRemovalStillHalts() {
         var observer = observer(true);
 
-        observer.onPut(put(SELF, WORKER_DIRECTIVE));
-        observer.onPut(put(SELF, new ActivationDirectiveValue(ActivationDirectiveValue.WORKER, "community-2", "")));
+        observer.onPut(put(SELF, directive(COMMUNITY_A)));
+        observer.onPut(put(SELF, new ActivationDirectiveValue(ActivationDirectiveValue.WORKER, COMMUNITY_A, "governor-hint")));
 
         assertEquals(0, halts.get());
+        assertFalse(observer.halted());
 
         observer.onRemove(remove(SELF));
 
         assertEquals(1, halts.get());
+    }
+
+    @Test
+    void onPut_directedCommunityAgain_doesNotHalt() {
+        var observer = observer(true);
+
+        observer.onPut(put(SELF, directive(COMMUNITY_A)));
+        observer.onPut(put(SELF, directive(COMMUNITY_A)));
+
+        assertEquals(0, halts.get());
+        assertFalse(observer.halted());
+        assertEquals(List.of(), ownWarningCodes());
+    }
+
+    /// #3330 put edge: a removal and a re-create committed between two deliveries arrive as ONE put naming another
+    /// community. That is a move, which a worker never makes in place, so it halts like the removal, exactly once.
+    @Test
+    void onPut_anotherCommunityAfterDirected_haltsOnce_andAThirdCommunityStillOnce() {
+        var observer = observer(true);
+
+        observer.onPut(put(SELF, directive(COMMUNITY_A)));
+        observer.onPut(put(SELF, directive(COMMUNITY_B)));
+
+        assertEquals(1, halts.get());
+        assertTrue(observer.halted());
+
+        observer.onPut(put(SELF, directive(COMMUNITY_C)));
+
+        assertEquals(1, halts.get());
+        assertEquals(List.of(OperatorWarningCode.OWN_DIRECTIVE_RETIRED), ownWarningCodes());
+        assertEquals(SELF.id(), ownWarnings().getFirst().subject());
+    }
+
+    /// The recorded community is the FIRST directed one and is never overwritten: a put for B suppressed by a running
+    /// drain does not make B the reference, so a later put for B (drain no longer running) is still a move from A.
+    @Test
+    void onPut_recordedCommunityIsNeverOverwritten_soALaterPutForTheSameOtherCommunityStillHalts() {
+        var observer = observer(true);
+
+        observer.onPut(put(SELF, directive(COMMUNITY_A)));
+        draining.set(true);
+        observer.onPut(put(SELF, directive(COMMUNITY_B)));
+
+        assertEquals(0, halts.get());
+
+        draining.set(false);
+        observer.onPut(put(SELF, directive(COMMUNITY_B)));
+
+        assertEquals(1, halts.get());
+    }
+
+    @Test
+    void onPut_anotherCommunityWhileDraining_startsNoSecondDrainAndRaisesNothing() {
+        var observer = observer(true);
+
+        observer.onPut(put(SELF, directive(COMMUNITY_A)));
+        draining.set(true);
+        observer.onPut(put(SELF, directive(COMMUNITY_B)));
+
+        assertEquals(0, halts.get());
+        assertFalse(observer.halted());
+        assertEquals(List.of(), ownWarningCodes());
+    }
+
+    @Test
+    void onPut_anotherNodesDirectiveForAnotherCommunity_doesNotHalt() {
+        var observer = observer(true);
+
+        observer.onPut(put(SELF, directive(COMMUNITY_A)));
+        observer.onPut(put(OTHER, directive(COMMUNITY_B)));
+
+        assertEquals(0, halts.get());
+        assertFalse(observer.halted());
     }
 
     @Test
@@ -185,6 +250,10 @@ class OwnDirectiveRetirementTest {
 
     private static ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> put(NodeId node, ActivationDirectiveValue value) {
         return new ValuePut<>(new KVCommand.Put<>(ActivationDirectiveKey.activationDirectiveKey(node), value), Option.none());
+    }
+
+    private static ActivationDirectiveValue directive(String communityId) {
+        return new ActivationDirectiveValue(ActivationDirectiveValue.WORKER, communityId, "");
     }
 
     private static ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> remove(NodeId node) {
