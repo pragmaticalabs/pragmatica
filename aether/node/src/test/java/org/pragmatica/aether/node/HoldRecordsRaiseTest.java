@@ -21,7 +21,7 @@ import static org.pragmatica.aether.node.HoldRecordsFixture.report;
 class HoldRecordsRaiseTest {
     private static final OperatorWarningCode AT_RISK = OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK;
     private static final Pattern PREDICTION = Pattern.compile("(?i)\\b(within|will|expect\\w*|eta|soon|seconds?|minutes?|hours?|"
-                                                              + "estimated|remaining time|by \\d)\\b");
+                                                              + "estimated|remaining time|by \\d|about|approximately|mins?|secs?|\\d+\\s*(?:ms|s|m|h))\\b");
 
     private final HoldRecordsFixture fx = new HoldRecordsFixture();
 
