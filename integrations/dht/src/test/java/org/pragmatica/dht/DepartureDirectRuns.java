@@ -23,6 +23,7 @@ import org.pragmatica.dht.DHTRebalancerTest.TimedSend;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -140,6 +141,22 @@ final class DepartureDirectRuns {
             }
         }
         throw new AssertionError("no RF-1 key held by LOCAL");
+    }
+
+    /// Whether `sent` carries `key`.
+    static boolean carriesKey(TimedSend sent, byte[] key) {
+        return sent.response().entries().stream().anyMatch(entry -> Arrays.equals(entry.key(), key));
+    }
+
+    /// A key LOCAL alone holds whose deliverer is not `avoid`.
+    static byte[] otherTargetKey(ConsistentHashRing<NodeId> ring, NodeId avoid, String prefix) {
+        for (int i = 0; i < 200; i++) {
+            var candidate = soleKey(ring, prefix + "-" + i);
+            if (!delivererOf(ring, candidate, Set.of(LOCAL)).equals(avoid)) {
+                return candidate;
+            }
+        }
+        throw new AssertionError("no key with a deliverer other than " + avoid);
     }
 
     private static TimeSpan ms(long millis) {
