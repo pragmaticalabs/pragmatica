@@ -13,9 +13,10 @@ import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.slice.SliceActionConfig;
@@ -31,6 +32,7 @@ import org.pragmatica.aether.node.ClusterTestPorts;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.config.ConfigService;
@@ -95,18 +97,20 @@ class AetherNodeWalGrowsWhileSealsFailBootTest {
         ResourceProvider.clear();
     }
 
-    @Test
+    @ParameterizedTest
+    @EnumSource(value = DeploymentEngine.class, names = {"LEGACY", "FSM2"})
     @Timeout(value = 120, unit = SECONDS)
-    void walGrowsWhileSealsFail_readSha() {
-        node = AetherNode.aetherNode(config(), () -> {})
+    void walGrowsWhileSealsFail_readSha(DeploymentEngine engine) {
+        node = AetherNode.aetherNode(config().withDeploymentEngine(engine), () -> {})
                          .onFailure(cause -> fail("boot must succeed: " + cause.message()))
                          .unwrap();
         node.start()
             .await(START_BOUND)
             .onFailure(cause -> fail("start must succeed: " + cause.message()));
 
-        assertThat(node.deploymentWiring().isFsm2()).as("fixture: the boot ran the LEGACY deployment engine (the config default; this test selects none)")
-                                                    .isFalse();
+        System.out.println("deployment engine " + engine + " (selected explicitly by this test)");
+        assertThat(node.deploymentWiring().isFsm2()).as("fixture: the boot ran the engine this test selected (" + engine + ")")
+                                                    .isEqualTo(engine == DeploymentEngine.FSM2);
 
         var manager = node.streamPartitionManager();
         var sealer = node.streamSegmentSealer();
