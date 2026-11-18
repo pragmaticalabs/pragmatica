@@ -29,6 +29,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.cluster.metrics.ClusterDirectory;
 import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.DirectoryVersion;
+import org.pragmatica.cluster.metrics.HeldReport;
 import org.pragmatica.cluster.metrics.MetricObservation;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
@@ -232,6 +233,11 @@ public interface ClusterSyncCollector {
     @Contract
     default void setNodeReportedStateSupplier(Supplier<NodeReportedState> supplier) {}
 
+    /// Wire the source of the `HELD` report the pong carries while this node's lifecycle state is `HELD`. Default is a
+    /// no-op; with no supplier wired every pong carries no report. Nothing wires one yet.
+    @Contract
+    default void setHeldReportSupplier(Supplier<Option<HeldReport>> supplier) {}
+
     /// Per-process random boot token stamped onto `ClusterSyncPong.incarnation`. Independent of SWIM
     /// refutation counters; compared by EQUALITY only — a restarted process carries a new, unordered token.
     default org.pragmatica.lang.Unit setMembershipIncarnationSupplier(LongSupplier supplier) {
@@ -380,6 +386,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// to carry SYNCING|READY|DRAINING. Default `Option.none()` falls back to
     /// `NodeReportedState.SYNCING` until `setNodeReportedStateSupplier(...)` is wired.
     private final AtomicReference<Option<Supplier<NodeReportedState>>> nodeReportedStateSupplier = new AtomicReference<>(Option.none());
+
+    private final AtomicReference<Supplier<Option<HeldReport>>> heldReportSupplier = new AtomicReference<>(Option::none);
 
     /// Fresh governor readiness evaluated on every read, without caching or renewing evidence age.
     private final AtomicReference<Supplier<Map<NodeId, NodeReportedState>>> communityReadiness = new AtomicReference<>(Map::of);
@@ -982,6 +990,14 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     }
 
     @Override
+    @Contract
+    public void setHeldReportSupplier(Supplier<Option<HeldReport>> supplier) {
+        heldReportSupplier.set(supplier == null
+                               ? Option::none
+                               : supplier);
+    }
+
+    @Override
     public org.pragmatica.lang.Unit setMembershipIncarnationSupplier(LongSupplier supplier) {
         membershipIncarnationSupplier.set(supplier);
 
@@ -1116,12 +1132,13 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
                                    Option.none(),
                                    held.map(ClusterDirectory::version).or(DirectoryVersion.NONE),
                                    held.filter(directory -> directory.version()
-                                                                     .isStrictlyAfter(askerHolds)));
+                                                                     .isStrictlyAfter(askerHolds)),
+                                   heldReportSupplier.get().get());
     }
 
     /// Membership v2 (§7.5.3) — the string stamped onto the pong's `lifecycleState`
     /// field. When a node-reported-state supplier is wired, the field carries the
-    /// `NodeReportedState` name (SYNCING|READY|DRAINING); otherwise it defaults to
+    /// `NodeReportedState` name (SYNCING|READY|DRAINING|HELD); otherwise it defaults to
     /// `NodeReportedState.SYNCING` (a freshly-booted node not yet wired is still syncing).
     private String reportedLifecycleState() {
         return nodeReportedStateSupplier.get()

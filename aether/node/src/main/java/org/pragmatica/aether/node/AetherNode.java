@@ -4141,7 +4141,7 @@ public interface AetherNode extends ManageableNode {
         var matching = new HashSet<NodeId>();
 
         states.forEach((nodeId, state) -> addIfMatching(matching, nodeId, state, target));
-        if (selfHolder.current() == target) {
+        if (matches(selfHolder.current(), target)) {
             matching.add(self);
         }
 
@@ -4153,9 +4153,16 @@ public interface AetherNode extends ManageableNode {
                                       NodeId nodeId,
                                       NodeReportedState state,
                                       NodeReportedState target) {
-        if (state == target) {
+        if (matches(state, target)) {
             matching.add(nodeId);
         }
+    }
+
+    /// A DRAINING target matches every draining state (DRAINING and HELD); any other target matches itself.
+    private static boolean matches(NodeReportedState state, NodeReportedState target) {
+        return target.isDraining()
+               ? state.isDraining()
+               : state == target;
     }
 
     private static Set<NodeId> ctmProvisionedFromFsm(MembershipFsm fsm) {

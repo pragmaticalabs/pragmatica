@@ -40,7 +40,40 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
                            boolean completeMetricsRoster,
                            boolean carriesAuthority,
                            DirectoryVersion observedDirectoryGeneration,
-                           Option<ClusterDirectory> directory) implements ClusterSyncMessage {
+                           Option<ClusterDirectory> directory,
+                           Option<HeldReport> heldReport) implements ClusterSyncMessage {
+        /// The shape before the held report: a node that reports no `HELD` episode.
+        public ClusterSyncPong(NodeId sender,
+                               MetricObservation observation,
+                               long incarnation,
+                               long observedRabiaTerm,
+                               long observedEpochIncarnation,
+                               long observedEpochTerm,
+                               long observedEpochCounter,
+                               String lifecycleState,
+                               List<CommunityReport> communityReports,
+                               List<PeerHealthObservation> peerHealth,
+                               List<PeerConnectivityObservation> peerConnectivity,
+                               Option<NodeId> readyCandidate,
+                               DirectoryVersion observedDirectoryGeneration,
+                               Option<ClusterDirectory> directory) {
+            this(sender,
+                 observation,
+                 incarnation,
+                 observedRabiaTerm,
+                 observedEpochIncarnation,
+                 observedEpochTerm,
+                 observedEpochCounter,
+                 lifecycleState,
+                 communityReports,
+                 peerHealth,
+                 peerConnectivity,
+                 readyCandidate,
+                 observedDirectoryGeneration,
+                 directory,
+                 Option.none());
+        }
+
         /// The shape before the directory path: a node that holds no directory and attaches none. Production senders use the canonical
         /// constructor so the pair they hold is always reported.
         public ClusterSyncPing(NodeId sender,
@@ -119,7 +152,40 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
                            List<PeerConnectivityObservation> peerConnectivity,
                            Option<NodeId> readyCandidate,
                            DirectoryVersion observedDirectoryGeneration,
-                           Option<ClusterDirectory> directory) implements ClusterSyncMessage {
+                           Option<ClusterDirectory> directory,
+                           Option<HeldReport> heldReport) implements ClusterSyncMessage {
+        /// The shape before the held report: a node that reports no `HELD` episode.
+        public ClusterSyncPong(NodeId sender,
+                               MetricObservation observation,
+                               long incarnation,
+                               long observedRabiaTerm,
+                               long observedEpochIncarnation,
+                               long observedEpochTerm,
+                               long observedEpochCounter,
+                               String lifecycleState,
+                               List<CommunityReport> communityReports,
+                               List<PeerHealthObservation> peerHealth,
+                               List<PeerConnectivityObservation> peerConnectivity,
+                               Option<NodeId> readyCandidate,
+                               DirectoryVersion observedDirectoryGeneration,
+                               Option<ClusterDirectory> directory) {
+            this(sender,
+                 observation,
+                 incarnation,
+                 observedRabiaTerm,
+                 observedEpochIncarnation,
+                 observedEpochTerm,
+                 observedEpochCounter,
+                 lifecycleState,
+                 communityReports,
+                 peerHealth,
+                 peerConnectivity,
+                 readyCandidate,
+                 observedDirectoryGeneration,
+                 directory,
+                 Option.none());
+        }
+
         /// The shape before the directory path: a node that holds no directory and attaches none.
         public ClusterSyncPong(NodeId sender,
                                MetricObservation observation,

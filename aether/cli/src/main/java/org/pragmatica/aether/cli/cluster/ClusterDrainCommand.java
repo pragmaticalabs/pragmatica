@@ -88,8 +88,14 @@ class ClusterDrainCommand implements Callable<Integer> {
         return ExitCode.SUCCESS;
     }
 
+    /// The wire names of the draining node-reported states: `DRAINING`, and `HELD` (a draining node whose
+    /// departure push has not resolved). This module does not depend on the metrics module that owns the enum.
+    private static boolean isDrainingState(String state) {
+        return state.contains("DRAINING") || state.equals("HELD");
+    }
+
     private static int handleDrainRejection(String state, String message) {
-        if (state.contains("DRAINING")) {
+        if (isDrainingState(state)) {
             System.out.printf("Node already %s: %s%n", state, message);
 
             return ExitCode.SUCCESS;

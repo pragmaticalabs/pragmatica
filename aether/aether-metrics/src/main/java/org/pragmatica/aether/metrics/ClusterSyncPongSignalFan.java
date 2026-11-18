@@ -11,9 +11,11 @@ import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
+import org.pragmatica.cluster.metrics.HeldReport;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -98,6 +100,12 @@ public interface ClusterSyncPongSignalFan {
     /// CDM allocation gate (later phase).
     Map<NodeId, NodeReportedState> readinessSnapshot();
 
+    /// The latest `HELD` report the node sent under the boot token its readiness entry is pinned to. Empty when the node has
+    /// no entry, its latest pong carried none, or the only report seen came under another token. Default is empty.
+    default Option<HeldReport> latestHeldReport(NodeId nodeId) {
+        return Option.none();
+    }
+
     /// Wire the callback invoked when a stuck-SYNCING entry is reaped. Default is a no-op.
     @Contract
     void onStuckSyncing(Consumer<NodeId> callback);
@@ -143,7 +151,11 @@ public interface ClusterSyncPongSignalFan {
     /// Per-node readiness entry in the leader's in-memory view. `syncCountdown` is the remaining
     /// number of SYNCING pongs tolerated before the reaper fires; it is meaningful only while
     /// `state == SYNCING`.
-    record ReadinessEntry(NodeReportedState state, long incarnation, long lastSeenNanos, int syncCountdown) {}
+    record ReadinessEntry(NodeReportedState state,
+                          long incarnation,
+                          long lastSeenNanos,
+                          int syncCountdown,
+                          Option<HeldReport> heldReport) {}
 
     final class StatefulSignalFan implements ClusterSyncPongSignalFan {
         private final LeaderManager leaderManager;
@@ -189,6 +201,11 @@ public interface ClusterSyncPongSignalFan {
         }
 
         @Override
+        public Option<HeldReport> latestHeldReport(NodeId nodeId) {
+            return Option.option(readiness.get(nodeId)).flatMap(ReadinessEntry::heldReport);
+        }
+
+        @Override
         public Map<NodeId, NodeReportedState> readinessSnapshot() {
             var snapshot = new HashMap<NodeId, NodeReportedState>();
 
@@ -227,7 +244,7 @@ public interface ClusterSyncPongSignalFan {
             var incarnation = pong.incarnation();
             var now = nowNanos.getAsLong();
             var merged = readiness.merge(sender,
-                                         freshEntry(state, incarnation, now),
+                                         freshEntry(state, incarnation, now, pong.heldReport()),
                                          (existing, incoming) -> reconcile(existing, incoming, now));
 
             maybeReap(sender, merged);
@@ -239,12 +256,16 @@ public interface ClusterSyncPongSignalFan {
         /// NodeId — refused under terminal removal — so it is ignored, never installed as a fresh entry.
         private static ReadinessEntry reconcile(ReadinessEntry existing, ReadinessEntry incoming, long now) {
             return incoming.incarnation() == existing.incarnation()
-                   ? updateSameEpoch(existing, incoming.state(), now)
+                   ? updateSameEpoch(existing, incoming, now)
                    : existing;
         }
 
-        private static ReadinessEntry updateSameEpoch(ReadinessEntry existing, NodeReportedState state, long now) {
-            return new ReadinessEntry(state, existing.incarnation(), now, nextCountdown(existing, state));
+        private static ReadinessEntry updateSameEpoch(ReadinessEntry existing, ReadinessEntry incoming, long now) {
+            return new ReadinessEntry(incoming.state(),
+                                      existing.incarnation(),
+                                      now,
+                                      nextCountdown(existing, incoming.state()),
+                                      incoming.heldReport());
         }
 
         private static int nextCountdown(ReadinessEntry existing, NodeReportedState state) {
@@ -253,7 +274,10 @@ public interface ClusterSyncPongSignalFan {
                    : SYNC_REAP_THRESHOLD;
         }
 
-        private static ReadinessEntry freshEntry(NodeReportedState state, long incarnation, long now) {
+        private static ReadinessEntry freshEntry(NodeReportedState state,
+                                                 long incarnation,
+                                                 long now,
+                                                 Option<HeldReport> heldReport) {
             return new ReadinessEntry(state,
                                       incarnation,
                                       now,
@@ -272,7 +296,7 @@ public interface ClusterSyncPongSignalFan {
         /// `DRAINING` at this pong's boot token. A pong from a different token leaves the pinned entry in place and
         /// must not speak for it.
         private void maybeReportDraining(NodeId sender, ReadinessEntry entry, long incarnation) {
-            if (entry.state() == NodeReportedState.DRAINING && entry.incarnation() == incarnation) {
+            if (entry.state().isDraining() && entry.incarnation() == incarnation) {
                 onDrainingReported.accept(sender);
             }
         }
