@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -30,13 +29,11 @@ class OwnerAckWatermarkMonotoneTest {
 
     private ReplicaRegistry registry;
     private ReplicationManager replication;
-    private CopyOnWriteArrayList<Long> persisted;
     private AtomicLong retainedFloor;
 
     @BeforeEach
     void setUp() {
-        persisted = new CopyOnWriteArrayList<>();
-        registry = replicaRegistry((_, _, _, offset) -> persisted.add(offset));
+        registry = replicaRegistry();
         registry.registerReplica(STREAM, PARTITION, PEER);
         retainedFloor = new AtomicLong(-1L);
         replication = replicationManager(SELF, registry, ReplicationTransport.NOOP, (_, _) -> retainedFloor.get());
@@ -48,7 +45,6 @@ class OwnerAckWatermarkMonotoneTest {
         replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 7L, EPOCH_1));
 
         assertThat(watermark()).isEqualTo(10L);
-        assertThat(persisted).as("the persisted watermark follows the surviving row").containsExactly(10L, 10L);
     }
 
     @Test

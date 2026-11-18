@@ -30,6 +30,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreOutcome;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngineValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
@@ -105,6 +107,7 @@ public final class BackupRestoreCoordinator {
     static final long CHUNK_BYTES = 8L * 1024 * 1024;
 
     private final NodeId self;
+    private final DeploymentEngine runningEngine;
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier;
     private final Option<Source> source;
@@ -117,6 +120,10 @@ public final class BackupRestoreCoordinator {
     private final AtomicReference<Option<Announced>> blocked = new AtomicReference<>(Option.none());
     private final AtomicBoolean missingReported = new AtomicBoolean(false);
     private final AtomicReference<ScheduledFuture<?>> pendingRetry = new AtomicReference<>();
+
+    private static final String INCOMPATIBLE_RELEASE_NOTE = "The backup holds a record this release cannot decode; a backup written by an incompatible release"
+                                                          + " (a backup written by rc4 read by rc5 is one) is one known cause, a damaged backup is another. ";
+
     private final AtomicReference<TimeSpan> nextBackoff = new AtomicReference<>(INITIAL_BACKOFF);
 
     /// Where a backup-enabled node restores from: the backup service (its repository, codec and worker)
@@ -197,12 +204,14 @@ public final class BackupRestoreCoordinator {
     }
 
     private BackupRestoreCoordinator(NodeId self,
+                                     DeploymentEngine runningEngine,
                                      KVStore<AetherKey, AetherValue> kvStore,
                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                      Option<Source> source,
                                      BackupWarning.Sink warnings,
                                      RetryScheduler scheduler) {
         this.self = self;
+        this.runningEngine = runningEngine;
         this.kvStore = kvStore;
         this.applier = applier;
         this.source = source;
@@ -214,11 +223,13 @@ public final class BackupRestoreCoordinator {
     /// is announced here, once, because its restore source is only the local repository of whichever node
     /// leads the cold start.
     public static BackupRestoreCoordinator backupRestoreCoordinator(NodeId self,
+                                                                    DeploymentEngine runningEngine,
                                                                     KVStore<AetherKey, AetherValue> kvStore,
                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                                     Option<Source> source,
                                                                     BackupWarning.Sink warnings) {
         var coordinator = new BackupRestoreCoordinator(self,
+                                                       runningEngine,
                                                        kvStore,
                                                        applier,
                                                        source,
@@ -235,12 +246,13 @@ public final class BackupRestoreCoordinator {
 
     /// Test factory with explicit warning sink and scheduler seams.
     static BackupRestoreCoordinator backupRestoreCoordinator(NodeId self,
+                                                             DeploymentEngine runningEngine,
                                                              KVStore<AetherKey, AetherValue> kvStore,
                                                              Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                              Option<Source> source,
                                                              BackupWarning.Sink warnings,
                                                              RetryScheduler scheduler) {
-        return new BackupRestoreCoordinator(self, kvStore, applier, source, warnings, scheduler);
+        return new BackupRestoreCoordinator(self, runningEngine, kvStore, applier, source, warnings, scheduler);
     }
 
     @Contract
@@ -693,16 +705,24 @@ public final class BackupRestoreCoordinator {
                                         Option.<AetherValue> some(marker.restored()));
     }
 
-    /// Phase-3 design 8.2 (W-34): the deployment engine marker ends as the backup has it. A leader without `[backup]` has no restore gate,
-    /// so it can mint the incarnation and the marker while this restore is `IN_PROGRESS` (the incarnation is excluded from the chunks).
-    /// A pre-phase-3 backup carries no marker: the locally minted one is removed here, in the same batch, so the restored cluster reads
-    /// "incarnation present, marker absent", i.e. LEGACY. A phase-3 backup's marker replaces any other. No mutation when they already agree,
-    /// so a finish whose marker already matches is the finish without the marker arm.
+    /// Phase-3 design 8.2 (W-34), FSM replacement plan 3.2 delta (a): a backup's marker replaces any other. A backup that carries no
+    /// engine marker restores into the running engine, never into "marker absent": the local marker stays when a leader without
+    /// `[backup]` minted one while this restore was `IN_PROGRESS` (the incarnation is excluded from the chunks), and otherwise this node mints
+    /// the marker of the engine it runs, in the same batch. Removing it instead would leave an FSM2 cluster reading "incarnation present,
+    /// marker absent", i.e. LEGACY, and every node refusing the mismatch. No mutation when they already agree, so a finish whose marker
+    /// already matches is the finish without the marker arm.
     private Option<KVCommand.Mutation<AetherKey, AetherValue>> engineMarker(Option<AetherValue> backedUp) {
-        return kvStore.get(DeploymentEngineKey.deploymentEngineKey())
-                      .equals(backedUp)
+        var local = kvStore.get(DeploymentEngineKey.deploymentEngineKey());
+        var target = backedUp.orElse(() -> local.orElse(this::runningMarker));
+
+        return local.equals(target)
                ? Option.none()
-               : Option.some(mutation(DeploymentEngineKey.deploymentEngineKey(), backedUp));
+               : Option.some(mutation(DeploymentEngineKey.deploymentEngineKey(), target));
+    }
+
+    /// The marker of the engine this node runs, minted by this node now: what a genesis mint would have written.
+    private Option<AetherValue> runningMarker() {
+        return Option.some(new DeploymentEngineValue(runningEngine, self, System.currentTimeMillis()));
     }
 
     /// The marker mutation rides on [ClusterIncarnation#replaceCommands]' put transaction, which carries no guard of its own
@@ -826,12 +846,21 @@ public final class BackupRestoreCoordinator {
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_BLOCKED,
                                                       cause.message()
                                                      + "; this cluster will not start fresh on its own, and writes to cluster state"
-                                                     + " stay refused while the restore is blocked. " + blockedAdvice(decision)));
+                                                     + " stay refused while the restore is blocked. " + incompatibleReleaseNote(blockedCause) + blockedAdvice(decision)));
         } else {
             LOG.debug("Backup restore: transient failure: {} — will retry", cause.message());
         }
 
         scheduleRetry();
+    }
+
+    /// #3310: on the decode step the fact held is that a record of the backup does not decode here; a backup written by an incompatible release
+    /// (rc4 into rc5 is one, a flag day with no legacy decoders) is one known cause, a damaged backup is another. The code does not identify the writing release, so none is claimed.
+    /// Other steps carry no such sentence. It is a function of the step, which the announced pair already holds.
+    private static String incompatibleReleaseNote(RestoreError.Blocked cause) {
+        return cause.step() == Step.DOCUMENT_UNDECODABLE
+               ? INCOMPATIBLE_RELEASE_NOTE
+               : "";
     }
 
     /// A committed decision other than `IN_PROGRESS` (`UNKNOWN` included, which is not terminal): there is no restore to continue, so nothing is blocked.

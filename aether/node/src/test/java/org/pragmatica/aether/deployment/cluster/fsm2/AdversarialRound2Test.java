@@ -38,8 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AdversarialRound2Test {
     private static MbWorld workerWorld(NodeId worker) {
         return MbWorld.world(CORE_1, CORE_2, CORE_3)
-                      .seams(seams -> seams.withCommunityPolicies(Map.of())
-                                           .withMemberSource(Map.of(worker, "east")))
+                      .seams(seams -> seams.withMemberSource(Map.of(worker, "east")))
                       .activate();
     }
 
@@ -110,14 +109,8 @@ class AdversarialRound2Test {
     void workerMatchingNoPolicy_isReportedNotSilentlyDropped() {
         var worker = node("worker-1");
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3)
-                       .seams(seams -> seams.withCommunityPolicies(Map.of("p",
-                                                                          new CommunityPlacement("p",
-                                                                                                 4,
-                                                                                                 List.of(new Location("other-source",
-                                                                                                                      Option.none(),
-                                                                                                                      0,
-                                                                                                                      1)))))
-                                            .withMemberSource(Map.of(worker, "east")))
+                       .placements(Map.of("p", policyFor("other-source")))
+                       .seams(seams -> seams.withMemberSource(Map.of(worker, "east")))
                        .activate();
 
         w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 21L)));
@@ -130,8 +123,8 @@ class AdversarialRound2Test {
     void workerMatchingNoPolicy_joiningAgain_isReportedOnce() {
         var worker = node("worker-1");
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3)
-                       .seams(seams -> seams.withCommunityPolicies(Map.of("p", policyFor("other-source")))
-                                            .withMemberSource(Map.of(worker, "east")))
+                       .placements(Map.of("p", policyFor("other-source")))
+                       .seams(seams -> seams.withMemberSource(Map.of(worker, "east")))
                        .activate();
 
         w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 21L)));
@@ -145,8 +138,8 @@ class AdversarialRound2Test {
 
     private MbWorld unplacedWorker(NodeId worker) {
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3)
-                       .seams(seams -> seams.withCommunityPolicies(Map.of("p", policyFor("other-source")))
-                                            .withMemberSource(Map.of(worker, "east")))
+                       .placements(Map.of("p", policyFor("other-source")))
+                       .seams(seams -> seams.withMemberSource(Map.of(worker, "east")))
                        .activate();
 
         w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 21L)));
@@ -164,9 +157,9 @@ class AdversarialRound2Test {
         var worker = node("worker-1");
         var w = unplacedWorker(worker);
 
-        w.refreshSeams(seams -> seams.withCommunityPolicies(Map.of("p", policyFor("east"))));
+        w.placements(Map.of("p", policyFor("east")));
         w.h.deliver(new ClusterInput.Reconcile());
-        assertThat(w.h.warns("worker-community-policy-matched")).as("a refresh alone runs no J5: the join is not pending").isEmpty();
+        assertThat(w.h.warns("worker-community-policy-matched")).as("a committed config alone runs no J5: the join is not pending").isEmpty();
         w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 21L)));
         var matched = w.h.warns("worker-community-policy-matched");
 

@@ -74,16 +74,16 @@ class AetherNodeConfigRedactionTest {
             .contains("clusterSecret=None");
     }
 
-    /// Phase-3 design 8.2: a node is LEGACY unless something says otherwise, the engine a test sets is the engine the config carries, and the
-    /// rendering names it (an operator reading a boot log sees which engine the node was constructed with).
+    /// Phase-3 design 8.2, flipped at F6 (#2767): a node is FSM2 unless something says otherwise, the engine a test sets is the engine the config
+    /// carries, and the rendering names it (an operator reading a boot log sees which engine the node was constructed with).
     @Test
-    void theDeploymentEngine_defaultsToLegacy_isCarriedByTheWither_andIsRendered() {
+    void theDeploymentEngine_defaultsToFsm2_isCarriedByTheWither_andIsRendered() {
         var config = minimalConfig();
 
-        assertThat(config.deploymentEngine()).isEqualTo(DeploymentEngine.LEGACY);
-        assertThat(config.toString()).contains("deploymentEngine=LEGACY");
-        assertThat(config.withDeploymentEngine(DeploymentEngine.FSM2).deploymentEngine()).isEqualTo(DeploymentEngine.FSM2);
-        assertThat(config.withDeploymentEngine(DeploymentEngine.FSM2).toString()).contains("deploymentEngine=FSM2");
+        assertThat(config.deploymentEngine()).isEqualTo(DeploymentEngine.FSM2);
+        assertThat(config.toString()).contains("deploymentEngine=FSM2");
+        assertThat(config.withDeploymentEngine(DeploymentEngine.LEGACY).deploymentEngine()).isEqualTo(DeploymentEngine.LEGACY);
+        assertThat(config.withDeploymentEngine(DeploymentEngine.LEGACY).toString()).contains("deploymentEngine=LEGACY");
     }
 
     /// The rest of the rendering must survive — a `toString` that redacted the secret by dropping 32

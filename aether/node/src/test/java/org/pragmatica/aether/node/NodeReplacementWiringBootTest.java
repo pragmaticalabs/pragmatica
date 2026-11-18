@@ -77,6 +77,7 @@ class NodeReplacementWiringBootTest {
     @Timeout(value = 120, unit = SECONDS)
     void theReplacementService_readsTheNodesRealReadyView() {
         node = bootedNode();
+        LoneNodeGenesis.mintAsTheLeader(node);
 
         await().atMost(30, SECONDS).alias("the node's own ready view contains the node")
                .untilAsserted(() -> assertThat(((NodeReplacementWiring.Wired) node.nodeReplacementService()).readyAll()).contains(self));

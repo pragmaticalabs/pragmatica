@@ -278,6 +278,25 @@ Git never prompts: https credential prompts are disabled (`GIT_TERMINAL_PROMPT=0
 mode; a remote that needs credentials the process does not hold fails, and the backup reports
 `BACKUP_PUSH_FAILING` (push) or `BACKUP_RESTORE_BLOCKED` (restore).
 
+## Backups across releases
+
+A backup written by rc4 is not restorable into rc5 (#3310). The rc5 release changed the wire layout of records of an rc4 backup (the stream
+configuration of every stream, the system stream `system:cluster-events:1.0.0` included, which an rc4 backup always holds; and the auto-heal
+state, which it holds only when auto-heal was configured),
+and rc5 carries no decoder for the rc4 layout: this is a flag day, pre-GA, with no bridge. Under `[backup] restore = "auto"` an rc5 cluster
+started over an rc4 backup does not restore and does not start fresh on its own: it raises `backup-restore-blocked` at the step
+`document undecodable`, and writes to cluster state stay refused.
+
+What the operator sees: the warning includes the failed step and the undecodable lines; the sentence below (verbatim) comes before the advice:
+
+> The backup holds a record this release cannot decode; a backup written by an incompatible release (a backup written by rc4 read by rc5 is one) is one known cause, a damaged backup is another.
+
+The release that wrote the backup is not identified by the node; the sentence names two known causes, not a diagnosis.
+
+The exit is to start the rc5 cluster without the backup: stop the nodes and start them with `[backup] restore = "fresh"`. That abandons the
+rc4 backup, and the cluster starts empty (no state, keys or blueprints from the rc4 site). A fixed build that decodes rc4 backups is not
+offered for this case. One control run restored a backup written by rc5 into the same rc5 build; nothing more is shown.
+
 ## Warnings
 
 | Code | Meaning | Operator action |
