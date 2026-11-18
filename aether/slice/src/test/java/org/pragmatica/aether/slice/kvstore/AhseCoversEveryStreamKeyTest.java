@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Test;
@@ -62,6 +63,12 @@ class AhseCoversEveryStreamKeyTest {
                                                      "38 BlueprintStreamBindingsKey",
                                                      "39 StorageStatusKey");
 
+    private static final List<Integer> S0_ROW_NUMBERS = IntStream.concat(IntStream.rangeClosed(1, 27),
+                                                                                           IntStream.rangeClosed(32, 39))
+                                                                                  .boxed()
+                                                                                  .toList();
+    private static final int ROWS_FINGERPRINT = -342844849;
+
     /// The `AetherKey` record behind each key row, with its §5 row number.
     private static final Map<String, Integer> KEY_ROWS = Map.ofEntries(Map.entry("StreamCursorCheckpointKey", 13),
                                                                        Map.entry("ConsumerAssignmentKey", 14),
@@ -95,6 +102,28 @@ class AhseCoversEveryStreamKeyTest {
                              .isEmpty();
         assertThat(ROWS).as("§5 rows copied at S0 (S3, S4a and S4b each add theirs)")
                         .hasSize(35);
+    }
+
+    /// ROWS is the copy of the §5 list, so its text is pinned three ways: the row numbers are the S0 sequence, each key row's
+    /// text names the record [#KEY_ROWS] maps to that number, and the whole text matches its fingerprint (which catches an
+    /// edit of a non-key row). A PR that adds a row updates ROWS, KEY_ROWS and [#ROWS_FINGERPRINT] together.
+    @Test
+    void copiedRows_arePinned() {
+        var numbers = ROWS.stream()
+                          .map(row -> Integer.valueOf(row.substring(0, row.indexOf(' '))))
+                          .toList();
+
+        assertThat(numbers).as("§5 row numbers at S0: 1-27 and 32-39")
+                           .containsExactlyElementsOf(S0_ROW_NUMBERS);
+        KEY_ROWS.forEach(AhseCoversEveryStreamKeyTest::assertKeyRowText);
+        assertThat(String.join("\n", ROWS)
+                         .hashCode()).as("fingerprint of the copied §5 row text; update ROWS_FINGERPRINT with the rows")
+                                     .isEqualTo(ROWS_FINGERPRINT);
+    }
+
+    private static void assertKeyRowText(String record, int number) {
+        assertThat(ROWS).as("row " + number + " names " + record)
+                        .anyMatch(row -> row.startsWith(number + " ") && row.contains(record));
     }
 
     /// Positive control: a fixture key record outside the list is reported. Both selection readings are exercised: one
