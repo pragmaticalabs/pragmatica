@@ -346,6 +346,9 @@ public interface SystemTags {
         pin(table, 707, "org.pragmatica.aether.slice.RetentionPolicy");
         pin(table, 708, "org.pragmatica.aether.slice.SliceState");
         pin(table, 709, "org.pragmatica.aether.slice.StreamCompression");
+        // Known limit of the #3334 flag day: this tag did not move when `StreamConfig` gained `declaration`, so an OLD node decodes a
+        // bare new `StreamConfig` silently (the trailing declaration byte is ignored; probe, v3361). Safe while `StreamConfigValue`
+        // (tag 2920) is the only wire carrier of a `StreamConfig`; a mixed-version cluster is not supported.
         pin(table, 710, "org.pragmatica.aether.slice.StreamConfig");
         pin(table, 711, "org.pragmatica.aether.slice.TierAwareRetention");
         pin(table, 712, "org.pragmatica.aether.slice.RetentionDimensions");
@@ -487,7 +490,11 @@ public interface SystemTags {
         pin(table, 1644, "org.pragmatica.aether.slice.kvstore.AetherValue.StorageRefValue");
         pin(table, 1645, "org.pragmatica.aether.slice.kvstore.AetherValue.StorageStatusValue");
         pin(table, 1646, "org.pragmatica.aether.slice.kvstore.AetherValue.StorageStatusValue.TierStatus");
-        pin(table, 1647, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue");
+        // RETIRED 2026-11-18 (#3333, flag day, know 38cad36811): `StreamConfigValue` moved to 2920 when `StreamConfig` gained
+        // its `declaration` component (#3334), so a node of an older build fails the new value on an unknown tag instead of
+        // misparsing it under a shape it does not know. First recorded renumber exception, pre-GA, no decoder kept (ST-RP-8).
+        // The pin STAYS, under a name that resolves to no class, so the tag is never reused.
+        pin(table, 1647, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValueRetiredRc6");
         pin(table, 1648, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue");
         // RETIRED 2026-09-27 (#1530): `StreamMetadataValue` was deleted — no production writer or reader. The
         // pin STAYS so the tag is never reused.
@@ -786,6 +793,14 @@ public interface SystemTags {
         // #2981 step 1: the node lease renewal row. Inside the impl2981s1 reservation 2910..2911 of wire-tag-ranges.txt.
         pin(table, 2910, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeLeaseKey");
         pin(table, 2911, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeLeaseValue");
+        // #3334 S2a1-1: the stream declaration model and the flag-day tag of `StreamConfigValue` (old tag 1647, retired above).
+        // Inside the S2a1-1 sub-allocation 2920..2925 of the rc6-streams-wire reservation in wire-tag-ranges.txt.
+        pin(table, 2920, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue");
+        pin(table, 2921, "org.pragmatica.aether.slice.StreamDeclaration");
+        pin(table, 2922, "org.pragmatica.aether.slice.RetentionDeclaration");
+        pin(table, 2923, "org.pragmatica.aether.slice.TruncationDeclaration");
+        pin(table, 2924, "org.pragmatica.aether.slice.HotWindowDeclaration");
+        pin(table, 2925, "org.pragmatica.aether.slice.TruncationPolicy");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 

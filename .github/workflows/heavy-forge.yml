@@ -61,8 +61,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.m2/repository
-          key: m2-full-v2-${{ hashFiles('**/pom.xml') }}
+          key: m2-full-v3-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
+            m2-full-v3-
             m2-full-v2-
             m2-full-
             setup-java-Linux-x64-maven-
@@ -150,8 +151,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.m2/repository
-          key: m2-full-v2-${{ hashFiles('**/pom.xml') }}
+          key: m2-full-v3-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
+            m2-full-v3-
             m2-full-v2-
             m2-full-
             setup-java-Linux-x64-maven-
