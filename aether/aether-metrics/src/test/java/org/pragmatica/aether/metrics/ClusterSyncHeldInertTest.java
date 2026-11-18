@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// Step D45-1 is inert: nothing produces `HELD` yet. The only producer of this node's reported state is the holder, which moves
+/// This change is inert: nothing produces `HELD` yet. The only producer of this node's reported state is the holder, which moves
 /// SYNCING, READY, DRAINING and nothing else; the only producer of a pong's report is the collector's supplier, which nothing wires, so
 /// every pong carries none. A later step that wires either makes these tests fail on purpose and replaces them.
 /// Mutations: let `onDrainStarted` return `HELD`; make the collector's default supplier return a report; drop `heldReportSupplier.get()`

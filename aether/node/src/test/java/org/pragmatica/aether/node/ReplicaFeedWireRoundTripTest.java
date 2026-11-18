@@ -149,7 +149,7 @@ class ReplicaFeedWireRoundTripTest {
         assertThat(roundTrip(with).observedDirectoryGeneration()).isEqualTo(held);
     }
 
-    /// #3345 D45-1. The pong's `heldReport` (tags 2960 `HeldReport`, 2961 `HeldEnd`) survives the node codec, every field and the end
+    /// #3345. The pong's `heldReport` (tags 2960 `HeldReport`, 2961 `HeldEnd`) survives the node codec, every field and the end
     /// verdict included, and an absent report stays absent. Mutation: the codec drops the `heldReport` component (the report arrives empty).
     @Test
     void pongCarriesHeldReport() {

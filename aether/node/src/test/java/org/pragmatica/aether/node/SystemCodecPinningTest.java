@@ -116,7 +116,7 @@ class SystemCodecPinningTest {
                                                                  "org.pragmatica.cluster.state.kvstore.ReplicaEntry",
                                                                  "org.pragmatica.cluster.state.kvstore.CommitRing.RefusalReason");
 
-    /// The `HELD` report (#3345 D45-1) is exempt because no one-byte slot is free (every slot 0..127 is pinned). Its cost, stated: it
+    /// The `HELD` report (#3345) is exempt because no one-byte slot is free (every slot 0..127 is pinned). Its cost, stated: it
     /// rides the `ClusterSync` pong only while the sending node is `HELD` (a draining node whose departure push has not resolved), never
     /// in steady state, and costs one extra byte per type occurrence there (the report and its end verdict).
     private static final Set<String> D45_HELD_REPORT = Set.of("org.pragmatica.cluster.metrics.HeldReport",

@@ -786,7 +786,7 @@ public interface SystemTags {
         // #2981 step 1: the node lease renewal row. Inside the impl2981s1 reservation 2910..2911 of wire-tag-ranges.txt.
         pin(table, 2910, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeLeaseKey");
         pin(table, 2911, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeLeaseValue");
-        // #3345 step D45-1: the HELD report carried on the pong. Inside the dht-3345-3347 reservation 2960..2979 of wire-tag-ranges.txt.
+        // #3345: the HELD report carried on the pong. Inside the dht-3345-3347 reservation 2960..2979 of wire-tag-ranges.txt.
         pin(table, 2960, "org.pragmatica.cluster.metrics.HeldReport");
         pin(table, 2961, "org.pragmatica.cluster.metrics.HeldEnd");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----

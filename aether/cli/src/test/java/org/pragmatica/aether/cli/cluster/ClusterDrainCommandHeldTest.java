@@ -7,7 +7,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #3345 D45-1: a drain refused because the node is already winding down treats `HELD` like `DRAINING` (the node is draining, its
+/// #3345: a drain refused because the node is already winding down treats `HELD` like `DRAINING` (the node is draining, its
 /// departure push has not resolved). The cli does not depend on the metrics module that owns the enum, so it matches the wire names.
 /// Mutation: drop the `HELD` match from `isDrainingState`.
 class ClusterDrainCommandHeldTest {
