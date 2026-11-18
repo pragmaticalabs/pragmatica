@@ -23,6 +23,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// This change is inert: nothing produces `HELD` yet. The only producer of this node's reported state is the holder, which moves
 /// SYNCING, READY, DRAINING and nothing else; the only producer of a pong's report is the collector's supplier, which nothing wires, so
 /// every pong carries none. A later step that wires either makes these tests fail on purpose and replaces them.
+/// What this class can and cannot detect: it drives the holder and a hand-built collector, so it sees a change INSIDE them (a holder
+/// that produces HELD; a collector whose default supplier returns a report). It cannot see production wiring that sets a supplier on
+/// the collector from outside; that is pinned on the assembled node's source by `ClusterSyncWiringTest#assembly_wiresNoHeldReportSupplier`
+/// (in `aether/node`). The step that wires the reporter must replace both.
 /// Mutations: let `onDrainStarted` return `HELD`; make the collector's default supplier return a report; drop `heldReportSupplier.get()`
 /// from the pong (the wired-supplier test).
 class ClusterSyncHeldInertTest {
@@ -62,6 +66,18 @@ class ClusterSyncHeldInertTest {
     void collector_withNoSupplierWired_pongCarriesNoHeldReport() {
         var network = new RecordingNetwork(Set.of(SELF));
         var responder = ClusterSyncCollector.clusterSyncCollector(CORE, network);
+
+        assertThat(pongToPing(responder, network).heldReport()).isEqualTo(Option.none());
+    }
+
+    /// The guard in `setHeldReportSupplier`: a null supplier means no report (the default), never a failure on the pong path.
+    @Test
+    void collector_withANullSupplier_pongCarriesNoHeldReport() {
+        var network = new RecordingNetwork(Set.of(SELF));
+        var responder = ClusterSyncCollector.clusterSyncCollector(CORE, network);
+
+        responder.setHeldReportSupplier(() -> Option.some(report()));
+        responder.setHeldReportSupplier(null);
 
         assertThat(pongToPing(responder, network).heldReport()).isEqualTo(Option.none());
     }
