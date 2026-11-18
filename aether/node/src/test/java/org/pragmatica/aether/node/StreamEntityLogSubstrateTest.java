@@ -240,7 +240,7 @@ class StreamEntityLogSubstrateTest {
 
     /// T-278 refusal arm (O19 ruled (c)): the entity `max_event_size` is 1 MiB. A record one byte over is refused with the
     /// typed `EventTooLarge(1_048_577, 1_048_576)` before anything is stored: the head does not move and the refusal is not
-    /// the ring's `EVENT_DROPPED`. A record of exactly 1 MiB is acked and readable.
+    /// the ring's `EVENT_DROPPED`. A record of exactly 1 MiB is acked at the next offset (substrate level only; the entity-level arm, which also reads it back and checks the key state and the log tail, is `EntityOversizedUpdateRefusalTest`).
     @Test
     void append_refusesAnEntityRecordOverOneMiB_andAcksOneOfExactlyOneMiB() {
         var partitionManager = StreamPartitionManager.streamPartitionManager(512L * 1024 * 1024,
