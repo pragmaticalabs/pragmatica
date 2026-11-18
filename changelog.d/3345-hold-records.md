@@ -1,0 +1,2 @@
+### Added (2026-11-18 — #3345: leader-side records of a held DHT drain, internal and not wired yet)
+- **Internal: the leader-side record of a held drain** (#3345). It keeps one latch per drain episode, raises the at-risk warning and re-raises it until the raise lands, closes the condition with its closers, writes the death record, and takes the decision to accept a loss. No node reports a held drain yet and nothing calls this unit, so nothing changes at run time. [verified: 29 unit tests; 9 mutants, each red]
