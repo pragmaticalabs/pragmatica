@@ -65,6 +65,7 @@ import java.time.Instant;
 import java.util.concurrent.TimeUnit;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -3655,14 +3656,33 @@ class ClusterEventAggregatorTest {
             assertThat(codes(h)).containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-hold-ended");
         }
 
+        /// The `landed` guard alone keeps the closer back: the warning's delivery is given up after an UNKNOWN outcome, which opens
+        /// the mark (the closer WOULD land, see the control) yet answers `false`, so `raiseClosing` must not attempt the closer.
         @Test
         @Timeout(10)
         void raiseClosing_warningNotLanded_raisesNoCloser() {
-            var h = Harness.create();
-            h.aggregator().interceptPublish(ClusterEventAggregatorTest::throwingPublish);
+            var clock = new AtomicLong(1_000_000L);
+            var h = clocked(clock);
+            var unknown = PublishOutcomeUnknown.FACTORY.apply(Causes.cause("owner died"));
+            var attempted = new CopyOnWriteArrayList<String>();
+            h.aggregator().interceptPublish(event -> attemptThen(attempted, event, unknown.promise()));
 
-            assertThat(landed(h.aggregator().raiseClosing(atRisk("n1@1"), holdEnded("n1@1")))).isFalse();
-            assertThat(h.events()).isEmpty();
+            var closing = h.aggregator().raiseClosing(atRisk("n1@1"), holdEnded("n1@1"));
+
+            expireRedelivery(h, clock);
+            assertThat(h.aggregator().redeliveryDropped()).as("control: the warning was given up on").containsEntry("expired", 1L);
+            assertThat(landed(closing)).isFalse();
+            h.aggregator().interceptPublish(event -> attemptThen(attempted, event, h.publisher().get().publish(event)));
+            clock.addAndGet(ClusterEventRedelivery.MAX_BACKOFF_MS);
+            h.aggregator().redeliverDue();
+            assertThat(attempted).as("the closer was never attempted").doesNotContain("dht-departure-hold-ended").contains("dht-departure-sole-copy-at-risk");
+            assertThat(landed(h.aggregator().raiseLanded(holdEnded("n1@1")))).as("control: in this state the closer lands").isTrue();
+        }
+
+        private static Promise<Unit> attemptThen(List<String> attempted, ClusterEvent event, Promise<Unit> outcome) {
+            attempted.add(event.details().get("code"));
+
+            return outcome;
         }
 
         @Test
