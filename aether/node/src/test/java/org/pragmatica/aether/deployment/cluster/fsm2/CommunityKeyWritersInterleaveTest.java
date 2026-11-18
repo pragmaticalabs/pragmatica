@@ -334,8 +334,8 @@ class CommunityKeyWritersInterleaveTest {
     // real: the first mint stands and the second, expecting none, is refused.
     private static MbWorld declaredPolicy() {
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3)
-                       .seams(seams -> seams.withCommunityPolicies(Map.of("p-a", new CommunityPlacement("p-a", 4, List.of(new Location("s1", Option.none(), 0, 1)))))
-                                            .withMemberSource(Map.of(W1, "s1")));
+                       .placements(Map.of("p-a", new CommunityPlacement("p-a", 4, List.of(new Location("s1", Option.none(), 0, 1)))))
+                       .seams(seams -> seams.withMemberSource(Map.of(W1, "s1")));
 
         configure(w.h, HEAD + DECLARED);
 

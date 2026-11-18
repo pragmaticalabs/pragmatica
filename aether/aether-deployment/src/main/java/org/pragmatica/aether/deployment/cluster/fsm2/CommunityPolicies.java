@@ -4,9 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.Map;
+
 import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
+import org.pragmatica.aether.config.cluster.CommunityPlacement;
 import org.pragmatica.aether.config.cluster.CommunityPolicy;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.lang.Option;
@@ -37,9 +40,24 @@ public sealed interface CommunityPolicies {
     }
 
     private static Option<CommunityPolicy> parsed(String toml) {
-        return ClusterBootstrapConfigParser.parse(toml)
-                                           .option()
-                                           .flatMap(ClusterBootstrapConfig::communityPolicy);
+        return parsedConfig(toml).flatMap(ClusterBootstrapConfig::communityPolicy);
+    }
+
+    // FER (degrade forward), as `committed` above: a committed config that no longer parses reads as "no placement policy", so a worker
+    // takes a derived community. Guarantee: the leader never halts on it. The legacy engine instead leaves the worker without a directive
+    // and logs (ClusterDeploymentState.assignWorkerRole); both are a format drift between versions of a config validated when applied.
+    /// The `[community.<id>]` placement policies of a committed cluster config (B-070), empty when it carries none or does not parse.
+    /// Indexed with the config row, so the worker community choice (`Directory.place`) reads the committed row in commit order: the policy
+    /// commit precedes every placement operation the reconciler derives from it, and so every node that operation provisions.
+    static Map<String, CommunityPlacement> placements(ClusterConfigValue value) {
+        return value.tomlContent()
+                    .flatMap(CommunityPolicies::parsedConfig)
+                    .map(ClusterBootstrapConfig::communities)
+                    .or(Map.of());
+    }
+
+    private static Option<ClusterBootstrapConfig> parsedConfig(String toml) {
+        return ClusterBootstrapConfigParser.parse(toml).option();
     }
 
     record unused() implements CommunityPolicies {}

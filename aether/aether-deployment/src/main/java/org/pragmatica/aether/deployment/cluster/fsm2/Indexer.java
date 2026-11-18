@@ -654,6 +654,7 @@ public sealed interface Indexer {
     static ClusterModel indexClusterConfig(ClusterModel m, ClusterConfigValue value) {
         m.clusterConfig = Option.some(value);
         m.communityPolicy = CommunityPolicies.committed(value);
+        m.communityPlacements = CommunityPolicies.placements(value);
 
         return m;
     }

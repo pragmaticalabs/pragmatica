@@ -25,7 +25,6 @@ import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
-import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -95,9 +94,7 @@ class HierarchicalWorkerDrainTest {
         assertThat(node.<Object>apply(List.of(transaction)).await(BUDGET).unwrap())
             .anyMatch(result -> result instanceof KVCommand.TransactionResult accepted && accepted.transactionId().equals(id) && accepted.accepted());
         await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).untilAsserted(() -> {
-            var active = cluster.allNodes().stream().filter(candidate -> leader().kvStore()
-                .getTyped(new AetherKey.NodeArtifactKey(candidate.self(), artifact), AetherValue.NodeArtifactValue.class)
-                .filter(value -> value.state() == SliceState.ACTIVE).isPresent()).map(AetherNode::self).toList();
+            var active = cluster.allNodes().stream().filter(candidate -> SliceStates.isActive(leader(), candidate.self(), artifact)).map(AetherNode::self).toList();
             assertThat(active).hasSize(3).allMatch(workers::contains);
         });
         var core = cluster.status().nodes().stream().filter(status -> !workers.stream().anyMatch(worker -> worker.id().equals(status.id()))).findFirst().orElseThrow();
@@ -108,9 +105,7 @@ class HierarchicalWorkerDrainTest {
             assertThat(response.statusCode()).isEqualTo(200);
             assertThat(response.body()).contains("worker-proof");
         });
-        var serving = workers.stream().filter(worker -> leader().kvStore()
-            .getTyped(new AetherKey.NodeArtifactKey(worker, artifact), AetherValue.NodeArtifactValue.class)
-            .filter(value -> value.state() == SliceState.ACTIVE).isPresent()).findFirst().orElseThrow();
+        var serving = workers.stream().filter(worker -> SliceStates.isActive(leader(), worker, artifact)).findFirst().orElseThrow();
         var workerStatus = cluster.status().nodes().stream().filter(status -> status.id().equals(serving.id())).findFirst().orElseThrow();
         barrier = Result.lift(() -> HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0)).unwrap();
         barrier.createContext("/release", exchange -> {

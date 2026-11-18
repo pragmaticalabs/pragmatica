@@ -376,6 +376,8 @@ class AetherNodeDhtMarkerPostFormationBootTest {
         node.start()
             .await(START_BOUND)
             .onFailure(cause -> fail("start() itself must succeed: this node's DHT holds no marker - " + cause.message()));
+        // The control's genesis, here too: only the unadmitted tier may keep this node from ACTIVE.
+        LoneNodeGenesis.mintAsTheLeader(node);
 
         var window = Math.max(MIN_NOT_ACTIVE_WINDOW_MS, 3 * controlActiveMs);
         var deadline = System.currentTimeMillis() + window;
@@ -430,6 +432,8 @@ class AetherNodeDhtMarkerPostFormationBootTest {
 
     private static long awaitActive(AetherNode candidate) throws InterruptedException {
         var started = System.nanoTime();
+
+        LoneNodeGenesis.mintAsTheLeader(candidate);
         var deadline = System.currentTimeMillis() + ACTIVE_BOUND_MS;
 
         while (candidate.nodeLifecycle().currentState() != NodeState.ACTIVE && System.currentTimeMillis() < deadline) {
