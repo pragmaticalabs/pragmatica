@@ -27,9 +27,9 @@ sed -i.bak "${close}d" "$v"; out=$(extract); expect unclosed 2 'is not closed' "
 fresh; awk -v c="$close" 'NR == c { print "/// ```tla OtherModule:probe"; print "/// Probe == TRUE"; print "/// ```"; next } { print }' "$v" > "$v.new" && mv "$v.new" "$v"
 out=$(extract); expect unclosed-other 2 'is not closed' "$out" $?
 
-fresh; sed -i.bak "${first}s/:\([A-Za-z_]*\)\$/ \1/" "$v"; out=$(extract); expect badtag 2 'is not <Module>:<Part>' "$out" $?
+fresh; sed -i.bak "${first}s/:\([A-Za-z_][A-Za-z0-9_]*\)\$/ \1/" "$v"; out=$(extract); expect badtag 2 'is not <Module>:<Part>' "$out" $?
 
-fresh; name=$(sed -n "${first}p" "$v" | sed -E 's/.*:([A-Za-z_]+)$/\1/')
+fresh; name=$(sed -n "${first}p" "$v" | sed -E 's/.*:([A-Za-z_][A-Za-z0-9_]*)$/\1/')
 sed -i.bak "${first}s/:${name}\$/:${name}Orphan/" "$v"; out=$(extract); expect undefined 2 'does not define an operator' "$out" $?
 
 fresh; sed -i.bak "${first},${close}s/^\( *\)\/\/\/ ${name}\([ (=]\)/\1\/\/\/ ${name}Orphan\2/" "$v"
