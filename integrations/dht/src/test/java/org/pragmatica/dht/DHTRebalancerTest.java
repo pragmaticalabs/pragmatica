@@ -38,6 +38,7 @@ import java.lang.reflect.Proxy;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.pragmatica.dht.storage.StorageEngine;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import java.util.concurrent.CompletableFuture;
@@ -679,8 +680,8 @@ class DHTRebalancerTest {
             assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
         }
 
-        /// T8 (H2): the target leaves the ring after losing the first push; the page goes to the next responsible node, and the push
-        /// carries the removed node in `leaving`.
+        /// T8 (H2): the target leaves the ring after losing the first push; the ring change reaches the run as `onViewChange` (as
+        /// `DHTTopologyListener` delivers it), the page goes to the next responsible node, and its `view` no longer has the removed node.
         @Test
         @Timeout(20)
         void pushOnDeparture_targetRemovedFromRing_retargetsWithLeaving() {
@@ -688,14 +689,17 @@ class DHTRebalancerTest {
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
             var probe = soleKey(ring, "t8");
             node.putLocal(probe, value("payload")).await();
-            var network = ScriptedNetwork.scripted((index, sent) -> index == 0 ? removeAndDrop(ring, sent.target()) : Reply.ACK);
+            var network = ScriptedNetwork.scriptedOver(ring, (index, sent) -> index == 0 ? removeAndDrop(ring, sent.target()) : Reply.ACK);
             var run = push(node, network, T(2_000, 2_000, 50), Set.of());
             var first = network.sends().getFirst().target();
             var expected = ring.nodesFor(probe, 1, candidate -> !candidate.equals(LOCAL)).getFirst();
 
             assertThat(network.sends()).hasSize(2);
             assertThat(network.sends().get(1).target()).isEqualTo(expected).isNotEqualTo(first);
-            assertThat(network.sends().get(1).response().leaving()).contains(first, LOCAL);
+            // #3345: `leaving` is L (self + drain set); the removed target reaches the receiver as its absence from the page's `view`
+            // (the pusher's ring after the change), so the receiver still computes the post-removal placement (#1818 L1).
+            assertThat(network.sends().get(1).response().leaving()).containsExactly(LOCAL);
+            assertThat(network.sends().get(1).response().view()).doesNotContain(first).contains(expected);
             assertThat(network.ackedKeys()).contains(new String(probe, StandardCharsets.UTF_8));
             assertThat(run.report().soleCopyAtRisk()).isZero();
         }
@@ -1490,6 +1494,7 @@ class DHTRebalancerTest {
                          EventRecorder recorder) {
             var rebalancer = dhtRebalancer(node, network, node.config());
             network.ackVia(rebalancer::onMigrationDataAck);
+            network.viewChangeVia(rebalancer::onViewChange);
             var started = System.nanoTime();
             var report = rebalancer.pushOnDeparture(DepartureWindow.departureWindow(started + timing.windowNanos()),
                                                     timing.tuning(),
@@ -1675,18 +1680,41 @@ class DHTRebalancerTest {
         private final CopyOnWriteArrayList<TimedSend> probes = new CopyOnWriteArrayList<>();
         private final CopyOnWriteArrayList<String> ackedKeys = new CopyOnWriteArrayList<>();
         private final AtomicReference<Consumer<DHTMessage.MigrationDataAck>> ackSink = new AtomicReference<>(ack -> {});
+        private final AtomicReference<Runnable> viewChangeSink = new AtomicReference<>(() -> {});
         private final java.util.function.BiFunction<Integer, TimedSend, Reply> script;
+        private final Option<ConsistentHashRing<NodeId>> watchedRing;
+        private final AtomicReference<Set<NodeId>> lastView;
 
-        private ScriptedNetwork(java.util.function.BiFunction<Integer, TimedSend, Reply> script) {
+        private ScriptedNetwork(java.util.function.BiFunction<Integer, TimedSend, Reply> script,
+                                Option<ConsistentHashRing<NodeId>> watchedRing) {
             this.script = script;
+            this.watchedRing = watchedRing;
+            this.lastView = new AtomicReference<>(watchedRing.map(ring -> Set.copyOf(ring.nodes())).or(Set.of()));
         }
 
         static ScriptedNetwork scripted(java.util.function.BiFunction<Integer, TimedSend, Reply> script) {
-            return new ScriptedNetwork(script);
+            return new ScriptedNetwork(script, Option.none());
+        }
+
+        /// A network whose script changes `ring`: like `DHTTopologyListener` after each `changeRing`, every change the script
+        /// makes is followed by the rebalancer's `onViewChange` (#3345's re-plan trigger), delivered from another thread.
+        static ScriptedNetwork scriptedOver(ConsistentHashRing<NodeId> ring,
+                                            java.util.function.BiFunction<Integer, TimedSend, Reply> script) {
+            return new ScriptedNetwork(script, Option.some(ring));
         }
 
         void ackVia(Consumer<DHTMessage.MigrationDataAck> sink) {
             ackSink.set(sink);
+        }
+
+        void viewChangeVia(Runnable sink) {
+            viewChangeSink.set(sink);
+        }
+
+        private void signalViewChange() {
+            watchedRing.map(ring -> Set.copyOf(ring.nodes()))
+                       .filter(view -> !view.equals(lastView.getAndSet(view)))
+                       .onPresent(_ -> Thread.ofVirtual().start(viewChangeSink.get()));
         }
 
         @Override
@@ -1707,6 +1735,7 @@ class DHTRebalancerTest {
                 sends.add(sent);
             }
             var reply = script.apply(index, sent);
+            signalViewChange();
             switch (reply.kind()) {
                 case "ack" -> answer(sent, true, reply.async());
                 case "nack" -> answer(sent, false, reply.async());
