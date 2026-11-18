@@ -275,7 +275,7 @@ class MojoPerRootTest {
         assertThat(anyContains(ret, sideFinding())).isTrue();
         assertThat(anyContains(ret, mainFinding())).isTrue();
         assertThat(logs).anyMatch(line -> line.contains("mode=infrastructure (from ") && line.contains("root=" + mainRoot));
-        assertThat(logs).anyMatch(line -> line.contains("mode=business (from ") && line.contains("root=" + sideTestRoot) && line.contains("test-root files"));
+        assertThat(logs).anyMatch(line -> line.contains("mode=business (from ") && line.contains("root=" + sideTestRoot) && line.contains("2 files; lint: 2 linted"));
     }
 
     @Test
@@ -283,8 +283,8 @@ class MojoPerRootTest {
         var integration = sources(module, "integration/java", "main").resolve(".").normalize();
 
         attempt(lint(true, integration));
-        assertThat(logs).anyMatch(line -> line.contains("root=" + integration) && line.contains("test-root files"));
-        assertThat(logs).noneMatch(line -> line.contains("root=" + mainRoot) && line.contains("test-root files"));
+        assertThat(logs).anyMatch(line -> line.contains("root=" + integration) && line.contains("2 files; lint: 2 linted"));
+        assertThat(logs).anyMatch(line -> line.contains("root=" + mainRoot) && line.contains("2 files; lint: 2 linted"));
     }
 
     @Test
@@ -355,7 +355,7 @@ class MojoPerRootTest {
         setMode("side", JbctMode.FORMAT_ONLY);
         var text = everything(attempt(score()));
 
-        assertThat(text).contains("Not scored: " + sideTestRoot + " (mode format-only skips it)").contains("file(s) scored");
+        assertThat(text).contains("Not scored: " + sideTestRoot + " (mode format-only skips it)").contains("lint: 2 scored");
         assertThat(text).doesNotContain("Not scored: " + mainRoot);
     }
 
@@ -365,7 +365,7 @@ class MojoPerRootTest {
         setMode("main", JbctMode.DISABLED);
         var text = everything(attempt(score()));
 
-        assertThat(text).contains("Nothing was scored: ").doesNotContain("file(s) scored");
+        assertThat(text).contains("Nothing was scored: ").doesNotContain("lint: 2 scored");
     }
 
     @Test

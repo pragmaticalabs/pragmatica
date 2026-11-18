@@ -116,15 +116,18 @@ class UnparseableCoverageReportingTest {
 
     @Test
     void lintMojo_reportsTheAnalysedDenominator_whenAFileCannotBeParsed(@TempDir Path base) throws Exception {
-        var mojo = configure(new LintMojo(), base, sourcesWith(base, "Pure.java", CLEAN, "Ell.java", UNPARSEABLE));
+        var capture = new RunCapture();
+        var mojo = capture.on(configure(new LintMojo(), base, sourcesWith(base, "Pure.java", CLEAN, "Ell.java", UNPARSEABLE)));
 
         var thrown = execute(mojo);
         var log = logOf(mojo);
 
-        assertThat(log.errors).anyMatch(line -> line.contains("Parse failed:"));
-        assertThat(log.infos).anyMatch(line -> line.equals("1 file(s) linted, 1 file(s) not parsed"));
-        assertThat(log.errors).anyMatch(line -> line.contains("COVERAGE GAP"));
-        assertThat(thrown).hasMessageContaining("could not be read or parsed and were NOT analysed")
+        assertThat(log.errors).anyMatch(line -> line.contains("Parse failed:")).containsAll(capture.texts(Level.ERROR));
+        assertThat(log.infos).containsAll(capture.texts(Level.INFO))
+                             .anyMatch(line -> line.contains("lint: 1 linted, 1 not parsed"));
+        assertThat(thrown).isInstanceOf(MojoFailureException.class)
+                          .hasMessage(capture.failure())
+                          .hasMessageContaining("NOT analysed")
                           .hasMessageNotContaining("found 0 error(s)");
     }
 
@@ -132,13 +135,15 @@ class UnparseableCoverageReportingTest {
     /// as this goal has always printed its counts, and a clean complete run still passes.
     @Test
     void lintMojo_reportsTheBareCountAndPasses_whenEveryFileParses(@TempDir Path base) throws Exception {
-        var mojo = configure(new LintMojo(), base, sourcesWith(base, "Pure.java", CLEAN));
+        var capture = new RunCapture();
+        var mojo = capture.on(configure(new LintMojo(), base, sourcesWith(base, "Pure.java", CLEAN)));
 
         var thrown = execute(mojo);
 
-        assertThat(logOf(mojo).infos).anyMatch(line -> line.equals("1 file(s) linted"))
-                                     .anyMatch(line -> line.contains("Findings: 0 error(s)"));
+        assertThat(logOf(mojo).infos).containsAll(capture.texts(Level.INFO))
+                                     .anyMatch(line -> line.contains("1 files; lint: 1 linted"));
         assertThat(logOf(mojo).everything()).noneMatch(line -> line.contains("UNPARSEABLE"));
+        assertThat(capture.failure()).isEmpty();
         assertThat(thrown).isNull();
     }
 
@@ -146,14 +151,43 @@ class UnparseableCoverageReportingTest {
 
     @Test
     void checkMojo_reportsTheAnalysedDenominator_whenAFileCannotBeParsed(@TempDir Path base) throws Exception {
-        var mojo = configure(new CheckMojo(), base, sourcesWith(base, "Pure.java", CLEAN, "Ell.java", UNPARSEABLE));
+        var capture = new RunCapture();
+        var mojo = capture.on(configure(new CheckMojo(), base, sourcesWith(base, "Pure.java", CLEAN, "Ell.java", UNPARSEABLE)));
 
         var thrown = execute(mojo);
         var log = logOf(mojo);
 
-        assertThat(log.errors).anyMatch(line -> line.contains("Parse failed:"));
-        assertThat(log.infos).anyMatch(line -> line.equals("1 file(s) linted, 1 file(s) not parsed"));
-        assertThat(thrown).hasMessageContaining("could not be read or parsed and were NOT analysed");
+        assertThat(log.errors).anyMatch(line -> line.contains("Parse failed:")).containsAll(capture.texts(Level.ERROR));
+        assertThat(log.infos).containsAll(capture.texts(Level.INFO))
+                             .anyMatch(line -> line.contains("lint: 1 linted, 1 not parsed"));
+        assertThat(thrown).isInstanceOf(MojoFailureException.class)
+                          .hasMessage(capture.failure())
+                          .hasMessageContaining("NOT analysed");
+    }
+
+    /// `jbct:check` over clean, formatted source: the run's verdict is a success and the goal throws nothing.
+    @Test
+    void checkMojo_cleanFormattedSource_buildSucceeds(@TempDir Path base) throws Exception {
+        var capture = new RunCapture();
+        var main = sourcesWith(base, "Pure.java", CLEAN);
+
+        assertThat(execute(configure(new FormatMojo(), base, main))).isNull();
+        var mojo = capture.on(configure(new CheckMojo(), base, main));
+
+        assertThat(execute(mojo)).isNull();
+        assertThat(capture.failure()).isEmpty();
+        assertThat(logOf(mojo).infos).containsAll(capture.texts(Level.INFO));
+    }
+
+    /// `jbct:check` over unformatted source: the failure is the run's text, naming the files first.
+    @Test
+    void checkMojo_unformattedSource_failsWithTheRunsFailureText(@TempDir Path base) throws Exception {
+        var capture = new RunCapture();
+        var mojo = capture.on(configure(new CheckMojo(), base, sourcesWith(base, "Pure.java", CLEAN)));
+        var thrown = execute(mojo);
+
+        assertThat(capture.failure()).contains("Pure.java");
+        assertThat(thrown).isInstanceOf(MojoFailureException.class).hasMessage(capture.failure());
     }
 
     /// The goal must never announce a pass over a set it could not read. `JBCT check passed.` is the
@@ -161,12 +195,14 @@ class UnparseableCoverageReportingTest {
     /// exception that happens to accompany it.
     @Test
     void checkMojo_neverAnnouncesAPass_whenAFileCannotBeParsed(@TempDir Path base) throws Exception {
-        var mojo = configure(new CheckMojo(), base, sourcesWith(base, "Ell.java", UNPARSEABLE));
+        var capture = new RunCapture();
+        var mojo = capture.on(configure(new CheckMojo(), base, sourcesWith(base, "Ell.java", UNPARSEABLE)));
 
         execute(mojo);
 
         assertThat(logOf(mojo).everything()).noneMatch(line -> line.contains("JBCT check passed."));
-        assertThat(logOf(mojo).infos).anyMatch(line -> line.startsWith("Nothing was linted: ") && line.contains("1 file(s) not parsed"));
+        assertThat(logOf(mojo).infos).containsAll(capture.texts(Level.INFO))
+                                     .anyMatch(line -> line.contains("lint: 0 linted, 1 not parsed"));
     }
 
     // ---- jbct:process ----------------------------------------------------------------------------
@@ -196,27 +232,45 @@ class UnparseableCoverageReportingTest {
     /// project's ratio, and the goal exists to gate on that number.
     @Test
     void scoreMojo_failsAndStatesTheCoverage_whenAFileCannotBeParsed(@TempDir Path base) throws Exception {
-        var mojo = configure(new ScoreMojo(), base, sourcesWith(base, "Pure.java", CLEAN, "Ell.java", UNPARSEABLE));
+        var capture = new RunCapture();
+        var mojo = capture.on(configure(new ScoreMojo(), base, sourcesWith(base, "Pure.java", CLEAN, "Ell.java", UNPARSEABLE)));
 
         var thrown = execute(mojo);
         var log = logOf(mojo);
 
-        assertThat(log.errors).anyMatch(line -> line.contains("Parse failed:"));
+        assertThat(log.errors).anyMatch(line -> line.contains("Parse failed:")).containsAll(capture.texts(Level.ERROR));
         assertThat(log.everything()).anyMatch(line -> line.contains("1 of 2 files, 1 UNPARSEABLE"));
-        assertThat(thrown).hasMessageContaining("could not be read or parsed and were NOT analysed");
+        assertThat(thrown).isInstanceOf(MojoFailureException.class).hasMessage(capture.failure());
     }
 
     /// Positive control: the density report and BUILD SUCCESS are reachable, and the clean-run header
     /// still renders the bare file count.
     @Test
     void scoreMojo_reportsTheBareFileCountAndPasses_whenEveryFileParses(@TempDir Path base) throws Exception {
-        var mojo = configure(new ScoreMojo(), base, sourcesWith(base, "Pure.java", CLEAN));
+        var capture = new RunCapture();
+        var mojo = capture.on(configure(new ScoreMojo(), base, sourcesWith(base, "Pure.java", CLEAN)));
 
         var thrown = execute(mojo);
 
+        assertThat(logOf(mojo).infos).containsAll(capture.texts(Level.INFO));
         assertThat(logOf(mojo).everything()).anyMatch(line -> line.contains("1 files"));
         assertThat(logOf(mojo).everything()).noneMatch(line -> line.contains("UNPARSEABLE"));
+        assertThat(capture.failure()).isEmpty();
         assertThat(thrown).isNull();
+    }
+
+    /// `jbct:score` with a density limit the source exceeds: the failure is the run's breach text.
+    @Test
+    void scoreMojo_maxDensityBreached_failsWithTheRunsFailureText(@TempDir Path base) throws Exception {
+        var capture = new RunCapture();
+        var violating = "public record Bad(String a) { public static String run() { return null; } }\n";
+        var mojo = configure(new ScoreMojo(), base, sourcesWith(base, "Bad.java", violating));
+
+        mojo.maxDensity = 0.0;
+        var thrown = execute(capture.on(mojo));
+
+        assertThat(capture.failure()).isNotEmpty();
+        assertThat(thrown).isInstanceOf(MojoFailureException.class).hasMessage(capture.failure());
     }
 
     @Test

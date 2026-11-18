@@ -1,14 +1,10 @@
 package org.pragmatica.jbct.maven;
 
-import java.nio.file.Path;
-
-import org.pragmatica.jbct.lint.cst.LintRun;
+import org.pragmatica.jbct.lint.cst.RunOutcome.DensityLimit;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Surface;
 import org.pragmatica.jbct.score.DensityGate;
-import org.pragmatica.jbct.score.ScoreCalculator;
-import org.pragmatica.jbct.score.ScoreReport;
-import org.pragmatica.jbct.score.ScoreResult;
-import org.pragmatica.jbct.score.SourceScan;
-import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
@@ -30,6 +26,8 @@ public class ScoreMojo extends AbstractJbctMojo {
     @Parameter(property = "jbct.includeTests", defaultValue = "false")
     protected boolean includeTests;
 
+    private static final String MAX_DENSITY_FLAG = "-D" + DensityGate.MAX_DENSITY_PROPERTY;
+
     @Parameter(property = DensityGate.MAX_DENSITY_PROPERTY)
     Double maxDensity;
 
@@ -50,68 +48,9 @@ public class ScoreMojo extends AbstractJbctMojo {
             throw new MojoExecutionException(DensityGate.REMOVED_BASELINE_MESSAGE);
         }
 
-        var plan = resolvePlan(includeTests);
+        var limit = Option.option(maxDensity)
+                          .map(max -> DensityLimit.densityLimit(max, MAX_DENSITY_FLAG));
 
-        if (plan.files().isEmpty()) {
-            reportNothingToCheck("score", includeTests);
-
-            return;
-        }
-
-        var run = LintRun.lintRun(plan);
-        var filesToProcess = run.scorable();
-        // A file the run did not offer for scoring is still routed through it, which records it as skipped by mode.
-        plan.files().stream().filter(file -> !filesToProcess.contains(file)).forEach(file -> routeUnscored(file, run));
-        if (filesToProcess.isEmpty()) {
-            nothingScored(run);
-
-            return;
-        }
-
-        var scan = SourceScan.sourceScan(filesToProcess,
-                                         run::lint,
-                                         message -> getLog().error("Parse error in " + message));
-        var score = ScoreCalculator.calculate(scan);
-        var report = finishRun(run);
-
-        report.scoreLines().forEach(getLog()::info);
-        reportDiagnostics(report.diagnostics());
-        layerCoverage(plan, report);
-        outputScore(score);
-        var coverage = score.coverage();
-        // A coverage gap outranks the density check and fails even with no maxDensity set: the goal
-        // reported a ratio over fewer files than it was asked to read, returning BUILD
-        // SUCCESS over files it never read (#977).
-        if (coverage.isPartial()) {
-            coverage.gapReport("score").onPresent(getLog()::error);
-
-            throw new MojoFailureException("JBCT score failed: " + coverage.unparseable()
-                                          + " file(s) could not be read or parsed and were NOT analysed,"
-                                          + " so the reported density does not cover them");
-        }
-
-        if (maxDensity != null && DensityGate.exceeds(score.totalDensityPerKloc(), maxDensity)) {
-            throw new MojoFailureException(DensityGate.breachMessage(score.totalDensityPerKloc(), maxDensity));
-        }
-    }
-
-    /// Nothing was scorable: the run's lines say why per root, and a requested `maxDensity` gate says it was not evaluated.
-    @Contract
-    private void nothingScored(LintRun run) throws MojoExecutionException {
-        var report = finishRun(run);
-
-        report.scoreLines().forEach(getLog()::info);
-        reportDiagnostics(report.diagnostics());
-        if (maxDensity != null) {
-            getLog().info("maxDensity " + maxDensity + " was not evaluated; the run passes.");
-        }
-    }
-
-    private void routeUnscored(Path file, LintRun run) {
-        run.lintFile(file).onFailure(cause -> getLog().error("Error: " + cause.message()));
-    }
-
-    private void outputScore(ScoreResult score) {
-        ScoreReport.terminalLines(score).forEach(line -> getLog().info(line));
+        perform(resolvePlan(includeTests), Invocation.score(Surface.MAVEN, limit));
     }
 }

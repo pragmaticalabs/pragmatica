@@ -135,8 +135,11 @@ class MojoSharedRunTest {
     private Optional<Exception> run(AbstractJbctMojo mojo, boolean includeTests) throws Exception {
         includeTests(mojo, includeTests);
         logs.clear();
+        var outcome = attempt(mojo);
 
-        return attempt(mojo);
+        assertThat(logs).containsAll(capture.lines());
+
+        return outcome;
     }
 
     private static Optional<Exception> attempt(Mojo mojo) {
@@ -182,8 +185,7 @@ class MojoSharedRunTest {
         run(wire(new LintMojo(), repo, null, new Properties()), false);
 
         assertThat(findings()).containsExactlyInAnyOrderElementsOf(SharedRunTree.expectedFindings());
-        assertThat(logs).containsSubsequence(SharedRunTree.expectedSummaryLines(repo))
-                        .containsAll(SharedRunTree.expectedLintLines());
+        assertThat(logs).containsAll(capture.lines());
         assertThat(String.join("\n", logs)).doesNotContain("test-root files");
     }
 
@@ -194,7 +196,7 @@ class MojoSharedRunTest {
 
         assertThat(count(text, ARCH_02)).isEqualTo(1);
         assertThat(count(text, RET_03)).isEqualTo(2);
-        assertThat(logs).containsAll(SharedRunTree.expectedLintLines());
+        assertThat(logs).containsAll(capture.lines());
     }
 
     // ---- T2 / F6: identical declared roots are one root, each file once
@@ -207,7 +209,7 @@ class MojoSharedRunTest {
 
         assertThat(findings()).containsExactlyInAnyOrder(ARCH_02 + "@biz", RET_03 + "@biz");
         assertThat(count(String.join("\n", logs), "root=" + root(biz))).isEqualTo(1);
-        assertThat(logs).anyMatch(line -> line.contains("1 examined by rules"));
+        assertThat(logs).anyMatch(line -> line.contains("root=" + root(biz)) && line.contains("1 files; lint: 1 linted"));
     }
 
     // ---- T4: no compliance pass when no root ran a rule; counts exclude skipped files
@@ -219,8 +221,8 @@ class MojoSharedRunTest {
 
         var linted = text(run(lint(infra, off), true));
 
-        assertThat(linted).contains(NOTHING_LINTED + root(infra) + " (mode format-only skips it)").contains("0 examined by rules").contains("1 skipped by mode");
-        assertThat(linted).contains("root=" + root(off) + " basePackage=org.acme.off: 0 examined by rules, 0 formatted or format-checked, 1 skipped by mode");
+        assertThat(linted).contains(NOTHING_LINTED + root(infra) + " (mode format-only skips it)").contains("lint: 0 linted, 1 skipped by mode");
+        assertThat(linted).contains("root=" + root(off) + " basePackage=org.acme.off: 1 files; lint: 0 linted, 1 skipped by mode");
         var disabledOnly = text(run(wire(new CheckMojo(), off, off, new Properties()), false));
 
         assertThat(disabledOnly).contains("Nothing was format-checked: " + root(off) + " (mode disabled skips it)")
@@ -229,7 +231,7 @@ class MojoSharedRunTest {
         run(wire(new FormatMojo(), infra, infra, new Properties()), false);
         var formatOnly = text(run(wire(new CheckMojo(), infra, infra, new Properties()), false));
 
-        assertThat(formatOnly).contains("1 file(s) format-checked")
+        assertThat(formatOnly).contains("format: 1 unchanged")
                               .contains(NOTHING_LINTED + root(infra) + " (mode format-only skips it)")
                               .doesNotContain("passed");
     }
@@ -252,13 +254,13 @@ class MojoSharedRunTest {
         var biz = module("biz", "mode = \"business\"\n");
         var off = module("off", "mode = \"disabled\"\n");
         var skipped = "root=" + root(off) + " basePackage=org.acme.off: 1 files;";
-        var lintSkipped = "root=" + root(off) + " basePackage=org.acme.off: 0 examined by rules, 0 formatted or format-checked, 1 skipped by mode";
+        var lintSkipped = "root=" + root(off) + " basePackage=org.acme.off: 1 files; lint: 0 linted, 1 skipped by mode";
 
-        assertThat(text(run(lint(biz, off), true))).contains("1 file(s) linted").contains(lintSkipped).doesNotContain(NOTHING_LINTED);
+        assertThat(text(run(lint(biz, off), true))).contains("1 files; lint: 1 linted").contains(lintSkipped).doesNotContain(NOTHING_LINTED);
         assertThat(text(run(wire(new ProcessMojo(), biz, off, new Properties()), true))).contains("Processing 1 Java file(s)").contains(skipped).contains("1 skipped by mode");
         assertThat(text(run(wire(new FormatMojo(), biz, off, new Properties()), true))).contains("Formatting 1 Java file(s)").contains(skipped).contains("1 skipped by mode");
         assertThat(text(run(wire(new FormatCheckMojo(), biz, off, new Properties()), true))).contains("Checking format of 1 Java file(s)").contains(skipped).contains("1 skipped by mode");
-        assertThat(text(run(wire(new CheckMojo(), biz, off, new Properties()), true))).contains("Running JBCT check on 1 Java file(s)").contains("1 file(s) format-checked").contains("1 file(s) linted").contains(lintSkipped);
+        assertThat(text(run(wire(new CheckMojo(), biz, off, new Properties()), true))).contains("Running JBCT check on 1 Java file(s)").contains("format: ").contains("1 files; lint: 1 linted").contains(lintSkipped);
     }
 
     // ---- T5: the summary line per mode with where it came from, in every goal; one line per root

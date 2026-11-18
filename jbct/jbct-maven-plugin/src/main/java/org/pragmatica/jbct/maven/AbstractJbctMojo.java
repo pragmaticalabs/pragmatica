@@ -1,8 +1,6 @@
 package org.pragmatica.jbct.maven;
 
 import java.io.File;
-import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
@@ -10,21 +8,17 @@ import java.util.function.BiFunction;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.lint.Diagnostic;
-import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.cst.LintRun;
-import org.pragmatica.jbct.lint.cst.LintRun.RootCounts;
-import org.pragmatica.jbct.lint.cst.LintRun.RunReport;
 import org.pragmatica.jbct.lint.cst.RootResolver;
 import org.pragmatica.jbct.lint.cst.RootResolver.ModeOverride;
-import org.pragmatica.jbct.lint.cst.RootResolver.ResolvedRoot;
 import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Line;
 import org.pragmatica.jbct.lint.cst.RunOutcome.MavenModule;
 import org.pragmatica.jbct.lint.cst.RunOutcome.RunResult;
-import org.pragmatica.jbct.lint.layer.LayerCoverage;
+import org.pragmatica.jbct.score.ScoreReport;
+import org.pragmatica.jbct.score.ScoreResult;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -159,9 +153,16 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
         result.before().forEach(this::log);
         reportDiagnostics(result.findings());
         result.after().forEach(this::log);
+        result.score().onPresent(this::logScore);
         if (failure.isPresent()) {
             throw new MojoFailureException(failure.unwrap());
         }
+    }
+
+    /// The score table the run returned, one line per row, as the CLI prints it.
+    @Contract
+    private void logScore(ScoreResult score) {
+        ScoreReport.terminalLines(score).forEach(getLog()::info);
     }
 
     /// A line is logged at its own level; the channel is read only by the CLI.
@@ -195,96 +196,8 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
                      .toList();
     }
 
-    /// Files formatted or format-checked, summed over the run's roots.
-    protected static int formatted(RunReport report) {
-        return report.roots()
-                     .stream()
-                     .mapToInt(RootCounts::formatted)
-                     .sum();
-    }
-
-    /// Files examined by rules, summed over the run's roots.
-    protected static int examined(RunReport report) {
-        return report.roots()
-                     .stream()
-                     .mapToInt(RootCounts::examined)
-                     .sum();
-    }
-
-    /// Files the run could not read or parse, summed over the run's roots.
-    protected static int notParsed(RunReport report) {
-        return report.roots()
-                     .stream()
-                     .mapToInt(RootCounts::notParsed)
-                     .sum();
-    }
-
-    /// Errors the run's roots counted.
-    protected static int errorsIn(RunReport report) {
-        return report.roots()
-                     .stream()
-                     .mapToInt(RootCounts::errors)
-                     .sum();
-    }
-
-    /// Warnings the run's roots counted.
-    protected static int warningsIn(RunReport report) {
-        return report.roots()
-                     .stream()
-                     .mapToInt(RootCounts::warnings)
-                     .sum();
-    }
-
-    /// Infos among the diagnostics a goal printed (the run's per-root counts carry errors and warnings only).
-    protected static int infosIn(List<Diagnostic> diagnostics) {
-        return (int) diagnostics.stream()
-                                .filter(d -> d.severity() == DiagnosticSeverity.INFO)
-                                .count();
-    }
-
-    /// One file with the formatter built from its own root's `[format]` settings.
-    protected record FormatJob(Path file, JbctFormatter formatter) {
-        public static FormatJob formatJob(Path file, JbctFormatter formatter) {
-            return new FormatJob(file, formatter);
-        }
-    }
-
-    /// The plan's files in root order, each with its own root's formatter; the run's `claimFormat` decides which of
-    /// them a goal touches.
-    protected static List<FormatJob> formatJobs(RootPlan plan) {
-        return plan.roots()
-                   .stream()
-                   .flatMap(AbstractJbctMojo::formatJobsOf)
-                   .toList();
-    }
-
-    private static Stream<FormatJob> formatJobsOf(ResolvedRoot root) {
-        var formatter = JbctFormatter.jbctFormatter(root.config().formatter());
-
-        return root.files()
-                   .stream()
-                   .map(file -> FormatJob.formatJob(file, formatter));
-    }
-
-    /// The layer-coverage line of each root the run examined by rules; a root no rule ran in has no layers to cover.
-    protected void layerCoverage(RootPlan plan, RunReport report) {
-        var examinedRoots = report.roots()
-                                  .stream()
-                                  .filter(root -> root.examined() > 0)
-                                  .map(RootCounts::root)
-                                  .collect(Collectors.toSet());
-
-        plan.roots()
-            .stream()
-            .filter(root -> examinedRoots.contains(root.path()))
-            .forEach(root -> LayerCoverage.coverage(root.files(),
-                                                    root.context())
-                                          .map(LayerCoverage::render)
-                                          .onPresent(getLog()::info));
-    }
-
     /// Print diagnostics at their severity: the files' own and the run's.
-    protected void reportDiagnostics(List<Diagnostic> diagnostics) {
+    private void reportDiagnostics(List<Diagnostic> diagnostics) {
         for (var d : diagnostics) {
             var line = "[" + d.ruleId() + "] " + d.file() + ":" + d.line() + ":" + d.column() + " - " + d.message();
 
@@ -296,22 +209,6 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
         }
     }
 
-    /// Finish the run and log its per-root summary, one line per source root with its mode and where it came from.
-    @Contract
-    protected RunReport finishRun(LintRun run) throws MojoExecutionException {
-        var report = run.finish();
-        var refusal = report.fold(cause -> Option.some(cause.message()),
-                                  _ -> Option.<String> none());
-
-        if (refusal.isPresent()) {
-            throw new MojoExecutionException(refusal.unwrap());
-        }
-
-        report.unwrap().summary().forEach(getLog()::info);
-
-        return report.unwrap();
-    }
-
     /// Check if this mojo should be skipped.
     protected boolean shouldSkip(String goalName) {
         if (skip) {
@@ -321,57 +218,5 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
         }
 
         return false;
-    }
-
-    /// Report an empty file set HONESTLY, distinguishing "nothing to check" from "everything was
-    /// excluded from checking" (#740).
-    ///
-    /// Both states used to render as `No Java files found.` at INFO, followed by a green build. For a
-    /// test-only module under the default `includeTests=false` that sentence is simply untrue — the
-    /// files exist and were skipped by policy — and a reader has no way to tell whether the
-    /// instrument looked and found nothing or never looked at all. A gate that cannot fail must at
-    /// least say so; that is the whole difference between a check that passed and a check that was
-    /// never performed.
-    ///
-    /// Warns only when files were actually excluded, so aggregator modules and genuinely empty source
-    /// trees stay quiet.
-    protected void reportNothingToCheck(String goalName, boolean includeTests) {
-        var excludedTests = includeTests
-                            ? 0
-                            : countJavaFiles(Option.option(testSourceDirectory).map(File::toPath));
-
-        if (excludedTests > 0) {
-            getLog().warn("JBCT " + goalName
-                         + " examined NOTHING in " + project.getArtifactId()
-                         + ": no Java files under " + sourceDirectory
-                         + ", and " + excludedTests
-                         + " test file(s) under " + testSourceDirectory
-                         + " were excluded because jbct.includeTests=false."
-                         + " This module is NOT covered by this goal — a green result here is not evidence about those files."
-                         + " Pass -Djbct.includeTests=true to examine them.");
-
-            return;
-        }
-
-        getLog().info("No Java files found.");
-    }
-
-    private static int countJavaFiles(Option<Path> directory) {
-        return directory.filter(Files::exists)
-                        .map(AbstractJbctMojo::countJavaFilesIn)
-                        .or(0);
-    }
-
-    private static int countJavaFilesIn(Path directory) {
-        try (var paths = Files.walk(directory)) {
-            return (int) paths.filter(Files::isRegularFile)
-                              .filter(path -> path.toString()
-                                                  .endsWith(".java"))
-                              .count();
-        } catch (IOException _) {
-            // Counting is only ever used to make a message more honest; a failure here must not
-            // turn a reporting path into a build failure.
-            return 0;
-        }
     }
 }

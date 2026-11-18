@@ -62,6 +62,7 @@ class JbctModeFixtureTest {
     Path tempDir;
 
     private final List<String> logs = new ArrayList<>();
+    private final RunCapture capture = new RunCapture();
     private String savedUserHome;
     private Path repo;
 
@@ -111,6 +112,7 @@ class JbctModeFixtureTest {
         mavenProject.setFile(new File(module.toFile(), "pom.xml"));
         request.setUserProperties(userProperties);
         mojo.project = mavenProject;
+        capture.on(mojo);
         mojo.session = new MavenSession(null, null, request, new DefaultMavenExecutionResult());
         mojo.sourceDirectory = root(module).toFile();
         mojo.testSourceDirectory = module.resolve("src/test/java").toFile();
@@ -139,9 +141,12 @@ class JbctModeFixtureTest {
         logs.clear();
         try {
             mojo.execute();
+            assertThat(logs).containsAll(capture.lines());
 
             return String.join("\n", logs);
         } catch (Exception e) {
+            assertThat(logs).containsAll(capture.lines());
+
             return String.join("\n", logs) + "\n" + e.getMessage();
         }
     }
@@ -149,9 +154,11 @@ class JbctModeFixtureTest {
     private boolean fails(Mojo mojo) {
         try {
             mojo.execute();
+            assertThat(logs).containsAll(capture.lines());
 
             return false;
         } catch (Exception e) {
+            assertThat(logs).containsAll(capture.lines());
             logs.add(e.getMessage());
 
             return true;
@@ -178,7 +185,7 @@ class JbctModeFixtureTest {
         var module = module("biz", JbctMode.BUSINESS);
 
         assertThat(fails(wire(new LintMojo(), module, new Properties()))).isTrue();
-        assertThat(all()).contains(ARCH_02, RET_03).contains("mode=business (from ", "root=" + root(module), "2 examined by rules, 0 formatted or format-checked, 0 skipped by mode");
+        assertThat(all()).contains(ARCH_02, RET_03).contains("mode=business (from ", "root=" + root(module), "2 files; lint: 2 linted");
         logs.clear();
         assertThat(fails(wire(new CheckMojo(), module, new Properties()))).isTrue();
         assertThat(all()).contains(ARCH_02, RET_03, price(module, "biz").toString());
@@ -204,7 +211,7 @@ class JbctModeFixtureTest {
 
         assertThat(fails(wire(new LintMojo(), module, new Properties()))).isTrue();
         assertThat(all()).contains(RET_03).doesNotContain(ARCH_02)
-                         .contains("mode=infrastructure (from ", "root=" + root(module), "2 examined by rules, 0 formatted or format-checked, 0 skipped by mode", "structure checks off");
+                         .contains("mode=infrastructure (from ", "root=" + root(module), "2 files; lint: 2 linted", "structure checks off");
         logs.clear();
         assertThat(fails(wire(new CheckMojo(), module, new Properties()))).isTrue();
         assertThat(all()).contains(RET_03, price(module, "infra").toString()).doesNotContain(ARCH_02);
@@ -227,7 +234,7 @@ class JbctModeFixtureTest {
         var text = run(wire(new LintMojo(), module, new Properties()));
 
         assertThat(text).doesNotContain("[JBCT-")
-                        .contains("mode=format-only (from ", "root=" + root(module), "0 examined by rules, 0 formatted or format-checked, 2 skipped by mode", "format only, no rule run");
+                        .contains("mode=format-only (from ", "root=" + root(module), "2 files; lint: 0 linted, 2 skipped by mode", "format only, no rule run");
     }
 
     @Test
@@ -236,7 +243,7 @@ class JbctModeFixtureTest {
 
         assertThat(fails(wire(new CheckMojo(), module, new Properties()))).isTrue();
         assertThat(all()).contains(price(module, "fmt").toString()).doesNotContain("[JBCT-")
-                         .contains("mode=format-only (from ", "root=" + root(module), "0 examined by rules, 2 formatted or format-checked, 0 skipped by mode", "format only, no rule run");
+                         .contains("mode=format-only (from ", "root=" + root(module), "lint: 0 linted, 2 skipped by mode; format: 0 unchanged, 2 would change", "format only, no rule run");
     }
 
     @Test
@@ -262,7 +269,7 @@ class JbctModeFixtureTest {
     void formatOnly_score_saysNotScored() throws Exception {
         var module = module("fmt", JbctMode.FORMAT_ONLY);
 
-        assertThat(run(wire(new ScoreMojo(), module, new Properties()))).contains("Not scored: " + root(module) + " (mode format-only skips it)");
+        assertThat(run(wire(new ScoreMojo(), module, new Properties()))).contains("Nothing was scored: " + root(module) + " (mode format-only skips it)");
     }
 
     // ---- disabled: none; nothing is written
@@ -273,11 +280,11 @@ class JbctModeFixtureTest {
         var lint = run(wire(new LintMojo(), module, new Properties()));
 
         assertThat(lint).doesNotContain("[JBCT-")
-                        .contains("mode=disabled (from ", "root=" + root(module), "0 examined by rules, 0 formatted or format-checked, 2 skipped by mode");
+                        .contains("mode=disabled (from ", "root=" + root(module), "2 files; lint: 0 linted, 2 skipped by mode");
         var check = run(wire(new CheckMojo(), module, new Properties()));
 
         assertThat(check).doesNotContain("[JBCT-").doesNotContain(price(module, "off").toString())
-                         .contains("mode=disabled (from ", "root=" + root(module), "0 examined by rules, 0 formatted or format-checked, 2 skipped by mode")
+                         .contains("mode=disabled (from ", "root=" + root(module), "2 files; lint: 0 linted, 2 skipped by mode")
                          .contains("Nothing was format-checked: " + root(module) + " (mode disabled skips it)");
     }
 
@@ -297,7 +304,7 @@ class JbctModeFixtureTest {
     void disabled_score_saysNotScored() throws Exception {
         var module = module("off", JbctMode.DISABLED);
 
-        assertThat(run(wire(new ScoreMojo(), module, new Properties()))).contains("Not scored: " + root(module) + " (mode disabled skips it)");
+        assertThat(run(wire(new ScoreMojo(), module, new Properties()))).contains("Nothing was scored: " + root(module) + " (mode disabled skips it)");
     }
 
     // ---- override arm
