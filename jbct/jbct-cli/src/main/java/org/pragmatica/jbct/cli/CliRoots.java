@@ -7,6 +7,7 @@ import java.util.function.BiFunction;
 
 import org.pragmatica.jbct.lint.cst.LintRun;
 import org.pragmatica.jbct.lint.cst.RootResolver;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Channel;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Level;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Line;
@@ -52,8 +53,7 @@ public sealed interface CliRoots {
     /// The run as a function of the resolved plan and the invocation; a front end holds one so a test can capture the result
     /// the front end itself received.
     /// The seam every command starts with: the plan's own run performs the invocation.
-    BiFunction<RootPlan, Invocation, Result<RunResult>> PERFORM = (plan, invocation) -> LintRun.lintRun(plan)
-                                                                                                .perform(invocation);
+    BiFunction<RootPlan, Invocation, Result<RunResult>> PERFORM = (plan, invocation) -> LintRun.lintRun(plan).perform(invocation);
 
     /// Print what the run returned and map its verdict to the exit status; a refused run prints its cause and exits with
     /// [CliConfig#CONFIG_ERROR_EXIT].
@@ -73,36 +73,32 @@ public sealed interface CliRoots {
         return exitCode(result.verdict(), nothingCollectedExit);
     }
 
-    /// The lines before the findings, the findings, then the lines after them: ERROR lines to stderr, DETAIL lines only
-    /// with `verbose`, the rest to stdout.
+    /// The lines before the findings, the findings, then the lines after them: each line to the stream it carries, DETAIL
+    /// lines only with `verbose`.
     @Contract
     static void print(RunResult result, boolean verbose) {
-        result.before()
-              .forEach(line -> printLine(line, verbose));
-        result.findings()
-              .forEach(CliRoots::printFinding);
-        result.after()
-              .forEach(line -> printLine(line, verbose));
+        result.before().forEach(line -> printLine(line, verbose));
+        result.findings().forEach(CliRoots::printFinding);
+        result.after().forEach(line -> printLine(line, verbose));
     }
 
-    /// The run's lines (not its findings) to stderr, for a command whose stdout document carries the findings.
+    /// The run's lines (not its findings, nor the lines that frame them) to stderr, for a command whose stdout document
+    /// carries the findings.
     @Contract
     static void printLinesToStderr(RunResult result, boolean verbose) {
         result.before()
+              .stream()
+              .filter(line -> line.channel() != Channel.WITH_FINDINGS)
               .forEach(line -> printLineTo(System.err, line, verbose));
-        result.after()
-              .forEach(line -> printLineTo(System.err, line, verbose));
+        result.after().forEach(line -> printLineTo(System.err, line, verbose));
     }
 
     /// Every line and finding of the run to stderr, for a command whose stdout carries a document of its own.
     @Contract
     static void printToStderr(RunResult result, boolean verbose) {
-        result.before()
-              .forEach(line -> printLineTo(System.err, line, verbose));
-        result.findings()
-              .forEach(finding -> System.err.print(finding.toHumanReadable()));
-        result.after()
-              .forEach(line -> printLineTo(System.err, line, verbose));
+        result.before().forEach(line -> printLineTo(System.err, line, verbose));
+        result.findings().forEach(finding -> System.err.print(finding.toHumanReadable()));
+        result.after().forEach(line -> printLineTo(System.err, line, verbose));
     }
 
     @Contract
@@ -119,17 +115,17 @@ public sealed interface CliRoots {
 
     @Contract
     private static void printLine(Line line, boolean verbose) {
-        streamOf(line.level(), verbose).onPresent(stream -> stream.println(line.text()));
+        streamOf(line.channel(), line.level(), verbose).onPresent(stream -> stream.println(line.text()));
     }
 
-    private static Option<PrintStream> streamOf(Level level, boolean verbose) {
-        return switch (level) {
-            case ERROR -> Option.some(System.err);
-            case DETAIL -> verbose
-                           ? Option.some(System.out)
-                           : Option.<PrintStream>none();
-            case WARN, INFO -> Option.some(System.out);
-        };
+    /// Where a line goes is what the line carries; DETAIL lines are shown only with `verbose`.
+    private static Option<PrintStream> streamOf(Channel channel, Level level, boolean verbose) {
+        return level == Level.DETAIL && !verbose
+               ? Option.<PrintStream> none()
+               : Option.some(switch (channel) {
+            case STDERR -> System.err;
+            case STDOUT, WITH_FINDINGS -> System.out;
+        });
     }
 
     /// The exit status of an INCOMPLETE run: the tool could not do its job.

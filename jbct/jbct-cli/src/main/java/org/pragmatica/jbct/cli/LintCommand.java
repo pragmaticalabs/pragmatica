@@ -123,6 +123,7 @@ public class LintCommand implements Callable<Integer> {
         return result.after()
                      .stream()
                      .map(Line::text)
+                     .filter(text -> !text.isEmpty())
                      .toList();
     }
 
@@ -229,8 +230,8 @@ public class LintCommand implements Callable<Integer> {
 
         if (!result.executionSuccessful()) {
             notifications.add("        { \"level\": \"%s\", \"message\": { \"text\": \"%s\" } }".formatted(result.notificationLevel(),
-                                                                                                                escapeJson(String.join(" ",
-                                                                                                                                       outcomeOf(result)))));
+                                                                                                           escapeJson(String.join(" ",
+                                                                                                                                  outcomeOf(result)))));
         }
 
         for (var skipped : unanalysedOf(result)) {

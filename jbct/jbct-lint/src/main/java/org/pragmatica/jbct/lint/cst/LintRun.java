@@ -338,8 +338,7 @@ public final class LintRun {
                                                           .stream()).toList();
         var score = RunScore.scoreOf(invocation, files);
         var verdict = verdict(invocation, activities, files, roots, score);
-        var lines = RunLines.runLines(invocation, files, roots, verdict, layerLines(files), uncollectedTestFiles, score)
-                            .lines();
+        var lines = RunLines.runLines(invocation, files, roots, verdict, layerLines(files), uncollectedTestFiles, score).lines();
 
         return RunResult.runResult(files,
                                    roots,
@@ -355,11 +354,13 @@ public final class LintRun {
     private static Totals totals(Activities activities, List<FileResult> files) {
         return Totals.totals(files.size(),
                              activities.lint()
-                             ? Option.some(tallyOf(files.stream().map(FileResult::lint).toList(), Linted.class))
+                             ? Option.some(tallyOf(files.stream().map(FileResult::lint).toList(),
+                                                   Linted.class))
                              : Option.none(),
                              activities.format() == FormatAction.NONE
                              ? Option.none()
-                             : Option.some(tallyOf(files.stream().map(FileResult::format).toList(), Rewritten.class)));
+                             : Option.some(tallyOf(files.stream().map(FileResult::format).toList(),
+                                                   Rewritten.class)));
     }
 
     /// The layer-coverage line of each root that linted a file, from the packages `perform` read.

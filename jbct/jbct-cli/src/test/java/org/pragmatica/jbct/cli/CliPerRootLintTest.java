@@ -206,7 +206,7 @@ class CliPerRootLintTest {
         setMode("biz", JbctMode.DISABLED);
         var exit = execute(new ScoreCommand(), business.toString());
 
-        assertThat(err.toString()).contains(run.result().after().getFirst().text());
+        assertThat(err.toString()).contains(run.afterBody().getFirst());
         assertThat(run.result().examined()).isZero();
         assertThat(out.toString()).isBlank();
         assertThat(exit).isZero();

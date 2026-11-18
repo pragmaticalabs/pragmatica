@@ -53,8 +53,7 @@ public class FormatCommand implements Callable<Integer> {
         }
 
         var plan = planned.unwrap();
-        var performed = Invocation.format(Surface.CLI, action())
-                                  .flatMap(invocation -> runSeam.apply(plan, invocation));
+        var performed = Invocation.format(Surface.CLI, action()).flatMap(invocation -> runSeam.apply(plan, invocation));
 
         return CliRoots.finish(performed, verbose, NOTHING_COLLECTED_EXIT);
     }

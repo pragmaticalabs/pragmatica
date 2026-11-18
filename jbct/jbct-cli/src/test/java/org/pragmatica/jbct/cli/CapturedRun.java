@@ -8,6 +8,7 @@ import java.util.stream.Stream;
 
 import org.pragmatica.jbct.lint.cst.RootResolver.RootPlan;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Channel;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Level;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Line;
 import org.pragmatica.jbct.lint.cst.RunOutcome.RunResult;
@@ -35,6 +36,11 @@ final class CapturedRun implements BiFunction<RootPlan, Invocation, Result<RunRe
         return received.size();
     }
 
+    /// The sentences of the lines after the findings, without the blank line that frames them.
+    List<String> afterBody() {
+        return result().after().stream().map(Line::text).filter(text -> !text.isEmpty()).toList();
+    }
+
     /// What the command prints to stdout: the lines before the findings, the findings, the lines after them; DETAIL lines only when `verbose`.
     String expectedStdout(boolean verbose) {
         return Stream.of(textOf(result().before(), verbose),
@@ -46,10 +52,10 @@ final class CapturedRun implements BiFunction<RootPlan, Invocation, Result<RunRe
                      .collect(Collectors.joining());
     }
 
-    /// The lines the command prints to stderr (ERROR lines), in order.
+    /// The lines the command prints to stderr (the lines whose channel is stderr), in order.
     List<String> expectedStderrLines() {
         return Stream.concat(result().before().stream(), result().after().stream())
-                     .filter(line -> line.level() == Level.ERROR)
+                     .filter(line -> line.channel() == Channel.STDERR && line.level() != Level.DETAIL)
                      .map(Line::text)
                      .toList();
     }
@@ -64,7 +70,7 @@ final class CapturedRun implements BiFunction<RootPlan, Invocation, Result<RunRe
 
     /// Every line and finding the machine-format and score commands print to stderr, in order: lines (DETAIL hidden) around the findings when asked.
     List<String> stderrLinesOfAll() {
-        return Stream.concat(result().before().stream(), result().after().stream())
+        return Stream.concat(result().before().stream().filter(line -> line.channel() != Channel.WITH_FINDINGS), result().after().stream())
                      .filter(line -> line.level() != Level.DETAIL)
                      .map(Line::text)
                      .toList();
@@ -78,6 +84,6 @@ final class CapturedRun implements BiFunction<RootPlan, Invocation, Result<RunRe
     }
 
     private static boolean toStdout(Line line, boolean verbose) {
-        return line.level() == Level.WARN || line.level() == Level.INFO || (verbose && line.level() == Level.DETAIL);
+        return line.channel() != Channel.STDERR && (line.level() != Level.DETAIL || verbose);
     }
 }

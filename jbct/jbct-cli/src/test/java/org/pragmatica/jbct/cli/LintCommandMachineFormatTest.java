@@ -88,7 +88,7 @@ class LintCommandMachineFormatTest {
 
     /// stderr carries exactly the run's lines (all levels; DETAIL only when verbose); stdout is the document alone.
     private void assertStderrIsTheRunsLines(boolean verbose) {
-        var expected = java.util.stream.Stream.concat(run.result().before().stream(), run.result().after().stream())
+        var expected = java.util.stream.Stream.concat(run.result().before().stream().filter(line -> line.channel() != org.pragmatica.jbct.lint.cst.RunOutcome.Channel.WITH_FINDINGS), run.result().after().stream())
                            .filter(line -> verbose || line.level() != org.pragmatica.jbct.lint.cst.RunOutcome.Level.DETAIL)
                            .map(org.pragmatica.jbct.lint.cst.RunOutcome.Line::text)
                            .toList();
@@ -112,7 +112,7 @@ class LintCommandMachineFormatTest {
         assertThat(doc.path("diagnostics").size()).isPositive();
         assertStderrIsTheRunsLines(false);
         assertThat(java.util.stream.StreamSupport.stream(doc.path("outcome").spliterator(), false).map(JsonNode::asText).toList())
-                  .isEqualTo(run.result().after().stream().map(org.pragmatica.jbct.lint.cst.RunOutcome.Line::text).toList());
+                  .isEqualTo(run.afterBody());
         assertThat(doc.path("collected").asInt()).isEqualTo(run.result().collected());
         assertThat(doc.path("examined").asInt()).isEqualTo(run.result().examined());
         assertThat(doc.path("skippedByMode").asInt()).isEqualTo(run.result().skippedByMode());

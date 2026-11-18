@@ -257,7 +257,7 @@ class CliSharedRunTest {
                                   .doesNotContain("No Java files found");
         assertThat(captured.result().skippedByMode()).isOne();
         assertThat(run(new LintCommand(), "--format", "json", off.toString())).isZero();
-        assertThat(out.toString()).contains("\"outcome\": [\"" + captured.result().after().getFirst().text() + "\"]")
+        assertThat(out.toString()).contains("\"outcome\": [\"" + captured.afterBody().getFirst() + "\"]")
                                   .contains("\"skippedByMode\": 1")
                                   .doesNotContain("No Java files found");
     }

@@ -389,10 +389,29 @@ public sealed interface RunOutcome permits RunOutcome.unused {
         DETAIL
     }
 
-    /// One sentence the run produced; a front end prints it at its level and holds no sentence of its own.
-    record Line(Level level, String text) {
+    /// The stream a CLI front end writes a line to: what the release's command wrote that sentence to, kept per command and
+    /// sentence. `WITH_FINDINGS` is a line that frames the findings and is written wherever they are written (the
+    /// front end that prints no findings prints no such line). The Maven surface logs by level and ignores it.
+    enum Channel {
+        STDOUT,
+        STDERR,
+        WITH_FINDINGS
+    }
+
+    /// One sentence the run produced; a front end prints it at its level, to its channel, and holds no sentence of its own.
+    /// [#line(Level, String)] takes the channel the level implies (ERROR to stderr, the rest to stdout); a sentence the
+    /// release wrote to the other stream says so with [#line(Level, String, Channel)].
+    record Line(Level level, String text, Channel channel) {
         public static Line line(Level level, String text) {
-            return new Line(level, text);
+            return new Line(level,
+                            text,
+                            level == Level.ERROR
+                            ? Channel.STDERR
+                            : Channel.STDOUT);
+        }
+
+        public static Line line(Level level, String text, Channel channel) {
+            return new Line(level, text, channel);
         }
     }
 

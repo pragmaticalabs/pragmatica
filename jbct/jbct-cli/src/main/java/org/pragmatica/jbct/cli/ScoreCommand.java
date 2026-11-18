@@ -55,7 +55,6 @@ public class ScoreCommand implements Callable<Integer> {
 
     /// The exit status when the plan holds no file: unchanged ("No Java files found" exits 1, not 2).
     static final int NOTHING_COLLECTED_EXIT = 1;
-
     /// The flag the density limit came from, named in the run's sentences.
     static final String MAX_DENSITY_FLAG = "--max-density";
 
@@ -85,7 +84,8 @@ public class ScoreCommand implements Callable<Integer> {
 
         var limit = Option.option(maxDensity).map(max -> DensityLimit.densityLimit(max, MAX_DENSITY_FLAG));
 
-        return runSeam.apply(planned.unwrap(), Invocation.score(Surface.CLI, limit))
+        return runSeam.apply(planned.unwrap(),
+                             Invocation.score(Surface.CLI, limit))
                       .fold(CliRoots::refused, this::printed);
     }
 

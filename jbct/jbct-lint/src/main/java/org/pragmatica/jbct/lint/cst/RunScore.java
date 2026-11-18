@@ -29,9 +29,7 @@ sealed interface RunScore permits RunScore.unused {
 
     /// The score of a SCORE invocation that scored at least one file; none otherwise (nothing to measure).
     static Option<ScoreResult> scoreOf(Invocation invocation, List<FileResult> files) {
-        var scored = files.stream()
-                          .filter(file -> file.lint() instanceof Linted)
-                          .toList();
+        var scored = files.stream().filter(file -> file.lint() instanceof Linted).toList();
 
         return invocation.command() == Command.SCORE && !scored.isEmpty()
                ? some(ScoreCalculator.calculate(scan(scored, unanalysed(files))))
@@ -52,12 +50,8 @@ sealed interface RunScore permits RunScore.unused {
     }
 
     private static SourceScan scan(List<FileResult> scored, int unanalysed) {
-        return new SourceScan(scored.stream()
-                                    .flatMap(RunScore::diagnosticsOf)
-                                    .toList(),
-                              scored.stream()
-                                    .mapToInt(FileResult::linesOfCode)
-                                    .sum(),
+        return new SourceScan(scored.stream().flatMap(RunScore::diagnosticsOf).toList(),
+                              scored.stream().mapToInt(FileResult::linesOfCode).sum(),
                               scored.size(),
                               unanalysed);
     }

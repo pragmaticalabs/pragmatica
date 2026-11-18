@@ -206,7 +206,7 @@ class RunLinesTest {
     void cliLint_findings_printsCheckedLineWithSeverities() {
         var lines = run(Invocation.lint(Surface.CLI), FINDINGS, 1, 0, 0, List.of(file(A, linted(), none()), file(B, linted(), none())));
 
-        assertEquals(List.of(line(Level.INFO, "Checked 2 file(s): 1 error(s), 0 warning(s), 0 info(s)")), lines.after());
+        assertEquals(List.of(line(Level.INFO, "Checked 2 file(s): 1 error(s), 0 warning(s), 0 info(s)")), bodyAfter(lines));
     }
 
     @Test
@@ -218,9 +218,9 @@ class RunLinesTest {
         assertEquals(List.of(line(Level.DETAIL, "Found 2 Java file(s) to lint."),
                              line(Level.ERROR, "  ✗ " + B + ": boom")),
                      bodyBefore(lines));
-        assertEquals(List.of(line(Level.ERROR, GAP_LINT),
+        assertEquals(List.of(lineOut(Level.ERROR, GAP_LINT),
                              line(Level.INFO, "✗ Checked 1 of 2 file(s), 1 UNPARSEABLE: 0 error(s), 0 warning(s), 0 info(s)")),
-                     lines.after());
+                     bodyAfter(lines));
     }
 
     @Test
@@ -228,7 +228,7 @@ class RunLinesTest {
         var lines = run(Invocation.lint(Surface.MAVEN), CLEAN, 1, 2, 3, List.of(file(A, linted(), none()), file(B, linted(), none())));
 
         assertEquals(List.of(line(Level.INFO, "Lint results (checked 2 file(s)): 1 error(s), 2 warning(s), 3 info(s)")),
-                     lines.after());
+                     bodyAfter(lines));
     }
 
     @Test
@@ -238,11 +238,14 @@ class RunLinesTest {
                         List.of(file(A, linted(), wouldChange()), file(B, linted(), unchanged())));
 
         assertEquals(List.of(line(Level.DETAIL, "Checking 2 Java file(s)..."),
-                             line(Level.ERROR, "Files not properly formatted:"),
-                             line(Level.ERROR, "  " + A)),
+                             line(Level.DETAIL, "  ✓ lint: A.java"),
+                             line(Level.DETAIL, "  ✓ format: B.java"),
+                             line(Level.DETAIL, "  ✓ lint: B.java"),
+                             lineOut(Level.ERROR, "Files not properly formatted:"),
+                             lineOut(Level.ERROR, "  " + A)),
                      bodyBefore(lines));
         assertEquals(List.of(line(Level.INFO, "Check results (checked 2 file(s)): 1 format issue(s), 0 lint error(s), 0 warning(s)")),
-                     lines.after());
+                     bodyAfter(lines));
     }
 
     @Test
@@ -259,7 +262,7 @@ class RunLinesTest {
                              line(Level.ERROR, "  " + A)),
                      bodyBefore(lines));
         assertEquals(List.of(line(Level.INFO, "Check results (checked 2 file(s)): 1 format issue(s), 0 lint error(s), 1 warning(s)")),
-                     lines.after());
+                     bodyAfter(lines));
     }
 
     @Test
@@ -276,7 +279,7 @@ class RunLinesTest {
                      bodyBefore(lines));
         assertEquals(List.of(line(Level.INFO, "Format (checked 2 file(s)): 1 formatted, 1 unchanged, 0 errors"),
                              line(Level.INFO, "Lint (checked 2 file(s)): 0 error(s), 1 warning(s), 0 info(s)")),
-                     lines.after());
+                     bodyAfter(lines));
     }
 
     @Test
@@ -290,7 +293,7 @@ class RunLinesTest {
                      bodyBefore(lines));
         assertEquals(List.of(line(Level.INFO, "Format (checked 2 file(s)): 0 formatted, 1 unchanged, 1 errors"),
                              line(Level.INFO, "Lint (checked 2 file(s)): 2 error(s), 0 warning(s), 0 info(s)")),
-                     lines.after());
+                     bodyAfter(lines));
         assertEquals("Formatting failed for 1 file(s)", failure(invocation, files, 2, true));
     }
 
@@ -306,7 +309,7 @@ class RunLinesTest {
         assertEquals(List.of(line(Level.WARN, "1 file(s) not formatted: lint errors (failBeforeFormat)"),
                              line(Level.INFO, "Format (checked 2 file(s)): 0 formatted, 1 unchanged, 0 errors"),
                              line(Level.INFO, "Lint (checked 2 file(s)): 1 error(s), 0 warning(s), 0 info(s)")),
-                     lines.after());
+                     bodyAfter(lines));
     }
 
     @Test
@@ -319,10 +322,10 @@ class RunLinesTest {
                              line(Level.DETAIL, "  formatted: " + A),
                              line(Level.DETAIL, "  unchanged: " + B)),
                      bodyBefore(cli));
-        assertEquals(List.of(line(Level.INFO, "Formatted: 1, Unchanged: 1, Errors: 0")), cli.after());
+        assertEquals(List.of(line(Level.INFO, "Formatted: 1, Unchanged: 1, Errors: 0")), bodyAfter(cli));
         assertEquals(List.of(line(Level.INFO, "Formatting 2 Java file(s)"), line(Level.WARN, "Formatted: " + A)),
                      bodyBefore(maven));
-        assertEquals(List.of(line(Level.INFO, "Formatted: 1, Unchanged: 1, Errors: 0")), maven.after());
+        assertEquals(List.of(line(Level.INFO, "Formatted: 1, Unchanged: 1, Errors: 0")), bodyAfter(maven));
     }
 
     @Test
@@ -333,9 +336,9 @@ class RunLinesTest {
                                 file(B, none(), parseFailed()),
                                 file(C, none(), writeFailed())));
 
-        assertEquals(List.of(line(Level.ERROR, GAP_FORMAT),
+        assertEquals(List.of(lineOut(Level.ERROR, GAP_FORMAT),
                              line(Level.INFO, "Formatted: 1, Unchanged: 0, Errors: 2")),
-                     lines.after());
+                     bodyAfter(lines));
     }
 
     @Test
@@ -348,12 +351,12 @@ class RunLinesTest {
                              line(Level.INFO, "  would format: " + A),
                              line(Level.DETAIL, "  unchanged: " + B)),
                      bodyBefore(dry));
-        assertEquals(List.of(line(Level.INFO, "Dry run: 1 file(s) would be formatted.")), dry.after());
+        assertEquals(List.of(line(Level.INFO, "Dry run: 1 file(s) would be formatted.")), bodyAfter(dry));
         assertEquals(List.of(line(Level.DETAIL, "Found 2 Java file(s) to process."),
                              line(Level.INFO, "  needs formatting: " + A),
                              line(Level.DETAIL, "  unchanged: " + B)),
                      bodyBefore(check));
-        assertEquals(List.of(line(Level.INFO, "1 file(s) need formatting.")), check.after());
+        assertEquals(List.of(line(Level.INFO, "1 file(s) need formatting.")), bodyAfter(check));
     }
 
     @Test
@@ -362,9 +365,9 @@ class RunLinesTest {
                         Verdict.incomplete("gap"),
                         List.of(file(A, none(), wouldChange()), file(B, none(), parseFailed())));
 
-        assertEquals(List.of(line(Level.ERROR, GAP_FORMAT),
+        assertEquals(List.of(lineOut(Level.ERROR, GAP_FORMAT),
                              line(Level.INFO, "✗ Checked 1 of 2 file(s), 1 UNPARSEABLE: 1 file(s) need formatting")),
-                     lines.after());
+                     bodyAfter(lines));
     }
 
     @Test
@@ -376,7 +379,7 @@ class RunLinesTest {
         assertEquals(List.of(line(Level.INFO, "Checking format of 2 Java file(s)"),
                              line(Level.ERROR, "Error reading " + B + ": denied")),
                      bodyBefore(lines));
-        assertEquals(List.of(line(Level.ERROR, GAP_FORMAT_CHECK)), lines.after());
+        assertEquals(List.of(line(Level.ERROR, GAP_FORMAT_CHECK)), bodyAfter(lines));
         assertEquals("1 file(s) are not properly formatted:\n  " + A + "\nRun 'mvn jbct:format' to fix.",
                      failure(invocation, files, 0, false));
     }
@@ -459,7 +462,7 @@ class RunLinesTest {
 
         assertEquals(List.of(line(Level.WARN, "1 file(s) skipped by mode: src/test/java (mode disabled)"),
                              line(Level.INFO, "Lint results (checked 1 file(s)): 0 error(s), 0 warning(s), 0 info(s)")),
-                     lines.after());
+                     bodyAfter(lines));
     }
 
     @Test
@@ -476,7 +479,7 @@ class RunLinesTest {
                             .lines();
 
         assertEquals(List.of(line(Level.WARN, "Nothing was linted: src/test/java (mode disabled skips it); src/main/java (no Java files)")),
-                     lines.after());
+                     bodyAfter(lines));
     }
 
     @Test
@@ -484,9 +487,9 @@ class RunLinesTest {
         var files = List.of(file(A, none(), skipped()));
 
         assertEquals(List.of(line(Level.WARN, "Nothing was formatted: src/main/java (mode business skips it)")),
-                     run(format(Surface.CLI, FormatAction.WRITE), CLEAN, files).after());
+                     bodyAfter(run(format(Surface.CLI, FormatAction.WRITE), CLEAN, files)));
         assertEquals(List.of(line(Level.WARN, "Nothing was format-checked: src/main/java (mode business skips it)")),
-                     run(Invocation.formatCheck(Surface.MAVEN), CLEAN, files).after());
+                     bodyAfter(run(Invocation.formatCheck(Surface.MAVEN), CLEAN, files)));
     }
 
     // ---------------------------------------------------------------- score lines (T6, T15, T16, T17)
@@ -525,7 +528,7 @@ class RunLinesTest {
                                       0)
                             .lines();
 
-        assertEquals(List.of(line(Level.WARN, "Not scored: src/test/java (mode disabled skips it)")), lines.after());
+        assertEquals(List.of(line(Level.WARN, "Not scored: src/test/java (mode disabled skips it)")), bodyAfter(lines));
     }
 
     @Test
@@ -541,7 +544,7 @@ class RunLinesTest {
                             .lines();
 
         assertEquals(List.of(line(Level.WARN, "Nothing was scored: src/test/java (mode disabled skips it)")),
-                     lines.after());
+                     bodyAfter(lines));
     }
 
     @Test
@@ -549,7 +552,7 @@ class RunLinesTest {
         var limit = Option.some(DensityLimit.densityLimit(5.0, "--max-density"));
         var invocation = Invocation.score(Surface.CLI, limit);
         var lines = scoreRun(invocation, List.of(skippedFile(invocation, A)));
-        var all = Stream.concat(lines.before().stream(), lines.after().stream()).map(Line::text).toList();
+        var all = Stream.concat(lines.before().stream(), bodyAfter(lines).stream()).map(Line::text).toList();
 
         assertTrue(all.contains("--max-density 5.0 was not evaluated: nothing was scored"), all.toString());
         assertTrue(all.stream().noneMatch(text -> text.contains("passes")), all.toString());
@@ -561,7 +564,7 @@ class RunLinesTest {
         var invocation = Invocation.score(Surface.MAVEN, limit);
         var lines = scoreRun(invocation, List.of(skippedFile(invocation, A)));
 
-        assertTrue(lines.after().contains(line(Level.INFO, "jbct.score.maxDensity 2.5 was not evaluated: nothing was scored")));
+        assertTrue(bodyAfter(lines).contains(line(Level.INFO, "jbct.score.maxDensity 2.5 was not evaluated: nothing was scored")));
     }
 
     @Test
@@ -579,7 +582,7 @@ class RunLinesTest {
                                       score)
                             .lines();
 
-        assertEquals(List.of(), lines.after());
+        assertEquals(List.of(), bodyAfter(lines));
     }
 
     @Test
@@ -601,6 +604,21 @@ class RunLinesTest {
                                         gap,
                                         List.of(rootOf(invocation, ROOT, JbctMode.BUSINESS, gap, 0, 0, 0, false)),
                                         score));
+    }
+
+    @Test
+    void score_aBreach_isPrintedToStderrAfterABlankLine_onTheCliOnly() {
+        var limit = Option.some(DensityLimit.densityLimit(0.5, "--max-density"));
+        var score = Option.some(ScoreCalculator.calculate(new SourceScan(List.of(diagnostic()), 1000, 1)));
+        var files = List.of(file(ROOT, A, linted(), none()));
+        var cli = Invocation.score(Surface.CLI, limit);
+        var maven = Invocation.score(Surface.MAVEN, limit);
+        var breach = "\n" + DensityGate.breachMessage(score.unwrap().totalDensityPerKloc(), 0.5);
+
+        assertEquals(List.of(RunOutcome.Line.line(Level.ERROR, breach, RunOutcome.Channel.STDERR)),
+                     bodyAfter(RunLines.runLines(cli, files, List.of(rootOf(cli, ROOT, JbctMode.BUSINESS, files, 0, 0, 0, false)), CLEAN, List.of(), 0, score).lines()));
+        assertEquals(List.of(),
+                     bodyAfter(RunLines.runLines(maven, files, List.of(rootOf(maven, ROOT, JbctMode.BUSINESS, files, 0, 0, 0, false)), CLEAN, List.of(), 0, score).lines()));
     }
 
     // ---------------------------------------------------------------- per-file lines (T20)
@@ -627,7 +645,7 @@ class RunLinesTest {
                      firstFileLine(format(Surface.MAVEN, FormatAction.WRITE), fileOf(none(), writeFailed())));
         assertEquals(line(Level.ERROR, "Error reading " + A + ": denied"),
                      firstFileLine(format(Surface.MAVEN, FormatAction.WRITE), fileOf(none(), readFailed())));
-        assertEquals(line(Level.ERROR, "  error: " + A + " - boom"),
+        assertEquals(line(Level.ERROR, "  error: " + A + " - Parse error at A.java:1:1 - boom"),
                      firstFileLine(format(Surface.CLI, FormatAction.WRITE), fileOf(none(), parseFailed())));
         assertEquals(line(Level.ERROR, "  error: " + A + " - disk"),
                      firstFileLine(format(Surface.CLI, FormatAction.WRITE), fileOf(none(), writeFailed())));
@@ -687,10 +705,63 @@ class RunLinesTest {
                      failure(Invocation.formatCheck(Surface.CLI), List.of(file(A, none(), wouldChange())), 0, false));
     }
 
+    @Test
+    void cliCheck_withAnUnformattedFileAndAFinding_framesTheListTheFindingsAndTheAfterLines() {
+        var lines = run(Invocation.check(Surface.CLI),
+                        FINDINGS,
+                        1,
+                        0,
+                        0,
+                        List.of(file(A, RunOutcome.Linted.linted(List.of(diagnostic())), wouldChange())));
+
+        var head = lines.before().indexOf(lineOut(Level.ERROR, "Files not properly formatted:"));
+
+        assertEquals(Line.line(Level.INFO, "", RunOutcome.Channel.STDOUT), lines.before().get(head - 1));
+        assertEquals(Line.line(Level.INFO, "", RunOutcome.Channel.WITH_FINDINGS), lines.before().getLast());
+        assertEquals(Line.line(Level.INFO, "", RunOutcome.Channel.STDOUT), lines.after().getFirst());
+    }
+
+    @Test
+    void cliFormat_write_putsABlankLineBeforeTheSummary_andMavenPutsNone() {
+        var files = List.of(file(A, none(), rewritten()));
+
+        assertEquals(Line.line(Level.INFO, "", RunOutcome.Channel.STDOUT), run(format(Surface.CLI, FormatAction.WRITE), CLEAN, files).after().getFirst());
+        assertEquals(List.of(), run(format(Surface.MAVEN, FormatAction.WRITE), CLEAN, files).after().stream().filter(l -> l.text().isEmpty()).toList());
+    }
+
+    @Test
+    void cliCheck_verbose_namesEveryCleanFilePerActivity_formatFirst() {
+        var lines = run(Invocation.check(Surface.CLI), CLEAN, List.of(file(A, linted(), unchanged())));
+
+        assertEquals(List.of(line(Level.DETAIL, "Checking 1 Java file(s)..."),
+                             line(Level.DETAIL, "  ✓ format: A.java"),
+                             line(Level.DETAIL, "  ✓ lint: A.java")),
+                     bodyBefore(lines));
+    }
+
+    @Test
+    void cliScore_gapAndNothingCollected_goToStderr_whereTheOtherCommandsWriteThemToStdout() {
+        var gap = run(Invocation.score(Surface.CLI, Option.none()), Verdict.incomplete("gap"), List.of(file(A, linted(), none()), file(B, parseFailed(), none())));
+        var lint = run(Invocation.lint(Surface.CLI), Verdict.incomplete("gap"), List.of(file(A, linted(), none()), file(B, parseFailed(), none())));
+
+        assertEquals(RunOutcome.Channel.STDERR, gap.after().stream().filter(l -> l.text().startsWith("Parse errors:")).findFirst().orElseThrow().channel());
+        assertEquals(RunOutcome.Channel.STDOUT, lint.after().stream().filter(l -> l.text().startsWith("Parse errors:")).findFirst().orElseThrow().channel());
+    }
+
     // ---------------------------------------------------------------- fixtures
 
     private static Line line(Level level, String text) {
         return Line.line(level, text);
+    }
+
+    /// A line the release's CLI wrote to stdout although its level is ERROR.
+    private static Line lineOut(Level level, String text) {
+        return Line.line(level, text, RunOutcome.Channel.STDOUT);
+    }
+
+    /// The after-lines without the blank line that frames them on the CLI surface.
+    private static List<Line> bodyAfter(RunLines.Lines lines) {
+        return lines.after().stream().filter(line -> !line.text().isEmpty()).toList();
     }
 
     private static Invocation format(Surface surface, FormatAction action) {
@@ -867,7 +938,7 @@ class RunLinesTest {
 
     /// The lines before the findings without the root line, which has its own tests.
     private static List<Line> bodyBefore(RunLines.Lines lines) {
-        return lines.before().stream().filter(line -> !isRootLine(line)).toList();
+        return lines.before().stream().filter(line -> !isRootLine(line) && !line.text().isEmpty()).toList();
     }
 
     private static Line rootLineOf(RunLines.Lines lines) {
@@ -875,7 +946,7 @@ class RunLinesTest {
     }
 
     private static List<String> texts(RunLines.Lines lines) {
-        return Stream.concat(lines.before().stream(), lines.after().stream())
+        return Stream.concat(lines.before().stream(), bodyAfter(lines).stream())
                      .filter(line -> !isRootLine(line))
                      .map(Line::text)
                      .toList();

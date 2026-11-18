@@ -226,7 +226,7 @@ class JbctModeFixtureTest {
         var root = module("fmt", JbctMode.FORMAT_ONLY);
 
         assertThat(run(new ScoreCommand(), root.toString())).isZero();
-        assertThat(err.toString()).contains(captured.result().after().getFirst().text());
+        assertThat(err.toString()).contains(captured.afterBody().getFirst());
         assertThat(err.toString()).contains(root(root));
         assertThat(captured.result().examined()).isZero();
         assertThat(out.toString()).isBlank();
@@ -266,7 +266,7 @@ class JbctModeFixtureTest {
         var root = module("off", JbctMode.DISABLED);
 
         assertThat(run(new ScoreCommand(), root.toString())).isZero();
-        assertThat(err.toString()).contains(captured.result().after().getFirst().text());
+        assertThat(err.toString()).contains(captured.afterBody().getFirst());
         assertThat(err.toString()).contains(root(root));
         assertThat(captured.result().examined()).isZero();
         assertThat(out.toString()).isBlank();

@@ -11,6 +11,7 @@ import org.pragmatica.jbct.lint.cst.RunOutcome.FileResult;
 import org.pragmatica.jbct.lint.cst.RunOutcome.FormatAction;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Kind;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Channel;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Level;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Line;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Linted;
@@ -100,7 +101,22 @@ record RunLines(Invocation invocation,
 
     // ---------------------------------------------------------------- nothing collected (T2, T3, T4)
     private List<Line> nothingCollected() {
-        return List.of(line(nothingLevel(), nothingText()));
+        return List.of(carried(nothingLevel(), nothingText(), scoreOrOut()));
+    }
+
+    /// A line whose CLI stream is `cliChannel`; on the Maven surface (which logs by level) the level's own channel.
+    private Line carried(Level level, String text, Channel cliChannel) {
+        return invocation.surface() == Surface.CLI
+               ? line(level, text, cliChannel)
+               : line(level, text);
+    }
+
+    /// The release's score command wrote every sentence of its own to stderr (its stdout is the report); the other
+    /// commands wrote theirs to stdout.
+    private Channel scoreOrOut() {
+        return invocation.command() == Command.SCORE
+               ? Channel.STDERR
+               : Channel.STDOUT;
     }
 
     private Level nothingLevel() {
@@ -142,11 +158,17 @@ record RunLines(Invocation invocation,
     private List<Line> before() {
         return Stream.of(header().stream(),
                          roots.stream().map(this::rootLine),
-                         layers.stream(),
+                         layers.stream().map(this::layerLine),
                          perFile().stream(),
-                         unformatted().stream())
+                         unformatted().stream(),
+                         findingsFrame().stream())
                      .flatMap(stream -> stream)
                      .toList();
+    }
+
+    /// The release wrote the layer-coverage line to stderr, in every CLI command.
+    private Line layerLine(Line layer) {
+        return carried(layer.level(), layer.text(), Channel.STDERR);
     }
 
     /// T5, T6 (Maven) and T21 (CLI, DETAIL).
@@ -247,10 +269,32 @@ record RunLines(Invocation invocation,
     /// T13: the files a check found not formatted, before the findings.
     private List<Line> unformatted() {
         return (invocation.command() == Command.CHECK && count(this::wouldChange) > 0)
-               ? Stream.concat(Stream.of(line(Level.ERROR, FINDINGS_HEAD)),
-                               wouldChangeFiles().map(file -> line(Level.ERROR, "  " + file)))
+               ? Stream.of(blank(),
+                           Stream.of(carried(Level.ERROR, FINDINGS_HEAD, Channel.STDOUT)),
+                           wouldChangeFiles().map(file -> carried(Level.ERROR, "  " + file, Channel.STDOUT)))
+                       .flatMap(stream -> stream)
                        .toList()
                : List.of();
+    }
+
+    /// The release's check and lint printed a blank line in front of their findings, when there were findings.
+    private List<Line> findingsFrame() {
+        return invocation.surface() == Surface.CLI && invocation.command() != Command.FORMAT && invocation.command() != Command.SCORE && hasFindings()
+               ? List.of(line(Level.INFO, "", Channel.WITH_FINDINGS))
+               : List.of();
+    }
+
+    private boolean hasFindings() {
+        return files.stream()
+                    .anyMatch(file -> file.lint() instanceof Linted linted && !linted.diagnostics()
+                                                                                     .isEmpty());
+    }
+
+    /// A blank line on stdout, as the release's CLI printed between its blocks; the Maven surface has none.
+    private Stream<Line> blank() {
+        return invocation.surface() == Surface.CLI
+               ? Stream.of(line(Level.INFO, "", Channel.STDOUT))
+               : Stream.empty();
     }
 
     private Stream<String> wouldChangeFiles() {
@@ -263,8 +307,31 @@ record RunLines(Invocation invocation,
     // ---------------------------------------------------------------- per-file lines (T20)
     private List<Line> perFile() {
         return files.stream()
-                    .flatMap(file -> fileLine(file).stream())
+                    .flatMap(file -> Stream.concat(fileLine(file).stream(),
+                                                   checkDetail(file)))
                     .toList();
+    }
+
+    /// `check -v` names every file the release's check found clean, per activity: format first, then lint.
+    private Stream<Line> checkDetail(FileResult file) {
+        return invocation.surface() == Surface.CLI && invocation.command() == Command.CHECK
+               ? Stream.of(detail(file.format() instanceof Unchanged,
+                                  "  ✓ format: " + file.file().getFileName()),
+                           detail(lintClean(file),
+                                  "  ✓ lint: " + file.file().getFileName()))
+                       .flatMap(Option::stream)
+               : Stream.empty();
+    }
+
+    private static boolean lintClean(FileResult file) {
+        return file.lint() instanceof Linted linted && linted.diagnostics()
+                                                             .isEmpty();
+    }
+
+    private static Option<Line> detail(boolean when, String text) {
+        return when
+               ? Option.some(line(Level.DETAIL, text))
+               : Option.none();
     }
 
     private Option<Line> fileLine(FileResult file) {
@@ -325,7 +392,10 @@ record RunLines(Invocation invocation,
             case PROCESS -> "Parse error in " + file.file() + ": " + message;
             default -> "Error formatting " + file.file() + ": " + message;
         }
-               : cliFailure(file, message);
+               : invocation.command() == Command.FORMAT
+                 ? "  error: " + file.file() + " - Parse error at " + file.file()
+                                                                          .getFileName() + ":1:1 - " + message
+                 : cliFailure(file, message);
     }
 
     private String writeText(FileResult file, String message) {
@@ -372,12 +442,31 @@ record RunLines(Invocation invocation,
 
     // ---------------------------------------------------------------- after the findings
     private List<Line> after() {
-        return Stream.of(withheldLine().stream(),
+        return Stream.of(afterFrame(),
+                         withheldLine().stream(),
                          gap().stream(),
+                         scoreBreach().stream(),
                          skipLines().stream(),
                          summary().stream())
                      .flatMap(stream -> stream)
                      .toList();
+    }
+
+    /// The release's score printed the density gate's breach to stderr, after a blank line, when nothing was left unexamined;
+    /// the Maven surface fails the build with the verdict's message instead.
+    private Option<Line> scoreBreach() {
+        return invocation.surface() == Surface.CLI && invocation.command() == Command.SCORE && !overall().isPartial()
+               ? RunScore.breachOf(score,
+                                   invocation.maxDensity())
+                         .map(message -> line(Level.ERROR, "\n" + message, Channel.STDERR))
+               : Option.none();
+    }
+
+    /// The release's lint, check and format printed one blank line before their gap report and summary.
+    private Stream<Line> afterFrame() {
+        return invocation.command() == Command.SCORE
+               ? Stream.empty()
+               : blank();
     }
 
     /// T26.
@@ -398,7 +487,9 @@ record RunLines(Invocation invocation,
     /// T18.
     private Option<Line> gap() {
         return overall().gapReport(goal())
-                      .map(text -> line(Level.ERROR, text));
+                      .map(text -> carried(Level.ERROR,
+                                           text,
+                                           scoreOrOut()));
     }
 
     /// T14 and T15.
@@ -454,8 +545,8 @@ record RunLines(Invocation invocation,
                                           .map(tally -> tally.done() == 0)
                                           .or(true))
                       .map(root -> line(Level.WARN,
-                                        "Not scored: " + root.root()
-                                       + " (" + reasons(root, root.lint()) + ")"))
+                                        "Not scored: " + root.root() + " (" + reasons(root,
+                                                                                      root.lint()) + ")"))
                : Stream.empty();
     }
 
@@ -464,7 +555,8 @@ record RunLines(Invocation invocation,
         return score.isEmpty()
                ? invocation.maxDensity()
                            .map(limit -> line(Level.INFO,
-                                              limit.flag() + " " + limit.perKloc()
+                                              limit.flag()
+                                             + " " + limit.perKloc()
                                              + " was not evaluated: nothing was scored"))
                : Option.none();
     }
@@ -666,9 +758,10 @@ record RunLines(Invocation invocation,
     /// The coverage gap outranks the density check; a breach is the gate's own message; roots do not fail a score.
     private String scoreFailure() {
         return overall().isPartial()
-               ? reasoned("score",
-                          gapReason().map(reason -> reason + ", so the reported density does not cover them"))
-               : RunScore.breachOf(score, invocation.maxDensity()).or("JBCT score failed");
+               ? reasoned("score", gapReason().map(reason -> reason + ", so the reported density does not cover them"))
+               : RunScore.breachOf(score,
+                                   invocation.maxDensity())
+                         .or("JBCT score failed");
     }
 
     private String formatFailure() {
