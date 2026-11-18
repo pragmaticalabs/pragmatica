@@ -65,6 +65,7 @@ import java.time.Instant;
 import java.util.concurrent.TimeUnit;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -3692,6 +3693,53 @@ class ClusterEventAggregatorTest {
             assertThat(codes(h)).containsExactly("dht-departure-sole-copy-at-risk",
                                                  "dht-departure-hold-ended",
                                                  "dht-departure-sole-copy-at-risk");
+        }
+
+        /// A closer raised while the node replays is held until the first tick after the replay; the caller's answer is its
+        /// final outcome, so the promise stays pending at the hold and completes `true` when the closer lands.
+        @Test
+        @Timeout(10)
+        void raiseLanded_closerDuringReplay_pendingAtTheHold_trueWhenItLands() {
+            var replaying = new AtomicBoolean(false);
+            var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get);
+
+            assertThat(landed(h.aggregator().raiseLanded(atRisk("n1@1")))).as("control: opened before the replay").isTrue();
+            replaying.set(true);
+            var closer = h.aggregator().raiseLanded(holdEnded("n1@1"));
+
+            assertThat(closer.isResolved()).as("held during replay: not answered at the hold").isFalse();
+            h.aggregator().redeliverDue();
+            assertThat(closer.isResolved()).as("control: still replaying, still held").isFalse();
+            replaying.set(false);
+            h.aggregator().redeliverDue();
+            assertThat(landed(closer)).as("lands on the first tick after the replay").isTrue();
+            assertThat(codes(h)).containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-hold-ended");
+        }
+
+        /// Retries during the replay hold (a plain `raiseLanded` and a `raiseClosing`) replace the held closer rather than add one:
+        /// each superseded promise completes `false` (its event is never published), the last one `true`, and the log shows the
+        /// warning and its closer once each.
+        @Test
+        @Timeout(10)
+        void raiseLanded_retriesDuringReplayHold_raiseNoSecondEvent() {
+            var replaying = new AtomicBoolean(false);
+            var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get);
+
+            assertThat(landed(h.aggregator().raiseLanded(atRisk("n1@1")))).as("control: opened before the replay").isTrue();
+            replaying.set(true);
+            var first = h.aggregator().raiseLanded(holdEnded("n1@1"));
+            var retry = h.aggregator().raiseLanded(holdEnded("n1@1"));
+
+            assertThat(landed(first)).as("superseded by the retry: never published").isFalse();
+            assertThat(retry.isResolved()).as("the retry is held in its place").isFalse();
+            var closing = h.aggregator().raiseClosing(atRisk("n1@1"), holdEnded("n1@1"));
+
+            assertThat(landed(retry)).as("superseded by raiseClosing: never published").isFalse();
+            assertThat(closing.isResolved()).as("raiseClosing's closer is held in its place").isFalse();
+            replaying.set(false);
+            h.aggregator().redeliverDue();
+            assertThat(landed(closing)).isTrue();
+            assertThat(codes(h)).containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-hold-ended");
         }
 
         private static boolean landed(Promise<Boolean> raised) {

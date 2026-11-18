@@ -247,7 +247,7 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
 
     /// Warnings with a recovery that are admitted but not yet in the log, each holding the recovery that arrived meanwhile.
     /// Recoveries raised during snapshot/resync replay, by the key of the warning they close, released after it (#752).
-    private final ConcurrentHashMap<String, ClusterEvent> replayHeldRecoveries = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, HeldRecovery> replayHeldRecoveries = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Option<HeldRecovery>> awaitingDelivery = new ConcurrentHashMap<>();
 
     /// A recovery held until the warning it closes lands, with the completion of whoever awaits it (#2034).
@@ -1043,7 +1043,7 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     /// Raise `warning` from a thread that must know when its event's life ended (#2034: a draining node waits for its departure
     /// events before it halts). The returned promise completes when the event lands, when redelivery gives up on it, or at once
     /// when it is throttled, suppressed by replay, dropped by the open cap, refused (a recovery with no open warning), or when raising
-    /// it threw. A recovery held behind its warning completes once it is released and delivered (or dropped with the warning). It
+    /// it threw. A recovery held behind its warning or during replay completes once it is released and delivered, or dropped. It
     /// never fails. Reads the replay bit on the calling thread, so the caller must not be a KV handler of a replay burst it wants
     /// to count as live (the departure push thread is not one). The caller bounds the wait.
     public Promise<Unit> raiseAwaited(OperatorWarning warning) {
@@ -1051,9 +1051,10 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     }
 
     /// [#raiseAwaited] that tells the caller whether the event is in the log (#3345): `true` only when it landed. `false` when it was
-    /// throttled, suppressed by replay, dropped by the open cap, refused (a recovery with no open warning on THIS aggregator), given
-    /// up by redelivery (a POSSIBLY_DELIVERED give-up included), or when raising it threw; a recovery held behind its warning
-    /// completes `false` when it is dropped or superseded. A caller that needs the event retries after [#OPERATOR_WARNING_RETRY_MS]
+    /// throttled, suppressed by replay (a condition), dropped by the open cap, refused (a recovery with no open warning on THIS
+    /// aggregator), given up by redelivery (a POSSIBLY_DELIVERED give-up included), or when raising it threw. A held recovery (behind
+    /// its warning's delivery, or during a snapshot/resync replay) stays pending while held and completes with its final outcome:
+    /// `true` when it is released and lands, `false` when it is dropped or superseded; it never completes `false` and then lands. A caller that needs the event retries after [#OPERATOR_WARNING_RETRY_MS]
     /// (a lost event shortens the window to it) or after [#EVENT_THROTTLE_MS] (a throttled one). It never fails. Same replay-bit and
     /// bounded-wait terms as [#raiseAwaited].
     public Promise<Boolean> raiseLanded(OperatorWarning warning) {
@@ -1136,7 +1137,7 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
             return;
         }
         // A recurrence makes a repair still held from replay stale: the tick must not publish it behind the new condition.
-        replayHeldRecoveries.remove(key);
+        dropReplayHeld(key);
         var window = admit(operatorWarningThrottle, key);
 
         if (!window.admitted()) {
@@ -1310,13 +1311,12 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
         }
 
         if (replayed.getAsBoolean()) {
-            holdDuringReplay(closedKey, event);
-            settle.lost();
+            holdDuringReplay(closedKey, new HeldRecovery(event, settle));
 
             return;
         }
 
-        replayHeldRecoveries.remove(closedKey);
+        dropReplayHeld(closedKey);
         if (!openRecoverable.remove(closedKey)) {
             LOG.debug("ClusterEventAggregator: refusing OperatorWarning {} for {}, no published warning is open",
                       warning.code().code(),
@@ -1330,12 +1330,24 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     }
 
     /// A shown warning must get its recovery, but replay suppresses local emits. So during replay the recovery is held
-    /// and the open mark is left alone; [#releaseReplayHeldRecoveries] publishes it on the first tick after replay.
-    private void holdDuringReplay(String closedKey, ClusterEvent recovery) {
+    /// and the open mark is left alone; [#releaseReplayHeldRecoveries] publishes it on the first tick after replay, and its settle
+    /// runs with that delivery's outcome (#3345: the caller learns the final outcome, never `false` for a recovery that then
+    /// lands). With no open mark nothing would ever publish it, so it settles `false` at once; a recovery it replaces is never
+    /// published, so that one settles `false`.
+    private void holdDuringReplay(String closedKey, HeldRecovery recovery) {
         if (openRecoverable.contains(closedKey)) {
-            replayHeldRecoveries.put(closedKey, recovery);
-            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — holding {} until it ends", recovery);
+            Option.option(replayHeldRecoveries.put(closedKey, recovery))
+                  .onPresent(ClusterEventAggregator::settleReplaced);
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — holding {} until it ends", recovery.event());
+        } else {
+            recovery.settle().lost();
         }
+    }
+
+    /// A replay-held recovery made stale (a recurrence of its condition, or a newer recovery after replay) is never published.
+    private void dropReplayHeld(String closedKey) {
+        Option.option(replayHeldRecoveries.remove(closedKey))
+              .onPresent(ClusterEventAggregator::settleReplaced);
     }
 
     private void releaseReplayHeldRecoveries() {
@@ -1348,8 +1360,16 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
 
     private void releaseReplayHeld(String closedKey) {
         Option.option(replayHeldRecoveries.remove(closedKey))
-              .filter(_ -> openRecoverable.remove(closedKey))
-              .onPresent(recovery -> publishRecovery(closedKey, recovery, NO_SETTLE));
+              .onPresent(recovery -> publishOrDropReplayHeld(closedKey, recovery));
+    }
+
+    /// The mark may have closed while the recovery was held (a spoofable mark expired): then it is never published.
+    private void publishOrDropReplayHeld(String closedKey, HeldRecovery recovery) {
+        if (openRecoverable.remove(closedKey)) {
+            publishRecovery(closedKey, recovery.event(), recovery.settle());
+        } else {
+            settleReplaced(recovery);
+        }
     }
 
     private void publishRecovery(String closedKey, ClusterEvent event, Settle settle) {
