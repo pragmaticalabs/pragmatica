@@ -64,6 +64,7 @@ class NodeLifecycleRoutesDrainBudgetTest {
     private Set<NodeId> allPresent;
     private Set<NodeId> installedVoters;
     private Option<NodeId> currentLeader = Option.none();
+    private NodeId handlingNode = new NodeId("handler-self");
 
     @BeforeEach
     void setUp() {
@@ -148,6 +149,7 @@ class NodeLifecycleRoutesDrainBudgetTest {
                 case "membershipFsm" -> fsm;
                 case "kvStore" -> kvStore;
                 case "leader" -> currentLeader;
+                case "self" -> handlingNode;
                 case "route" -> recordRoute(args);
                 default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
             });
@@ -452,6 +454,48 @@ class NodeLifecycleRoutesDrainBudgetTest {
 
             assertThat(routes().drainNodeForTest(node(2).id()).await().isSuccess()).isTrue();
             assertThat(pendingDrains).containsExactly(node(2));
+        }
+
+        /// #3348 (R-a): the handler runs on the believed leader, so a target equal to the handling node is refused
+        /// whether or not this node has learned of its own election; the arm with no leader known pins "own id compared".
+        @Test
+        void selfTarget_noLeaderKnown_isRefused() {
+            currentLeader = Option.none();
+            handlingNode = node(3);
+
+            assertRefusedAndNothingDispatched(node(3));
+        }
+
+        @Test
+        void selfTarget_whileLeaderStateStillNamesTheOldLeader_isRefused() {
+            currentLeader = Option.some(node(1));
+            handlingNode = node(3);
+
+            assertRefusedAndNothingDispatched(node(3));
+        }
+
+        @Test
+        void otherNodeThatIsTheLeader_isRefused() {
+            currentLeader = Option.some(node(1));
+            handlingNode = node(3);
+
+            assertRefusedAndNothingDispatched(node(1));
+        }
+
+        @Test
+        void readyFollowerHandledOnTheLeader_isAdmitted() {
+            currentLeader = Option.some(node(1));
+            handlingNode = node(1);
+
+            assertThat(routes().drainNodeForTest(node(2).id()).await().isSuccess()).isTrue();
+            assertThat(pendingDrains).containsExactly(node(2));
+        }
+
+        private void assertRefusedAndNothingDispatched(NodeId target) {
+            routes().drainNodeForTest(target.id()).await()
+                    .onSuccess(_ -> fail("a drain of the leader or of the handling node must not be admitted"))
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(NodeLifecycleRoutes.LeaderCannotBeDrained.class));
+            assertThat(pendingDrains).isEmpty();
         }
 
         @Test

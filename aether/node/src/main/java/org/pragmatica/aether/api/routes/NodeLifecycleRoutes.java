@@ -104,7 +104,8 @@ public final class NodeLifecycleRoutes implements RouteSource {
         }
     }
 
-    /// 409: the operator drain targets the current leader. The leader has no row in the readiness view (it never pings
+    /// 409: the operator drain targets the current leader (or the node handling the request, which by construction is the
+    /// believed or just-elected leader). The leader has no row in the readiness view (it never pings
     /// itself) and a drain commanded on it is not carried out, so a leader is not drained: the operator moves
     /// leadership first. The product has no step-down command; stopping the leader's process makes the cluster elect
     /// another leader.
@@ -569,16 +570,24 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                .equals(nodeId) && !MEMBERSHIP_DEAD.equals(entry.getValue()));
     }
 
-    /// A drain of the current leader is refused before anything else is read or dispatched. Decided from the leadership
-    /// state this node holds (`leader()`), so the leader's own route and a follower's route answer alike. With no leader
-    /// elected at this instant nothing matches and today's answer for the target stands (404 when it has no reported state).
+    /// A drain of the current leader, or of the node handling the request, is refused before anything else is read or
+    /// dispatched. Every management request for this route is forwarded to the node the receiver believes is the leader
+    /// (`ManagementServer.tryForwardIfNotOwner`), so a target equal to the handling node is the leader or a node that was
+    /// just elected and has not yet applied its own election: its `leader()` may still name the old leader. Both are
+    /// decided from state this node holds, so the leader's own route and a follower's route answer alike. With no leader
+    /// elected and a target other than this node, nothing matches and today's answer stands (404 when it has no reported state).
     private Result<org.pragmatica.lang.Unit> refuseLeaderDrain(NodeId node, boolean requireReady) {
-        return requireReady && nodeSupplier.get()
-                                           .leader()
-                                           .filter(node::equals)
-                                           .isPresent()
+        return requireReady && isLeaderOrSelf(node)
                ? new LeaderCannotBeDrained(node.id()).result()
                : Result.success(org.pragmatica.lang.Unit.unit());
+    }
+
+    private boolean isLeaderOrSelf(NodeId node) {
+        var current = nodeSupplier.get();
+
+        return node.equals(current.self()) || current.leader()
+                                                     .filter(node::equals)
+                                                     .isPresent();
     }
 
     private Result<org.pragmatica.lang.Unit> checkDrainReadiness(NodeId node, boolean requireReady) {
