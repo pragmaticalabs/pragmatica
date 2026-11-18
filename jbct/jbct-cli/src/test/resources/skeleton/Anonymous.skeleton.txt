@@ -1,0 +1,4 @@
+class Anonymous 5:1-28:1
+  method build(String): Runnable 6:5-21:5
+  field FIELD: Runnable 23:5-25:6
+  method after(): void 27:5-27:19
