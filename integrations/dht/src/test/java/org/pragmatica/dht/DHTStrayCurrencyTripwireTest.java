@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -28,6 +29,10 @@ class DHTStrayCurrencyTripwireTest {
     private static final byte[] BLOCK = bytes("block");
     private static final long ONE_MINUTE = 60_000L;
     private static final int ROUNDS = 6;
+
+    private static String answer(Option<byte[]> value) {
+        return value.map(bytes -> new String(bytes, StandardCharsets.UTF_8)).or("none");
+    }
 
     private static String fixed(String twin) {
         return "#3347 fixed? enable " + twin + ", delete this tripwire. ";
@@ -60,7 +65,7 @@ class DHTStrayCurrencyTripwireTest {
         assertThat(cluster.holdsLive(holder, key)).as("restart keeps the store").isTrue();
 
         cluster.restartEmpty(holder, RF3);
-        assertThat(cluster.entryAt(holder, key)).as("restartEmpty starts over an empty store").isEmpty();
+        assertThat(cluster.entryAt(holder, key).isPresent()).as("restartEmpty starts over an empty store").isFalse();
     }
 
     // ---- T3
@@ -87,9 +92,9 @@ class DHTStrayCurrencyTripwireTest {
 
         assertThat(route.liveAtEnd()).as("#3347 T3: nodes holding the deleted block live. Trace: %s", route.trace)
                                      .isEmpty();
-        assertThat(route.cluster.member(route.a).client().get(route.key).await().unwrap())
+        assertThat(answer(route.cluster.member(route.a).client().get(route.key).await().unwrap()))
             .as("#3347 T3: a get from A answers none. Trace: %s", route.trace)
-            .isEmpty();
+            .isEqualTo("none");
     }
 
     // ---- T5, T5b
@@ -102,9 +107,9 @@ class DHTStrayCurrencyTripwireTest {
 
         route.run();
 
-        assertThat(route.cluster.member(route.a).client().get(route.key).await().unwrap())
+        assertThat(answer(route.cluster.member(route.a).client().get(route.key).await().unwrap()))
             .as(fixed("displacedStray_getFromHolder_answersNone") + "Trace: %s", route.trace)
-            .isEqualTo(Option.some(BLOCK));
+            .isEqualTo("block");
     }
 
     @Disabled("#3347: enable when a get does not answer a deleted block held by a displaced stray")
@@ -114,9 +119,9 @@ class DHTStrayCurrencyTripwireTest {
 
         route.run();
 
-        assertThat(route.cluster.member(route.a).client().get(route.key).await().unwrap())
+        assertThat(answer(route.cluster.member(route.a).client().get(route.key).await().unwrap()))
             .as("#3347 T5: a get from A answers none. Trace: %s", route.trace)
-            .isEmpty();
+            .isEqualTo("none");
         assertThat(route.liveAnywhere()).as("#3347 T5: K is live nowhere. Trace: %s", route.trace).isEmpty();
     }
 
@@ -127,9 +132,9 @@ class DHTStrayCurrencyTripwireTest {
 
         route.run();
 
-        assertThat(route.cluster.member(route.c).client().get(route.key).await().unwrap())
+        assertThat(answer(route.cluster.member(route.c).client().get(route.key).await().unwrap()))
             .as(fixed("displacedStray_getFromTheStrayItself_answersNone") + "Trace: %s", route.trace)
-            .isEqualTo(Option.some(BLOCK));
+            .isEqualTo("block");
     }
 
     @Disabled("#3347: enable when the stray's own get does not answer a deleted block")
@@ -139,9 +144,9 @@ class DHTStrayCurrencyTripwireTest {
 
         route.run();
 
-        assertThat(route.cluster.member(route.c).client().get(route.key).await().unwrap())
+        assertThat(answer(route.cluster.member(route.c).client().get(route.key).await().unwrap()))
             .as("#3347 T5b: a get from C answers none. Trace: %s", route.trace)
-            .isEmpty();
+            .isEqualTo("none");
     }
 
     private abstract static class Route {
@@ -248,7 +253,7 @@ class DHTStrayCurrencyTripwireTest {
 
             holders.forEach(id -> {
                 cluster.restartEmpty(id, RF3);
-                assertThat(cluster.entryAt(id, key)).as("restarted " + id.id() + " holds an empty store").isEmpty();
+                assertThat(cluster.entryAt(id, key).isPresent()).as("restarted " + id.id() + " holds an empty store").isFalse();
             });
             snapshot("restarted-empty");
 
