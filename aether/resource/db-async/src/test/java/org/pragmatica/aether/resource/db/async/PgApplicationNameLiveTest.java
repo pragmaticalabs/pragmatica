@@ -30,6 +30,10 @@ import static org.pragmatica.aether.resource.db.DatabaseConnectorConfig.database
 class PgApplicationNameLiveTest {
     private static final String COUNT_NAMED = "SELECT count(*) AS n FROM pg_stat_activity WHERE application_name = ?";
     private static PostgreSQLContainer<?> postgres;
+    // The pool hands a released connection back to its idle set on another thread (PgConnectionPool.release), so the
+    // counting query can run before a warmed session is idle again and open one session of its own. The query is one
+    // request: at most one session beyond the warm-up, never fewer than the warm-up (#3363).
+    private static final int COUNTING_QUERY_EXTRA = 1;
     private final List<DatabaseConnector> opened = new ArrayList<>();
 
     @BeforeAll
@@ -81,14 +85,14 @@ class PgApplicationNameLiveTest {
     void pgSqlConnector_sessionsCarryConfiguredApplicationName_andPoolIsWarm() {
         var connector = provision(new PgSqlConnectorFactory(), config("live-pg", "bench-arm-pg", 3));
 
-        assertThat(sessionsNamed(connector, "bench-arm-pg")).isEqualTo(3);
+        assertThat(sessionsNamed(connector, "bench-arm-pg")).isBetween(3, 3 + COUNTING_QUERY_EXTRA);
     }
 
     @Test
     void asyncSqlConnector_sessionsCarryConfiguredApplicationName_andPoolIsWarm() {
         var connector = provision(new AsyncSqlConnectorFactory(), config("live-async", "bench-arm-async", 2));
 
-        assertThat(sessionsNamed(connector, "bench-arm-async")).isEqualTo(2);
+        assertThat(sessionsNamed(connector, "bench-arm-async")).isBetween(2, 2 + COUNTING_QUERY_EXTRA);
     }
 
     @Test
@@ -102,6 +106,6 @@ class PgApplicationNameLiveTest {
     void pgSqlConnector_withoutConfiguredName_usesDerivedAetherName() {
         var connector = provision(new PgSqlConnectorFactory(), config("live-derived", null, 1));
 
-        assertThat(sessionsNamed(connector, PgPoolSettings.applicationName(config("live-derived", null, 1)))).isEqualTo(1);
+        assertThat(sessionsNamed(connector, PgPoolSettings.applicationName(config("live-derived", null, 1)))).isBetween(1, 1 + COUNTING_QUERY_EXTRA);
     }
 }

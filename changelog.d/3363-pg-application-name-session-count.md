@@ -1,0 +1,2 @@
+### Fixed (2026-11-18 — #3363: a flaky Postgres application-name test counted one session too many)
+- **`PgApplicationNameLiveTest` no longer fails when the pool has not yet taken a warmed connection back** (#3363). The pool returns a released connection to its idle set on another thread, so the test's counting query could open one session of its own and see one more than the configured minimum. The three assertions now accept the minimum or one more; the lazy case (minimum 0) still expects exactly one. Test only; the pool is unchanged.
