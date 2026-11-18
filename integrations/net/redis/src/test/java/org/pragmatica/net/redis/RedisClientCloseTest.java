@@ -136,7 +136,7 @@ class RedisClientCloseTest {
     private void awaitDropObserved() throws InterruptedException {
         var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
 
-        while (client.openConnections() != 0) {
+        while (client.liveConnections() != 0) {
             assertThat(System.nanoTime()).as("client never observed the dropped connection").isLessThan(deadline);
             Thread.sleep(1);
         }
