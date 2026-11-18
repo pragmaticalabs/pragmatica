@@ -72,7 +72,7 @@ class SkeletonCommandTest {
 
         var run = run("skeleton", broken.toString(), good.toString());
 
-        assertThat(run.exit()).isEqualTo(1);
+        assertThat(run.exit()).isEqualTo(2);
         assertThat(run.err()).containsPattern("Broken\\.java:\\d+:\\d+: \\S");
         assertThat(run.out()).contains("class Docs").doesNotContain("Broken").doesNotContain("fine");
     }
@@ -81,7 +81,7 @@ class SkeletonCommandTest {
     void aDirectoryWithoutJavaFiles_failsWithAMessage() {
         var run = run("skeleton", dir.toString());
 
-        assertThat(run.exit()).isEqualTo(1);
+        assertThat(run.exit()).isEqualTo(2);
         assertThat(run.err()).contains("No Java files found");
     }
 

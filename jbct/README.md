@@ -21,6 +21,7 @@ jbct format --check src/main/java  # Check formatting (CI)
 jbct lint src/main/java            # Check JBCT compliance
 jbct check src/main/java           # Combined format-check + lint
 jbct score src/main/java           # Report violation density (violations per KLOC)
+jbct skeleton [--fields] [--json] <file>...  # Types and members with exact row/column ranges
 jbct init my-project               # Scaffold a project (Aether slice by default; --no-slice for plain)
 jbct verify-slice                  # Validate slice configuration
 jbct upgrade                       # Self-update to latest version
@@ -60,6 +61,42 @@ A `lint` run that found no Java files exits `2`: examining nothing is a coverage
 
 `shape-census` and `obligations` are reports rather than gates: they still exit 0 over a partial run,
 but each states the gap rather than omitting it silently.
+
+### `jbct skeleton`
+
+Prints the types and members of Java files with the exact range each occupies, so that a reader (a person, a
+script, a coding agent working inside a context budget) can open the one method it needs instead of reading a
+5 000-line file. It is read-only and uses the same parse tree as `format` and `lint`.
+
+```
+jbct skeleton [--fields] [--json] <file-or-directory>...
+```
+
+One line per declaration, two spaces of indentation per nesting level:
+
+```
+<kind> <name><signature> <startRow>:<startCol>-<endRow>:<endCol>[ doc@<row>][ @Annotation ...]
+```
+
+```
+class Docs 6:1-29:1 doc@3
+  method three(): void 13:5-13:19 doc@10
+  method annotated(): void 24:5-25:23 doc@21 @Deprecated
+  record R 28:5-28:22 doc@27
+```
+
+- Kinds: `class`, `interface`, `record`, `enum`, `annotation`, `method`, `constructor` (a compact constructor is
+  `Name(compact)`), `initializer`; with `--fields` also `field` and `enum-constant`. A declaration of several
+  variables (`int a, b;`) is one range and one line per variable. Anonymous classes, local classes and lambdas are
+  not listed: they lie inside the range of the member that holds them.
+- Rows and columns are 1-based and the end is INCLUSIVE: `endRow:endCol` is the closing brace or the semicolon
+  itself. A tab counts one column. The range starts at the first annotation or modifier and ends at the last token
+  of the declaration, so trailing blank lines and comments are outside it.
+- The doc comment (`///` lines or `/** */`) is outside the range; `doc@` is its first row.
+- `--json` prints an array with one `{file, declarations}` object per file; each declaration carries `kind`, `name`,
+  `signature`, `startRow`, `startColumn`, `endRow`, `endColumn`, `docRow` (or `null`), `annotations` and `children`.
+- A file that does not parse gets its position and message on stderr and no skeleton, never a partial one; the other
+  files still print and the exit code is 2, as for `lint`, `check` and `score`.
 
 ### Maven Plugin
 

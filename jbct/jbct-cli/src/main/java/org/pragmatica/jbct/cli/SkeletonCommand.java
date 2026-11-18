@@ -30,10 +30,10 @@ import picocli.CommandLine.Parameters;
 /// lambdas are not listed; they lie inside the range of the method that holds them.
 ///
 /// **A file that does not parse** gets its error and position on stderr and no skeleton, never a partial one; the
-/// other files still print and the exit code is 1.
+/// other files still print and the exit code is 2, as for the other commands that could not analyse a file.
 @Command(name = "skeleton", description = "Print the types and members of Java files with exact ranges: rows and columns are 1-based, the end is inclusive (the closing brace or semicolon)", mixinStandardHelpOptions = true)
 public class SkeletonCommand implements Callable<Integer> {
-    static final int FAILURE = 1;
+    static final int FAILURE = 2;
     private static final FilesConfig EVERYTHING = new FilesConfig(0L, List.of());
 
     @Parameters(paramLabel = "<file>", description = "Java files, or directories searched recursively", arity = "1..*")
