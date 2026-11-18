@@ -358,6 +358,10 @@ public final class LeaderReconciler {
     /// dedupe/CAS-arm discipline (a non-null ref short-circuits, CAS-arm cancels a lost race) with
     /// a hard delay floor of [`#DEBOUNCE_DELAY`], so the arm path can never loop hot.
     private final AtomicReference<ScheduledFuture<?>> surplusFollowUpFutureRef = new AtomicReference<>();
+    /// #3324: whether the last pass held the core surplus drain back (auto-heal disabled). The follow-up loop keeps running while held
+    /// (re-enabling must take effect), so its pass line is logged only on the edges: the first held pass logs it, later held
+    /// follow-ups stay silent, and the HELD / RESUMED operator warnings name the begin and the end. Per-leader memory, cleared on deactivate.
+    private final AtomicBoolean surplusHoldNoted = new AtomicBoolean();
 
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
 
@@ -631,6 +635,7 @@ public final class LeaderReconciler {
         cancelInFlightSweep();
         cancelDeficitFollowUp();
         cancelSurplusFollowUp();
+        surplusHoldNoted.set(false);
         cancelDrainGraceReEval();
         inFlightProvisioning.clear();
         pairedDeparted.clear();
@@ -1210,6 +1215,10 @@ public final class LeaderReconciler {
         if (!hasDeficit && !provisioningPermitted && !alwaysLoggedTrigger) {
             return;
         }
+        // #3324: a held core surplus re-runs the follow-up pass indefinitely; the line was logged on the pass that began the hold.
+        if (trigger == ReconcileTrigger.SURPLUS_FOLLOW_UP && surplusHoldNoted.get()) {
+            return;
+        }
 
         log.info("LeaderReconciler pass: trigger={} clusterMembershipCount={} peakMembershipCount={} members={} effective={} configuredCoreCount={} armedForProvisioning={} reachedFullMembership={} deficitAgeMs={} quorumSafe={} reason={}",
                  trigger,
@@ -1511,14 +1520,20 @@ public final class LeaderReconciler {
         var effective = effectiveWithSurge - surge;
 
         if (effective <= configuredCoreCount) {
+            surplusHoldNoted.set(false);
+
             return Set.of();
         }
 
         var nominalExcess = effective - configuredCoreCount;
         var floorHeadroom = Math.max(0, currentMembers.size() - configuredCoreCount);
         var drainCount = Math.min(nominalExcess, floorHeadroom);
+        // #3324: with auto-heal disabled a surplus core member is not drained on the cluster's own initiative. Asked only when there is a
+        // surplus to drain, through the accessor the worker and community gates use, so the hold is raised as the same operator warning.
+        var held = drainCount > 0 && ctm.scalingHeld(ClusterTopologyManager.coreSubject());
 
-        if (drainCount == 0) {
+        surplusHoldNoted.set(held);
+        if (drainCount == 0 || held) {
             return Set.of();
         }
 

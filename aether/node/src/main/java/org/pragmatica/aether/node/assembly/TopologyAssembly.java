@@ -851,12 +851,36 @@ public sealed interface TopologyAssembly {
             return Promise.unitPromise();
         }
 
+        var victims = excludedCoreNodes(cluster, membership, store, replacements, ready).stream()
+                                       .filter(node -> deployments.byNode(node)
+                                                                  .isEmpty())
+                                       .toList();
+
+        return retireSurplusCores(victims, topology);
+    }
+
+    /// #3324: the production wiring of the voter-excluded core retirement: the hold asked is `topology`'s own, for the subject `core`,
+    /// and every victim leaves as an `OVERPROVISION_SCALE_DOWN` drain (the reason that keeps the retirement refusal and the grace re-check).
+    static Promise<Unit> retireSurplusCores(List<NodeId> victims, ClusterTopologyManager topology) {
+        return drainSurplusCores(victims,
+                                 () -> topology.scalingHeld(ClusterTopologyManager.coreSubject()),
+                                 node -> topology.drainNode(node, DrainReason.OVERPROVISION_SCALE_DOWN));
+    }
+
+    /// #3324: a core excluded from the voter set is core surplus; with auto-heal disabled it is not drained on the cluster's own
+    /// initiative. `coreHeld` is asked only when there is a victim, so it is the worker and community gates' accessor
+    /// ([ClusterTopologyManager#scalingHeld]) and raises the same operator warning only for a surplus that is really held back.
+    static Promise<Unit> drainSurplusCores(List<NodeId> victims,
+                                           BooleanSupplier coreHeld,
+                                           Function<NodeId, Promise<Unit>> drain) {
+        if (victims.isEmpty() || coreHeld.getAsBoolean()) {
+            return Promise.unitPromise();
+        }
+
         var work = Promise.unitPromise();
 
-        for (var node : excludedCoreNodes(cluster, membership, store, replacements, ready)) {
-            if (deployments.byNode(node).isEmpty()) {
-                work = work.flatMap(_ -> topology.drainNode(node, DrainReason.OVERPROVISION_SCALE_DOWN));
-            }
+        for (var node : victims) {
+            work = work.flatMap(_ -> drain.apply(node));
         }
 
         return work;
