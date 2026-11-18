@@ -80,18 +80,20 @@ class EmberLeaderDrainTest {
 
         awaitReady(follower);
 
-        var answer = postDrain(follower);
+        var answer = postDrain(follower, cluster.getLeaderManagementPort().or(-1));
 
         System.out.println("T3348 control size=" + CLUSTER_SIZE + " route=" + answer);
         assertThat(answer).as("control: the follower drain is admitted by the route").startsWith("2");
 
         var deadline = System.currentTimeMillis() + OBSERVE_WINDOW_MS;
-        var sawDraining = false;
 
         while (System.currentTimeMillis() < deadline && cluster.getNode(follower).isPresent()) {
-            sawDraining |= procedure.state() != DrainProcedure.DrainState.INACTIVE;
             sleepQuietly(SAMPLE_MS);
         }
+
+        // DRAINING lasts milliseconds on an idle node; the state is single-shot (nothing leads back to INACTIVE), so the
+        // final state proves it left INACTIVE.
+        var sawDraining = procedure.state() != DrainProcedure.DrainState.INACTIVE;
 
         System.out.println("T3348 control drainProcedure left INACTIVE=" + sawDraining + " final=" + procedure.state()
                            + " exited=" + cluster.getNode(follower).isEmpty());
@@ -103,7 +105,18 @@ class EmberLeaderDrainTest {
     /// DEPARTING on itself while its own drain procedure is INACTIVE.
     @Test
     @Timeout(600)
-    void leaderDrain_neverHalfApplies_departingOnSelfWithInactiveDrain() {
+    void leaderDrain_throughTheLeadersRoute_neverHalfApplies() {
+        leaderDrainScenario(false);
+    }
+
+    /// The same drain posted to a FOLLOWER's management port: an operator may address any node.
+    @Test
+    @Timeout(600)
+    void leaderDrain_throughAFollowersRoute_neverHalfApplies() {
+        leaderDrainScenario(true);
+    }
+
+    private void leaderDrainScenario(boolean viaFollower) {
         start();
         var leaderId = cluster.currentLeader().unwrap();
         var leader = cluster.getNode(leaderId).unwrap();
@@ -113,9 +126,17 @@ class EmberLeaderDrainTest {
 
         awaitReady(leaderId);
 
-        var answer = postDrain(leaderId);
+        var port = viaFollower
+                   ? cluster.status().nodes().stream().filter(n -> !n.id().equals(leaderId)).findFirst().orElseThrow().mgmtPort()
+                   : cluster.getLeaderManagementPort().or(-1);
 
-        System.out.println("T3348 leader size=" + CLUSTER_SIZE + " leader=" + leaderId + " route=" + answer);
+        if (viaFollower) {
+            awaitViewOf(followers.getFirst(), leaderId);
+        }
+
+        var answer = postDrain(leaderId, port);
+
+        System.out.println("T3348 leader size=" + CLUSTER_SIZE + " via=" + (viaFollower ? "follower" : "leader") + " port=" + port + " leader=" + leaderId + " route=" + answer);
 
         var halfApplied = new ArrayList<String>();
         var last = "";
@@ -182,8 +203,18 @@ class EmberLeaderDrainTest {
         System.out.println("T3348 readiness view of " + nodeId + " on the leader: " + leader.metricsCollector().reportedStates().get(nodeId(nodeId)));
     }
 
-    private String postDrain(String nodeId) {
-        var port = cluster.getLeaderManagementPort().or(-1);
+    /// A follower's own readiness view of the leader (the route reads the receiving node's view).
+    private static void awaitViewOf(AetherNode viewer, String nodeId) {
+        var deadline = System.currentTimeMillis() + READY_BUDGET_MS;
+
+        while (System.currentTimeMillis() < deadline && viewer.metricsCollector().reportedStates().get(nodeId(nodeId)) != NodeReportedState.READY) {
+            sleepQuietly(500L);
+        }
+
+        System.out.println("T3348 readiness view of " + nodeId + " on follower " + viewer.self().id() + ": " + viewer.metricsCollector().reportedStates().get(nodeId(nodeId)));
+    }
+
+    private String postDrain(String nodeId, int port) {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://127.0.0.1:" + port + "/api/v1/nodes/drain/" + nodeId))
                                  .timeout(Duration.ofSeconds(30))
