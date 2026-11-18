@@ -407,12 +407,12 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// admission test.
     private synchronized Result<TransitionResult> admitOperatorDrain(NodeId node, boolean requireReady, boolean force) {
         return refuseLeader(node, requireReady).flatMap(_ -> checkDisruptionBudgetForTarget(node.id(),
-                                                                                                 node))
-                                .flatMap(budget -> checkDrainReadiness(node, requireReady).map(_ -> budget))
-                                .flatMap(budget -> checkSliceFloor(node, requireReady, force).map(_ -> budget))
-                                .map(budget -> enqueueOperatorDrain(node,
-                                                                    budget.message(),
-                                                                    requireReady));
+                                                                                            node))
+                           .flatMap(budget -> checkDrainReadiness(node, requireReady).map(_ -> budget))
+                           .flatMap(budget -> checkSliceFloor(node, requireReady, force).map(_ -> budget))
+                           .map(budget -> enqueueOperatorDrain(node,
+                                                               budget.message(),
+                                                               requireReady));
     }
 
     /// #1720: refuse, 409, an operator drain or shutdown that would leave a hosted slice below its `minAvailable`
