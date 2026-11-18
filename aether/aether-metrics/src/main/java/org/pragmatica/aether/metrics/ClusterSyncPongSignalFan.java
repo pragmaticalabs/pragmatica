@@ -283,7 +283,8 @@ public interface ClusterSyncPongSignalFan {
                                       now,
                                       state == NodeReportedState.SYNCING
                                       ? SYNC_REAP_THRESHOLD
-                                      : 0);
+                                      : 0,
+                                      heldReport);
         }
 
         private void maybeReap(NodeId sender, ReadinessEntry entry) {
