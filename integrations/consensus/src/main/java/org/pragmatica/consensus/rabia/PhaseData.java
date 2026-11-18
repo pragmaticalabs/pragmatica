@@ -428,6 +428,9 @@ final class PhaseData<C extends Command> {
     /// ```tla RabiaEpoch:Decide
     /// \* The tally guard is acceptsBallot (RabiaEngine); the "b.e > epoch" branch of Accepts is
     /// \* deferIfNewerEpoch. Value agreement: PhaseData.agreedValue.
+    /// \* Collapses weak-MVC's rounds (R1, R2, carry-forward, coin) into one quorum tally per slot. The collapse rests on
+    /// \* RabiaSlot, which checks the rounds exhaustively only at MaxRound = 1 (`code`); two rounds were explored without
+    /// \* violation but not to completion (stopped at depth 31, 51.8M distinct states), so it is not checked beyond one.
     /// Decide(n) ==
     ///     /\ Voter(n)
     ///     /\ Active(n)

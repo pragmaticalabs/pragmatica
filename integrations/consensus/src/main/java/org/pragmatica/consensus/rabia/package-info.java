@@ -37,10 +37,13 @@
 /// Reading the configs: a `pass` row named as a removal (`noexactepoch`, `norelayepoch`, `nopastguard`, `nooneconfig`,
 /// `noselfvouch`, `paperD4`, `paperD5`) is a known-bad config that did not go red: the removed rule is redundant at
 /// those bounds, which does not show the rule is needed. `paper_*` and `paperD*` swap one rule for the paper's. `ctl_*`
-/// are instrument checks (a failing `Reach` shows an adoption path is reachable). `rjT_*` pass vacuously for rejoin
-/// (`ctl_rjTAny` shows no rejoined incarnation completes an adoption), so only `rjT_noamnesiafence` is informative;
-/// `rjA_*` and `rjW_*` admit an old or wiped incarnation by construction and fail on Agreement. Configs whose result is
-/// an incomplete run or a random-simulation hit have no row.
+/// are instrument checks (a failing `Reach` shows an adoption path is reachable). Under token rejoin no rejoined
+/// incarnation completes an adoption (`ctl_rjTAny`), so the `rjT_*` passes say nothing about rejoin itself and the
+/// rejoin-specific removals (`rjT_nooneconfig`, `rjT_noselfvouch`, `rjT_paperD4`, `rjT_paperD5`) are vacuous; the
+/// informative `rjT_*` rows are the reds `rjT_noamnesiafence`, `rjT_nosyncresume` and `rjT_nosyncresume_savefail`
+/// (#3211: a voter paused from Syncing resumes to active), whose passing counterparts are `rjT_allfixes` and
+/// `rjT_allfixes_savefail`. `rjA_*` and `rjW_*` admit an old or wiped incarnation by construction and fail on
+/// Agreement. Configs whose result is an incomplete run or a random-simulation hit have no row.
 ///
 /// ```tla RabiaSlot:head
 /// \* One Rabia log slot sequence (weak-MVC per slot) at ONE fixed roster and epoch, with our deviations
@@ -246,6 +249,8 @@
 /// ```tla RabiaEpoch:head
 /// \* Rabia deviations D2 (decision relay), D6 (in-log reconfiguration: epoch per slot boundary, exact-epoch ballot
 /// \* counting, newer-epoch deferral) and D12 (leader layer as a requester set) of pragmatica#3164.
+/// \* A slot is decided by one quorum tally (Decide, DecideNull); the rounds inside a slot are RabiaSlot's, which checks
+/// \* them exhaustively at one round only (see Decide).
 /// \*
 /// \* Fixed (each fix a member; every cfg assigns it):
 /// \*   "exactepoch" acceptsBallot counts a ballot only at epoch == voterEpoch() (known-bad: epoch <= current)
