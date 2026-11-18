@@ -1283,7 +1283,9 @@ aether nodes lifecycle <nodeId>
 # Drain a node (READY → DRAINING via the membership-v2 DRAIN-command heartbeat;
 # the target self-drains, finishing in-flight requests, respecting the disruption budget
 # and every hosted slice's minAvailable floor: a drain that would take a slice below it
-# is refused with 409 naming the slice)
+# is refused with 409 naming the slice). Draining the current leader is refused with 409;
+# the CLI prints the server's text: stop the leader's process from outside the cluster so a
+# new leader is elected, then drain the node
 aether nodes drain <nodeId>
 
 # Override the slice minAvailable floor (the cluster raises an operator warning)
@@ -1291,6 +1293,7 @@ aether nodes drain <nodeId> --override-floor
 
 # Shut down a node (self-drain then halt via the DRAIN-command heartbeat; CTM
 # grace-terminate backstop reaps the container). Same floor, same --override-floor.
+# Shutting down the current leader is refused with 409 (the server's text is printed).
 aether nodes shutdown <nodeId>
 
 # Check an already matching immutable role (CORE, WORKER or SPOT).
@@ -2690,6 +2693,8 @@ aether cluster destroy --cluster=my-cluster --yes
 | `-q`, `--no-color`, `-o <format>`, `--field <field>` | Standard output controls |
 
 Destroy takes every slice below its `minAvailable` floor by definition (it drains and shuts down every node without undeploying), so it sends `force=true` on every drain and shutdown request. The operator-drain slice floor (`aether nodes drain`, #1720) therefore never refuses it, and each node's breach is reported as a `slice-floor-breached-by-force` operator warning.
+
+The management API refuses a drain or a shutdown of the current leader or of the node handling the request (409; there is no way to stop a leader through it), so `destroy` cannot drain the leader. It reports that node as held (`leader held (<id>)` in the outcome line), sends it no shutdown, and does not treat the refusal as a failure: the teardown goes ahead and the leader's instance is deleted with the rest by the cloud cleanup, as for a node held for quorum. Any other refusal still stops the destroy unless `--force-undrained` is given.
 
 > **Cleanup failure is loud (#521).** If cloud resource termination fails, `destroy` exits
 > non-zero (`ExitCode.CLEANUP_FAILED`) and deliberately **keeps** the registry entry — the

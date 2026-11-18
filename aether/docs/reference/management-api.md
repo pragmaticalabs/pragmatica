@@ -4785,6 +4785,18 @@ Which guard applied — and why — is always visible in `message`, both on succ
 
 **Slice `minAvailable` floor (#1720).** Independently of the budget above, and for workers as well as cores (slices run on workers), a drain is refused with `409 Conflict` when it would leave a slice the target hosts below its `minAvailable` ACTIVE instances on the remaining nodes. The remaining nodes are the cluster's counted members minus the leader's pending drains minus the target, the same rule the automatic drain (leader reconciler) applies. The refusal names every such slice and its counts. Admission is serialised against concurrent operator drains, so two requests cannot both pass against one pending-drains snapshot. Add the query parameter `force=true` (`aether nodes drain <id> --override-floor`) to override: the drain is admitted and an `OPERATOR_WARNING` event with code `slice-floor-breached-by-force` (subject: the node, message: each breached slice and its counts) is raised, so a forced breach is never silent. A REFUSED drain raises `slice-floor-drain-refused` once per target (on entering refusal), and the next admission of that target raises its recovery event `slice-floor-drain-admitted` (severity `INFO`). `aether cluster destroy` passes `force` on every drain and shutdown, because destroying a cluster takes every slice below its floor by definition.
 
+**The current leader is not drained (#3348).** A drain whose target is the current leader, or the node that is handling the request, is refused with `409 Conflict`. Every request for this route is forwarded to the node the receiver believes is the leader, so the handling node is the leader or a node just elected that has not yet applied its own election; both are refused. The decision uses only state the node holds, runs before any readiness lookup, budget read or dispatch, and nothing is commanded. The product has no leadership step-down command: stop the leader's process from outside the cluster (the service manager or the container runtime), the cluster elects another leader, then drain the node once it is no longer the leader. `shutdown` of the leader is refused the same way (see `POST /api/v1/nodes/shutdown/{id}`). When no leader is known and the target is another node, the leader rule does not apply and the target is answered as any target is (`404 Node lifecycle not found` if it has no reported state).
+
+**Response (target is the current leader, 409 Conflict):**
+```json
+{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "Cannot drain node node-1: it is the current leader or the node handling this request, and such a node is not drained. Move leadership first: stop this node's process from outside the cluster (the service manager or the container runtime) so the cluster elects another leader, then drain this node once it is no longer the leader. `aether nodes shutdown` is refused for the leader too."
+}
+```
+
 **Response (slice floor, 409 Conflict):**
 ```json
 {
@@ -4827,7 +4839,7 @@ Which guard applied — and why — is always visible in `message`, both on succ
 
 ### POST /api/v1/nodes/shutdown/{id}
 
-Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command channel. The same admission as drain applies, including the slice `minAvailable` floor and the `force=true` override described there (#1720); a refused shutdown answers `409` with `Cannot shutdown node <id>: ...`. The leader's cluster-sync heartbeat carries `NodePingCommand.DRAIN` to the target, which self-drains (finishes in-flight requests) via its `DrainProcedure` and then halts; the CTM grace-terminate backstop reaps the container if it never self-exits. No direct lifecycle KV write happens on this path.
+Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command channel. The same admission as drain applies, including the slice `minAvailable` floor and the `force=true` override described there (#1720); a refused shutdown answers `409` with `Cannot shutdown node <id>: ...`. A shutdown of the current leader (or of the handling node) is refused with `409 Conflict` before anything is dispatched, with its own text: `Cannot shut down node <id>: it is the current leader or the node handling this request, and such a node is not shut down through the API. Move leadership first: stop this node's process from outside the cluster (the service manager or the container runtime) so the cluster elects another leader; ...` (#3348). A shutdown of any other node is unchanged. The leader's cluster-sync heartbeat carries `NodePingCommand.DRAIN` to the target, which self-drains (finishes in-flight requests) via its `DrainProcedure` and then halts; the CTM grace-terminate backstop reaps the container if it never self-exits. No direct lifecycle KV write happens on this path.
 
 **Response:**
 ```json

@@ -171,6 +171,8 @@ class ManagementForwardedSecurityContextTest {
 
         when(appHttpServer.httpRoutePublisher()).thenReturn(Option.none());
         when(node.self()).thenReturn(SELF);
+        // a real node answers an Option, never null; the drain and shutdown route reads it (#3348): a leader other than the targeted worker
+        when(node.leader()).thenReturn(Option.some(SENDER));
         when(node.appHttpServer()).thenReturn(appHttpServer);
         when(node.clusterTopologyManager()).thenReturn(Option.none());
         when(node.consumerGroupCoordinator()).thenReturn(ConsumerGroupCoordinator.noOp());
