@@ -82,6 +82,7 @@ class NodeLifecycleRoutesSliceFloorTest {
 
     private final Set<NodeId> pendingDrains = new LinkedHashSet<>();
     private final Set<NodeId> reportedDraining = new LinkedHashSet<>();
+    private final Set<NodeId> reportedHeld = new LinkedHashSet<>();
     private final List<String> routedEvents = new CopyOnWriteArrayList<>();
 
     private KVStore<AetherKey, AetherValue> kvStore;
@@ -181,11 +182,19 @@ class NodeLifecycleRoutesSliceFloorTest {
         };
     }
 
+    private NodeReportedState reportedState(NodeId peer) {
+        return reportedHeld.contains(peer)
+               ? NodeReportedState.HELD
+               : reportedDraining.contains(peer)
+                 ? NodeReportedState.DRAINING
+                 : NodeReportedState.READY;
+    }
+
     /// All present members report READY so an admitted drain flows through the READY gate and
     /// succeeds — proving the budget guard did NOT reject (rather than being masked by a later guard).
     private ClusterSyncCollector metricsCollector() {
         var states = allPresent.stream()
-                               .collect(Collectors.toMap(peer -> peer, peer -> reportedDraining.contains(peer) ? NodeReportedState.DRAINING : NodeReportedState.READY));
+                               .collect(Collectors.toMap(peer -> peer, this::reportedState));
         return (ClusterSyncCollector) Proxy.newProxyInstance(
             ClusterSyncCollector.class.getClassLoader(),
             new Class[]{ClusterSyncCollector.class},
@@ -271,6 +280,20 @@ class NodeLifecycleRoutesSliceFloorTest {
         reportedDraining.add(node(2));
 
         assertThat(routes().admitReplacementDrain(node(2)).await().isSuccess()).as("reported DRAINING: not asked for again").isTrue();
+    }
+
+    @Test
+    void replacementDrain_ofANodeThatReportsItselfHeld_isNotAdmittedAgain() {
+        var a = slice("a", 3, 2);
+        host(a, node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+
+        assertThat(breach(routes().admitReplacementDrain(node(2)).await()).message()).as("control: reports READY, the floor refuses it").contains(SLICE_A);
+
+        reportedHeld.add(node(2));
+        assertThat(routes().admitReplacementDrain(node(2)).await().isSuccess()).as("reported HELD is a drain under way: not asked for again").isTrue();
+        assertThat(routes().drainUnderWay(node(2))).isTrue();
+        assertThat(routes().drainUnderWay(node(3))).as("a READY node is not draining").isFalse();
     }
 
     @Test
