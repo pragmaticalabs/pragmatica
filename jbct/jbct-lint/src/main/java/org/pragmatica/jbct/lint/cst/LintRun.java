@@ -87,9 +87,7 @@ public final class LintRun {
 
     /// A run over a plan with the given parser: the seam through which a test counts the parses of [#perform].
     static LintRun lintRun(RootPlan plan, Function<String, Result<Cursor>> parser) {
-        return new LintRun(ordered(plan.roots()
-                                       .stream()
-                                       .map(root -> Group.group(root, Detail.detail(root, plan)))),
+        return new LintRun(ordered(plan.roots().stream().map(root -> Group.group(root, Detail.detail(root, plan)))),
                            parser,
                            plan.uncollectedTestFiles());
     }

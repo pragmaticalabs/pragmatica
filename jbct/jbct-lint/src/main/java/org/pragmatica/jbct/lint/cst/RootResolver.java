@@ -308,7 +308,8 @@ public sealed interface RootResolver permits RootResolver.unused {
     private static Path searchBase(Option<Path> argument, Path file) {
         var module = ConfigLoader.moduleDirectory(file);
 
-        return argument.filter(directory -> directory.getNameCount() <= module.getNameCount()).or(module);
+        return argument.filter(directory -> directory.getNameCount() <= module.getNameCount())
+                       .or(module);
     }
 
     /// The deepest directory argument that contains the file.

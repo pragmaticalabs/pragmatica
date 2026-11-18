@@ -274,13 +274,10 @@ record RunLines(Invocation invocation,
             case CHECK -> count(this::wouldChange) > 0
                           ? Stream.of(blank(),
                                       Stream.of(carried(Level.ERROR, FINDINGS_HEAD, Channel.STDOUT)),
-                                      wouldChangeFiles().map(file -> carried(Level.ERROR, "  " + file, Channel.STDOUT)))
-                                  .flatMap(stream -> stream)
-                                  .toList()
+                                      wouldChangeFiles().map(file -> carried(Level.ERROR, "  " + file, Channel.STDOUT))).flatMap(stream -> stream).toList()
                           : List.of();
             case FORMAT_CHECK -> invocation.surface() == Surface.MAVEN
-                                 ? wouldChangeFiles().map(file -> line(Level.ERROR, "  " + file))
-                                                     .toList()
+                                 ? wouldChangeFiles().map(file -> line(Level.ERROR, "  " + file)).toList()
                                  : List.of();
             default -> List.of();
         };
@@ -473,8 +470,7 @@ record RunLines(Invocation invocation,
     private Stream<Line> scoreTable() {
         return invocation.surface() == Surface.MAVEN && invocation.command() == Command.SCORE
                ? score.stream()
-                      .flatMap(result -> ScoreReport.terminalLines(result)
-                                                    .stream())
+                      .flatMap(result -> ScoreReport.terminalLines(result).stream())
                       .map(text -> line(Level.INFO, text))
                : Stream.empty();
     }

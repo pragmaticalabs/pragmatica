@@ -118,8 +118,7 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
 
     /// The seam every run-driven goal starts with: a function from the plan and the invocation to the run's result,
     /// defaulting to the plan's own run. A test replaces it to capture the invocation and to return a result of its own.
-    protected BiFunction<RootPlan, Invocation, Result<RunResult>> performer = (plan, invocation) -> LintRun.lintRun(plan)
-                                                                                                         .perform(invocation);
+    protected BiFunction<RootPlan, Invocation, Result<RunResult>> performer = (plan, invocation) -> LintRun.lintRun(plan).perform(invocation);
 
     /// Perform the invocation and print what the run returned: a refused run is a [MojoExecutionException]; otherwise the
     /// run's lines and findings are logged and a verdict that carries a failure text fails the build with that text.
@@ -131,8 +130,7 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
     /// As [#perform(RootPlan, Invocation)] for an invocation that may itself be refused.
     @Contract
     protected void perform(RootPlan plan, Result<Invocation> invocation) throws MojoExecutionException, MojoFailureException {
-        finish(invocation.map(asked -> asked.withModule(module()))
-                         .flatMap(asked -> performer.apply(plan, asked)));
+        finish(invocation.map(asked -> asked.withModule(module())).flatMap(asked -> performer.apply(plan, asked)));
     }
 
     @Contract
@@ -145,8 +143,7 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
         }
 
         var result = performed.unwrap();
-        var failure = result.verdict()
-                            .failure();
+        var failure = result.verdict().failure();
 
         result.before().forEach(this::log);
         reportDiagnostics(result.findings());

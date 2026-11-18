@@ -48,8 +48,7 @@ public class ScoreMojo extends AbstractJbctMojo {
             throw new MojoExecutionException(DensityGate.REMOVED_BASELINE_MESSAGE);
         }
 
-        var limit = Option.option(maxDensity)
-                          .map(max -> DensityLimit.densityLimit(max, MAX_DENSITY_FLAG));
+        var limit = Option.option(maxDensity).map(max -> DensityLimit.densityLimit(max, MAX_DENSITY_FLAG));
 
         perform(resolvePlan(includeTests), Invocation.score(Surface.MAVEN, limit));
     }
