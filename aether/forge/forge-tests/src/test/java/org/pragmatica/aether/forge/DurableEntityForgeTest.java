@@ -318,8 +318,11 @@ class DurableEntityForgeTest {
         assertThat(outcome(updated)).isEqualTo("updated");
         assertThat(number(updated, "amount")).isEqualTo(999);
         assertThat(text(updated, "status")).describedAs("the mutator changes amount only").isEqualTo("placed");
-        assertThat(number(getReadable(owner, "order-update"), "amount")).describedAs("the mutation is committed, not just returned")
-                                                                 .isEqualTo(999);
+        var reread = getReadable(owner, "order-update");
+
+        assertThat(outcome(reread)).isEqualTo("found");
+        assertThat(number(reread, "amount")).describedAs("the mutation is committed, not just returned")
+                                            .isEqualTo(999);
     }
 
     /// Delete removes the instance, and the subsequent read reports absence rather than failing.
@@ -783,22 +786,34 @@ class DurableEntityForgeTest {
 
     /// A read answered by the node that ACCEPTED the create, which is not necessarily the owner: a non-owner that holds the
     /// partition serves the bounded-stale read from its own replica fold, and while that fold is being rebuilt (the log was cut)
-    /// it refuses with the typed transient `FoldInProgress` (or `NotYetCommitted`), whose shape carries `amount` 0 like an absent key
-    /// (#3398). The assertions that follow read the answer, so they wait for a settled one: found or absent, never a transient refusal.
+    /// it refuses with a typed transient failure, `FoldInProgress` among them, whose shape carries `amount` 0 like an absent key
+    /// (#3398). One rule decides what is retried: the product's own classification, `Cause.isTransient()`, which the test
+    /// blueprint reports as `transientFailure`. Polls at once, then backs off. A transient refusal is retried until WAIT_TIMEOUT,
+    /// when the test fails naming the key, the port and the last response; any other failure ends the wait and fails the test
+    /// at once; any other answer is returned for the caller's assertions to judge.
     private String getReadable(int port, String key) {
-        var last = new java.util.concurrent.atomic.AtomicReference<String>();
+        var deadline = System.nanoTime() + WAIT_TIMEOUT.toNanos();
+        var backoffMillis = 20L;
+        String last;
 
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> {
-                          last.set(get(port, key));
-                          return !isTransientRefusal(last.get());
-                      });
-        return last.get();
-    }
+        while (true) {
+            last = get(port, key);
 
-    private static boolean isTransientRefusal(String response) {
-        return response.contains("\"failureType\":\"FoldInProgress\"") || response.contains("\"failureType\":\"NotYetCommitted\"");
+            if (!"failed".equals(outcome(last))) {
+                return last;
+            }
+
+            if (!last.matches("(?s).*\"transientFailure\"\\s*:\\s*true.*")) {
+                throw new AssertionError("read of '" + key + "' on port " + port + " failed with a non-transient failure: " + last);
+            }
+
+            if (System.nanoTime() >= deadline) {
+                throw new AssertionError("read of '" + key + "' on port " + port + " still refused transiently after " + WAIT_TIMEOUT
+                                         + "; last response: " + last);
+            }
+            LockSupport.parkNanos(Duration.ofMillis(backoffMillis).toNanos());
+            backoffMillis = Math.min(backoffMillis * 2, POLL_INTERVAL.toMillis());
+        }
     }
 
     private String update(int port, String key, int amount) {
