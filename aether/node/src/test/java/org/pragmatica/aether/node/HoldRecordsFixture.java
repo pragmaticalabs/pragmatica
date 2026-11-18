@@ -17,6 +17,7 @@ import org.pragmatica.cluster.metrics.HeldReport;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 
@@ -28,6 +29,8 @@ final class HoldRecordsFixture {
     static final NodeId NODE = NodeId.nodeId("drainer-1").unwrap();
     static final String EPISODE = "drainer-1@1000";
     static final long T0 = 1_000_000L;
+    /// A later drain episode of [#NODE] (its start stamp is after [#EPISODE]'s).
+    static final String E2 = "drainer-1@2000";
 
     /// One raise the fake event layer received: `closer` empty for `raiseLanded`.
     record Raised(OperatorWarning warning, Option<OperatorWarning> closer) {}
@@ -71,6 +74,10 @@ final class HoldRecordsFixture {
         return HeldReport.heldReport(EPISODE, owed, undeliverable, digest, T0 - 500, List.of("k1", "k2"), ended);
     }
 
+    static HeldReport ofEpisode(String episode, long owed, String digest, long asOfMillis, HeldEnd ended) {
+        return HeldReport.heldReport(episode, owed, 0, digest, asOfMillis, List.of("k1"), ended);
+    }
+
     static HeldReport held(long owed, String digest) {
         return report(owed, 0, digest, HeldEnd.NONE);
     }
@@ -86,6 +93,11 @@ final class HoldRecordsFixture {
         pending.forEach(promise -> promise.succeed(landed));
         pending.clear();
         eventually(observed);
+    }
+
+    /// Whether `result` failed with a cause of `type`.
+    static boolean refusedWith(Result<?> result, Class<?> type) {
+        return result.fold(type::isInstance, _ -> false);
     }
 
     static void eventually(BooleanSupplier condition) {
@@ -107,6 +119,14 @@ final class HoldRecordsFixture {
                      .flatMap(raise -> raise.closer().stream())
                      .filter(closer -> closer.code() == code)
                      .toList();
+    }
+
+    /// Closers raised for `subject`, whatever their code.
+    long closersOfSubject(String subject) {
+        return raised.stream()
+                     .flatMap(raise -> raise.closer().stream())
+                     .filter(closer -> closer.subject().equals(subject))
+                     .count();
     }
 
     void logWarning(OperatorWarningCode code, String subject) {
