@@ -320,13 +320,12 @@ class EmberNodeReplacementTest {
     }
 
     /// "Settled" is the state the tests that ask for it assert on: every live node's SWIM has observed the victim healthy (its
-    /// membership FSM counts it, which is the first HEALTHY edge, so cold-boot suppression no longer hides its death) and the
-    /// capacity reservation the confirmed reap needs is committed. A fixed park stood in for both (#3391).
+    /// membership FSM counts it, which is the first HEALTHY edge, so cold-boot suppression no longer hides its death). A fixed park
+    /// stood in for it (#3391). No capacity reservation is awaited: the originals are bootstrapped by Ember outside the capacity
+    /// lifecycle, which commits a reservation only for an instance a provider listing or create observes, so none ever appears here.
     private void awaitSettled(NodeId victimId) {
         awaitCondition("every live node's membership FSM counts " + victimId.id() + " as a member (SWIM saw it healthy)",
                        () -> notCountingOn(victimId).isEmpty());
-        awaitCondition("the capacity reservation of " + victimId.id() + " is committed on the leader",
-                       () -> awaitLeader().kvStore().get(new AetherKey.CapacityReservationKey(victimId)).isPresent());
     }
 
     private List<String> notCountingOn(NodeId victimId) {
