@@ -13,6 +13,8 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.statemachine.FsmTestHarness;
@@ -42,6 +44,11 @@ class QuorumWaitingKvPollTest {
     private static final TimeSpan KV_SYNC_GRACE_DELAY = TimeSpan.timeSpan(60).seconds();
     private static final TimeSpan LONG_OBSERVATION_INTERVAL = TimeSpan.timeSpan(60).seconds();
 
+    /// Cluster mode (a proposal handler is present): FIX 1 adopts a committed KV leader absent from the view only in
+    /// cluster mode; #3092 I2 holds a LOCAL-mode leader to the applied view, so the local mode of this harness
+    /// would drop PEER_A against the empty topology.
+    private static final LeaderProposalHandler CLUSTER_HANDLER = (candidate, viewSequence) -> Promise.success(Unit.unit());
+
     private FsmTestHarness<LeaderElectionState, ClusterFsmEvent> buildHarness(
             AtomicBoolean consensusReady,
             AtomicReference<Option<NodeId>> kvLeader) {
@@ -50,7 +57,7 @@ class QuorumWaitingKvPollTest {
                 fsm -> {
                     var ctx = new LeaderElectionContext(fsm,
                                                         SELF,
-                                                        Option.<LeaderProposalHandler>none(),
+                                                        Option.some(CLUSTER_HANDLER),
                                                         List.of(SELF, PEER_A, PEER_B),
                                                         MessageRouter.mutable(),
                                                         PROPOSAL_RETRY_DELAY,
