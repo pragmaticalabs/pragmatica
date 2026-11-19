@@ -37,6 +37,7 @@ class PassiveEntryLeaderPullTest {
     private static final NodeId SELF = new NodeId("worker-1");
     private static final NodeId LEADER = new NodeId("core-1");
     private static final NodeId SUCCESSOR = new NodeId("core-2");
+    private static final NodeId JOINED = new NodeId("core-3");
     private static final List<NodeId> CORES = List.of(LEADER, SUCCESSOR);
 
     private static final TimeSpan LONG = TimeSpan.timeSpan(60).seconds();
@@ -104,6 +105,19 @@ class PassiveEntryLeaderPullTest {
                                     .isEqualTo(Option.none());
         assertThat(ctx.adoptedViewSequence()).isEqualTo(7L);
         assertThat(changes).isEmpty();
+    }
+
+    @Test
+    void passiveEntry_committedLeaderOnlyInEnteredMembers_pullRunsAfterVotersInstalled() {
+        startDormant();
+        kvLeader.set(Option.some(JOINED));
+        ctx.observeViewSequence(5L);
+
+        harness.dispatch(new PassiveDirectory(List.of(LEADER, JOINED)));
+
+        assertThat(manager.leader()).as("eligibility comes from the members installed by this entry, not the configured cluster")
+                                    .isEqualTo(Option.some(JOINED));
+        assertThat(ctx.adoptedViewSequence()).isEqualTo(5L);
     }
 
     private void startDormant() {
