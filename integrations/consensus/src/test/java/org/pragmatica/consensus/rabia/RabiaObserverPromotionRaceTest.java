@@ -49,7 +49,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// `Idle` unconditionally, so a quorum-loss pause queued ahead of it was overwritten and the engine left a pause it
 /// should hold. The race arm makes the interleaving deterministic: the apply executor is parked in a task, the pause and
 /// then the authorization are queued behind it, and only then is the executor released. The control arm pins that a
-/// promotion from `Observing` still promotes.
+/// promotion from `Observing` still promotes. [RabiaEngine#clusterState] had the same split on the quorum-return path,
+/// pinned by the last arm.
 class RabiaObserverPromotionRaceTest {
     private static final NodeId NODE_1 = nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = nodeId("node-2").unwrap();
@@ -109,6 +110,30 @@ class RabiaObserverPromotionRaceTest {
 
         assertThat(engine.isActive()).as("events=" + events).isTrue();
         assertThat(engine.isObserving()).as("events=" + events).isFalse();
+    }
+
+    /// The same check-then-act on the quorum-return path: an ACTIVE read against the caller's view of the state was
+    /// dropped as a "redundant echo" while a pause was still queued, so the engine stayed `Paused` with quorum present.
+    @Test
+    void quorumReturnQueuedBehindAQuorumLossPause_resumesTheEngine() throws InterruptedException {
+        var events = new CopyOnWriteArrayList<String>();
+        var engine = observingEngine(events);
+
+        engine.authorizeActivation();
+        quiesce(engine);
+        assertThat(engine.isActive()).as("precondition: a voter; events=" + events).isTrue();
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+
+        engine.safeExecuteForTesting(() -> parked(entered, release));
+        assertThat(entered.await(5, TimeUnit.SECONDS)).as("the executor must be parked before anything is queued").isTrue();
+        engine.clusterState(ClusterStateNotification.passive());
+        engine.clusterState(ClusterStateNotification.active());
+        release.countDown();
+        quiesce(engine);
+
+        assertThat(engine.isPaused()).as("a quorum return queued after the pause must resume it; events=" + events).isFalse();
+        assertThat(engine.isActive()).as("events=" + events).isTrue();
     }
 
     private RabiaEngine<TestCommand> observingEngine(List<String> events) {
