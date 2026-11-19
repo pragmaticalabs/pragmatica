@@ -2526,7 +2526,6 @@ public sealed interface AetherValue {
         /// Wire sentinel, same contract as `SchemaStatus.UNKNOWN`: an ordinal this node cannot name decodes here. Treated as
         /// forward-migrated (no guard), because an unreadable value must not block a publish. Must stay LAST.
         UNKNOWN;
-
         /// Whether a publish declaring a higher version would re-apply what an operator intervention left out.
         public boolean guardsRepublish() {
             return this == UNDONE || this == BASELINED;

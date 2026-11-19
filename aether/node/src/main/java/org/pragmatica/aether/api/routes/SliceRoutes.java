@@ -262,8 +262,8 @@ public final class SliceRoutes implements RouteSource {
                      .flatMap(coords -> nodeSupplier.get()
                                                     .blueprintService()
                                                     .publishFromArtifact(coords,
-                                                                             false,
-                                                                             request.force()))
+                                                                         false,
+                                                                         request.force()))
                      .withSuccess(this::onBlueprintActivated)
                      .map(this::deployBlueprintResponse)
                      .onFailure(cause -> log.warn("Blueprint artifact deploy failed: {}",
@@ -277,8 +277,8 @@ public final class SliceRoutes implements RouteSource {
                      .flatMap(coords -> nodeSupplier.get()
                                                     .blueprintService()
                                                     .publishFromArtifact(coords,
-                                                                             true,
-                                                                             request.force()))
+                                                                         true,
+                                                                         request.force()))
                      .map(published -> blueprintResponse("published", published))
                      .onSuccess(r -> log.info("Blueprint {} published (register-only — not activated)",
                                               r.blueprint()))
