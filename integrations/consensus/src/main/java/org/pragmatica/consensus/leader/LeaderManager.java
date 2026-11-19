@@ -523,16 +523,22 @@ public interface LeaderManager {
             dispatchView(nodeGone);
         }
 
-        /// Every view event takes this one path. Cluster mode dispatches it. Local mode needs the new leader to appear
-        /// BEFORE the event, so `Led` stays in `Led` (another leader) instead of going `Led` -> `ReElecting` -> `Led`,
-        /// which would emit an intermediate "no leader" notification (#3044): the view is applied first, through the
-        /// fence the FSM uses, then the local leader is elected from the applied view, then the event is dispatched. A
-        /// stale view (older than one already applied) neither elects nor dispatches. The FSM finds the view already
-        /// applied and checks the leader against it (I2): an empty view elects nothing, so `Led` loses the leader.
         private void dispatchView(ClusterFsmEvent.TopologyChange event) {
+            dispatchViewChange(() -> context.applyTopology(event), event);
+        }
+
+        /// Every view change (a sequenced view, a view-free removal) takes this one path. Cluster mode dispatches it.
+        /// Local mode needs the new leader to appear BEFORE the event, so `Led` stays in `Led` (another leader) instead
+        /// of going `Led` -> `ReElecting` -> `Led`, which would emit an intermediate "no leader" notification (#3044):
+        /// the change is applied first, through the storage the FSM uses, then the local leader is elected from the
+        /// stored view, then the event is dispatched. A change the storage does not apply (a stale view; a removal of an
+        /// absent node, of self or of the last node) neither elects nor dispatches: a local leader is a function of the
+        /// stored view (I3's election rule), so an unchanged view moves nothing. The FSM finds the change already
+        /// applied and holds the leader to the stored view (I2): an empty view elects nothing, so `Led` loses it.
+        private void dispatchViewChange(BooleanSupplier applyLocally, ClusterFsmEvent event) {
             if (!localMode) {
                 fsm.dispatch(event);
-            } else if (context.applyTopology(event)) {
+            } else if (applyLocally.getAsBoolean()) {
                 electLocallyIfPossible();
                 fsm.dispatch(event);
             }
@@ -543,26 +549,12 @@ public interface LeaderManager {
         public void peerObservedFaulty(PeerObservedFaulty peerObservedFaulty) {
             // SWIM-FAULTY removes exactly the faulty peer, view-free (#3044): SWIM's snapshot is not a sequenced
             // transport view, so it never replaces the stored one (it would also drop SUSPECT peers and re-add peers
-            // the transport has evicted).
-            // Local mode removes the peer first and, only if it was removed, adopts from the STORED view and then
-            // dispatches (#3044), so `Led` never sees an intermediate "no leader"; the FSM's removal then finds the peer
-            // gone. A refused removal (the last node stays) neither adopts nor dispatches: in local mode the leader is the
-            // first entry of the stored view, so nothing was removed and nothing may move, and a dispatch would make `Led`
-            // lose a leader that no local commit can restore.
-            // Non-local mode dispatches even when nothing was removed: a removal is never stale, and `Led` loses a
-            // removed leader unconditionally even when the stored view no longer holds it.
-            if (localMode) {
-                removeLocally(peerObservedFaulty.nodeId());
-            } else {
-                fsm.dispatch(new LeaderElectionEvents.PeerRemovedFromView(peerObservedFaulty.nodeId()));
-            }
-        }
+            // the transport has evicted). It takes the one view-change path; cluster mode dispatches even when the
+            // storage removes nothing, because a removal is never stale and `Led` loses a leader named failed.
+            var nodeId = peerObservedFaulty.nodeId();
 
-        private void removeLocally(NodeId nodeId) {
-            if (context.removeFromView(nodeId)) {
-                electLocallyIfPossible();
-                fsm.dispatch(new LeaderElectionEvents.PeerRemovedFromView(nodeId));
-            }
+            dispatchViewChange(() -> context.removeFromView(nodeId),
+                               new LeaderElectionEvents.PeerRemovedFromView(nodeId));
         }
 
         @Contract

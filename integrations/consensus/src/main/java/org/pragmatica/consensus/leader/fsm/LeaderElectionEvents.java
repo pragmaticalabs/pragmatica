@@ -86,7 +86,15 @@ public final class LeaderElectionEvents {
     /// A view-free removal of one peer from the stored topology (#3044): the observer saw `node` fail but carries no
     /// sequenced view, so it removes exactly that node and never adds one. It is not fenced and never stale; the
     /// storage keeps the view when the node is absent, is this node itself, or is the last node left (see
-    /// `LeaderElectionContext#removeFromView`). In `Led`, a removal of the leader loses the leader whatever the
-    /// storage kept. Placed here rather than in `ClusterFsmEvent` so the cluster-lifecycle vocabulary is unchanged.
+    /// `LeaderElectionContext#removeFromView`). A removal of the held leader loses it whatever the storage kept
+    /// (`LeaderElectionState#holdLeaderToView`). Placed here rather than in `ClusterFsmEvent` so the cluster-lifecycle
+    /// vocabulary is unchanged.
     public record PeerRemovedFromView(NodeId node) implements ClusterFsmEvent {}
+
+    /// Dispatched by the one #3092 I2 site (`LeaderElectionState#holdLeaderToView`) when the leader the current state
+    /// holds is absent from the stored view, or is the node a view-free removal named failed: `Led` loses it,
+    /// `Passive` drops the observed leader, every other state holds none and ignores it. Carries the leader the site
+    /// checked, so a check that outlives its tenure (leader swapped meanwhile) is discarded rather than deposing the
+    /// new leader.
+    public record LeaderOutOfView(NodeId leader) implements ClusterFsmEvent {}
 }

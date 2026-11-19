@@ -20,6 +20,7 @@ import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ElectionTick;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.KvSyncGraceTimeout;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderDoubtConfirmed;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderOutOfView;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderSilent;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.PeerRemovedFromView;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ProposalSettled;
@@ -58,9 +59,14 @@ import org.slf4j.LoggerFactory;
 /// `ViewApplicationTableTest`; no state keeps a local rule of its own about a view:
 /// - I1: an applied view is stored as it is, an empty one included ([LeaderElectionContext#currentTopology()] never
 ///   returns a view the transport has replaced).
-/// - I2: after any view event the leader `Led` follows is in the applied eligible view, or `Led` loses it
-///   (`applyViewInLed`; the pre-vote asks first when enabled). States without a leader only store the view. A
-///   committed leader is still adopted when absent from the view (FIX 1): I2 governs views, not commits.
+/// - I2: after every view write and every local leader adoption, the leader the state holds (`Led`'s leader,
+///   `Passive`'s observed leader) is in the stored eligible view and is not the node a removal just named failed, or
+///   it is lost. ONE predicate decides membership (`isInStoredView`; every in-view test reads it), and I2 is decided
+///   at two places only: the local-commit admission (`adoptLocalCommit`) and the post-change site `holdLeaderToView`,
+///   which every state's view arms run
+///   through `storeView` / `storeRemoval` and a local `Led` runs on entry (a leader adopted while a concurrent view
+///   dropped it is caught after the transition). A cluster commit is still adopted when absent from the view (FIX 1: a
+///   consensus decision; the next view checks it).
 /// - I3: a leaderless electing state makes progress on its own ticks in local mode as in cluster mode: a local tick
 ///   elects the first node of the view, and a local commit is not gated on a sequence local mode never advances.
 public sealed interface LeaderElectionState extends FsmState<LeaderElectionState, ClusterFsmEvent> permits LeaderElectionState.Dormant, LeaderElectionState.QuorumWaiting, LeaderElectionState.AwaitingKvSync, LeaderElectionState.Electing, LeaderElectionState.Led, LeaderElectionState.ReElecting, LeaderElectionState.QuorumLost, LeaderElectionState.Stopped, LeaderElectionState.Passive {
@@ -94,9 +100,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 // the SSOT for consensus readiness is the consensus engine itself, queried on
                 // entry to QuorumWaiting via `ctx.consensusReadySupplier()`.
                 case ConsensusReady _ -> tx.handle(NO_ACTION_DORMANT);
-                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> ctx.applyTopology(na));
-                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> ctx.applyTopology(ng));
-                case PeerRemovedFromView removed -> tx.handle(() -> ctx.removeFromView(removed.node()));
+                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> storeView(ctx, na));
+                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> storeView(ctx, ng));
+                case PeerRemovedFromView removed -> tx.handle(() -> storeRemoval(ctx, removed));
                 default -> tx.ignore();
             }
         }
@@ -182,9 +188,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case ConsensusReady _ -> tx.transitionTo(ctx.awaitingKvSync());
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.dormant());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
-                case ClusterFsmEvent.NodeAdded na -> ctx.applyTopology(na);
-                case ClusterFsmEvent.NodeGone ng -> ctx.applyTopology(ng);
-                case PeerRemovedFromView removed -> ctx.removeFromView(removed.node());
+                case ClusterFsmEvent.NodeAdded na -> storeView(ctx, na);
+                case ClusterFsmEvent.NodeGone ng -> storeView(ctx, ng);
+                case PeerRemovedFromView removed -> storeRemoval(ctx, removed);
                 case LeaderCommitted lc -> adoptLeaderUnconditionally(ctx, lc, tx);
                 default -> tx.ignore();
             }
@@ -277,9 +283,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case KvSyncGraceTimeout _ -> graceTimeoutFallthrough(ctx, tx, this);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
-                case ClusterFsmEvent.NodeAdded na -> ctx.applyTopology(na);
-                case ClusterFsmEvent.NodeGone ng -> ctx.applyTopology(ng);
-                case PeerRemovedFromView removed -> ctx.removeFromView(removed.node());
+                case ClusterFsmEvent.NodeAdded na -> storeView(ctx, na);
+                case ClusterFsmEvent.NodeGone ng -> storeView(ctx, ng);
+                case PeerRemovedFromView removed -> storeRemoval(ctx, removed);
                 default -> tx.ignore();
             }
         }
@@ -467,6 +473,10 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
         @Override
         public void onEntry() {
+            if (leftTheViewOnLocalEntry()) {
+                return;
+            }
+
             ctx.markHasEverHadLeader();
             ctx.setCurrentLeader(Option.some(leader));
             notifyLeaderChange(ctx);
@@ -495,6 +505,22 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             leaseFuture.set(future);
         }
 
+        /// #3092 I2 after a local leader adoption: a local commit names a node of the view it was elected from, but a
+        /// view written concurrently (another transport thread) may have dropped that node between the commit's
+        /// admission and this transition. The one I2 site runs here, BEFORE the leader is published, so such a
+        /// tenure leaves at once and announces nothing. Cluster mode is exempt: a consensus commit is adopted when
+        /// absent from the view (FIX 1), and the next view checks it.
+        private boolean leftTheViewOnLocalEntry() {
+            if (!ctx.isLocalMode()) {
+                return false;
+            }
+
+            holdLeaderToView(ctx, Option.none());
+
+            return ctx.fsm()
+                      .current() != this;
+        }
+
         @Override
         public void onExit() {
             cancelFuture(leaseFuture);
@@ -510,8 +536,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         /// view, or its leader ping has been silent for the full lease threshold. Read by the pre-vote both to
         /// keep retrying while it holds and to answer other followers' questions about this leader.
         public boolean isLeaderSuspected() {
-            return ! ctx.currentTopology()
-                        .contains(leader) || consecutiveSilentChecks.get() >= LeaderElectionContext.LEADER_SILENCE_THRESHOLD_INTERVALS;
+            return ! isInStoredView(ctx, leader) || consecutiveSilentChecks.get() >= LeaderElectionContext.LEADER_SILENCE_THRESHOLD_INTERVALS;
         }
 
         @Override
@@ -519,9 +544,10 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             switch (event) {
                 case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
                                                                                                     directory.members()));
-                case ClusterFsmEvent.NodeGone ng -> applyViewInLed(ctx, this, ng, tx);
-                case PeerRemovedFromView removed -> handleRemovalInLed(ctx, this, removed, tx);
-                case ClusterFsmEvent.NodeAdded na -> applyViewInLed(ctx, this, na, tx);
+                case ClusterFsmEvent.NodeGone ng -> storeView(ctx, ng);
+                case PeerRemovedFromView removed -> storeRemoval(ctx, removed);
+                case ClusterFsmEvent.NodeAdded na -> storeView(ctx, na);
+                case LeaderOutOfView out -> handleLeaderOutOfViewInLed(ctx, this, out, tx);
                 case LeaderCommitted lc -> handleLeaderCommittedInLed(ctx, leader, lc, tx);
                 case LeaderSilent ls -> handleLeaderSilentInLed(ctx, this, ls, tx);
                 case LeaderDoubtConfirmed dc -> handleLeaderDoubtConfirmedInLed(ctx, this, dc, tx);
@@ -601,32 +627,68 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                    tx);
     }
 
-    /// #3092/#3426 I2: every view event in `Led` (`NodeAdded`, `NodeGone` of the leader or of another node, an empty
-    /// view) ends with the leader in the applied eligible view, otherwise the leader is lost through [#loseLeader]
-    /// (with the pre-vote enabled the electorate is asked first, #1748). The check reads the STORED view after the
-    /// write, whether or not this event's own view was applied: a stale event (#2971) writes nothing, so the view it
-    /// checks is the newer one, and a view that `LeaderManager`'s local paths applied ahead of the dispatch (#3044) is
-    /// checked here too. No suspect (#2869): a leader absent from the view is already out of the transport topology.
-    private static void applyViewInLed(LeaderElectionContext ctx,
-                                       Led led,
-                                       ClusterFsmEvent.TopologyChange event,
-                                       TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
-        ctx.applyTopology(event);
-        if (!ctx.currentTopology().contains(led.leader())) {
-            loseLeader(ctx, led, Option.none(), tx);
-        }
+    /// The one #3092/#3426 I2 site: the leader the current state holds (`Led`'s leader, `Passive`'s observed leader;
+    /// every other state holds none) must be in the stored eligible view, otherwise a [LeaderOutOfView] is dispatched
+    /// and the state loses it (`Led` through [#loseLeader], with the pre-vote asking first when enabled, #1748;
+    /// `Passive` drops it). It reads the STORED view after the write, whether or not the event's own view applied: a
+    /// stale event (#2971) writes nothing, so the view it checks is the newer one, and a view that `LeaderManager`'s
+    /// local paths applied ahead of the dispatch (#3044) is checked here too. Runs after every view write
+    /// ([#storeView], [#storeRemoval]) and on a local `Led` entry; no other path checks the leader against the view.
+    /// `namedFailed` is the node a view-free removal named (#3044): SWIM evidence that it failed, so a held leader it
+    /// names is lost even where the storage KEPT it (it is this node, or the last node left), the one case the stored
+    /// view cannot express. A view write names none.
+    private static void holdLeaderToView(LeaderElectionContext ctx, Option<NodeId> namedFailed) {
+        heldLeader(ctx.fsm().current()).filter(leader -> !isInStoredView(ctx, leader) || namedFailed.filter(leader::equals)
+                                                                                                    .isPresent())
+                  .onPresent(leader -> dispatchSelf(ctx,
+                                                    new LeaderOutOfView(leader)));
     }
 
-    /// #3044: the removal is stored first (the storage decides only what is kept: an absent node, self, or the last
-    /// node leaves the view as it is), then a removal of the leader loses the leader UNCONDITIONALLY. A removal is
-    /// never stale, and gating on the storage result would keep a leader that is the last node of the stored view or
-    /// already absent from it. A removal of another peer leaves the leader alone.
-    private static void handleRemovalInLed(LeaderElectionContext ctx,
-                                           Led led,
-                                           PeerRemovedFromView event,
-                                           TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
-        ctx.removeFromView(event.node());
-        if (event.node().equals(led.leader())) {
+    /// The one #3092 I2 membership predicate: `node` is in the stored eligible view. Every in-view test in this file
+    /// reads it; the I2 decisions are [#adoptLocalCommit]'s admission and [#holdLeaderToView].
+    private static boolean isInStoredView(LeaderElectionContext ctx, NodeId node) {
+        return ctx.currentTopology()
+                  .contains(node);
+    }
+
+    private static Option<NodeId> heldLeader(LeaderElectionState state) {
+        return switch (state) {
+            case Led led -> Option.some(led.leader());
+            case Passive passive -> passive.ctx().currentLeader();
+            default -> Option.none();
+        };
+    }
+
+    /// I1 then I2 for a sequenced view event, in every state: store the event's view (dropped when stale), then hold
+    /// the leader to the stored view. Returns `true` iff the event's view was applied.
+    private static boolean storeView(LeaderElectionContext ctx, ClusterFsmEvent.TopologyChange event) {
+        var applied = ctx.applyTopology(event);
+
+        holdLeaderToView(ctx, Option.none());
+
+        return applied;
+    }
+
+    /// I2 for a view-free removal, in every state: remove the node (the storage keeps an absent node, self and the last
+    /// node), then hold the leader to the stored view with the removed node named failed, so a held leader it names is
+    /// lost whatever the storage kept. Returns `true` iff the node was removed.
+    private static boolean storeRemoval(LeaderElectionContext ctx, PeerRemovedFromView event) {
+        var removed = ctx.removeFromView(event.node());
+
+        holdLeaderToView(ctx,
+                         Option.some(event.node()));
+
+        return removed;
+    }
+
+    /// The I2 site found this tenure's leader absent from the stored view, or named failed by a removal. Fenced by the carried leader, like
+    /// [LeaderSilent]: a check made for an earlier tenure is discarded. No suspect (#2869): a leader absent from the
+    /// view is already out of the transport topology (and a removal names it failed).
+    private static void handleLeaderOutOfViewInLed(LeaderElectionContext ctx,
+                                                   Led led,
+                                                   LeaderOutOfView event,
+                                                   TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        if (event.leader().equals(led.leader())) {
             loseLeader(ctx, led, Option.none(), tx);
         }
     }
@@ -697,7 +759,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         // FIX 1: a committed leader-SWAP is adopted unconditionally w.r.t. transport — transport
         // presence must not veto a consensus decision. WARN when the new leader is not yet in the
         // transport view for diagnosability; SWIM/FSM death drives correction if it is genuinely gone.
-        if (!ctx.currentTopology().contains(event.leader())) {
+        if (!isInStoredView(ctx, event.leader())) {
             log.warn("Adopting leader-swap LeaderCommitted({}) in Led({}) — new leader NOT YET in "
                     + "transport topology {} (consensus decision overrides observed state, FIX 1)",
                      event.leader(),
@@ -840,9 +902,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 // `ctx.consensusReadySupplier()` on next entry to QuorumWaiting (after
                 // QuorumEstablished re-establishes quorum).
                 case ConsensusReady _ -> tx.handle(NO_ACTION_DORMANT);
-                case ClusterFsmEvent.NodeAdded na -> ctx.applyTopology(na);
-                case ClusterFsmEvent.NodeGone ng -> ctx.applyTopology(ng);
-                case PeerRemovedFromView removed -> ctx.removeFromView(removed.node());
+                case ClusterFsmEvent.NodeAdded na -> storeView(ctx, na);
+                case ClusterFsmEvent.NodeGone ng -> storeView(ctx, ng);
+                case PeerRemovedFromView removed -> storeRemoval(ctx, removed);
                 case LeaderCommitted lc -> log.warn("Rejecting stale LeaderCommitted({}) in QuorumLost", lc.leader());
                 default -> tx.ignore();
             }
@@ -862,9 +924,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             // Terminal: no transition. A view is still stored (#3092 I1, the same in local and cluster mode).
             switch (event) {
-                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> ctx.applyTopology(na));
-                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> ctx.applyTopology(ng));
-                case PeerRemovedFromView removed -> tx.handle(() -> ctx.removeFromView(removed.node()));
+                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> storeView(ctx, na));
+                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> storeView(ctx, ng));
+                case PeerRemovedFromView removed -> tx.handle(() -> storeRemoval(ctx, removed));
                 default -> tx.ignore();
             }
         }
@@ -888,11 +950,12 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                                                                                                     directory.members()));
                 case LeaderElectionEvents.VoterReadmitted _ -> tx.transitionTo(ctx.quorumWaiting());
                 case LeaderCommitted committed -> tx.handle(() -> observeCommittedLeader(ctx, committed));
+                case LeaderOutOfView out -> tx.handle(() -> dropObservedLeader(ctx, out));
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 // #3092 I1: a readmitted worker elects from the view the transport last applied, not a replaced one.
-                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> ctx.applyTopology(na));
-                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> ctx.applyTopology(ng));
-                case PeerRemovedFromView removed -> tx.handle(() -> ctx.removeFromView(removed.node()));
+                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> storeView(ctx, na));
+                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> storeView(ctx, ng));
+                case PeerRemovedFromView removed -> tx.handle(() -> storeRemoval(ctx, removed));
                 default -> tx.ignore();
             }
         }
@@ -910,6 +973,12 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         notifyLeaderChange(ctx);
     }
 
+    /// `Passive` side of the I2 site: the observed leader the site found absent from the stored view is dropped
+    /// (F-a4), unless a newer commit replaced it meanwhile.
+    private static void dropObservedLeader(LeaderElectionContext ctx, LeaderOutOfView event) {
+        ctx.currentLeader().filter(event.leader()::equals).onPresent(_ -> clearLeaderAndNotify(ctx));
+    }
+
     // --- Shared action helpers ---
     /// Adopt a COMMITTED leader unconditionally (FIX 1, B5-facet-2 600s wedge). A committed
     /// `LeaderKey` is a consensus-validated DECISION; the transport-fed `ctx.currentTopology()`
@@ -920,7 +989,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     private static void adoptLeaderUnconditionally(LeaderElectionContext ctx,
                                                    LeaderCommitted event,
                                                    TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
-        if (!ctx.currentTopology().contains(event.leader())) {
+        if (!isInStoredView(ctx, event.leader())) {
             log.warn("Adopting committed LeaderCommitted({}) NOT YET in transport topology {} — "
                     + "consensus decision overrides observed transport state (FIX 1); SWIM/FSM "
                     + "death will drive re-election if the leader is genuinely gone",
@@ -977,14 +1046,17 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     }
 
     /// #3092 I3: local mode never advances the committed sequence, so the sequence gate would skip every local commit
-    /// and leave an electing node leaderless. A local commit is adopted iff its leader is in the applied eligible view
-    /// (I2): every local election names the first node of that view (I1), and a KV-pull commit of a leader the view no
-    /// longer holds (the evicted leader's stale `LeaderKey`) is skipped instead of resurrecting it.
+    /// and leave an electing node leaderless. A local commit is adopted iff its leader is in the applied eligible view:
+    /// every local election names the first node of that view (I1), and a KV-pull commit of a leader the view no
+    /// longer holds (the evicted leader's stale `LeaderKey`) is skipped. This is I2's admission half (the post-change
+    /// half is [#holdLeaderToView]; both read [#isInStoredView]): without it the post-change site would still drop such
+    /// a tenure on `Led` entry, but `ReElecting`'s entry re-pulls the same stale `LeaderKey`, so admit -> drop ->
+    /// re-pull would recurse on the dispatching thread.
     private static void adoptLocalCommit(LeaderElectionContext ctx,
                                          LeaderCommitted event,
                                          String stateLabel,
                                          TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
-        if (!ctx.currentTopology().contains(event.leader())) {
+        if (!isInStoredView(ctx, event.leader())) {
             log.info("{}: skipping local-mode LeaderCommitted({}) — absent from the applied view {}",
                      stateLabel,
                      event.leader(),
@@ -1033,8 +1105,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                           // root of the 600s wedge (one joiner self-healed only by luck, the other never did).
                           // The KV leader is a consensus-validated decision; adopt it. A transport-absent leader
                           // is logged WARN here; the `adoptLeaderUnconditionally` handler emits the adoption WARN.
-                          if (!ctx.currentTopology()
-                                  .contains(leader)) {
+                          if (!isInStoredView(ctx, leader)) {
                               log.warn("KV-pull: committed leader {} NOT in transport topology {} — adopting anyway "
                                       + "(consensus decision overrides observed state, FIX 1)",
                                        leader,
@@ -1086,7 +1157,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     }
 
     private static void handleTopologyChange(LeaderElectionContext ctx, ClusterFsmEvent.TopologyChange event) {
-        if (ctx.applyTopology(event)) {
+        if (storeView(ctx, event)) {
             rescheduleCurrentTick(ctx);
         }
     }
@@ -1094,7 +1165,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// #3044: a view-free removal reschedules the election tick only when the storage removed the node, as a dropped
     /// stale topology event does not (#3040).
     private static void handleRemoval(LeaderElectionContext ctx, PeerRemovedFromView event) {
-        if (ctx.removeFromView(event.node())) {
+        if (storeRemoval(ctx, event)) {
             rescheduleCurrentTick(ctx);
         }
     }
