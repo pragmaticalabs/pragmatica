@@ -9,10 +9,10 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
+import org.pragmatica.aether.slice.kvstore.SliceRowSource;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
@@ -34,7 +34,7 @@ public final class TopologyCollector {
 
     private final AtomicReference<TopologyManager> topologyManager = new AtomicReference<>();
     private final AtomicReference<LeaderManager> leaderManager = new AtomicReference<>();
-    private final AtomicReference<KVStore<AetherKey, AetherValue>> kvStore = new AtomicReference<>();
+    private final AtomicReference<SliceRows> sliceRows = new AtomicReference<>();
     private final ConcurrentHashMap<String, NodeInfo> knownNodes = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> nodeSuspectTimes = new ConcurrentHashMap<>();
 
@@ -57,11 +57,19 @@ public final class TopologyCollector {
         return unitResult();
     }
 
+    /// The store and the engine's per-node slice rows in it (#3411: `NodeArtifactKey` under LEGACY, the current `SliceObservedKey`
+    /// rows under FSM2), which the slice distribution is counted from.
     @SuppressWarnings("JBCT-ACR-01")
-    public Result<Unit> setKVStore(KVStore<AetherKey, AetherValue> store) {
-        kvStore.set(store);
+    public Result<Unit> setKVStore(KVStore<AetherKey, AetherValue> store, SliceRowSource rows) {
+        sliceRows.set(SliceRows.sliceRows(store, rows));
 
         return unitResult();
+    }
+
+    private record SliceRows(KVStore<AetherKey, AetherValue> store, SliceRowSource source) {
+        static SliceRows sliceRows(KVStore<AetherKey, AetherValue> store, SliceRowSource source) {
+            return new SliceRows(store, source);
+        }
     }
 
     public Result<Unit> registerNode(NodeInfo node) {
@@ -94,7 +102,7 @@ public final class TopologyCollector {
     public ClusterTopology snapshot() {
         var topology = option(topologyManager.get());
         var leader = option(leaderManager.get());
-        var store = option(kvStore.get());
+        var rows = option(sliceRows.get());
 
         if (topology.isEmpty()) {
             log.trace("TopologyManager not set, returning empty topology");
@@ -105,7 +113,7 @@ public final class TopologyCollector {
         Option<String> leaderId = leader.flatMap(LeaderManager::leader).map(NodeId::id);
         var nodeInfos = buildNodeInfos(leaderId);
         int healthyCount = countHealthyNodes();
-        Map<String, ClusterTopology.SliceInfo> sliceInfos = store.map(this::collectSliceInfo).or(Map.of());
+        Map<String, ClusterTopology.SliceInfo> sliceInfos = rows.map(this::collectSliceInfo).or(Map.of());
         int totalNodes = nodeInfos.size();
         int quorumSize = topology.map(TopologyManager::quorumSize).or(0);
         boolean hasQuorum = healthyCount >= quorumSize;
@@ -144,13 +152,13 @@ public final class TopologyCollector {
                                .count();
     }
 
-    private Map<String, ClusterTopology.SliceInfo> collectSliceInfo(KVStore<AetherKey, AetherValue> store) {
+    private Map<String, ClusterTopology.SliceInfo> collectSliceInfo(SliceRows rows) {
         Map<String, ClusterTopology.SliceInfo> sliceInfos = new HashMap<>();
 
         try {
             var sliceCounts = new HashMap<String, Map<String, Integer>>();
 
-            store.forEach(SliceNodeKey.class, SliceNodeValue.class, (key, _) -> countSlice(sliceCounts, key));
+            rows.source().forEachRow(rows.store(), (node, artifact, _) -> countSlice(sliceCounts, node, artifact));
             sliceCounts.forEach((artifact, distribution) -> sliceInfos.put(artifact,
                                                                            buildSliceInfo(artifact, distribution)));
         } catch (Exception e) {
@@ -166,10 +174,7 @@ public final class TopologyCollector {
         return new ClusterTopology.SliceInfo(artifact, totalInstances, totalInstances, distribution);
     }
 
-    private void countSlice(Map<String, Map<String, Integer>> sliceCounts, SliceNodeKey sliceKey) {
-        String artifact = sliceKey.artifact().asString();
-        String nodeId = sliceKey.nodeId().id();
-
-        sliceCounts.computeIfAbsent(artifact, _ -> new HashMap<>()).merge(nodeId, 1, Integer::sum);
+    private void countSlice(Map<String, Map<String, Integer>> sliceCounts, NodeId node, Artifact artifact) {
+        sliceCounts.computeIfAbsent(artifact.asString(), _ -> new HashMap<>()).merge(node.id(), 1, Integer::sum);
     }
 }
