@@ -2187,6 +2187,7 @@ start_log_streamers() {
     # Teardown is `log-streamer.sh stop`: kill by RECORDED pid (daemon.pid, <container>.pid), never by pattern. The earlier
     # `pkill -f 'docker logs -[f] aether-'` matched every run's streams on a shared host (and its own remote shell, hence the
     # bracket idiom); a pid file names exactly what this harness started (#3427).
+    # proc-registry: remote (the nohup below runs inside remote_exec, on the test host, not a local fork)
     remote_exec "[ -f /tmp/aether-log-streamer.sh ] && bash /tmp/aether-log-streamer.sh stop; \
 rm -rf /tmp/aether-node-logs && mkdir -p /tmp/aether-node-logs; \
 chmod +x /tmp/aether-log-streamer.sh; \
@@ -3086,9 +3087,11 @@ reap_cloud_cluster() {
                 fi
             ) &
             pids+=("$!")
+            proc_track "$!"
         done <<< "$ids"
         for pid in "${pids[@]+"${pids[@]}"}"; do
             wait "$pid" 2>/dev/null || true
+            proc_untrack "$pid"
         done
         # Brief settle before re-enumerating: deletions are async on the API
         # side, and auto-heal (if a leader briefly survives) can respawn a

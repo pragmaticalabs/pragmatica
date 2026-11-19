@@ -367,11 +367,13 @@ read_amount() {
 }
 
 reap_creator() {
-    if [ -n "$CREATOR_PID" ] && kill -0 "$CREATOR_PID" 2>/dev/null; then
-        if kill "$CREATOR_PID" 2>/dev/null; then
-            wait "$CREATOR_PID" 2>/dev/null
+    if [ -n "$CREATOR_PID" ]; then
+        local was_alive=0
+        if kill -0 "$CREATOR_PID" 2>/dev/null; then was_alive=1; fi
+        proc_reap "$CREATOR_PID"
+        if [ "$was_alive" -eq 1 ]; then
+            log_info "concurrent creator ${CREATOR_PID} reaped (non-zero exit expected when the owner dies mid-create)"
         fi
-        log_info "concurrent creator ${CREATOR_PID} reaped (non-zero exit expected when the owner dies mid-create)"
     fi
     CREATOR_PID=""
 }
@@ -543,6 +545,7 @@ test_kill_node_under_concurrent_creates() {
 
     create_range_recording_acks "$N_PRE" "$N_DURING" "$ACKED_DURING" &
     CREATOR_PID=$!
+    proc_track "$CREATOR_PID"
 
     sleep 2   # let the concurrent creator get into the window before the kill lands
 

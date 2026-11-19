@@ -27,7 +27,7 @@ if [ "${1:-}" = stop ]; then
         case "$p" in '' | *[!0-9]*) continue ;; esac
         cmd=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null)
         case "$cmd" in
-            *aether-log-streamer.sh* | 'docker logs -f aether-'*) kill "$p" 2>/dev/null ;;
+            *aether-log-streamer.sh* | 'docker logs -f aether-'*) kill "$p" 2>/dev/null ;;  # proc-registry: remote (this script runs on the test host)
         esac
     done
     exit 0
@@ -39,7 +39,7 @@ while true; do
     for c in $(docker ps --format '{{.Names}}' --filter name=aether- 2>/dev/null); do
         pidfile="${LOG_DIR}/${c}.pid"
         if [ ! -e "$pidfile" ] || ! kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; then
-            nohup docker logs -f "$c" >> "${LOG_DIR}/${c}.log" 2>&1 &
+            nohup docker logs -f "$c" >> "${LOG_DIR}/${c}.log" 2>&1 &  # proc-registry: remote
             echo $! > "$pidfile"
         fi
     done
