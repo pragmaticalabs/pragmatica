@@ -8,6 +8,7 @@ import java.util.Locale;
 
 import org.pragmatica.lang.Verify;
 
+
 public enum DeploymentAtomicity {
     BEST_EFFORT,
     ALL_OR_NOTHING;

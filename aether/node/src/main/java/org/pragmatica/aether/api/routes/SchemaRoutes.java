@@ -201,7 +201,7 @@ public final class SchemaRoutes implements RouteSource {
     /// the shared source a fact rather than a coincidence of two identical bodies.
     private Option<BlueprintId> sliceOwner(Artifact artifact) {
         return SchemaHold.resolveSliceOwner(nodeSupplier.get().kvStore(),
-                                           artifact);
+                                            artifact);
     }
 
     /// #760 review BLOCKING 1: `/migrate` writing MIGRATING has no orchestrator effect by itself —

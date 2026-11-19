@@ -2294,13 +2294,13 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         // once per blueprint-change/restore event, not once per slice/schema pair.
         private boolean resolveSchemaRequired(BlueprintId blueprintId) {
             return SchemaHold.resolveDeclaredSchemaRequired(ctx.kvStore(),
-                                                                        blueprintId)
-                                         .onPresent(value -> log.debug("schemaRequired resolved to {} for {} from declared deploymentConfig",
-                                                                       value,
-                                                                       blueprintId))
-                                         .onEmpty(() -> log.warn("schemaRequired unresolved for {}, defaulting to true (missing blueprint entry, resourcesConfig, or unparsable/incomplete resources.toml) — every slice of this blueprint will hold in LOADED until a schema migration record for its datasource reaches COMPLETED",
-                                                                 blueprintId))
-                                         .or(true);
+                                                            blueprintId)
+                             .onPresent(value -> log.debug("schemaRequired resolved to {} for {} from declared deploymentConfig",
+                                                           value,
+                                                           blueprintId))
+                             .onEmpty(() -> log.warn("schemaRequired unresolved for {}, defaulting to true (missing blueprint entry, resourcesConfig, or unparsable/incomplete resources.toml) — every slice of this blueprint will hold in LOADED until a schema migration record for its datasource reaches COMPLETED",
+                                                     blueprintId))
+                             .or(true);
         }
 
         private Option<ExpandedBlueprint> capturePreviousBlueprint(ExpandedBlueprint expanded) {
@@ -2627,7 +2627,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             return Option.option(blueprints.get(artifact))
                          .flatMap(Blueprint::owner)
                          .orElse(() -> SchemaHold.resolveSliceOwner(ctx.kvStore(),
-                                                         artifact));
+                                                                    artifact));
         }
 
         /// #805 item 2. This write is a read-modify-write: it merges `artifact` into whatever
@@ -3019,8 +3019,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// calling one predicate. See that method for why dropping the pre-filter removes no check.
         private List<SchemaVersionValue> blockingSchemaRecords(SliceNodeKey sliceKey) {
             return SchemaHold.resolveSliceOwner(ctx.kvStore(),
-                                     sliceKey.artifact()).map(this::collectBlockingSchemaRecords)
-                                    .or(List.of());
+                                                sliceKey.artifact())
+                             .map(this::collectBlockingSchemaRecords)
+                             .or(List.of());
         }
 
         private List<SchemaVersionValue> collectBlockingSchemaRecords(BlueprintId owner) {

@@ -20,6 +20,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.Option;
 
+
 /// The schema-hold predicate: whether a schema record holds a slice back from activation, shared by the activation gate and the
 /// management API. The blocking status set is [Schemas#BLOCKING].
 public interface SchemaHold {
