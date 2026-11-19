@@ -15,6 +15,9 @@
 #   C4  a fixture stamped below the tree's current contract is refused as well (the stamp, not only the
 #       absent method, is compared);
 #   C5  a stamp above the tree's value is not refused (the preflight refuses < current only);
+#   C7  a non-constant stamp is refused as unreadable; C8 bipush/sipush stamps (100, 1000) parse;
+#   C9/C10  a truncated slice, coordinate or blueprint jar is refused and named;
+#   C11 a blueprint-listed slice jar absent from the repository is refused (no WARN, no 'current' PASS);
 #   C6  a stale jar directly under a coordinate (not via its blueprint's slice list) is refused too.
 # Fixtures are compiled here with javac from a stub source: the preflight reads the same thing the runtime's
 # factory exposes, a `routeSecurityContract()` method on the class listed in META-INF/services.
@@ -45,6 +48,8 @@ make_jar() {
     mkdir -p "$b/src/fx" "$b/out/META-INF/services"
     if [ "$stamp" = "none" ]; then
         echo 'package fx; public final class FxRoutes { }' > "$b/src/fx/FxRoutes.java"
+    elif [ "$stamp" = "field" ]; then
+        echo 'package fx; public final class FxRoutes { private int v = Integer.parseInt("1"); public int routeSecurityContract() { return v; } }' > "$b/src/fx/FxRoutes.java"
     else
         echo "package fx; public final class FxRoutes { public int routeSecurityContract() { return ${stamp}; } }" > "$b/src/fx/FxRoutes.java"
     fi
@@ -92,7 +97,7 @@ FIRST="$(find "$REPO" -name '*-fx-slice-*.jar' | sort | head -1)"
 STALE_ARTIFACT="$(basename "$(dirname "$(dirname "$FIRST")")")"
 
 run_preflight "$REPO"
-if [ "$RC" -eq 0 ]; then ok "C1 all-current repository passes"; else fail "C1 all-current repository refused (rc ${RC}): ${OUT}"; fi
+if [ "$RC" -eq 0 ] && echo "$OUT" | grep -q "present and current"; then ok "C1 all-current repository passes"; else fail "C1 all-current repository refused (rc ${RC}): ${OUT}"; fi
 
 make_jar "$FIRST" none
 run_preflight "$REPO"
@@ -119,6 +124,49 @@ OWN6="$(find "${WORK}/repo6" -name '*[0-9].jar' ! -name '*-fx-slice-*' ! -name '
 make_jar "$OWN6" none
 run_preflight "${WORK}/repo6"
 if [ "$RC" -eq 1 ] && echo "$OUT" | grep -q "$(basename "$OWN6")"; then ok "C6 stale coordinate jar refused, named"; else fail "C6 stale coordinate jar not refused (rc ${RC}): ${OUT}"; fi
+
+# C7: a stamp that is not a constant cannot be read, so it is refused (never read as current).
+build_repo "${WORK}/repo7" "$CURRENT"
+F7="$(find "${WORK}/repo7" -name '*-fx-slice-*.jar' | sort | head -1)"
+make_jar "$F7" field
+run_preflight "${WORK}/repo7"
+if [ "$RC" -eq 1 ] && echo "$OUT" | grep -q "$(basename "$F7")" && echo "$OUT" | grep -q "unreadable"; then ok "C7 non-constant stamp refused, named, 'unreadable'"; else fail "C7 non-constant stamp not refused (rc ${RC}): ${OUT}"; fi
+
+# C8: stamps compiled to bipush / sipush (above iconst_5) are parsed: 100 and 1000 are current-or-newer, so accepted.
+for big in 100 1000; do
+    build_repo "${WORK}/repo8" "$CURRENT"
+    make_jar "$(find "${WORK}/repo8" -name '*-fx-slice-*.jar' | sort | head -1)" "$big"
+    run_preflight "${WORK}/repo8"
+    if [ "$RC" -eq 0 ]; then ok "C8 stamp ${big} (bipush/sipush) parsed and accepted"; else fail "C8 stamp ${big} refused (rc ${RC}): ${OUT}"; fi
+    rm -rf "${WORK}/repo8"
+done
+
+# C9: a truncated slice jar is refused and named (empty read must not pass as 'not a slice jar').
+build_repo "${WORK}/repo9" "$CURRENT"
+F9="$(find "${WORK}/repo9" -name '*-fx-slice-*.jar' | sort | head -1)"
+head -c 100 "$F9" > "${F9}.cut" && mv "${F9}.cut" "$F9"
+run_preflight "${WORK}/repo9"
+if [ "$RC" -eq 1 ] && echo "$OUT" | grep -q "$(basename "$F9")"; then ok "C9 truncated slice jar refused, named"; else fail "C9 truncated slice jar not refused (rc ${RC}): ${OUT}"; fi
+
+# C10: a truncated coordinate jar and a truncated blueprint jar are refused and named too.
+build_repo "${WORK}/repo10" "$CURRENT"
+F10="$(find "${WORK}/repo10" -name '*[0-9].jar' ! -name '*-fx-slice-*' ! -name '*-blueprint.jar' | sort | head -1)"
+head -c 100 "$F10" > "${F10}.cut" && mv "${F10}.cut" "$F10"
+run_preflight "${WORK}/repo10"
+if [ "$RC" -eq 1 ] && echo "$OUT" | grep -q "$(basename "$F10")"; then ok "C10a truncated coordinate jar refused, named"; else fail "C10a truncated coordinate jar not refused (rc ${RC}): ${OUT}"; fi
+build_repo "${WORK}/repo10b" "$CURRENT"
+B10="$(find "${WORK}/repo10b" -name '*-blueprint.jar' | sort | head -1)"
+head -c 100 "$B10" > "${B10}.cut" && mv "${B10}.cut" "$B10"
+run_preflight "${WORK}/repo10b"
+if [ "$RC" -eq 1 ] && echo "$OUT" | grep -q "$(basename "$B10")"; then ok "C10b truncated blueprint jar refused, named"; else fail "C10b truncated blueprint jar not refused (rc ${RC}): ${OUT}"; fi
+
+# C11: a slice jar the blueprint lists but the repository lacks is refused (not warned), and the PASS wording
+# "current" is reserved for a run where every listed slice was read.
+build_repo "${WORK}/repo11" "$CURRENT"
+F11="$(find "${WORK}/repo11" -name '*-fx-slice-*.jar' | sort | head -1)"
+rm -f "$F11"
+run_preflight "${WORK}/repo11"
+if [ "$RC" -eq 1 ] && echo "$OUT" | grep -q "$(basename "$F11")" && ! echo "$OUT" | grep -q "present and current"; then ok "C11 missing blueprint-listed slice jar refused, named"; else fail "C11 missing listed slice not refused (rc ${RC}): ${OUT}"; fi
 
 echo ""
 echo "  ----"

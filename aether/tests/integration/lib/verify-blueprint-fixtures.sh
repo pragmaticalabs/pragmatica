@@ -129,11 +129,15 @@ noblueprint=()
 stale=()
 present=0
 checked=0
-unlisted=()
 
 # check_stamps <coord> <jar>: record a stale or unreadable stamp for every factory in the jar.
 check_stamps() {
     local coord="$1" jar="$2" cls stamp
+    # An empty read of a damaged archive looks exactly like a jar with no factory; test the archive first.
+    if ! unzip -tqq "$jar" > /dev/null 2>&1; then
+        stale+=("${jar}  (corrupt or truncated archive, cannot be read; fixture of ${coord})")
+        return
+    fi
     while read -r cls stamp; do
         [ -n "$cls" ] || continue
         if [ "$stamp" = "unreadable" ]; then
@@ -158,7 +162,10 @@ for coord in "${COORDS[@]}"; do
             checked=$((checked + 1))
             check_stamps "$coord" "$jar"
         done
-        if [ -f "${dir}/${artifact}-${version}-blueprint.jar" ]; then
+        if [ -f "${dir}/${artifact}-${version}-blueprint.jar" ] \
+            && ! unzip -tqq "${dir}/${artifact}-${version}-blueprint.jar" > /dev/null 2>&1; then
+            stale+=("${dir}/${artifact}-${version}-blueprint.jar  (corrupt or truncated archive, its slice list cannot be read; fixture of ${coord})")
+        elif [ -f "${dir}/${artifact}-${version}-blueprint.jar" ]; then
             while IFS= read -r sa; do
                 [ -n "$sa" ] || continue
                 sgroup="${sa%%:*}"; srest="${sa#*:}"; sartifact="${srest%%:*}"; sversion="${srest##*:}"
@@ -167,7 +174,7 @@ for coord in "${COORDS[@]}"; do
                     checked=$((checked + 1))
                     check_stamps "$coord" "$sjar"
                 else
-                    unlisted+=("${sa}  (listed by ${coord}, not in ${REPO})")
+                    stale+=("${sjar}  (slice artifact ${sa} is listed by ${coord} but not built into the repository, so its contract cannot be read)")
                 fi
             done < <(unzip -p "${dir}/${artifact}-${version}-blueprint.jar" META-INF/blueprint.toml 2>/dev/null \
                          | sed -n 's/^[[:space:]]*artifact[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p')
@@ -183,10 +190,6 @@ fi
 
 echo "[INFO]    present: ${present}/${#COORDS[@]}"
 echo "[INFO]    slice jars read for route-security stamp: ${checked} (current contract ${CURRENT_CONTRACT})"
-if [ "${#unlisted[@]}" -gt 0 ]; then
-    echo "[WARN]    blueprint-listed slice artifacts not in the repository (not stamp-checked): ${#unlisted[@]}"
-    for u in "${unlisted[@]}"; do echo "          ${u}"; done
-fi
 
 if [ "${#missing[@]}" -gt 0 ]; then
     echo "[FAIL]  ${#missing[@]} fixture(s) NOT BUILT into ${REPO}:"
@@ -203,7 +206,7 @@ if [ "${#missing[@]}" -gt 0 ]; then
 fi
 
 if [ "${#stale[@]}" -gt 0 ]; then
-    echo "[FAIL]  ${#stale[@]} fixture jar(s) in ${REPO} predate the route-security contract:"
+    echo "[FAIL]  ${#stale[@]} fixture jar(s) in ${REPO} are stale, missing or unreadable for the route-security contract:"
     for m in "${stale[@]}"; do
         echo "          ${m}"
     done
