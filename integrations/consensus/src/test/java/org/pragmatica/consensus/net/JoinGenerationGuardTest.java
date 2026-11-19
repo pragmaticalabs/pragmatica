@@ -123,21 +123,33 @@ class JoinGenerationGuardTest {
         assertThat((System.nanoTime() - start) / 1_000_000).as("ended early, not at the 30 s bound").isLessThan(5_000);
     }
 
+    // admit() runs its first poll on the calling thread, so once it returns the guard has already observed B as not
+    // handshaken and parked on the timer: "still waiting" is asserted against a wait far longer than the test.
     @Test
-    void unknownMemberIsWaitedFor_thenProceededOver_decidingOnlyHandshakenMembers() throws InterruptedException {
+    void unknownMemberIsWaitedFor_untilItHandshakes() {
         handshaken.put(A, generation("2"));
-        var promise = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, SHORT, 2);
+        var promise = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, 2);
 
-        Thread.sleep(100);
         assertThat(promise.isResolved()).as("B has not handshaken: the guard still waits").isFalse();
-        assertThat(promise.await(AWAIT).isSuccess()).as("timeout proceeds").isTrue();
+
+        handshaken.put(B, generation("2"));
+
+        assertThat(promise.await(AWAIT).isSuccess()).as("all handshaken: proceeds before the bound").isTrue();
     }
 
     @Test
-    void lowerMemberHandshakingDuringTheWait_isRefusedAtOnce() throws InterruptedException {
+    void unknownMemberIsProceededOver_whenTheWaitEnds_decidingOnlyHandshakenMembers() {
+        handshaken.put(A, generation("2"));
+
+        assertThat(JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, SHORT, 2).await(AWAIT).isSuccess())
+            .as("timeout proceeds").isTrue();
+    }
+
+    @Test
+    void lowerMemberHandshakingDuringTheWait_isRefusedAtOnce() {
         var promise = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, 2);
 
-        Thread.sleep(100);
+        assertThat(promise.isResolved()).as("first poll saw nobody handshaken: waiting").isFalse();
         handshaken.put(B, Map.of());
 
         promise.await(AWAIT)
