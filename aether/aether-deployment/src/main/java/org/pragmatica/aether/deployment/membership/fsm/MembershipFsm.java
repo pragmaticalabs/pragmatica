@@ -1030,9 +1030,9 @@ public final class MembershipFsm {
     /// Member identity (tracking) and join age (the latch stamp) are set by the same latch, with no
     /// timer. The stamp is retained across DEAD/rejoin (the latch never clears), which is deliberate: the
     /// descriptor is retained too, so a rejoining member's role is already known and the
-    /// role-propagation race this age guards against does not re-open. Consumer: the
-    /// `LeaderReconciler` drain-safety grace (cluster-topology-overhaul Wave 2) — a surplus-drain
-    /// victim younger than the grace window is never selected, closing the window where a
+    /// role-propagation race this age guards against does not re-open. Consumer: the drain-safety
+    /// grace (`DrainSafetyGrace`, enforced at `ClusterTopologyManager.drainNode`, #1880) — a drain
+    /// target younger than the grace window is refused, closing the window where a
     /// just-joined worker whose role labels are still propagating reads as a blank-role core
     /// surplus and is drained.
     public Option<Long> memberAgeMs(NodeId id) {

@@ -47,6 +47,9 @@ import org.pragmatica.statemachine.FsmObserver;
 import org.pragmatica.testlogging.LogCapture;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.Locale;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -395,6 +398,80 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(ctm.drainNode(PEER_D, DrainReason.OVERPROVISION_SCALE_DOWN).await().isFailure()).isTrue();
         assertThat(drainCommandSinkCalls).isEmpty();
         assertThat(lifecycleManager.terminateCount.get()).isZero();
+    }
+
+    /// #1880 — the drain-safety grace at the `drainNode` choke point, as a (DrainReason x age) table over EVERY reason.
+    /// The exempt set is written out here, never read from [DrainReason#subjectToDrainSafetyGrace], so widening or
+    /// narrowing it in production turns a cell red. Ages straddle the 30 s grace (`2 x` a 15 s `splitTimeout`): an
+    /// untracked node (no age) reads mature; a tracked node never reached is 0 ms old.
+    @Nested
+    class DrainSafetyGraceTable {
+        private static final Set<DrainReason> EXEMPT = EnumSet.of(DrainReason.JOIN_GRACE_REAP, DrainReason.OPERATOR_COMMAND);
+        private static final long GRACE_MS = 30_000L;
+        /// `none()` = untracked; the rest are ages in ms.
+        private static final List<Option<Long>> AGES = List.of(Option.none(),
+                                                               Option.some(0L),
+                                                               Option.some(1_500L),
+                                                               Option.some(GRACE_MS - 1),
+                                                               Option.some(GRACE_MS),
+                                                               Option.some(GRACE_MS + 60_000L));
+
+        @Test
+        void everyReasonAtEveryAge_drainedIffExemptOrPastTheGrace() {
+            record Cell(DrainReason reason, Option<Long> age, NodeId target, boolean drainable) {}
+
+            var cells = new ArrayList<Cell>();
+            var ages = new LinkedHashMap<NodeId, Long>();
+
+            for (var reason : DrainReason.values()) {
+                for (var age : AGES) {
+                    var target = nodeId("t-" + reason.name().toLowerCase(Locale.ROOT) + "-"
+                                        + age.map(String::valueOf).or("untracked")).unwrap();
+
+                    age.onPresent(ms -> ages.put(target, ms));
+                    cells.add(new Cell(reason, age, target, EXEMPT.contains(reason) || age.map(ms -> ms >= GRACE_MS).or(true)));
+                }
+            }
+            ctm.setDrainSafetyGrace(DrainSafetyGrace.drainSafetyGrace(timeSpan(15).seconds(),
+                                                                      node -> Option.option(ages.get(node))));
+            ctm.activate();
+
+            var mismatches = new ArrayList<String>();
+
+            for (var cell : cells) {
+                var drained = ctm.drainNode(cell.target(), cell.reason()).await().isSuccess();
+                var enqueued = drainCommandSinkCalls.contains(cell.target());
+
+                if (drained != cell.drainable() || enqueued != cell.drainable()) {
+                    mismatches.add(cell.reason() + " x age " + cell.age() + ": expected drained=" + cell.drainable()
+                                   + ", got drained=" + drained + " enqueued=" + enqueued);
+                }
+            }
+
+            assertThat(mismatches).as("(DrainReason x age) cells that disagree with the drain-safety grace").isEmpty();
+            assertThat(cells).as("the table covers every reason at every age")
+                             .hasSize(DrainReason.values().length * AGES.size());
+        }
+
+        /// A refused young drain leaves nothing behind, so the caller's retry after the target ages is a fresh drain.
+        @Test
+        void refusedYoungDrain_hasNoSideEffect_drainsOnceTheTargetHasAged() {
+            var age = new AtomicLong(1_500L);
+
+            ctm.setDrainSafetyGrace(DrainSafetyGrace.drainSafetyGrace(timeSpan(15).seconds(),
+                                                                      node -> node.equals(PEER_D)
+                                                                              ? Option.some(age.get())
+                                                                              : Option.none()));
+            ctm.activate();
+
+            assertThat(ctm.drainNode(PEER_D, DrainReason.OVERPROVISION_SCALE_DOWN).await().isFailure()).isTrue();
+            assertThat(drainCommandSinkCalls).isEmpty();
+
+            age.set(GRACE_MS);
+
+            assertThat(ctm.drainNode(PEER_D, DrainReason.OVERPROVISION_SCALE_DOWN).await().isSuccess()).isTrue();
+            assertThat(drainCommandSinkCalls).containsExactly(PEER_D);
+        }
     }
 
     /// #1543: the LeaderReconciler surplus drain picks a fresh ephemeral core first — the +1 replacement. While

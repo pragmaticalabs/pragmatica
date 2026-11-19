@@ -411,8 +411,15 @@ public interface ClusterTopologyManager extends TopologyManager {
         return org.pragmatica.lang.Unit.unit();
     }
 
+    /// #1880: the drain-safety grace [#drainNode] enforces. Default: nothing (a manager that drains nothing).
+    default Unit setDrainSafetyGrace(DrainSafetyGrace grace) {
+        return Unit.unit();
+    }
+
     Promise<Unit> provisionPlacementNode(org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue operation);
 
+    /// The choke point every drain of another node passes (#1880): a drain whose reason the [DrainSafetyGrace] holds is
+    /// refused while its target is younger than the grace.
     Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason);
 
     /// #1543: terminate the provider instance of a retired node and CONFIRM it is gone. Succeeds only when a provider listing shows no

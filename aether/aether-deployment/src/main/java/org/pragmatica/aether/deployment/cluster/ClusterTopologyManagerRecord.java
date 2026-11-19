@@ -128,6 +128,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicReference<Supplier<List<NodeId>>> genesisVoters,
                                     AtomicReference<Function<NodeId, Option<String>>> retirementRefusal,
                                     AtomicReference<NodeReplacementIndex> nodeReplacements,
+                                    AtomicReference<DrainSafetyGrace> drainSafetyGrace,
                                     AtomicReference<HierarchyStateWriter> hierarchyWriter,
                                     ConcurrentHashMap<NodeId, Long> pendingDrains,
                                     AtomicReference<org.pragmatica.utility.warning.OperatorWarningSink> warningSink,
@@ -289,6 +290,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicReference<>(List::of),
                                                 new AtomicReference<>(_ -> Option.some(NO_RETIREMENT_CHECK)),
                                                 new AtomicReference<>(NodeReplacementIndex.nodeReplacementIndex()),
+                                                new AtomicReference<>(DrainSafetyGrace.unwired()),
                                                 new AtomicReference<>(HierarchyStateWriter.unavailable()),
                                                 new ConcurrentHashMap<>(),
                                                 new AtomicReference<>(org.pragmatica.utility.warning.OperatorWarningSink.logOnly()),
@@ -376,6 +378,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         nodeReplacements.set(index);
 
         return org.pragmatica.lang.Unit.unit();
+    }
+
+    @Override
+    public Unit setDrainSafetyGrace(DrainSafetyGrace grace) {
+        drainSafetyGrace.set(grace);
+
+        return Unit.unit();
     }
 
     private long nowMs() {
@@ -2334,11 +2343,22 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// #1543: a SURPLUS trim of a node a live replacement pairing protects is refused — the `LeaderReconciler`
     /// surplus drain picks a fresh ephemeral core first, which is exactly the +1 replacement. Non-surplus
     /// reasons are not gated by the pairing: a never-joined zombie (`JOIN_GRACE_REAP`) has no other reaper.
+    ///
+    /// #1880: the drain-safety grace is enforced HERE, the one point every drain of another node passes: a drain whose
+    /// reason [DrainReason#subjectToDrainSafetyGrace] holds is refused while its target is younger than the grace
+    /// ([DrainSafetyGrace]). Refused with no side effect, so the caller's own retry (the reconciler's armed follow-up, the
+    /// voter-retirement tick, the replacement effect) asks again once the target has aged.
     @Override
     public synchronized Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
         if (!active.get() || retirementRefusal.get().apply(targetNodeId).isPresent()) {
             return org.pragmatica.lang.utils.Causes.cause("Node retirement awaits certified voter handoff")
                                                    .promise();
+        }
+
+        var tooYoung = drainSafetyGrace.get().refusal(targetNodeId, reason);
+
+        if (tooYoung.isPresent()) {
+            return Causes.cause(tooYoung.unwrap()).promise();
         }
 
         if (reason.isSurplusTrim() && nodeReplacements.get().retirementProtected().contains(targetNodeId)) {

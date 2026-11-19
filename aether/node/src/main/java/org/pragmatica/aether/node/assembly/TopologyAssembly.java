@@ -587,6 +587,9 @@ public sealed interface TopologyAssembly {
                                                                  SharedScheduler::schedule);
 
         leaderReconcilerRef.set(leaderReconciler);
+        // #1880: the reconciler's drain-safety grace is THE choke point every drain passes — installed into the CTM so the
+        // voter-retirement drain, replacement retirement and surplus drain are all held by the one rule selection uses.
+        clusterTopologyManager.setDrainSafetyGrace(leaderReconciler.drainSafetyGrace());
         // Provisioning-stickiness fix — read-only supplier wiring (no consensus). The leader's metrics
         // ping carries its in-flight provisioning set (LeaderReconciler -> ClusterSyncPing.dispatchedNodes);
         // followers retain it term-fenced. On leadership gain LeaderReconciler seeds its in-flight set

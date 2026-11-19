@@ -1482,16 +1482,10 @@ class LeaderReconcilerTest {
         }
     }
 
-    /// Drain-safety grace (Wave 2 defense in depth at the drain authority) — narrowed by the
-    /// Approach-3 victim-selection rewrite to apply to CONFIGURED SEEDS only. A just-joined
-    /// configured seed whose role labels may still be propagating is never picked as a surplus
-    /// victim while inside `nttDepartureTimeout × 2`; an EPHEMERAL (CTM-provisioned, ULID-suffix)
-    /// node that owns no slices is drainable regardless of age (it was added for scale-up and owns
-    /// nothing — resolving the maturity-grace tension that previously forced seed-draining). These
-    /// tests therefore use CONFIGURED-SHAPED young members (`aether-test-cluster-node-<ordinal>`)
-    /// where they assert the grace protects a young node, and ephemeral-shaped (`randomNodeId`)
-    /// members where they assert young-ephemeral nodes drain. An all-young CONFIGURED candidate
-    /// pool DEFERS the drain (WARN + exactly one armed follow-up reconcile) instead of silently
+    /// Drain-safety grace (Wave 2 defense in depth; #1880 one rule, [`ClusterTopologyManager#drainNode`] enforces it): a
+    /// just-joined member whose role labels may still be propagating is never picked as a surplus victim while inside
+    /// `nttDepartureTimeout × 2`, whether CONFIGURED (`aether-test-cluster-node-<ordinal>`) or EPHEMERAL (`randomNodeId`).
+    /// An all-young candidate pool DEFERS the drain (WARN + exactly one armed follow-up reconcile) instead of silently
     /// dropping the surplus.
     @Nested
     class DrainSafetyGrace {
@@ -1534,12 +1528,13 @@ class LeaderReconcilerTest {
                 .doesNotContain(youngSeed1);
         }
 
+        /// #1880: the grace holds EVERY young candidate, ephemeral included — the choke point refuses a young drain for
+        /// any reason it holds, so selection must not pick one. The surplus is taken from a mature member instead.
         @Test
-        void surplusDrain_youngEphemeralNode_isDrainable_graceDoesNotBlock() {
+        void surplusDrain_youngEphemeralNode_isHeldByGrace_matureVictimSelected() {
             configuredCoreCount.set(3);
-            // SELF + two mature peers, plus one just-joined EPHEMERAL (CTM-shaped, ULID-suffix)
-            // node. The grace must NOT protect it — it owns no slices and was added for scale-up,
-            // so it is the PREFERRED victim despite its youth (the maturity-grace resolution).
+            // SELF + two mature peers, plus one just-joined EPHEMERAL (CTM-shaped, ULID-suffix) node, which would be
+            // the preferred victim were it mature.
             seedClusterWithPeers(PEER_A, PEER_B);
             var youngEphemeral = NodeId.randomNodeId();
             seedYoungPeers(youngEphemeral);
@@ -1547,10 +1542,11 @@ class LeaderReconcilerTest {
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
-            // Surplus = 4 - 3 = 1: the young ephemeral node is eligible and drained.
+            // Surplus = 4 - 3 = 1: a mature victim is drained, never the young ephemeral node.
             assertThat(ctm.drainNodeCalls())
-                .as("a young ephemeral non-slice-owner must be drainable — the grace does not block it")
-                .hasSize(1);
+                .as("a young ephemeral node is held by the drain-safety grace; a mature member is drained instead")
+                .hasSize(1)
+                .doesNotContain(youngEphemeral);
         }
 
         /// #1543 E (v-1970 gap): a paired replacement is surge capacity, not surplus. With one live pairing the +1 member
@@ -2039,9 +2035,8 @@ class LeaderReconcilerTest {
                 .containsExactly(ctm1);
         }
 
-        /// The owner tier keeps the drain-safety grace for EPHEMERAL owners too: the "owns nothing"
-        /// argument that lets a young ephemeral non-owner be drained does not hold for an owner, so
-        /// a young all-owner pool is deferred (with a follow-up), not drained.
+        /// The owner tier keeps the drain-safety grace for EPHEMERAL owners too (#1880: every young
+        /// candidate is held), so a young all-owner pool is deferred (with a follow-up), not drained.
         @Test
         void surplusDrain_youngEphemeralOwners_deferredByGrace() {
             configuredCoreCount.set(2);
@@ -2133,13 +2128,13 @@ class LeaderReconcilerTest {
                 .doesNotContain(seed1, seed2, seed3, seed4, seed5);
         }
 
-        /// Maturity-grace resolution: a YOUNG ephemeral node that owns no slices IS drainable —
-        /// the grace (which now governs configured seeds only) does not block it.
+        /// #1880: a YOUNG ephemeral node that owns no slices is held by the drain-safety grace like any other young
+        /// member (the earlier "owns nothing" exemption is gone: the CTM choke point refuses it for every surplus reason).
         @Test
-        void youngEphemeralNonOwner_isDrainable_graceDoesNotBlock() {
+        void youngEphemeralNonOwner_isHeldByGrace_notDrained() {
             configuredCoreCount.set(2);
-            // SELF + seed1 (mature) + ctm1 (YOUNG ephemeral). Shield the mature ones so ctm1 is the
-            // only eligible victim — proving the young ephemeral is selected despite its age.
+            // SELF + seed1 (mature) + ctm1 (YOUNG ephemeral). Shield the mature ones so ctm1 would be the
+            // only non-owner victim — the grace holds it back.
             seedClusterWithPeers(seed1);
             health.markHealthy(ctm1);
             observeCoreHealthy(ctm1);
@@ -2149,11 +2144,10 @@ class LeaderReconcilerTest {
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
-            // Members = 3, configured = 2, surplus = 1, only ctm1 eligible (others shielded) → drained
-            // even though it is young.
+            // Members = 3, configured = 2, surplus = 1; ctm1 is young, so it is never the victim.
             assertThat(ctm.drainNodeCalls())
-                .as("a young ephemeral non-slice-owner is drainable — the grace does not block it")
-                .containsExactly(ctm1);
+                .as("a young ephemeral non-slice-owner is held by the drain-safety grace")
+                .doesNotContain(ctm1);
         }
 
         /// Combined orderings: every ephemeral candidate is a slice owner, so the drain takes a mature
