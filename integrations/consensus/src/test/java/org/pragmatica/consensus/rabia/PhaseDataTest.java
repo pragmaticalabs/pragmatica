@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 
 import java.util.List;
 
@@ -198,7 +199,7 @@ class PhaseDataTest {
             phaseData.registerProposal(NODE_2, batch);
             phaseData.registerProposal(NODE_3, batch);
 
-            var vote = phaseData.evaluateInitialVote(NODE_1, QUORUM_SIZE);
+            var vote = phaseData.evaluateInitialVote(NODE_1, Incarnation.UNSTAMPED, QUORUM_SIZE);
 
             assertThat(vote.stateValue()).isEqualTo(StateValue.V1);
             assertThat(vote.sender()).isEqualTo(NODE_1);
@@ -214,7 +215,7 @@ class PhaseDataTest {
             phaseData.registerProposal(NODE_2, batch2);
             phaseData.registerProposal(NODE_3, batch3);
 
-            var vote = phaseData.evaluateInitialVote(NODE_1, QUORUM_SIZE);
+            var vote = phaseData.evaluateInitialVote(NODE_1, Incarnation.UNSTAMPED, QUORUM_SIZE);
 
             assertThat(vote.stateValue()).isEqualTo(StateValue.V0);
         }
@@ -227,7 +228,7 @@ class PhaseDataTest {
             phaseData.registerProposal(NODE_2, batch);
             phaseData.registerProposal(NODE_3, otherBatch);
 
-            var vote = phaseData.evaluateInitialVote(NODE_1, QUORUM_SIZE);
+            var vote = phaseData.evaluateInitialVote(NODE_1, Incarnation.UNSTAMPED, QUORUM_SIZE);
 
             assertThat(vote.stateValue()).isEqualTo(StateValue.V0);
         }
@@ -242,7 +243,7 @@ class PhaseDataTest {
             phaseData.registerProposal(NODE_4, otherBatch);
             phaseData.registerProposal(NODE_5, otherBatch);
 
-            var vote = phaseData.evaluateInitialVote(NODE_1, QUORUM_SIZE);
+            var vote = phaseData.evaluateInitialVote(NODE_1, Incarnation.UNSTAMPED, QUORUM_SIZE);
 
             assertThat(vote.stateValue()).isEqualTo(StateValue.V1);
         }
@@ -256,7 +257,7 @@ class PhaseDataTest {
             phaseData.registerProposal(NODE_4, Batch.emptyBatch());
             phaseData.registerProposal(NODE_5, Batch.emptyBatch());
 
-            var vote = phaseData.evaluateInitialVote(NODE_1, QUORUM_SIZE);
+            var vote = phaseData.evaluateInitialVote(NODE_1, Incarnation.UNSTAMPED, QUORUM_SIZE);
 
             assertThat(vote.stateValue()).isEqualTo(StateValue.V1);
         }
@@ -515,7 +516,7 @@ class PhaseDataTest {
             phaseData.registerProposal(NODE_2, batch);
             phaseData.registerProposal(NODE_3, batch);
 
-            var vote = phaseData.evaluateInitialVote(NODE_1, QUORUM_SIZE);
+            var vote = phaseData.evaluateInitialVote(NODE_1, Incarnation.UNSTAMPED, QUORUM_SIZE);
 
             assertThat(vote.stateValue()).isNotEqualTo(StateValue.VQUESTION);
             assertThat(vote.stateValue()).isIn(StateValue.V0, StateValue.V1);
@@ -621,6 +622,60 @@ class PhaseDataTest {
                     .as("Phase %d coin flip", i)
                     .isIn(StateValue.V0, StateValue.V1);
             }
+        }
+    }
+
+    /// #2625: one process incarnation per NodeId per slot.
+    @Nested
+    class Admit {
+        private final Incarnation original = Incarnation.incarnation(11);
+        private final Incarnation restarted = Incarnation.incarnation(22);
+
+        @Test
+        void admit_sameIncarnationRepeated_admitsEveryBallot() {
+            assertThat(phaseData.admit(NODE_2, original)).isEqualTo(PhaseData.Admission.ADMITTED);
+            assertThat(phaseData.admit(NODE_2, original)).isEqualTo(PhaseData.Admission.ADMITTED);
+            assertThat(phaseData.incarnation(NODE_2)).isEqualTo(Option.some(original));
+        }
+
+        @Test
+        void admit_secondIncarnation_voidsTheNodesBallotsAtEveryRoundAndKeepsOthers() {
+            phaseData.admit(NODE_2, original);
+            phaseData.registerProposal(NODE_2, createBatch("x"));
+            phaseData.registerRound1Vote(NODE_2, 0, StateValue.V1);
+            phaseData.registerRound2Vote(NODE_2, 0, StateValue.V1);
+            phaseData.registerRound1Vote(NODE_2, 1, StateValue.V0);
+            phaseData.admit(NODE_3, original);
+            phaseData.registerProposal(NODE_3, createBatch("x"));
+            phaseData.registerRound1Vote(NODE_3, 0, StateValue.V1);
+
+            assertThat(phaseData.admit(NODE_2, restarted)).isEqualTo(PhaseData.Admission.CONFLICT);
+
+            assertThat(phaseData.hasProposal(NODE_2)).isFalse();
+            assertThat(phaseData.round1Vote(NODE_2, 0).isPresent()).isFalse();
+            assertThat(phaseData.round2Vote(NODE_2, 0).isPresent()).isFalse();
+            assertThat(phaseData.round1Vote(NODE_2, 1).isPresent()).isFalse();
+            assertThat(phaseData.hasProposal(NODE_3)).isTrue();
+            assertThat(phaseData.round1Vote(NODE_3, 0).isPresent()).isTrue();
+        }
+
+        @Test
+        void admit_afterConflict_isVoidedUnderEitherIncarnationAndReportedOnce() {
+            phaseData.admit(NODE_2, original);
+            assertThat(phaseData.admit(NODE_2, restarted)).isEqualTo(PhaseData.Admission.CONFLICT);
+
+            assertThat(phaseData.admit(NODE_2, original)).isEqualTo(PhaseData.Admission.VOIDED);
+            assertThat(phaseData.admit(NODE_2, restarted)).isEqualTo(PhaseData.Admission.VOIDED);
+            assertThat(phaseData.admit(NODE_3, restarted)).isEqualTo(PhaseData.Admission.ADMITTED);
+        }
+
+        @Test
+        void admit_newSlot_startsWithNoIncarnation() {
+            phaseData.admit(NODE_2, original);
+            phaseData.admit(NODE_2, restarted);
+            var next = new PhaseData<TestCommand>(new Phase(2));
+
+            assertThat(next.admit(NODE_2, restarted)).isEqualTo(PhaseData.Admission.ADMITTED);
         }
     }
 }
