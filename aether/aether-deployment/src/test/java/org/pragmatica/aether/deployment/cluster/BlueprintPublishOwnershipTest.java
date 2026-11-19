@@ -206,6 +206,20 @@ class BlueprintPublishOwnershipTest {
         }
     }
 
+    /// #834: `executeUndoStep` removes the undone versions from the history table, and a routine republish of the same blueprint
+    /// then writes `(declared maxVersion, PENDING)` over the record, so `migrate()` re-applies them. The operator's undo is the
+    /// record's version; a publish declaring a higher one is refused unless forced.
+    @Nested
+    class UndoneRepublishGuard {
+        @Test
+        void publishFromArtifact_isRefused_whenRecordWasUndoneBelowTheDeclaredVersion() {
+            seedUndoneAt(1);
+
+            publish(OWNER_COORDS, withMigrationsUpTo(OWNER_COORDS, 2)).onSuccess(_ -> Assertions.fail("Republish declaring V2 over an undo to V1 must be refused"))
+                                                                      .onFailure(BlueprintPublishOwnershipTest::assertReapplyRefused);
+        }
+    }
+
     /// #759 review: `DeploymentOutcomeKey` is written only at the four terminal FSM transitions and
     /// was never cleared when a NEW deployment of the same blueprint id started. `BlueprintId` wraps
     /// the artifact, so a retry reuses the key, and `BlueprintService.outcome(id)` — the outcome-first
@@ -503,6 +517,29 @@ class BlueprintPublishOwnershipTest {
                                                                                             1L)));
     }
 
+    /// What `SchemaOrchestratorService.recordOutcome` leaves after an undo: COMPLETED at the target version, marker `U<version>__undo`.
+    private void seedUndoneAt(int version) {
+        store.processCommand(new KVCommand.Put<>(SchemaVersionKey.schemaVersionKey(DATASOURCE),
+                                                 SchemaVersionValue.schemaVersionValue(DATASOURCE,
+                                                                                       version,
+                                                                                       "U00" + version + "__undo",
+                                                                                       SchemaStatus.COMPLETED,
+                                                                                       OWNER.asString(),
+                                                                                       OWNER)));
+    }
+
+    private static void assertReapplyRefused(Cause cause) {
+        assertThat(cause).isInstanceOf(HttpStatusAware.class);
+        assertThat(((HttpStatusAware) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(cause.message()).contains(DATASOURCE)
+                                   .contains("undo")
+                                   .contains("[2]");
+    }
+
+    private static byte[] withMigrationsUpTo(String blueprintId, int version) {
+        return blueprintJar(blueprintId, List.of("schema/V001__init.sql", "schema/V00" + version + "__next.sql"));
+    }
+
     private void seedSchemaOwnedBy(BlueprintId owner) {
         store.processCommand(new KVCommand.Put<>(SchemaVersionKey.schemaVersionKey(DATASOURCE),
                                                  SchemaVersionValue.schemaVersionValue(DATASOURCE,
@@ -545,11 +582,15 @@ class BlueprintPublishOwnershipTest {
     /// A blueprint jar carrying `META-INF/blueprint.toml` and, when requested, one migration script
     /// under the default layout — which `BlueprintArtifactParser` maps to the `"database"` datasource.
     private static byte[] blueprintJar(String blueprintId, Option<String> migrationEntryPath) {
+        return blueprintJar(blueprintId, migrationEntryPath.map(path -> List.of(path)).or(List.of()));
+    }
+
+    private static byte[] blueprintJar(String blueprintId, List<String> migrationEntryPaths) {
         var bytes = new ByteArrayOutputStream();
 
         try (var zip = new ZipOutputStream(bytes)) {
             writeEntry(zip, "META-INF/blueprint.toml", "id = \"" + blueprintId + "\"\n" + SLICE_STANZA);
-            migrationEntryPath.onPresent(path -> writeMigration(zip, path));
+            migrationEntryPaths.forEach(path -> writeMigration(zip, path));
         } catch (IOException e) {
             throw new IllegalStateException("Failed to build test blueprint jar", e);
         }
