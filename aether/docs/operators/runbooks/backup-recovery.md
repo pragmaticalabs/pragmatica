@@ -104,7 +104,7 @@ names depends on one fact only, whether the restore has committed its `IN_PROGRE
 
 - **No marker** (the warning says "No restore marker is committed"): the restore has not started. Fix what the failed step
   names; the next retry reads the source again. Or restart with `[backup] restore = "fresh"` to skip the restore and abandon
-  the backup `[verified: BackupRestoreCoordinatorTest.Blocked, EmberKvBackupRestoreTest]`.
+  the backup `[verified: BackupRestoreCoordinatorTest.Blocked, EmberKvBackupRestoreTest]`. When the failed step is `document undecodable`, `restore = "fresh"` on the old remote is not enough: follow the five steps in *Backups across releases*.
 - **Marker committed** (the warning says "A restore of commit <sha> is in progress"): that commit is pinned. `restore =
   "fresh"` on a restart does NOT abandon it, on some of the nodes while others keep running, because the marker is cluster state and a resumed restore
   never reads `restore` again `[verified: BackupRestoreCoordinatorTest.Blocked
@@ -137,7 +137,9 @@ on the FORKED cluster in one of three ways:
 
 **`restore = "fresh"` against an existing backup** starts a new lineage, and its backup is then GATED
 (`BACKUP_GATED`) until `aether backup declare-genesis` makes it the head; the old lineage stays in git
-history.
+history. This holds for a head this release can DECODE. A head it cannot decode (a backup written by another
+release, see *Backups across releases*) is not GATED: its backup status is `HEAD_UNREADABLE` (`BACKUP_REMOTE_UNREADABLE`),
+nothing is flushed, and `aether backup declare-genesis` is refused (`HeadUnreadable`).
 
 **No `[backup] remote`:** the restore reads only the local repository of whichever node leads the cold
 start, which may be older than another node's. A startup `BACKUP_RESTORE_SOURCE_LOCAL` warning says so.
@@ -293,8 +295,17 @@ What the operator sees: the warning includes the failed step and the undecodable
 
 The release that wrote the backup is not identified by the node; the sentence names two known causes, not a diagnosis.
 
-The exit is to start the rc5 cluster without the backup: stop the nodes and start them with `[backup] restore = "fresh"`. That abandons the
-rc4 backup, and the cluster starts empty (no state, keys or blueprints from the rc4 site). A fixed build that decodes rc4 backups is not
+The exit abandons the rc4 backup, and the cluster starts empty (no state, keys or blueprints from the rc4 site). Five steps, in this order:
+
+1. Stop every node.
+2. Point `[backup] path` / `remote` at a new, empty repository, or move the old backup branch aside (it stays in git history).
+3. Start the nodes with `[backup] restore = "fresh"`.
+4. Re-apply blueprints and config. The backup is change-triggered, so the first flush follows the first cluster-state write.
+5. Confirm the first flush writes: the new repository's head commit exists.
+
+Starting with `restore = "fresh"` against the OLD remote, without step 2, is not an exit. The cluster opens its gate, but the backup stays
+`HEAD_UNREADABLE` (`BACKUP_REMOTE_UNREADABLE`): the flush refuses to write over a head it cannot decode, and `aether backup declare-genesis`
+is refused (`HeadUnreadable`), so nothing is backed up until step 2 is done. A fixed build that decodes rc4 backups is not
 offered for this case. One control run restored a backup written by rc5 into the same rc5 build; nothing more is shown.
 
 ## Warnings
@@ -303,16 +314,16 @@ offered for this case. One control run restored a backup written by rc5 into the
 |------|---------|-----------------|
 | `BACKUP_GATED` | The head belongs to another lineage | Restore it, or `aether backup declare-genesis` to make this cluster the head |
 | `BACKUP_FORKED` | Another cluster (a different incarnation id) holds the head at this cluster's own lineage and incarnation (two clusters restored from the same backup) | Retire one cluster; run `aether backup declare-genesis` on the one whose state continues |
-| `backup-restore-blocked` (cluster event, CRITICAL) | A cold start cannot read the backup; cluster-state writes stay refused until it can (#1533). The warning names the failed step | No marker committed (the warning says "No restore marker is committed"): fix what the failed step names (the next retry reads the source again), or restart with `[backup] restore = "fresh"` to abandon the backup. Marker committed (the warning says "A restore of commit <sha> is in progress"): the restore resumes once what the failed step names is readable again at the source; if it cannot be repaired there, stop ALL nodes and cold-start with `restore = "fresh"` (discards the partly restored state). A restart of some of the nodes while others keep running, with `fresh`, does not abandon a marked restore |
+| `backup-restore-blocked` (cluster event, CRITICAL) | A cold start cannot read the backup; cluster-state writes stay refused until it can (#1533). The warning names the failed step | No marker committed (the warning says "No restore marker is committed"): fix what the failed step names (the next retry reads the source again), or restart with `[backup] restore = "fresh"` to abandon the backup (for `document undecodable`, with a new or moved-aside backup repository: *Backups across releases*, steps 1-5). Marker committed (the warning says "A restore of commit <sha> is in progress"): the restore resumes once what the failed step names is readable again at the source; if it cannot be repaired there, stop ALL nodes and cold-start with `restore = "fresh"` (discards the partly restored state). A restart of some of the nodes while others keep running, with `fresh`, does not abandon a marked restore |
 | `backup-restore-unblocked` (INFO) | The block ended: the backup was read and the restore decided, or the blocked node stopped leading or is stopping (a restart is a stop first) | None. A crash of the blocked node cannot raise it (see `backup-config-restored`); a leader that still cannot read the backup raises `backup-restore-blocked` again |
 | `backup-config-missing` (cluster event, `OPERATOR_WARNING`) | This leader has no `[backup]` while the committed state says the backup is in use; nothing is backed up while it leads (#1968) | Restart it with the cluster's `[backup]` (or `AETHER_BACKUP_*`), or move leadership |
 | `backup-config-restored` (INFO) | The leader that lacked `[backup]` no longer leads, or its node is stopping (graceful stop, drain, self-fence) | None; a new leader without `[backup]` raises the warning again. A crash (`kill -9`, power loss, OOM kill) cannot raise it: that node's `backup-config-missing` then stays the last event for the code, and only another node's event layer could close it, which the event design does not allow. Treat a `backup-config-missing` whose node is gone as closed |
 | `BACKUP_HEAD_AHEAD` | The head of this lineage stayed ahead of this cluster for > 30 s; nothing is backed up meanwhile | If the warning names a **higher incarnation**, another cluster took over this lineage's backup (a `declare-genesis` or a later restore) and this cluster will never write again: stop it or point its `[backup]` elsewhere. At the **same** incarnation, a later revision of this cluster holds the head; it writes again once its revision passes the head's |
 | `BACKUP_HEAD_REPLACED` | This cluster's state replaced a newer head | The replaced commit is in git history; inspect it |
-| `BACKUP_REMOTE_UNREADABLE` | The head cannot be decoded | Repair or move the head |
+| `BACKUP_REMOTE_UNREADABLE` | The head cannot be decoded; nothing is flushed and `declare-genesis` is refused (`HeadUnreadable`) | Repair the head, or move it aside / point `[backup]` at a new repository (*Backups across releases*, step 2) |
 | `BACKUP_PUSH_FAILING` | Commits have not reached the remote for 60 s | Check remote, credentials, network |
 | `BACKUP_COMMIT_FAILED` | The local repository cannot take a commit | Check disk, permissions, git |
-| `BACKUP_RESTORE_BLOCKED` | A cold start cannot read the backup; cluster-state writes are refused. The warning names the failed step | No marker: fix what the step names, or restart with `restore = "fresh"`. Marker committed: the restore resumes once what the failed step names is readable again at the remote; if it cannot be repaired there, the whole-cluster cold start is the exit (see above) |
+| `BACKUP_RESTORE_BLOCKED` | A cold start cannot read the backup; cluster-state writes are refused. The warning names the failed step | No marker: fix what the step names, or restart with `restore = "fresh"` (for `document undecodable`, with a new or moved-aside backup repository: *Backups across releases*). Marker committed: the restore resumes once what the failed step names is readable again at the remote; if it cannot be repaired there, the whole-cluster cold start is the exit (see above) |
 | `BACKUP_RESTORE_SOURCE_LOCAL` | No remote: the restore reads one node's local repository | Configure `remote` |
 | `BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED` | A restore withheld entity checkpoints; entity state restarts empty | None — this is the documented limit |
 | `BACKUP_RECOVERED` | A failing backup is current again | — |
