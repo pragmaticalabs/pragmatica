@@ -17,6 +17,7 @@ package org.pragmatica.consensus.rabia;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
@@ -88,9 +89,28 @@ final class PhaseData<C extends Command> {
         static Ballots ballots() {
             return new Ballots(new ConcurrentHashMap<>(), new ConcurrentHashMap<>());
         }
+
+        org.pragmatica.lang.Unit forget(NodeId node) {
+            first.remove(node);
+            second.remove(node);
+
+            return org.pragmatica.lang.Unit.unit();
+        }
     }
 
     private final Map<Long, Ballots> ballots = new ConcurrentHashMap<>();
+
+    /// The outcome of [#admit]: the ballot counts, or this ballot revealed a second process under the sender's id
+    /// (reported once), or the sender's ballots were already voided in this slot.
+    enum Admission {
+        ADMITTED,
+        CONFLICT,
+        VOIDED
+    }
+
+    /// #2625: the one process incarnation each peer's ballots count under in this slot, and the peers seen under two.
+    private final Map<NodeId, Incarnation> incarnations = new ConcurrentHashMap<>();
+    private final Set<NodeId> voided = ConcurrentHashMap.newKeySet();
     private long round;
 
     org.pragmatica.lang.Unit restoreOwnRound(long restoredRound) {
@@ -145,6 +165,39 @@ final class PhaseData<C extends Command> {
     }
 
     // ==================== Intent-Revealing API ====================
+    /// Admits a peer's proposal or vote sent under `incarnation` (#2625). The first incarnation seen for a NodeId in this
+    /// slot is the only one whose ballots count. A second one means two processes balloted under one NodeId, such as a
+    /// restart that lost its ballots: every ballot of that NodeId in this slot is dropped, at every round, and none from it
+    /// counts again here. Receivers that saw only one of the two processes keep counting it; this closes the case at every
+    /// receiver that saw both.
+    Admission admit(NodeId node, Incarnation incarnation) {
+        if (voided.contains(node)) {
+            return Admission.VOIDED;
+        }
+
+        var conflicting = Option.option(incarnations.putIfAbsent(node, incarnation))
+                                .filter(held -> !held.equals(incarnation))
+                                .isPresent();
+
+        return conflicting
+               ? voidBallots(node)
+               : Admission.ADMITTED;
+    }
+
+    private Admission voidBallots(NodeId node) {
+        voided.add(node);
+        proposals.remove(node);
+        configurations.remove(node);
+        ballots.values().forEach(round -> round.forget(node));
+
+        return Admission.CONFLICT;
+    }
+
+    /// The incarnation `node`'s ballots count under in this slot, if any was admitted.
+    Option<Incarnation> incarnation(NodeId node) {
+        return Option.option(incarnations.get(node));
+    }
+
     /// Registers a proposal from a node. Idempotent - first proposal wins.
     @Contract
     org.pragmatica.lang.Unit registerProposal(NodeId node, Batch<C> batch) {
@@ -341,13 +394,13 @@ final class PhaseData<C extends Command> {
     ///   /\ ballots' = ballots \cup {<<n, s, v, reinc[n]>>}
     ///   /\ UNCHANGED <<st, log, saved, marker, admit, known, reinc, chosen, crashes, restarts, pauses>>
     /// ```
-    VoteRound1 evaluateInitialVote(NodeId self, int quorumSize) {
+    VoteRound1 evaluateInitialVote(NodeId self, Incarnation incarnation, int quorumSize) {
         boolean hasQuorumAgreement = agreedValue(quorumSize).isPresent();
         var stateValue = hasQuorumAgreement
                          ? StateValue.V1
                          : StateValue.V0;
 
-        return new VoteRound1(self, epoch, phase, round, stateValue);
+        return new VoteRound1(self, epoch, phase, round, stateValue, incarnation);
     }
 
     /// Evaluates the round 2 vote based on round 1 voting results.

@@ -1064,6 +1064,9 @@ public class RabiaEngine<C extends Command> {
     private volatile boolean observerMode;
     private volatile boolean joinedFormedElectorate;
     private final AtomicHolder<ClusterStateNotification> pendingQuorum = AtomicHolder.atomicHolder();
+    /// #2625: this process's incarnation, stamped on every proposal and vote it sends. Minted per engine instance and never
+    /// persisted, so a restart under the same NodeId ballots under a new one (see [PhaseData#admit]).
+    private final Incarnation incarnation = Incarnation.freshIncarnation();
     /// Sink for engine-level `ConsensusEvent` emissions. The default no-op consumer keeps
     /// existing test constructors working; production wiring (`RabiaNode`) injects
     /// `ConsensusBridge.consensusBridge(router)` so the consensus engine becomes the
@@ -3805,26 +3808,47 @@ public class RabiaEngine<C extends Command> {
     /// original contributing node's id. Idempotent at the receiver; bounded by the periodic
     /// stall-check cadence and by the `!hasQuorumProposals` guard at the call site.
     private void rebroadcastProposalSet(Phase phase, PhaseData<C> phaseData) {
-        phaseData.proposals()
-                 .forEach((proposer, batch) -> broadcastVoters(new Propose<>(proposer,
-                                                                             voterEpoch(),
-                                                                             phase,
-                                                                             batch,
-                                                                             phaseData.configuration(proposer))));
+        phaseData.proposals().forEach((proposer, batch) -> relayProposal(phase, phaseData, proposer, batch));
+    }
+
+    /// A relayed proposal keeps its proposer's incarnation (#2625), so a receiver admits it under the process that made it.
+    private void relayProposal(Phase phase, PhaseData<C> phaseData, NodeId proposer, Batch<C> batch) {
+        proposerIncarnation(proposer, phaseData).onPresent(proposerIncarnation -> broadcastVoters(new Propose<>(proposer,
+                                                                                                                voterEpoch(),
+                                                                                                                phase,
+                                                                                                                batch,
+                                                                                                                phaseData.configuration(proposer),
+                                                                                                                proposerIncarnation)));
+    }
+
+    private Option<Incarnation> proposerIncarnation(NodeId proposer, PhaseData<C> phaseData) {
+        return proposer.equals(self)
+               ? Option.some(incarnation)
+               : phaseData.incarnation(proposer);
     }
 
     private void rebroadcastRound1Stall(Phase phase, StateValue value) {
         log.debug("Node {} stall detected in phase {}: round1 votes short of quorum, re-broadcasting own R1 vote",
                   self,
                   phase);
-        broadcastVoters(new VoteRound1(self, voterEpoch(), phase, getOrCreatePhaseData(phase).round(), value));
+        broadcastVoters(new VoteRound1(self,
+                                       voterEpoch(),
+                                       phase,
+                                       getOrCreatePhaseData(phase).round(),
+                                       value,
+                                       incarnation));
     }
 
     private void rebroadcastRound2Stall(Phase phase, StateValue value) {
         log.debug("Node {} stall detected in phase {}: round2 votes short of quorum, re-broadcasting own R2 vote",
                   self,
                   phase);
-        broadcastVoters(new VoteRound2(self, voterEpoch(), phase, getOrCreatePhaseData(phase).round(), value));
+        broadcastVoters(new VoteRound2(self,
+                                       voterEpoch(),
+                                       phase,
+                                       getOrCreatePhaseData(phase).round(),
+                                       value,
+                                       incarnation));
     }
 
     /// Handles a synchronization request from another node.
@@ -4060,14 +4084,17 @@ public class RabiaEngine<C extends Command> {
     /// {A,B,C} → {A,B,D} with B lost after R). Responses whose claimed configurations disagree are
     /// refused — under crash faults that cannot happen, so it is reported as an inconsistency.
     ///
-    /// [limit: amnesiac-same-id-excluded-by-boot-token] Safe only because a same-NodeId restart is refused
-    /// at transport (#1528/#1545); a fresh ULID has never balloted. The second bullet above assumes the
-    /// adopting process is the one that held this NodeId's ballots, or a new identity. A process restarted
-    /// under a NodeId that DID ballot past R, with its memory lost, breaks that assumption: it can adopt
-    /// from one responder and vote again (`V1554AmnesiaProbeTest` demonstrates it at this layer). Peers
-    /// keep the original process's boot token and drop everything from a different process under that id
-    /// before it reaches this engine, which is what excludes the case. A responder-quorum fence here would
-    /// recreate the #1526 wedge for a replacement that must adopt a snapshot.
+    /// [limit: amnesiac-same-id-excluded-by-boot-token] The second bullet above assumes the adopting process
+    /// is the one that held this NodeId's ballots, or a new identity (a fresh ULID has never balloted). A
+    /// process restarted under a NodeId that DID ballot past R, with its memory lost, breaks that assumption:
+    /// it can adopt from one responder and vote again (`V1554AmnesiaProbeTest` demonstrates it at this layer).
+    /// Since #2625 the engine narrows the case without any transport: every proposal and vote carries its
+    /// process [Incarnation], and a receiver that sees two incarnations of one NodeId in a slot stops counting
+    /// that NodeId there ([PhaseData#admit], `RabiaRestartIncarnationTest`). It does not close it: a quorum
+    /// whose members never received the earlier process's ballots for the slot (lost with its crash, as in
+    /// `V1554AmnesiaProbeTest`) sees one incarnation and counts the new process. That remainder is excluded
+    /// only by the transport refusing a same-NodeId restart by its boot token (#1528/#1545). A
+    /// responder-quorum fence here would recreate the #1526 wedge for a replacement that must adopt a snapshot.
     private Option<List<SyncResponse<C>>> newerEpochCandidates(List<SyncResponse<C>> responses) {
         var live = responses.stream().filter(response -> response.responder() == ResponderState.LIVE).toList();
         var claimed = live.stream().map(response -> response.state()
@@ -4395,12 +4422,47 @@ public class RabiaEngine<C extends Command> {
                                       voterEpoch(),
                                       phase,
                                       phaseData.getProposal(self),
-                                      phaseData.configuration(self)));
+                                      phaseData.configuration(self),
+                                      incarnation));
     }
 
     private void registerProposal(Propose<C> propose, PhaseData<C> phaseData) {
+        if (!admitsBallot(propose.sender(), propose.incarnation(), phaseData)) {
+            return;
+        }
+
         phaseData.registerProposal(propose.sender(), propose.value(), propose.reconfiguration());
         metrics.recordProposal(propose.sender(), propose.phase());
+    }
+
+    /// #2625: a ballot counts only under the one process incarnation `phaseData` holds for its sender in this slot. A
+    /// ballot that names this node with another incarnation is a previous process of this node; it is dropped and never
+    /// voids this node's own ballots, which this process still holds.
+    private boolean admitsBallot(NodeId sender, Incarnation senderIncarnation, PhaseData<C> phaseData) {
+        if (sender.equals(self)) {
+            return senderIncarnation.equals(incarnation);
+        }
+
+        return switch (phaseData.admit(sender, senderIncarnation)) {
+            case ADMITTED -> true;
+            case VOIDED -> false;
+            case CONFLICT -> reportIncarnationConflict(sender, phaseData.phase());
+        };
+    }
+
+    private boolean reportIncarnationConflict(NodeId sender, Phase phase) {
+        OperatorWarnings.raise(log,
+                               operatorWarningSink.get(),
+                               OperatorWarningCode.CONSENSUS_INCARNATION_CONFLICT,
+                               sender.id(),
+                               "Node {} received ballots from two processes under node id {} in slot {}: a process restarted "
+                              + "under that id without the ballots it cast. Its ballots in that slot no longer count here. "
+                              + "Operator action: check why that node restarted under the same id (#2625).",
+                               self,
+                               sender,
+                               phase);
+
+        return false;
     }
 
     private void tryBroadcastRound1Vote(Phase phase, PhaseData<C> phaseData) {
@@ -4424,7 +4486,7 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void broadcastRound1Vote(Phase phase, PhaseData<C> phaseData, int quorumSize) {
-        var vote = phaseData.evaluateInitialVote(self, quorumSize);
+        var vote = phaseData.evaluateInitialVote(self, incarnation, quorumSize);
 
         log.trace("Node {} broadcasting R1 vote {} for phase {} after collecting quorum proposals", self, vote, phase);
         if (broadcastVoters(vote)) {
@@ -4495,6 +4557,10 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void registerRound1Vote(VoteRound1 vote, PhaseData<C> phaseData) {
+        if (!admitsBallot(vote.sender(), vote.incarnation(), phaseData)) {
+            return;
+        }
+
         phaseData.registerRound1Vote(vote.sender(), vote.round(), vote.stateValue());
         metrics.recordVoteRound1(vote.sender(), vote.phase(), vote.stateValue());
     }
@@ -4575,14 +4641,16 @@ public class RabiaEngine<C extends Command> {
                                                                  voterEpoch(),
                                                                  phaseData.phase(),
                                                                  round,
-                                                                 value)));
+                                                                 value,
+                                                                 incarnation)));
         phaseData.round2Vote(self, round)
                  .onPresent(value -> network.send(peer,
                                                   new VoteRound2(self,
                                                                  voterEpoch(),
                                                                  phaseData.phase(),
                                                                  round,
-                                                                 value)));
+                                                                 value,
+                                                                 incarnation)));
     }
 
     private boolean canVoteRound2(Phase phase, PhaseData<C> phaseData, int quorumSize) {
@@ -4599,7 +4667,7 @@ public class RabiaEngine<C extends Command> {
         var round2Vote = phaseData.evaluateRound2Vote(quorumSize);
 
         log.trace("Node {} votes in round 2 {}", self, round2Vote);
-        if (broadcastVoters(new VoteRound2(self, voterEpoch(), phase, phaseData.round(), round2Vote))) {
+        if (broadcastVoters(new VoteRound2(self, voterEpoch(), phase, phaseData.round(), round2Vote, incarnation))) {
             phaseData.registerRound2Vote(self, round2Vote);
         }
     }
@@ -4651,6 +4719,10 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void registerRound2Vote(VoteRound2 vote, PhaseData<C> phaseData) {
+        if (!admitsBallot(vote.sender(), vote.incarnation(), phaseData)) {
+            return;
+        }
+
         phaseData.registerRound2Vote(vote.sender(), vote.round(), vote.stateValue());
         metrics.recordVoteRound2(vote.sender(), vote.phase(), vote.stateValue());
     }
@@ -4688,7 +4760,8 @@ public class RabiaEngine<C extends Command> {
                                                voterEpoch(),
                                                phaseData.phase(),
                                                phaseData.round(),
-                                               carryForward.value()));
+                                               carryForward.value(),
+                                               incarnation));
                 safeExecute(() -> driveBinaryRound(phaseData));
             }
         }

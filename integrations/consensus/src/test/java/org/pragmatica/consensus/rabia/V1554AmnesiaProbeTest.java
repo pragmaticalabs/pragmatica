@@ -22,12 +22,17 @@ import java.util.List;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 import java.util.stream.IntStream;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -47,8 +52,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///
 /// [limit: amnesiac-same-id-excluded-by-boot-token] The stall is a property of THIS schedule, not a guard: a
 /// LIVE response that arrives after v1''s genesis round is not recorded, and single-responder newer-epoch
-/// adoption can still break agreement at the engine layer (v1554's J2/J1 arms). What excludes the case is
-/// the transport refusing a same-NodeId restart by its boot token (#1528/#1545), pinned on real QUIC/SWIM by
+/// adoption can still break agreement at the engine layer (v1554's J2/J1 arms). The engine's ballot
+/// incarnation (#2625) does not reach this schedule either: v1's slot-S ballots toward v0 are lost with its
+/// crash, so no replica ever holds ballots from both processes under v1's id, and none raises
+/// `consensus-incarnation-conflict`. Each run asserts that, so the engine rule is never mistaken for what
+/// holds here (`RabiaRestartIncarnationTest` is the schedule it does close). What excludes this case is the
+/// transport refusing a same-NodeId restart by its boot token (#1528/#1545), pinned on real QUIC/SWIM by
 /// `EmberAmnesiacRestartTest`.
 class V1554AmnesiaProbeTest {
     private static final int A = 0, B = 1, C = 2, D = 3;
@@ -121,6 +130,8 @@ class V1554AmnesiaProbeTest {
         cluster.pumpUntil(() -> cluster.machines.get(A).getProcessedCommands().size() >= dLog.size());
         assertThat(cluster.machines.get(A).getProcessedCommands()).as("seed %s: slot S agreement", seed)
                                                                .containsExactlyElementsOf(dLog);
+        assertThat(cluster.flushedWarnings()).as("seed %s: no replica saw two processes under v1's id, so the #2625 rule did not act", seed)
+                                             .noneMatch(warning -> warning.code() == OperatorWarningCode.CONSENSUS_INCARNATION_CONFLICT);
         cluster.stop();
     }
 
@@ -137,6 +148,19 @@ class V1554AmnesiaProbeTest {
         Predicate<Delivery> blocked = _ -> false;
         Predicate<Delivery> held = _ -> false;
         final Random random;
+        /// Every engine raises into this one sink. Its hand-off is a single FIFO thread, so a sentinel accepted after the
+        /// schedule is published after every warning raised before it.
+        final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
+        final OperatorWarningSink sink = OperatorWarningSink.handingOffTo(warnings::add);
+        private static final OperatorWarning SENTINEL = new OperatorWarning(OperatorWarningCode.GENESIS_SEAT_REACHABLE, "v1554-flush", "flush");
+
+        List<OperatorWarning> flushedWarnings() {
+            sink.accept(SENTINEL);
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!warnings.contains(SENTINEL) && System.nanoTime() < deadline) { Thread.onSpinWait(); }
+            assertThat(warnings).as("warning hand-off flushed").contains(SENTINEL);
+            return warnings.stream().filter(warning -> warning != SENTINEL).toList();
+        }
 
         Cluster(int seed) {
             random = new Random(seed);
@@ -177,8 +201,10 @@ class V1554AmnesiaProbeTest {
                     return send(nodeId, message);
                 }
             };
-            return new RabiaEngine<>(topology, network, machines.get(index),
-                                     ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds()));
+            var engine = new RabiaEngine<>(topology, network, machines.get(index),
+                                           ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds()));
+            engine.useOperatorWarningSink(sink);
+            return engine;
         }
 
         void crash(int index) {

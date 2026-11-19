@@ -664,6 +664,13 @@ public enum OperatorWarningCode {
     /// The recovery of [#GENESIS_SEAT_UNREACHABLE], same subject (#1654): the seat is a connected peer again, or it left the voter
     /// roster (replaced); the message says which. INFO, published only after a published unreachable event for the seat (#752 mechanism).
     GENESIS_SEAT_REACHABLE("genesis-seat-reachable", "consensus", WarningLevel.INFO, GENESIS_SEAT_UNREACHABLE),
+    /// A consensus voter received slot ballots from two processes under one node id (#2625): a process restarted under that id
+    /// without the proposals and votes it had cast, and balloted again in a slot that was still open. The receiver stops
+    /// counting every ballot of that id in that slot, so the slot cannot decide on a mix of the two processes' votes.
+    /// CRITICAL: safety then rests on the receivers that saw both processes, and in Aether the transport's boot token should
+    /// have refused the restarted process first. Raised once per slot by each receiver that sees the second process; subject
+    /// is the restarted node id; the message names the receiver and the slot.
+    CONSENSUS_INCARNATION_CONFLICT("consensus-incarnation-conflict", "consensus", WarningLevel.CRITICAL),
     /// Background promotion of a storage instance has copied nothing for several consecutive cycles while copies kept
     /// failing: a copy attempt fails when its faster tier rejects the write or its source tier cannot be read. It detects
     /// FAILING COPIES only: a tier sitting above its promotion watermark is skipped without an attempt and raises nothing.

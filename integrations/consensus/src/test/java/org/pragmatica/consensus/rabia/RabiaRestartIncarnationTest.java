@@ -39,12 +39,16 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
 import java.util.stream.IntStream;
 
@@ -116,6 +120,8 @@ class RabiaRestartIncarnationTest {
         cluster.verifyPrefixes();
         assertThat(cluster.machines.get(C).getProcessedCommands()).as("C must not decide Y in the slot where B decided X")
                                                                .doesNotContain(new TestCommand("Y"));
+        assertThat(cluster.raisedWithin(C + "|" + OperatorWarningCode.CONSENSUS_INCARNATION_CONFLICT + "|" + cluster.members.get(A).id()))
+            .as("C reports the second process under A's id as an operator event").isTrue();
     }
 
     private static Batch<TestCommand> batch(Cluster cluster, String value) {
@@ -144,6 +150,15 @@ class RabiaRestartIncarnationTest {
         final List<Delivery> parked = new ArrayList<>();
         final Set<Integer> dead = new HashSet<>();
         Predicate<Delivery> deliverable = _ -> true;
+        /// `<receiver index>|<code>|<subject>` of every operator warning any engine raised.
+        final List<String> warnings = new CopyOnWriteArrayList<>();
+
+        /// The sinks hand warnings off to another thread: wait for `expected`, bounded.
+        boolean raisedWithin(String expected) {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!warnings.contains(expected) && System.nanoTime() < deadline) { Thread.onSpinWait(); }
+            return warnings.contains(expected);
+        }
 
         Cluster() {
             for (int i = 0; i < 3; i++) {
@@ -178,6 +193,7 @@ class RabiaRestartIncarnationTest {
             var engine = new RabiaEngine<>(topology, network, machines.get(index),
                                            ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds(), marker));
             assertThat(engine.initializeVoters(new VoterConfiguration(0, new ClusterConfig(members))).isSuccess()).isTrue();
+            engine.useOperatorWarningSink(OperatorWarningSink.handingOffTo(warning -> warnings.add(index + "|" + warning.code() + "|" + warning.subject())));
             return engine;
         }
 
