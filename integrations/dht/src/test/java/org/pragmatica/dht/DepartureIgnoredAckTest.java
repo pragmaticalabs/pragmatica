@@ -38,40 +38,48 @@ import static org.pragmatica.dht.DHTRebalancerTest.value;
 import static org.pragmatica.dht.DepartureDirectRuns.direct;
 import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine;
 
-/// #3345: an ack that does not count (IGNORED: here its target was out of the ring when it landed) does not end the attempt. The
-/// page still waits `resendAfter` for an answer that counts and is resent when none comes; the resend's ack makes the key safe.
-/// The run never observes a view change, so the page stays current and only the resend can deliver the key.
+/// #3345: an ack that does not count (IGNORED: its page is no longer current, because its target left V at an observed re-plan and
+/// came back as a new tenure) does not end the attempt and is never a holder. The returned target is paged again in its new tenure,
+/// and that page's ack makes the key safe. May-act and the ack read V, never the live ring: a ring change nobody observed leaves
+/// the page current and its ack counted (DepartureLivePageTest).
 class DepartureIgnoredAckTest {
     private static final DHTConfig RF1 = new DHTConfig(1, 1, 1, DHTConfig.DEFAULT_TIMEOUT);
 
     @Test
     @Timeout(20)
-    void ignoredAck_targetOutOfTheRingWhenItLands_pageIsResentAndTheKeyDelivered() {
+    void ignoredAck_targetLeftTheViewAndCameBack_newTenurePageDeliversTheKey() {
         var ring = ConsistentHashRing.<NodeId>consistentHashRing();
         List.of(LOCAL, PEER_A).forEach(ring::addNode);
         var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
         node.putLocal(key("ignored-ack"), value("payload")).await();
         var self = new AtomicReference<ScriptedNetwork>();
+        var handle = new AtomicReference<DeparturePushRun>();
         var network = ScriptedNetwork.scripted((index, sent) -> index == 0
-                                                                ? ackWhileOutOfTheRing(self, ring, sent)
+                                                                ? ackWhileOutOfTheView(self, ring, handle, sent)
                                                                 : Reply.ACK);
         self.set(network);
-        var run = direct(node, network, 1_500, 100, Set::of);
+        var run = direct(node, network, 1_500, 100, Set::of, handle);
 
-        assertThat(network.sends()).as("the ignored ack left the page to its resend").hasSizeGreaterThanOrEqualTo(2);
-        assertThat(run.report().owed()).as("the resend's ack delivered the key").isZero();
+        assertThat(network.sends()).as("the ignored ack left the key to a page of the new tenure").hasSizeGreaterThanOrEqualTo(2);
+        assertThat(run.report().owed()).as("the new tenure's ack delivered the key").isZero();
     }
 
-    /// The target leaves the ring, the ack lands 20 ms later (ignored: the target is out of the ring), then the target is back.
-    private static Reply ackWhileOutOfTheRing(AtomicReference<ScriptedNetwork> self, ConsistentHashRing<NodeId> ring, TimedSend sent) {
+    /// The target leaves the ring and the run observes it, the ack lands 20 ms later (ignored: its page is dead), then the target is
+    /// back and the run observes that too.
+    private static Reply ackWhileOutOfTheView(AtomicReference<ScriptedNetwork> self,
+                                              ConsistentHashRing<NodeId> ring,
+                                              AtomicReference<DeparturePushRun> handle,
+                                              TimedSend sent) {
         ring.removeNode(sent.target());
-        CompletableFuture.runAsync(() -> ackThenRejoin(self.get(), ring, sent),
+        handle.get().onViewChange();
+        CompletableFuture.runAsync(() -> ackThenRejoin(self.get(), ring, handle.get(), sent),
                                    CompletableFuture.delayedExecutor(20, TimeUnit.MILLISECONDS));
         return Reply.DROP;
     }
 
-    private static void ackThenRejoin(ScriptedNetwork network, ConsistentHashRing<NodeId> ring, TimedSend sent) {
+    private static void ackThenRejoin(ScriptedNetwork network, ConsistentHashRing<NodeId> ring, DeparturePushRun run, TimedSend sent) {
         network.deliver(sent, Reply.ACK);
         ring.addNode(sent.target());
+        run.onViewChange();
     }
 }

@@ -19,8 +19,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.dht.DHTAntiEntropy.dhtAntiEntropy;
@@ -68,6 +70,32 @@ class DHTDepartureSequentialAbsenceTest {
         assertThat(Set.copyOf(h.pageTargets)).as("no exit while a planned page is live: both targets are paged")
                                              .containsExactlyInAnyOrder(newcomer, other(newcomer));
         assertThat(h.holds(newcomer)).as("no absence: the newcomer's page was applied").isTrue();
+    }
+
+    /// #3345 P1 (from the v3394d review): "the run exits only after every registered page is delivered or failed". The newcomer's
+    /// ack is recorded inside its send; right after it one re-plan trigger fires (onViewChange with the view unchanged, standing
+    /// for any trigger: a ring change elsewhere, a lost holder). The key is now safe at one deliverer, but the other node still
+    /// gains it and holds no copy, so it is still owed there: its planned page is kept and sent, never cancelled.
+    @Test
+    void replanAfterNewcomerAck_otherRegisteredPageStillSent() {
+        var h = new Harness(true);
+        var newcomer = h.newcomer();
+        var fired = new AtomicBoolean();
+
+        h.afterPage.set(target -> replanOnceAfter(h, newcomer, target, fired));
+        h.push().await();
+        h.halt();
+        assertThat(fired.get()).as("control: the re-plan fired after the newcomer's ack").isTrue();
+        assertThat(h.holds(newcomer)).as("control: the newcomer's page was applied").isTrue();
+        assertThat(h.pageTargets.getFirst()).as("control: the first page goes to the newcomer").isEqualTo(newcomer);
+        assertThat(Set.copyOf(h.pageTargets)).as("every registered page is sent: both targets are paged")
+                                             .containsExactlyInAnyOrder(newcomer, other(newcomer));
+    }
+
+    private static void replanOnceAfter(Harness h, NodeId newcomer, NodeId target, AtomicBoolean fired) {
+        if (target.equals(newcomer) && fired.compareAndSet(false, true)) {
+            h.members.get(DRAINER).rebalancer().onViewChange();
+        }
     }
 
     @Test
@@ -162,6 +190,7 @@ class DHTDepartureSequentialAbsenceTest {
         final Map<NodeId, Member> members = new LinkedHashMap<>();
         final Set<NodeId> absent = ConcurrentHashMap.newKeySet();
         final List<NodeId> pageTargets = new CopyOnWriteArrayList<>();
+        final AtomicReference<Consumer<NodeId>> afterPage = new AtomicReference<>(_ -> {});
         final DHTTopologyListener listener;
         final byte[] key;
 
@@ -259,6 +288,9 @@ class DHTDepartureSequentialAbsenceTest {
             }
             if (!absent.contains(target)) {
                 Option.option(members.get(target)).onPresent(m -> route(m, message));
+            }
+            if (message instanceof DHTMessage.MigrationDataResponse r && r.ackRequested() && !r.entries().isEmpty()) {
+                afterPage.get().accept(target);
             }
         }
 

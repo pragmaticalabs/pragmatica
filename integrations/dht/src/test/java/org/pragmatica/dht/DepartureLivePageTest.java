@@ -19,6 +19,7 @@ package org.pragmatica.dht;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.dht.DHTRebalancerTest.Reply;
 import org.pragmatica.dht.DHTRebalancerTest.ScriptedNetwork;
 import org.pragmatica.dht.DHTRebalancerTest.TimedSend;
@@ -44,7 +45,7 @@ import static org.pragmatica.dht.DepartureDirectRuns.soleKey;
 import static org.pragmatica.dht.DepartureDirectRuns.takeover;
 import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine;
 
-/// #3345. One predicate `live(page)` (registered, not cancelled, current) decides send, resend, split and the count of
+/// #3345. One predicate `mayAct(page)` (registered, not cancelled, current) decides send, resend, split and the count of
 /// live chains, so a page a re-plan cancelled is dead like a page of an earlier tenure: never split, never resent, and it does not
 /// hold the exit. A probe not answered in time is sent again while the window lasts and is never a lost holder, so a
 /// slow-answering live holder costs no re-push. Every delay is driven by event order, not by the wall clock.
@@ -84,6 +85,85 @@ class DepartureLivePageTest {
         assertThat(elapsedMs).as("the run exits early, not at the deadline").isLessThan(WINDOW_MS / 2);
         assertThat(direct.report().owed()).isZero();
     }
+
+    /// The encode-failure split site (`encodeFailed` -> `splitPage`): D's two-key page cannot be encoded, and inside that send the
+    /// joiner takes both keys over, so the re-plan cancels D's page before the refusal is handled. A cancelled page that fails to
+    /// encode is never split into single-key pages: D gets exactly the one page and no key is marked undeliverable. The joiner's probes are
+    /// answered late so the run is still open when the refusal is handled (a closed run would stop the split by itself, masking it).
+    @Test
+    @Timeout(30)
+    void cancelledPage_encodeFailedAfterReplan_neverSplit() {
+        var ring = fiveNodeRing();
+        var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+        var first = soleKey(ring, "z5");
+        var refusing = delivererOf(ring, first, Set.of(LOCAL));
+        var joiner = takeover(ring, first);
+        var second = movedWith(ring, first, refusing, joiner);
+        node.putLocal(first, value("v1")).await();
+        node.putLocal(second, value("v2")).await();
+        var handle = new AtomicReference<DeparturePushRun>();
+        var network = ScriptedNetwork.scripted((index, sent) -> index == 0
+                                                                ? joinAtFirstSend(ring, joiner, handle, ENCODE_FAILED)
+                                                                : sent.target().equals(joiner) ? Reply.ACK : ENCODE_FAILED);
+        var self = new AtomicReference<ScriptedNetwork>();
+        var probeSends = new CopyOnWriteArrayList<TimedSend>();
+        self.set(network);
+        network.probesAnswer(probe -> answerEarlierProbe(probe, probeSends, self));
+        var direct = direct(node, network, WINDOW_MS, RESEND_MS, Set::of, handle);
+
+        assertThat(network.sends().getFirst().response().entries()).as("one two-key page to D first").hasSize(2);
+        assertThat(network.sends().stream().filter(sent -> sent.target().equals(joiner))).as("control: J paged").isNotEmpty();
+        assertThat(network.sends().stream().filter(sent -> sent.target().equals(refusing))).as("D's cancelled page never split")
+                                                                                           .hasSize(1);
+        assertThat(direct.report().undeliverable()).as("no single-key page of the cancelled page failed").isZero();
+        assertThat(direct.report().owed()).isZero();
+    }
+
+    /// P2, the resend site: D's page is unanswered while D leaves the live ring WITHOUT any re-plan (the run's view V still has D). May-act
+    /// is read from V, never the live ring: D's page is still resent while its window lasts.
+    @Test
+    @Timeout(30)
+    void ringChangeWithoutObservation_unansweredPageStillResent() {
+        var ring = fiveNodeRing();
+        var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+        var key = soleKey(ring, "z6");
+        var target = delivererOf(ring, key, Set.of(LOCAL));
+        node.putLocal(key, value("v1")).await();
+        var network = ScriptedNetwork.scripted((index, _) -> index == 0 ? silentRingLoss(ring, target) : Reply.DROP);
+        var direct = direct(node, network, WINDOW_MS, RESEND_MS, Set::of);
+
+        assertThat(network.sends().stream().filter(sent -> sent.target().equals(target))).as("D's page is resent from V, not gated on the live ring")
+                                                                                         .hasSizeGreaterThan(1);
+        assertThat(direct.report()).isNotNull();
+    }
+
+    /// P2, the ack site: D's ack arrives while D has left the live ring WITHOUT any re-plan (V still has D). The ack counts (`inTenure` reads V):
+    /// the key is safe at D and nothing stays owed.
+    @Test
+    @Timeout(30)
+    void ringChangeWithoutObservation_ackStillCounts() {
+        var ring = fiveNodeRing();
+        var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+        var key = soleKey(ring, "z7");
+        var target = delivererOf(ring, key, Set.of(LOCAL));
+        node.putLocal(key, value("v1")).await();
+        var network = ScriptedNetwork.scripted((index, _) -> index == 0 ? silentRingLoss(ring, target, Reply.ACK) : Reply.ACK);
+        var direct = direct(node, network, WINDOW_MS, RESEND_MS, Set::of);
+
+        assertThat(direct.report().owed()).as("the ack of a node the ring dropped unobserved still counts").isZero();
+    }
+
+    private static Reply silentRingLoss(ConsistentHashRing<NodeId> ring, NodeId target) {
+        return silentRingLoss(ring, target, Reply.DROP);
+    }
+
+    private static Reply silentRingLoss(ConsistentHashRing<NodeId> ring, NodeId target, Reply answer) {
+        ring.removeNode(target);
+
+        return answer;
+    }
+
+    private static final Reply ENCODE_FAILED = Reply.refuse(id -> new WriteOutcome.EncodeFailed(id, "MigrationDataResponse"));
 
     /// The split site: D answers its two-key page with a nack inside the send that lets the joiner take both keys over, so
     /// the page is cancelled when its nack pause ends: a cancelled page is never halved, D gets exactly the one page. The joiner's probe is
