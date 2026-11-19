@@ -53,6 +53,16 @@ import org.slf4j.LoggerFactory;
 /// All states accept [`ClusterFsmEvent`] as their event type; leader-election domain events
 /// ([`LeaderElectionEvents`]) also implement `ClusterFsmEvent` so they flow through the same
 /// dispatch path.
+///
+/// View application (#3092, #3426) follows three invariants, pinned cell by cell (state x view event x mode) by
+/// `ViewApplicationTableTest`; no state keeps a local rule of its own about a view:
+/// - I1: an applied view is stored as it is, an empty one included ([LeaderElectionContext#currentTopology()] never
+///   returns a view the transport has replaced).
+/// - I2: after any view event the leader `Led` follows is in the applied eligible view, or `Led` loses it
+///   (`applyViewInLed`; the pre-vote asks first when enabled). States without a leader only store the view. A
+///   committed leader is still adopted when absent from the view (FIX 1): I2 governs views, not commits.
+/// - I3: a leaderless electing state makes progress on its own ticks in local mode as in cluster mode: a local tick
+///   elects the first node of the view, and a local commit is not gated on a sequence local mode never advances.
 public sealed interface LeaderElectionState extends FsmState<LeaderElectionState, ClusterFsmEvent> permits LeaderElectionState.Dormant, LeaderElectionState.QuorumWaiting, LeaderElectionState.AwaitingKvSync, LeaderElectionState.Electing, LeaderElectionState.Led, LeaderElectionState.ReElecting, LeaderElectionState.QuorumLost, LeaderElectionState.Stopped, LeaderElectionState.Passive {
     Logger log = LoggerFactory.getLogger(LeaderElectionState.class);
 
@@ -509,9 +519,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             switch (event) {
                 case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
                                                                                                     directory.members()));
-                case ClusterFsmEvent.NodeGone ng -> handleNodeGoneInLed(ctx, this, ng, tx);
+                case ClusterFsmEvent.NodeGone ng -> applyViewInLed(ctx, this, ng, tx);
                 case PeerRemovedFromView removed -> handleRemovalInLed(ctx, this, removed, tx);
-                case ClusterFsmEvent.NodeAdded na -> ctx.applyTopology(na);
+                case ClusterFsmEvent.NodeAdded na -> applyViewInLed(ctx, this, na, tx);
                 case LeaderCommitted lc -> handleLeaderCommittedInLed(ctx, leader, lc, tx);
                 case LeaderSilent ls -> handleLeaderSilentInLed(ctx, this, ls, tx);
                 case LeaderDoubtConfirmed dc -> handleLeaderDoubtConfirmedInLed(ctx, this, dc, tx);
@@ -591,14 +601,18 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                    tx);
     }
 
-    private static void handleNodeGoneInLed(LeaderElectionContext ctx,
-                                            Led led,
-                                            ClusterFsmEvent.NodeGone event,
-                                            TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
-        // #2971: a stale NodeGone (an older view than one already applied) neither writes the view nor loses the
-        // leader — the newer observation already decided both.
-        if (ctx.applyTopology(event) && event.node().equals(led.leader())) {
-            // #2869: no suspect on this path — the departed leader is already out of the transport topology.
+    /// #3092/#3426 I2: every view event in `Led` (`NodeAdded`, `NodeGone` of the leader or of another node, an empty
+    /// view) ends with the leader in the applied eligible view, otherwise the leader is lost through [#loseLeader]
+    /// (with the pre-vote enabled the electorate is asked first, #1748). The check reads the STORED view after the
+    /// write, whether or not this event's own view was applied: a stale event (#2971) writes nothing, so the view it
+    /// checks is the newer one, and a view that `LeaderManager`'s local paths applied ahead of the dispatch (#3044) is
+    /// checked here too. No suspect (#2869): a leader absent from the view is already out of the transport topology.
+    private static void applyViewInLed(LeaderElectionContext ctx,
+                                       Led led,
+                                       ClusterFsmEvent.TopologyChange event,
+                                       TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        ctx.applyTopology(event);
+        if (!ctx.currentTopology().contains(led.leader())) {
             loseLeader(ctx, led, Option.none(), tx);
         }
     }
@@ -846,8 +860,13 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
-            // Terminal — ignore everything.
-            tx.ignore();
+            // Terminal: no transition. A view is still stored (#3092 I1, the same in local and cluster mode).
+            switch (event) {
+                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> ctx.applyTopology(na));
+                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> ctx.applyTopology(ng));
+                case PeerRemovedFromView removed -> tx.handle(() -> ctx.removeFromView(removed.node()));
+                default -> tx.ignore();
+            }
         }
     }
 
@@ -870,6 +889,10 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case LeaderElectionEvents.VoterReadmitted _ -> tx.transitionTo(ctx.quorumWaiting());
                 case LeaderCommitted committed -> tx.handle(() -> observeCommittedLeader(ctx, committed));
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
+                // #3092 I1: a readmitted worker elects from the view the transport last applied, not a replaced one.
+                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> ctx.applyTopology(na));
+                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> ctx.applyTopology(ng));
+                case PeerRemovedFromView removed -> tx.handle(() -> ctx.removeFromView(removed.node()));
                 default -> tx.ignore();
             }
         }
@@ -925,6 +948,12 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                                                         long entryBaseline,
                                                         String stateLabel,
                                                         TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        if (ctx.isLocalMode()) {
+            adoptLocalCommit(ctx, event, stateLabel, tx);
+
+            return;
+        }
+
         var committed = ctx.committedViewSequence();
 
         if (committed <= entryBaseline) {
@@ -943,6 +972,30 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                  event.leader(),
                  committed,
                  entryBaseline);
+        recordAdoptedSequence(ctx, event);
+        tx.transitionTo(Led.fresh(ctx, event.leader()));
+    }
+
+    /// #3092 I3: local mode never advances the committed sequence, so the sequence gate would skip every local commit
+    /// and leave an electing node leaderless. A local commit is adopted iff its leader is in the applied eligible view
+    /// (I2): every local election names the first node of that view (I1), and a KV-pull commit of a leader the view no
+    /// longer holds (the evicted leader's stale `LeaderKey`) is skipped instead of resurrecting it.
+    private static void adoptLocalCommit(LeaderElectionContext ctx,
+                                         LeaderCommitted event,
+                                         String stateLabel,
+                                         TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        if (!ctx.currentTopology().contains(event.leader())) {
+            log.info("{}: skipping local-mode LeaderCommitted({}) — absent from the applied view {}",
+                     stateLabel,
+                     event.leader(),
+                     ctx.currentTopology());
+
+            return;
+        }
+
+        log.info("{}: adopting local-mode LeaderCommitted({}) — no commit sequence exists in local mode",
+                 stateLabel,
+                 event.leader());
         recordAdoptedSequence(ctx, event);
         tx.transitionTo(Led.fresh(ctx, event.leader()));
     }
@@ -1113,13 +1166,28 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     private static void trySubmitProposal(LeaderElectionContext ctx, LeaderElectionState owner) {
         ctx.proposalHandler()
            .onPresent(handler -> submitProposalWith(ctx, owner, handler))
-           .onEmpty(() -> {
-                        // GUARD 1 (election-trigger swallow): no consensus proposal handler wired (local
-                        // mode / mis-wired). The trigger cannot produce a consensus proposal — reschedule.
-                        log.warn("triggerElection swallowed by GUARD[no-proposal-handler]: "
-                                + "no proposal handler configured — rescheduling tick");
-                        rescheduleCurrentTick(ctx);
-                    });
+           .onEmpty(() -> electLocallyOnTick(ctx, owner));
+    }
+
+    /// #3092 I3: in local mode (no proposal handler) a tick elects the way every local path does, by committing the
+    /// first node of the applied eligible view ([LeaderElectionContext#localLeaderCandidate()]), so a leaderless
+    /// electing state makes progress on its own ticks. A tick whose KV pull already moved the FSM elects nothing.
+    private static void electLocallyOnTick(LeaderElectionContext ctx, LeaderElectionState owner) {
+        if (ctx.fsm().current() != owner) {
+            return;
+        }
+
+        ctx.localLeaderCandidate()
+           .onPresent(leader -> dispatchSelf(ctx,
+                                             new LeaderCommitted(leader)))
+           .onEmpty(() -> rescheduleOnEmptyLocalView(ctx));
+    }
+
+    /// GUARD 1 (election-trigger swallow): local mode with an empty eligible view has no node to elect — reschedule.
+    private static void rescheduleOnEmptyLocalView(LeaderElectionContext ctx) {
+        log.warn("triggerElection swallowed by GUARD[local-empty-view]: local mode with an empty eligible view — "
+                + "rescheduling tick");
+        rescheduleCurrentTick(ctx);
     }
 
     private static void submitProposalWith(LeaderElectionContext ctx,

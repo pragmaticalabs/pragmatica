@@ -507,10 +507,7 @@ public interface LeaderManager {
         @Contract
         @Override
         public void peerJoined(PeerJoined peerJoined) {
-            dispatchNodeAdded(peerJoined.nodeId(), peerJoined.topology(), peerJoined.sequence());
-            if (localMode) {
-                electLocallyIfPossible();
-            }
+            dispatchView(nodeAdded(peerJoined.nodeId(), peerJoined.topology(), peerJoined.sequence()));
         }
 
         @Contract
@@ -523,28 +520,21 @@ public interface LeaderManager {
                                                                         .toList(),
                                                         peerDisconnected.sequence());
 
-            if (localMode) {
-                disconnectLocally(nodeGone);
-            } else {
-                fsm.dispatch(nodeGone);
-            }
+            dispatchView(nodeGone);
         }
 
-        /// Local mode needs the new leader to appear BEFORE the `NodeGone` event, so the FSM stays in `Led` (different
-        /// leader) rather than going `Led` → `ReElecting` → `Led`, which would emit an intermediate "no leader"
-        /// notification (#3044). The view is applied first, through the same fence the FSM uses: a stale eviction
-        /// (older than a view already applied) neither adopts nor dispatches. An applied one adopts from the STORED
-        /// view, then dispatches; the FSM's own `applyTopology` finds the event already applied, so `Led` does not
-        /// lose the leader the adoption has just moved. An eviction whose eligible view is EMPTY adopts nothing (#3092):
-        /// the stored view keeps its content under an empty view and still holds the evicted leader, so adopting from
-        /// it would re-adopt a node absent from the eligible view. It goes straight to the FSM, which applies the view
-        /// through the same fence and loses the leader (re-election pending).
-        private void disconnectLocally(ClusterFsmEvent.NodeGone nodeGone) {
-            if (nodeGone.topology().isEmpty()) {
-                fsm.dispatch(nodeGone);
-            } else if (context.applyTopology(nodeGone)) {
+        /// Every view event takes this one path. Cluster mode dispatches it. Local mode needs the new leader to appear
+        /// BEFORE the event, so `Led` stays in `Led` (another leader) instead of going `Led` -> `ReElecting` -> `Led`,
+        /// which would emit an intermediate "no leader" notification (#3044): the view is applied first, through the
+        /// fence the FSM uses, then the local leader is elected from the applied view, then the event is dispatched. A
+        /// stale view (older than one already applied) neither elects nor dispatches. The FSM finds the view already
+        /// applied and checks the leader against it (I2): an empty view elects nothing, so `Led` loses the leader.
+        private void dispatchView(ClusterFsmEvent.TopologyChange event) {
+            if (!localMode) {
+                fsm.dispatch(event);
+            } else if (context.applyTopology(event)) {
                 electLocallyIfPossible();
-                fsm.dispatch(nodeGone);
+                fsm.dispatch(event);
             }
         }
 
@@ -586,7 +576,7 @@ public interface LeaderManager {
             // stored view already equals this reconnect's, so the write changes no content, but an older eviction
             // routed late must find the fence moved past it, or its view would drop a peer whose link is back.
             if (restoresTheView(peerReconnected.nodeId(), peerReconnected.topology())) {
-                dispatchNodeAdded(peerReconnected.nodeId(), peerReconnected.topology(), peerReconnected.sequence());
+                dispatchView(nodeAdded(peerReconnected.nodeId(), peerReconnected.topology(), peerReconnected.sequence()));
             } else {
                 context.applyTopology(nodeAdded(peerReconnected.nodeId(),
                                                 peerReconnected.topology(),
@@ -600,10 +590,6 @@ public interface LeaderManager {
             var peerMissing = context.isEligible(nodeId) && !stored.contains(nodeId);
 
             return peerMissing || !stored.equals(eligibleView);
-        }
-
-        private void dispatchNodeAdded(NodeId nodeId, List<NodeId> topology, long sequence) {
-            fsm.dispatch(nodeAdded(nodeId, topology, sequence));
         }
 
         private ClusterFsmEvent.NodeAdded nodeAdded(NodeId nodeId, List<NodeId> topology, long sequence) {
@@ -640,19 +626,11 @@ public interface LeaderManager {
             }
         }
 
+        /// No external FSM-state read here: each state's handler ignores or logs a `LeaderCommitted` that does not fit
+        /// it. An empty applied view has no candidate and commits nothing (I1: it is the view, not the one it replaced).
         private void electLocallyIfPossible() {
-            // No external FSM-state read here — per state's handler, a LeaderCommitted that does
-            // not match the current topology / active state is ignored or logged. We still need
-            // to read topology to *construct* the LeaderCommitted event (it requires a concrete
-            // NodeId), so an empty topology short-circuits before event construction — this is
-            // a data-validity check, not a TOCTOU guard on FSM state.
-            var topology = context.currentTopology();
-
-            if (topology.isEmpty()) {
-                return;
-            }
-
-            fsm.dispatch(new LeaderElectionEvents.LeaderCommitted(topology.getFirst()));
+            context.localLeaderCandidate()
+                   .onPresent(leader -> fsm.dispatch(new LeaderElectionEvents.LeaderCommitted(leader)));
         }
     }
 }
