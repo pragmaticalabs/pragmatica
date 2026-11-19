@@ -225,6 +225,18 @@ class PeerObservationOrderTest {
     }
 
     @Test
+    void localMode_evictionOfTheLeaderWithAnEmptyEligibleView_leavesNoLeader() {
+        node = Node.following(false);
+        var local = new FsmBackedLeaderManager(node.harness.fsm(), node.ctx, true);
+
+        node.ctx.installVoters(List.of(N1));
+        local.peerDisconnected(new PeerDisconnected(N1, WITHOUT_N1, ObservationSource.QUIC, 2L));
+
+        assertThat(node.followsTheLeader()).as("the evicted leader is absent from the eligible view and is not re-adopted").isFalse();
+        assertThat(node.harness.state()).as("an empty eligible view yields re-election, not the evicted leader").isInstanceOf(LeaderElectionState.ReElecting.class);
+    }
+
+    @Test
     void sequencedEmptyView_keepsTheViewButAdvancesTheFence() {
         node = Node.following();
 
