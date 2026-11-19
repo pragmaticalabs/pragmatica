@@ -5,7 +5,6 @@
 package org.pragmatica.aether.deployment.cluster;
 
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
@@ -71,7 +70,6 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
@@ -202,23 +200,6 @@ public interface ClusterDeploymentManager {
     @Contract
     @MessageReceiver
     void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut);
-
-    enum DeploymentAtomicity {
-        BEST_EFFORT,
-        ALL_OR_NOTHING;
-        public static DeploymentAtomicity parse(String value) {
-            if (!Verify.Is.present(value)) {
-                return ALL_OR_NOTHING;
-            }
-
-            return switch (value.trim()
-                                .toLowerCase(Locale.ROOT)
-                                .replace("-", "_")) {
-                case "best_effort" -> BEST_EFFORT;
-                default -> ALL_OR_NOTHING;
-            };
-        }
-    }
 
     /// #699 — the 2/3/4-arg `blueprint(...)` overloads that used to live here all hardcoded
     /// `schemaRequired = true`, silently, with no call site able to see the default being applied.
