@@ -44,18 +44,18 @@ import static org.pragmatica.dht.DepartureDirectRuns.soleKey;
 import static org.pragmatica.dht.DepartureDirectRuns.takeover;
 import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine;
 
-/// #3345 P5 and P6. P5: one predicate `live(page)` (registered, not cancelled, current) decides send, resend, split and the count of
+/// #3345. One predicate `live(page)` (registered, not cancelled, current) decides send, resend, split and the count of
 /// live chains, so a page a re-plan cancelled is dead like a page of an earlier tenure: never split, never resent, and it does not
-/// hold the exit (Z1). P6: a probe not answered in time is sent again while the window lasts and is never a lost holder, so a
-/// slow-answering live holder costs no re-push (M2b). Every delay is driven by event order, not by the wall clock.
+/// hold the exit. A probe not answered in time is sent again while the window lasts and is never a lost holder, so a
+/// slow-answering live holder costs no re-push. Every delay is driven by event order, not by the wall clock.
 class DepartureLivePageTest {
     private static final DHTConfig RF1 = new DHTConfig(1, 1, 1, DHTConfig.DEFAULT_TIMEOUT);
     private static final long WINDOW_MS = 1_500;
     private static final long RESEND_MS = 100;
     private static final int KEYS = 64;
-    private static final int PROBE_DELAY_ROUNDS = 2;
+    static final int PROBE_DELAY_ROUNDS = 2;
 
-    /// Z1: a two-key page goes to D; inside that send a joiner J takes both keys over, the re-plan cancels D's page and pages J,
+    /// A two-key page goes to D; inside that send a joiner J takes both keys over, the re-plan cancels D's page and pages J,
     /// which acks. D stays silent: its cancelled page must not be split into single-key pages resent to D until the deadline.
     @Test
     @Timeout(30)
@@ -70,7 +70,7 @@ class DepartureLivePageTest {
         node.putLocal(second, value("v2")).await();
         var handle = new AtomicReference<DeparturePushRun>();
         var network = ScriptedNetwork.scripted((index, sent) -> index == 0
-                                                                ? joinAtFirstSend(ring, joiner, handle)
+                                                                ? joinAtFirstSend(ring, joiner, handle, Reply.DROP)
                                                                 : sent.target().equals(joiner) ? Reply.ACK : Reply.DROP);
         var started = System.nanoTime();
         var direct = direct(node, network, WINDOW_MS, RESEND_MS, Set::of, handle);
@@ -85,7 +85,39 @@ class DepartureLivePageTest {
         assertThat(direct.report().owed()).isZero();
     }
 
-    /// M2b: 64 keys in one page, acked at once; every probe is answered only when the probe has been sent PROBE_DELAY_ROUNDS more
+    /// The split site: D answers its two-key page with a nack inside the send that lets the joiner take both keys over, so
+    /// the page is cancelled when its nack pause ends: a cancelled page is never halved, D gets exactly the one page. The joiner's probe is
+    /// answered late (event order) so that the run is still open when the pause ends.
+    @Test
+    @Timeout(30)
+    void cancelledPage_nackedAfterReplan_neverHalved() {
+        var ring = fiveNodeRing();
+        var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+        var first = soleKey(ring, "z3");
+        var nacking = delivererOf(ring, first, Set.of(LOCAL));
+        var joiner = takeover(ring, first);
+        var second = movedWith(ring, first, nacking, joiner);
+        node.putLocal(first, value("v1")).await();
+        node.putLocal(second, value("v2")).await();
+        var handle = new AtomicReference<DeparturePushRun>();
+        var network = ScriptedNetwork.scripted((index, sent) -> index == 0
+                                                                ? joinAtFirstSend(ring, joiner, handle, Reply.NACK)
+                                                                : sent.target().equals(joiner) ? Reply.ACK : Reply.DROP);
+        var self = new AtomicReference<ScriptedNetwork>();
+        var probeSends = new CopyOnWriteArrayList<TimedSend>();
+        self.set(network);
+        network.probesAnswer(probe -> answerEarlierProbe(probe, probeSends, self));
+        var direct = direct(node, network, WINDOW_MS, RESEND_MS, Set::of, handle);
+
+        assertThat(network.sends().getFirst().response().entries()).as("one two-key page to D first").hasSize(2);
+        assertThat(network.sends().stream().filter(sent -> sent.target().equals(joiner))).as("control: J paged").isNotEmpty();
+        assertThat(network.probes()).as("control: the run stayed open past D's nack pause").hasSizeGreaterThan(PROBE_DELAY_ROUNDS);
+        assertThat(network.sends().stream().filter(sent -> sent.target().equals(nacking))).as("D's cancelled page never halved")
+                                                                                          .hasSize(1);
+        assertThat(direct.report().owed()).isZero();
+    }
+
+    /// 64 keys in one page, acked at once; every probe is answered only when the probe has been sent PROBE_DELAY_ROUNDS more
     /// times (twice the resend wait). The slow answer must count: no lost holder, no re-push, nothing owed.
     @Test
     @Timeout(30)
@@ -109,15 +141,18 @@ class DepartureLivePageTest {
     }
 
     /// The join happens inside the first send, so the re-plan meets D's page in flight; J's chain starts from it.
-    private static Reply joinAtFirstSend(ConsistentHashRing<NodeId> ring, NodeId joiner, AtomicReference<DeparturePushRun> handle) {
+    private static Reply joinAtFirstSend(ConsistentHashRing<NodeId> ring,
+                                         NodeId joiner,
+                                         AtomicReference<DeparturePushRun> handle,
+                                         Reply answer) {
         ring.addNode(joiner);
         handle.get().onViewChange();
 
-        return Reply.DROP;
+        return answer;
     }
 
     /// The answer to probe send r is delivered at probe send r + PROBE_DELAY_ROUNDS.
-    private static Reply answerEarlierProbe(TimedSend probe, List<TimedSend> probeSends, AtomicReference<ScriptedNetwork> self) {
+    static Reply answerEarlierProbe(TimedSend probe, List<TimedSend> probeSends, AtomicReference<ScriptedNetwork> self) {
         probeSends.add(probe);
         var due = probeSends.size() - 1 - PROBE_DELAY_ROUNDS;
 

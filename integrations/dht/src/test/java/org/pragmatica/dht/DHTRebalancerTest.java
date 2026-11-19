@@ -1647,10 +1647,11 @@ class DHTRebalancerTest {
                 assertThat(run.report().owed()).isZero();
             }
 
-            /// A probe unanswered past `resendAfter` is a holder lost: the key is paged again and the run closes before its deadline.
+            /// #3345: a probe unanswered past `resendAfter` is sent again, never a holder lost: the key is not paged again and the
+            /// run closes before its deadline.
             @Test
             @Timeout(20)
-            void probeSilencePastResendIsHolderLost() {
+            void probeSilencePastResendIsResentNotHolderLost() {
                 var ring = fiveNodeRing();
                 var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
                 node.putLocal(soleKey(ring, "h6"), value("payload")).await();
@@ -1660,9 +1661,9 @@ class DHTRebalancerTest {
                 var started = System.nanoTime();
                 var run = direct(node, network, 3_000, 100, Set::of);
 
-                assertThat(run.run().holderLosses()).isEqualTo(1);
-                assertThat(network.probes()).hasSizeGreaterThanOrEqualTo(2);
-                assertThat(network.sends()).hasSizeGreaterThanOrEqualTo(2);
+                assertThat(run.run().holderLosses()).isZero();
+                assertThat(network.probes()).as("the silent probe was sent again").hasSizeGreaterThanOrEqualTo(2);
+                assertThat(network.sends()).as("no re-push").hasSize(1);
                 assertThat(run.report().owed()).isZero();
                 assertThat(System.nanoTime() - started).as("closed before the deadline").isLessThan(ms(3_000).nanos());
             }

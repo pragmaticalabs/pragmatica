@@ -52,8 +52,9 @@ class DHTDepartureSequentialAbsenceTest {
     private static final NodeId RETURNED = N_A;
     private static final long RESEND_PLUS = 700L;
 
-    /// #3345: the key is Safe once one holder in D(k, V) has it, and D(k, V) is the delta (the live node that gains the key at the
-    /// departure: the other live node already had the drainer's partition in its replica set), so the plan pages only the newcomer.
+    /// #3345: the plan registers a page for each live node, the newcomer (the live node that gains the key at the departure) first.
+    /// No exit starts while a planned page's chain is live, so the other node's page is sent too, although the newcomer's ack
+    /// already makes the key Safe; a run that counted only started chains could close between the two and leave it unsent.
     @Test
     void control_noAbsence_theKeyIsDeliveredToALiveNode() {
         var h = new Harness(true);
@@ -63,14 +64,16 @@ class DHTDepartureSequentialAbsenceTest {
         h.halt();
         assertThat(report.soleCopyAtRisk()).as("no absence: nothing at risk").isZero();
         assertThat(h.heldByALiveNode()).as("no absence: the key is on a live node").isTrue();
-        assertThat(Set.copyOf(h.pageTargets)).as("instrument: the plan pages the key to the newcomer only").containsExactly(newcomer);
+        assertThat(h.pageTargets.getFirst()).as("instrument: the first page goes to the newcomer").isEqualTo(newcomer);
+        assertThat(Set.copyOf(h.pageTargets)).as("no exit while a planned page is live: both targets are paged")
+                                             .containsExactlyInAnyOrder(newcomer, other(newcomer));
         assertThat(h.holds(newcomer)).as("no absence: the newcomer's page was applied").isTrue();
     }
 
     @Test
     void control_oneAbsenceEpisode_theOtherTargetReceivesTheKey() {
         var h = new Harness(true);
-        // #3345: the plan pages only the newcomer (see control_noAbsence), so the absent first target is the newcomer.
+        // #3345: the plan pages the newcomer first (see control_noAbsence), so the absent first target is the newcomer.
         var first = h.newcomer();
         var other = other(first);
 

@@ -34,18 +34,19 @@ import static org.pragmatica.dht.DepartureDirectRuns.fiveNodeRing;
 import static org.pragmatica.dht.DepartureDirectRuns.soleKey;
 import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine;
 
-/// #3345 trigger 3: an exit is attempted only when no chain runs. A chain whose page went silent runs until its attempt times out
-/// (`resendAfter`), even when nothing is owed any more; the exit (and its probe) waits for it.
+/// #3345 trigger 3: an exit is attempted only when no chain holds a live page (`live(page)`: registered, not cancelled,
+/// current). A chain whose page is dead (its target left the view) still runs until its attempt times out, but it no longer holds
+/// the exit: the probe goes out without waiting for it.
 class DepartureExitWaitsForChainsTest {
     private static final DHTConfig RF1 = new DHTConfig(1, 1, 1, DHTConfig.DEFAULT_TIMEOUT);
     private static final long RESEND_MS = 600;
 
     /// The key's deliverer leaves the ring at its send, silent; the re-plan pages the next deliverer, which acks at once, so nothing
-    /// is owed. The first chain still waits for its silent attempt: the probe goes out only after that wait, about `resendAfter`
-    /// after the first send.
+    /// is owed. The first chain still waits for its silent attempt, but its page is dead: the probe goes out well before that wait
+    /// (`resendAfter`) ends.
     @Test
     @Timeout(20)
-    void silentChainOfALeftTarget_exitWaitsForItsAttemptToTimeOut() {
+    void silentChainOfALeftTarget_deadPageDoesNotHoldTheExit() {
         var ring = fiveNodeRing();
         var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
         var k = soleKey(ring, "ew");
@@ -57,7 +58,7 @@ class DepartureExitWaitsForChainsTest {
         assertThat(network.targets()).as("the first deliverer, then the next").hasSize(2).startsWith(first);
         assertThat(direct.report().owed()).isZero();
         var probeAfterMs = (network.probes().getFirst().atNanos() - network.sends().getFirst().atNanos()) / 1_000_000;
-        assertThat(probeAfterMs).as("the probe waited for the silent chain").isGreaterThanOrEqualTo(RESEND_MS / 2);
+        assertThat(probeAfterMs).as("the probe did not wait for the dead page's chain").isLessThan(RESEND_MS / 2);
     }
 
     private static Reply leaveSilentlyOrAck(ConsistentHashRing<NodeId> ring, NodeId first, NodeId target) {
