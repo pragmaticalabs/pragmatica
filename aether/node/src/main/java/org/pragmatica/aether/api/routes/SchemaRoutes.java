@@ -13,7 +13,8 @@ import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState;
+import org.pragmatica.aether.deployment.cluster.SchemaHold;
+import org.pragmatica.aether.deployment.cluster.fsm2.Schemas;
 import org.pragmatica.aether.deployment.schema.SchemaError;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
@@ -155,15 +156,17 @@ public final class SchemaRoutes implements RouteSource {
     /// Scans the engine's per-node slice rows ([ManageableNode#sliceRows]: `NodeArtifactKey` under LEGACY, the current
     /// `SliceObservedKey` rows under FSM2, #3411) — the LIVE per-node runtime state, not the
     /// ownership-only `SliceTargetKey`/`SliceTargetValue` this used to scan — and delegates to the
-    /// SAME predicate ([ClusterDeploymentState#blocksSliceActivation]) the activation gate itself
-    /// uses (#760 review BLOCKING 1). The prior version matched ownership alone with no state
+    /// KV-based predicate ([SchemaHold#blocksSliceActivation]), because this route answers on every
+    /// node while the FSM2 gate reads the leader's `ClusterModel` through `Schemas.blocking`. The two
+    /// share the blocking status set ([Schemas#BLOCKING]); that their per-slice verdicts agree is
+    /// not asserted here (#760 review BLOCKING 1). The prior version matched ownership alone with no state
     /// check at all, so a slice already ACTIVE (which passed the gate and has no transition path
     /// back through it) was reported as held whenever its record was re-armed to MIGRATING —
     /// exactly the false positive this rewrite eliminates. Deduped by artifact base: several node
     /// instances of the same artifact each contribute a row, and the reported shape is
     /// one entry per held artifact, not one per instance.
     private List<String> heldSlices(SchemaVersionValue schema) {
-        if (!ClusterDeploymentState.BLOCKING_SCHEMA_STATUSES.contains(schema.status())) {
+        if (!Schemas.BLOCKING.contains(schema.status())) {
             return List.of();
         }
 
@@ -183,7 +186,7 @@ public final class SchemaRoutes implements RouteSource {
                                        SliceState state,
                                        KVStore<AetherKey, AetherValue> kvStore,
                                        Set<String> held) {
-        if (ClusterDeploymentState.blocksSliceActivation(state, sliceOwner(artifact), schema, kvStore)) {
+        if (SchemaHold.blocksSliceActivation(state, sliceOwner(artifact), schema, kvStore)) {
             held.add(artifact.base().asString());
         }
     }
@@ -192,13 +195,13 @@ public final class SchemaRoutes implements RouteSource {
     /// (the same desired/ownership record `ClusterDeploymentState.Active.blueprints` mirrors), so
     /// live state and ownership are joined here per slice, one KV read per artifact.
     ///
-    /// #805 item 1: delegates to [ClusterDeploymentState#resolveSliceOwner(KVStore, Artifact)] — the
-    /// SAME static the activation gate now calls. The route already read the committed record; it
+    /// #805 item 1: delegates to [SchemaHold#resolveSliceOwner(KVStore, Artifact)] — the
+    /// same static the legacy activation gate calls. The route already read the committed record; it
     /// was the gate that read the node-local `blueprints` mirror, so this delegation is what makes
     /// the shared source a fact rather than a coincidence of two identical bodies.
     private Option<BlueprintId> sliceOwner(Artifact artifact) {
-        return ClusterDeploymentState.resolveSliceOwner(nodeSupplier.get().kvStore(),
-                                                        artifact);
+        return SchemaHold.resolveSliceOwner(nodeSupplier.get().kvStore(),
+                                            artifact);
     }
 
     /// #760 review BLOCKING 1: `/migrate` writing MIGRATING has no orchestrator effect by itself —

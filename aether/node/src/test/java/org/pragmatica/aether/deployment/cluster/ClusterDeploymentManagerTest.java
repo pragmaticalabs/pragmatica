@@ -98,7 +98,7 @@ class ClusterDeploymentManagerTest {
         // only under that record, so the fixture carries it as production does.
         kvStore.commitLeader(new LeaderValue(self, 1));
         router = MessageRouter.mutable();
-        manager = buildManager(List.of(self, node2, node3), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT);
+        manager = buildManager(List.of(self, node2, node3), DeploymentAtomicity.BEST_EFFORT);
     }
 
     // Membership-v2 finale: the node-lifecycle KV atom is deleted and presence IS membership.
@@ -109,7 +109,7 @@ class ClusterDeploymentManagerTest {
     }
 
     private ClusterDeploymentManager buildManager(List<NodeId> initialTopology,
-                                                   ClusterDeploymentManager.DeploymentAtomicity atomicity) {
+                                                   DeploymentAtomicity atomicity) {
         return ClusterDeploymentManager.clusterDeploymentManager(self,
                                                                   clusterNode,
                                                                   kvStore,
@@ -221,7 +221,7 @@ class ClusterDeploymentManagerTest {
     @Test
     void no_allocation_when_no_nodes_available() {
         // Create manager with empty initial topology
-        var emptyTopologyManager = buildManager(List.of(), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT);
+        var emptyTopologyManager = buildManager(List.of(), DeploymentAtomicity.BEST_EFFORT);
         emptyTopologyManager.activate();
         clusterNode.appliedCommands.clear();
 
@@ -669,7 +669,7 @@ class ClusterDeploymentManagerTest {
         kvStore.put(targetKey, targetValue);
 
         // Create a new CDM that will rebuild from KVStore on leader activation
-        var restoredManager = buildManager(List.of(self, node2, node3), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT);
+        var restoredManager = buildManager(List.of(self, node2, node3), DeploymentAtomicity.BEST_EFFORT);
 
         // Become leader triggers rebuildStateFromKVStore
         restoredManager.activate();
@@ -914,7 +914,7 @@ class ClusterDeploymentManagerTest {
     }
 
     private ClusterDeploymentManager createAllOrNothingManager() {
-        return buildManager(List.of(self, node2, node3), ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING);
+        return buildManager(List.of(self, node2, node3), DeploymentAtomicity.ALL_OR_NOTHING);
     }
 
     private void sendAppBlueprintPut(ClusterDeploymentManager mgr, ExpandedBlueprint blueprint) {

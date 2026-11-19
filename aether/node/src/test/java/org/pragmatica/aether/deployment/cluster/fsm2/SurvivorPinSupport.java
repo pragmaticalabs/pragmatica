@@ -6,7 +6,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Set;
 
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 
 
 /// What the survivor pins of the pure-FSM files share: the real settings and a `Ctx` at chosen clock readings.
