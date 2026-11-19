@@ -22,11 +22,9 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.http.routing.QueryParameter;
@@ -154,14 +152,15 @@ public final class SchemaRoutes implements RouteSource {
         return SchemaStatusResponse.schemaStatusResponse(value, heldSlices(value));
     }
 
-    /// Scans `SliceNodeKey`/`SliceNodeValue` — the LIVE per-node runtime state, not the
+    /// Scans the engine's per-node slice rows ([ManageableNode#sliceRows]: `NodeArtifactKey` under LEGACY, the current
+    /// `SliceObservedKey` rows under FSM2, #3411) — the LIVE per-node runtime state, not the
     /// ownership-only `SliceTargetKey`/`SliceTargetValue` this used to scan — and delegates to the
     /// SAME predicate ([ClusterDeploymentState#blocksSliceActivation]) the activation gate itself
     /// uses (#760 review BLOCKING 1). The prior version matched ownership alone with no state
     /// check at all, so a slice already ACTIVE (which passed the gate and has no transition path
     /// back through it) was reported as held whenever its record was re-armed to MIGRATING —
     /// exactly the false positive this rewrite eliminates. Deduped by artifact base: several node
-    /// instances of the same artifact each contribute a `SliceNodeKey`, and the reported shape is
+    /// instances of the same artifact each contribute a row, and the reported shape is
     /// one entry per held artifact, not one per instance.
     private List<String> heldSlices(SchemaVersionValue schema) {
         if (!ClusterDeploymentState.BLOCKING_SCHEMA_STATUSES.contains(schema.status())) {
@@ -169,26 +168,27 @@ public final class SchemaRoutes implements RouteSource {
         }
 
         var held = new LinkedHashSet<String>();
-        var kvStore = nodeSupplier.get().kvStore();
+        var node = nodeSupplier.get();
+        var kvStore = node.kvStore();
 
-        kvStore.forEach(SliceNodeKey.class,
-                        SliceNodeValue.class,
-                        (key, value) -> collectIfHeldBySchema(schema, key, value, kvStore, held));
+        node.sliceRows()
+            .forEachRow(kvStore,
+                        (_, artifact, state) -> collectIfHeldBySchema(schema, artifact, state, kvStore, held));
 
         return List.copyOf(held);
     }
 
     private void collectIfHeldBySchema(SchemaVersionValue schema,
-                                       SliceNodeKey key,
-                                       SliceNodeValue value,
+                                       Artifact artifact,
+                                       SliceState state,
                                        KVStore<AetherKey, AetherValue> kvStore,
                                        Set<String> held) {
-        if (ClusterDeploymentState.blocksSliceActivation(value.state(), sliceOwner(key.artifact()), schema, kvStore)) {
-            held.add(key.artifact().base().asString());
+        if (ClusterDeploymentState.blocksSliceActivation(state, sliceOwner(artifact), schema, kvStore)) {
+            held.add(artifact.base().asString());
         }
     }
 
-    /// `SliceNodeValue` carries no ownership — that lives on `SliceTargetKey`/`SliceTargetValue`
+    /// A per-node slice row carries no ownership — that lives on `SliceTargetKey`/`SliceTargetValue`
     /// (the same desired/ownership record `ClusterDeploymentState.Active.blueprints` mirrors), so
     /// live state and ownership are joined here per slice, one KV read per artifact.
     ///
@@ -247,7 +247,9 @@ public final class SchemaRoutes implements RouteSource {
     /// the datasource it will serve from once it reaches ACTIVE — refusing to count it would let a
     /// re-arm race a slice that is seconds from going live. Counting ACTIVATING/ROUTING/ACTIVE alike
     /// is deliberately over-inclusive rather than under: a false-positive refusal costs the operator a
-    /// retry, a false-negative would strand the very migration this guard exists to protect.
+    /// retry, a false-negative would strand the very migration this guard exists to protect. The set is
+    /// [SliceState#isServing]; the rows are the engine's ([ManageableNode#sliceRows], #3411: no engine writes a
+    /// `SliceNodeKey` row, so a count over those read 0 and never refused).
     ///
     /// This count is a snapshot read against a live KV store with no lock spanning it and the
     /// subsequent status Put — a slice can transition into a serving state, or a brand-new one can be
@@ -258,27 +260,19 @@ public final class SchemaRoutes implements RouteSource {
     /// already-serving version), not to provide a linearizable barrier.
     private int activeSliceCount(BlueprintId owner) {
         var count = new AtomicInteger();
+        var node = nodeSupplier.get();
 
-        nodeSupplier.get()
-                    .kvStore()
-                    .forEach(SliceNodeKey.class,
-                             SliceNodeValue.class,
-                             (key, value) -> countIfActiveAndOwnedBy(owner, key, value, count));
+        node.sliceRows()
+            .forEachRow(node.kvStore(),
+                        (_, artifact, state) -> countIfActiveAndOwnedBy(owner, artifact, state, count));
 
         return count.get();
     }
 
-    private static final Set<SliceState> SERVING_STATES = Set.of(SliceState.ACTIVATING,
-                                                                 SliceState.ROUTING,
-                                                                 SliceState.ACTIVE);
-
-    private void countIfActiveAndOwnedBy(BlueprintId owner,
-                                         SliceNodeKey key,
-                                         SliceNodeValue value,
-                                         AtomicInteger count) {
-        if (SERVING_STATES.contains(value.state()) && sliceOwner(key.artifact()).map(actualOwner -> actualOwner.base()
-                                                                                                               .equals(owner.base()))
-                                                                .or(false)) {
+    private void countIfActiveAndOwnedBy(BlueprintId owner, Artifact artifact, SliceState state, AtomicInteger count) {
+        if (state.isServing() && sliceOwner(artifact).map(actualOwner -> actualOwner.base()
+                                                                                    .equals(owner.base()))
+                                           .or(false)) {
             count.incrementAndGet();
         }
     }
