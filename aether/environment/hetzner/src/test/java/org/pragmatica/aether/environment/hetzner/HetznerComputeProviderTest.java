@@ -11,6 +11,7 @@ import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.FirewallId;
+import org.pragmatica.aether.environment.FirewallName;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
@@ -1250,6 +1251,7 @@ class HetznerComputeProviderTest {
         Promise<Unit> updateLabelsResponse = Promise.success(Unit.unit());
         Promise<List<SshKey>> listSshKeysResponse = Promise.success(List.of());
         Promise<List<Firewall>> listFirewallsResponse = Promise.success(List.of());
+        Promise<List<Firewall>> listAllFirewallsResponse = Promise.success(List.of());
         Promise<Firewall> createFirewallResponse = Promise.success(new Firewall(77,
                                                                                 "fw",
                                                                                 List.of(),
@@ -1350,7 +1352,7 @@ class HetznerComputeProviderTest {
 
         @Override
         public Promise<List<Firewall>> listFirewalls() {
-            return Promise.success(List.of());
+            return listAllFirewallsResponse;
         }
 
         @Override
@@ -1770,6 +1772,99 @@ class HetznerComputeProviderTest {
                                                                       .isNull());
 
             assertThat(testClient.lastCreateServerRequest).isNotNull();
+        }
+
+        /// #3292 (label-loss arm): an Aether firewall that lost its `aether-cluster` label is invisible to every
+        /// label selector, so the provision must find it by NAME in the unselected listing and fail closed.
+        @Test
+        void createFrom_whenAetherFirewallLostClusterLabel_refusesToCreate() {
+            testClient.firewallsBySelector.put(SOURCE_SELECTOR, Promise.success(List.of()));
+            testClient.firewallsBySelector.put(CLUSTER_SELECTOR, Promise.success(List.of()));
+            testClient.listAllFirewallsResponse = Promise.success(List.of(new Firewall(98,
+                                                                                       "aether-prod-eu-hetzner-eu",
+                                                                                       List.of(),
+                                                                                       Map.of())));
+
+            replacementProvider().createFrom(replacementRequest(SOURCE))
+                                 .await()
+                                 .onSuccess(info -> assertThat(info).isNull())
+                                 .onFailure(cause -> assertThat(cause.message()).contains("Refusing to provision")
+                                                                                .contains("carries no cluster label"));
+
+            assertThat(testClient.lastCreateServerRequest).as("#3292: no server without a firewall when an Aether firewall exists")
+                                                          .isNull();
+        }
+
+        /// #3292 control: unlabelled firewalls that are not named for this cluster, and firewalls of ANOTHER cluster
+        /// (label present, name sharing the prefix), are no evidence.
+        @Test
+        void createFrom_whenUnselectedFirewallsAreNotThisClusters_createsUnfirewalled() {
+            testClient.firewallsBySelector.put(SOURCE_SELECTOR, Promise.success(List.of()));
+            testClient.firewallsBySelector.put(CLUSTER_SELECTOR, Promise.success(List.of()));
+            testClient.listAllFirewallsResponse = Promise.success(List.of(new Firewall(98, "unrelated", List.of(), Map.of()),
+                                                                          new Firewall(99,
+                                                                                       "aether-prod-eu-west-x",
+                                                                                       List.of(),
+                                                                                       Map.of("aether-cluster", "prod-eu-west"))));
+
+            replacementProvider().createFrom(replacementRequest(SOURCE))
+                                 .await()
+                                 .onFailure(cause -> assertThat(cause).as("other clusters' firewalls must not block auto-heal")
+                                                                      .isNull());
+
+            assertThat(testClient.lastCreateServerRequest).isNotNull();
+            assertThat(testClient.lastCreateServerRequest.firewalls()).isEmpty();
+        }
+
+        /// #3292: the unselected listing failing is unknown state, not a safe one.
+        @Test
+        void createFrom_whenUnselectedFirewallListingFails_refusesToCreate() {
+            testClient.firewallsBySelector.put(SOURCE_SELECTOR, Promise.success(List.of()));
+            testClient.firewallsBySelector.put(CLUSTER_SELECTOR, Promise.success(List.of()));
+            testClient.listAllFirewallsResponse = new HetznerError.ApiError(503, "unavailable", "service unavailable").promise();
+
+            replacementProvider().createFrom(replacementRequest(SOURCE))
+                                 .await()
+                                 .onSuccess(info -> assertThat(info).isNull())
+                                 .onFailure(cause -> assertThat(cause.message()).contains("UNKNOWN firewall state"));
+
+            assertThat(testClient.lastCreateServerRequest).isNull();
+        }
+
+        /// #3292 (long-name arm): for a cluster name of 56+ characters `aether-<cluster>-` is longer than the 63
+        /// characters a firewall name keeps, so the name of the real firewall cannot contain the full prefix.
+        @Test
+        void createFrom_whenClusterNameIsLong_andFirewallLostSourceLabel_refusesToCreate() {
+            var longCluster = clusterName("c".repeat(58)).unwrap();
+            var source = sourceNameOrDefault("hetzner-eu");
+            var name = FirewallName.forSource(longCluster, source).value();
+            var clusterSelector = "aether-cluster=" + longCluster.value();
+            var request = new ProvisionRequest(InstanceType.ON_DEMAND,
+                                               "cx22",
+                                               "ubuntu-24.04",
+                                               "fsn1",
+                                               Option.empty(),
+                                               MarketOptions.ON_DEMAND,
+                                               ProvisionContext.forReplacement(Option.some(longCluster),
+                                                                               "core",
+                                                                               source,
+                                                                               "node-01",
+                                                                               "node-00:10.0.0.1:8090",
+                                                                               3));
+            testClient.firewallsBySelector.put(clusterSelector + ",aether-source=hetzner-eu", Promise.success(List.of()));
+            testClient.firewallsBySelector.put(clusterSelector,
+                                               Promise.success(List.of(new Firewall(94,
+                                                                                    name,
+                                                                                    List.of(),
+                                                                                    Map.of("aether-cluster", longCluster.value())))));
+
+            replacementProvider().createFrom(request)
+                                 .await()
+                                 .onSuccess(info -> assertThat(info).isNull())
+                                 .onFailure(cause -> assertThat(cause.message()).contains("has 1 Aether-managed firewall(s)"));
+
+            assertThat(testClient.lastCreateServerRequest).as("#3292: long cluster name must not defeat the name arm")
+                                                          .isNull();
         }
 
         @Test
