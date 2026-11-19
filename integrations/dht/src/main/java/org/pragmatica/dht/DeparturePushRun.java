@@ -722,8 +722,7 @@ final class DeparturePushRun {
     private Promise<Unit> runChain(List<Page> chain, int index) {
         return index >= chain.size()
                ? Promise.unitPromise()
-               : runPage(chain.get(index)).onResultRun(() -> chain.get(index).finished
-                                                                  .set(true))
+               : runPage(chain.get(index)).fold(result -> finished(chain.get(index), result))
                         .flatMap(_ -> runChain(chain, index + 1));
     }
 
@@ -735,6 +734,12 @@ final class DeparturePushRun {
                : node.readEntries(page.stamps())
                      .timeout(remainingUntil(attemptsDeadline))
                      .fold(read -> read.fold(cause -> unreadable(page, cause),
+    /// A page is finished BEFORE the chain's result completes: the exit trigger at the chain's end must see it (a side effect
+    /// attached to the same promise is not ordered against the dependent steps that complete the chain).
+    private static Promise<Unit> finished(Page page, Result<Unit> result) {
+        return Promise.resolved(result.onResultRun(() -> page.finished.set(true)));
+    }
+
                                              entries -> sendRead(page, entries)));
     }
 
