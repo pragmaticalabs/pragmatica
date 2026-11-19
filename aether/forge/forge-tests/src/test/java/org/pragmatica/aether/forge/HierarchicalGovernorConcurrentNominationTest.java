@@ -98,19 +98,19 @@ class HierarchicalGovernorConcurrentNominationTest {
                         var sends = new ArrayList<Promise<WriteOutcome>>();
 
                         for (int index = 0; index < workers.size(); index++) {
-                        var worker = workers.get(index);
-                        var request = new GovernorAuthorityMessage.Request(worker.self(),
-                                                                           COMMUNITY,
-                                                                           REQUEST_BASE + attempt * 10L + index,
-                                                                           0,
-                                                                           "",
-                                                                           false);
+                            var worker = workers.get(index);
+                            var request = new GovernorAuthorityMessage.Request(worker.self(),
+                                                                               COMMUNITY,
+                                                                               REQUEST_BASE + attempt * 10L + index,
+                                                                               0,
+                                                                               "",
+                                                                               false);
 
-                        sends.add(HierarchyAuthorityAcceptanceTest.runtime(worker)
-                                                                  .network()
-                                                                  .send(leader().self(),
-                                                                               request));
-                    }
+                            sends.add(HierarchyAuthorityAcceptanceTest.runtime(worker)
+                                                                      .network()
+                                                                      .send(leader().self(),
+                                                                            request));
+                        }
 
                         sends.forEach(send -> assertThat(send.await(BUDGET).unwrap().isSent()).isTrue());
 
@@ -143,7 +143,8 @@ class HierarchicalGovernorConcurrentNominationTest {
     /// exists). The harness mints the next ids by incrementing the prefix counter, so the ids are predicted and checked.
     private List<AetherNode> addWorkers() {
         var node = leader();
-        var predicted = List.of(NodeId.nodeId(NODE_PREFIX + "-4").unwrap(), NodeId.nodeId(NODE_PREFIX + "-5").unwrap());
+        var predicted = List.of(NodeId.nodeId(NODE_PREFIX + "-4").unwrap(),
+                                NodeId.nodeId(NODE_PREFIX + "-5").unwrap());
         var key = new AetherKey.CommunityKey(COMMUNITY);
         var changes = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
 

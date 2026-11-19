@@ -23,6 +23,13 @@
     </licenses>
 
     <properties>
+        <!-- #1629: test sources are unlinted repo-wide (jbct.includeTests defaults to false) and this module sits behind
+             -Pwith-e2e, outside the default reactor the CI gate runs over, so nothing examined its 114 test files. Both
+             properties are needed: without includeTests the gate examines zero files here and exits green. CI runs the
+             check with -Pwith-e2e (ci.yml, "JBCT format + lint gate, forge-tests"). Rule pins live in jbct.toml. -->
+        <jbct.skip>false</jbct.skip>
+        <jbct.includeTests>true</jbct.includeTests>
+
         <!-- One reused fork runs every selected class, so this bounds the whole run, not one class (surefire
              starts the clock at the first test set and never resets it). When it elapses surefire writes a
              thread dump to failsafe-reports/*-jvmRunN.dump, and the #1344 guard fails the build on any such

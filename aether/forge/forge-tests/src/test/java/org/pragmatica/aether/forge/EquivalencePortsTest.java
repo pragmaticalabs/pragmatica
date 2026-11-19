@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
 import java.io.IOException;
@@ -14,6 +13,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 
 /// The F4 port-block choice, offline (f4fixC, f4fixD). Each test holds real sockets, so the probe is exercised against the OS, not a stub.
 /// The blocks are never assumed free: [#twoFreeBlocks] probes a start whose block and the next block are both free on this host (retrying),
@@ -30,10 +30,12 @@ class EquivalencePortsTest {
             try (var probe = new ServerSocket(0)) {
                 start = probe.getLocalPort();
             }
+
             if (start + 2 * EquivalencePorts.STEP + 300 < 65_000 && blockIsFree(start) && blockIsFree(start + EquivalencePorts.STEP)) {
                 return start;
             }
         }
+
         throw new IllegalStateException("no two free port blocks on this host after 200 probes");
     }
 
@@ -114,9 +116,12 @@ class EquivalencePortsTest {
         try (var held = new ServerSocket(0)) {
             var port = held.getLocalPort();
 
-            assertThatThrownBy(() -> EquivalencePorts.freeBase(port, EquivalencePorts.STEP, 1, NODES, EquivalencePorts::canBind))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining(String.valueOf(port));
+            assertThatThrownBy(() -> EquivalencePorts.freeBase(port,
+                                                               EquivalencePorts.STEP,
+                                                               1,
+                                                               NODES,
+                                                               EquivalencePorts::canBind)).isInstanceOf(IllegalStateException.class)
+                              .hasMessageContaining(String.valueOf(port));
         }
     }
 
@@ -124,10 +129,11 @@ class EquivalencePortsTest {
     /// "from base N", so naming it proves nothing. Mutation: `taken.addAll(busy)` removed; the list reads `[]`.
     @Test
     void noFreeBlock_listsTheBusyPorts() {
-        IntPredicate canBind = port -> port != 5001 && port != 5401 && port != 5602;
+        IntPredicate canBind = port -> port != 5001
+                                       && port != 5401
+                                       && port != 5602;
 
-        assertThatThrownBy(() -> EquivalencePorts.freeBase(5000, 400, 2, 3, canBind))
-            .isInstanceOf(IllegalStateException.class)
-            .hasMessage("no free port block in 2 tries from base 5000 (step 400); busy ports: [5001, 5401, 5602]");
+        assertThatThrownBy(() -> EquivalencePorts.freeBase(5000, 400, 2, 3, canBind)).isInstanceOf(IllegalStateException.class)
+                          .hasMessage("no free port block in 2 tries from base 5000 (step 400); busy ports: [5001, 5401, 5602]");
     }
 }

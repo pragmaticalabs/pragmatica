@@ -2,27 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
-
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
-import org.pragmatica.aether.ember.EmberCluster;
-import org.pragmatica.aether.node.AetherNode;
-import org.pragmatica.aether.slice.SliceState;
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.TerminalOperation;
-import org.pragmatica.lang.parse.Number;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
@@ -32,11 +12,32 @@ import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
+import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.TerminalOperation;
+import org.pragmatica.lang.parse.Number;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 import static org.pragmatica.lang.Option.some;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
 
 /// #427 deliverable 4 — end-to-end evidence check: an artifact seeded before a MANAGED 5→7→5 scale
 /// cycle must survive the cycle (its DHT-resident bytecode chunks are not lost when surplus cores
@@ -98,24 +99,20 @@ import static org.pragmatica.lang.Option.some;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ArtifactChurnSurvival5to7to5ProbeTest {
     private static final Logger log = LoggerFactory.getLogger(ArtifactChurnSurvival5to7to5ProbeTest.class);
-
     private static final int INITIAL_CORES = 5;
     private static final int TARGET_CORES = 7;
     private static final int BASE_PORT = 5680;
     private static final int BASE_MGMT_PORT = 5780;
     private static final int BASE_APP_HTTP_PORT = 5880;
-
     private static final String TEST_ARTIFACT = TestArtifacts.ECHO_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:artifact-churn:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
-
     private static final Duration FORM_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration DEPLOY_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration SCALE_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration SURVIVE_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL = Duration.ofMillis(500);
     private static final Duration LOG_EVERY = Duration.ofSeconds(5);
-
     private static final Pattern CONFIG_VERSION = Pattern.compile("\"configVersion\"\\s*:\\s*(\\d+)");
     private static final Pattern NEW_COUNT = Pattern.compile("\"newCount\"\\s*:\\s*(\\d+)");
     /// Read while no running node claims leadership. Never equals a target, so a leaderless tick is
@@ -135,13 +132,17 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     void setUp() {
         cluster = emberCluster(INITIAL_CORES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "churn");
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
-
-        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
+        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader()
+                                                                           .isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(this::allNodesHealthy);
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> countedCores() == INITIAL_CORES);
-        formedNodeIds = cluster.allNodes().stream().map(node -> node.self().id()).collect(Collectors.toSet());
+        formedNodeIds = cluster.allNodes().stream().map(node -> node.self()
+                                                                    .id()).collect(Collectors.toSet());
         log.info("CHURN-PROBE: {}-core cluster formed, leader={}, countedCores={}, formedNodes={}",
-                 INITIAL_CORES, cluster.currentLeader().or("none"), countedCores(), formedNodeIds);
+                 INITIAL_CORES,
+                 cluster.currentLeader().or("none"),
+                 countedCores(),
+                 formedNodeIds);
     }
 
     @AfterAll
@@ -156,28 +157,31 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     @TerminalOperation
     void seededArtifact_survivesManagedFiveToSevenToFiveChurn() {
         var downLeg = churn().downLeg();
-        assertThat(downLeg.reachedAtMs())
-            .as("GUARD: managed 7->5 via /api/v1/cluster/scale must COMPLETE within %ds: both drain victims "
-                + "stopped and removed from the cluster, and a surviving leader counting exactly the %d survivors "
-                + "with every victim Dead in its view and nothing Departing (latch=-1 => the surplus never "
-                + "drained to the terminal edge, so the departure push never ran to completion). Last observed: %s",
-                SCALE_TIMEOUT.toSeconds(), INITIAL_CORES, downLeg)
-            .isGreaterThanOrEqualTo(0L);
+
+        assertThat(downLeg.reachedAtMs()).as("GUARD: managed 7->5 via /api/v1/cluster/scale must COMPLETE within %ds: both drain victims "
+                                            + "stopped and removed from the cluster, and a surviving leader counting exactly the %d survivors "
+                                            + "with every victim Dead in its view and nothing Departing (latch=-1 => the surplus never "
+                                            + "drained to the terminal edge, so the departure push never ran to completion). Last observed: %s",
+                                             SCALE_TIMEOUT.toSeconds(),
+                                             INITIAL_CORES,
+                                             downLeg)
+                  .isGreaterThanOrEqualTo(0L);
         requireTerminalOnSurvivor(downLeg);
-
         var survivor = survivorNode(downLeg);
-        await().atMost(SURVIVE_TIMEOUT).pollInterval(POLL).ignoreExceptions()
-               .until(() -> sliceIsActiveOn(survivor, TEST_ARTIFACT));
 
+        await().atMost(SURVIVE_TIMEOUT)
+             .pollInterval(POLL)
+             .ignoreExceptions()
+             .until(() -> sliceIsActiveOn(survivor, TEST_ARTIFACT));
         var slices = getSlices(survivorPort(downLeg));
-        assertThat(slices)
-            .as("LOAD-BEARING: the artifact seeded before the confirmed managed 5->7->5 churn "
-                + "survives it and is still resolvable at HEAD from survivor %s (C1 departure-push fix present: "
-                + "DHTRebalancer.pushOnDeparture wired at AetherNode.java:1852). Missing artifact => "
-                + "its DHT chunks were lost when surplus cores drained — #427 reproducing end-to-end.",
-                downLeg.countedOn())
-            .contains(TEST_ARTIFACT)
-            .doesNotContain("\"error\"");
+
+        assertThat(slices).as("LOAD-BEARING: the artifact seeded before the confirmed managed 5->7->5 churn "
+                             + "survives it and is still resolvable at HEAD from survivor %s (C1 departure-push fix present: "
+                             + "DHTRebalancer.pushOnDeparture wired at AetherNode.java:1852). Missing artifact => "
+                             + "its DHT chunks were lost when surplus cores drained — #427 reproducing end-to-end.",
+                              downLeg.countedOn())
+                  .contains(TEST_ARTIFACT)
+                  .doesNotContain("\"error\"");
     }
 
     /// One churn cycle, run once (PER_CLASS): seed the artifact, run the STRICT up-leg guard, POST the
@@ -191,34 +195,40 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
         if (cachedChurn.isEmpty()) {
             cachedChurn = some(seedThenScaleUpThenScaleDown());
         }
+
         return cachedChurn.unwrap();
     }
 
     @TerminalOperation
     private Churn seedThenScaleUpThenScaleDown() {
         var deployResponse = deploy(leaderPort(), TEST_ARTIFACT);
-        assertThat(deployResponse).doesNotContain("\"error\"");
-        await().atMost(DEPLOY_TIMEOUT).pollInterval(POLL).ignoreExceptions()
-               .until(() -> sliceIsActiveOn(leaderNode(), TEST_ARTIFACT));
-        log.info("CHURN-PROBE: artifact seeded and ACTIVE at countedCores={}", countedCores());
 
+        assertThat(deployResponse).doesNotContain("\"error\"");
+        await().atMost(DEPLOY_TIMEOUT)
+             .pollInterval(POLL)
+             .ignoreExceptions()
+             .until(() -> sliceIsActiveOn(leaderNode(),
+                                          TEST_ARTIFACT));
+        log.info("CHURN-PROBE: artifact seeded and ACTIVE at countedCores={}", countedCores());
         var upLatency = managedScaleUp(TARGET_CORES);
-        assertThat(upLatency)
-            .as("GUARD: managed 5->7 via /api/v1/cluster/scale must physically reach %d counted cores "
-                + "within %ds (latch=-1 => no physical churn, the trigger no-ops and the departure "
-                + "push is never exercised — vacuous survival is thereby impossible).",
-                TARGET_CORES, SCALE_TIMEOUT.toSeconds())
-            .isGreaterThanOrEqualTo(0L);
+
+        assertThat(upLatency).as("GUARD: managed 5->7 via /api/v1/cluster/scale must physically reach %d counted cores "
+                                + "within %ds (latch=-1 => no physical churn, the trigger no-ops and the departure "
+                                + "push is never exercised — vacuous survival is thereby impossible).",
+                                 TARGET_CORES,
+                                 SCALE_TIMEOUT.toSeconds())
+                  .isGreaterThanOrEqualTo(0L);
 
         return new Churn(managedScaleDown(INITIAL_CORES));
     }
 
     private static Set<String> without(Set<String> ids, String id) {
-        return ids.stream().filter(candidate -> !candidate.equals(id)).collect(Collectors.toSet());
+        return ids.stream()
+                  .filter(candidate -> !candidate.equals(id))
+                  .collect(Collectors.toSet());
     }
 
     // ----- managed scale via the real ClusterConfigKey path (mirrors ScaleUpFiveToSevenProbeTest) -----
-
     /// Up-leg: commits the target core count through `POST /api/v1/cluster/scale` and blocks until
     /// the leader's counted-core denominator equals it (or the budget expires). Returns the
     /// convergence latency in ms, or -1 if the target was never observed within the budget.
@@ -226,10 +236,16 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     private long managedScaleUp(int targetCores) {
         var version = postScaleToLeader(targetCores);
         var latency = awaitCounted(targetCores, SCALE_TIMEOUT);
+
         log.info("CHURN-PROBE RESULT: target={} reachedAtMs={} (-1=NOT within {}s) countedOn={} countedCores={} "
-                 + "configVersion={}",
-                 targetCores, latency, SCALE_TIMEOUT.toSeconds(), cluster.currentLeader().or("none"), countedCores(),
+                + "configVersion={}",
+                 targetCores,
+                 latency,
+                 SCALE_TIMEOUT.toSeconds(),
+                 cluster.currentLeader().or("none"),
+                 countedCores(),
                  version + 1);
+
         return latency;
     }
 
@@ -240,10 +256,16 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     @TerminalOperation
     private DownLeg managedScaleDown(int targetCores) {
         var membersAtStart = nodeIds();
+
         postScaleToLeader(targetCores);
         var downLeg = awaitDrained(targetCores, membersAtStart, SCALE_TIMEOUT);
+
         log.info("CHURN-PROBE RESULT: target={} reachedAtMs={} (-1=NOT within {}s) {}",
-                 targetCores, downLeg.reachedAtMs(), SCALE_TIMEOUT.toSeconds(), downLeg);
+                 targetCores,
+                 downLeg.reachedAtMs(),
+                 SCALE_TIMEOUT.toSeconds(),
+                 downLeg);
+
         return downLeg;
     }
 
@@ -253,35 +275,43 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
         var port = leaderPort();
         var version = readConfigVersion(port);
         var response = postScale(port, targetCores, version);
+
         log.info("CHURN-PROBE: POST /api/v1/cluster/scale {{role:core, count:{}, expectedVersion:{}}} -> {}",
-                 targetCores, version, response);
+                 targetCores,
+                 version,
+                 response);
+
         return version;
     }
 
     private long awaitCounted(int target, Duration budget) {
         var t0 = System.nanoTime();
-        var reached = new long[]{-1L};
+        var reached = new long[]{ - 1L};
         var lastLog = new long[]{0L};
+
         await().pollInterval(POLL)
-               .pollDelay(Duration.ZERO)
-               .timeout(budget.plusSeconds(5))
-               .until(() -> countedTick(target, t0, budget, reached, lastLog));
+             .pollDelay(Duration.ZERO)
+             .timeout(budget.plusSeconds(5))
+             .until(() -> countedTick(target, t0, budget, reached, lastLog));
+
         return reached[0];
     }
 
     private boolean countedTick(int target, long t0, Duration budget, long[] reached, long[] lastLog) {
         var elapsed = (System.nanoTime() - t0) / 1_000_000L;
         var leader = leaderNode();
+
         if (reached[0] < 0 && countedCoresOn(leader) == target) {
             requireCountedOnFormedNode(leader, target);
             reached[0] = elapsed;
         }
+
         maybeLog(target, elapsed, lastLog);
-        return reached[0] >= 0 || elapsed >= budget.toMillis();
+
+        return reached[0]>= 0 || elapsed >= budget.toMillis();
     }
 
     // ----- down-leg: terminal-edge wait -----
-
     /// One observation of the down-leg. `countedOn` is the surviving leader the count and the
     /// victims' states were read from; `victims` are the members present at the POST that are no
     /// longer in the cluster; `victimStates` are their states in `countedOn`'s `MembershipFsm`
@@ -303,7 +333,9 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
         }
 
         static boolean allDead(Map<String, String> states) {
-            return states.values().stream().allMatch(DEAD::equals);
+            return states.values()
+                         .stream()
+                         .allMatch(DEAD::equals);
         }
 
         DownLeg reachedAt(long elapsedMs) {
@@ -315,10 +347,12 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
         var t0 = System.nanoTime();
         var latest = new DownLeg[]{observeDownLeg(membersAtStart)};
         var lastLog = new long[]{0L};
+
         await().pollInterval(POLL)
-               .pollDelay(Duration.ZERO)
-               .timeout(budget.plusSeconds(5))
-               .until(() -> drainTick(target, membersAtStart, t0, budget, latest, lastLog));
+             .pollDelay(Duration.ZERO)
+             .timeout(budget.plusSeconds(5))
+             .until(() -> drainTick(target, membersAtStart, t0, budget, latest, lastLog));
+
         return latest[0];
     }
 
@@ -329,19 +363,26 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     /// victim as `Dead` and nobody as `Departing`. Anything less is the DEPARTING edge, which the
     /// class doc explains is not a churn. A leaderless tick (election in progress after the old
     /// leader drained) is "not yet", never a count.
-    private boolean drainTick(int target, Set<String> membersAtStart, long t0, Duration budget,
-                              DownLeg[] latest, long[] lastLog) {
+    private boolean drainTick(int target,
+                              Set<String> membersAtStart,
+                              long t0,
+                              Duration budget,
+                              DownLeg[] latest,
+                              long[] lastLog) {
         var elapsed = (System.nanoTime() - t0) / 1_000_000L;
         var observed = observeDownLeg(membersAtStart);
+
         if (latest[0].reachedAtMs() < 0) {
             latest[0] = observed.terminal(target, membersAtStart.size())
                         ? observed.reachedAt(elapsed)
                         : observed;
         }
-        if (elapsed - lastLog[0] >= LOG_EVERY.toMillis()) {
+
+        if (elapsed - lastLog[0]>= LOG_EVERY.toMillis()) {
             lastLog[0] = elapsed;
             log.info("CHURN-PROBE: t+{}ms target={} {}", elapsed, target, observed);
         }
+
         return latest[0].reachedAtMs() >= 0 || elapsed >= budget.toMillis();
     }
 
@@ -349,12 +390,19 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
         var survivors = nodeIds();
         var victims = membersAtStart.stream().filter(id -> !survivors.contains(id)).collect(Collectors.toSet());
         var leader = leaderNode();
-        var countedOn = leader.map(node -> node.self().id()).or("none");
+        var countedOn = leader.map(node -> node.self()
+                                               .id()).or("none");
         var counted = leader.map(node -> idStrings(node.membershipFsm().coreCountedMembers())).or(Set.of());
         var states = leader.map(this::memberStateNames).or(Map.of());
         var victimStates = victims.stream()
-                                  .collect(Collectors.toMap(id -> id, id -> states.getOrDefault(id, "absent")));
-        var departing = states.entrySet().stream().filter(ArtifactChurnSurvival5to7to5ProbeTest::isDeparting).map(Map.Entry::getKey).collect(Collectors.toSet());
+                                  .collect(Collectors.toMap(id -> id,
+                                                            id -> states.getOrDefault(id, "absent")));
+        var departing = states.entrySet()
+                              .stream()
+                              .filter(ArtifactChurnSurvival5to7to5ProbeTest::isDeparting)
+                              .map(Map.Entry::getKey)
+                              .collect(Collectors.toSet());
+
         return new DownLeg(-1L, countedOn, counted, survivors, victims, victimStates, departing);
     }
 
@@ -365,7 +413,11 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     private Map<String, String> memberStateNames(AetherNode node) {
         var states = node.membershipFsm().memberStates();
 
-        return states.entrySet().stream().collect(Collectors.toMap(entry -> entry.getKey().id(), Map.Entry::getValue));
+        return states.entrySet()
+                     .stream()
+                     .collect(Collectors.toMap(entry -> entry.getKey()
+                                                             .id(),
+                                               Map.Entry::getValue));
     }
 
     /// Tripwire behind [#DownLeg#terminal]: the 5 must have been read from a survivor that was a
@@ -376,11 +428,13 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
         if (!downLeg.survivors().contains(downLeg.countedOn()) || downLeg.victims().contains(downLeg.countedOn())) {
             failScenario("the 7->5 count was read from " + downLeg.countedOn() + ", which is not a survivor: " + downLeg);
         }
+
         if (!downLeg.departing().isEmpty() || !DownLeg.allDead(downLeg.victimStates())) {
             failScenario("the 7->5 count was accepted at the DEPARTING edge, not the terminal one: " + downLeg.countedOn()
-                         + " still sees departing=" + downLeg.departing() + " victims=" + downLeg.victimStates()
-                         + " — a drainer is pruned from coreCountedMembers() before its departure push has moved a "
-                         + "chunk, so this read cannot tell a completed churn from one that has not started");
+                        + " still sees departing=" + downLeg.departing()
+                        + " victims=" + downLeg.victimStates()
+                        + " — a drainer is pruned from coreCountedMembers() before its departure push has moved a "
+                        + "chunk, so this read cannot tell a completed churn from one that has not started");
         }
     }
 
@@ -388,38 +442,50 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     private Option<AetherNode> survivorNode(DownLeg downLeg) {
         return cluster.getNode(downLeg.countedOn())
                       .onEmpty(() -> failScenario("survivor " + downLeg.countedOn()
-                                                  + " left the cluster before the survival read"));
+                                                 + " left the cluster before the survival read"));
     }
 
     private int survivorPort(DownLeg downLeg) {
         var nodes = cluster.status().nodes();
-        var port = nodes.stream().filter(node -> node.id().equals(downLeg.countedOn())).findFirst();
+        var port = nodes.stream().filter(node -> node.id()
+                                                     .equals(downLeg.countedOn())).findFirst();
 
         return Option.from(port)
                      .map(EmberCluster.NodeStatus::mgmtPort)
-                     .onEmpty(() -> failScenario("survivor " + downLeg.countedOn() + " has no management port in status()"))
+                     .onEmpty(() -> failScenario("survivor " + downLeg.countedOn()
+                                                + " has no management port in status()"))
                      .or(-1);
     }
 
     private Set<String> nodeIds() {
-        return cluster.allNodes().stream().map(node -> node.self().id()).collect(Collectors.toSet());
+        return cluster.allNodes()
+                      .stream()
+                      .map(node -> node.self()
+                                       .id())
+                      .collect(Collectors.toSet());
     }
 
     private static Set<String> idStrings(Set<NodeId> ids) {
-        return ids.stream().map(NodeId::id).collect(Collectors.toSet());
+        return ids.stream()
+                  .map(NodeId::id)
+                  .collect(Collectors.toSet());
     }
 
     private void maybeLog(int target, long elapsedMs, long[] lastLog) {
         if (elapsedMs - lastLog[0] < LOG_EVERY.toMillis()) {
             return;
         }
+
         lastLog[0] = elapsedMs;
         log.info("CHURN-PROBE: t+{}ms target={} countedCores={} emberNodeCount={} leaderPresent={}",
-                 elapsedMs, target, countedCores(), cluster.nodeCount(), cluster.currentLeader().isPresent());
+                 elapsedMs,
+                 target,
+                 countedCores(),
+                 cluster.nodeCount(),
+                 cluster.currentLeader().isPresent());
     }
 
     // ----- in-process membership reads -----
-
     /// The counted-core denominator the reconciler itself uses, read off the leader's `MembershipFsm`;
     /// [#NO_LEADER_COUNT] while no running node claims leadership.
     private int countedCores() {
@@ -427,33 +493,46 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     }
 
     private static int countedCoresOn(Option<AetherNode> node) {
-        return node.map(n -> n.membershipFsm().coreCountedMembers().size()).or(NO_LEADER_COUNT);
+        return node.map(n -> n.membershipFsm()
+                              .coreCountedMembers()
+                              .size())
+                   .or(NO_LEADER_COUNT);
     }
 
     /// The node whose own `isLeader()` holds — `EmberCluster.currentLeader()` resolves it by that
     /// self-claim. Deliberately NO fallback to an arbitrary node (see the class doc).
     private Option<AetherNode> leaderNode() {
-        return cluster.currentLeader().flatMap(cluster::getNode);
+        return cluster.currentLeader()
+                      .flatMap(cluster::getNode);
     }
 
     /// Up-leg tripwire: a 7 is accepted only from a node that was already a member at 5. A node
     /// created by the scale reports the configured 7 from its seed before it has joined, which would
     /// pass the guard before any churn happened. That read is a scenario failure, not a result.
     private void requireCountedOnFormedNode(Option<AetherNode> counted, int target) {
-        var countedOn = counted.map(node -> node.self().id()).or("none");
+        var countedOn = counted.map(node -> node.self()
+                                                .id()).or("none");
+
         if (!formedNodeIds.contains(countedOn)) {
-            failScenario("counted " + target + " cores on " + countedOn + ", which is not one of the nodes that "
-                         + "formed the " + INITIAL_CORES + "-core cluster " + formedNodeIds
-                         + " — a node created by the churn reports its seeded configuration, not observed "
-                         + "membership, so this read measures nothing; at this instant " + claimingLeaderSummary());
+            failScenario("counted " + target
+                        + " cores on " + countedOn
+                        + ", which is not one of the nodes that "
+                        + "formed the " + INITIAL_CORES
+                        + "-core cluster " + formedNodeIds
+                        + " — a node created by the churn reports its seeded configuration, not observed "
+                        + "membership, so this read measures nothing; at this instant " + claimingLeaderSummary());
         }
     }
 
     /// What the node whose own `isLeader()` holds counts right now — the reading the probe should have taken.
     private String claimingLeaderSummary() {
         var claimant = cluster.allNodes().stream().filter(AetherNode::isLeader).findFirst();
-        return claimant.map(leader -> "the node claiming leadership (" + leader.self().id() + ") counts "
-                                      + leader.membershipFsm().coreCountedMembers().size())
+
+        return claimant.map(leader -> "the node claiming leadership (" + leader.self()
+                                                                               .id()
+                                     + ") counts " + leader.membershipFsm()
+                                                           .coreCountedMembers()
+                                                           .size())
                        .orElse("no running node claims leadership");
     }
 
@@ -463,7 +542,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     private int leaderPort() {
         return cluster.getLeaderManagementPort()
                       .onEmpty(() -> failScenario("no running node claims leadership, so there is no management "
-                                                  + "port to address"))
+                                                 + "port to address"))
                       .or(-1);
     }
 
@@ -472,7 +551,6 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     }
 
     // ----- HTTP helpers (scale trigger + slice deploy/resolve) -----
-
     /// Posts the current `ManagementApiResponses.ScaleRequest` shape — `source` / `role` / `count` /
     /// `expectedVersion`. A blank `source` asks
     /// the server to infer it, which succeeds because the Ember cluster declares exactly one source
@@ -484,17 +562,21 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     @TerminalOperation
     private String postScale(int port, int count, int expectedVersion) {
         if (expectedVersion < 1) {
-            failScaleTrigger("was not sent: fencing version " + expectedVersion + " is unreadable or the CAS-bypass "
-                             + "sentinel, and an unfenced scale could land over another writer");
+            failScaleTrigger("was not sent: fencing version " + expectedVersion
+                            + " is unreadable or the CAS-bypass "
+                            + "sentinel, and an unfenced scale could land over another writer");
         }
+
         var body = "{\"source\":\"\",\"role\":\"core\",\"count\":" + count
-                   + ",\"expectedVersion\":" + expectedVersion + "}";
+                 + ",\"expectedVersion\":" + expectedVersion
+                 + "}";
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + "/api/v1/cluster/scale"))
                                  .header("Content-Type", "application/json")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .onFailure(cause -> failScaleTrigger("got no response: " + cause.message()))
@@ -509,25 +591,30 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
         if (result.statusCode() / 100 != 2) {
             failScaleTrigger("returned HTTP " + result.statusCode() + " " + result.body());
         }
+
         var newCount = jsonNumber(NEW_COUNT, result.body());
         var configVersion = jsonNumber(CONFIG_VERSION, result.body());
+
         if (newCount != count || configVersion != expectedVersion + 1L) {
-            failScaleTrigger("was accepted but reported newCount=" + newCount + " configVersion=" + configVersion
-                             + " (expected newCount=" + count + " configVersion=" + (expectedVersion + 1L)
-                             + "; a different version means another writer committed between the read and the scale): "
-                             + renderResponse(result));
+            failScaleTrigger("was accepted but reported newCount=" + newCount
+                            + " configVersion=" + configVersion
+                            + " (expected newCount=" + count
+                            + " configVersion=" + (expectedVersion + 1L)
+                            + "; a different version means another writer committed between the read and the scale): " + renderResponse(result));
         }
+
         return renderResponse(result);
     }
 
     private static void failScaleTrigger(String detail) {
         throw new AssertionError("SCALE TRIGGER DID NOT LAND: POST /api/v1/cluster/scale " + detail
-                                 + " — nothing below this point would be measuring a scale, so the probe stops "
-                                 + "here instead of reporting a convergence failure.");
+                                + " — nothing below this point would be measuring a scale, so the probe stops "
+                                + "here instead of reporting a convergence failure.");
     }
 
     private static long jsonNumber(Pattern field, String body) {
         var matcher = field.matcher(body);
+
         return matcher.find()
                ? Number.parseLong(matcher.group(1)).or(-1L)
                : -1L;
@@ -542,6 +629,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     /// unreadable version must never be sent as one (#1070 review NIT-1).
     private int readConfigVersion(int port) {
         var matcher = CONFIG_VERSION.matcher(httpGet(port, "/api/v1/cluster/config"));
+
         return matcher.find()
                ? Integer.parseInt(matcher.group(1))
                : -1;
@@ -554,6 +642,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -567,8 +656,8 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
         return node.map(n -> n.deploymentMap()
                               .allDeployments()
                               .stream()
-                              .anyMatch(info -> info.artifact().equals(artifact)
-                                                && info.aggregateState() == SliceState.ACTIVE))
+                              .anyMatch(info -> info.artifact()
+                                                    .equals(artifact) && info.aggregateState() == SliceState.ACTIVE))
                    .or(false);
     }
 
@@ -581,6 +670,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
             artifact = "%s"
             instances = 3
             """.formatted(BLUEPRINT_ID, artifact);
+
         return http.sendString(postBlueprint(port, blueprint))
                    .await()
                    .map(HttpResult::body)
@@ -603,6 +693,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -610,7 +701,10 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     }
 
     private boolean allNodesHealthy() {
-        return cluster.status().nodes().stream().allMatch(node -> checkNodeHealth(node.mgmtPort()));
+        return cluster.status()
+                      .nodes()
+                      .stream()
+                      .allMatch(node -> checkNodeHealth(node.mgmtPort()));
     }
 
     @TerminalOperation
@@ -620,10 +714,11 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
+
         return http.sendString(request)
                    .await()
-                   .map(r -> r.statusCode() == 200 && r.body().contains("\"quorum\":true"))
+                   .map(r -> r.statusCode() == 200 && r.body()
+                                                       .contains("\"quorum\":true"))
                    .or(false);
     }
-
 }

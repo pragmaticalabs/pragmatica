@@ -2,28 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
-
-import org.awaitility.core.ConditionTimeoutException;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.ClassOrderer;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Order;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestClassOrder;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.io.TempDir;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
-import org.pragmatica.aether.ember.EmberCluster;
-import org.pragmatica.config.ConfigurationProvider;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.lang.Option;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
@@ -42,10 +21,32 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
+import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Option;
+
+import org.awaitility.core.ConditionTimeoutException;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.ClassOrderer;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestClassOrder;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
 
 /// #386 — the COMPOSED durable pub/sub path, end to end on a real multi-node cluster.
 ///
@@ -121,7 +122,6 @@ class DurableTopicDeliveryForgeTest {
     /// from the log next to the product's own attach/detach lines: rev1341's false red on a setUp move
     /// was readable only that way.
     private static final System.Logger LOG = System.getLogger(DurableTopicDeliveryForgeTest.class.getName());
-
     private static final int BASE_PORT = 19000;
     private static final int BASE_MGMT_PORT = 19100;
     private static final int BASE_APP_HTTP_PORT = 19200;
@@ -129,25 +129,20 @@ class DurableTopicDeliveryForgeTest {
     /// Peer acks that make an append visible: the fixture's `min_sync_replicas = 3` minus the owner (#1547).
     private static final long VISIBILITY_PEER_ACKS = 2;
     private static final int INSTANCES = 5;
-
     private static final int ORDER_COUNT = 20;
     private static final int SLOW_ORDER_COUNT = 10;
     private static final int POISON_COUNT = 2;
-
     /// durable-pubsub-spec §7: bounded retries before the dead-letter hop. The fixture's failing
     /// handler records every invocation, so this is observed rather than assumed.
     private static final int EXPECTED_ATTEMPTS_PER_EVENT = 5;
-
     /// Declared alongside every other fixture coordinate in [TestArtifacts], where its rationale lives.
     private static final String DURABLE_TOPIC_SLICE = TestArtifacts.DURABLE_TOPIC_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:durable-topic:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
-
     /// The poison readiness gate publishes under this id, and the order-events gate's ids carry it as a
     /// prefix. No arm counts it: every arm counts only the ids it published itself, which is what removes
     /// baseline carryover rather than draining around it.
     private static final String WARMUP_ID = "__warmup__";
-
     /// Probe knob, read once in [#setUp]: `-DdurableTopic.forceUnknownFirstWarmup=true` makes the gate
     /// treat its FIRST order-events publish as outcome-unknown whatever the slice answered, so the
     /// retried-warm-up shape (#1236/#1237: a 5 s replication timeout after the event landed, seen in 2 of
@@ -160,53 +155,48 @@ class DurableTopicDeliveryForgeTest {
     /// outcome came back unknown and the owner's head offset advanced by exactly one across the attempt
     /// (see [#publishPreAttachWarmup]). Empty when no gate attempt met either.
     private Option<String> preAttachOrderId = Option.none();
-
     /// How [#preAttachOrderId] was established, for the arm's message.
     private String preAttachEvidence = "";
-
     /// Gate attempts made so far; names the next `__warmup__-N`.
     private int warmupAttempts = 0;
-
     /// Per gate attempt: id, publish start and return instants, outcome — for the `SETUP SHAPE` line.
     private final List<String> warmupTimeline = new ArrayList<>();
-
     /// The assignee reading taken at the end of [#setUp] ([#orderGroupSitsOnItsOwner]), for the arm's
     /// message and the `SETUP SHAPE` line.
     private String assigneeReading = "";
-
     /// Order-events gate publishes that neither returned success nor could be resolved from the owner's
     /// head offset, each with the readings that failed to resolve it. Excluded from every verdict: such
     /// an event may or may not be in the log, and a retry of it that lands after the consumer attached
     /// is delivered by the listener, which is exactly what [PreAttachBacklog] must not mistake for a
     /// backlog read.
     private final List<String> excludedWarmupIds = new ArrayList<>();
-
     /// `attachedSubscriptions` summed over every node when the first definite success returned, for
     /// the message of a run that could not establish the pre-attach shape.
     private int attachedWhenWarmupSucceeded = -1;
 
     /// The fixture acks orders carrying this prefix late (`DurableTopicSlice.durableTopicSlice.SLOW_ACK_PREFIX`).
     private static final String SLOW_ACK_PREFIX = "slow-";
-
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration DELIVERY_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-
     /// How long a count must stay put before it is read as final. Longer than the whole retry budget
     /// (100+200+400+800ms of backoff), so a late duplicate or a resumed retry lands inside it.
     private static final Duration SETTLE = Duration.ofSeconds(10);
-
     /// Cadence of [#observeAppendBeforeAttach]: each sample is one management GET per node for the head
     /// and, once the head has moved, one more per node for the attach count.
     private static final Duration IN_FLIGHT_SAMPLE_INTERVAL = Duration.ofMillis(100);
 
     private static final Pattern ORDER_ENTRY = Pattern.compile("\"orderId\"\\s*:\\s*\"([^\"]*)\"\\s*,\\s*\"sequence\"\\s*:\\s*(-?\\d+)");
+
     private static final Pattern FAILING_PAYLOADS = Pattern.compile("\"failingPayloads\"\\s*:\\s*\\[([^\\]]*)\\]");
     private static final Pattern HEALTHY_PAYLOADS = Pattern.compile("\"healthyPayloads\"\\s*:\\s*\\[([^\\]]*)\\]");
     private static final Pattern INSTANCE_ID = Pattern.compile("\"instanceId\"\\s*:\\s*\"([^\"]*)\"");
+
     private static final Pattern ATTACHED_SUBSCRIPTIONS = Pattern.compile("\"attachedSubscriptions\"\\s*:\\s*(\\d+)");
+
     private static final Pattern SERVED_BY_OWNER = Pattern.compile("\"servedByOwner\"\\s*:\\s*true");
     private static final Pattern OWNER_HEAD_OFFSET = Pattern.compile("\"ownerHeadOffset\"\\s*:\\s*(-?\\d+)");
+
     /// One replica row's acked watermark and owner flag, adjacent in `ReplicaStateDetail`'s component
     /// order (`nodeId, state, confirmedOffset, isHrwOwner`). A parser over a body is a parser: a
     /// reordered record turns every peer-ack read into "not acked", which withholds the pre-attach claim
@@ -217,10 +207,13 @@ class DurableTopicDeliveryForgeTest {
     /// address (`DurableTopicNames.TOPIC_STREAM_PREFIX`). Four colon-separated parts, so no
     /// `(namespace, stream, version)` management route can address it (`Namespace` admits no colon);
     /// the one read route that takes the raw name is `STREAM_REPLICAS_LOCAL`.
-    private static final String ORDER_EVENTS_TOPIC_STREAM = "topic:" + TestArtifacts.streamEngineKey(BLUEPRINT_ID, "order-events");
-    private static final String POISON_EVENTS_TOPIC_STREAM = "topic:" + TestArtifacts.streamEngineKey(BLUEPRINT_ID, "poison-events");
-    private static final Pattern HRW_OWNER = Pattern.compile("\"hrwOwner\"\\s*:\\s*\"([^\"]*)\"");
+    private static final String ORDER_EVENTS_TOPIC_STREAM = "topic:" + TestArtifacts.streamEngineKey(BLUEPRINT_ID,
+                                                                                                     "order-events");
 
+    private static final String POISON_EVENTS_TOPIC_STREAM = "topic:" + TestArtifacts.streamEngineKey(BLUEPRINT_ID,
+                                                                                                      "poison-events");
+
+    private static final Pattern HRW_OWNER = Pattern.compile("\"hrwOwner\"\\s*:\\s*\"([^\"]*)\"");
     /// Consumer groups the fixture declares: one on `order-events`, two on `poison-events`. The
     /// assignee check in [#orderGroupSitsOnItsOwner] counts `attachedSubscriptions` per node against
     /// this shape.
@@ -243,32 +236,23 @@ class DurableTopicDeliveryForgeTest {
         // backing streams are memory-only and "durable" would be measuring nothing.
         cluster.withDataBaseDir(baseDir);
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(this::allNodesHealthy);
-
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
+                                                                                    .isPresent());
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesHealthy);
         deployDurableTopicSlice();
-
         await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(this::failIfSliceFailed)
-               .until(this::appHttpReady);
-
+             .pollInterval(POLL_INTERVAL)
+             .failFast(this::failIfSliceFailed)
+             .until(this::appHttpReady);
         // The order-events warm-up goes FIRST, as soon as one port answers: [PreAttachBacklog] needs an
         // event whose publish succeeded before the group's consumer attached, and the consumer attaches
         // on the next reconcile tick after the first instance is ACTIVE. Waiting for all five instances
         // first would put every warm-up after the attach. A publish can also land before the backing
         // stream's owner has materialized its ring, so the gate retries until one resolves.
         await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(this::failIfSliceFailed)
-               .until(this::publishPreAttachWarmup);
-
+             .pollInterval(POLL_INTERVAL)
+             .failFast(this::failIfSliceFailed)
+             .until(this::publishPreAttachWarmup);
         // Every instance ACTIVE, on five distinct nodes, before any arm publishes. The blueprint pins
         // instances = minAvailable = maxInstances, so the autoscaler can neither descale the slice off
         // nodes mid-arm (one run went 5 -> 4 -> 3 and had NO consumer attached anywhere for 5.5 min,
@@ -277,15 +261,13 @@ class DurableTopicDeliveryForgeTest {
         // candidate set and moves it, which is the documented reconcile-window duplicate. Both were
         // seen inside arm windows before this gate existed.
         await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(this::failIfSliceFailed)
-               .untilAsserted(this::assertAllInstancesActiveOnDistinctNodes);
-
+             .pollInterval(POLL_INTERVAL)
+             .failFast(this::failIfSliceFailed)
+             .untilAsserted(this::assertAllInstancesActiveOnDistinctNodes);
         await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(this::failIfSliceFailed)
-               .until(this::poisonPublishReady);
-
+             .pollInterval(POLL_INTERVAL)
+             .failFast(this::failIfSliceFailed)
+             .until(this::poisonPublishReady);
         // Arms count only their own ids, so a warm-up can no longer be MISCOUNTED. It can still
         // INTERFERE: a poison warm-up mid-retry when an arm publishes shares that group's partition, and
         // before #1285 every append re-delivered a retrying event. So the poison topic must be
@@ -298,11 +280,11 @@ class DurableTopicDeliveryForgeTest {
         var lastPoisonSample = new AtomicInteger(-1);
 
         await().atMost(WAIT_TIMEOUT)
-               .pollDelay(SETTLE)
-               .pollInterval(SETTLE)
-               .failFast(this::failIfSliceFailed)
-               .until(() -> unchangedSinceLastSample(lastPoisonSample, failingAttemptsFor(WARMUP_ID)));
-
+             .pollDelay(SETTLE)
+             .pollInterval(SETTLE)
+             .failFast(this::failIfSliceFailed)
+             .until(() -> unchangedSinceLastSample(lastPoisonSample,
+                                                   failingAttemptsFor(WARMUP_ID)));
         // The push-mode precondition, checked on the settled cluster: an id established while the owner's
         // instance was ACTIVE should have attached on the owner; if the group sits elsewhere the arm
         // has nothing to say and skips with the reading.
@@ -372,24 +354,26 @@ class DurableTopicDeliveryForgeTest {
     class PreAttachBacklog {
         @Test
         void eventPublishedBeforeTheGroupAttached_isDeliveredWithoutAFollowUpAppend() {
-            var id = preAttachOrderId.or(() -> Assumptions.abort(
-                    "pre-attach shape not established this run: no order-events warm-up was observed in"
-                    + " the log before the attach — the first publish that returned success did so with"
-                    + " attachedSubscriptions=" + attachedWhenWarmupSucceeded + " across the nodes, and the"
-                    + " unknown-outcome attempts could not be resolved from the owner's head offset:"
-                    + " " + excludedWarmupIds + "; assignee: " + assigneeReading + ". Nothing this run can"
-                    + " say about the backlog read at subscribe — see the class doc for why this is a named"
-                    + " skip, not a red"));
+            var id = preAttachOrderId.or(() -> Assumptions.abort("pre-attach shape not established this run: no order-events warm-up was observed in"
+                                                                + " the log before the attach — the first publish that returned success did so with"
+                                                                + " attachedSubscriptions=" + attachedWhenWarmupSucceeded
+                                                                + " across the nodes, and the"
+                                                                + " unknown-outcome attempts could not be resolved from the owner's head offset:"
+                                                                + " " + excludedWarmupIds
+                                                                + "; assignee: " + assigneeReading
+                                                                + ". Nothing this run can"
+                                                                + " say about the backlog read at subscribe — see the class doc for why this is a named"
+                                                                + " skip, not a red"));
 
             await().atMost(DELIVERY_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
-                   .untilAsserted(() -> assertThat(deliveriesOf(id))
-                           .describedAs("%s is definitely in the log before the attach (%s), so a subscribe"
-                                        .formatted(id, preAttachEvidence)
-                                        + " that reads the backlog delivers it without any further publish"
-                                        + " (excluded warm-ups: " + excludedWarmupIds + ")")
-                           .isGreaterThanOrEqualTo(1));
+                 .pollInterval(POLL_INTERVAL)
+                 .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
+                 .untilAsserted(() -> assertThat(deliveriesOf(id)).describedAs("%s is definitely in the log before the attach (%s), so a subscribe".formatted(id,
+                                                                                                                                                              preAttachEvidence)
+                                                                              + " that reads the backlog delivers it without any further publish"
+                                                                              + " (excluded warm-ups: " + excludedWarmupIds
+                                                                              + ")")
+                                                .isGreaterThanOrEqualTo(1));
         }
     }
 
@@ -416,13 +400,11 @@ class DurableTopicDeliveryForgeTest {
         @Test
         void failingHandlerIsRETRIED_whichEphemeralDispatchNeverDoes() {
             publishPoison("tier-probe");
-
-            awaitSettled("the durable tier retries a failing handler %d times; ephemeral delivery invokes"
-                           .formatted(EXPECTED_ATTEMPTS_PER_EVENT)
-                           + " it ONCE and never retries, so anything above 1 proves the durable tier is"
-                           + " dispatching",
-                           () -> failingAttemptsFor("tier-probe"),
-                           EXPECTED_ATTEMPTS_PER_EVENT);
+            awaitSettled("the durable tier retries a failing handler %d times; ephemeral delivery invokes".formatted(EXPECTED_ATTEMPTS_PER_EVENT)
+                        + " it ONCE and never retries, so anything above 1 proves the durable tier is"
+                        + " dispatching",
+                         () -> failingAttemptsFor("tier-probe"),
+                         EXPECTED_ATTEMPTS_PER_EVENT);
         }
     }
 
@@ -438,9 +420,8 @@ class DurableTopicDeliveryForgeTest {
             var ids = publishOrders("dlv-", ORDER_COUNT);
 
             awaitSettledUnlessMoved(assignees,
-                                    "each event delivered exactly once cluster-wide — a count of %d per id would mean"
-                                    .formatted(NODES)
-                                    + " ungated per-node delivery",
+                                    "each event delivered exactly once cluster-wide — a count of %d per id would mean".formatted(NODES)
+                                   + " ungated per-node delivery",
                                     () -> deliveryCounts(ids),
                                     onceEach(ids));
         }
@@ -471,15 +452,14 @@ class DurableTopicDeliveryForgeTest {
 
             awaitSettledUnlessMoved(assignees,
                                     "each late-acked event delivered exactly once — a repeat means a second delivery"
-                                    + " of an offset overlapped the first",
+                                   + " of an offset overlapped the first",
                                     () -> deliveryCounts(ids),
                                     onceEach(ids));
-
             assertThat(sequencesPerNode(prefix)).describedAs("serial per-(group x partition) dispatch over"
-                                                              + " one partition means arrival order IS"
-                                                              + " offset order on every node that"
-                                                              + " delivered")
-                                                 .allSatisfy(sequences -> assertThat(sequences).isSorted());
+                                                            + " one partition means arrival order IS"
+                                                            + " offset order on every node that"
+                                                            + " delivered")
+                      .allSatisfy(sequences -> assertThat(sequences).isSorted());
         }
     }
 
@@ -510,12 +490,12 @@ class DurableTopicDeliveryForgeTest {
                 var payload = "poison-" + i;
 
                 publishPoison(payload);
-                awaitSettled("the never-acking handler must be retried a BOUNDED number of times (%d for %s),"
-                               .formatted(EXPECTED_ATTEMPTS_PER_EVENT, payload)
-                               + " not forever and not once — a count still climbing after the budget means"
-                               + " the event was never moved aside",
-                               () -> failingAttemptsFor(payload),
-                               EXPECTED_ATTEMPTS_PER_EVENT);
+                awaitSettled("the never-acking handler must be retried a BOUNDED number of times (%d for %s),".formatted(EXPECTED_ATTEMPTS_PER_EVENT,
+                                                                                                                         payload)
+                            + " not forever and not once — a count still climbing after the budget means"
+                            + " the event was never moved aside",
+                             () -> failingAttemptsFor(payload),
+                             EXPECTED_ATTEMPTS_PER_EVENT);
             }
         }
 
@@ -539,29 +519,25 @@ class DurableTopicDeliveryForgeTest {
             var assignees = attachedPerNode();
 
             publishPoison(probe);
-
             await().atMost(DELIVERY_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
-                   .untilAsserted(() -> assertThat(failingAttemptsFor(probe))
-                           .describedAs("the failing group must be invoked for %s — if only one group ever"
-                                        + " sees it, the two subscriber methods are not two groups", probe)
-                           .isGreaterThan(0));
-
+                 .pollInterval(POLL_INTERVAL)
+                 .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
+                 .untilAsserted(() -> assertThat(failingAttemptsFor(probe)).describedAs("the failing group must be invoked for %s — if only one group ever"
+                                                                                       + " sees it, the two subscriber methods are not two groups",
+                                                                                        probe)
+                                                .isGreaterThan(0));
             awaitSettledUnlessMoved(assignees,
                                     "the healthy group must handle %s exactly once, while the group sharing the topic".formatted(probe)
-                                    + " never acks it",
+                                   + " never acks it",
                                     () -> healthyDeliveriesOf(probe),
                                     1);
-
             awaitSettled("the failing group's budget for %s is its own".formatted(probe),
-                           () -> failingAttemptsFor(probe),
-                           EXPECTED_ATTEMPTS_PER_EVENT);
+                         () -> failingAttemptsFor(probe),
+                         EXPECTED_ATTEMPTS_PER_EVENT);
         }
     }
 
     // --- fixture driving -----------------------------------------------------
-
     /// Publishes `count` orders with ids `prefix + i` and ascending sequences, each publish resolving
     /// before the next is sent, so publication order is offset order.
     private List<String> publishOrders(String prefix, int count) {
@@ -575,7 +551,7 @@ class DurableTopicDeliveryForgeTest {
         var response = httpPost(appPort(), "/api/durable-topic/publish-order", body);
 
         assertThat(response).describedAs("durable publish must resolve at the min-sync floor")
-                            .doesNotContain("\"error\"");
+                  .doesNotContain("\"error\"");
 
         return orderId;
     }
@@ -591,15 +567,13 @@ class DurableTopicDeliveryForgeTest {
     /// retry arrived afterwards, which a bare "until equal" can never see.
     private <T> void awaitSettled(String description, Supplier<T> probe, T expected) {
         await().atMost(DELIVERY_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(this::failIfSliceFailed)
-               .untilAsserted(() -> assertThat(probe.get()).describedAs(description)
-                                                           .isEqualTo(expected));
-
+             .pollInterval(POLL_INTERVAL)
+             .failFast(this::failIfSliceFailed)
+             .untilAsserted(() -> assertThat(probe.get()).describedAs(description)
+                                            .isEqualTo(expected));
         sleep(SETTLE);
-
         assertThat(probe.get()).describedAs("%s — and it must STAY there for %s", description, SETTLE)
-                               .isEqualTo(expected);
+                  .isEqualTo(expected);
     }
 
     /// [#awaitSettled] for an exactly-once claim, which holds only while the consumer does not MOVE:
@@ -612,7 +586,10 @@ class DurableTopicDeliveryForgeTest {
     /// deployment map reported all five ACTIVE while one node was still ROUTING, its forced
     /// `ROUTING -> ACTIVE` at +8 s moved the group to the owner, and the successor replayed `dlv-1..19`
     /// from the checkpoint at offset 2 (rev1341 classification A on #1341's runner red).
-    private <T> void awaitSettledUnlessMoved(String assigneesBefore, String description, Supplier<T> probe, T expected) {
+    private <T> void awaitSettledUnlessMoved(String assigneesBefore,
+                                             String description,
+                                             Supplier<T> probe,
+                                             T expected) {
         String assigneesAfter;
 
         try {
@@ -620,21 +597,22 @@ class DurableTopicDeliveryForgeTest {
             assigneesAfter = attachedPerNode();
         } catch (AssertionError | ConditionTimeoutException failure) {
             assigneesAfter = attachedPerNode();
-
             if (!assigneesAfter.equals(assigneesBefore)) {
-                Assumptions.abort("the consumer MOVED while [%s] was measured — attachedSubscriptions per node before: %s, after: %s;"
-                                  .formatted(description, assigneesBefore, assigneesAfter)
-                                  + " a replay across a move is the documented at-least-once (#1385), so this run cannot judge"
-                                  + " exactly-once; the count read: " + failure.getMessage());
+                Assumptions.abort("the consumer MOVED while [%s] was measured — attachedSubscriptions per node before: %s, after: %s;".formatted(description,
+                                                                                                                                                 assigneesBefore,
+                                                                                                                                                 assigneesAfter)
+                                 + " a replay across a move is the documented at-least-once (#1385), so this run cannot judge"
+                                 + " exactly-once; the count read: " + failure.getMessage());
             }
 
             throw failure;
         }
 
         if (!assigneesAfter.equals(assigneesBefore)) {
-            Assumptions.abort("the consumer MOVED while [%s] was measured (the counts still matched) — attachedSubscriptions per node before: %s, after: %s;"
-                              .formatted(description, assigneesBefore, assigneesAfter)
-                              + " exactly-once is claimed only without a move");
+            Assumptions.abort("the consumer MOVED while [%s] was measured (the counts still matched) — attachedSubscriptions per node before: %s, after: %s;".formatted(description,
+                                                                                                                                                                        assigneesBefore,
+                                                                                                                                                                        assigneesAfter)
+                             + " exactly-once is claimed only without a move");
         }
     }
 
@@ -644,7 +622,8 @@ class DurableTopicDeliveryForgeTest {
                       .nodes()
                       .stream()
                       .collect(Collectors.toMap(EmberCluster.NodeStatus::id,
-                                                node -> attachedSubscriptions(httpGet(node.mgmtPort(), "/api/v1/streams/declarative-consumers")),
+                                                node -> attachedSubscriptions(httpGet(node.mgmtPort(),
+                                                                                      "/api/v1/streams/declarative-consumers")),
                                                 (first, _) -> first,
                                                 java.util.TreeMap::new))
                       .toString();
@@ -652,29 +631,33 @@ class DurableTopicDeliveryForgeTest {
 
     private static Map<String, Long> onceEach(List<String> ids) {
         return ids.stream()
-                  .collect(Collectors.toMap(Function.identity(), _ -> 1L));
+                  .collect(Collectors.toMap(Function.identity(),
+                                            _ -> 1L));
     }
 
     /// Per id, how many times it was delivered, summed across every instance — which is what makes the
     /// count a cluster-wide claim rather than a per-node one. Ids never delivered are reported as 0.
     private Map<String, Long> deliveryCounts(List<String> ids) {
         var delivered = allDeliveries().stream()
-                                       .collect(Collectors.groupingBy(Delivered::orderId, Collectors.counting()));
+                                     .collect(Collectors.groupingBy(Delivered::orderId,
+                                                                    Collectors.counting()));
 
         return ids.stream()
-                  .collect(Collectors.toMap(Function.identity(), id -> delivered.getOrDefault(id, 0L)));
+                  .collect(Collectors.toMap(Function.identity(),
+                                            id -> delivered.getOrDefault(id, 0L)));
     }
 
     private long deliveriesOf(String orderId) {
         return allDeliveries().stream()
-                              .filter(delivered -> delivered.orderId().equals(orderId))
-                              .count();
+                            .filter(delivered -> delivered.orderId()
+                                                          .equals(orderId))
+                            .count();
     }
 
     private List<Delivered> allDeliveries() {
         return deliveriesPerNode().stream()
-                                  .flatMap(List::stream)
-                                  .toList();
+                                .flatMap(List::stream)
+                                .toList();
     }
 
     /// The sequences of the `prefix` orders as each node delivered them, in arrival order; nodes that
@@ -686,18 +669,19 @@ class DurableTopicDeliveryForgeTest {
     /// polled.
     private List<List<Integer>> sequencesPerNode(String prefix) {
         return deliveriesPerNode().stream()
-                                  .map(deliveries -> deliveries.stream()
-                                                               .filter(delivered -> delivered.orderId().startsWith(prefix))
-                                                               .map(Delivered::sequence)
-                                                               .toList())
-                                  .filter(sequences -> !sequences.isEmpty())
-                                  .toList();
+                                .map(deliveries -> deliveries.stream()
+                                                             .filter(delivered -> delivered.orderId()
+                                                                                           .startsWith(prefix))
+                                                             .map(Delivered::sequence)
+                                                             .toList())
+                                .filter(sequences -> !sequences.isEmpty())
+                                .toList();
     }
 
     private List<List<Delivered>> deliveriesPerNode() {
         return statusPerInstance("/api/durable-topic/order-status").stream()
-                                                                   .map(DurableTopicDeliveryForgeTest::parseDeliveries)
-                                                                   .toList();
+                                .map(DurableTopicDeliveryForgeTest::parseDeliveries)
+                                .toList();
     }
 
     /// One status body per slice INSTANCE, however many ports answered from it.
@@ -729,7 +713,8 @@ class DurableTopicDeliveryForgeTest {
     private static List<Delivered> parseDeliveries(String body) {
         return ORDER_ENTRY.matcher(body)
                           .results()
-                          .map(result -> new Delivered(result.group(1), Integer.parseInt(result.group(2))))
+                          .map(result -> new Delivered(result.group(1),
+                                                       Integer.parseInt(result.group(2))))
                           .toList();
     }
 
@@ -744,8 +729,8 @@ class DurableTopicDeliveryForgeTest {
     /// Occurrences of `payload` in one of the fixture's per-group records, summed across every instance.
     private int poisonRecordsOf(Pattern field, String payload) {
         return statusPerInstance("/api/durable-topic/poison-status").stream()
-                                                                    .mapToInt(body -> occurrences(field, body, payload))
-                                                                    .sum();
+                                .mapToInt(body -> occurrences(field, body, payload))
+                                .sum();
     }
 
     private static int occurrences(Pattern field, String body, String payload) {
@@ -754,7 +739,8 @@ class DurableTopicDeliveryForgeTest {
         return list.find()
                ? (int) QUOTED.matcher(list.group(1))
                              .results()
-                             .filter(result -> result.group(1).equals(payload))
+                             .filter(result -> result.group(1)
+                                                     .equals(payload))
                              .count()
                : 0;
     }
@@ -766,7 +752,6 @@ class DurableTopicDeliveryForgeTest {
     record Delivered(String orderId, int sequence) {}
 
     // --- cluster plumbing ----------------------------------------------------
-
     private void deployDurableTopicSlice() {
         var blueprint = """
             id = "%s"
@@ -781,8 +766,8 @@ class DurableTopicDeliveryForgeTest {
         var response = httpPostToml(leaderPort, "/api/v1/blueprints", blueprint);
 
         assertThat(response).describedAs("durable-topic slice deployment")
-                            .doesNotContain("\"error\"")
-                            .contains("\"status\":\"applied\"");
+                  .doesNotContain("\"error\"")
+                  .contains("\"status\":\"applied\"");
     }
 
     private boolean appHttpReady() {
@@ -794,7 +779,7 @@ class DurableTopicDeliveryForgeTest {
 
         var body = httpPost(ports.getFirst(), "/api/durable-topic/order-status", "{}");
 
-        return !body.contains("\"error\"") && body.contains("count");
+        return ! body.contains("\"error\"") && body.contains("count");
     }
 
     /// One gate attempt: publishes a fresh `__warmup__-N` order and classifies the outcome. The gate ends
@@ -835,16 +820,18 @@ class DurableTopicDeliveryForgeTest {
 
         var attempt = warmupAttempts++;
         var id = WARMUP_ID + "-" + attempt;
-        var headBefore = ownerReplicaView().flatMap(DurableTopicDeliveryForgeTest::ownerHeadOffset).or(attempt == 0 ? 0L : -1L);
+        var headBefore = ownerReplicaView().flatMap(DurableTopicDeliveryForgeTest::ownerHeadOffset)
+                                         .or(attempt == 0
+                                             ? 0L
+                                             : -1L);
         var responseRef = new AtomicReference<>(ERROR_FALLBACK);
         var port = ports.getFirst();
         var started = Instant.now();
-        var publisher = Thread.ofVirtual()
-                              .start(() -> responseRef.set(httpPost(port,
-                                                                    "/api/durable-topic/publish-order",
-                                                                    "{\"orderId\":\"" + id + "\",\"sequence\":0}")));
+        var publisher = Thread.ofVirtual().start(() -> responseRef.set(httpPost(port,
+                                                                                "/api/durable-topic/publish-order",
+                                                                                "{\"orderId\":\"" + id
+                                                                               + "\",\"sequence\":0}")));
         var observedInFlight = observeAppendBeforeAttach(publisher, headBefore);
-
         // The sampler returns at its first qualifying sample, which can precede the call's return; the
         // outcome below must be the call's, not the placeholder.
         while (publisher.isAlive()) {
@@ -856,18 +843,16 @@ class DurableTopicDeliveryForgeTest {
         var definiteSuccess = !forcedUnknown && !response.contains("\"error\"") && response.contains("published");
 
         warmupTimeline.add("%s: started %s, returned %s (%s%s), in-flight: %s".formatted(id,
-                                                                                    started,
-                                                                                    Instant.now(),
-                                                                                    definiteSuccess
-                                                                                    ? "success"
-                                                                                    : response,
-                                                                                    forcedUnknown
-                                                                                    ? ", forced unknown"
-                                                                                    : "",
-                                                                                    observedInFlight.or("no sample saw the append before the attach")));
-
+                                                                                         started,
+                                                                                         Instant.now(),
+                                                                                         definiteSuccess
+                                                                                         ? "success"
+                                                                                         : response,
+                                                                                         forcedUnknown
+                                                                                         ? ", forced unknown"
+                                                                                         : "",
+                                                                                         observedInFlight.or("no sample saw the append before the attach")));
         observedInFlight.onPresent(sample -> establishPreAttachId(id, 0, sample));
-
         if (definiteSuccess) {
             attachedWhenWarmupSucceeded = attachedSubscriptionsClusterWide();
             establishPreAttachId(id, attachedWhenWarmupSucceeded, "its publish returned success");
@@ -877,7 +862,9 @@ class DurableTopicDeliveryForgeTest {
 
         var viewAfter = ownerReplicaView();
         var headAfter = viewAfter.flatMap(DurableTopicDeliveryForgeTest::ownerHeadOffset).or(-1L);
-        var landedAlone = headBefore >= 0 && headAfter == headBefore + 1 && viewAfter.map(body -> peerConfirmedAtLeast(body, headBefore)).or(false);
+        var landedAlone = headBefore >= 0 && headAfter == headBefore + 1 && viewAfter.map(body -> peerConfirmedAtLeast(body,
+                                                                                                                       headBefore))
+                                                                                     .or(false);
         var attachedAfterRead = landedAlone
                                 ? attachedSubscriptionsClusterWide()
                                 : -1;
@@ -886,16 +873,20 @@ class DurableTopicDeliveryForgeTest {
             establishPreAttachId(id,
                                  attachedAfterRead,
                                  "its publish outcome was unknown (%s) and the owner's head offset read %d -> %d, peer-acked, after the call returned".formatted(response,
-                                                                                                                                                       headBefore,
-                                                                                                                                                       headAfter));
+                                                                                                                                                                 headBefore,
+                                                                                                                                                                 headAfter));
         }
 
         if (preAttachOrderId.map(id::equals).or(false)) {
             return true;
         }
 
-        excludedWarmupIds.add(id + "(head " + headBefore + "->" + headAfter + ", peer-acked " + viewAfter.map(body -> peerConfirmedAtLeast(body, headBefore)).or(false)
-                              + ", attached " + attachedAfterRead + " after return; no in-flight sample saw the append visible before the attach)");
+        excludedWarmupIds.add(id
+                             + "(head " + headBefore
+                             + "->" + headAfter
+                             + ", peer-acked " + viewAfter.map(body -> peerConfirmedAtLeast(body, headBefore)).or(false)
+                             + ", attached " + attachedAfterRead
+                             + " after return; no in-flight sample saw the append visible before the attach)");
 
         return false;
     }
@@ -926,18 +917,21 @@ class DurableTopicDeliveryForgeTest {
             samples++;
             var view = ownerReplicaView();
             var head = view.flatMap(DurableTopicDeliveryForgeTest::ownerHeadOffset).or(-1L);
-            var visible = headBefore >= 0 && head == headBefore + 1 && view.map(body -> peerConfirmedAtLeast(body, headBefore)).or(false);
-
-            var ownerActive = visible && view.flatMap(DurableTopicDeliveryForgeTest::hrwOwner).map(this::instanceActiveOn).or(false);
+            var visible = headBefore >= 0 && head == headBefore + 1 && view.map(body -> peerConfirmedAtLeast(body,
+                                                                                                             headBefore))
+                                                                           .or(false);
+            var ownerActive = visible && view.flatMap(DurableTopicDeliveryForgeTest::hrwOwner)
+                                             .map(this::instanceActiveOn)
+                                             .or(false);
 
             if (visible && ownerActive) {
                 var attached = attachedSubscriptionsClusterWide();
 
                 if (attached == 0) {
                     return Option.some("in-flight sample %d saw the owner's head offset at %d (was %d), a peer acked through offset %d, and attachedSubscriptions=0 on every node".formatted(samples,
-                                                                                                                                                                                              head,
-                                                                                                                                                                                              headBefore,
-                                                                                                                                                                                              headBefore));
+                                                                                                                                                                                             head,
+                                                                                                                                                                                             headBefore,
+                                                                                                                                                                                             headBefore));
                 }
 
                 return Option.none();
@@ -974,8 +968,9 @@ class DurableTopicDeliveryForgeTest {
 
         if (ownerActive && attachedAfterOwnerRead != 0) {
             if (excludedWarmupIds.stream().noneMatch(entry -> entry.startsWith(id + "("))) {
-                excludedWarmupIds.add(id + "(nobody attached at the first read, but attachedSubscriptions=" + attachedAfterOwnerRead
-                                      + " once the owner's instance was confirmed ACTIVE: the attach raced the establishment)");
+                excludedWarmupIds.add(id
+                                     + "(nobody attached at the first read, but attachedSubscriptions=" + attachedAfterOwnerRead
+                                     + " once the owner's instance was confirmed ACTIVE: the attach raced the establishment)");
             }
 
             return;
@@ -983,8 +978,9 @@ class DurableTopicDeliveryForgeTest {
 
         if (!ownerActive) {
             if (excludedWarmupIds.stream().noneMatch(entry -> entry.startsWith(id + "("))) {
-                excludedWarmupIds.add(id + "(nobody attached, but the partition owner " + owner.or("<unresolved>")
-                                      + "'s instance was not yet ACTIVE, so the first assignee would poll, not push)");
+                excludedWarmupIds.add(id
+                                     + "(nobody attached, but the partition owner " + owner.or("<unresolved>")
+                                     + "'s instance was not yet ACTIVE, so the first assignee would poll, not push)");
             }
 
             return;
@@ -995,14 +991,17 @@ class DurableTopicDeliveryForgeTest {
         preAttachEvidence = how + (how.startsWith("in-flight")
                                    ? ""
                                    : ", and attachedSubscriptions read 0 on every node afterwards")
-                            + "; the owner " + owner.or("?") + "'s instance was ACTIVE and attachedSubscriptions re-read 0 after that, so the first assignee is the owner (push mode)";
+                          + "; the owner " + owner.or("?")
+                          + "'s instance was ACTIVE and attachedSubscriptions re-read 0 after that, so the first assignee is the owner (push mode)";
     }
 
     private boolean instanceActiveOn(String nodeId) {
         return cluster.slicesStatus()
                       .stream()
-                      .filter(slice -> slice.artifact().equals(DURABLE_TOPIC_SLICE))
-                      .flatMap(slice -> slice.instances().stream())
+                      .filter(slice -> slice.artifact()
+                                            .equals(DURABLE_TOPIC_SLICE))
+                      .flatMap(slice -> slice.instances()
+                                             .stream())
                       .anyMatch(instance -> nodeId.equals(instance.nodeId()) && "ACTIVE".equals(instance.state()));
     }
 
@@ -1029,7 +1028,8 @@ class DurableTopicDeliveryForgeTest {
                              .nodes()
                              .stream()
                              .collect(Collectors.toMap(EmberCluster.NodeStatus::id,
-                                                       node -> attachedSubscriptions(httpGet(node.mgmtPort(), "/api/v1/streams/declarative-consumers")),
+                                                       node -> attachedSubscriptions(httpGet(node.mgmtPort(),
+                                                                                             "/api/v1/streams/declarative-consumers")),
                                                        (first, _) -> first,
                                                        java.util.TreeMap::new));
         var total = perNode.values().stream().mapToInt(Integer::intValue).sum();
@@ -1044,22 +1044,21 @@ class DurableTopicDeliveryForgeTest {
                                              : atOrderOwner == 1 && atPoisonOwner == POISON_GROUPS);
 
         assigneeReading = "order-events owner=%s, poison-events owner=%s (%s), attachedSubscriptions per node=%s (expected %s, %d in total): %s".formatted(orderOwner.or("<unresolved>"),
-                                                                                                                                                       poisonOwner.or("<unresolved>"),
-                                                                                                                                                       sameOwner
-                                                                                                                                                       ? "same node"
-                                                                                                                                                       : "different nodes",
-                                                                                                                                                       perNode,
-                                                                                                                                                       sameOwner
-                                                                                                                                                       ? "3 on that node"
-                                                                                                                                                       : "1 on the order-events owner and 2 on the poison-events owner",
-                                                                                                                                                       TOTAL_GROUPS,
-                                                                                                                                                       sits
-                                                                                                                                                       ? "the order-events group sits on its owner (push mode)"
-                                                                                                                                                       : "the order-events group is NOT shown to be on its owner (poll mode or an ambiguous distribution — not the #1238(c) path)");
+                                                                                                                                                           poisonOwner.or("<unresolved>"),
+                                                                                                                                                           sameOwner
+                                                                                                                                                           ? "same node"
+                                                                                                                                                           : "different nodes",
+                                                                                                                                                           perNode,
+                                                                                                                                                           sameOwner
+                                                                                                                                                           ? "3 on that node"
+                                                                                                                                                           : "1 on the order-events owner and 2 on the poison-events owner",
+                                                                                                                                                           TOTAL_GROUPS,
+                                                                                                                                                           sits
+                                                                                                                                                           ? "the order-events group sits on its owner (push mode)"
+                                                                                                                                                           : "the order-events group is NOT shown to be on its owner (poll mode or an ambiguous distribution — not the #1238(c) path)");
 
         return sits;
     }
-
 
     /// The order-events partition's replica view as answered by its OWNER (`servedByOwner=true`); empty
     /// until some node is the owner. Read per node over `GET /api/v1/streams/{name}/{partition}/replicas-local`,
@@ -1075,7 +1074,8 @@ class DurableTopicDeliveryForgeTest {
         return cluster.status()
                       .nodes()
                       .stream()
-                      .map(node -> httpGet(node.mgmtPort(), "/api/v1/streams/" + topicStream + "/0/replicas-local"))
+                      .map(node -> httpGet(node.mgmtPort(),
+                                           "/api/v1/streams/" + topicStream + "/0/replicas-local"))
                       .filter(body -> SERVED_BY_OWNER.matcher(body).find())
                       .findFirst()
                       .map(Option::some)
@@ -1108,7 +1108,8 @@ class DurableTopicDeliveryForgeTest {
         return cluster.status()
                       .nodes()
                       .stream()
-                      .mapToInt(node -> attachedSubscriptions(httpGet(node.mgmtPort(), "/api/v1/streams/declarative-consumers")))
+                      .mapToInt(node -> attachedSubscriptions(httpGet(node.mgmtPort(),
+                                                                      "/api/v1/streams/declarative-consumers")))
                       .sum();
     }
 
@@ -1126,22 +1127,23 @@ class DurableTopicDeliveryForgeTest {
     private void assertAllInstancesActiveOnDistinctNodes() {
         var instances = cluster.slicesStatus()
                                .stream()
-                               .filter(slice -> slice.artifact().equals(DURABLE_TOPIC_SLICE))
-                               .flatMap(slice -> slice.instances().stream())
+                               .filter(slice -> slice.artifact()
+                                                     .equals(DURABLE_TOPIC_SLICE))
+                               .flatMap(slice -> slice.instances()
+                                                      .stream())
                                .toList();
         var activeNodes = instances.stream()
                                    .filter(instance -> "ACTIVE".equals(instance.state()))
                                    .map(EmberCluster.SliceInstanceStatus::nodeId)
                                    .collect(Collectors.toSet());
 
-        assertThat(activeNodes).describedAs("all %d instances ACTIVE on distinct nodes before any arm publishes;"
-                                            .formatted(INSTANCES)
-                                            + " the cluster deployment map reports: "
-                                            + instances.stream()
-                                                       .map(instance -> instance.nodeId() + "=" + instance.state())
-                                                       .sorted()
-                                                       .toList())
-                               .hasSize(INSTANCES);
+        assertThat(activeNodes).describedAs("all %d instances ACTIVE on distinct nodes before any arm publishes;".formatted(INSTANCES)
+                                           + " the cluster deployment map reports: " + instances.stream()
+                                                                                                .map(instance -> instance.nodeId()
+                                                                                                                + "=" + instance.state())
+                                                                                                .sorted()
+                                                                                                .toList())
+                  .hasSize(INSTANCES);
     }
 
     /// The `poison-events` half of the readiness gate. Its warm-up event WILL be dead-lettered by the
@@ -1154,9 +1156,11 @@ class DurableTopicDeliveryForgeTest {
             return false;
         }
 
-        var response = httpPost(ports.getFirst(), "/api/durable-topic/publish-poison", "{\"payload\":\"" + WARMUP_ID + "\"}");
+        var response = httpPost(ports.getFirst(),
+                                "/api/durable-topic/publish-poison",
+                                "{\"payload\":\"" + WARMUP_ID + "\"}");
 
-        return !response.contains("\"error\"") && response.contains("published");
+        return ! response.contains("\"error\"") && response.contains("published");
     }
 
     /// Deliberately a park rather than an awaitility gate: the assertion it serves is that a count does
@@ -1169,8 +1173,9 @@ class DurableTopicDeliveryForgeTest {
     private void failIfSliceFailed() {
         var failed = cluster.slicesStatus()
                             .stream()
-                            .anyMatch(status -> status.artifact().equals(DURABLE_TOPIC_SLICE)
-                                                && status.state().equals("FAILED"));
+                            .anyMatch(status -> status.artifact()
+                                                      .equals(DURABLE_TOPIC_SLICE) && status.state()
+                                                                                            .equals("FAILED"));
 
         if (failed) {
             throw new AssertionError("Durable-topic slice deployment FAILED: " + DURABLE_TOPIC_SLICE);
@@ -1185,7 +1190,10 @@ class DurableTopicDeliveryForgeTest {
     }
 
     private int anyMgmtPort() {
-        return cluster.status().nodes().getFirst().mgmtPort();
+        return cluster.status()
+                      .nodes()
+                      .getFirst()
+                      .mgmtPort();
     }
 
     private boolean allNodesHealthy() {
@@ -1204,12 +1212,12 @@ class DurableTopicDeliveryForgeTest {
 
         return http.sendString(request)
                    .await()
-                   .map(response -> response.statusCode() == 200 && response.body().contains("\"quorum\":true"))
+                   .map(response -> response.statusCode() == 200 && response.body()
+                                                                            .contains("\"quorum\":true"))
                    .or(false);
     }
 
     // --- HTTP ----------------------------------------------------------------
-
     private String httpPostToml(int port, String path, String body) {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + path))

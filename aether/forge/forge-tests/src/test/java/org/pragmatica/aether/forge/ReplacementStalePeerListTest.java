@@ -4,6 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge;
 
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
@@ -20,12 +26,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
-
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -34,6 +34,7 @@ import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+
 
 /// #1803: a core dies, and its replacement is minted with a peer list that does not name the current leader — the
 /// peers that existed when it was MINTED, and the leader (in the incident a node that had itself joined after those
@@ -103,7 +104,6 @@ class ReplacementStalePeerListTest {
         LifecycleAwait.nodeSettled("stop " + victim, cluster, cluster.killNode(victim));
         await().atMost(BUDGET.duration()).until(() -> !counted(leader).contains(victim));
         var mintTimePeers = survivors.stream().filter(id -> !id.equals(leader)).collect(Collectors.toSet());
-
         // Not awaited here: a replacement that cannot reach the leader never finishes starting, and the assertions
         // below then say WHY (membership short, leader changed) instead of "start did not settle".
         var joined = cluster.addCoreNode(replacement, mintTimePeers);
@@ -111,20 +111,23 @@ class ReplacementStalePeerListTest {
 
         expected.add(replacement);
         await().atMost(countedWithin.duration())
-               .untilAsserted(() -> assertThat(counted(leader)).as("leader %s must count the replacement and the survivors", leader)
-                                                               .containsExactlyInAnyOrderElementsOf(expected));
+             .untilAsserted(() -> assertThat(counted(leader)).as("leader %s must count the replacement and the survivors",
+                                                                 leader)
+                                            .containsExactlyInAnyOrderElementsOf(expected));
         // (b) needs the replacement to be ADMITTED as a voter: only then does it leave passive observation and reach
         // the election gate. The leader reconfigures the electorate to take it in; give the gate time to act.
         await().atMost(BUDGET.duration()).until(() -> isVoter(replacement));
         settlePastElectionGate();
-        assertThat(committedLeader()).as("the replacement must not depose the live leader").isEqualTo(Option.some(leader));
+        assertThat(committedLeader()).as("the replacement must not depose the live leader")
+                  .isEqualTo(Option.some(leader));
         assertThat(committedSequence(leader)).as("no election took place at all: the committed LeaderKey sequence is unchanged")
-                                             .isEqualTo(electionSequence);
+                  .isEqualTo(electionSequence);
         LifecycleAwait.nodeSettled("join " + replacement, cluster, joined);
         await().atMost(BUDGET.duration())
-               .untilAsserted(() -> assertThat(memberStates(replacement)).as("replacement %s must hold the leader it was never told of as a live member",
-                                                                             replacement)
-                                                                         .containsEntry(new NodeId(leader), "Member"));
+             .untilAsserted(() -> assertThat(memberStates(replacement)).as("replacement %s must hold the leader it was never told of as a live member",
+                                                                           replacement)
+                                            .containsEntry(new NodeId(leader),
+                                                           "Member"));
     }
 
     private Set<String> allCores() {
@@ -137,25 +140,31 @@ class ReplacementStalePeerListTest {
 
     private List<String> nonLeaderCores(String leader) {
         return allCores().stream()
-                         .filter(id -> !id.equals(leader))
-                         .sorted()
-                         .toList();
+                       .filter(id -> !id.equals(leader))
+                       .sorted()
+                       .toList();
     }
 
     private boolean isVoter(String replacement) {
         return cluster.getNode(replacement)
-                      .map(node -> node.topologyManager().coreNodes().contains(node.self()))
+                      .map(node -> node.topologyManager()
+                                       .coreNodes()
+                                       .contains(node.self()))
                       .or(false);
     }
 
     /// The KV-sync grace (3 s) plus the first election tick (2 s base) and a margin: an election that was going to
     /// happen has been proposed and committed by then.
     private static void settlePastElectionGate() {
-        await().pollDelay(ELECTION_GATE_SETTLE.duration()).timeout(ELECTION_GATE_SETTLE.duration().plusSeconds(10)).until(() -> true);
+        await().pollDelay(ELECTION_GATE_SETTLE.duration())
+             .timeout(ELECTION_GATE_SETTLE.duration().plusSeconds(10))
+             .until(() -> true);
     }
 
     private static void settlePastStartupCooldown() {
-        await().pollDelay(STARTUP_SETTLE.duration()).timeout(STARTUP_SETTLE.duration().plusSeconds(10)).until(() -> true);
+        await().pollDelay(STARTUP_SETTLE.duration())
+             .timeout(STARTUP_SETTLE.duration().plusSeconds(10))
+             .until(() -> true);
     }
 
     private Set<String> counted(String viewer) {
@@ -177,19 +186,23 @@ class ReplacementStalePeerListTest {
     /// `EmberCluster#addWorkerNode`), so a replacement never counts them whatever it knows of their health.
     private Map<NodeId, String> memberStates(String viewer) {
         return cluster.getNode(viewer)
-                      .map(node -> node.membershipFsm().memberStates())
+                      .map(node -> node.membershipFsm()
+                                       .memberStates())
                       .or(Map.of());
     }
 
     /// The leader every live node's committed `LeaderKey` names, once one does.
     private Option<String> committedLeader() {
         return cluster.currentLeader()
-                      .filter(id -> cluster.getNode(id).filter(ReplacementStalePeerListTest::committedAsLeader).isPresent());
+                      .filter(id -> cluster.getNode(id)
+                                           .filter(ReplacementStalePeerListTest::committedAsLeader)
+                                           .isPresent());
     }
 
     private long committedSequence(String viewer) {
         return cluster.getNode(viewer)
-                      .flatMap(node -> node.kvStore().getTyped(LeaderKey.INSTANCE, LeaderValue.class))
+                      .flatMap(node -> node.kvStore()
+                                           .getTyped(LeaderKey.INSTANCE, LeaderValue.class))
                       .map(LeaderValue::viewSequence)
                       .or(-1L);
     }
@@ -197,7 +210,8 @@ class ReplacementStalePeerListTest {
     private static boolean committedAsLeader(AetherNode node) {
         return node.kvStore()
                    .getTyped(LeaderKey.INSTANCE, LeaderValue.class)
-                   .filter(value -> value.leader().equals(node.self()))
+                   .filter(value -> value.leader()
+                                         .equals(node.self()))
                    .isPresent();
     }
 
@@ -217,7 +231,8 @@ class ReplacementStalePeerListTest {
 
         @Override
         public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
-            return EnvironmentError.capacityUnavailable("", new RuntimeException("provisioning blocked by the test (#1803)")).promise();
+            return EnvironmentError.capacityUnavailable("",
+                                                        new RuntimeException("provisioning blocked by the test (#1803)")).promise();
         }
 
         @Override

@@ -4,11 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.time.Duration;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
 import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.ember.EmberCluster;
@@ -22,21 +26,19 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.swim.SwimHealth;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.net.URI;
-import java.net.http.HttpRequest;
-import java.time.Duration;
-import java.util.List;
-import java.util.Set;
-import java.util.UUID;
-import java.util.stream.Collectors;
-import java.util.stream.IntStream;
-
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+
 
 /// #3326 item 2: a worker cut off from EVERY core (SWIM and QUIC, so its core pings stop at the cut) fences itself: the
 /// core-absence fence stops it within the core-absence bound of the cut, it exits drained, and the slice instance placed on it
@@ -67,14 +69,17 @@ class FullCutWorkerStopTest {
     /// A timeout, not a bound: how long the test waits for the fence before it gives up (a missing fence fails here).
     private static final Duration STOP_WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final String FENCE_CODE = "core-absence-fence";
+
     private final EmberCluster cluster = EmberCluster.emberCluster(3, 33700, 33750, 33780, "full-cut");
     private Set<NodeId> coreIds = Set.of();
 
-    @AfterEach void stop() {
+    @AfterEach
+    void stop() {
         LifecycleAwait.bestEffort("stop full-cut fixture", cluster, cluster.stop());
     }
 
-    @Test void workerCutOffFromEveryCore_fencesItselfWithinTheCoreAbsenceBound() {
+    @Test
+    void workerCutOffFromEveryCore_fencesItselfWithinTheCoreAbsenceBound() {
         var id = bootWorker();
         var events = cluster.getNode(id.id()).unwrap().eventAggregator();
 
@@ -82,15 +87,15 @@ class FullCutWorkerStopTest {
         var cutAt = cutEveryLink(id);
 
         await().alias("the worker fenced itself")
-               .atMost(STOP_WAIT_TIMEOUT)
-               .pollInterval(Duration.ofMillis(20))
-               .until(() -> fenceRaised(events));
+             .atMost(STOP_WAIT_TIMEOUT)
+             .pollInterval(Duration.ofMillis(20))
+             .until(() -> fenceRaised(events));
         var delay = Duration.ofNanos(System.nanoTime() - cutAt);
         var coresDeadAtStop = cores().stream().filter(node -> isDead(node, id)).count();
 
         log.info("FULL-CUT-STOP path={} delayMs={} coresDeadAtStop={}", FENCE_CODE, delay.toMillis(), coresDeadAtStop);
         assertThat(delay).as("the fence fired within coreAbsence + ping interval + tick + margin of the cut")
-                         .isLessThanOrEqualTo(FENCE_BOUND);
+                  .isLessThanOrEqualTo(FENCE_BOUND);
         assertNothingKeepsRunningOn(id);
     }
 
@@ -98,7 +103,10 @@ class FullCutWorkerStopTest {
     /// slice (blueprint minimum: 3 instances) at WORKERS_ONLY placement, and waits until an instance is ACTIVE on the worker and visible in the cluster's slice status, so the after-fence check has a subject.
     private void deploySliceOnWorker(NodeId worker) {
         var artifact = Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap();
-        IntStream.range(0, 2).forEach(_ -> LifecycleAwait.nodeSettled("admit full-cut peer worker", cluster, cluster.addWorkerNode()));
+
+        IntStream.range(0, 2).forEach(_ -> LifecycleAwait.nodeSettled("admit full-cut peer worker",
+                                                                      cluster,
+                                                                      cluster.addWorkerNode()));
         var key = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
         var blueprint = """
             id = "forge.test:full-cut:1.0.0"
@@ -106,50 +114,79 @@ class FullCutWorkerStopTest {
             artifact = "%s"
             instances = 3
             """.formatted(TestArtifacts.ECHO_SLICE);
-        var applyRequest = HttpRequest.newBuilder(URI.create("http://localhost:" + mgmtPortOfLeader() + "/api/v1/blueprints"))
+        var applyRequest = HttpRequest.newBuilder(URI.create("http://localhost:" + mgmtPortOfLeader()
+                                                            + "/api/v1/blueprints"))
                                       .header("Content-Type", "application/toml")
                                       .timeout(Duration.ofSeconds(10))
                                       .POST(HttpRequest.BodyPublishers.ofString(blueprint))
                                       .build();
 
-        assertThat(jdkHttpOperations().sendString(applyRequest).await(TimeSpan.timeSpan(10).seconds()).unwrap().body())
-                .contains("\"status\":\"applied\"");
-        await().atMost(BUDGET.duration()).until(() -> leader().kvStore().getTyped(key, AetherValue.SliceTargetValue.class).isPresent());
+        assertThat(jdkHttpOperations().sendString(applyRequest).await(TimeSpan.timeSpan(10).seconds()).unwrap().body()).contains("\"status\":\"applied\"");
+        await().atMost(BUDGET.duration())
+             .until(() -> leader().kvStore()
+                                .getTyped(key, AetherValue.SliceTargetValue.class)
+                                .isPresent());
         var node = leader();
         var before = node.kvStore().getTyped(key, AetherValue.SliceTargetValue.class).unwrap();
         var txId = UUID.randomUUID().toString();
-        var transaction = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key, txId,
-                node.kvStore().getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap(), List.of(),
-                List.of(new KVCommand.Mutation<>(key, Option.some(before), Option.some(before.withPlacement("WORKERS_ONLY")))));
+        var transaction = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                                  txId,
+                                                                                  node.kvStore()
+                                                                                      .getTyped(LeaderKey.INSTANCE,
+                                                                                                LeaderValue.class)
+                                                                                      .unwrap(),
+                                                                                  List.of(),
+                                                                                  List.of(new KVCommand.Mutation<>(key,
+                                                                                                                   Option.some(before),
+                                                                                                                   Option.some(before.withPlacement("WORKERS_ONLY")))));
 
-        assertThat(node.<Object>apply(List.of(transaction)).await(BUDGET).unwrap())
-                .anyMatch(result -> result instanceof KVCommand.TransactionResult accepted
-                                    && accepted.transactionId().equals(txId) && accepted.accepted());
-        await().alias("the slice instance is ACTIVE on the worker").atMost(BUDGET.duration()).until(() -> activeInstancesOn(worker) == 1);
-        assertThat(instancesPlacedOn(worker)).as("the instrument sees the deployed instance before the cut").isEqualTo(1);
+        assertThat(node.<Object> apply(List.of(transaction)).await(BUDGET).unwrap()).anyMatch(result -> result instanceof KVCommand.TransactionResult accepted
+                                                                                                        && accepted.transactionId()
+                                                                                                                   .equals(txId)
+                                                                                                        && accepted.accepted());
+        await().alias("the slice instance is ACTIVE on the worker")
+             .atMost(BUDGET.duration())
+             .until(() -> activeInstancesOn(worker) == 1);
+        assertThat(instancesPlacedOn(worker)).as("the instrument sees the deployed instance before the cut")
+                  .isEqualTo(1);
     }
 
     private int mgmtPortOfLeader() {
         var leaderId = leader().self();
 
-        return cluster.status().nodes().stream().filter(status -> status.id().equals(leaderId.id())).findFirst().orElseThrow().mgmtPort();
+        return cluster.status()
+                      .nodes()
+                      .stream()
+                      .filter(status -> status.id()
+                                              .equals(leaderId.id()))
+                      .findFirst()
+                      .orElseThrow()
+                      .mgmtPort();
     }
 
     private AetherNode leader() {
-        return cluster.currentLeader().flatMap(cluster::getNode).unwrap();
+        return cluster.currentLeader()
+                      .flatMap(cluster::getNode)
+                      .unwrap();
     }
 
     private long activeInstancesOn(NodeId worker) {
-        return cluster.slicesStatus().stream()
-                      .flatMap(slice -> slice.instances().stream())
-                      .filter(instance -> instance.nodeId().equals(worker.id()) && "ACTIVE".equals(instance.state()))
+        return cluster.slicesStatus()
+                      .stream()
+                      .flatMap(slice -> slice.instances()
+                                             .stream())
+                      .filter(instance -> instance.nodeId()
+                                                  .equals(worker.id()) && "ACTIVE".equals(instance.state()))
                       .count();
     }
 
     private long instancesPlacedOn(NodeId worker) {
-        return cluster.slicesStatus().stream()
-                      .flatMap(slice -> slice.instances().stream())
-                      .filter(instance -> instance.nodeId().equals(worker.id()))
+        return cluster.slicesStatus()
+                      .stream()
+                      .flatMap(slice -> slice.instances()
+                                             .stream())
+                      .filter(instance -> instance.nodeId()
+                                                  .equals(worker.id()))
                       .count();
     }
 
@@ -157,13 +194,15 @@ class FullCutWorkerStopTest {
     /// cluster's slice status.
     private void assertNothingKeepsRunningOn(NodeId id) {
         await().alias("the stopped worker reported its exit")
-               .atMost(BUDGET.duration())
-               .until(() -> cluster.exitCodeOf(id.id()).isPresent());
+             .atMost(BUDGET.duration())
+             .until(() -> cluster.exitCodeOf(id.id())
+                                 .isPresent());
         assertThat(cluster.exitCodeOf(id.id()).unwrap()).isEqualTo(AetherNode.EXIT_DRAINED);
-        assertThat(cluster.getNode(id.id())).as("the stopped worker is no longer a running node").isEqualTo(Option.none());
+        assertThat(cluster.getNode(id.id())).as("the stopped worker is no longer a running node")
+                  .isEqualTo(Option.none());
         await().alias("no slice instance is placed on the stopped worker")
-               .atMost(BUDGET.duration())
-               .until(() -> instancesPlacedOn(id) == 0);
+             .atMost(BUDGET.duration())
+             .until(() -> instancesPlacedOn(id) == 0);
     }
 
     private static boolean fenceRaised(ClusterEventAggregator events) {
@@ -174,7 +213,10 @@ class FullCutWorkerStopTest {
     }
 
     private List<AetherNode> cores() {
-        return cluster.allNodes().stream().filter(node -> coreIds.contains(node.self())).toList();
+        return cluster.allNodes()
+                      .stream()
+                      .filter(node -> coreIds.contains(node.self()))
+                      .toList();
     }
 
     private static boolean isDead(AetherNode node, NodeId peer) {
@@ -183,7 +225,8 @@ class FullCutWorkerStopTest {
 
     private NodeId bootWorker() {
         LifecycleAwait.settled("start full-cut fixture", cluster, cluster.start());
-        await().atMost(BUDGET.duration()).until(() -> cluster.currentLeader().isPresent());
+        await().atMost(BUDGET.duration()).until(() -> cluster.currentLeader()
+                                                             .isPresent());
         coreIds = cluster.allNodes().stream().map(AetherNode::self).collect(Collectors.toSet());
         // Set after the cores started: only the worker created next gets the fence window under test.
         cluster.withCoreAbsenceForNewNodes(CORE_ABSENCE);
@@ -191,18 +234,24 @@ class FullCutWorkerStopTest {
         var id = LifecycleAwait.nodeSettled("admit full-cut worker", cluster, cluster.addWorkerNode());
         var worker = cluster.getNode(id.id()).unwrap();
 
-        assertThat(worker.coreAbsenceSnapshot().map(snapshot -> snapshot.thresholdMs()))
-                .as("the worker's effective core-absence threshold is the seam value")
-                .isEqualTo(Option.some(CORE_ABSENCE.duration().toMillis()));
+        assertThat(worker.coreAbsenceSnapshot().map(snapshot -> snapshot.thresholdMs())).as("the worker's effective core-absence threshold is the seam value")
+                  .isEqualTo(Option.some(CORE_ABSENCE.duration().toMillis()));
         var key = new AetherKey.ActivationDirectiveKey(id);
 
-        await().atMost(BUDGET.duration()).until(() -> worker.kvStore().getTyped(key, AetherValue.ActivationDirectiveValue.class).isPresent());
+        await().atMost(BUDGET.duration())
+             .until(() -> worker.kvStore()
+                                .getTyped(key, AetherValue.ActivationDirectiveValue.class)
+                                .isPresent());
         await().alias("the fence is armed: the worker accepted a core ping")
-               .atMost(BUDGET.duration())
-               .until(() -> worker.coreAbsenceSnapshot().map(snapshot -> snapshot.armed()).or(false));
+             .atMost(BUDGET.duration())
+             .until(() -> worker.coreAbsenceSnapshot()
+                                .map(snapshot -> snapshot.armed())
+                                .or(false));
         await().alias("every core has observed the worker SWIM-HEALTHY before the cut")
-               .atMost(BUDGET.duration())
-               .until(() -> cores().stream().allMatch(node -> swimHealthy(node, id)));
+             .atMost(BUDGET.duration())
+             .until(() -> cores().stream()
+                               .allMatch(node -> swimHealthy(node, id)));
+
         return id;
     }
 
@@ -211,11 +260,21 @@ class FullCutWorkerStopTest {
     private long cutEveryLink(NodeId worker) {
         var cores = cores().stream().map(AetherNode::self).collect(Collectors.toSet());
 
-        cluster.allNodes().stream().filter(node -> cores.contains(node.self()) || node.self().equals(worker)).forEach(node -> node.partitionFrom(node.self().equals(worker) ? cores : Set.of(worker)));
+        cluster.allNodes()
+               .stream()
+               .filter(node -> cores.contains(node.self()) || node.self()
+                                                                  .equals(worker))
+               .forEach(node -> node.partitionFrom(node.self().equals(worker)
+                                                   ? cores
+                                                   : Set.of(worker)));
+
         return System.nanoTime();
     }
 
     private static boolean swimHealthy(AetherNode node, NodeId peer) {
-        return node.membershipView().get(peer).map(view -> view.swimHealth() == SwimHealth.HEALTHY).or(false);
+        return node.membershipView()
+                   .get(peer)
+                   .map(view -> view.swimHealth() == SwimHealth.HEALTHY)
+                   .or(false);
     }
 }

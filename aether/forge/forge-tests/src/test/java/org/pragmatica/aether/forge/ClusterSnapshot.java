@@ -15,6 +15,7 @@ import org.pragmatica.http.HttpOperations;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
+
 /// #727 — the cluster state a bounded wait prints when it expires.
 ///
 /// Extracted from `SliceInvocationTest` in review round 1 so the two cases that matter can be pinned
@@ -29,9 +30,7 @@ final class ClusterSnapshot {
     /// AND no start of it has failed. Distinguishing this from a start failure is review B2: a failed
     /// start clears `nodes`/`nodeInfos` before the caller sees the failure, so an un-named empty
     /// snapshot on a start failure is indistinguishable from a cluster that was never asked to start.
-    static final String NO_STATE =
-        "  no cluster state: no node is registered and no start of this cluster has failed";
-
+    static final String NO_STATE = "  no cluster state: no node is registered and no start of this cluster has failed";
     private static final TimeSpan HEALTH_BOUND = TimeSpan.timeSpan(30).seconds();
     private static final Duration HEALTH_REQUEST_TIMEOUT = Duration.ofSeconds(5);
 
@@ -63,12 +62,13 @@ final class ClusterSnapshot {
                                  Option<EmberCluster.StartFailure> startFailure,
                                  Function<EmberCluster.NodeStatus, String> lineOf) {
         if (!live.nodes().isEmpty()) {
-            return "  leader=" + live.leaderId() + "\n"
-                   + live.nodes()
-                         .stream()
-                         .map(lineOf)
-                         .collect(Collectors.joining("\n"));
+            return "  leader=" + live.leaderId()
+                 + "\n" + live.nodes()
+                              .stream()
+                              .map(lineOf)
+                              .collect(Collectors.joining("\n"));
         }
+
         return startFailure.map(ClusterSnapshot::renderCaptured)
                            .or(NO_STATE);
     }
@@ -81,15 +81,15 @@ final class ClusterSnapshot {
                        ? "no node reported a cause"
                        : failure.nodeFailures().toString();
 
-        return "  leader=" + failure.status().leaderId()
-               + " (captured when the start failed; the abort has since cleared the live cluster"
-               + " state, so no health endpoint is probed here)\n"
-               + failure.status()
-                        .nodes()
-                        .stream()
-                        .map(ClusterSnapshot::nodeLine)
-                        .collect(Collectors.joining("\n"))
-               + "\n  start failures: " + failures;
+        return "  leader=" + failure.status()
+                                    .leaderId()
+             + " (captured when the start failed; the abort has since cleared the live cluster"
+             + " state, so no health endpoint is probed here)\n" + failure.status()
+                                                                          .nodes()
+                                                                          .stream()
+                                                                          .map(ClusterSnapshot::nodeLine)
+                                                                          .collect(Collectors.joining("\n"))
+             + "\n  start failures: " + failures;
     }
 
     static String liveNodeLine(EmberCluster.NodeStatus node, HttpOperations http) {
@@ -99,8 +99,11 @@ final class ClusterSnapshot {
     /// #915 added the two ports. The canonical failure this dump is read for is a port that could
     /// not be bound, and the id alone does not say which port the node was asked to take.
     private static String nodeLine(EmberCluster.NodeStatus node) {
-        return "  " + node.id() + " state=" + node.state() + " leader=" + node.isLeader()
-               + " port=" + node.port() + " mgmt=" + node.mgmtPort();
+        return "  " + node.id()
+             + " state=" + node.state()
+             + " leader=" + node.isLeader()
+             + " port=" + node.port()
+             + " mgmt=" + node.mgmtPort();
     }
 
     /// Bounded, unlike the `await()` this replaced (review N1): the failure path is the one that runs

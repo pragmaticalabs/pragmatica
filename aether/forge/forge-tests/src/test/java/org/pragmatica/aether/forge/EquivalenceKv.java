@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
 import java.util.List;
@@ -16,6 +15,7 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.consensus.NodeId;
+
 
 /// The engine-neutral reading of one committed KV snapshot that every F4 instrument shares (design 9.5 criterion 4: "the instruments are
 /// identical for both engines"). A LEGACY instance is a `NodeArtifactKey`; an FSM2 instance is a `SliceObservedKey`. Both families are read in
@@ -49,15 +49,19 @@ record EquivalenceKv(Map<AetherKey, AetherValue> entries) {
     List<Instance> instances() {
         return entries.entrySet()
                       .stream()
-                      .<Instance>mapMulti((entry, sink) -> {
-                          switch (entry.getKey()) {
-                              case AetherKey.NodeArtifactKey key when entry.getValue() instanceof AetherValue.NodeArtifactValue value ->
-                                  sink.accept(new Instance(key.nodeId(), key.artifact().base(), value.state().name(), "legacy"));
-                              case AetherKey.SliceObservedKey key when entry.getValue() instanceof AetherValue.SliceObservedValue value ->
-                                  sink.accept(new Instance(key.nodeId(), key.artifact().base(), value.state().name(), "fsm2"));
-                              default -> {}
-                          }
-                      })
+                      .<Instance> mapMulti((entry, sink) -> {
+                                               switch (entry.getKey()) {
+                                                   case AetherKey.NodeArtifactKey key when entry.getValue() instanceof AetherValue.NodeArtifactValue value -> sink.accept(new Instance(key.nodeId(),
+                                                                                                                                                                                       key.artifact().base(),
+                                                                                                                                                                                       value.state().name(),
+                                                                                                                                                                                       "legacy"));
+                                                   case AetherKey.SliceObservedKey key when entry.getValue() instanceof AetherValue.SliceObservedValue value -> sink.accept(new Instance(key.nodeId(),
+                                                                                                                                                                                         key.artifact().base(),
+                                                                                                                                                                                         value.state().name(),
+                                                                                                                                                                                         "fsm2"));
+                                                   default -> {}
+                                               }
+                                           })
                       .toList();
     }
 
@@ -65,8 +69,10 @@ record EquivalenceKv(Map<AetherKey, AetherValue> entries) {
         var counts = new TreeMap<ArtifactBase, Long>(EquivalenceKv::compareBase);
 
         instances().stream()
-                   .filter(instance -> state.test(instance.state()))
-                   .forEach(instance -> counts.merge(instance.base(), 1L, Long::sum));
+                 .filter(instance -> state.test(instance.state()))
+                 .forEach(instance -> counts.merge(instance.base(),
+                                                   1L,
+                                                   Long::sum));
 
         return counts;
     }
@@ -96,7 +102,8 @@ record EquivalenceKv(Map<AetherKey, AetherValue> entries) {
 
         entries.forEach((key, value) -> {
             if (key instanceof AetherKey.DeploymentOutcomeKey outcome && value instanceof AetherValue.DeploymentOutcomeValue outcomeValue) {
-                outcomes.put(outcome.blueprintId().asString(), outcomeValue);
+                outcomes.put(outcome.blueprintId().asString(),
+                             outcomeValue);
             }
         });
 
@@ -108,7 +115,8 @@ record EquivalenceKv(Map<AetherKey, AetherValue> entries) {
 
         entries.forEach((key, value) -> {
             if (key instanceof AetherKey.AppBlueprintKey blueprint && value instanceof AetherValue.AppBlueprintValue blueprintValue) {
-                blueprints.put(blueprint.blueprintId().asString(), blueprintValue);
+                blueprints.put(blueprint.blueprintId().asString(),
+                               blueprintValue);
             }
         });
 
@@ -120,7 +128,8 @@ record EquivalenceKv(Map<AetherKey, AetherValue> entries) {
 
         entries.forEach((key, value) -> {
             if (key instanceof AetherKey.DeploymentApplyKey apply && value instanceof AetherValue.DeploymentApplyValue applyValue) {
-                applies.put(apply.blueprintId().asString(), applyValue);
+                applies.put(apply.blueprintId().asString(),
+                            applyValue);
             }
         });
 
@@ -139,6 +148,7 @@ record EquivalenceKv(Map<AetherKey, AetherValue> entries) {
     }
 
     static int compareBase(ArtifactBase left, ArtifactBase right) {
-        return left.asString().compareTo(right.asString());
+        return left.asString()
+                   .compareTo(right.asString());
     }
 }

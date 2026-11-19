@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
 import java.io.BufferedReader;
@@ -38,6 +37,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.swim.SwimConfig;
 
+
 /// The quiescent-point convergence oracle (phase-3 design 9.6, P3-Q23, D-8): at a quiescent point of a LEGACY run, project the committed state
 /// into FSM2's records, feed the projection to a **pure** `ClusterFsm` as `Rebuild`, run the first `Reconcile` through its `Flush`, and collect
 /// every `Submit`. A Submit not on the frozen allow-list (`fsm2/oracle-allowlist.txt`, keyed by spec CHANGE row) is a disagreement to read.
@@ -59,7 +59,9 @@ final class EquivalenceOracle {
     private static final long NOW_MONO = 5_000_000_000L;
     private static final int DRAIN_GUARD = 20_000;
     static final String ALLOW_LIST = "/fsm2/oracle-allowlist.txt";
+
     private static final Artifact UNDER_PLACED = Artifact.artifact("org.f4.control:oracle-under-placed:1.0.0").unwrap();
+
     private static final Artifact STRAY = Artifact.artifact("org.f4.control:oracle-stray:1.0.0").unwrap();
 
     private EquivalenceOracle() {}
@@ -73,7 +75,11 @@ final class EquivalenceOracle {
 
     record AllowEntry(String changeRow, String kind, Pattern key) {
         boolean admits(SubmitSeen submit) {
-            return submit.kind().equals(kind) && submit.mutatedKeys().stream().allMatch(mutated -> key.matcher(mutated).find());
+            return submit.kind()
+                         .equals(kind) && submit.mutatedKeys()
+                                                .stream()
+                                                .allMatch(mutated -> key.matcher(mutated)
+                                                                        .find());
         }
     }
 
@@ -94,13 +100,13 @@ final class EquivalenceOracle {
 
         String describe() {
             return "oracle: projected=%d submits=%d disagreements=%s controls(underPlacement=%s, stray=%s) judgmentsUnread=%s".formatted(projectedInstances,
-                                                                                                                                      submits.size(),
-                                                                                                                                      disagreements.stream()
-                                                                                                                                                   .map(SubmitSeen::describe)
-                                                                                                                                                   .toList(),
-                                                                                                                                      underPlacementControlFired,
-                                                                                                                                      strayControlFired,
-                                                                                                                                      judgmentsUnread);
+                                                                                                                                         submits.size(),
+                                                                                                                                         disagreements.stream()
+                                                                                                                                                      .map(SubmitSeen::describe)
+                                                                                                                                                      .toList(),
+                                                                                                                                         underPlacementControlFired,
+                                                                                                                                         strayControlFired,
+                                                                                                                                         judgmentsUnread);
         }
     }
 
@@ -109,14 +115,18 @@ final class EquivalenceOracle {
         var projection = project(legacy, leader);
         var submits = run(projection, leader, liveCores);
         var disagreements = submits.stream()
-                                   .filter(submit -> allowList.stream().noneMatch(entry -> entry.admits(submit)))
+                                   .filter(submit -> allowList.stream()
+                                                              .noneMatch(entry -> entry.admits(submit)))
                                    .toList();
 
         return new Verdict(submits,
                            disagreements,
                            underPlacementFires(projection, leader, liveCores),
                            strayFires(projection, leader, liveCores),
-                           (int) projection.keySet().stream().filter(AetherKey.SliceDesiredKey.class::isInstance).count(),
+                           (int) projection.keySet()
+                                           .stream()
+                                           .filter(AetherKey.SliceDesiredKey.class::isInstance)
+                                           .count(),
                            true);
     }
 
@@ -125,16 +135,18 @@ final class EquivalenceOracle {
         var projected = new HashMap<AetherKey, AetherValue>();
         var instances = new ArrayList<Map.Entry<AetherKey.NodeArtifactKey, AetherValue.NodeArtifactValue>>();
 
-        legacy.entries().forEach((key, value) -> {
-            switch (key) {
-                case AetherKey.NodeArtifactKey artifactKey when value instanceof AetherValue.NodeArtifactValue artifactValue -> instances.add(Map.entry(artifactKey, artifactValue));
-                case AetherKey.NodeArtifactKey _ -> {}
-                case AetherKey.SliceDesiredKey _, AetherKey.SliceObservedKey _, AetherKey.DeploymentApplyKey _, AetherKey.NodeDepartureKey _,
-                     AetherKey.ArtifactJudgmentKey _ -> {}
-                default -> projected.put(key, value);
-            }
-        });
-        instances.sort(Comparator.comparing(entry -> entry.getKey().toString()));
+        legacy.entries()
+              .forEach((key, value) -> {
+                           switch (key) {
+                               case AetherKey.NodeArtifactKey artifactKey when value instanceof AetherValue.NodeArtifactValue artifactValue -> instances.add(Map.entry(artifactKey,
+                                                                                                                                                                       artifactValue));
+                               case AetherKey.NodeArtifactKey _ -> {}
+                               case AetherKey.SliceDesiredKey _, AetherKey.SliceObservedKey _, AetherKey.DeploymentApplyKey _, AetherKey.NodeDepartureKey _, AetherKey.ArtifactJudgmentKey _ -> {}
+                               default -> projected.put(key, value);
+                           }
+                       });
+        instances.sort(Comparator.comparing(entry -> entry.getKey()
+                                                          .toString()));
         var counter = 0L;
 
         for (var instance : instances) {
@@ -143,6 +155,7 @@ final class EquivalenceOracle {
             if (!state.equals("ACTIVE") && !state.equals("LOADED")) {
                 continue;
             }
+
             var generation = new AetherValue.Generation(leader.viewSequence(), ++counter);
             var node = instance.getKey().nodeId();
             var artifact = instance.getKey().artifact();
@@ -173,7 +186,9 @@ final class EquivalenceOracle {
     /// D-8 (e), first control: one projected instance removed; red unless a Submit puts a desired key for it. A quiescent point with no instance
     /// (after an undeploy) has nothing to remove, so the under-placement is planted instead: an unowned target of one instance for a control
     /// artifact, which must draw a goal Submit for that artifact.
-    private static boolean underPlacementFires(Map<AetherKey, AetherValue> projection, LeaderValue leader, Set<NodeId> liveCores) {
+    private static boolean underPlacementFires(Map<AetherKey, AetherValue> projection,
+                                               LeaderValue leader,
+                                               Set<NodeId> liveCores) {
         var victim = projection.keySet()
                                .stream()
                                .filter(AetherKey.SliceDesiredKey.class::isInstance)
@@ -184,25 +199,30 @@ final class EquivalenceOracle {
 
         victim.ifPresentOrElse(key -> {
                                    underPlaced.remove(key);
-                                   underPlaced.remove(AetherKey.SliceObservedKey.sliceObservedKey(key.nodeId(), key.artifact()));
+                                   underPlaced.remove(AetherKey.SliceObservedKey.sliceObservedKey(key.nodeId(),
+                                                                                                  key.artifact()));
                                },
                                () -> underPlaced.put(AetherKey.SliceTargetKey.sliceTargetKey(UNDER_PLACED.base()),
-                                                     AetherValue.SliceTargetValue.sliceTargetValue(UNDER_PLACED.version(), 1)));
+                                                     AetherValue.SliceTargetValue.sliceTargetValue(UNDER_PLACED.version(),
+                                                                                                   1)));
 
         return run(underPlaced, leader, liveCores).stream()
-                                                  .anyMatch(submit -> submit.mutatedKeys()
-                                                                            .stream()
-                                                                            .anyMatch(key -> key.startsWith("SliceDesiredKey") && key.contains(artifact.asString())));
+                  .anyMatch(submit -> submit.mutatedKeys()
+                                            .stream()
+                                            .anyMatch(key -> key.startsWith("SliceDesiredKey") && key.contains(artifact.asString())));
     }
 
     /// D-8 (e), second control: one stray observed ACTIVE row with no desired key (an artifact no target names) on the first live core; red unless
     /// a Submit names that row's node and artifact (adopt or condemn).
-    private static boolean strayFires(Map<AetherKey, AetherValue> projection, LeaderValue leader, Set<NodeId> liveCores) {
+    private static boolean strayFires(Map<AetherKey, AetherValue> projection,
+                                      LeaderValue leader,
+                                      Set<NodeId> liveCores) {
         var host = liveCores.stream().min(Comparator.comparing(NodeId::id));
 
         if (host.isEmpty()) {
             return false;
         }
+
         var withStray = new HashMap<>(projection);
 
         withStray.put(AetherKey.SliceObservedKey.sliceObservedKey(host.get(), STRAY),
@@ -218,9 +238,9 @@ final class EquivalenceOracle {
         var hostId = host.get().id();
 
         return run(withStray, leader, liveCores).stream()
-                                                .anyMatch(submit -> submit.mutatedKeys()
-                                                                          .stream()
-                                                                          .anyMatch(key -> key.contains(hostId) && key.contains(STRAY.asString())));
+                  .anyMatch(submit -> submit.mutatedKeys()
+                                            .stream()
+                                            .anyMatch(key -> key.contains(hostId) && key.contains(STRAY.asString())));
     }
 
     /// Activate, `Rebuild(projection)`, then drain the mailbox until the first `Reconcile` has run and the `Flush` after it has run (D-8 (b)).
@@ -240,11 +260,14 @@ final class EquivalenceOracle {
                 if (reconciled) {
                     break;
                 }
+
                 mailbox.add(new ClusterInput.Reconcile());
             }
+
             if (++guard > DRAIN_GUARD) {
                 throw new AssertionError("oracle: the pure cluster FSM keeps queueing work for itself");
             }
+
             var input = mailbox.pollFirst();
             var stepped = fsm.step(state, input);
 
@@ -252,9 +275,11 @@ final class EquivalenceOracle {
             if (input instanceof ClusterInput.Reconcile) {
                 reconciled = true;
             }
+
             if (input instanceof ClusterInput.Flush && reconciled) {
                 flushedAfterReconcile = true;
             }
+
             for (var effect : stepped.effects()) {
                 switch (effect) {
                     case ClusterEffect.Enqueue enqueue -> mailbox.addLast(enqueue.input());
@@ -273,25 +298,42 @@ final class EquivalenceOracle {
                               submit.transaction()
                                     .mutations()
                                     .stream()
-                                    .map(mutation -> mutation.key().getClass().getSimpleName() + ":" + mutation.key())
+                                    .map(mutation -> mutation.key()
+                                                             .getClass()
+                                                             .getSimpleName() + ":" + mutation.key())
                                     .toList());
     }
 
-    private static ClusterInput.Snapshot snapshot(Map<AetherKey, AetherValue> projection, LeaderValue leader, Set<NodeId> liveCores) {
+    private static ClusterInput.Snapshot snapshot(Map<AetherKey, AetherValue> projection,
+                                                  LeaderValue leader,
+                                                  Set<NodeId> liveCores) {
         var entries = projection.entrySet()
                                 .stream()
-                                .sorted(Comparator.comparing(entry -> entry.getKey().toString()))
-                                .map(entry -> new ClusterInput.KvPut(entry.getKey(), entry.getValue()))
+                                .sorted(Comparator.comparing(entry -> entry.getKey()
+                                                                           .toString()))
+                                .map(entry -> new ClusterInput.KvPut(entry.getKey(),
+                                                                     entry.getValue()))
                                 .toList();
         var admissions = new HashMap<NodeId, Admission>();
 
         liveCores.forEach(node -> admissions.put(node, Admission.UNKNOWN));
 
-        return ClusterInput.Snapshot.snapshot(entries, seams(liveCores), admissions, Option.some(leader), ClusterInput.DeadSet.NONE);
+        return ClusterInput.Snapshot.snapshot(entries,
+                                              seams(liveCores),
+                                              admissions,
+                                              Option.some(leader),
+                                              ClusterInput.DeadSet.NONE);
     }
 
     private static Seams seams(Set<NodeId> liveCores) {
-        return Seams.seams(liveCores, liveCores, Set.of(), Option.some(liveCores), Option.some(liveCores), Set.of(), Map.of(), liveCores);
+        return Seams.seams(liveCores,
+                           liveCores,
+                           Set.of(),
+                           Option.some(liveCores),
+                           Option.some(liveCores),
+                           Set.of(),
+                           Map.of(),
+                           liveCores);
     }
 
     /// The production settings shape (Fsm2System.clusterSettings) with the default timeouts: ALL_OR_NOTHING, default SWIM, no suspicion lag.
@@ -311,14 +353,17 @@ final class EquivalenceOracle {
 
     /// D-8 (d): the allow-list is frozen before the first run. One line per entry: `<CHANGE row> <SubmitKind> <regex over "KeyClass:key">`.
     static List<AllowEntry> allowList() {
-        var stream = Objects.requireNonNull(EquivalenceOracle.class.getResourceAsStream(ALLOW_LIST), ALLOW_LIST + " is checked in");
+        var stream = Objects.requireNonNull(EquivalenceOracle.class.getResourceAsStream(ALLOW_LIST),
+                                            ALLOW_LIST + " is checked in");
 
         try (var reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) {
             return reader.lines()
                          .map(String::strip)
                          .filter(line -> !line.isEmpty() && !line.startsWith("#"))
                          .map(line -> line.split("\\s+", 3))
-                         .map(parts -> new AllowEntry(parts[0], parts[1], Pattern.compile(parts[2])))
+                         .map(parts -> new AllowEntry(parts[0],
+                                                      parts[1],
+                                                      Pattern.compile(parts[2])))
                          .toList();
         } catch (IOException e) {
             throw new UncheckedIOException(e);

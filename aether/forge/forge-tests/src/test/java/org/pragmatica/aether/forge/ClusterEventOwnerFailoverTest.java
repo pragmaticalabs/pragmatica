@@ -13,21 +13,23 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+
 
 /// #1640 live path: cluster events raised while the cluster-events partition's owner dies are not lost.
 ///
@@ -77,24 +79,18 @@ class ClusterEventOwnerFailoverTest {
     @Test
     void eventsRaisedAcrossOwnerDeath_areLandedHeldOrCounted_neverSilentlyLost() {
         startSettledCluster();
-
         var ownerId = owner().unwrap();
         var phase = raiseWhileKilling(ownerId, "held");
         var producers = Set.copyOf(phase.producers());
 
-        await().pollDelay(Duration.ofSeconds(10))
-               .atMost(Duration.ofSeconds(15))
-               .until(() -> true);
-
+        await().pollDelay(Duration.ofSeconds(10)).atMost(Duration.ofSeconds(15)).until(() -> true);
         var landed = landedTags();
         var accepted = sum(producers, "accepted");
         // held BEFORE delivered: an event settling between the two reads then counts in both (an overcount, safe for
         // an upper bound), never in neither (an undercount that could go falsely red).
         var held = sum(producers, "held");
         var delivered = sum(producers, "delivered");
-        var dropped = producers.stream()
-                               .mapToLong(id -> droppedOn(id))
-                               .sum();
+        var dropped = producers.stream().mapToLong(id -> droppedOn(id)).sum();
 
         report(ownerId, "-", producers, phase.sent(), landed, dropped);
         log.info("FAILOVER-PROBE accepted={} delivered={} held={} deliveredButNotInLog={}",
@@ -102,7 +98,6 @@ class ClusterEventOwnerFailoverTest {
                  delivered,
                  held,
                  delivered - landed.size());
-
         // The producers also raise their own events (for example on the owner's death), so accepted >= sent.
         assertThat(accepted).as("every raised event reached redelivery").isGreaterThanOrEqualTo(phase.sent().size());
         assertThat(dropped).as("nothing was given up on inside the horizon").isZero();
@@ -112,25 +107,28 @@ class ClusterEventOwnerFailoverTest {
         // landed, up to `delivered + held`, never more (#1824: CI reds reconciled exactly to delivered + held =
         // accepted, with every tag landed once). That every sent tag is in the log is asserted below, after the held
         // events settle, not here.
-        assertThat((long) landed.size()).as("the log holds no more than delivered + held").isLessThanOrEqualTo(delivered + held);
+        assertThat((long) landed.size()).as("the log holds no more than delivered + held")
+                  .isLessThanOrEqualTo(delivered + held);
         // #1653, the retry drivers. Since #1555 re-places the dead owner, a retry count above zero pins "held events
         // are re-sent, by AetherNode's 1 s tick OR the new owner's ownership-put drain", not the tick alone. The tick
         // and the drain are pinned separately in the assembly by ClusterEventRedeliveryWiringTest, and behaviourally
         // by the Ember mutation arms (NO-TICK, NO-DRAIN-ROUTE) on a head without #1555.
-        assertThat(sum(producers, "retried")).as("held events were re-sent, by the 1 s tick or the new owner's drain").isPositive();
+        assertThat(sum(producers, "retried")).as("held events were re-sent, by the 1 s tick or the new owner's drain")
+                  .isPositive();
         // The relaxed bound above must not hide a redelivery stall: held events are re-sent and SETTLE, and then every
         // tag sent is in the log exactly once (#1824).
-        await().atMost(LANDING)
-               .pollInterval(Duration.ofSeconds(2))
-               .until(() -> sum(producers, "held") == 0L);
+        await().atMost(LANDING).pollInterval(Duration.ofSeconds(2)).until(() -> sum(producers, "held") == 0L);
         // The reader is EVENTUAL (min-sync 1): wait for the log to catch up rather than read it once.
         await().atMost(LANDING)
-               .pollInterval(Duration.ofSeconds(2))
-               .until(() -> landedTags().keySet().containsAll(phase.sent()));
+             .pollInterval(Duration.ofSeconds(2))
+             .until(() -> landedTags().keySet()
+                                    .containsAll(phase.sent()));
         var settled = landedTags();
 
-        assertThat(settled.values()).as("after the held events settled, no tag landed twice as read").allMatch(count -> count == 1L);
-        assertThat(settled.keySet()).as("after the held events settled, every sent tag landed").containsAll(phase.sent());
+        assertThat(settled.values()).as("after the held events settled, no tag landed twice as read")
+                  .allMatch(count -> count == 1L);
+        assertThat(settled.keySet()).as("after the held events settled, every sent tag landed")
+                  .containsAll(phase.sent());
     }
 
     /// The full #1640 property, now that #1555 re-places a dead owner: events raised across the owner's death and then
@@ -138,43 +136,36 @@ class ClusterEventOwnerFailoverTest {
     @Test
     void eventsRaisedAcrossOwnerAndLeaderDeaths_eachLandOnceOrAreCountedDropped() {
         startSettledCluster();
-
         var ownerId = owner().unwrap();
         var phase1 = raiseWhileKilling(ownerId, "phase1");
 
-        await().atMost(SETTLE).until(() -> owner().isPresent() && cluster.currentLeader()
-                                                                         .filter(id -> !id.equals(ownerId))
-                                                                         .isPresent());
-
-        var leaderId = cluster.currentLeader()
-                              .unwrap();
+        await().atMost(SETTLE)
+             .until(() -> owner().isPresent() && cluster.currentLeader()
+                                                        .filter(id -> !id.equals(ownerId))
+                                                        .isPresent());
+        var leaderId = cluster.currentLeader().unwrap();
         var phase2 = raiseWhileKilling(leaderId, "phase2");
         var sent = concat(phase1.sent(), phase2.sent());
         var producers = Set.copyOf(concat(phase1.producers(), phase2.producers()));
 
-        await().atMost(LANDING)
-               .pollInterval(Duration.ofSeconds(2))
-               .until(() -> allWaitingDrained(producers));
-
+        await().atMost(LANDING).pollInterval(Duration.ofSeconds(2)).until(() -> allWaitingDrained(producers));
         var landed = landedTags();
-        var dropped = producers.stream()
-                               .mapToLong(id -> droppedOn(id))
-                               .sum();
+        var dropped = producers.stream().mapToLong(id -> droppedOn(id)).sum();
 
         report(ownerId, leaderId, producers, sent, landed, dropped);
-
         assertThat(landed.values()).as("no tag landed twice as read").allMatch(count -> count == 1L);
         assertThat(landed.keySet()).as("every landed tag was sent").isSubsetOf(Set.copyOf(sent));
         assertThat((long) landed.size() + dropped).as("sent = landed + counted drops (sent %d, landed %d, dropped %d)",
                                                       sent.size(),
                                                       landed.size(),
                                                       dropped)
-                                                  .isEqualTo(sent.size());
+                  .isEqualTo(sent.size());
     }
 
     private void startSettledCluster() {
         LifecycleAwait.settled("start cluster-event failover cluster", cluster, cluster.start());
-        await().atMost(SETTLE).until(() -> owner().isPresent() && cluster.currentLeader().isPresent());
+        await().atMost(SETTLE).until(() -> owner().isPresent() && cluster.currentLeader()
+                                                                         .isPresent());
         await().atMost(SETTLE).until(this::clusterEventsReadable);
         // Past SWIM's cold-boot phase, in which a never-HEALTHY peer's death is reported as UNKNOWN, not FAULTY.
         await().pollDelay(COLD_BOOT_MARGIN).atMost(COLD_BOOT_MARGIN.plusSeconds(5)).until(() -> true);
@@ -199,8 +190,7 @@ class ClusterEventOwnerFailoverTest {
     /// Two nodes that are neither the victim nor the leader raise tagged events every 50 ms for 12 s; the victim
     /// is killed 3 s in.
     private Phase raiseWhileKilling(String victim, String phase) {
-        var leader = cluster.currentLeader()
-                            .or("");
+        var leader = cluster.currentLeader().or("");
         var producers = cluster.allNodes()
                                .stream()
                                .map(node -> node.self()
@@ -215,24 +205,30 @@ class ClusterEventOwnerFailoverTest {
         var start = System.nanoTime();
         var killed = false;
 
-        log.info("FAILOVER-PROBE {}: victim={} leader={} owner={} producers={}", phase, victim, leader, owner().or("?"), producers);
+        log.info("FAILOVER-PROBE {}: victim={} leader={} owner={} producers={}",
+                 phase,
+                 victim,
+                 leader,
+                 owner().or("?"),
+                 producers);
         while (System.nanoTime() - start < Duration.ofSeconds(12).toNanos()) {
             if (!killed && System.nanoTime() - start >= Duration.ofSeconds(3).toNanos()) {
                 LifecycleAwait.nodeSettled("kill " + victim, cluster, cluster.killNode(victim));
                 killed = true;
             }
+
             for (var producer : producers) {
                 var tag = TAG + phase + "-" + sequence.incrementAndGet();
 
                 cluster.getNode(producer)
                        .onPresent(node -> node.eventAggregator()
-                                              .emitLocal(new ClusterEvent.AlertInjected(clocks.get(producer)
-                                                                                              .now(),
+                                              .emitLocal(new ClusterEvent.AlertInjected(clocks.get(producer).now(),
                                                                                         ClusterEvent.Severity.INFO,
                                                                                         tag,
                                                                                         Map.of("probe", tag))));
                 sent.add(tag);
             }
+
             sleep(50);
         }
 
@@ -241,12 +237,12 @@ class ClusterEventOwnerFailoverTest {
 
     private Option<String> owner() {
         return Option.from(cluster.allNodes()
-                                                      .stream()
-                                                      .filter(node -> node.eventAggregator()
-                                                                          .isClusterEventsOwner())
-                                                      .map(node -> node.self()
-                                                                       .id())
-                                                      .findFirst());
+                                  .stream()
+                                  .filter(node -> node.eventAggregator()
+                                                      .isClusterEventsOwner())
+                                  .map(node -> node.self()
+                                                   .id())
+                                  .findFirst());
     }
 
     private boolean clusterEventsReadable() {
@@ -289,7 +285,8 @@ class ClusterEventOwnerFailoverTest {
                       .map(events -> events.stream()
                                            .filter(event -> event.summary()
                                                                  .startsWith(TAG))
-                                           .collect(Collectors.groupingBy(ClusterEvent::summary, Collectors.counting())))
+                                           .collect(Collectors.groupingBy(ClusterEvent::summary,
+                                                                          Collectors.counting())))
                       .or(Map.of());
     }
 
@@ -299,12 +296,10 @@ class ClusterEventOwnerFailoverTest {
                         List<String> sent,
                         Map<String, Long> landed,
                         long dropped) {
-        var reader = cluster.allNodes()
-                            .getFirst()
-                            .eventAggregator();
+        var reader = cluster.allNodes().getFirst().eventAggregator();
 
         log.info("FAILOVER-PROBE RESULT: killedOwner={} killedLeader={} sent={} landed={} dropped={} "
-                 + "duplicatesRemovedOnRead={}",
+                + "duplicatesRemovedOnRead={}",
                  ownerId,
                  leaderId,
                  sent.size(),

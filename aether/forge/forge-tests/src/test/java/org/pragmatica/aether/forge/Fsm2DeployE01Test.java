@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
 import java.net.URI;
@@ -11,13 +10,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
@@ -33,10 +25,19 @@ import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.lang.Option;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
 
 /// E-01 (phase-3 design 9.3): deploy one slice with three instances on three cores under FSM2, and read the result **from the KV**, not from a
 /// status route: the blueprint's outcome is SUCCEEDED and stays so, the apply record has been completed, the leader holds three ACTIVE goals, and
@@ -71,7 +72,6 @@ class Fsm2DeployE01Test {
     private static final double SPEC_LEADER_FLOOR = 4;
     private static final double SPEC_LEADER_TRANSACTIONS = 2 + 2 * SLICES * NODES;
     private static final double SPEC_NODE_ROUNDS = NODES * 4;
-
     private static final String EXPECTED_WARNS = "/fsm2/expected-warns-e01.txt";
 
     private final HttpOperations http = jdkHttpOperations();
@@ -84,7 +84,10 @@ class Fsm2DeployE01Test {
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "e01");
         cluster.withDeploymentEngine(DeploymentEngine.FSM2);
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
-        await().atMost(WAIT_TIMEOUT).pollInterval(Duration.ofMillis(500)).until(() -> cluster.currentLeader().isPresent());
+        await().atMost(WAIT_TIMEOUT)
+             .pollInterval(Duration.ofMillis(500))
+             .until(() -> cluster.currentLeader()
+                                 .isPresent());
         await().atMost(WAIT_TIMEOUT).pollInterval(Duration.ofMillis(500)).until(this::allNodesHealthy);
     }
 
@@ -100,33 +103,44 @@ class Fsm2DeployE01Test {
     void deployOneSliceByThree_succeedsOnce_threeGoals_threeCurrentActiveRows() {
         var artifact = Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap();
         var id = BlueprintId.blueprintId(BLUEPRINT_ID).unwrap();
-
         var version = deployOnce(artifact, id);
-
         var kv = leader().kvStore();
 
-        assertThat(kv.get(AetherKey.DeploymentApplyKey.deploymentApplyKey(id)).isEmpty()).as("SUCCEEDED completes the apply record (R-4.1.5)").isTrue();
+        assertThat(kv.get(AetherKey.DeploymentApplyKey.deploymentApplyKey(id)).isEmpty()).as("SUCCEEDED completes the apply record (R-4.1.5)")
+                  .isTrue();
         assertThat(activeGoals(artifact)).as("goals ACTIVE x 3").isEqualTo(NODES);
         assertThat(activeRows(artifact)).as("3 ACTIVE rows").isEqualTo(NODES);
-        cluster.allNodes().forEach(node -> assertThat(currentRow(node, artifact)).as("a current row of " + node.self().id()).isTrue());
+        cluster.allNodes()
+               .forEach(node -> assertThat(currentRow(node, artifact)).as("a current row of " + node.self().id())
+                                          .isTrue());
         var leaderApplies = leaderApplies();
         var leaderTransactions = submitted("cluster");
         var nodeRounds = submitted("node");
 
         System.out.printf("E01 outcomeVersion=%d leaderApplies=%.0f (spec %.0f + drain splits, measured) leaderTransactions=%.0f (spec %.0f) nodeRounds=%.0f (spec %.0f)%n",
-                          version, leaderApplies, SPEC_LEADER_FLOOR, leaderTransactions, SPEC_LEADER_TRANSACTIONS, nodeRounds, SPEC_NODE_ROUNDS);
-        assertThat(nodeRounds).as("design 7.1: 4 rounds per instance, counted at submission").isLessThanOrEqualTo(SPEC_NODE_ROUNDS);
-        assertThat(sensorViolations()).as("E-01 against fsm2/expected-warns-e01.txt and the O6 metrics (no fault: silent)").isEmpty();
+                          version,
+                          leaderApplies,
+                          SPEC_LEADER_FLOOR,
+                          leaderTransactions,
+                          SPEC_LEADER_TRANSACTIONS,
+                          nodeRounds,
+                          SPEC_NODE_ROUNDS);
+        assertThat(nodeRounds).as("design 7.1: 4 rounds per instance, counted at submission")
+                  .isLessThanOrEqualTo(SPEC_NODE_ROUNDS);
+        assertThat(sensorViolations()).as("E-01 against fsm2/expected-warns-e01.txt and the O6 metrics (no fault: silent)")
+                  .isEmpty();
     }
 
     /// 7.1 as restated by P3-G, the leader's assertion: exactly `2 + 2·S·I` transactions (a duplicate target batch makes it one more), and
     /// at least the 4 causal applies. Drain splits are timing-dependent and measured (O4, P3-H), not bounded here. Enabled at P3-G on 11 of 11 runs.
     @Test
     void leaderRounds_withinTheSpecBudget() {
-        deployOnce(Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap(), BlueprintId.blueprintId(BLUEPRINT_ID).unwrap());
-
-        assertThat(submitted("cluster")).as("design 7.1: leader, clean deploy, 2 + 2*S*I transactions").isEqualTo(SPEC_LEADER_TRANSACTIONS);
-        assertThat(leaderApplies()).as("design 7.1: leader, clean deploy, at least the 4 causal stages").isGreaterThanOrEqualTo(SPEC_LEADER_FLOOR);
+        deployOnce(Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap(),
+                   BlueprintId.blueprintId(BLUEPRINT_ID).unwrap());
+        assertThat(submitted("cluster")).as("design 7.1: leader, clean deploy, 2 + 2*S*I transactions")
+                  .isEqualTo(SPEC_LEADER_TRANSACTIONS);
+        assertThat(leaderApplies()).as("design 7.1: leader, clean deploy, at least the 4 causal stages")
+                  .isGreaterThanOrEqualTo(SPEC_LEADER_FLOOR);
     }
 
     private long deployedVersion = -1;
@@ -136,10 +150,14 @@ class Fsm2DeployE01Test {
         if (deployedVersion < 0) {
             deployBlueprint();
             await().atMost(DEPLOY_TIMEOUT).pollInterval(Duration.ofMillis(250)).until(() -> succeeded(id));
-            await().atMost(DEPLOY_TIMEOUT).pollInterval(Duration.ofMillis(250)).until(() -> activeRows(artifact) == NODES);
+            await().atMost(DEPLOY_TIMEOUT)
+                 .pollInterval(Duration.ofMillis(250))
+                 .until(() -> activeRows(artifact) == NODES);
             var version = outcomeVersion(id);
 
-            await().during(Duration.ofSeconds(8)).atMost(Duration.ofSeconds(12)).until(() -> succeeded(id) && outcomeVersion(id) == version);
+            await().during(Duration.ofSeconds(8))
+                 .atMost(Duration.ofSeconds(12))
+                 .until(() -> succeeded(id) && outcomeVersion(id) == version);
             deployedVersion = version;
         }
 
@@ -155,19 +173,30 @@ class Fsm2DeployE01Test {
 
         warnLines.forEach(line -> System.out.println("E01 warn: " + line));
         warnLines.stream()
-                 .filter(line -> expectations.stream().filter(e -> e.kind().equals("warn")).noneMatch(e -> e.matches(line)))
+                 .filter(line -> expectations.stream()
+                                             .filter(e -> e.kind()
+                                                           .equals("warn"))
+                                             .noneMatch(e -> e.matches(line)))
                  .forEach(line -> violations.add("WARN not on the expected list: " + line));
         for (var entry : expectations) {
             var count = switch (entry.kind()) {
                 case "warn" -> warnLines.stream().filter(entry::matches).count();
-                case "line" -> cluster.allNodes().stream().mapToLong(node -> sensors.sensorLines(node.self().id(), entry.name()).size()).sum();
-                default -> (long) cluster.allNodes().stream().mapToDouble(node -> Fsm2Sensors.armCount(node, entry.name())).sum();
+                case "line" -> cluster.allNodes().stream().mapToLong(node -> sensors.sensorLines(node.self().id(),
+                                                                                                 entry.name())
+                                                                                    .size()).sum();
+                default -> (long) cluster.allNodes().stream().mapToDouble(node -> Fsm2Sensors.armCount(node,
+                                                                                                       entry.name())).sum();
             };
 
             if (!entry.admits(count)) {
-                violations.add("%s %s: %d, expected %d..%d".formatted(entry.kind(), entry.name(), count, entry.min(), entry.max()));
+                violations.add("%s %s: %d, expected %d..%d".formatted(entry.kind(),
+                                                                      entry.name(),
+                                                                      count,
+                                                                      entry.min(),
+                                                                      entry.max()));
             }
         }
+
         for (var arm : List.of("lost", "settled_unknown")) {
             var count = cluster.allNodes().stream().mapToDouble(node -> Fsm2Sensors.armCount(node, arm)).sum();
 
@@ -175,6 +204,7 @@ class Fsm2DeployE01Test {
                 violations.add("submissions_total{outcome=%s}: %.0f, expected 0".formatted(arm, count));
             }
         }
+
         var closed = cluster.allNodes().stream().mapToDouble(this::closedInputs).sum();
 
         if (closed != 0.0) {
@@ -196,38 +226,58 @@ class Fsm2DeployE01Test {
     }
 
     private boolean succeeded(BlueprintId id) {
-        return leader().blueprintService().outcome(id).map(outcome -> outcome.status() == DeploymentOutcomeStatus.SUCCEEDED).or(false);
+        return leader().blueprintService()
+                     .outcome(id)
+                     .map(outcome -> outcome.status() == DeploymentOutcomeStatus.SUCCEEDED)
+                     .or(false);
     }
 
     private long outcomeVersion(BlueprintId id) {
-        return leader().blueprintService().outcome(id).map(outcome -> outcome.outcomeVersion()).or(-1L);
+        return leader().blueprintService()
+                     .outcome(id)
+                     .map(outcome -> outcome.outcomeVersion())
+                     .or(-1L);
     }
 
     private long activeRows(Artifact artifact) {
-        return cluster.allNodes().stream().filter(node -> row(node, artifact).map(row -> row.state() == SliceObservedState.ACTIVE).or(false)).count();
+        return cluster.allNodes()
+                      .stream()
+                      .filter(node -> row(node, artifact).map(row -> row.state() == SliceObservedState.ACTIVE)
+                                         .or(false))
+                      .count();
     }
 
     private long activeGoals(Artifact artifact) {
         return cluster.allNodes()
                       .stream()
                       .filter(node -> leader().kvStore()
-                                              .getTyped(AetherKey.SliceDesiredKey.sliceDesiredKey(node.self(), artifact), SliceDesiredValue.class)
-                                              .map(goal -> goal.goal() == SliceGoal.ACTIVE)
-                                              .or(false))
+                                            .getTyped(AetherKey.SliceDesiredKey.sliceDesiredKey(node.self(),
+                                                                                                artifact),
+                                                      SliceDesiredValue.class)
+                                            .map(goal -> goal.goal() == SliceGoal.ACTIVE)
+                                            .or(false))
                       .count();
     }
 
     private Option<SliceObservedValue> row(AetherNode node, Artifact artifact) {
-        return leader().kvStore().getTyped(AetherKey.SliceObservedKey.sliceObservedKey(node.self(), artifact), SliceObservedValue.class);
+        return leader().kvStore()
+                     .getTyped(AetherKey.SliceObservedKey.sliceObservedKey(node.self(),
+                                                                           artifact),
+                               SliceObservedValue.class);
     }
 
     /// A row is current when it names a known process: the boot token of the node's own process is non-zero (C8).
     private boolean currentRow(AetherNode node, Artifact artifact) {
-        return row(node, artifact).map(row -> row.incarnation().bootToken() != 0L).or(false);
+        return row(node, artifact).map(row -> row.incarnation()
+                                                 .bootToken() != 0L)
+                  .or(false);
     }
 
     private double submitted(String fsm) {
-        return cluster.allNodes().stream().mapToDouble(node -> Fsm2Sensors.armCount(node, fsm, "submitted")).sum();
+        return cluster.allNodes()
+                      .stream()
+                      .mapToDouble(node -> Fsm2Sensors.armCount(node, fsm, "submitted"))
+                      .sum();
     }
 
     /// The leader's `apply(List)` calls, summed over the nodes (only the leader's cluster FSM submits).
@@ -246,11 +296,18 @@ class Fsm2DeployE01Test {
     }
 
     private AetherNode leader() {
-        return cluster.currentLeader().flatMap(cluster::getNode).or(() -> cluster.allNodes().getFirst());
+        return cluster.currentLeader()
+                      .flatMap(cluster::getNode)
+                      .or(() -> cluster.allNodes()
+                                       .getFirst());
     }
 
     private boolean allNodesHealthy() {
-        return cluster.status().nodes().stream().allMatch(node -> httpGet(node.mgmtPort(), "/api/v1/health").contains("\"quorum\":true"));
+        return cluster.status()
+                      .nodes()
+                      .stream()
+                      .allMatch(node -> httpGet(node.mgmtPort(),
+                                                "/api/v1/health").contains("\"quorum\":true"));
     }
 
     private void deployBlueprint() {
@@ -269,14 +326,23 @@ class Fsm2DeployE01Test {
                                        .timeout(Duration.ofSeconds(10))
                                        .build());
 
-        assertThat(response).describedAs("SETUP: blueprint deployment").doesNotContain("\"error\"").contains("\"status\":\"applied\"");
+        assertThat(response).describedAs("SETUP: blueprint deployment")
+                  .doesNotContain("\"error\"")
+                  .contains("\"status\":\"applied\"");
     }
 
     private String httpGet(int port, String path) {
-        return send(HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path)).GET().timeout(Duration.ofSeconds(10)).build());
+        return send(HttpRequest.newBuilder()
+                               .uri(URI.create("http://localhost:" + port + path))
+                               .GET()
+                               .timeout(Duration.ofSeconds(10))
+                               .build());
     }
 
     private String send(HttpRequest request) {
-        return http.sendString(request).await().map(HttpResult::body).or("{\"error\":\"request failed\"}");
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or("{\"error\":\"request failed\"}");
     }
 }

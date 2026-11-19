@@ -2,8 +2,16 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
+
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.time.Duration;
+
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Result;
+import org.pragmatica.aether.ember.EmberCluster;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -11,19 +19,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.lang.Result;
 
-import java.net.URI;
-import java.net.http.HttpRequest;
-import java.time.Duration;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
-import org.pragmatica.aether.ember.EmberCluster;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
 
 /// Proves #198 §8.2 deprecation/sunset/successor response headers and §11.3 version-registry
 /// introspection reach the wire.
@@ -54,11 +55,8 @@ class SliceVersionLifecycleTest {
     void setUp() {
         cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "svl");
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
+                                                                                    .isPresent());
         deployVersionedSlice();
     }
 
@@ -75,8 +73,8 @@ class SliceVersionLifecycleTest {
             assertThat(result.statusCode()).isEqualTo(200);
             assertThat(result.header("Deprecation").or("")).isEqualTo("true");
             assertThat(result.header("Sunset").or("")).isEqualTo("Thu, 31 Dec 2026 00:00:00 GMT");
-            assertThat(result.header("Link").or(""))
-                .isEqualTo("</api/orders/v2/" + ITEM_ID + ">; rel=\"successor-version\"");
+            assertThat(result.header("Link").or("")).isEqualTo("</api/orders/v2/" + ITEM_ID
+                                                              + ">; rel=\"successor-version\"");
         });
     }
 
@@ -126,22 +124,19 @@ class SliceVersionLifecycleTest {
     /// assertions read, so the coordinate and the fields come from one snapshot.
     private String awaitVersionsFromHostingNode() {
         return await().atMost(WAIT_TIMEOUT)
-                      .pollInterval(POLL_INTERVAL)
-                      .alias("no node's LOCAL /api/v1/versions named " + TEST_ARTIFACT
-                             + " — only the nodes hosting the slice hold that registry, so ask every node, "
-                             + "never one node twice; the quoted input below is every management port's body "
-                             + "joined by ' | '")
-                      .until(this::hostingNodeVersionsBody, body -> body.contains(TEST_ARTIFACT));
+                    .pollInterval(POLL_INTERVAL)
+                    .alias("no node's LOCAL /api/v1/versions named " + TEST_ARTIFACT
+                          + " — only the nodes hosting the slice hold that registry, so ask every node, "
+                          + "never one node twice; the quoted input below is every management port's body "
+                          + "joined by ' | '")
+                    .until(this::hostingNodeVersionsBody,
+                           body -> body.contains(TEST_ARTIFACT));
     }
 
     /// The body of the first management port whose `/versions` names the deployed slice; when no port
     /// does, every body joined, so a timeout renders the real responses rather than an empty string.
     private String hostingNodeVersionsBody() {
-        var bodies = cluster.status()
-                            .nodes()
-                            .stream()
-                            .map(node -> versionsBody(node.mgmtPort()))
-                            .toList();
+        var bodies = cluster.status().nodes().stream().map(node -> versionsBody(node.mgmtPort())).toList();
 
         return bodies.stream()
                      .filter(body -> body.contains(TEST_ARTIFACT))
@@ -167,26 +162,27 @@ class SliceVersionLifecycleTest {
 
     private void deployVersionedSlice() {
         var deployResponse = deploy(TEST_ARTIFACT);
-        assertThat(deployResponse)
-            .describedAs("Deployment response")
-            .doesNotContain("\"error\"")
-            .contains("\"status\":\"applied\"");
 
+        assertThat(deployResponse).describedAs("Deployment response")
+                  .doesNotContain("\"error\"")
+                  .contains("\"status\":\"applied\"");
         await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(() -> {
-                   if (sliceHasFailed()) {
-                       throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
-                   }
-               })
-               .until(this::v1RouteServes);
+             .pollInterval(POLL_INTERVAL)
+             .failFast(() -> {
+                           if (sliceHasFailed()) {
+                               throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
+                           }
+                       })
+             .until(this::v1RouteServes);
     }
 
     private boolean v1RouteServes() {
         if (cluster.getAvailableAppHttpPorts().isEmpty()) {
             return false;
         }
-        return http.sendString(getRequest(appPort(), "/api/orders/v1/" + ITEM_ID))
+
+        return http.sendString(getRequest(appPort(),
+                                          "/api/orders/v1/" + ITEM_ID))
                    .await()
                    .map(result -> result.statusCode() == 200)
                    .or(false);
@@ -194,7 +190,9 @@ class SliceVersionLifecycleTest {
 
     private int appPort() {
         var ports = cluster.getAvailableAppHttpPorts();
+
         assertThat(ports).describedAs("available app HTTP ports").isNotEmpty();
+
         return ports.getFirst();
     }
 
@@ -215,20 +213,24 @@ class SliceVersionLifecycleTest {
             instances = 3
             """.formatted(BLUEPRINT_ID, artifact);
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
+
         return postBlueprintWithRetry(leaderPort, blueprint);
     }
 
     private String postBlueprintWithRetry(int port, String body) {
         String lastResponse = null;
+
         for (int attempt = 1; attempt <= 3; attempt++) {
             lastResponse = httpRequestBlueprint(port, body);
             if (!lastResponse.contains("\"error\"")) {
                 return lastResponse;
             }
+
             if (attempt < 3) {
                 sleepQuietly();
             }
         }
+
         return lastResponse;
     }
 
@@ -247,6 +249,7 @@ class SliceVersionLifecycleTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -256,10 +259,15 @@ class SliceVersionLifecycleTest {
     private boolean sliceHasFailed() {
         return cluster.slicesStatus()
                       .stream()
-                      .anyMatch(s -> s.artifact().equals(TEST_ARTIFACT) && s.state().equals("FAILED"));
+                      .anyMatch(s -> s.artifact()
+                                      .equals(TEST_ARTIFACT) && s.state()
+                                                                 .equals("FAILED"));
     }
 
     private int anyMgmtPort() {
-        return cluster.status().nodes().getFirst().mgmtPort();
+        return cluster.status()
+                      .nodes()
+                      .getFirst()
+                      .mgmtPort();
     }
 }

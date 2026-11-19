@@ -1,0 +1,20 @@
+# #1629: this module's test sources entered the CI JBCT gate (jbct.includeTests=true in pom.xml). Format and every lint rule not
+# listed here are enforced. The rules below are pinned to warning (visible, non-failing) for the stated reason, the same way
+# integrations/net/http-server/jbct.toml pins RET-01. Burn down by removing a line when its findings reach zero.
+
+[lint.rules]
+# EX-01: assertion-style `throw new AssertionError(...)` in test fold/orElse callbacks and `throws` on JUnit methods; JUnit reports a failed scenario only by an exception
+JBCT-EX-01 = "warning"
+# EX-02: orElseThrow()/get() unwraps in test scenario steps; a test that cannot proceed without the value fails by exception
+JBCT-EX-02 = "warning"
+# RET-01: void return mandated by JUnit lifecycle and test methods (@Test/@BeforeEach/@AfterEach) and by callback-style test helpers
+JBCT-RET-01 = "warning"
+# RET-07: a test step awaits a Promise and routes its failure to a failScenario callback, which the rule reads as a discarded chain
+JBCT-RET-07 = "warning"
+# TOT-01: partial operations in fold/map mappers that assert inside a test; the assertion IS the intended failure channel
+JBCT-TOT-01 = "warning"
+# BND-01: CompletableFuture/Optional come from the JDK HttpClient and Jackson APIs the tests drive from the outside
+JBCT-BND-01 = "warning"
+# RET-03 / RET-06: JUnit and Throwable hand over nullable values (Throwable.getMessage, a null failure for a passed invocation)
+JBCT-RET-03 = "warning"
+JBCT-RET-06 = "warning"
