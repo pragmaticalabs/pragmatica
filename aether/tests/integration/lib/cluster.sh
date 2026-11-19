@@ -2184,12 +2184,10 @@ start_log_streamers() {
     fi
     # Restart clean: a previous run's daemon, streams, and files must not pollute this run's
     # evidence (the failure-log dir had exactly that staleness bug on the harness side).
-    # `-[f]` is the self-exclusion idiom: a bare `pkill -f 'docker logs -f aether-'` matches the
-    # REMOTE SHELL RUNNING THIS VERY CHAIN (the pattern is part of its command line) and kills it
-    # mid-chain — run5 hit exactly that, and it is the recorded "pgrep matches your own waiter"
-    # class. The bracketed pattern still matches real streams but not its own literal self.
-    remote_exec "[ -f /tmp/aether-node-logs/daemon.pid ] && kill \$(cat /tmp/aether-node-logs/daemon.pid) 2>/dev/null; \
-pkill -f 'docker logs -[f] aether-' 2>/dev/null; \
+    # Teardown is `log-streamer.sh stop`: kill by RECORDED pid (daemon.pid, <container>.pid), never by pattern. The earlier
+    # `pkill -f 'docker logs -[f] aether-'` matched every run's streams on a shared host (and its own remote shell, hence the
+    # bracket idiom); a pid file names exactly what this harness started (#3427).
+    remote_exec "[ -f /tmp/aether-log-streamer.sh ] && bash /tmp/aether-log-streamer.sh stop; \
 rm -rf /tmp/aether-node-logs && mkdir -p /tmp/aether-node-logs; \
 chmod +x /tmp/aether-log-streamer.sh; \
 nohup /tmp/aether-log-streamer.sh >/dev/null 2>&1 & echo \$! > /tmp/aether-node-logs/daemon.pid" \
@@ -2199,8 +2197,7 @@ nohup /tmp/aether-log-streamer.sh >/dev/null 2>&1 & echo \$! > /tmp/aether-node-
 
 stop_log_streamers() {
     [ "$ENV_TYPE" = "remote" ] || return 0
-    remote_exec "[ -f /tmp/aether-node-logs/daemon.pid ] && kill \$(cat /tmp/aether-node-logs/daemon.pid) 2>/dev/null; \
-pkill -f 'docker logs -[f] aether-' 2>/dev/null; true" >/dev/null 2>&1 || true
+    remote_exec "[ -f /tmp/aether-log-streamer.sh ] && bash /tmp/aether-log-streamer.sh stop; true" >/dev/null 2>&1 || true
 }
 
 cleanup_cluster_zombies() {

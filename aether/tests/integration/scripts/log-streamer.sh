@@ -11,9 +11,28 @@
 #
 # State lives under /tmp/aether-node-logs: <container>.log (the evidence),
 # <container>.pid (the stream's pid, for liveness re-check), daemon.pid (this loop).
+#
+# `log-streamer.sh stop` is the teardown (#3427): it ends the daemon and every stream by the pid it RECORDED, never by a
+# process-name pattern (a pattern on a shared host can hit another run's streams). A recorded pid is only signalled when its
+# /proc cmdline still names what we started, so a stale file whose pid was reused kills nothing.
 set -u
 
-LOG_DIR="/tmp/aether-node-logs"
+LOG_DIR="${AETHER_STREAM_DIR:-/tmp/aether-node-logs}"
+
+if [ "${1:-}" = stop ]; then
+    # Daemon first, so it cannot respawn a stream we are about to end.
+    for f in "$LOG_DIR/daemon.pid" "$LOG_DIR"/aether-*.pid; do
+        [ -f "$f" ] || continue
+        p=$(cat "$f" 2>/dev/null)
+        case "$p" in '' | *[!0-9]*) continue ;; esac
+        cmd=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null)
+        case "$cmd" in
+            *aether-log-streamer.sh* | 'docker logs -f aether-'*) kill "$p" 2>/dev/null ;;
+        esac
+    done
+    exit 0
+fi
+
 mkdir -p "$LOG_DIR"
 
 while true; do

@@ -134,5 +134,58 @@ n_lib=$(/usr/bin/grep -nE '(^|[^[:alnum:]_.-])kill( |$)' "${INTEG_DIR}"/lib/*.sh
 if [ "$n_load" = 0 ] && [ "$n_poll" = 0 ] && [ "$n_bg" = 0 ] && [ "$n_sdv" = 0 ] && [ "$n_poll_len" -gt 10 ]; then ok "P8 raw kill/pkill outside the reaper: load.sh $n_load, poll_until $n_poll (body of $n_poll_len lines), reap_bg_job $n_bg, test-scale-down-victims.sh $n_sdv"
 else fail "P8 load.sh=$n_load poll_until=$n_poll (body $n_poll_len lines) reap_bg_job=$n_bg scale-down-victims=$n_sdv"; fi
 
+# P12: the remote log-streamer teardown (`log-streamer.sh stop`) ends what it RECORDED and nothing else. Four fixtures with unique
+# argv0: a recorded daemon, a recorded stream, an UNRECORDED stream-lookalike (a pattern kill would take it), and a pid file
+# whose pid is not a stream (stale/reused: the cmdline guard must refuse it). Needs /proc (the remote host is always Linux).
+if [ -r /proc/self/cmdline ]; then
+    SD="$WORK/streams"; mkdir -p "$SD"; : > "$WORK/p12.pids"
+    ( exec -a "bash /tmp/aether-log-streamer.sh" sleep 61 ) & d_pid=$!  # sleep-ok: fixture process
+    ( exec -a "docker logs -f aether-t1" sleep 62 ) & s_pid=$!  # sleep-ok: fixture process
+    ( exec -a "docker logs -f aether-bystander" sleep 63 ) & b_pid=$!  # sleep-ok: fixture process
+    ( exec -a "sleep-not-a-stream" sleep 64 ) & x_pid=$!  # sleep-ok: fixture process
+    echo "$d_pid $s_pid $b_pid $x_pid" > "$WORK/p12.pids"
+    echo "$d_pid" > "$SD/daemon.pid"; echo "$s_pid" > "$SD/aether-t1.pid"; echo "$x_pid" > "$SD/aether-stale.pid"
+    execd() { tr '\0' ' ' < "/proc/$1/cmdline" 2> /dev/null | grep -q "$2"; }
+    gone() { case "$(state_of "$1")" in '' | Z*) return 0 ;; *) return 1 ;; esac; }
+    poll_until 10 execd "$d_pid" aether-log-streamer; poll_until 10 execd "$s_pid" aether-t1; poll_until 10 execd "$b_pid" bystander; poll_until 10 execd "$x_pid" sleep-not-a
+    AETHER_STREAM_DIR="$SD" bash "${INTEG_DIR}/scripts/log-streamer.sh" stop
+    poll_until 10 gone "$d_pid"; poll_until 10 gone "$s_pid"
+    sd=$(state_of "$d_pid"); ss=$(state_of "$s_pid"); sb=$(state_of "$b_pid"); sx=$(state_of "$x_pid")
+    case "$sd" in '' | Z*) dd=1 ;; *) dd=0 ;; esac; case "$ss" in '' | Z*) dsd=1 ;; *) dsd=0 ;; esac
+    case "$sb" in '' | Z*) db=0 ;; *) db=1 ;; esac; case "$sx" in '' | Z*) dx=0 ;; *) dx=1 ;; esac
+    [ "$dd$dsd$db$dx" = 1111 ] && ok "P12 stop ends the recorded daemon and stream; the unrecorded lookalike and the stale-pid process survive" || fail "P12 daemon-gone=$dd stream-gone=$dsd lookalike-alive=$db stale-alive=$dx"
+else ok "P12 skipped (no /proc: host-only)"; fi
+# P12b: the start/stop paths in cluster.sh signal nothing by pattern and route teardown through the recorded-pid script.
+cl_body=$(body_of "${INTEG_DIR}/lib/cluster.sh" start_log_streamers; body_of "${INTEG_DIR}/lib/cluster.sh" stop_log_streamers)
+n_pat=$(printf '%s\n' "$cl_body" | grep -v '^[[:space:]]*#' | grep -cE 'pkill|killall|kill |pgrep')
+n_stop=$(printf '%s\n' "$cl_body" | grep -v '^[[:space:]]*#' | grep -c 'log-streamer.sh stop')
+[ "$n_pat" = 0 ] && [ "$n_stop" = 2 ] && ok "P12b start/stop_log_streamers: 0 pattern kills, 2 calls to the recorded-pid stop" || fail "P12b pattern-kills=$n_pat stop-calls=$n_stop"
+
+# P13: a caller's EXIT trap is chained: it runs FIRST (the tracked process is still alive then), the reap follows.
+T13="$WORK/t13.sh"; OUT13="$WORK/t13.out"; : > "$OUT13"
+cat > "$T13" << EOF
+export TARGET_HOST=localhost; source "${INTEG_DIR}/lib/common.sh" > /dev/null 2>&1
+trap 'if ps -p "\$(cat "$WORK/t13.pid")" > /dev/null 2>&1; then echo caller-saw-alive >> "$OUT13"; else echo caller-saw-dead >> "$OUT13"; fi' EXIT
+sleep 55 &  # sleep-ok: fixture
+echo \$! > "$WORK/t13.pid"; proc_track \$!
+exit 0
+EOF
+bash "$T13" > /dev/null 2>&1
+p13=$(cat "$WORK/t13.pid"); echo "$p13" >> "$WORK/p12.pids"; s13=$(state_of "$p13")
+case "$s13" in '' | Z*) gone13=1 ;; *) gone13=0 ;; esac
+[ "$(cat "$OUT13")" = caller-saw-alive ] && [ "$gone13" = 1 ] && ok "P13 caller's EXIT trap ran once, before the reap, and the tracked process is gone" || fail "P13 out=[$(tr '\n' ' ' < "$OUT13")] gone=$gone13"
+# P13b: a SUBSHELL that tracks a process (the parent already owns the registry trap) must not re-run the parent's EXIT trap (trap -p in a subshell still reports the parent's).
+T13B="$WORK/t13b.sh"; OUT13B="$WORK/t13b.out"; : > "$OUT13B"
+cat > "$T13B" << EOF
+export TARGET_HOST=localhost; source "${INTEG_DIR}/lib/common.sh" > /dev/null 2>&1
+trap 'echo parent-trap >> "$OUT13B"' EXIT
+sleep 57 & echo \$! > "$WORK/t13b0.pid"; proc_track \$!  # sleep-ok: fixture, makes the parent own the registry trap first
+( sleep 56 & echo \$! > "$WORK/t13b.pid"; proc_track \$!; exit 0 )  # sleep-ok: fixture
+exit 0
+EOF
+bash "$T13B" > /dev/null 2>&1
+echo "$(cat "$WORK/t13b.pid") $(cat "$WORK/t13b0.pid")" >> "$WORK/p12.pids"
+[ "$(cat "$OUT13B")" = parent-trap ] && ok "P13b a tracking subshell does not repeat the parent's EXIT trap (ran $(grep -c . "$OUT13B") time)" || fail "P13b out=[$(tr '\n' ' ' < "$OUT13B")]"
+
 echo "  passed: $PASS"; echo "  failed: $FAIL"
 [ "$FAIL" -eq 0 ]
