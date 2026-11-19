@@ -290,7 +290,149 @@ _run_with_timeout_kill() {
     _run_with_timeout "$secs" "$@"
 }
 
-# Reap a background job: wait up to <seconds> for it to end, then kill it and its whole process tree (TERM, then KILL).
+# ---------------------------------------------------------------------------
+# Process registry (#3424, #3427): ONE invariant for every process the harness starts (load loops, poll_until predicates and
+# everything they fork). A process is registered at start (proc_track) and ended by ONE function (proc_reap), on every exit
+# path: a normal return, a failure, a timeout, and a signal (the registry owns the INT/TERM/HUP/EXIT trap it installs on the
+# first proc_track). No other site sends STOP, CONT, TERM or KILL to a process it started (test-proc-registry.sh counts them).
+#
+# proc_reap ends each registered process AND everything below it:
+#   1. freeze: STOP the process, list its children, recurse. A frozen process cannot fork a replacement between the listing
+#      and the kill, so the list is complete (#1886).
+#   2. CONT every frozen process, then TERM it. CONT comes first and is idempotent: a process is never left stopped, and the
+#      TERM is delivered rather than left pending on a stopped process. A signal that lands inside the freeze window is run by
+#      the trap only after the current command returns, and the trap reaps again from the top, so no exit path leaves a
+#      process in state T.
+#   3. wait up to PROC_REAP_TERM_WAIT_S (default 2 s) for them to end.
+#   4. KILL what is left, by freezing its tree again first (a TERM-ignoring parent may have forked in step 3).
+# Not covered: SIGKILL of the harness itself runs no trap, so a registered process may outlive it; a process group would not
+# help either (bash without job control keeps children in the caller's group), which is why the tree is walked by parent pid.
+# Registry entries carry the owner (BASHPID, else $$ on bash 3.2), so a subshell reaps only what it started itself.
+# ---------------------------------------------------------------------------
+PROC_REG=()
+PROC_TRAP_OWNER=""
+PROC_FROZEN=()
+
+# proc_track <pid>: register a background process of this shell, and own the exit-path trap.
+proc_track() {
+    [ -n "${1:-}" ] || return 0
+    PROC_REG+=("${BASHPID:-$$}:$1")
+    _proc_install_trap
+}
+
+# proc_untrack <pid>: forget a process that ended on its own (its result was collected with wait).
+proc_untrack() {
+    local e keep=() me="${BASHPID:-$$}"
+    for e in ${PROC_REG[@]+"${PROC_REG[@]}"}; do
+        [ "$e" = "${me}:${1:-}" ] || keep+=("$e")
+    done
+    PROC_REG=(${keep[@]+"${keep[@]}"})
+}
+
+# proc_start <cmd> [args...]: run in the background, registered. The pid is left in PROC_LAST.
+proc_start() {
+    "$@" &
+    PROC_LAST=$!
+    proc_track "$PROC_LAST"
+}
+
+# Signals reap, then leave with the conventional status; the EXIT trap (ours, or the caller's if one was already set) follows.
+# An EXIT trap that was already set is kept and runs first, then the reap.
+_proc_install_trap() {
+    local me="${BASHPID:-$$}" prev
+    [ "$PROC_TRAP_OWNER" = "$me" ] && return 0
+    PROC_TRAP_OWNER="$me"
+    # A signal trap the caller already set is theirs and stays (the EXIT reap still covers a normal exit).
+    [ -n "$(trap -p TERM)" ] || trap 'proc_reap_all; exit 143' TERM
+    [ -n "$(trap -p INT)" ] || trap 'proc_reap_all; exit 130' INT
+    [ -n "$(trap -p HUP)" ] || trap 'proc_reap_all; exit 129' HUP
+    # Chain a caller's EXIT trap only in the shell that set it: inside a subshell `trap -p` still reports the PARENT's traps,
+    # and running those again in the subshell would repeat the parent's cleanup.
+    [ "$me" = "$$" ] && prev=$(trap -p EXIT) || prev=""
+    if [ -n "$prev" ]; then
+        eval "set -- ${prev}"
+        trap "$3"$'\n''proc_reap_all' EXIT
+    else
+        trap 'proc_reap_all' EXIT
+    fi
+}
+
+_proc_alive() {
+    local st
+    st=$(ps -o stat= -p "$1" 2>/dev/null) || return 1
+    case "$st" in '' | Z*) return 1 ;; esac
+    return 0
+}
+
+# _proc_freeze <pid>: STOP it and everything below it, appending every frozen pid to PROC_FROZEN.
+_proc_freeze() {
+    local c
+    kill -STOP "$1" 2>/dev/null || return 0
+    PROC_FROZEN+=("$1")
+    for c in $(pgrep -P "$1" 2>/dev/null); do
+        _proc_freeze "$c"
+    done
+}
+
+_proc_any_alive() {
+    local p
+    for p in "$@"; do
+        ! _proc_alive "$p" || return 0
+    done
+    return 1
+}
+
+# proc_reap [pid...]: end the given registered processes and their trees (default: all this shell registered). Never fails,
+# and is immune to the caller's `set -e`: it also runs from an EXIT trap entered because errexit fired, where a `wait` on a
+# killed child (rc 143) would otherwise abort the reap half-way and leave the rest alive.
+proc_reap() {
+    local errexit=0
+    case $- in *e*) errexit=1; set +e ;; esac
+    _proc_reap_body "$@"
+    [ "$errexit" = 1 ] && set -e
+    return 0
+}
+
+_proc_reap_body() {
+    local me="${BASHPID:-$$}" e p roots=() all=() live=() ticks=0
+    if [ $# -gt 0 ]; then
+        roots=("$@")
+    else
+        for e in ${PROC_REG[@]+"${PROC_REG[@]}"}; do
+            [ "${e%%:*}" = "$me" ] && roots+=("${e#*:}")
+        done
+    fi
+    [ ${#roots[@]} -gt 0 ] || return 0
+    PROC_FROZEN=()
+    for p in "${roots[@]}"; do _proc_freeze "$p"; done
+    all=(${PROC_FROZEN[@]+"${PROC_FROZEN[@]}"})
+    for p in ${all[@]+"${all[@]}"}; do kill -CONT "$p" 2>/dev/null; done
+    for p in ${all[@]+"${all[@]}"}; do kill -TERM "$p" 2>/dev/null; done
+    while [ "$ticks" -lt $(( ${PROC_REAP_TERM_WAIT_S:-2} * 10 )) ] && _proc_any_alive ${all[@]+"${all[@]}"}; do
+        sleep 0.1
+        ticks=$((ticks + 1))
+    done
+    for p in ${all[@]+"${all[@]}"}; do _proc_alive "$p" && live+=("$p"); done
+    if [ ${#live[@]} -gt 0 ]; then
+        PROC_FROZEN=()
+        for p in "${live[@]}"; do _proc_freeze "$p"; done
+        for p in ${PROC_FROZEN[@]+"${PROC_FROZEN[@]}"}; do kill -KILL "$p" 2>/dev/null; done
+    fi
+    ticks=0
+    while [ "$ticks" -lt 20 ] && _proc_any_alive "${roots[@]}"; do
+        sleep 0.1
+        ticks=$((ticks + 1))
+    done
+    for p in "${roots[@]}"; do
+        _proc_alive "$p" || { wait "$p"; } 2>/dev/null
+        proc_untrack "$p"
+    done
+    return 0
+}
+
+proc_reap_all() { proc_reap; }
+
+# Reap a background job: wait up to <seconds> for it to end on its own, then reap it and its whole process tree.
 # Never fails.
 # Usage: reap_bg_job <pid> [seconds]
 reap_bg_job() {
@@ -300,27 +442,8 @@ reap_bg_job() {
         sleep 1
         waited=$((waited + 1))
     done
-    if kill -0 "$pid" 2>/dev/null; then
-        pkill -TERM -P "$pid" 2>/dev/null || true
-        kill -TERM "$pid" 2>/dev/null || true
-        sleep 1
-        _kill_tree "$pid"
-    fi
-    wait "$pid" 2>/dev/null || true
+    proc_reap "$pid"
     return 0
-}
-
-# Kill <pid> and every descendant with SIGKILL (#1886). Each process is STOPPED before its children are listed, so it
-# cannot fork a replacement between the listing and its own kill, and descendants are killed before their parent, so
-# none is orphaned out of reach of `-P`. Killing the job first left a child it had just respawned, and killing only its
-# direct children left grandchildren; either survived the reap and outlived the suite.
-_kill_tree() {
-    local p="$1" c
-    kill -STOP "$p" 2>/dev/null || return 0
-    for c in $(pgrep -P "$p" 2>/dev/null); do
-        _kill_tree "$c"
-    done
-    kill -KILL "$p" 2>/dev/null || true
 }
 
 # A run-level warning: logged, AND recorded in RUN_WARNINGS_FILE (exported by run-tests.sh) so print_summary, the end-of-run
@@ -1091,22 +1214,29 @@ _wait_for_poll_once() {
 # ---------------------------------------------------------------------------
 poll_until() {
     local timeout=$(( ${1:?poll_until: timeout} * ${TIMEOUT_SCALE:-1} )); shift
-    local deadline=$((SECONDS + timeout)) pid rc
+    local deadline=$((SECONDS + timeout)) limit pid rc attempts=0
     POLL_UNTIL_FIRST=""
     while :; do
         # Each call runs in the background so a hanging predicate is cut at the deadline instead of overrunning it (#3424).
         # A predicate therefore cannot set variables in the caller's shell; it is judged by its exit code only.
+        # It is registered, so proc_reap ends it and everything it forked (nested subshells included) on a timeout or a signal.
+        # The predicate runs at least once before the deadline is judged: a 0 deadline (TIMEOUT_SCALE=0) gives the first call 1 s.
         "$@" > /dev/null 2>&1 < /dev/null &
         pid=$!
+        proc_track "$pid"
+        attempts=$((attempts + 1))
+        limit=$deadline
+        [ "$attempts" -eq 1 ] && [ "$timeout" -lt 1 ] && limit=$((SECONDS + 1))
         while kill -0 "$pid" 2>/dev/null; do
-            if [ "$SECONDS" -ge "$deadline" ]; then
-                pkill -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null; { wait "$pid"; } 2>/dev/null
+            if [ "$SECONDS" -ge "$limit" ]; then
+                proc_reap "$pid"
                 [ -z "$POLL_UNTIL_FIRST" ] && POLL_UNTIL_FIRST=1
                 POLL_UNTIL_ELAPSED=$timeout; return 1
             fi
             sleep 0.1
         done
         { wait "$pid" && rc=0 || rc=$?; } 2>/dev/null
+        proc_untrack "$pid"
         if [ "$rc" -eq 0 ]; then
             [ -z "$POLL_UNTIL_FIRST" ] && POLL_UNTIL_FIRST=0
             POLL_UNTIL_ELAPSED=$((SECONDS - deadline + timeout)); return 0

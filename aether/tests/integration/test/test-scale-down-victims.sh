@@ -113,7 +113,6 @@ loop_run() {  # <label> <write override? 0|1>
     : > "$WORK/hits.$1"; rm -f /tmp/load_endpoint_override_$$ "$WORK"/seen.$1.*
     ( export PATH="$WORK/bin:$PATH" HITS="$WORK/hits.$1" TARGET_HOST=localhost API_KEY=k APP_ENDPOINT=http://orig:8070 STUB_CURL_DELAY=0.6
       source "${INTEG_DIR}/lib/load.sh" > /dev/null 2>&1
-      trap 'stop_load > /dev/null 2>&1' EXIT   # the load loop never outlives this run, whatever the exit path
       start_load 10 60 GET /api/echo/health > /dev/null 2>&1   # 60 s is only an upper bound: stop_load ends the loop
       poll_until 60 hits_ge "$HITS" 1; seen $1 first
       if [ "$2" = "1" ]; then
@@ -146,24 +145,12 @@ url="${*: -1}"; echo "$url" >> "${STUB_HITS_TO:-$HITS}"
 case "$url" in http://victim:8075*) printf '503' ;; *) printf '200' ;; esac
 STUB
 chmod +x "$WORK/bin/curl"
-# stop_load kills the load loop but not a $(curl ...) call it already forked: that stub answers and records AFTER stop_load
-# returned (a hit counted as a leak, #3424). drain_load freezes the loop, lists everything below it, stops the loop, then waits
-# (deadline) for exactly those processes to end: no new call can start once the loop is frozen, so the list is complete.
-descendants() { local p c; for p in "$@"; do for c in $(pgrep -P "$p"); do echo "$c"; descendants "$c"; done; done; }
-all_gone() { local p; for p in "$@"; do ! kill -0 "$p" 2> /dev/null || return 1; done; }
-drain_load() {
-    local p kids
-    for p in "${LOAD_PIDS[@]}"; do kill -STOP "$p" 2> /dev/null; done
-    kids=$(descendants "${LOAD_PIDS[@]}")
-    for p in "${LOAD_PIDS[@]}"; do kill -CONT "$p" 2> /dev/null; done
-    stop_load > /dev/null 2>&1
-    poll_until 10 all_gone $kids
-}
+# stop_load (proc_reap) ends the loop AND the curl call it already forked, and returns only when both are gone: no stub answers or
+# records after it returned (#3424). The same reaper runs from the EXIT/signal trap, so no exit path leaves a process behind.
 reresolve_run() {  # <label> [deadline of each wait, s: default 60] [file the stub records into: default the hits file]
     : > "$WORK/hits.$1"; rm -f /tmp/load_endpoint_override_$$ "$WORK"/seen.$1.* "$WORK/n.$1"
     ( export PATH="$WORK/bin:$PATH" HITS="$WORK/hits.$1" TARGET_HOST=localhost API_KEY=k APP_ENDPOINT=http://orig:8070 ENV_TYPE=cloud STUB_CURL_DELAY=0.6 STUB_HITS_TO="${3:-$WORK/hits.$1}"
       source "${INTEG_DIR}/lib/load.sh" > /dev/null 2>&1
-      trap 'stop_load > /dev/null 2>&1' EXIT   # the load loop never outlives this run, on the failing path too (#3424)
       slice_owner_for() { echo node-new; }; cloud_public_ip() { echo newhost; }
       start_load 10 60 GET /api/echo/health "" "g:a:v" > /dev/null 2>&1   # 60 s is only an upper bound: stop_load ends the loop
       poll_until "${2:-60}" hits_ge "$HITS" 1; seen $1 first
@@ -172,7 +159,7 @@ reresolve_run() {  # <label> [deadline of each wait, s: default 60] [file the st
       n=$(grep -c . "$HITS" 2>/dev/null); n=${n:-0}   # `|| echo 0` made "0\n0" on an empty file and broke the arithmetic below
       echo "$n" > "$WORK/n.$1"
       poll_until "${2:-60}" hits_ge "$HITS" $((n + 8)); seen $1 stays   # STAYS on the new owner: 8 more requests after the first one there
-      drain_load )
+      stop_load > /dev/null 2>&1 )
 }
 reresolve_run rr
 last=$(tail -1 "$WORK/hits.rr")

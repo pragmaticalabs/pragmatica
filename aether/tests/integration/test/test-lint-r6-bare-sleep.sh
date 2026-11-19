@@ -53,6 +53,8 @@ flagged "a # inside a word is not a comment"   'echo a#b; sleep 3'
 flagged "quoted argument 'sleep 0.5'"      "sleep '0.5'"
 flagged "sleep in a \$( ) inside double quotes" 'x="$(sleep 2)"'
 flagged "a sleep-ok marker inside a string is not a marker" 'echo "# sleep-ok: x"; sleep 3'
+flagged "a # after an escaped quote inside a string is not a comment" 'echo "a \" #"; sleep 3'
+flagged "an escaped backslash does not escape the closing quote"      'echo "a \\"; sleep 3'
 flagged "command sleep"                  'command sleep 3'
 flagged "after && "                      'true && sleep 3'
 flagged "in a subshell"                  '(sleep 4)'
@@ -67,6 +69,7 @@ clean "sleep inside a string, after a word"   'echo "wait a sleep 3 now"'
 clean "sleep inside single quotes"             "echo 'wait: sleep 3'"
 clean "printf with sleep text"                 'printf "%s\\n" "sleep 3 seconds"'
 clean "double-quoted text around a \$( ) that has no sleep" 'x="a sleep 3 $(date) b"'
+clean "an escaped quote keeps the string open: sleep text inside it"  'echo "a \" sleep 3"'
 clean "poll_until"                       'poll_until 5 true'
 
 # R3 — the real tree

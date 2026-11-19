@@ -241,7 +241,7 @@ lint_r6_bare_sleep() {
     local file="$1"
     # `code` = the line up to the first real comment, with quoted text removed (the quotes stay): a `#` opens a comment only
     # outside quotes and at a word start, so `echo "step #1"; sleep 3` keeps its sleep, and `echo "a sleep 3"` has none.
-    # Inside a double-quoted string only a `$( ... )` substitution is code. The sleep may be reached by any path (`/bin/sleep 9`).
+    # Inside a double-quoted string only a `$( ... )` substitution is code, and a backslash makes the next character literal (`\"`). The sleep may be reached by any path (`/bin/sleep 9`).
     # The `# sleep-ok: <reason>` marker counts only in the real comment (`cmt`), never inside a string.
     awk '
         {
@@ -254,7 +254,8 @@ lint_r6_bare_sleep() {
                     else if (c == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[[:space:];&|(]/)) { cmt = substr(line, i); break }
                 } else if (d > 0) {
                     if (c == "(") d++; else if (c == ")") d--
-                } else if (c == q) q = ""
+                } else if (q == "\"" && c == "\\") { i++; continue }   # \" and \\ inside double quotes: the next char is literal
+                else if (c == q) q = ""
                 else if (q == "\"" && c == "$" && substr(line, i + 1, 1) == "(") { d = 1; code = code "$("; i++; continue }
                 else continue
                 code = code c
