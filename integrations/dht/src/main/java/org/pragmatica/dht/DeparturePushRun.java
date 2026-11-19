@@ -71,8 +71,15 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// not a target without an ack. A page of x's previous tenure is dead from the next re-plan on (never sent, split or acked, its keys
 /// are paged again in the current tenure); within one tenure a late ack (its page cancelled by a re-plan) still counts.
 ///
+/// **Live page.** One predicate, [#live(Page)] (registered, not cancelled, current), is asked by send, resend, split and the count of
+/// live chains alike, so a page a re-plan cancelled is dead like a page of an earlier tenure: never sent, resent or split, and it
+/// holds no exit.
+///
+/// **Probe.** A probe that gets no answer is sent again while its window lasts and is never a lost holder (no re-push follows);
+/// only a refusal in its answer (a "draining" nack or a token mismatch) is.
+///
 /// **Re-plan.** One serial [#reconcile] on exactly three triggers: a change of V ([#onViewChange], called after each ring change),
-/// a holder lost (a token mismatch, a "draining" nack, a failed probe), and the start and each exit attempt. Acks and nacks never
+/// a holder lost (a token mismatch, a "draining" nack, a refused probe), and the start and each exit attempt. Acks and nacks never
 /// trigger it: an ack records a holder and settles its page, a nack splits a page of several keys in halves after a backoff and
 /// resends a single-key page after a growing one, and an attempt timed out splits likewise without the backoff (P1); a split, a
 /// send and a resend carry only the keys not yet safe at the target, and a page with none left is not sent. A reconcile observes
@@ -94,8 +101,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///
 /// **Deadline and events.** At the window deadline less `eventDeliveryWait` (the attempts deadline) no data page or exit starts;
 /// unless the node halted (then it sends nothing), the run sends ONE probe round to every holder whose counted ack for a key owed
-/// at the close no passed probe covers yet, waits at most `resendAfter`, and resolves with its owed set: a key whose holder passed
-/// that probe is delivered, any other is owed ([#onDeadline], P3). The cost: a deadline close may resolve up to one `resendAfter`
+/// at the close no passed probe covers yet, waits at most `resendAfter` (a silent probe is sent again while that time lasts), and
+/// resolves with its owed set: a key whose holder passed that probe is delivered, any other is owed; a probe the deadline cuts
+/// short is no lost holder and covers nothing ([#onDeadline]). The cost: a deadline close may resolve up to one `resendAfter`
 /// after the attempts deadline. This is the one resolve point of this step besides a passed exit. Classification (S) of a key as SOLE (`|currentSet \ L| - |L \ ring| <= 0` at
 /// the time it entered the inventory) only shapes the events: `onSoleCopyAtRisk` once, at plan time when a sole key has no
 /// deliverer or the window is already used up (or the inventory was not enumerated), else at the deadline when a sole key is
@@ -562,7 +570,7 @@ final class DeparturePushRun {
         }
     }
 
-    /// Under `transitions`, #3345 P5: the ONE answer to "may this page still act": registered, not cancelled and [#current(Page)].
+    /// Under `transitions`: the ONE answer to "may this page still act": registered, not cancelled and [#current(Page)].
     /// A page a re-plan cancelled is dead exactly like a page of an earlier tenure. Send and resend (`probeStopped`), split
     /// (`halvePage`, `splitPage`) and the count of live chains (`liveInChain`) ask only this; a late ack of a cancelled page still
     /// counts (`inTenure` does not ask it).
@@ -726,6 +734,12 @@ final class DeparturePushRun {
                         .flatMap(_ -> runChain(chain, index + 1));
     }
 
+    /// A page is finished BEFORE the chain's result completes: the exit trigger at the chain's end must see it (a side effect
+    /// attached to the same promise is not ordered against the dependent steps that complete the chain).
+    private static Promise<Unit> finished(Page page, Result<Unit> result) {
+        return Promise.resolved(result.onResultRun(() -> page.finished.set(true)));
+    }
+
     /// The page's entries are read once and the same list is resent (N5): every apply is versioned, so a stale resend never
     /// overwrites a newer copy. A key the read no longer finds is marked absent; a read that fails leaves its keys owed.
     private Promise<Unit> runPage(Page page) {
@@ -734,12 +748,6 @@ final class DeparturePushRun {
                : node.readEntries(page.stamps())
                      .timeout(remainingUntil(attemptsDeadline))
                      .fold(read -> read.fold(cause -> unreadable(page, cause),
-    /// A page is finished BEFORE the chain's result completes: the exit trigger at the chain's end must see it (a side effect
-    /// attached to the same promise is not ordered against the dependent steps that complete the chain).
-    private static Promise<Unit> finished(Page page, Result<Unit> result) {
-        return Promise.resolved(result.onResultRun(() -> page.finished.set(true)));
-    }
-
                                              entries -> sendRead(page, entries)));
     }
 
@@ -888,7 +896,7 @@ final class DeparturePushRun {
 
     /// Under `transitions`: the page is cancelled and its keys not yet safe at its target (I2: a late ack of an earlier page may
     /// have made some safe) go to at most two pages on the same target, in the page's tenure; none when every key is safe or the
-    /// page is not [#live(Page)] (P5: a page cancelled by a re-plan or of an earlier tenure is never split).
+    /// page is not [#live(Page)] (a page cancelled by a re-plan or of an earlier tenure is never split).
     private List<Page> halvePage(Page page) {
         var open = live(page)
                    ? page.keys.stream().filter(key -> !safe(key, page.target, false)).toList()
@@ -928,7 +936,7 @@ final class DeparturePushRun {
         return Unit.unit();
     }
 
-    /// Under `transitions`: single-key pages in the page's tenure; none when the page is not [#live(Page)] (P5).
+    /// Under `transitions`: single-key pages in the page's tenure; none when the page is not [#live(Page)].
     private List<Page> splitPage(Page page) {
         var singles = live(page)
                       ? page.keys.stream()
@@ -949,7 +957,7 @@ final class DeparturePushRun {
         return probeStopped(page, attemptsDeadline) || isSettled(page);
     }
 
-    /// A page (a probe: any page) is not sent once the node halted, the page is not [#live(Page)] (P5), the run closed, or `until`
+    /// A page (a probe: any page) is not sent once the node halted, the page is not [#live(Page)], the run closed, or `until`
     /// passed.
     private boolean probeStopped(Page page, long until) {
         if (window.halted().getAsBoolean()) {
@@ -1148,7 +1156,7 @@ final class DeparturePushRun {
         return Promise.allOf(probes.stream().map(page -> probeOne(page, until)).toList());
     }
 
-    /// #3345 P6: a probe not answered within `resendAfter` is sent again, on the same page, while it may be sent; a late answer
+    /// A probe not answered within `resendAfter` is sent again, on the same page, while it may be sent; a late answer
     /// to an earlier send counts. Silence is never a loss.
     private Promise<AttemptResult> probeOne(Page page, long until) {
         return probeStopped(page, until)
@@ -1157,7 +1165,7 @@ final class DeparturePushRun {
                                           .flatMap(result -> resendIfSilent(page, result, until));
     }
 
-    /// A refusal to take the probe proves nothing (H2): it is waited out like silence.
+    /// A refusal to take the probe proves nothing: it is waited out like silence.
     private Promise<AttemptResult> probeAnswer(Dispatched dispatched, long until) {
         return dispatched.outcome() instanceof WriteOutcome.Sent
                ? awaitAttempt(dispatched, until)
@@ -1192,7 +1200,7 @@ final class DeparturePushRun {
         }
 
         transition(this::releaseExit);
-        // P6: only an explicit refusal is a lost holder; an unanswered probe is not, and triggers no re-push.
+        // Only an explicit refusal is a lost holder; an unanswered probe is not, and triggers no re-push.
         refused.forEach(target -> holderLost(target, "probe refused"));
         maybeExit();
     }
