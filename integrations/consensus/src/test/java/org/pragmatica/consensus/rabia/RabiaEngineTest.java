@@ -1040,15 +1040,22 @@ class RabiaEngineTest {
 
     @Nested
     class DecisionLatency {
+        private static final long HOLD_MILLIS = 25;
+        private static final long MIN_HELD_NANOS = MILLISECONDS.toNanos(20);
 
+        /// #2644: commitDecision recorded a hard-coded 0, so every consumer of average decision latency read 0.
+        /// The bounds come from the test's own clock: the slot is held at least the quorum delay (the lower bound
+        /// also rejects a unit slip down) and no longer than the wall time around the slot (rejects a missing stamp
+        /// and a unit slip up).
         @Test
-        void decided_slot_records_positive_decision_duration() throws InterruptedException {
-            // #2644: commitDecision recorded a hard-coded 0, so every consumer of average decision latency read 0.
+        void decided_slot_records_duration_bounded_by_the_test_clock() throws InterruptedException {
             var recorder = new DecisionRecorder();
             var target = new RabiaEngine<>(topologyManager, network, stateMachine,
                                            ProtocolConfig.testConfig(), recorder, false);
             activate(target, network);
             network.clearMessages();
+
+            var before = System.nanoTime();
 
             target.<Unit>apply(List.of(new TestCommand("timed")));
             awaitSent("the batch it was asked to apply", network, newBatch());
@@ -1064,22 +1071,49 @@ class RabiaEngineTest {
             target.processVoteRound1(new VoteRound1(NODE_2, Phase.ZERO, StateValue.V1));
             target.processVoteRound1(new VoteRound1(NODE_3, Phase.ZERO, StateValue.V1));
             awaitOwnVote2(Phase.ZERO);
+            Thread.sleep(HOLD_MILLIS);
             target.processVoteRound2(new VoteRound2(NODE_2, Phase.ZERO, StateValue.V1));
             target.processVoteRound2(new VoteRound2(NODE_3, Phase.ZERO, StateValue.V1));
 
             assertThat(recorder.decided.await(5, SECONDS)).as("slot decided").isTrue();
-            assertThat(recorder.durationNs.get())
-                    .as("decision duration measured from slot start, not the constant 0")
-                    .isPositive();
+            var wall = System.nanoTime() - before;
+
+            assertThat(recorder.lastDurationNs.get())
+                    .as("duration from the slot's start on this node, within [hold, wall time around the slot]")
+                    .isGreaterThanOrEqualTo(MIN_HELD_NANOS)
+                    .isLessThanOrEqualTo(wall);
+            target.stop().await();
+        }
+
+        /// #2644 (F1): a slot first seen as a Decision was never held on this node: no start point, so no
+        /// sample (a near-zero one would drag the average toward 0). The slot is still decided and applied.
+        @Test
+        void decision_first_slot_records_no_duration_sample() throws InterruptedException {
+            var recorder = new DecisionRecorder();
+            var target = new RabiaEngine<>(topologyManager, network, stateMachine,
+                                           ProtocolConfig.testConfig(), recorder, false);
+            activate(target, network);
+
+            target.processDecision(new Decision<>(NODE_2, Phase.ZERO, StateValue.V0, Batch.<TestCommand>emptyBatch()));
+
+            assertThat(awaitCondition(() -> new Phase(1).equals(target.currentPhaseForTesting())))
+                    .as("the decision-first slot is decided and the engine moved past it")
+                    .isTrue();
+            assertThat(recorder.samples.get()).as("decisions recorded").isZero();
+            assertThat(recorder.totalNs.get()).as("duration sum").isZero();
             target.stop().await();
         }
 
         private static final class DecisionRecorder implements ConsensusMetrics {
             final CountDownLatch decided = new CountDownLatch(1);
-            final java.util.concurrent.atomic.AtomicLong durationNs = new java.util.concurrent.atomic.AtomicLong(-1);
+            final java.util.concurrent.atomic.AtomicLong lastDurationNs = new java.util.concurrent.atomic.AtomicLong(-1);
+            final java.util.concurrent.atomic.AtomicLong samples = new java.util.concurrent.atomic.AtomicLong();
+            final java.util.concurrent.atomic.AtomicLong totalNs = new java.util.concurrent.atomic.AtomicLong();
 
             @Override public void recordDecision(NodeId nodeId, Phase phase, StateValue stateValue, long duration) {
-                durationNs.set(duration);
+                lastDurationNs.set(duration);
+                samples.incrementAndGet();
+                totalNs.addAndGet(duration);
                 decided.countDown();
             }
 

@@ -68,6 +68,22 @@ class RabiaMetricsCollectorTest {
         assertThat(second.voteRound2Count()).isZero();
     }
 
+    /// #2644: the duration the engine records is the duration the sink sums and counts; the average is
+    /// ns / decisions in ms. Real collector, no stub (the engine's side is pinned in `RabiaEngineTest$DecisionLatency`).
+    @Test
+    void recordDecision_durationReachesSumCountAndAverage() {
+        var collector = RabiaMetricsCollector.rabiaMetricsCollector();
+
+        collector.recordDecision(NODE, PHASE, StateValue.V1, 2_000_000L);
+        collector.recordDecision(NODE, PHASE, StateValue.V1, 4_000_000L);
+
+        var snapshot = collector.snapshot();
+
+        assertThat(snapshot.decisionsCount()).isEqualTo(2);
+        assertThat(snapshot.totalDecisionLatencyNs()).isEqualTo(6_000_000L);
+        assertThat(snapshot.avgDecisionLatencyMs()).isEqualTo(3.0);
+    }
+
     /// The wire vocabulary: `counterMap()`'s keys ARE the Prometheus gauge names
     /// (`ObservabilityRegistry.registerConsensusMetrics` binds each by exact key), so a drifted key
     /// silently freezes its gauge at 0. Pinned entry-by-entry with live values.
