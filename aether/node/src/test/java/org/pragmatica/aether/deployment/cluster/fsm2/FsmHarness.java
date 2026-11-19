@@ -15,7 +15,7 @@ import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.function.Predicate;
 
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;

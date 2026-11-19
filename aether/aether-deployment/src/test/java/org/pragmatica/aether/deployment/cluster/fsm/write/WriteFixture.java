@@ -4,7 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm.write;
 
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentContext;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState;

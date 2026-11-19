@@ -37,7 +37,8 @@ import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
 import org.pragmatica.aether.deployment.CommittedSliceTarget;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.SchemaHold;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.ActivationDirectivePutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.ActivationDirectiveRemoveReceived;
@@ -67,8 +68,6 @@ import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarte
 import org.pragmatica.aether.metrics.deployment.ReconciliationAdjustment;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
-import org.pragmatica.aether.slice.blueprint.BlueprintParser;
-import org.pragmatica.aether.slice.blueprint.DeploymentConfig;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -142,97 +141,6 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymentState, ClusterFsmEvent> permits ClusterDeploymentState.Dormant, ClusterDeploymentState.Active, ClusterDeploymentState.Stopped {
     Logger LOG = LoggerFactory.getLogger(ClusterDeploymentState.class);
     ClusterDeploymentContext ctx();
-
-    /// Schema statuses that hold slice activation (#542). FAILED is a blocking status: the
-    /// physical schema sits at a version the slice was not built against until an operator
-    /// retries or redeploys.
-    ///
-    /// #760 review BLOCKING 1 / TEST GAP 5: hoisted from a `private` copy inside [Active] to a
-    /// single shared accessor also used by `SchemaRoutes.heldSlices` (`aether-node`), so the
-    /// activation gate and the management-API report cannot silently diverge on which statuses
-    /// hold a slice.
-    Set<SchemaStatus> BLOCKING_SCHEMA_STATUSES = Set.of(SchemaStatus.PENDING,
-                                                        SchemaStatus.MIGRATING,
-                                                        SchemaStatus.FAILED);
-
-    /// #760 review BLOCKING 1: the SAME predicate the activation gate uses
-    /// ([Active#collectIfBlocking]) to decide whether a schema record holds a slice, exposed so
-    /// `SchemaRoutes.heldSlices` reads live per-node state instead of re-deriving a parallel
-    /// ownership-only check that ignores [SliceState] entirely.
-    ///
-    /// A slice is held only while it sits in [SliceState#LOADED] — i.e. it has not yet passed the
-    /// gate. An [SliceState#ACTIVE] slice already passed it and has no transition path back
-    /// through this check ([SliceState#validTransitions]), so re-arming a COMPLETED record to
-    /// MIGRATING must not retroactively report a serving slice as held: `sliceState == LOADED` is
-    /// load-bearing, not incidental.
-    static boolean blocksSliceActivation(SliceState sliceState,
-                                         Option<BlueprintId> sliceOwner,
-                                         SchemaVersionValue schema,
-                                         KVStore<AetherKey, AetherValue> kvStore) {
-        return sliceState == SliceState.LOADED
-               && BLOCKING_SCHEMA_STATUSES.contains(schema.status())
-               && sliceOwner.map(owner -> owner.base()
-                                               .equals(schema.owningBlueprint().base()) && resolveSchemaRequired(kvStore,
-                                                                                                                 owner))
-                            .or(false);
-    }
-
-    /// #760 review round 2 item a: `heldSlices` (the management-API view) and the FSM gate
-    /// (`blockingSchemaRecords`) previously called schemaRequired resolution through two different
-    /// paths — the gate via the in-memory [Active#blueprints] map, the route not at all — so a
-    /// slice owned by a `schema_required = false` blueprint could be reported held even though the
-    /// gate itself never blocked it. `resolveDeclaredSchemaRequired` is a pure function of the shared
-    /// [KVStore], so both call sites now go through this one static method instead of diverging.
-    /// Returns [Option#empty()] when nothing could be resolved (missing blueprint entry,
-    /// resourcesConfig, or unparsable/incomplete resources.toml) — the caller decides how to log
-    /// that and what to default to; see [#resolveSchemaRequired(KVStore, BlueprintId)] and
-    /// [Active#resolveSchemaRequired(BlueprintId)].
-    static Option<Boolean> resolveDeclaredSchemaRequired(KVStore<AetherKey, AetherValue> kvStore,
-                                                         BlueprintId blueprintId) {
-        var blueprintKey = AppBlueprintKey.appBlueprintKey(blueprintId);
-
-        return kvStore.get(blueprintKey)
-                      .filter(AppBlueprintValue.class::isInstance)
-                      .map(AppBlueprintValue.class::cast)
-                      .flatMap(value -> value.blueprint()
-                                             .resourcesConfig())
-                      .flatMap(toml -> BlueprintParser.parse(toml).option())
-                      .flatMap(org.pragmatica.aether.slice.blueprint.Blueprint::deploymentConfig)
-                      .map(DeploymentConfig::schemaRequired);
-    }
-
-    /// Deliberately silent, unlike [Active#resolveSchemaRequired(BlueprintId)]: this is invoked once
-    /// per candidate record inside [#blocksSliceActivation] (from both `blockingSchemaRecords`'s
-    /// forEach and `heldSlices`'s forEach), so logging here would fire once per slice-node/schema
-    /// pair per gate pass or status request instead of once per blueprint change.
-    static boolean resolveSchemaRequired(KVStore<AetherKey, AetherValue> kvStore, BlueprintId blueprintId) {
-        return resolveDeclaredSchemaRequired(kvStore, blueprintId).or(true);
-    }
-
-    /// #805 item 1: the SINGLE slice-owner resolution path for both callers of
-    /// [#blocksSliceActivation] — the activation gate (`Active.blockingSchemaRecords`) and
-    /// `SchemaRoutes.heldSlices` — reading the committed `SliceTargetKey`/`SliceTargetValue` record
-    /// that both already treat as the ownership authority.
-    ///
-    /// #760's first round made the two share this PREDICATE; they still fed it from two different
-    /// sources. The gate resolved the owner from [Active#blueprints], a node-local mirror rebuilt
-    /// from KV notifications and therefore lagging them, and additionally pre-filtered on that
-    /// mirror's `schemaRequired` flag; the route read the KV record directly and pre-filtered on
-    /// nothing. A stale mirror entry naming an owner the committed record no longer names made the
-    /// gate hold a slice the route simultaneously reported as NOT held — the same divergence #760
-    /// closed, running the other way. Sharing a predicate is not sharing a decision while its INPUTS
-    /// disagree.
-    ///
-    /// The dropped `schemaRequired` pre-filter is not a lost check: [#blocksSliceActivation] already
-    /// resolves `schemaRequired` per candidate record from this same [KVStore] via
-    /// [#resolveSchemaRequired(KVStore, BlueprintId)], so the mirror's copy was strictly a second,
-    /// divergent answer to a question the shared predicate was already asking.
-    static Option<BlueprintId> resolveSliceOwner(KVStore<AetherKey, AetherValue> kvStore, Artifact artifact) {
-        return kvStore.get(SliceTargetKey.sliceTargetKey(artifact.base()))
-                      .filter(SliceTargetValue.class::isInstance)
-                      .map(SliceTargetValue.class::cast)
-                      .flatMap(SliceTargetValue::owningBlueprint);
-    }
 
     record Dormant(ClusterDeploymentContext ctx) implements ClusterDeploymentState {
         @Contract
@@ -2380,19 +2288,19 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         // #760 review round 2 item a: the KVStore/TOML resolution itself is hoisted to the
-        // interface (ClusterDeploymentState#resolveDeclaredSchemaRequired) so SchemaRoutes.heldSlices
+        // interface (SchemaHold#resolveDeclaredSchemaRequired) so SchemaRoutes.heldSlices
         // can share it with the gate instead of two paths that could diverge. The DEBUG/WARN
         // logging stays here, on Active's own logger, unchanged from before the hoist — it fires
         // once per blueprint-change/restore event, not once per slice/schema pair.
         private boolean resolveSchemaRequired(BlueprintId blueprintId) {
-            return ClusterDeploymentState.resolveDeclaredSchemaRequired(ctx.kvStore(),
-                                                                        blueprintId)
-                                         .onPresent(value -> log.debug("schemaRequired resolved to {} for {} from declared deploymentConfig",
-                                                                       value,
-                                                                       blueprintId))
-                                         .onEmpty(() -> log.warn("schemaRequired unresolved for {}, defaulting to true (missing blueprint entry, resourcesConfig, or unparsable/incomplete resources.toml) — every slice of this blueprint will hold in LOADED until a schema migration record for its datasource reaches COMPLETED",
-                                                                 blueprintId))
-                                         .or(true);
+            return SchemaHold.resolveDeclaredSchemaRequired(ctx.kvStore(),
+                                                            blueprintId)
+                             .onPresent(value -> log.debug("schemaRequired resolved to {} for {} from declared deploymentConfig",
+                                                           value,
+                                                           blueprintId))
+                             .onEmpty(() -> log.warn("schemaRequired unresolved for {}, defaulting to true (missing blueprint entry, resourcesConfig, or unparsable/incomplete resources.toml) — every slice of this blueprint will hold in LOADED until a schema migration record for its datasource reaches COMPLETED",
+                                                     blueprintId))
+                             .or(true);
         }
 
         private Option<ExpandedBlueprint> capturePreviousBlueprint(ExpandedBlueprint expanded) {
@@ -2710,7 +2618,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// recorded: the worst case is attributing a failure to an owner that is about to change,
         /// never losing the record. For a ticket about lost records that is the right asymmetry.
         ///
-        /// Deliberately NOT the shared [ClusterDeploymentState#resolveSliceOwner(KVStore, Artifact)]
+        /// Deliberately NOT the shared [SchemaHold#resolveSliceOwner(KVStore, Artifact)]
         /// call alone: that method is item 1's single-source rule for the SCHEMA GATE, where
         /// convergence with `SchemaRoutes.heldSlices` is the whole point and one source is required.
         /// Here there is no second reader to converge with, and the requirement is the opposite —
@@ -2718,8 +2626,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private Option<BlueprintId> resolveOutcomeOwner(Artifact artifact) {
             return Option.option(blueprints.get(artifact))
                          .flatMap(Blueprint::owner)
-                         .orElse(() -> resolveSliceOwner(ctx.kvStore(),
-                                                         artifact));
+                         .orElse(() -> SchemaHold.resolveSliceOwner(ctx.kvStore(),
+                                                                    artifact));
         }
 
         /// #805 item 2. This write is a read-modify-write: it merges `artifact` into whatever
@@ -3104,15 +3012,16 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// prior `noBlockingSchemaRecords` collapsed the same scan into a single flag, which is all
         /// [#areSchemasReady(SliceNodeKey)] needs but nothing an operator-facing log could name.
         /// #805 item 1: owner resolution goes through the shared
-        /// [ClusterDeploymentState#resolveSliceOwner(KVStore, Artifact)] — the committed
+        /// [SchemaHold#resolveSliceOwner(KVStore, Artifact)] — the committed
         /// `SliceTargetValue` record — instead of the node-local [#blueprints] mirror, and the
         /// mirror's `schemaRequired` pre-filter is gone. Both were inputs the route did not share,
         /// so the gate and `SchemaRoutes.heldSlices` could disagree about the same slice even while
         /// calling one predicate. See that method for why dropping the pre-filter removes no check.
         private List<SchemaVersionValue> blockingSchemaRecords(SliceNodeKey sliceKey) {
-            return resolveSliceOwner(ctx.kvStore(),
-                                     sliceKey.artifact()).map(this::collectBlockingSchemaRecords)
-                                    .or(List.of());
+            return SchemaHold.resolveSliceOwner(ctx.kvStore(),
+                                                sliceKey.artifact())
+                             .map(this::collectBlockingSchemaRecords)
+                             .or(List.of());
         }
 
         private List<SchemaVersionValue> collectBlockingSchemaRecords(BlueprintId owner) {
@@ -3130,7 +3039,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// `my-app:1.0.0` to `my-app:1.0.1` still owns the records its earlier version wrote — the
         /// same rule `hasConflictingOwnership` and `BlueprintService`'s deploy-time gate apply.
         ///
-        /// #760 review BLOCKING 1: delegates to the shared [ClusterDeploymentState#blocksSliceActivation]
+        /// #760 review BLOCKING 1: delegates to the shared [SchemaHold#blocksSliceActivation]
         /// predicate instead of re-checking status/ownership inline, so this gate and
         /// `SchemaRoutes.heldSlices` cannot drift apart. `SliceState.LOADED` is passed explicitly —
         /// this method is reachable only from [#tryActivateIfDependenciesReady(SliceNodeKey)], itself
@@ -3140,7 +3049,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                               SchemaVersionValue value,
                                               KVStore<AetherKey, AetherValue> kvStore,
                                               List<SchemaVersionValue> blocking) {
-            if (ClusterDeploymentState.blocksSliceActivation(SliceState.LOADED, Option.some(owner), value, kvStore)) {
+            if (SchemaHold.blocksSliceActivation(SliceState.LOADED, Option.some(owner), value, kvStore)) {
                 blocking.add(value);
             }
         }

@@ -5338,7 +5338,7 @@ Returns schema migration status for all datasources.
 | `lastMigration` | string | Filename of the last migration recorded |
 | `status` | string | `PENDING`, `MIGRATING`, `COMPLETED`, `FAILED` |
 | `owningBlueprint` | string | Blueprint id (`group:artifact:version`) that declared the migrations. Whose slices this record holds while `status` is not `COMPLETED` |
-| `heldSlices` | string[] | Slices owned by this record's blueprint that are currently sitting in `LOADED` state and being held back from `ACTIVE` by a blocking `status` (#760). Requires BOTH a blocking status (`PENDING`, `MIGRATING`, or `FAILED`) AND at least one owned slice in `LOADED`; empty when `status` is `COMPLETED`, and equally empty under a blocking status if no owned slice is currently `LOADED` (e.g. already `ACTIVE`, or not yet loaded) `[mechanism: ClusterDeploymentState.blocksSliceActivation]` |
+| `heldSlices` | string[] | Slices owned by this record's blueprint that are currently sitting in `LOADED` state and being held back from `ACTIVE` by a blocking `status` (#760). Requires BOTH a blocking status (`PENDING`, `MIGRATING`, or `FAILED`) AND at least one owned slice in `LOADED`; empty when `status` is `COMPLETED`, and equally empty under a blocking status if no owned slice is currently `LOADED` (e.g. already `ACTIVE`, or not yet loaded) `[mechanism: SchemaHold.blocksSliceActivation]` |
 
 ### GET /api/v1/schema/status/{datasource}
 
