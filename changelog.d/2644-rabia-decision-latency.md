@@ -1,0 +1,2 @@
+### Fixed (2026-11-19 — #2644: Rabia decision latency was always recorded as 0)
+- **Rabia reports a real decision duration** (#2644). `RabiaEngine.commitDecision` passed a hard-coded `0` to `ConsensusMetrics.recordDecision`, so the average decision latency every consumer read was 0. Each slot now stamps the local monotonic time at which this node first held it, and the decision records the nanoseconds elapsed from that stamp. [verified: `RabiaEngineTest$DecisionLatency` (red on the old constant)]

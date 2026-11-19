@@ -4696,7 +4696,7 @@ public class RabiaEngine<C extends Command> {
 
     private void commitDecision(PhaseData<C> phaseData, Decision<C> decision) {
         if (phaseData.tryMarkDecided()) {
-            metrics.recordDecision(self, phaseData.phase(), decision.stateValue(), 0L);
+            metrics.recordDecision(self, phaseData.phase(), decision.stateValue(), phaseData.elapsedNanos());
             // Apply commands to state machine ONLY if it was a V1 decision with a non-empty batch
             if (decision.stateValue() == StateValue.V1 && !decision.value().commands().isEmpty()) {
                 commitChanges(phaseData, decision);
