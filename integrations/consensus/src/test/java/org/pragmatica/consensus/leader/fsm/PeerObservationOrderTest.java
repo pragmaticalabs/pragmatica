@@ -237,13 +237,13 @@ class PeerObservationOrderTest {
     }
 
     @Test
-    void sequencedEmptyView_keepsTheViewButAdvancesTheFence() {
+    void sequencedEmptyView_isStoredAndAdvancesTheFence() {
         node = Node.following();
 
         assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N3, List.of(), 3L))).as("a newer empty view is not stale").isTrue();
-        assertThat(node.ctx.currentTopology()).as("an empty view is never stored").containsExactlyElementsOf(ALL);
+        assertThat(node.ctx.currentTopology()).as("#3092 I1: an applied empty view is the view").isEmpty();
         assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N1, WITHOUT_N1, 2L))).as("older than the empty view").isFalse();
-        assertThat(node.ctx.currentTopology()).containsExactlyElementsOf(ALL);
+        assertThat(node.ctx.currentTopology()).isEmpty();
     }
 
     @Test
@@ -508,7 +508,7 @@ class PeerObservationOrderTest {
         node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, List.of(N1), 1L));
 
         assertThat(node.ctx.removeFromView(N1)).as("removing the last node is not applied").isFalse();
-        assertThat(node.ctx.currentTopology()).as("an empty view is never stored").containsExactly(N1);
+        assertThat(node.ctx.currentTopology()).as("a view-free removal never empties the view (only a sequenced view may, I1)").containsExactly(N1);
     }
 
     @Test
