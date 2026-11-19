@@ -65,6 +65,7 @@ class PeerObservationOrderTest {
     private static final NodeId N4 = new NodeId("node-4");
     private static final List<NodeId> ALL = List.of(N1, N2, N3);
     private static final List<NodeId> WITHOUT_N1 = List.of(N2, N3);
+    private static final List<NodeId> WITHOUT_N3 = List.of(N1, N2);
     private static final TimeSpan LONG = TimeSpan.timeSpan(60).seconds();
 
     private Node node;
@@ -535,23 +536,6 @@ class PeerObservationOrderTest {
         assertThat(node.ctx.currentTopology()).as("a newer transport view restores the node").containsExactlyElementsOf(ALL);
     }
 
-    /// Named gap S1 (#3044 design §2): a removal is not ordered against a NEWER transport restore of the same node that
-    /// arrived first on another route. Asserts today's behaviour: the node stays out until the next transport view.
-    @Test
-    void removalAfterNewerRestore_staysRemovedUntilNextTransportObservation_tripwire() {
-        node = new Node(LeaderElectionContext::dormant);
-        node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N3, List.of(N1, N2), 5L));
-        node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N3, ALL, 6L));
-
-        node.harness.dispatch(new PeerRemovedFromView(N3));
-
-        assertThat(node.ctx.currentTopology())
-            .as("periodic sequenced re-assertion landed: enable removalAfterNewerRestore_nodeReturnsWithinBound and delete this tripwire")
-            .containsExactly(N1, N2);
-        assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, ALL, 7L))).isTrue();
-        assertThat(node.ctx.currentTopology()).as("the next transport view restores the node").containsExactlyElementsOf(ALL);
-    }
-
     /// #3047: the transport still lists the removed node, so the re-assertion a removal arms re-reads the transport view
     /// under a fresh sequence and the node returns within the bound, with no other transport observation.
     @Test
@@ -570,6 +554,87 @@ class PeerObservationOrderTest {
         }
 
         assertThat(node.ctx.currentTopology()).as("re-asserted within the period, no other transport observation").contains(N3);
+    }
+
+    /// #3047, the binding ruling on #3092: the re-assertion adds only what the transport lists. A node the transport
+    /// dropped as well stays out, so an evicted node is never restored by it.
+    @Test
+    void reassertion_transportAlsoDroppedNode_staysOut() throws InterruptedException {
+        node = new Node(LeaderElectionContext::dormant);
+        var reads = new AtomicInteger();
+        var sequence = new AtomicLong(6L);
+        node.ctx.installTransportView(() -> countedView(reads, WITHOUT_N3, sequence), TimeSpan.timeSpan(100).millis());
+        node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, ALL, 6L));
+
+        node.harness.dispatch(new PeerRemovedFromView(N3));
+        awaitReads(reads, 1);
+
+        assertThat(node.ctx.currentTopology()).as("the transport does not list node-3").containsExactly(N1, N2);
+    }
+
+    /// #3047: removals inside one period share one re-assertion, so a burst costs one transport read, and a removal
+    /// after it arms the next.
+    @Test
+    void reassertion_removalsInOnePeriod_shareOneRead() throws InterruptedException {
+        node = new Node(LeaderElectionContext::dormant);
+        var reads = new AtomicInteger();
+        var sequence = new AtomicLong(6L);
+        node.ctx.installTransportView(() -> countedView(reads, ALL, sequence), TimeSpan.timeSpan(300).millis());
+        node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, ALL, 6L));
+
+        node.harness.dispatch(new PeerRemovedFromView(N3));
+        node.harness.dispatch(new PeerRemovedFromView(N1));
+        awaitReads(reads, 1);
+        Thread.sleep(600);
+
+        assertThat(reads.get()).as("one read for the burst").isEqualTo(1);
+        node.harness.dispatch(new PeerRemovedFromView(N3));
+        awaitReads(reads, 2);
+        assertThat(node.ctx.currentTopology()).as("restored again").containsExactlyElementsOf(ALL);
+    }
+
+    /// #3047: the manager's `installTransportView` is the production seam (the node wires the transport through it), and
+    /// it re-asserts within the default bound.
+    @Test
+    void installedThroughTheManager_nodeReturnsWithinTheDefaultBound() throws InterruptedException {
+        node = new Node(LeaderElectionContext::dormant);
+        var sequence = new AtomicLong(6L);
+        node.manager.installTransportView(() -> Option.some(TransportView.transportView(ALL, sequence.incrementAndGet())));
+        node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, ALL, 6L));
+
+        node.harness.dispatch(new PeerRemovedFromView(N3));
+        var deadline = System.nanoTime() + LeaderElectionContext.DEFAULT_REASSERT_PERIOD.nanos() * 3;
+        while (!node.ctx.currentTopology().contains(N3) && System.nanoTime() < deadline) {
+            Thread.sleep(50);
+        }
+
+        assertThat(node.ctx.currentTopology()).as("re-asserted within the default period").containsExactlyElementsOf(ALL);
+    }
+
+    /// #3047: a host with no transport view (local election, stubs) never re-asserts.
+    @Test
+    void reassertion_withoutTransportView_neverRestores() throws InterruptedException {
+        node = new Node(LeaderElectionContext::dormant);
+        node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, ALL, 6L));
+
+        node.harness.dispatch(new PeerRemovedFromView(N3));
+        Thread.sleep(400);
+
+        assertThat(node.ctx.currentTopology()).containsExactly(N1, N2);
+    }
+
+    private static Option<TransportView> countedView(AtomicInteger reads, List<NodeId> view, AtomicLong sequence) {
+        reads.incrementAndGet();
+        return Option.some(TransportView.transportView(view, sequence.incrementAndGet()));
+    }
+
+    private static void awaitReads(AtomicInteger reads, int expected) throws InterruptedException {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (reads.get() < expected && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        Thread.sleep(100);
     }
 
     /// The seven states that handle `NodeGone` handle the removal too (#3044 design §3.1).

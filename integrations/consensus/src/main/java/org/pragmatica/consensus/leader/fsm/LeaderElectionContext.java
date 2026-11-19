@@ -28,6 +28,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.utility.react.ReactExecutor;
 import org.pragmatica.statemachine.Fsm;
@@ -252,6 +253,7 @@ public final class LeaderElectionContext {
     /// [`#installTransportView`]: a host without a sequencing transport (local election, stubs) never re-asserts.
     private final AtomicReference<Option<Supplier<Option<TransportView>>>> transportView = new AtomicReference<>(Option.none());
 
+    private final AtomicBoolean reassertionArmed = new AtomicBoolean(false);
     private final AtomicReference<TimeSpan> reassertPeriod = new AtomicReference<>(DEFAULT_REASSERT_PERIOD);
     /// Leader pre-vote (#1748). Absent until [`#enablePreVote`]: without it a follower that loses the leader
     /// re-elects immediately, which is what local-election mode and the stubs that never wire a network need.
@@ -829,7 +831,39 @@ public final class LeaderElectionContext {
     /// sequence, so only a newer transport view undoes it. The check and the write are one atomic step with every
     /// other view write. Returns `true` iff the node was removed.
     public boolean removeFromView(NodeId node) {
-        return advanceView(new ViewCandidate.Remove(node));
+        var removed = advanceView(new ViewCandidate.Remove(node));
+
+        if (removed) {
+            armReassertion();
+        }
+
+        return removed;
+    }
+
+    /// #3047: a removal is the only event that can leave the view short of the transport's (SWIM removes a node whose
+    /// transport link stays up, and the transport emits nothing when it next agrees), so it arms ONE re-assertion
+    /// `reassertPeriod` later; removals inside that window share it. The delay is deliberate: re-reading at once would
+    /// undo the removal before it took effect. A host without a transport view arms nothing.
+    private void armReassertion() {
+        transportView.get().onPresent(this::scheduleReassertion);
+    }
+
+    private void scheduleReassertion(Supplier<Option<TransportView>> view) {
+        if (reassertionArmed.compareAndSet(false, true)) {
+            SharedScheduler.schedule(() -> reassert(view), reassertPeriod.get());
+        }
+    }
+
+    /// Disarms BEFORE it reads the transport, so a removal that lands after the read arms the next re-assertion. The
+    /// view goes through the FSM as a sequenced transport observation: the sequence fence admits it iff it is newer
+    /// than the stored view, and it never adds a node the transport does not list.
+    private void reassert(Supplier<Option<TransportView>> view) {
+        reassertionArmed.set(false);
+        view.get().onPresent(this::dispatchTransportView);
+    }
+
+    private void dispatchTransportView(TransportView view) {
+        fsm.dispatch(new ClusterFsmEvent.NodeAdded(self, view.topology(), view.sequence()));
     }
 
     private boolean applyTopology(List<NodeId> topology, long sequence) {
