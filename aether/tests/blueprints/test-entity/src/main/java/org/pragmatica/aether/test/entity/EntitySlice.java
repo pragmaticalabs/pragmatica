@@ -168,6 +168,9 @@ public interface EntitySlice {
     /// `NotCurrentOwner`. Asserting on the TYPE rather than on `failure` (the rendered message) keeps
     /// the proof anchored to the sealed cause hierarchy instead of to wording that may be reworded.
     ///
+    /// `transientFailure` is [Cause#isTransient()] of the failure: the product's own classification of "retry may
+    /// succeed", so a test that waits on a refusal keys on it instead of keeping a list of type names.
+    ///
     /// `token` carries a scheduled timer's handle in its own component rather than borrowing `status`: a
     /// gate that re-sends a schedule asserts the SAME token comes back, and reading that out of a field
     /// whose other meaning is the order's lifecycle would make the assertion unreadable.
@@ -175,6 +178,7 @@ public interface EntitySlice {
                           String outcome,
                           String failureType,
                           String failure,
+                          boolean transientFailure,
                           String status,
                           int amount,
                           int expiries,
@@ -192,15 +196,15 @@ public interface EntitySlice {
         }
 
         static EntityResponse absent(String instance) {
-            return new EntityResponse(instance, "absent", "", "", "", 0, 0, "");
+            return new EntityResponse(instance, "absent", "", "", false, "", 0, 0, "");
         }
 
         static EntityResponse deleted(String instance) {
-            return new EntityResponse(instance, "deleted", "", "", "", 0, 0, "");
+            return new EntityResponse(instance, "deleted", "", "", false, "", 0, 0, "");
         }
 
         static EntityResponse scheduled(String instance, DurableEntity.TimerToken token) {
-            return new EntityResponse(instance, "scheduled", "", "", "", 0, 0, token.value());
+            return new EntityResponse(instance, "scheduled", "", "", false, "", 0, 0, token.value());
         }
 
         static EntityResponse failed(String instance, Cause cause) {
@@ -208,6 +212,7 @@ public interface EntitySlice {
                                       "failed",
                                       cause.getClass().getSimpleName(),
                                       cause.message(),
+                                      cause.isTransient(),
                                       "",
                                       0,
                                       0,
@@ -215,7 +220,15 @@ public interface EntitySlice {
         }
 
         private static EntityResponse succeeded(String instance, String outcome, OrderState state) {
-            return new EntityResponse(instance, outcome, "", "", state.status(), state.amount(), state.expiries(), "");
+            return new EntityResponse(instance,
+                                      outcome,
+                                      "",
+                                      "",
+                                      false,
+                                      state.status(),
+                                      state.amount(),
+                                      state.expiries(),
+                                      "");
         }
     }
 
