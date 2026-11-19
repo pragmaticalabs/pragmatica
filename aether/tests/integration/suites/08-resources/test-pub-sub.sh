@@ -99,7 +99,10 @@ test_subscriber_receives_events() {
     assert_eq "$success" "$publish_count" "All $publish_count subscriber-batch publishes succeeded"
 
     # Wait until the events are readable (replication / partition routing), not a fixed sleep (#3424).
-    poll_until 30 _pubsub_events_delivered "$publish_count"
+    if ! poll_until 30 _pubsub_events_delivered "$publish_count"; then
+        log_fail "Fewer than ${publish_count} events readable on ${STREAM_NAME} partition 0 within 30s"
+        return 1
+    fi
 
     # Read events back via the streams read CLI
     # (STREAM_READ → /api/v1/streams/{namespace}/{stream}/{version}/read/<partition>).

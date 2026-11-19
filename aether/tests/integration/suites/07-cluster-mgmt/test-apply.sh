@@ -31,9 +31,19 @@ test_apply_config_override() {
     fi
 }
 
+# Predicate for poll_until: the marker applied above is readable on EVERY node (the same per-node read as
+# test_config_visible_on_all_nodes below). A healthy cluster says nothing about propagation (#3424).
+_marker_on_all_nodes() {
+    local i overrides
+    for i in $(seq 0 $((NODE_COUNT - 1))); do
+        overrides=$(node_api_get "$i" "/api/v1/config/overrides") || return 1
+        [ "$(json_value "$overrides" "test.integration.marker")" = "applied" ] || return 1
+    done
+}
+
 test_config_converges() {
-    # Wait on health itself, not a fixed sleep (#3424); the assertion below fails loudly at the deadline.
-    poll_until 30 cluster_is_healthy
+    # The removed `sleep 5` was the propagation grace for the per-node read below: wait on that read, not on health (#3424).
+    poll_until 30 _marker_on_all_nodes
     assert_cluster_healthy "Cluster healthy after config apply"
 }
 

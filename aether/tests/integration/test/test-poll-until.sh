@@ -4,6 +4,7 @@
 #   W2 a predicate already true: rc 0, FIRST=0 (a vacuous wait is visible to the caller)
 #   W3 a predicate that never turns true: rc 1 at the deadline (loud, never an endless wait, never a silent pass)
 #   W4 arguments reach the predicate; TIMEOUT_SCALE multiplies the deadline
+#   W5 a predicate that hangs (30 s) under a 3 s deadline: rc 1 within ~4 s (each call is bounded by the remaining deadline)
 #   Mutations: always-return-0 reddens W3; returning after the first poll reddens W1.   INTEG_DIR_UNDER_TEST selects another copy.
 set -uo pipefail
 unset TARGET_HOST AETHER_SSH_USER HCLOUD_TOKEN
@@ -34,6 +35,10 @@ argp() { [ "$1" = "a b" ] && [ "$2" = "x" ]; }
 poll_until 5 argp "a b" x; rc1=$?
 start=$SECONDS; TIMEOUT_SCALE=2 poll_until 1 never; rc2=$?; took=$((SECONDS - start))
 if [ "$rc1" -eq 0 ] && [ "$rc2" -eq 1 ] && [ "$took" -ge 2 ]; then ok "W4 arguments reach the predicate (quoted arg kept); TIMEOUT_SCALE=2 doubled a 1 s deadline (took ${took}s)"; else fail "W4 rc1=$rc1 rc2=$rc2 took=${took}s"; fi
+
+hang() { sleep 30; }   # sleep-ok: the hanging predicate is the fixture
+start=$SECONDS; poll_until 3 hang; rc=$?; took=$((SECONDS - start))
+if [ "$rc" -eq 1 ] && [ "$took" -le 5 ]; then ok "W5 a predicate that hangs 30 s under a 3 s deadline is cut: rc 1 after ${took}s, not 30"; else fail "W5 rc=$rc took=${took}s (a hanging predicate overran the deadline)"; fi
 
 echo "  passed: $PASS"; echo "  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

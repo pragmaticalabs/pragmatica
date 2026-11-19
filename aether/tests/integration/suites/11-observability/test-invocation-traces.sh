@@ -58,9 +58,11 @@ test_generate_traceable_requests() {
     TRACE_REQ_ID_1=$(_inject_trace "$TRACE_OP_1" 100 0) || return 1
     TRACE_REQ_ID_2=$(_inject_trace "$TRACE_OP_2" 250 1) || return 1
     TRACE_REQ_ID_3=$(_inject_trace "$TRACE_OP_3" 500 2) || return 1
-    # Wait until the three entries are observable from /api/v1/traces, not a fixed sleep (#3424); the field-level tests
-    # below fail loudly on an entry that never shows.
-    poll_until 15 _injected_traces_visible
+    # Wait until the three entries are observable from /api/v1/traces, not a fixed sleep (#3424); a timeout fails HERE.
+    if ! poll_until 15 _injected_traces_visible; then
+        log_fail "Injected traces not visible on /api/v1/traces within 15s: req1=${TRACE_REQ_ID_1} req2=${TRACE_REQ_ID_2} req3=${TRACE_REQ_ID_3}"
+        return 1
+    fi
     log_pass "Injected 3 synthetic traces: req1=${TRACE_REQ_ID_1} req2=${TRACE_REQ_ID_2} req3=${TRACE_REQ_ID_3}"
 }
 

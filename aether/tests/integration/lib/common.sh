@@ -1091,10 +1091,26 @@ _wait_for_poll_once() {
 # ---------------------------------------------------------------------------
 poll_until() {
     local timeout=$(( ${1:?poll_until: timeout} * ${TIMEOUT_SCALE:-1} )); shift
-    local deadline=$((SECONDS + timeout))
+    local deadline=$((SECONDS + timeout)) pid rc
     POLL_UNTIL_FIRST=""
     while :; do
-        "$@" > /dev/null 2>&1 && { [ -z "$POLL_UNTIL_FIRST" ] && POLL_UNTIL_FIRST=0; POLL_UNTIL_ELAPSED=$((SECONDS - deadline + timeout)); return 0; }
+        # Each call runs in the background so a hanging predicate is cut at the deadline instead of overrunning it (#3424).
+        # A predicate therefore cannot set variables in the caller's shell; it is judged by its exit code only.
+        "$@" > /dev/null 2>&1 < /dev/null &
+        pid=$!
+        while kill -0 "$pid" 2>/dev/null; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+                pkill -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null; { wait "$pid"; } 2>/dev/null
+                [ -z "$POLL_UNTIL_FIRST" ] && POLL_UNTIL_FIRST=1
+                POLL_UNTIL_ELAPSED=$timeout; return 1
+            fi
+            sleep 0.1
+        done
+        { wait "$pid" && rc=0 || rc=$?; } 2>/dev/null
+        if [ "$rc" -eq 0 ]; then
+            [ -z "$POLL_UNTIL_FIRST" ] && POLL_UNTIL_FIRST=0
+            POLL_UNTIL_ELAPSED=$((SECONDS - deadline + timeout)); return 0
+        fi
         [ -z "$POLL_UNTIL_FIRST" ] && POLL_UNTIL_FIRST=1
         if [ "$SECONDS" -ge "$deadline" ]; then POLL_UNTIL_ELAPSED=$timeout; return 1; fi
         sleep 0.5
