@@ -1835,7 +1835,7 @@ class HetznerComputeProviderTest {
         /// characters a firewall name keeps, so the name of the real firewall cannot contain the full prefix.
         @Test
         void createFrom_whenClusterNameIsLong_andFirewallLostSourceLabel_refusesToCreate() {
-            var longCluster = clusterName("c".repeat(58)).unwrap();
+            var longCluster = clusterName("c".repeat(56)).unwrap();
             var source = sourceNameOrDefault("hetzner-eu");
             var name = FirewallName.forSource(longCluster, source).value();
             var clusterSelector = "aether-cluster=" + longCluster.value();
@@ -1848,7 +1848,7 @@ class HetznerComputeProviderTest {
                                                ProvisionContext.forReplacement(Option.some(longCluster),
                                                                                "core",
                                                                                source,
-                                                                               "node-01",
+                                                                               "n0",
                                                                                "node-00:10.0.0.1:8090",
                                                                                3));
             testClient.firewallsBySelector.put(clusterSelector + ",aether-source=hetzner-eu", Promise.success(List.of()));
