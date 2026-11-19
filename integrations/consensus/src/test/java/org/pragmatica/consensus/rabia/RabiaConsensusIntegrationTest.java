@@ -531,14 +531,20 @@ class RabiaConsensusIntegrationTest {
         }
 
         void simulateProposal(NodeId sender, Batch<TestCommand> batch) {
-            var propose = new Propose<>(sender, Phase.ZERO, batch);
+            var propose = simulatedPropose(sender, Phase.ZERO, batch);
             for (var engine : engines.values()) {
                 engine.processPropose(propose);
             }
         }
 
+        /// A proposal as the sender's live process would make it: stamped with that engine's incarnation (#2625), so
+        /// it does not read as a second process under the same id.
+        private Propose<TestCommand> simulatedPropose(NodeId sender, Phase phase, Batch<TestCommand> batch) {
+            return new Propose<>(sender, 0, phase, batch, Option.none(), engines.get(sender).incarnationForTesting());
+        }
+
         void simulateProposalForPhase(NodeId sender, Phase phase, Batch<TestCommand> batch) {
-            var propose = new Propose<>(sender, phase, batch);
+            var propose = simulatedPropose(sender, phase, batch);
             for (var engine : engines.values()) {
                 engine.processPropose(propose);
             }

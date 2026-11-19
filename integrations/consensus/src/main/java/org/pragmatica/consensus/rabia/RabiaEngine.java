@@ -2195,6 +2195,12 @@ public class RabiaEngine<C extends Command> {
         return currentPhase.get();
     }
 
+    /// Package-private test hook: this process's incarnation (#2625), so a test that simulates a proposal from
+    /// a live engine's node stamps it as that process would.
+    Incarnation incarnationForTesting() {
+        return incarnation;
+    }
+
     /// Package-private test hook: number of pending batches awaiting consensus.
     /// Used by R1 unit tests to verify state retention across pause/resume.
     int pendingBatchCountForTesting() {
