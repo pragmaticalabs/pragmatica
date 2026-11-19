@@ -871,6 +871,21 @@ class ClusterEventAggregatorTest {
         assertThat(h.aggregator().lastRaisedOperatorWarning().map(e -> e.details().get("code"))).isEqualTo(Option.some("observer-consensus-lagging"));
     }
 
+    /// #3403 — the raised history keeps an earlier warning after a later one replaced it in the single most-recent slot; this
+    /// is what tests that wait for a specific code read. Reading the slot here instead of the history turns this red.
+    @Test
+    void raisedOperatorWarnings_keepsTheEarlierWarning_whenALaterOneReplacesTheLastRaisedSlot() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfIsVoter(() -> false);
+        h.aggregator().bindSelfCoreAbsenceDrain(() -> false);
+        h.aggregator().onOperatorWarning(coreAbsenceFence());
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+
+        assertThat(h.aggregator().lastRaisedOperatorWarning().map(e -> e.details().get("code"))).isEqualTo(Option.some("observer-consensus-lagging"));
+        assertThat(h.aggregator().raisedOperatorWarnings().stream().map(e -> e.details().get("code")).toList())
+            .containsExactly("core-absence-fence", "observer-consensus-lagging");
+    }
+
     /// #2439 — the exemption is scoped to the observer branch: a VOTER whose PASSIVE arrives during a core-absence drain
     /// still raises CRITICAL `QuorumLost`. Hoisting the guard above the voter check turns this red.
     @Test

@@ -17,7 +17,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
-import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -145,13 +144,7 @@ class AetherNodeKvDispatcherWiringBootTest {
     }
 
     private static boolean slowHandlerRaised(AetherNode node, String subject) {
-        return node.eventAggregator()
-                   .lastRaisedOperatorWarning()
-                   .filter(ClusterEvent.OperatorWarning.class::isInstance)
-                   .map(ClusterEvent.OperatorWarning.class::cast)
-                   .filter(event -> "kv-dispatch-slow-handler".equals(event.details().get("code")))
-                   .filter(event -> subject.equals(event.details().get("subject")))
-                   .isPresent();
+        return RaisedWarnings.raised(node.eventAggregator(), "kv-dispatch-slow-handler", subject);
     }
 
     private static boolean eventually(java.util.function.BooleanSupplier condition) throws InterruptedException {

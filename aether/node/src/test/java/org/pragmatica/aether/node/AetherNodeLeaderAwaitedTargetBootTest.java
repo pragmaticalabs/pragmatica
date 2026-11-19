@@ -8,7 +8,6 @@ import java.time.Duration;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
-import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentContext;
@@ -147,15 +146,9 @@ class AetherNodeLeaderAwaitedTargetBootTest {
                          .unwrap();
         node.start().await(START_BOUND).onFailure(cause -> fail("start() must succeed: " + cause.message()));
 
-        await().atMost(Duration.ofSeconds(40)).untilAsserted(() -> assertThat(storageWarningCode(node.eventAggregator().lastRaisedOperatorWarning()))
-                .startsWith("storage-"));
-    }
-
-    private static String storageWarningCode(Option<ClusterEvent> raised) {
-        return raised.filter(ClusterEvent.OperatorWarning.class::isInstance)
-                     .map(ClusterEvent.OperatorWarning.class::cast)
-                     .map(warning -> String.valueOf(warning.details().get("code")))
-                     .or("none");
+        // A storage warning was RAISED on the aggregator, whatever was raised after it (#3403: the single most-recent slot was
+        // overwritten by kv-dispatch-lagging).
+        RaisedWarnings.awaitCodePrefix(node.eventAggregator(), "storage-", Duration.ofSeconds(40));
     }
 
     private static AetherNodeConfig minimalConfig(NodeId self, Path storageRoot, DeploymentEngine engine) {

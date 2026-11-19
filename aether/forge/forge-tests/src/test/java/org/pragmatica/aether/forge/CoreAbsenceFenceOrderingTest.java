@@ -25,6 +25,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -256,13 +257,19 @@ class CoreAbsenceFenceOrderingTest {
         // AetherNode binds. It cannot reach the cluster event log from an isolated node (that is the case the
         // log line exists for), so this reads the worker's aggregator directly. Unbinding the sink in
         // AetherNode leaves it empty.
+        // Reads the raised history, not the single most-recent slot: another warning raised by the isolated worker after the
+        // fence must not hide it (#3403).
         await().atMost(Duration.ofSeconds(5))
                .pollInterval(POLL)
-               .until(() -> workerEvents.lastRaisedOperatorWarning().isPresent());
+               .untilAsserted(() -> assertThat(fenceWarnings()).as("a 'core-absence-fence' warning was raised on the isolated worker; raised codes: %s",
+                                                                   workerEvents.raisedOperatorWarnings()
+                                                                               .stream()
+                                                                               .map(event -> event.details().get("code"))
+                                                                               .toList())
+                                                              .isNotEmpty());
 
-        var warning = workerEvents.lastRaisedOperatorWarning().unwrap();
+        var warning = fenceWarnings().getFirst();
 
-        assertThat(warning).isInstanceOf(ClusterEvent.OperatorWarning.class);
         assertThat(warning.severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
         assertThat(warning.details()).containsEntry("code", "core-absence-fence")
                                      .containsEntry("nodeId", worker)
@@ -383,5 +390,14 @@ class CoreAbsenceFenceOrderingTest {
     private Option<CoreAbsenceSnapshot> snapshot(String nodeId) {
         return cluster.getNode(nodeId)
                       .flatMap(node -> node.coreAbsenceSnapshot());
+    }
+
+    private List<ClusterEvent.OperatorWarning> fenceWarnings() {
+        return workerEvents.raisedOperatorWarnings()
+                           .stream()
+                           .filter(ClusterEvent.OperatorWarning.class::isInstance)
+                           .map(ClusterEvent.OperatorWarning.class::cast)
+                           .filter(event -> "core-absence-fence".equals(event.details().get("code")))
+                           .toList();
     }
 }
