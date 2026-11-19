@@ -45,6 +45,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
@@ -525,7 +526,9 @@ class BlueprintPublishOwnershipTest {
                                                                                        "U00" + version + "__undo",
                                                                                        SchemaStatus.COMPLETED,
                                                                                        OWNER.asString(),
-                                                                                       OWNER)));
+                                                                                       OWNER,
+                                                                                       0,
+                                                                                       SchemaReach.UNDONE)));
     }
 
     private static void assertReapplyRefused(Cause cause) {
