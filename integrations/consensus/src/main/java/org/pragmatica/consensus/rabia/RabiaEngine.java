@@ -1748,10 +1748,11 @@ public class RabiaEngine<C extends Command> {
                  : "voter",
                  currentPhase.get(),
                  pendingBatches.size());
-        // Replay through the live ordering guard. A remaining gap starts synchronization;
-        // only a decision at the applied frontier can mutate the state machine.
-        drainBufferedDecisions();
+        // Restore announce before the buffered Decisions, as in [#activate] (#3452). Then replay through
+        // the live ordering guard: a remaining gap starts synchronization; only a decision at the applied
+        // frontier can mutate the state machine.
         announceRestoreIfPending();
+        drainBufferedDecisions();
         if (!pendingBatches.isEmpty() || requestedConfiguration.isPresent()) {
             safeExecute(this::startPhase);
         }
@@ -3658,11 +3659,12 @@ public class RabiaEngine<C extends Command> {
         syncRounds.set(0);
         metrics.recordSyncAttempt(self, true);
         log.info("Node {} activated in phase {}", self, currentPhase.get());
-        // Drain any Decisions that were buffered while the engine was Stopped/Syncing.
-        // Must happen AFTER engineState=Idle so that `handleDecision`'s state guard accepts
-        // re-applied Decisions, and AFTER the Idle-restore so phase-filter math is correct.
-        drainBufferedDecisions();
+        // Announce the restore (world-as-of-N), THEN drain the Decisions buffered while the engine was
+        // Stopped/Syncing (N+1 onward, #3452). The drain must happen AFTER engineState=Idle so that
+        // `handleDecision`'s state guard accepts re-applied Decisions, and AFTER the Idle-restore so
+        // phase-filter math is correct; a gap it finds may start synchronization, after the announce.
         announceRestoreIfPending();
+        drainBufferedDecisions();
         safeExecute(this::startPhase);
     }
 
@@ -3679,8 +3681,9 @@ public class RabiaEngine<C extends Command> {
         syncRounds.set(0);
         metrics.recordSyncAttempt(self, true);
         log.info("Node {} activated in observer mode at phase {}", self, currentPhase.get());
-        drainBufferedDecisions();
+        // Restore announce before the buffered Decisions, as in [#activate] (#3452).
         announceRestoreIfPending();
+        drainBufferedDecisions();
     }
 
     /// Cancels any timers owned by the old state during a transition.
