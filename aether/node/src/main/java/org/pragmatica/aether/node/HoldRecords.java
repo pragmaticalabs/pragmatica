@@ -142,12 +142,12 @@ public interface HoldRecords {
 
         record OtherEpisode(String requested, Option<HeldReport> current, String message) implements HoldRefusal {
             static final Fn2<OtherEpisode, String, Option<HeldReport>> FACTORY = Causes.forTwoValues("Episode %s is not the held episode; current report: %s",
-                                                                                             OtherEpisode::new);
+                                                                                                     OtherEpisode::new);
         }
 
         record StaleDigest(String requested, Option<HeldReport> current, String message) implements HoldRefusal {
             static final Fn2<StaleDigest, String, Option<HeldReport>> FACTORY = Causes.forTwoValues("Confirmation %s does not match the current report: %s",
-                                                                                            StaleDigest::new);
+                                                                                                    StaleDigest::new);
         }
 
         record AlreadyAccepted(String episode, String message) implements HoldRefusal {
@@ -370,8 +370,7 @@ public interface HoldRecords {
                                        .or(List.of());
 
                     raises.forEach(raise -> update(nodeId,
-                                                   current -> current.changed(raise.episode(),
-                                                                              Episode::claimed)));
+                                                   current -> current.changed(raise.episode(), Episode::claimed)));
 
                     return raises;
                 }
@@ -487,13 +486,10 @@ public interface HoldRecords {
         LOSS_ACCEPTED(true),
         DEATH(true),
         SUPERSEDED(false);
-
         private final boolean possibleLoss;
-
         Closer(boolean possibleLoss) {
             this.possibleLoss = possibleLoss;
         }
-
         boolean possibleLoss() {
             return possibleLoss;
         }
@@ -529,11 +525,14 @@ public interface HoldRecords {
         Retry settled(boolean landed, long now) {
             return landed
                    ? idle()
-                   : retry(false, failures + 1, now + Math.min(MAX_MS, BASE_MS << Math.min(failures, 6)));
+                   : retry(false,
+                           failures + 1,
+                           now + Math.min(MAX_MS, BASE_MS << Math.min(failures, 6)));
         }
 
         boolean allows(long now, boolean onTick) {
-            return ! inFlight && (failures == 0 || onTick && now >= notBefore);
+            return ! inFlight
+                   && (failures == 0 || onTick && now >= notBefore);
         }
 
         /// A raise of this episode went out (in flight or not landed); with a landed one, the at-risk warning was raised.
@@ -619,13 +618,27 @@ public interface HoldRecords {
 
         /// Opened by its first report (R2); a first report that already ended opens it closed.
         static Episode first(HeldReport report, long now) {
-            return episode(report.episode(), Option.none(), now, Option.none(), false, Option.none(), false, Retry.idle()).reported(report);
+            return episode(report.episode(),
+                           Option.none(),
+                           now,
+                           Option.none(),
+                           false,
+                           Option.none(),
+                           false,
+                           Retry.idle()).reported(report);
         }
 
         /// Opened from the event log by a new leader: no report yet, raised at once on the first report (same subject); its
         /// override is checked against the form its landed at-risk warning named (H8).
         static Episode seededAt(Seed seed, long now) {
-            return episode(seed.episode(), Option.none(), now, Option.some(seed.form()), false, Option.none(), false, Retry.idle());
+            return episode(seed.episode(),
+                           Option.none(),
+                           now,
+                           Option.some(seed.form()),
+                           false,
+                           Option.none(),
+                           false,
+                           Retry.idle());
         }
 
         boolean open() {
@@ -691,7 +704,7 @@ public interface HoldRecords {
         /// the episode ends silently (nothing to land).
         private Closing owing(Closing closed) {
             var owed = warningLanded || seeded.isPresent() || raising.attempted() || accepting || closed.kind()
-                                                                                                      .possibleLoss();
+                                                                                                        .possibleLoss();
 
             return owed
                    ? closed
@@ -712,7 +725,14 @@ public interface HoldRecords {
         }
 
         Episode claimed() {
-            return episode(episode, lastReport, firstSeenMillis, seeded, warningLanded, closing, accepting, raising.claimed());
+            return episode(episode,
+                           lastReport,
+                           firstSeenMillis,
+                           seeded,
+                           warningLanded,
+                           closing,
+                           accepting,
+                           raising.claimed());
         }
 
         /// The outcome of a raise of this episode: clears the in-flight mark (a raise that did not land waits its backoff, H11);
@@ -786,8 +806,7 @@ public interface HoldRecords {
             return lastReport.map(report -> matches(report, confirmation))
                              .orElse(() -> seeded.map(confirmation::equals))
                              .map(confirmed -> checked(nodeId, requested, confirmation, confirmed))
-                             .or(() -> HoldRefusal.NotHeld.FACTORY.apply(nodeId)
-                                                                  .result());
+                             .or(() -> HoldRefusal.NotHeld.FACTORY.apply(nodeId).result());
         }
 
         private Result<LossAccepted> checked(NodeId nodeId,
@@ -865,9 +884,7 @@ public interface HoldRecords {
         public static Drainer drainer(NodeId nodeId, List<Episode> episodes, boolean departed) {
             return new Drainer(nodeId,
                                departed
-                               ? episodes.stream()
-                                         .map(Episode::released)
-                                         .toList()
+                               ? episodes.stream().map(Episode::released).toList()
                                : List.copyOf(episodes),
                                departed);
         }
@@ -1016,7 +1033,8 @@ public interface HoldRecords {
 
             return opened.entrySet()
                          .stream()
-                         .map(entry -> Seed.seed(entry.getKey(), entry.getValue()))
+                         .map(entry -> Seed.seed(entry.getKey(),
+                                                 entry.getValue()))
                          .sorted(Comparator.comparingLong(seed -> Episode.stamp(seed.episode())))
                          .toList();
         }
@@ -1128,9 +1146,9 @@ public interface HoldRecords {
                                                   + " (" + accepted.confirmation()
                                                                    .render()
                                                   + ")" + accepted.report()
-                                                                 .map(held -> "; first keys: " + String.join(",",
-                                                                                                             held.sampleKeys()))
-                                                                 .or(""));
+                                                                  .map(held -> "; first keys: " + String.join(",",
+                                                                                                              held.sampleKeys()))
+                                                                  .or(""));
         }
 
         private static String acceptedClause(HeldReport report) {
@@ -1159,6 +1177,7 @@ public interface HoldRecords {
         }
 
         private static final String NO_REPORT = "no report of this episode reached this leader; checked against its landed at-risk warning";
+
         private static final String EXITS = "Exits: a holder acknowledges them (a target returns or stops refusing), or, while a leader is reachable, `";
 
         private static String heldClause(HeldReport report) {
@@ -1173,6 +1192,7 @@ public interface HoldRecords {
                    : "";
         }
 
+        /// Inverse pair: [Drainer#formOf] reads this form back from a landed at-risk warning (H8); a change here moves it too.
         private static String exitCommand(NodeId nodeId, String episode, HeldReport report) {
             return "aether node drain accept-loss " + nodeId.id()
                  + " --episode " + episode
