@@ -68,8 +68,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// in V ([#drainTargets]); at a close (a passed exit or the deadline) that holder must also have passed a probe sent after the ack.
 /// Every decision asks this ONE predicate ([#safe], I2): the re-plan, the send, resend and split of a page, the exit and the close.
 /// `Owed = inventory - Safe`. Nothing else counts: not responsible-set membership, not a plan-time survivor,
-/// not a target without an ack. Pages of x's previous tenure are dropped from the registry at x's removal edge, so an ack for one
-/// finds no page; within one tenure a late ack (its page cancelled by a re-plan) still counts.
+/// not a target without an ack. A page of x's previous tenure is dead from the next re-plan on (never sent, split or acked, its keys
+/// are paged again in the current tenure); within one tenure a late ack (its page cancelled by a re-plan) still counts.
 ///
 /// **Re-plan.** One serial [#reconcile] on exactly three triggers: a change of V ([#onViewChange], called after each ring change),
 /// a holder lost (a token mismatch, a "draining" nack, a failed probe), and the start and each exit attempt. Acks and nacks never
@@ -100,7 +100,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// the time it entered the inventory) only shapes the events: `onSoleCopyAtRisk` once, at plan time when a sole key has no
 /// deliverer or the window is already used up (or the inventory was not enumerated), else at the deadline when a sole key is
 /// owed; `onSoleCopyDelivered` at the end iff it was raised and no sole key is owed, `onIncompleteReport` at the end iff anything
-/// is owed. After a halt nothing more is sent or raised.
+/// is owed. After a halt nothing more is sent or raised, and the run resolves within one `resendAfter` of it.
 ///
 /// **Concurrency.** Every read and write of run state happens under `transitions`, which is never held across a send, an await or
 /// an observer call; log lines and observer calls queued under it run after it is released, in queue order ([#runEffects]).
@@ -180,7 +180,7 @@ final class DeparturePushRun {
     /// The outcome of one reconcile: the chains to start once `transitions` is released.
     private record Plan(List<List<Page>> chains) {}
 
-    /// One departure page, registered under its correlation id until its target's removal edge or the end of the run.
+    /// One departure page, registered under its correlation id until the end of the run; a page that is no longer current never counts.
     static final class Page {
         private final DeparturePushRun run;
         private final String correlationId;
