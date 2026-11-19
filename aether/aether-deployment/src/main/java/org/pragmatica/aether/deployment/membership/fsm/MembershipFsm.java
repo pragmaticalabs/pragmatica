@@ -1021,10 +1021,14 @@ public final class MembershipFsm {
         return snapshot;
     }
 
-    /// Age (ms) of `id`'s membership tracking: wall-clock time since this manager FIRST began
-    /// tracking the member (its [`MemberTracking`] creation on first observation), on the
-    /// manager's injected wall clock — `none()` for an untracked id. The creation stamp is
-    /// retained across DEAD/rejoin (the tracking is never recreated), which is deliberate: the
+    /// Age (ms) of `id`'s membership: wall-clock time since this manager FIRST saw first-hand
+    /// reachability evidence for the member ([`MemberTracking#everReachable`] latching), on the
+    /// manager's injected wall clock — `none()` for an untracked id. A tracked member that has not
+    /// been reached yet (a configured seed promoted at wiring, or a descriptor-only observation) has
+    /// not joined: its age is 0, so a seed that joins long after wiring is young at its join (#1880).
+    /// This node's own tracking is never reached by itself, so its age stays 0; the grace never reads it (self is never a victim).
+    /// Member identity (tracking) and join age (the latch stamp) are set by the same latch, with no
+    /// timer. The stamp is retained across DEAD/rejoin (the latch never clears), which is deliberate: the
     /// descriptor is retained too, so a rejoining member's role is already known and the
     /// role-propagation race this age guards against does not re-open. Consumer: the
     /// `LeaderReconciler` drain-safety grace (cluster-topology-overhaul Wave 2) — a surplus-drain
@@ -1032,7 +1036,7 @@ public final class MembershipFsm {
     /// just-joined worker whose role labels are still propagating reads as a blank-role core
     /// surplus and is drained.
     public Option<Long> memberAgeMs(NodeId id) {
-        return Option.option(members.get(id)).map(tracking -> wallClockMs.getAsLong() - tracking.firstTrackedAtMs());
+        return Option.option(members.get(id)).map(tracking -> tracking.reachableAgeMs(wallClockMs.getAsLong()));
     }
 
     // --- Projections (desired connection-set for the transport executor) ---
@@ -1583,7 +1587,7 @@ public final class MembershipFsm {
                                           this::emitTransition,
                                           this::emitMembershipDelta,
                                           this::reachabilityLatchedEdge,
-                                          wallClockMs.getAsLong(),
+                                          wallClockMs,
                                           departureTimeout,
                                           joinGrace,
                                           node -> joinGraceReapEligibility.test(node),
@@ -1658,11 +1662,16 @@ public final class MembershipFsm {
         /// fresh DEAD edge of a previously-JOINED member). Cheap payload, fired under this
         /// monitor; the upstream listener must be non-blocking.
         private final Consumer<MembershipDeltaEdge> deltaSink;
-        /// Wall-clock stamp (ms, the manager's injected clock) of this tracking's creation —
-        /// the member's first observation. Immutable: retained across DEAD/rejoin (the tracking
-        /// is never recreated), matching the descriptor-retention rationale documented on
-        /// [`MembershipFsm#memberAgeMs`]. Final → safe to read without the per-member monitor.
-        private final long firstTrackedAtMs;
+        /// The manager's injected wall clock, read once when [`#everReachable`] latches.
+        private final LongSupplier wallClockMs;
+        /// Wall-clock stamp (ms) at which [`#everReachable`] first latched — the member's join instant
+        /// for the drain-safety grace ([`MembershipFsm#memberAgeMs`], #1880); [`#NOT_REACHED`] until
+        /// then. Written once, under the per-member monitor, by [`#latchReachable`]; volatile so the
+        /// age read needs no monitor. Retained across DEAD/rejoin like the latch itself.
+        private volatile long reachableSinceMs = NOT_REACHED;
+
+        private static final long NOT_REACHED = -1L;
+
         /// Serialises one member's WHOLE logical transition — the state change AND the listener
         /// fan-out — without holding the per-member state monitor across the fan-out (#929).
         ///
@@ -1797,7 +1806,7 @@ public final class MembershipFsm {
                                Consumer<MembershipTransitionRecord> transitionSink,
                                Consumer<MembershipDeltaEdge> deltaSink,
                                Consumer<NodeId> onReachabilityLatched,
-                               long firstTrackedAtMs,
+                               LongSupplier wallClockMs,
                                TimeSpan departureTimeout,
                                TimeSpan joinGrace,
                                Predicate<NodeId> joinGraceReapEligibility,
@@ -1815,16 +1824,20 @@ public final class MembershipFsm {
             this.transitionSink = transitionSink;
             this.deltaSink = deltaSink;
             this.onReachabilityLatched = onReachabilityLatched;
-            this.firstTrackedAtMs = firstTrackedAtMs;
+            this.wallClockMs = wallClockMs;
             this.departureTimeout = departureTimeout;
             this.joinGrace = joinGrace;
             this.joinGraceReapEligibility = joinGraceReapEligibility;
         }
 
-        /// Creation stamp (ms) of this tracking — the member's first observation on the
-        /// manager's wall clock. Final field; monitor-free read.
-        long firstTrackedAtMs() {
-            return firstTrackedAtMs;
+        /// Age (ms) of the member at `nowMs`: time since first reachability evidence, or 0 while the
+        /// member has not been reached (it has not joined). Monitor-free read.
+        long reachableAgeMs(long nowMs) {
+            var since = reachableSinceMs;
+
+            return since == NOT_REACHED
+                   ? 0L
+                   : nowMs - since;
         }
 
         /// Run a MULTI-STEP driver operation with this member's [`#transitionGuard`] held (#929).
@@ -1978,8 +1991,17 @@ public final class MembershipFsm {
         /// Folding them together is the mistake that would reintroduce quorum flap.
         private void trackReachabilityEvidence(MembershipEvent event) {
             switch (event) {
-                case PeerConnected _, SwimHealthy _, MembershipEvent.GovernorHealthy _, MembershipEvent.WorkerAdmissionHealthy _ -> everReachable = true;
+                case PeerConnected _, SwimHealthy _, MembershipEvent.GovernorHealthy _, MembershipEvent.WorkerAdmissionHealthy _ -> latchReachable();
                 default -> {}
+            }
+        }
+
+        /// Latch [`#everReachable`] and stamp the join instant, once. Runs under the per-member monitor.
+        @Contract
+        private void latchReachable() {
+            if (!everReachable) {
+                everReachable = true;
+                reachableSinceMs = wallClockMs.getAsLong();
             }
         }
 

@@ -206,7 +206,7 @@ public final class LeaderReconciler {
     /// other reconciler decision gate) and comfortably above the worst-case role-propagation
     /// time (ANNOUNCE → gossip → Hello descriptor, seconds); ×2 keeps it tied to the single
     /// membership timing constant (`nttDepartureTimeout`) rather than introducing a new literal.
-    /// Age source: [`MembershipFsm#memberAgeMs`] (first-tracked stamp on the FSM's wall clock).
+    /// Age source: [`MembershipFsm#memberAgeMs`] (time since first reachability evidence on the FSM's wall clock; 0 before it).
     private final TimeSpan drainSafetyGraceWindow;
     /// Status-poll cadence for in-flight replacements (#1049) — see [`#computeInFlightPollInterval`].
     private final TimeSpan inFlightPollInterval;

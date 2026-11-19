@@ -1917,7 +1917,7 @@ class MembershipFsmTest {
     }
 
     /// Drain-safety grace age source ([`MembershipFsm#memberAgeMs`], cluster-topology-overhaul
-    /// Wave 2): wall-clock age since the member's FIRST observation (tracking creation), on the
+    /// Wave 2): wall-clock age since the member's FIRST reachability evidence (0 before it), on the
     /// manager's injected clock; `none()` for an untracked id; retained across DEAD/rejoin (the
     /// descriptor is retained too, so the role-propagation race the consumer guards against does
     /// not re-open on rejoin).
