@@ -1934,6 +1934,19 @@ class MembershipFsmTest {
         }
 
         @Test
+        void memberAgeMs_seededThenJoinedLater_countsFromFirstReachability() {
+            var clock = new AtomicLong(1_000L);
+            var manager = MembershipFsm.membershipFsm(FsmObserver.noop(), clock::get, NO_HINT_DECAY, SHORT_BACKSTOP);
+
+            manager.seed(Set.of(A));
+            clock.set(101_000L);
+            assertThat(manager.memberAgeMs(A)).as("seeded but never reached: it has not joined yet").isEqualTo(Option.some(0L));
+            manager.onSwimHealthy(A, 1L);
+            clock.set(106_000L);
+            assertThat(manager.memberAgeMs(A)).as("age runs from the first reachability evidence, not from the seed").isEqualTo(Option.some(5_000L));
+        }
+
+        @Test
         void memberAgeMs_untrackedId_isNone() {
             var manager = activeManager();
 
