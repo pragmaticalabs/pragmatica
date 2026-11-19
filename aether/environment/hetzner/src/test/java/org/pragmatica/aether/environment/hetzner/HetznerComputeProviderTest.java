@@ -42,6 +42,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
+import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.environment.ClusterName.clusterName;
@@ -1561,13 +1563,17 @@ class HetznerComputeProviderTest {
         }
 
         private ProvisionRequest replacementRequest(SourceName sourceName) {
+            return replacementRequestFor(CLUSTER, sourceName);
+        }
+
+        private static ProvisionRequest replacementRequestFor(ClusterName cluster, SourceName sourceName) {
             return new ProvisionRequest(InstanceType.ON_DEMAND,
                                         "cx22",
                                         "ubuntu-24.04",
                                         "fsn1",
                                         Option.empty(),
                                         MarketOptions.ON_DEMAND,
-                                        ProvisionContext.forReplacement(Option.some(CLUSTER),
+                                        ProvisionContext.forReplacement(Option.some(cluster),
                                                                         "core",
                                                                         sourceName,
                                                                         "node-01",
@@ -1836,35 +1842,98 @@ class HetznerComputeProviderTest {
         @Test
         void createFrom_whenClusterNameIsLong_andFirewallLostSourceLabel_refusesToCreate() {
             var longCluster = clusterName("c".repeat(56)).unwrap();
-            var source = sourceNameOrDefault("hetzner-eu");
-            var name = FirewallName.forSource(longCluster, source).value();
-            var clusterSelector = "aether-cluster=" + longCluster.value();
-            var request = new ProvisionRequest(InstanceType.ON_DEMAND,
-                                               "cx22",
-                                               "ubuntu-24.04",
-                                               "fsn1",
-                                               Option.empty(),
-                                               MarketOptions.ON_DEMAND,
-                                               ProvisionContext.forReplacement(Option.some(longCluster),
-                                                                               "core",
-                                                                               source,
-                                                                               "n0",
-                                                                               "node-00:10.0.0.1:8090",
-                                                                               3));
-            testClient.firewallsBySelector.put(clusterSelector + ",aether-source=hetzner-eu", Promise.success(List.of()));
-            testClient.firewallsBySelector.put(clusterSelector,
-                                               Promise.success(List.of(new Firewall(94,
-                                                                                    name,
-                                                                                    List.of(),
-                                                                                    Map.of("aether-cluster", longCluster.value())))));
 
-            replacementProvider().createFrom(request)
+            assertThat(refusesWhenSourceLabelLost(longCluster)).as("#3292: long cluster name must not defeat the name arm")
+                                                               .isTrue();
+        }
+
+        /// #3292: the cluster-label-lost arm and the source-label-lost arm both match by name, so BOTH are swept over
+        /// every legal cluster-name length (1..63, the [ClusterName] bound) in two shapes. Length 55 is the one where
+        /// `aether-<cluster>-` is exactly 63 characters and the cut leaves a trailing hyphen to trim: a hand-built
+        /// prefix missed it and a duplicate firewall-less node was provisioned.
+        @Test
+        void createFrom_acrossEveryClusterNameLength_refusesWhenClusterLabelLost() {
+            assertThat(lengthsNotRefused(this::refusesWhenClusterLabelLost)).as("cluster-name lengths provisioned unfirewalled")
+                                                                            .isEmpty();
+        }
+
+        @Test
+        void createFrom_acrossEveryClusterNameLength_refusesWhenSourceLabelLost() {
+            assertThat(lengthsNotRefused(this::refusesWhenSourceLabelLost)).as("cluster-name lengths provisioned unfirewalled")
+                                                                           .isEmpty();
+        }
+
+        /// #3292: the cut at 63 lands on a hyphen here (`aether-` + 55 `c` + `-x`: the 63rd character is the hyphen),
+        /// so the derived name is `aether-ccc...c` and ends without it. A prefix keeping the hyphen never matches.
+        @Test
+        void createFrom_whenTheCutExposesTrailingHyphen_refusesWhenClusterLabelLost() {
+            var cluster = clusterName("c".repeat(55) + "-x").unwrap();
+
+            assertThat(FirewallName.forSource(cluster, SOURCE).value()).doesNotEndWith("-");
+            assertThat(refusesWhenClusterLabelLost(cluster)).as("trailing-hyphen trim").isTrue();
+        }
+
+        /// #3292: clusters sharing a name prefix (`prod` and `prod-eu`) share the name prefix too. An unlabelled
+        /// `aether-prod-eu-...` firewall therefore refuses cluster `prod` — an OVER-refusal that names a firewall
+        /// to restore or remove, never an adoption: nothing is attached to anything.
+        @Test
+        void createFrom_whenOtherClustersUnlabelledFirewallSharesThePrefix_refusesRatherThanAdopts() {
+            var prod = clusterName("prod").unwrap();
+            testClient.firewallsBySelector.put("aether-cluster=prod,aether-source=hetzner-eu", Promise.success(List.of()));
+            testClient.firewallsBySelector.put("aether-cluster=prod", Promise.success(List.of()));
+            testClient.listAllFirewallsResponse = Promise.success(List.of(new Firewall(97,
+                                                                                       "aether-prod-eu-hetzner-eu",
+                                                                                       List.of(),
+                                                                                       Map.of())));
+
+            replacementProvider().createFrom(replacementRequestFor(prod, SOURCE))
                                  .await()
                                  .onSuccess(info -> assertThat(info).isNull())
-                                 .onFailure(cause -> assertThat(cause.message()).contains("has 1 Aether-managed firewall(s)"));
+                                 .onFailure(cause -> assertThat(cause.message()).contains("carries no cluster label"));
 
-            assertThat(testClient.lastCreateServerRequest).as("#3292: long cluster name must not defeat the name arm")
-                                                          .isNull();
+            assertThat(testClient.lastCreateServerRequest).isNull();
+        }
+
+        private List<Integer> lengthsNotRefused(Predicate<ClusterName> refuses) {
+            return IntStream.rangeClosed(1, FirewallName.MAX_LENGTH)
+                                             .boxed()
+                                             .filter(length -> !refuses.test(plainCluster(length)) || !refuses.test(hyphenatedCluster(length)))
+                                             .toList();
+        }
+
+        private static ClusterName plainCluster(int length) {
+            return clusterName("c".repeat(length)).unwrap();
+        }
+
+        /// `c-c-c-…z`: hyphens at every second position, so the 63-character cut often lands on one.
+        private static ClusterName hyphenatedCluster(int length) {
+            return clusterName(length == 1
+                               ? "c"
+                               : "c-".repeat(length).substring(0, length - 1) + "z").unwrap();
+        }
+
+        private boolean refusesWhenClusterLabelLost(ClusterName cluster) {
+            var name = FirewallName.forSource(cluster, SOURCE).value();
+
+            return refuses(cluster, List.of(), List.of(new Firewall(98, name, List.of(), Map.of())));
+        }
+
+        private boolean refusesWhenSourceLabelLost(ClusterName cluster) {
+            var name = FirewallName.forSource(cluster, SOURCE).value();
+            var stripped = new Firewall(94, name, List.of(), Map.of("aether-cluster", cluster.value()));
+
+            return refuses(cluster, List.of(stripped), List.of());
+        }
+
+        private boolean refuses(ClusterName cluster, List<Firewall> clusterSelected, List<Firewall> unselected) {
+            var selector = "aether-cluster=" + cluster.value();
+            testClient.lastCreateServerRequest = null;
+            testClient.firewallsBySelector.put(selector + ",aether-source=hetzner-eu", Promise.success(List.of()));
+            testClient.firewallsBySelector.put(selector, Promise.success(clusterSelected));
+            testClient.listAllFirewallsResponse = Promise.success(unselected);
+
+            return replacementProvider().createFrom(replacementRequestFor(cluster, SOURCE)).await().isFailure()
+                   && testClient.lastCreateServerRequest == null;
         }
 
         @Test

@@ -652,33 +652,19 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return hasSourceLabel(firewall) || hasAetherName(firewall, cluster);
     }
 
+    /// #3292: the match is [FirewallName#isDerivedFor], the derivation's own answer to "is this a name for this
+    /// cluster", so the cut at [FirewallName#MAX_LENGTH] and its hyphen trim are never rebuilt here.
     private static boolean hasAetherName(Firewall firewall, ClusterName cluster) {
         return Option.option(firewall.name())
-                     .map(name -> name.startsWith(aetherNamePrefix(cluster)))
+                     .map(name -> FirewallName.isDerivedFor(name, cluster))
                      .or(false);
     }
-
-    /// #3292: [FirewallName#forSource] cuts at [FirewallName#MAX_LENGTH], so for a cluster name of 56+ characters
-    /// the real firewall name cannot contain the full `aether-<cluster>-`. The prefix is cut the same way and, only
-    /// when it WAS cut, loses the trailing hyphens the cut can expose ([FirewallName] trims them too); an uncut
-    /// prefix keeps its closing hyphen so `aether-prod-eux` still does not match cluster `prod-eu`.
-    private static String aetherNamePrefix(ClusterName cluster) {
-        var full = AETHER_FIREWALL_PREFIX + cluster.value() + "-";
-
-        return full.length() <= FirewallName.MAX_LENGTH
-               ? full
-               : TRAILING_HYPHENS.matcher(full.substring(0, FirewallName.MAX_LENGTH)).replaceAll("");
-    }
-
-    private static final Pattern TRAILING_HYPHENS = Pattern.compile("-+$");
 
     private static boolean hasSourceLabel(Firewall firewall) {
         return Option.option(firewall.labels())
                      .map(labels -> labels.containsKey(SOURCE_LABEL))
                      .or(false);
     }
-
-    private static final String AETHER_FIREWALL_PREFIX = "aether-";
 
     private static Promise<List<Long>> ingressUnmanaged(ClusterName cluster, SourceName source) {
         log.warn("Hetzner provision: no Aether-managed firewall exists for cluster '{}' (source '{}') — the server is "
