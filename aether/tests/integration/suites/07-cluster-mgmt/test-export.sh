@@ -51,13 +51,15 @@ test_reapply_exported_config() {
     fi
 }
 
+_export_nonempty() { [ -n "$(config_export)" ]; }
+
 test_config_identical_after_reapply() {
     # Audit fix (#14): the prior shape logged a byte-count diff and always
     # passed. Now we assert round-trip identity: capture the post-reapply
     # export, re-apply the same {key,value} a second time (idempotent), and
     # compare the next export. Any divergence in the canonical key/value
     # set is a hard failure.
-    sleep 2
+    poll_until 15 _export_nonempty   # wait on the export itself, not a fixed sleep (#3424)
     local first
     first=$(config_export)
     if [ -z "$first" ]; then
@@ -73,7 +75,7 @@ test_config_identical_after_reapply() {
         log_fail "Idempotent re-apply of {key,value} returned empty"
         return 1
     fi
-    sleep 2
+    poll_until 15 _export_nonempty
     local second
     second=$(config_export)
     if [ -z "$second" ]; then

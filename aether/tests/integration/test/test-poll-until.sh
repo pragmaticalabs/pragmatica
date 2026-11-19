@@ -1,0 +1,39 @@
+#!/bin/bash
+# test-poll-until.sh — stubs only. lib/common.sh poll_until, the wait that replaces fixed sleeps before assertions (#3424).
+#   W1 a predicate that turns true later: rc 0, FIRST=1 (the wait was NOT vacuous), ELAPSED >= the delay
+#   W2 a predicate already true: rc 0, FIRST=0 (a vacuous wait is visible to the caller)
+#   W3 a predicate that never turns true: rc 1 at the deadline (loud, never an endless wait, never a silent pass)
+#   W4 arguments reach the predicate; TIMEOUT_SCALE multiplies the deadline
+#   Mutations: always-return-0 reddens W3; returning after the first poll reddens W1.   INTEG_DIR_UNDER_TEST selects another copy.
+set -uo pipefail
+unset TARGET_HOST AETHER_SSH_USER HCLOUD_TOKEN
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INTEG_DIR="${INTEG_DIR_UNDER_TEST:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+PASS=0; FAIL=0
+ok()   { echo "  PASS  $1"; PASS=$((PASS + 1)); }
+fail() { echo "  FAIL  $1"; FAIL=$((FAIL + 1)); }
+WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+export TARGET_HOST=localhost; source "${INTEG_DIR}/lib/common.sh" > /dev/null 2>&1
+type poll_until > /dev/null 2>&1 || { echo "  FAIL  poll_until is not defined in lib/common.sh"; echo "  passed: 0"; echo "  failed: 1"; exit 1; }
+
+( sleep 2; : > "$WORK/flag" ) &  # sleep-ok: the delayed event is the fixture
+flag_set() { [ -e "$WORK/flag" ]; }
+poll_until 20 flag_set; rc=$?
+if [ "$rc" -eq 0 ] && [ "$POLL_UNTIL_FIRST" = "1" ] && [ "$POLL_UNTIL_ELAPSED" -ge 1 ]; then ok "W1 turns true after ~2 s: rc 0, first poll false, elapsed=${POLL_UNTIL_ELAPSED}s"
+else fail "W1 rc=$rc first=$POLL_UNTIL_FIRST elapsed=${POLL_UNTIL_ELAPSED:-}"; fi
+wait
+
+poll_until 20 flag_set; rc=$?
+if [ "$rc" -eq 0 ] && [ "$POLL_UNTIL_FIRST" = "0" ]; then ok "W2 already true: rc 0, FIRST=0 (vacuous wait is reported)"; else fail "W2 rc=$rc first=$POLL_UNTIL_FIRST"; fi
+
+never() { return 1; }
+start=$SECONDS; poll_until 2 never; rc=$?; took=$((SECONDS - start))
+if [ "$rc" -eq 1 ] && [ "$took" -ge 2 ] && [ "$took" -le 6 ]; then ok "W3 never true: rc 1 at the deadline (took ${took}s of 2)"; else fail "W3 rc=$rc took=${took}s"; fi
+
+argp() { [ "$1" = "a b" ] && [ "$2" = "x" ]; }
+poll_until 5 argp "a b" x; rc1=$?
+start=$SECONDS; TIMEOUT_SCALE=2 poll_until 1 never; rc2=$?; took=$((SECONDS - start))
+if [ "$rc1" -eq 0 ] && [ "$rc2" -eq 1 ] && [ "$took" -ge 2 ]; then ok "W4 arguments reach the predicate (quoted arg kept); TIMEOUT_SCALE=2 doubled a 1 s deadline (took ${took}s)"; else fail "W4 rc1=$rc1 rc2=$rc2 took=${took}s"; fi
+
+echo "  passed: $PASS"; echo "  failed: $FAIL"
+[ "$FAIL" -eq 0 ]

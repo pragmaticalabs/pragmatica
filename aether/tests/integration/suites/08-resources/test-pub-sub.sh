@@ -75,6 +75,14 @@ test_stream_info_after_publish() {
     assert_ne "$info" "" "Stream info available after publishing"
 }
 
+# Predicate for poll_until: >= $1 events readable on partition 0 of the stream (same read as the assertion below).
+_pubsub_events_delivered() {
+    local id r
+    id=$(stream_identity "$STREAM_NAME") || return 1
+    r=$(aether_json streams read "$id" 0) || return 1
+    [ "$(echo "$r" | grep -oE '"offset"[[:space:]]*:' | wc -l | tr -d ' ')" -ge "$1" ]
+}
+
 test_subscriber_receives_events() {
     # Publish N events through partition 0 and verify them via streams read.
     # Drives the canonical CLI surface (streams read) rather than re-asserting
@@ -90,8 +98,8 @@ test_subscriber_receives_events() {
     done
     assert_eq "$success" "$publish_count" "All $publish_count subscriber-batch publishes succeeded"
 
-    # Allow replication / partition routing to settle.
-    sleep 2
+    # Wait until the events are readable (replication / partition routing), not a fixed sleep (#3424).
+    poll_until 30 _pubsub_events_delivered "$publish_count"
 
     # Read events back via the streams read CLI
     # (STREAM_READ → /api/v1/streams/{namespace}/{stream}/{version}/read/<partition>).

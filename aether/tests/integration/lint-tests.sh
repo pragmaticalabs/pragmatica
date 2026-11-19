@@ -43,6 +43,10 @@
 #   R3: assert_ne <var> "" on raw HTTP response (tautology — see audit §2.1)
 #   R4: [ status -ge 200 ] && [ status -lt 400 ] outside lib/load.sh (3xx-as-success)
 #   R5: test_* function defined but never invoked via run_test (dead code)
+#   R6: a bare `sleep N` / `command sleep N` in test/*.sh (the stub suites) without `# sleep-ok: <reason>` on the line (#3424).
+#       A fixed sleep before an assertion ends before the event under CPU contention (#3421); wait on the asserted artifact
+#       with poll_until (lib/common.sh) instead. The reason must say why a fixed duration IS the point (virtual time,
+#       a timing probe, a process fixture), e.g. `sleep 600  # sleep-ok: fixture process that must outlive the probe`.
 #
 # References:
 #   audit: aether/docs/internal/audits/integration-test-audit-2026-05-21.md
@@ -229,6 +233,27 @@ while IFS= read -r line; do
     detail=$(echo "$line" | cut -d: -f3-)
     emit_finding R5 "$file" "$lineno" "$detail"
 done < <(find "$SUITES_DIR" -type f -name "test-*.sh" -exec bash -c "$(declare -f lint_r5_dead_test); lint_r5_dead_test \"\$1\"" _ {} \;)
+
+# ============================================================
+# R6 — bare sleep in the stub suites (test/*.sh) without `# sleep-ok: <reason>`
+# ============================================================
+lint_r6_bare_sleep() {
+    local file="$1"
+    awk '
+        { line = $0; code = line }
+        { sub(/^[[:space:]]*#.*/, "", code); sub(/[[:space:]]#.*/, "", code) }
+        code ~ /(^|[^[:alnum:]_.\047"\/^-])(command[[:space:]]+)?sleep[[:space:]]+[0-9$"]/ {
+            if (line !~ /# sleep-ok:[[:space:]]*[^[:space:]]/) print FILENAME ":" NR ":bare-sleep"
+        }
+    ' "$file"
+}
+
+while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    file=$(echo "$line" | cut -d: -f1)
+    lineno=$(echo "$line" | cut -d: -f2)
+    emit_finding R6 "$file" "$lineno" "bare sleep in a stub suite: poll the asserted artifact with poll_until, or mark '# sleep-ok: <reason>'"
+done < <([ -d "$ROOT_DIR/test" ] && find "$ROOT_DIR/test" -type f -name "test-*.sh" | sort | while IFS= read -r f; do lint_r6_bare_sleep "$f"; done)
 
 # ============================================================
 # Report

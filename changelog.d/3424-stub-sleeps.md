@@ -1,0 +1,2 @@
+### Fixed (2026-11-19 — #3424: fixed sleeps before assertions in the integration tests)
+- **Stub load tests V5/V6 and ten cluster-suite sites wait on the asserted artifact instead of a fixed sleep** (#3424, class of #3421). A new `poll_until <timeout> <cmd>` in `lib/common.sh` polls with a deadline and returns non-zero at the deadline, so the assertion that follows fails loudly. `lint-tests.sh` rule R6 refuses a bare `sleep N` in `test/*.sh` unless the line carries `# sleep-ok: <reason>`.

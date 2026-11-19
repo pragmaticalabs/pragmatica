@@ -102,14 +102,20 @@ cat > "$WORK/bin/curl" <<'STUB'
 echo "${*: -1}" >> "$HITS"; printf '200'
 STUB
 chmod +x "$WORK/bin/curl"
+hits_ge() { [ "$(grep -c . "$1" 2>/dev/null || echo 0)" -ge "$2" ]; }   # <hits file> <n>: the loop has recorded >= n requests
+# Waits poll the hits file the assertions read, with a deadline; never a fixed sleep (#3424: a starved 1-4 s window ended without a tick after the write).
 loop_run() {  # <label> <write override? 0|1>
     : > "$WORK/hits.$1"; rm -f /tmp/load_endpoint_override_$$
     ( export PATH="$WORK/bin:$PATH" HITS="$WORK/hits.$1" TARGET_HOST=localhost API_KEY=k APP_ENDPOINT=http://orig:8070
       source "${INTEG_DIR}/lib/load.sh" > /dev/null 2>&1
-      start_load 10 3 GET /api/echo/health > /dev/null 2>&1
-      sleep 1
-      [ "$2" = "1" ] && printf 'http://victim:8075' > "/tmp/load_endpoint_override_$$"
-      sleep 3
+      start_load 10 60 GET /api/echo/health > /dev/null 2>&1   # 60 s is only an upper bound: stop_load ends the loop
+      poll_until 60 hits_ge "$HITS" 1
+      if [ "$2" = "1" ]; then
+          printf 'http://victim:8075' > "/tmp/load_endpoint_override_$$"
+          poll_until 60 grep -q 'http://victim:8075' "$HITS"
+      else
+          poll_until 60 hits_ge "$HITS" 12   # no override: give the loop the ticks the override arm gets, then judge
+      fi
       stop_load > /dev/null 2>&1 )
 }
 loop_run vl1 1; loop_run vl0 0
@@ -132,10 +138,12 @@ reresolve_run() {  # <label>
     ( export PATH="$WORK/bin:$PATH" HITS="$WORK/hits.$1" TARGET_HOST=localhost API_KEY=k APP_ENDPOINT=http://orig:8070 ENV_TYPE=cloud
       source "${INTEG_DIR}/lib/load.sh" > /dev/null 2>&1
       slice_owner_for() { echo node-new; }; cloud_public_ip() { echo newhost; }
-      start_load 10 4 GET /api/echo/health "" "g:a:v" > /dev/null 2>&1
-      sleep 1
+      start_load 10 60 GET /api/echo/health "" "g:a:v" > /dev/null 2>&1   # 60 s is only an upper bound: stop_load ends the loop
+      poll_until 60 hits_ge "$HITS" 1
       printf 'http://victim:8075' > "/tmp/load_endpoint_override_$$"
-      sleep 4
+      poll_until 60 grep -q 'http://newhost:8070' "$HITS"
+      n=$(grep -c . "$HITS" 2>/dev/null || echo 0)
+      poll_until 60 hits_ge "$HITS" $((n + 8))   # STAYS on the new owner: 8 more requests after the first one there
       stop_load > /dev/null 2>&1 )
 }
 reresolve_run rr
