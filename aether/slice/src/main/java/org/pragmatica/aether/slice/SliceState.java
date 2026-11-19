@@ -71,6 +71,15 @@ public enum SliceState {
             case LOADED, ACTIVE, FAILED, UNKNOWN -> false;
         };
     }
+    /// Serving: the slice occupies the datasource it serves from, or is about to (#760, #3411). ACTIVATING and ROUTING count
+    /// beside ACTIVE on purpose: a false-positive refusal costs the operator a retry, a false negative strands a migration.
+    /// Under FSM2 the per-node rows ([org.pragmatica.aether.slice.kvstore.SliceRowSource]) map to ACTIVATING and ACTIVE only.
+    public boolean isServing() {
+        return switch (this) {
+            case ACTIVATING, ROUTING, ACTIVE -> true;
+            case LOAD, LOADING, LOADED, ACTIVATE, DEACTIVATE, DEACTIVATING, FAILED, UNLOAD, UNLOADING, UNKNOWN -> false;
+        };
+    }
     public Set<SliceState> validTransitions() {
         return switch (this) {
             case LOAD -> Set.of(LOADING);
