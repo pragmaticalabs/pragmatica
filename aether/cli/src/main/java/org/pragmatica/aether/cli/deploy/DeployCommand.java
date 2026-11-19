@@ -100,8 +100,8 @@ public class DeployCommand implements Callable<Integer> {
     @SuppressWarnings("JBCT-SEQ-01")
     private int deployImmediate() {
         var body = "{\"artifact\":\"" + coordinates + "\"" + (force
-                                                                      ? ",\"force\":true"
-                                                                      : "") + "}";
+                                                              ? ",\"force\":true"
+                                                              : "") + "}";
         var response = parent.post(BLUEPRINT_DEPLOY, body);
 
         return OutputFormatter.printQuery(response, parent.outputOptions());

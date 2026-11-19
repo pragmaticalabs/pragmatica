@@ -289,7 +289,10 @@ public sealed interface SchemaError extends Cause {
     /// the versions listed in `reapplied`. Surfaces as HTTP 409 on the publish endpoints: the request is well-formed and the conflict is
     /// with existing cluster state. Recovery: deploy a blueprint that declares the version the operator left (`currentVersion`), or
     /// repeat the publish with `force` (`--force`) to accept the re-application.
-    record RepublishWouldReapply(String datasource, SchemaReach reachedBy, int currentVersion, List<Integer> reapplied) implements SchemaError, HttpStatusAware {
+    record RepublishWouldReapply(String datasource,
+                                 SchemaReach reachedBy,
+                                 int currentVersion,
+                                 List<Integer> reapplied) implements SchemaError, HttpStatusAware {
         public static RepublishWouldReapply republishWouldReapply(String datasource,
                                                                   SchemaReach reachedBy,
                                                                   int currentVersion,
@@ -299,8 +302,11 @@ public sealed interface SchemaError extends Cause {
 
         @Override
         public String message() {
-            return "Publish refused — datasource '" + datasource + "' was left at version " + currentVersion
-                 + " by an operator " + (reachedBy == SchemaReach.UNDONE ? "undo" : "baseline")
+            return "Publish refused — datasource '" + datasource
+                 + "' was left at version " + currentVersion
+                 + " by an operator " + (reachedBy == SchemaReach.UNDONE
+                                         ? "undo"
+                                         : "baseline")
                  + ", and this blueprint declares versions " + reapplied
                  + " which would be applied again. Deploy a blueprint that declares version " + currentVersion
                  + ", or repeat the publish with force to accept the re-application.";

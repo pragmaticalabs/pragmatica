@@ -100,13 +100,17 @@ public interface BlueprintService {
     /// When `registerOnly == false`, behaves as the default `publishFromArtifact` —
     /// the new version is immediately activated.
     Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly);
+
     /// #834: `force` lets a publish declare a version above a schema record an operator left by undo or baseline, which re-applies
     /// the versions the operator removed or skipped; without it such a publish is refused
     /// ([org.pragmatica.aether.deployment.schema.SchemaError.RepublishWouldReapply], 409). An implementation that does not guard
     /// ignores `force`.
-    default Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly, boolean force) {
+    default Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords,
+                                                            boolean registerOnly,
+                                                            boolean force) {
         return publishFromArtifact(artifactCoords, registerOnly);
     }
+
     Option<ExpandedBlueprint> get(BlueprintId id);
     /// Durable terminal outcome of `id`'s last deployment attempt (#759 review, BLOCKING 3). Bounded
     /// to exactly one record per blueprint id: the FSM writes via `KVCommand.Put` at
@@ -667,8 +671,7 @@ class BlueprintServiceInstance implements BlueprintService {
         var expanded = preflighted.expanded();
 
         return ensureMigrationOwnership(expanded.id(),
-                                        migrations).flatMap(_ -> ensureNoUndoneReapplied(migrations,
-                                                                                         force))
+                                        migrations).flatMap(_ -> ensureNoUndoneReapplied(migrations, force))
                                        .flatMap(_ -> StreamResourceValidator.ensureHonourableConsistency(resourcesConfig))
                                        .flatMap(_ -> replicationContext())
                                        .flatMap(replication -> streamBindings(expanded.id(),
@@ -833,8 +836,8 @@ class BlueprintServiceInstance implements BlueprintService {
 
     private Result<Unit> ensureDatasourceNotReapplied(String datasource, List<Integer> declared) {
         return interventionRecord(datasource).flatMap(record -> reapplication(record, declared))
-                                             .map(BlueprintServiceInstance::refused)
-                                             .or(Result::unitResult);
+                                 .map(BlueprintServiceInstance::refused)
+                                 .or(Result::unitResult);
     }
 
     private static Result<Unit> refused(Cause cause) {
@@ -850,9 +853,7 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private static Option<Cause> reapplication(SchemaVersionValue record, List<Integer> declared) {
-        var reapplied = declared.stream()
-                                .filter(version -> version > record.currentVersion())
-                                .toList();
+        var reapplied = declared.stream().filter(version -> version > record.currentVersion()).toList();
 
         return Option.option(reapplied)
                      .filter(versions -> !versions.isEmpty())
@@ -1063,10 +1064,7 @@ class BlueprintServiceInstance implements BlueprintService {
                                                        BlueprintId owningBlueprint) {
         var datasource = entry.getKey();
         var migrationList = entry.getValue();
-        var maxVersion = declaredVersions(migrationList).stream()
-                                                        .mapToInt(Integer::intValue)
-                                                        .max()
-                                                        .orElse(0);
+        var maxVersion = declaredVersions(migrationList).stream().mapToInt(Integer::intValue).max().orElse(0);
         var lastFilename = migrationList.isEmpty()
                            ? ""
                            : migrationList.getLast().filename();
