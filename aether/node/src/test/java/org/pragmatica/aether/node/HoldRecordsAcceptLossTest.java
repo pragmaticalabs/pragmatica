@@ -12,6 +12,7 @@ import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.cluster.metrics.HeldReport;
 import org.pragmatica.lang.Result;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 
@@ -37,7 +38,7 @@ class HoldRecordsAcceptLossTest {
         var refusal = refusalOf(fx.records.acceptLoss(NODE, EPISODE, D1).await());
 
         assertThat(refusal).as("same count, other digest").isInstanceOf(HoldRefusal.StaleDigest.class);
-        assertThat(((HoldRefusal.StaleDigest) refusal).current().owedDigest()).as("carries the current report").isEqualTo("d2");
+        assertThat(((HoldRefusal.StaleDigest) refusal).current().map(HeldReport::owedDigest)).as("carries the current report").isEqualTo(Option.some("d2"));
         assertThat(status(refusal)).isEqualTo(HttpStatus.CONFLICT);
         assertThat(fx.raisedOf(OperatorWarningCode.DHT_DEPARTURE_LOSS_ACCEPTED)).isZero();
         assertThat(fx.records.decisionFor(NODE)).isEqualTo(Option.none());
@@ -70,7 +71,7 @@ class HoldRecordsAcceptLossTest {
         fx.settlePending(true, () -> fx.records.decisionFor(NODE).isPresent());
 
         assertThat(fx.records.decisionFor(NODE)).isEqualTo(Option.some(HoldRecords.HoldDecision.AcceptLoss.acceptLoss(EPISODE, D1)));
-        assertThat(call.await().unwrap().report().owedDigest()).isEqualTo("d1");
+        assertThat(call.await().unwrap().report().map(HeldReport::owedDigest)).isEqualTo(Option.some("d1"));
     }
 
     @Test

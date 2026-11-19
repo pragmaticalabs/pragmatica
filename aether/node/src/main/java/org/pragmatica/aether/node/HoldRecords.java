@@ -113,12 +113,13 @@ public interface HoldRecords {
         }
     }
 
-    /// The landed loss-acceptance record: the episode, the confirmation and the report it was checked against.
-    record LossAccepted(NodeId nodeId, String episode, LossConfirmation confirmation, HeldReport report) {
+    /// The landed loss-acceptance record: the episode, the confirmation and the report it was checked against (none for a seeded
+    /// episode no report of which reached this leader: then it was checked against the landed at-risk warning, H8).
+    record LossAccepted(NodeId nodeId, String episode, LossConfirmation confirmation, Option<HeldReport> report) {
         public static LossAccepted lossAccepted(NodeId nodeId,
                                                 String episode,
                                                 LossConfirmation confirmation,
-                                                HeldReport report) {
+                                                Option<HeldReport> report) {
             return new LossAccepted(nodeId, episode, confirmation, report);
         }
     }
@@ -139,13 +140,13 @@ public interface HoldRecords {
             static final Fn1<Ended, String> FACTORY = Causes.forOneValue("Hold of episode %s has ended", Ended::new);
         }
 
-        record OtherEpisode(String requested, HeldReport current, String message) implements HoldRefusal {
-            static final Fn2<OtherEpisode, String, HeldReport> FACTORY = Causes.forTwoValues("Episode %s is not the held episode; current report: %s",
+        record OtherEpisode(String requested, Option<HeldReport> current, String message) implements HoldRefusal {
+            static final Fn2<OtherEpisode, String, Option<HeldReport>> FACTORY = Causes.forTwoValues("Episode %s is not the held episode; current report: %s",
                                                                                              OtherEpisode::new);
         }
 
-        record StaleDigest(String requested, HeldReport current, String message) implements HoldRefusal {
-            static final Fn2<StaleDigest, String, HeldReport> FACTORY = Causes.forTwoValues("Confirmation %s does not match the current report: %s",
+        record StaleDigest(String requested, Option<HeldReport> current, String message) implements HoldRefusal {
+            static final Fn2<StaleDigest, String, Option<HeldReport>> FACTORY = Causes.forTwoValues("Confirmation %s does not match the current report: %s",
                                                                                             StaleDigest::new);
         }
 
@@ -230,27 +231,27 @@ public interface HoldRecords {
             @Contract
             public void onPong(NodeId nodeId) {
                 refresh(nodeId);
-                raiseDue(nodeId);
+                raiseDue(nodeId, false);
             }
 
             @Override
             @Contract
             public void tick() {
-                recordedIds().forEach(this::onPong);
+                recordedIds().forEach(this::onTick);
             }
 
             @Override
             @Contract
             public void onLeft(NodeId nodeId) {
                 update(nodeId, Drainer::left);
-                raiseDue(nodeId);
+                raiseDue(nodeId, false);
             }
 
             @Override
             @Contract
             public void onDead(NodeId nodeId) {
                 update(nodeId, Drainer::died);
-                raiseDue(nodeId);
+                raiseDue(nodeId, false);
             }
 
             @Override
@@ -301,6 +302,28 @@ public interface HoldRecords {
                 }
             }
 
+            /// The tick of one recorded node: its report is refreshed and its due raises go out, retries included (H11); a
+            /// finished record the FAN no longer reports is dropped.
+            @Contract
+            private void onTick(NodeId nodeId) {
+                reports.latestHeldReport(nodeId)
+                       .onPresent(report -> observe(nodeId, report))
+                       .onEmpty(() -> dropFinished(nodeId));
+                raiseDue(nodeId, true);
+            }
+
+            /// H11, the bound of the map: a node's entry goes once its episodes are closed, their closers landed and the node
+            /// left the view, the FAN's included. While the FAN still carries a report of it the finished record stays as the
+            /// tombstone that makes that late report ignorable (a dropped entry would re-open it).
+            @Contract
+            private void dropFinished(NodeId nodeId) {
+                synchronized (drainers) {
+                    Option.option(drainers.get(nodeId))
+                          .filter(Drainer::finished)
+                          .onPresent(_ -> drainers.remove(nodeId));
+                }
+            }
+
             /// Take the FAN's latest held report of `nodeId` into its record (absence changes nothing). The port is read outside
             /// the lock; the order of two reports is settled under it by their own asOf (H6).
             @Contract
@@ -322,7 +345,8 @@ public interface HoldRecords {
                 return Option.option(drainers.get(nodeId)).or(() -> Drainer.unseen(nodeId));
             }
 
-            /// Apply `change` to the record of `nodeId`, if any. A finished record stays as the tombstone of its closed episode.
+            /// Apply `change` to the record of `nodeId`, if any. A finished record stays as the tombstone of its closed episode
+            /// until the tick finds the FAN no longer reporting the node (H11).
             @Contract
             private void update(NodeId nodeId, Fn1<Drainer, Drainer> change) {
                 synchronized (drainers) {
@@ -333,21 +357,21 @@ public interface HoldRecords {
             /// Claim the raises due for `nodeId` (marking them in flight) and perform them outside the lock: the event layer's
             /// completion may call back into this unit on another thread.
             @Contract
-            private void raiseDue(NodeId nodeId) {
-                claimRaises(nodeId).forEach(this::perform);
+            private void raiseDue(NodeId nodeId, boolean onTick) {
+                claimRaises(nodeId, onTick).forEach(this::perform);
             }
 
-            private List<Raise> claimRaises(NodeId nodeId) {
+            private List<Raise> claimRaises(NodeId nodeId, boolean onTick) {
                 var now = clock.getAsLong();
 
                 synchronized (drainers) {
                     var raises = Option.option(drainers.get(nodeId))
-                                       .map(current -> current.dueRaises(now, reportAfterMs))
+                                       .map(current -> current.dueRaises(now, reportAfterMs, onTick))
                                        .or(List.of());
 
                     raises.forEach(raise -> update(nodeId,
                                                    current -> current.changed(raise.episode(),
-                                                                              episode -> episode.raising(true))));
+                                                                              Episode::claimed)));
 
                     return raises;
                 }
@@ -365,11 +389,14 @@ public interface HoldRecords {
                                                                 closer));
             }
 
-            /// A raise that did not land only clears the in-flight mark: the next pong or tick raises it again (re-raised until landed).
+            /// A raise that did not land clears the in-flight mark and waits its backoff: a later tick raises it again (re-raised
+            /// until landed, never on every pong: H11).
             @Contract
             private void settleRaise(Raise raise, boolean landed) {
+                var now = clock.getAsLong();
+
                 update(raise.nodeId(),
-                       current -> current.changed(raise.episode(), episode -> episode.settled(raise, landed)));
+                       current -> current.changed(raise.episode(), episode -> episode.settled(raise, landed, now)));
             }
 
             private int seed(List<ClusterEvent> events) {
@@ -378,33 +405,34 @@ public interface HoldRecords {
 
                 synchronized (drainers) {
                     return (int) open.stream()
-                                     .filter(episode -> learn(episode, now))
+                                     .filter(seed -> learn(seed, now))
                                      .count();
                 }
             }
 
             /// Learn one open episode from the log; true when it latched an episode this leader did not know. Called under the lock.
-            private boolean learn(String episode, long now) {
-                return Drainer.episodeNode(episode)
-                              .map(nodeId -> learnFor(nodeId, episode, now))
+            private boolean learn(Seed seed, long now) {
+                return Drainer.episodeNode(seed.episode())
+                              .map(nodeId -> learnFor(nodeId, seed, now))
                               .or(false);
             }
 
-            private boolean learnFor(NodeId nodeId, String episode, long now) {
+            private boolean learnFor(NodeId nodeId, Seed seed, long now) {
                 var before = known(nodeId);
-                var after = before.learned(episode, now);
+                var after = before.learned(seed, now);
 
                 drainers.put(nodeId, after);
 
-                return before.find(episode)
-                             .isEmpty() && after.find(episode)
+                return before.find(seed.episode())
+                             .isEmpty() && after.find(seed.episode())
                                                 .filter(Episode::open)
                                                 .isPresent();
             }
 
             /// Check the override against the record (refreshed from the FAN first, kept past its sweep: H3) and mark it in flight.
+            /// Only a node with a record is refreshed: no record is built from the FAN on demand, a node without one is NotHeld (H10).
             private Result<LossAccepted> claimAcceptance(NodeId nodeId, String episode, LossConfirmation confirmation) {
-                refresh(nodeId);
+                drainer(nodeId).onPresent(_ -> refresh(nodeId));
                 synchronized (drainers) {
                     return Option.option(drainers.get(nodeId))
                                  .flatMap(Drainer::current)
@@ -452,16 +480,71 @@ public interface HoldRecords {
         }
     }
 
-    /// How an episode closed.
+    /// How an episode closed, and whether that end may have lost keys (then its closer is owed even when the at-risk warning was
+    /// never raised: it carries the warning with it).
     enum Closer {
-        DELIVERED,
-        LOSS_ACCEPTED,
-        DEATH,
-        SUPERSEDED
+        DELIVERED(false),
+        LOSS_ACCEPTED(true),
+        DEATH(true),
+        SUPERSEDED(false);
+
+        private final boolean possibleLoss;
+
+        Closer(boolean possibleLoss) {
+            this.possibleLoss = possibleLoss;
+        }
+
+        boolean possibleLoss() {
+            return possibleLoss;
+        }
+    }
+
+    /// The opening of an episode learned from the event log: the episode, and the override form its landed at-risk warning named
+    /// (the digest of its exit command, or the inventory-unknown form when that warning carried no count, H8).
+    record Seed(String episode, LossConfirmation form) {
+        public static Seed seed(String episode, LossConfirmation form) {
+            return new Seed(episode, form);
+        }
+    }
+
+    /// The raise bookkeeping of an episode (H11): a raise in flight, the raises that did not land in a row, and the earliest time
+    /// of the next retry. A first raise goes out on any edge; a retry only on the tick, once its backoff has passed.
+    record Retry(boolean inFlight, int failures, long notBefore) {
+        static final long BASE_MS = 1_000L;
+        static final long MAX_MS = 60_000L;
+
+        public static Retry retry(boolean inFlight, int failures, long notBefore) {
+            return new Retry(inFlight, failures, notBefore);
+        }
+
+        static Retry idle() {
+            return retry(false, 0, Long.MIN_VALUE);
+        }
+
+        Retry claimed() {
+            return retry(true, failures, notBefore);
+        }
+
+        /// The outcome of the raise in flight: landed resets the count; not landed waits a doubling backoff, capped.
+        Retry settled(boolean landed, long now) {
+            return landed
+                   ? idle()
+                   : retry(false, failures + 1, now + Math.min(MAX_MS, BASE_MS << Math.min(failures, 6)));
+        }
+
+        boolean allows(long now, boolean onTick) {
+            return ! inFlight && (failures == 0 || onTick && now >= notBefore);
+        }
+
+        /// A raise of this episode went out (in flight or not landed); with a landed one, the at-risk warning was raised.
+        boolean attempted() {
+            return inFlight || failures > 0;
+        }
     }
 
     /// The closing of an episode: its kind, the newer episode that superseded it, the decision still awaiting the drainer (an
-    /// acceptance whose record landed before the drainer reported its end) and whether its closer landed.
+    /// acceptance whose record landed before the drainer reported its end) and whether its closer landed, or none is owed (H10: an
+    /// episode that ends without a possible loss before its at-risk warning was ever raised ends silently).
     record Closing(Closer kind, Option<String> successor, Option<HoldDecision.AcceptLoss> relay, boolean landed) {
         public static Closing closing(Closer kind,
                                       Option<String> successor,
@@ -514,33 +597,35 @@ public interface HoldRecords {
 
     /// One drain episode of a node: OPEN while `closing` is empty, CLOSED (terminal, remembered) once it is present.
     /// Immutable; [HoldRecords] replaces it under its lock.
+    /// `seeded` is present for an episode learned from the log and carries the override form its at-risk warning named.
     record Episode(String episode,
                    Option<HeldReport> lastReport,
                    long firstSeenMillis,
-                   boolean seeded,
+                   Option<LossConfirmation> seeded,
                    boolean warningLanded,
                    Option<Closing> closing,
                    boolean accepting,
-                   boolean raising) {
+                   Retry raising) {
         public static Episode episode(String episode,
                                       Option<HeldReport> lastReport,
                                       long firstSeenMillis,
-                                      boolean seeded,
+                                      Option<LossConfirmation> seeded,
                                       boolean warningLanded,
                                       Option<Closing> closing,
                                       boolean accepting,
-                                      boolean raising) {
+                                      Retry raising) {
             return new Episode(episode, lastReport, firstSeenMillis, seeded, warningLanded, closing, accepting, raising);
         }
 
         /// Opened by its first report (R2); a first report that already ended opens it closed.
         static Episode first(HeldReport report, long now) {
-            return episode(report.episode(), Option.none(), now, false, false, Option.none(), false, false).reported(report);
+            return episode(report.episode(), Option.none(), now, Option.none(), false, Option.none(), false, Retry.idle()).reported(report);
         }
 
-        /// Opened from the event log by a new leader: no report yet, raised at once on the first report (same subject).
-        static Episode seededAt(String episode, long now) {
-            return episode(episode, Option.none(), now, true, false, Option.none(), false, false);
+        /// Opened from the event log by a new leader: no report yet, raised at once on the first report (same subject); its
+        /// override is checked against the form its landed at-risk warning named (H8).
+        static Episode seededAt(Seed seed, long now) {
+            return episode(seed.episode(), Option.none(), now, Option.some(seed.form()), false, Option.none(), false, Retry.idle());
         }
 
         boolean open() {
@@ -576,7 +661,7 @@ public interface HoldRecords {
                            firstSeenMillis,
                            seeded,
                            warningLanded,
-                           reportedCloser(report).map(Closing::closedBy),
+                           reportedCloser(report).map(kind -> owing(Closing.closedBy(kind))),
                            accepting,
                            raising);
         }
@@ -592,13 +677,31 @@ public interface HoldRecords {
         /// The drainer is past this episode (death, or a newer episode): the open episode closes as `whenOpen`; a decision
         /// awaiting the drainer is released; any other closing stands.
         Episode ended(Closing whenOpen) {
-            return withClosing(closing.map(Closing::released).or(whenOpen));
+            return withClosing(closing.map(Closing::released).or(() -> owing(whenOpen)));
+        }
+
+        /// The drainer left the view: a decision awaiting it is released, so its closer becomes due (H7); an open episode stands.
+        Episode released() {
+            return closing.map(closed -> withClosing(closed.released()))
+                          .or(this);
+        }
+
+        /// The closing of this still open episode as owed (H10): a closer answers a raised at-risk warning (raised here or, when
+        /// seeded, by an earlier leader) or an override in flight (its record may land), or reports a possible loss; otherwise
+        /// the episode ends silently (nothing to land).
+        private Closing owing(Closing closed) {
+            var owed = warningLanded || seeded.isPresent() || raising.attempted() || accepting || closed.kind()
+                                                                                                      .possibleLoss();
+
+            return owed
+                   ? closed
+                   : closed.landed(true);
         }
 
         /// The acceptance's record landed while the episode is open: closed LOSS_ACCEPTED, `AcceptLoss` awaits the drainer.
         Episode acceptanceSettled(LossAccepted record, boolean landed) {
             var settled = landed && open()
-                          ? Option.some(Closing.accepted(record))
+                          ? Option.some(owing(Closing.accepted(record)))
                           : closing;
 
             return episode(episode, lastReport, firstSeenMillis, seeded, warningLanded, settled, false, raising);
@@ -608,12 +711,13 @@ public interface HoldRecords {
             return episode(episode, lastReport, firstSeenMillis, seeded, warningLanded, closing, inFlight, raising);
         }
 
-        Episode raising(boolean inFlight) {
-            return episode(episode, lastReport, firstSeenMillis, seeded, warningLanded, closing, accepting, inFlight);
+        Episode claimed() {
+            return episode(episode, lastReport, firstSeenMillis, seeded, warningLanded, closing, accepting, raising.claimed());
         }
 
-        /// The outcome of a raise of this episode: clears the in-flight mark; a landed closer marks the closing landed.
-        Episode settled(Raise raise, boolean landed) {
+        /// The outcome of a raise of this episode: clears the in-flight mark (a raise that did not land waits its backoff, H11);
+        /// a landed closer marks the closing landed.
+        Episode settled(Raise raise, boolean landed, long now) {
             var closed = raise.closer().isPresent()
                          ? closing.map(current -> current.landed(landed))
                          : closing;
@@ -625,7 +729,7 @@ public interface HoldRecords {
                            warningLanded || landed,
                            closed,
                            accepting,
-                           false);
+                           raising.settled(landed, now));
         }
 
         private Episode withClosing(Closing closed) {
@@ -639,9 +743,10 @@ public interface HoldRecords {
                            raising);
         }
 
-        /// The raise due now, if any: the closer until it landed, else the at-risk warning while open, reportable and not landed.
-        Option<Raise> dueRaise(NodeId nodeId, long now, long reportAfterMs) {
-            if (raising) {
+        /// The raise due now, if any: the closer until it landed, else the at-risk warning while open, reportable and not landed;
+        /// nothing while a raise is in flight or a retry waits for the tick and its backoff (H11).
+        Option<Raise> dueRaise(NodeId nodeId, long now, long reportAfterMs, boolean onTick) {
+            if (!raising.allows(now, onTick)) {
                 return Option.none();
             }
 
@@ -671,22 +776,26 @@ public interface HoldRecords {
         /// Reportable at once when seeded, unenumerated or undeliverable, else after `reportAfterMs`. A clock read earlier than
         /// the first sighting (a step back) is read as the delay having passed: a late warning is the harm, an early one is not.
         private boolean reportable(HeldReport report, long now, long reportAfterMs) {
-            return seeded || report.owedCount() < 0 || report.undeliverable() > 0 || now < firstSeenMillis || now - firstSeenMillis >= reportAfterMs;
+            return seeded.isPresent() || report.owedCount() < 0 || report.undeliverable() > 0 || now < firstSeenMillis || now - firstSeenMillis >= reportAfterMs;
         }
 
-        /// The override check against this episode's own last report (H3): the episode named, still open, no acceptance
+        /// The override check against this episode's own last report (H3), or, for a seeded episode no report of which reached
+        /// this leader, against the form its landed at-risk warning named (H8): the episode named, still open, no acceptance
         /// recorded or in flight, and the digest of an enumerated inventory (or the unknown form while not enumerated).
         Result<LossAccepted> acceptable(NodeId nodeId, String requested, LossConfirmation confirmation) {
-            return lastReport.toResult(HoldRefusal.NotHeld.FACTORY.apply(nodeId))
-                             .flatMap(report -> checked(nodeId, report, requested, confirmation));
+            return lastReport.map(report -> matches(report, confirmation))
+                             .orElse(() -> seeded.map(confirmation::equals))
+                             .map(confirmed -> checked(nodeId, requested, confirmation, confirmed))
+                             .or(() -> HoldRefusal.NotHeld.FACTORY.apply(nodeId)
+                                                                  .result());
         }
 
         private Result<LossAccepted> checked(NodeId nodeId,
-                                             HeldReport report,
                                              String requested,
-                                             LossConfirmation confirmation) {
+                                             LossConfirmation confirmation,
+                                             boolean confirmed) {
             if (!episode.equals(requested)) {
-                return HoldRefusal.OtherEpisode.FACTORY.apply(requested, report).result();
+                return HoldRefusal.OtherEpisode.FACTORY.apply(requested, lastReport).result();
             }
 
             if (accepting || closing.flatMap(Closing::relay).isPresent()) {
@@ -697,10 +806,10 @@ public interface HoldRecords {
                 return HoldRefusal.Ended.FACTORY.apply(episode).result();
             }
 
-            return matches(report, confirmation)
-                   ? Result.success(LossAccepted.lossAccepted(nodeId, episode, confirmation, report))
+            return confirmed
+                   ? Result.success(LossAccepted.lossAccepted(nodeId, episode, confirmation, lastReport))
                    : HoldRefusal.StaleDigest.FACTORY.apply(confirmation.render(),
-                                                           report)
+                                                           lastReport)
                                                     .result();
         }
 
@@ -746,11 +855,21 @@ public interface HoldRecords {
     /// - report of an unknown NEWER episode -> the open one closes SUPERSEDED, the new one opens (H2); of an unknown older one
     ///   -> ignored (H1);
     /// - DEAD edge -> the open episode closes DEATH; LEAVE edge -> departed, the latch stands.
+    /// Invariant E: every open episode keeps all its exits reachable (a report, the override, DEAD, and once an acceptance
+    /// landed, LEAVE). So a departed drainer has no decision awaiting it: departure releases every relay and its closer becomes
+    /// due (H7), whichever came first, the LEAVE edge or the landing of the acceptance.
     /// Kept: the open episode, every closed one whose closer has not landed or whose decision awaits the drainer, and the
-    /// newest closed one (the tombstone that makes a late report of it ignorable).
+    /// newest closed one (the tombstone that makes a late report of it ignorable). The whole record is dropped once it is
+    /// [#finished] and the FAN no longer carries a report of the node (H11).
     record Drainer(NodeId nodeId, List<Episode> episodes, boolean departed) {
         public static Drainer drainer(NodeId nodeId, List<Episode> episodes, boolean departed) {
-            return new Drainer(nodeId, List.copyOf(episodes), departed);
+            return new Drainer(nodeId,
+                               departed
+                               ? episodes.stream()
+                                         .map(Episode::released)
+                                         .toList()
+                               : List.copyOf(episodes),
+                               departed);
         }
 
         static Drainer unseen(NodeId nodeId) {
@@ -811,15 +930,15 @@ public interface HoldRecords {
 
         /// A new leader learned an open episode from the log: a newer one opens as a report would; an older unknown one is
         /// remembered closed SUPERSEDED by the current episode, so its at-risk gets a closer.
-        Drainer learned(String episode, long now) {
-            if (find(episode).isPresent()) {
+        Drainer learned(Seed seed, long now) {
+            if (find(seed.episode()).isPresent()) {
                 return this;
             }
 
-            return newer(episode)
-                   ? opened(Episode.seededAt(episode, now))
-                   : withOlder(Episode.seededAt(episode, now).ended(Closing.supersededBy(current().map(Episode::episode)
-                                                                                                .or(episode))));
+            return newer(seed.episode())
+                   ? opened(Episode.seededAt(seed, now))
+                   : withOlder(Episode.seededAt(seed, now).ended(Closing.supersededBy(current().map(Episode::episode)
+                                                                                             .or(seed.episode()))));
         }
 
         private boolean newer(String episode) {
@@ -868,9 +987,9 @@ public interface HoldRecords {
                            departed);
         }
 
-        List<Raise> dueRaises(long now, long reportAfterMs) {
+        List<Raise> dueRaises(long now, long reportAfterMs, boolean onTick) {
             return episodes.stream()
-                           .flatMap(episode -> episode.dueRaise(nodeId, now, reportAfterMs)
+                           .flatMap(episode -> episode.dueRaise(nodeId, now, reportAfterMs, onTick)
                                                       .stream())
                            .toList();
         }
@@ -884,31 +1003,64 @@ public interface HoldRecords {
                       .toList();
         }
 
-        /// Subjects whose at-risk warning landed in `events` with no closer of the same subject, oldest drain first.
-        static List<String> openEpisodes(List<ClusterEvent> events) {
-            var opened = new HashSet<String>();
+        /// Subjects whose at-risk warning landed in `events` with no closer of the same subject, oldest drain first, each with
+        /// the override form its latest at-risk warning named.
+        static List<Seed> openEpisodes(List<ClusterEvent> events) {
+            var opened = new HashMap<String, LossConfirmation>();
             var closed = new HashSet<String>();
 
             events.stream()
                   .flatMap(event -> warningOf(event).stream())
                   .forEach(warning -> classify(warning, opened, closed));
-            opened.removeAll(closed);
+            closed.forEach(opened::remove);
 
-            return opened.stream()
-                         .sorted(Comparator.comparingLong(Episode::stamp))
+            return opened.entrySet()
+                         .stream()
+                         .map(entry -> Seed.seed(entry.getKey(), entry.getValue()))
+                         .sorted(Comparator.comparingLong(seed -> Episode.stamp(seed.episode())))
                          .toList();
         }
 
         @Contract
-        private static void classify(ClusterEvent.OperatorWarning warning, Set<String> opened, Set<String> closed) {
+        private static void classify(ClusterEvent.OperatorWarning warning,
+                                     Map<String, LossConfirmation> opened,
+                                     Set<String> closed) {
             var code = detail(warning, "code").or("");
-            var target = OPENER.equals(code)
-                         ? Option.some(opened)
-                         : CLOSERS.contains(code)
-                           ? Option.some(closed)
-                           : Option.<Set<String>> none();
 
-            target.onPresent(subjects -> detail(warning, "subject").onPresent(subjects::add));
+            detail(warning, "subject").onPresent(subject -> file(warning, code, subject, opened, closed));
+        }
+
+        @Contract
+        private static void file(ClusterEvent.OperatorWarning warning,
+                                 String code,
+                                 String subject,
+                                 Map<String, LossConfirmation> opened,
+                                 Set<String> closed) {
+            if (OPENER.equals(code)) {
+                opened.put(subject, formOf(warning.summary(), subject));
+            } else if (CLOSERS.contains(code)) {
+                closed.add(subject);
+            }
+        }
+
+        /// The override form an at-risk text names in its exit command: `--episode <e> --digest <d>` gives the digest; any other
+        /// text (the inventory-unknown form, or no report reached that leader) gives the inventory-unknown form (H8).
+        static LossConfirmation formOf(String text, String episode) {
+            var marker = " --episode " + episode + " --digest ";
+            var start = text.indexOf(marker);
+
+            return start < 0
+                   ? LossConfirmation.InventoryUnknown.INVENTORY_UNKNOWN
+                   : LossConfirmation.Digest.digest(digestAt(text, start + marker.length()));
+        }
+
+        private static String digestAt(String text, int from) {
+            var end = text.indexOf('`', from);
+
+            return text.substring(from,
+                                  end < 0
+                                  ? text.length()
+                                  : end);
         }
 
         private static final String OPENER = OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK.code();
@@ -958,23 +1110,31 @@ public interface HoldRecords {
                                                               "Draining node " + nodeId.id() + " (episode " + episode + "): declared dead by failure detection while held; " + owed(report) + " may be lost; restore them from the source of truth");
                 case SUPERSEDED -> OperatorWarning.operatorWarning(OperatorWarningCode.DHT_DEPARTURE_HOLD_ENDED,
                                                                    episode,
-                                                                   "Draining node " + nodeId.id() + " (episode " + episode + "): hold ended, superseded by episode " + closing.successor().or("unknown") + " (the drainer started a new drain); last report of this episode: " + owed(report));
+                                                                   "Draining node " + nodeId.id() + " (episode " + episode + "): hold ended, superseded by episode " + closing.successor().or("unknown") + " (the drainer started a new drain); no operator action is needed for this episode; last report of this episode: " + owed(report));
             };
         }
 
+        /// The record names the report the override was checked against, or says that none reached this leader (a seeded
+        /// episode, checked against its landed at-risk warning: H8).
         static OperatorWarning lossAccepted(LossAccepted accepted) {
-            var report = accepted.report();
-
             return OperatorWarning.operatorWarning(OperatorWarningCode.DHT_DEPARTURE_LOSS_ACCEPTED,
                                                    accepted.episode(),
                                                    "Operator accepted the loss of draining node " + accepted.nodeId()
                                                                                                             .id()
                                                   + " (episode " + accepted.episode()
-                                                  + "): " + count(report)
-                                                  + " as of " + at(report)
+                                                  + "): " + accepted.report()
+                                                                    .map(HoldTexts::acceptedClause)
+                                                                    .or(NO_REPORT)
                                                   + " (" + accepted.confirmation()
                                                                    .render()
-                                                  + "); first keys: " + String.join(",", report.sampleKeys()));
+                                                  + ")" + accepted.report()
+                                                                 .map(held -> "; first keys: " + String.join(",",
+                                                                                                             held.sampleKeys()))
+                                                                 .or(""));
+        }
+
+        private static String acceptedClause(HeldReport report) {
+            return count(report) + " as of " + at(report);
         }
 
         private static String atRiskText(NodeId nodeId, String episode, HeldReport report) {
@@ -998,6 +1158,7 @@ public interface HoldRecords {
                  + "` if it reports an inventory not enumerated.";
         }
 
+        private static final String NO_REPORT = "no report of this episode reached this leader; checked against its landed at-risk warning";
         private static final String EXITS = "Exits: a holder acknowledges them (a target returns or stops refusing), or, while a leader is reachable, `";
 
         private static String heldClause(HeldReport report) {

@@ -13,6 +13,7 @@ import org.pragmatica.utility.warning.OperatorWarningCode;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.node.HoldRecordsFixture.EPISODE;
 import static org.pragmatica.aether.node.HoldRecordsFixture.NODE;
+import static org.pragmatica.aether.node.HoldRecordsFixture.T0;
 import static org.pragmatica.aether.node.HoldRecordsFixture.held;
 import static org.pragmatica.aether.node.HoldRecordsFixture.report;
 
@@ -56,11 +57,18 @@ class HoldRecordsRaiseTest {
         fx.lands = false;
         fx.pong(held(-1, ""));
         fx.records.tick();
+        fx.pong(held(-1, ""));
+        assertThat(fx.raisedOf(AT_RISK)).as("a retry waits for the tick and its backoff, never a pong (H11)").isEqualTo(1);
+
+        fx.now = T0 + 1_000;
+        fx.records.tick();
         fx.live.clear();
+        fx.now = T0 + 3_000;
         fx.records.tick();
         assertThat(fx.raisedOf(AT_RISK)).as("re-raised while not landed, the drainer silent included").isEqualTo(3);
 
         fx.lands = true;
+        fx.now = T0 + 7_000;
         fx.records.tick();
         fx.records.tick();
         fx.pong(held(-1, ""));

@@ -12,6 +12,7 @@ import org.pragmatica.utility.warning.OperatorWarningCode;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.node.HoldRecordsFixture.EPISODE;
 import static org.pragmatica.aether.node.HoldRecordsFixture.NODE;
+import static org.pragmatica.aether.node.HoldRecordsFixture.T0;
 import static org.pragmatica.aether.node.HoldRecordsFixture.held;
 import static org.pragmatica.aether.node.HoldRecordsFixture.report;
 
@@ -20,6 +21,7 @@ import static org.pragmatica.aether.node.HoldRecordsFixture.report;
 class HoldRecordsCloserTest {
     private static final OperatorWarningCode HOLD_ENDED = OperatorWarningCode.DHT_DEPARTURE_HOLD_ENDED;
     private static final OperatorWarningCode DELIVERED = OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED;
+    private static final OperatorWarningCode AT_RISK = OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK;
 
     private final HoldRecordsFixture fx = new HoldRecordsFixture();
 
@@ -69,9 +71,13 @@ class HoldRecordsCloserTest {
         fx.pong(held(3, "d1"));
         fx.records.onDead(NODE);
         fx.records.tick();
+        assertThat(fx.closersOf(HOLD_ENDED)).as("a retry waits for its backoff (H11)").hasSize(1);
+        fx.now = T0 + 1_000;
+        fx.records.tick();
         assertThat(fx.closersOf(HOLD_ENDED)).hasSize(2);
 
         fx.lands = true;
+        fx.now = T0 + 3_000;
         fx.records.tick();
         fx.records.tick();
 
@@ -83,6 +89,9 @@ class HoldRecordsCloserTest {
     @Test
     void deliveredReportClosesWithDelivered() {
         fx.pong(held(3, "d1"));
+        fx.now = T0 + HoldRecords.REPORT_AFTER_MS;
+        fx.pong(held(3, "d1"));
+        assertThat(fx.raisedOf(AT_RISK)).as("the at-risk warning was raised: a closer is owed (H10)").isEqualTo(1);
         fx.pong(report(0, 0, "", HeldEnd.DELIVERED));
 
         assertThat(fx.closersOf(DELIVERED)).hasSize(1);
@@ -102,6 +111,9 @@ class HoldRecordsCloserTest {
     @Test
     void endEchoAfterCloserLanded() {
         fx.pong(held(3, "d1"));
+        fx.now = T0 + HoldRecords.REPORT_AFTER_MS;
+        fx.pong(held(3, "d1"));
+        assertThat(fx.raisedOf(AT_RISK)).as("the at-risk warning was raised: a closer is owed (H10)").isEqualTo(1);
         fx.holdOpen = true;
         fx.pong(report(0, 0, "", HeldEnd.DELIVERED));
         assertThat(fx.closersOf(DELIVERED)).hasSize(1);

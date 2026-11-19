@@ -28,6 +28,8 @@ class HoldRecordsTextsTest {
     @Test
     void supersededCloserNamesSuccessorAndLastReportCounts() {
         fx.pong(held(3, "d1"));
+        fx.now = T0 + HoldRecords.REPORT_AFTER_MS;
+        fx.pong(held(3, "d1"));
         fx.pong(ofEpisode(E2, 2, "d2", T0, HeldEnd.NONE));
 
         var message = fx.closersOf(HOLD_ENDED).getFirst().message();
@@ -35,6 +37,7 @@ class HoldRecordsTextsTest {
         assertThat(message).startsWith("Draining node drainer-1 (episode " + EPISODE + "): hold ended, superseded by episode " + E2)
                            .contains("last report of this episode: 3 key(s) owed as of ")
                            .contains("(digest d1)")
+                           .contains("no operator action is needed")
                            .doesNotContain("will")
                            .doesNotContain("soon");
     }

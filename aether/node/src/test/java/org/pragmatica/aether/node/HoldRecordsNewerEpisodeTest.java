@@ -58,6 +58,9 @@ class HoldRecordsNewerEpisodeTest {
     @Test
     void newEpisodeAfterADeliveredOneLatches() {
         fx.pong(held(3, "d1"));
+        fx.now = T0 + HoldRecords.REPORT_AFTER_MS;
+        fx.pong(held(3, "d1"));
+        assertThat(fx.raisedOf(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK)).as("E1's at-risk warning was raised: a closer is owed (H10)").isEqualTo(1);
         fx.holdOpen = true;
         fx.pong(report(3, 0, "d1", HeldEnd.DELIVERED));
         fx.pong(ofEpisode(E2, 2, "d2", T0, HeldEnd.NONE));
@@ -79,8 +82,11 @@ class HoldRecordsNewerEpisodeTest {
     @Test
     void openEpisodeSupersededThenNewerEpisodeOverridden() throws InterruptedException {
         fx.pong(held(3, "d1"));
+        fx.now = T0 + HoldRecords.REPORT_AFTER_MS;
+        fx.pong(held(3, "d1"));
+        assertThat(fx.raisedOf(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK)).as("E1's at-risk warning was raised: a closer is owed (H10)").isEqualTo(1);
         fx.pong(ofEpisode(E2, 2, "d2", T0, HeldEnd.NONE));
-        fx.now = T0 + 20_000;
+        fx.now = T0 + 35_000;
         fx.records.tick();
         eventually(() -> fx.closersOfSubject(EPISODE) == 1);
 
