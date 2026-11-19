@@ -802,9 +802,9 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskPauseValue 170
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskStateValue 2168
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskValue 1635
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SchemaMigrationLockValue 1636
-TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SchemaReach 2981
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SchemaReach 2985
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SchemaStatus 1637
-TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SchemaVersionValue 2980
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SchemaVersionValue 2984
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SliceDesiredValue 2148
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SliceGoal 2155
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SliceNodeValue 1639
