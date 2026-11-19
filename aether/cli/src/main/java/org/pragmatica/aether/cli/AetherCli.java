@@ -2511,6 +2511,9 @@ public class AetherCli implements Runnable {
             @CommandLine.Option(names = {"-v", "--version"}, description = "Version", required = true)
             private String version;
 
+            @CommandLine.Option(names = "--force", description = FORCE_REAPPLY_DESCRIPTION)
+            private boolean force;
+
             @Override
             @SuppressWarnings({"JBCT-UTIL-02", "JBCT-SEQ-01"})
             public Integer call() {
@@ -2548,7 +2551,7 @@ public class AetherCli implements Runnable {
                         return uploadError;
                     }
 
-                    var deployBody = "{\"artifact\":\"" + escapeJsonValue(coordinates) + "\"}";
+                    var deployBody = "{\"artifact\":\"" + escapeJsonValue(coordinates) + "\"" + forceField(force) + "}";
                     var deployResponse = blueprintParent.parent.post(BLUEPRINT_DEPLOY, deployBody);
                     var deployError = OutputFormatter.checkResponseError(deployResponse,
                                                                          blueprintParent.parent.outputOptions(),

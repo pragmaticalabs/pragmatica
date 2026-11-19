@@ -479,7 +479,10 @@ public interface SystemTags {
         pin(table, 1635, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue");
         pin(table, 1636, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue");
         pin(table, 1637, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus");
-        pin(table, 1638, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue");
+        // #834: tag 1638 was SchemaVersionValue's, before it gained `reachedBy`. It stays the tag of that old shape (decode-only, see
+        // LegacySchemaVersionValue): a snapshot or persisted state written by an older build decodes as one unit, so one old-shape row
+        // under a tag that now meant the new shape would fail the whole restore. The current shape took 2980, its reach enum 2981.
+        pin(table, 1638, "org.pragmatica.aether.slice.kvstore.LegacySchemaVersionValue");
         pin(table, 1639, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue");
         pin(table, 1640, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue");
         pin(table, 1641, "org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanStatus");
@@ -804,6 +807,10 @@ public interface SystemTags {
         // #3345: the HELD report carried on the pong. Inside the dht-3345-3347 reservation 2960..2979 of wire-tag-ranges.txt.
         pin(table, 2960, "org.pragmatica.cluster.metrics.HeldReport");
         pin(table, 2961, "org.pragmatica.cluster.metrics.HeldEnd");
+        // #834: SchemaVersionValue with `reachedBy`, and the reach enum; 2980 and 2981 were free on every origin branch (817 tips,
+        // ledger and SystemTags both scanned 2026-11-19); the range is reserved in wire-tag-ranges.txt first.
+        pin(table, 2980, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue");
+        pin(table, 2981, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 
