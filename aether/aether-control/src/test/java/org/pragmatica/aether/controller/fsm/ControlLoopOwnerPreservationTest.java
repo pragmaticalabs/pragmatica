@@ -30,7 +30,7 @@ import org.pragmatica.aether.controller.ScalingConfig;
 import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.controller.ScalingMetric;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentContext;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState;
