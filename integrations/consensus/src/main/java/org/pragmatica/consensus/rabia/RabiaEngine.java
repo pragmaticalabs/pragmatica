@@ -1067,6 +1067,8 @@ public class RabiaEngine<C extends Command> {
     /// #2625: this process's incarnation, stamped on every proposal and vote it sends. Minted per engine instance and never
     /// persisted, so a restart under the same NodeId ballots under a new one (see [PhaseData#admit]).
     private final Incarnation incarnation = Incarnation.freshIncarnation();
+    /// #2625: peers this node raised [OperatorWarningCode#CONSENSUS_INCARNATION_CONFLICT] for and has not closed yet.
+    private final Set<NodeId> incarnationConflicts = ConcurrentHashMap.newKeySet();
     /// Sink for engine-level `ConsensusEvent` emissions. The default no-op consumer keeps
     /// existing test constructors working; production wiring (`RabiaNode`) injects
     /// `ConsensusBridge.consensusBridge(router)` so the consensus engine becomes the
@@ -4444,13 +4446,14 @@ public class RabiaEngine<C extends Command> {
         }
 
         return switch (phaseData.admit(sender, senderIncarnation)) {
-            case ADMITTED -> true;
+            case ADMITTED -> closeIncarnationConflict(sender, phaseData.phase());
             case VOIDED -> false;
             case CONFLICT -> reportIncarnationConflict(sender, phaseData.phase());
         };
     }
 
     private boolean reportIncarnationConflict(NodeId sender, Phase phase) {
+        incarnationConflicts.add(sender);
         OperatorWarnings.raise(log,
                                operatorWarningSink.get(),
                                OperatorWarningCode.CONSENSUS_INCARNATION_CONFLICT,
@@ -4463,6 +4466,23 @@ public class RabiaEngine<C extends Command> {
                                phase);
 
         return false;
+    }
+
+    /// Closes [OperatorWarningCode#CONSENSUS_INCARNATION_CONFLICT] for `sender` when one of its ballots is next admitted in a
+    /// slot under a single incarnation: that id ballots as one process again here.
+    private boolean closeIncarnationConflict(NodeId sender, Phase phase) {
+        if (incarnationConflicts.remove(sender)) {
+            OperatorWarnings.raise(log,
+                                   operatorWarningSink.get(),
+                                   OperatorWarningCode.CONSENSUS_INCARNATION_RESOLVED,
+                                   sender.id(),
+                                   "Node {}: node id {} ballots as one process again (admitted under a single incarnation in slot {})",
+                                   self,
+                                   sender,
+                                   phase);
+        }
+
+        return true;
     }
 
     private void tryBroadcastRound1Vote(Phase phase, PhaseData<C> phaseData) {

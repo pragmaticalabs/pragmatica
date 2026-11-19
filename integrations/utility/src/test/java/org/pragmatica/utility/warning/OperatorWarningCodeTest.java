@@ -278,6 +278,19 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.CONSENSUS_RESTORE_RECOVERED.subsystem()).isEqualTo(OperatorWarningCode.CONSENSUS_RESTORE_REFUSED.subsystem());
     }
 
+    /// #2625: two processes balloting under one node id in a slot is critical and closed by an INFO recovery of the same
+    /// subsystem when that id is next admitted under a single incarnation; both wire strings are pinned.
+    @Test
+    void consensusIncarnationConflict_isCritical_andIsClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.CONSENSUS_INCARNATION_RESOLVED.recoveryOf()
+                                                                     .unwrap()).isEqualTo(OperatorWarningCode.CONSENSUS_INCARNATION_CONFLICT);
+        assertThat(OperatorWarningCode.CONSENSUS_INCARNATION_RESOLVED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.CONSENSUS_INCARNATION_CONFLICT.level()).isEqualTo(WarningLevel.CRITICAL);
+        assertThat(OperatorWarningCode.CONSENSUS_INCARNATION_CONFLICT.code()).isEqualTo("consensus-incarnation-conflict");
+        assertThat(OperatorWarningCode.CONSENSUS_INCARNATION_RESOLVED.code()).isEqualTo("consensus-incarnation-resolved");
+        assertThat(OperatorWarningCode.CONSENSUS_INCARNATION_RESOLVED.subsystem()).isEqualTo(OperatorWarningCode.CONSENSUS_INCARNATION_CONFLICT.subsystem());
+    }
+
     /// #2201 C-16, owner ruling 2026-10-28 on Q11: a cursor expiry is critical and closed by an INFO recovery of the same
     /// subsystem when the cursor is re-established; both wire strings are pinned.
     @Test

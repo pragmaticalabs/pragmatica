@@ -122,6 +122,15 @@ class RabiaRestartIncarnationTest {
                                                                .doesNotContain(new TestCommand("Y"));
         assertThat(cluster.raisedWithin(C + "|" + OperatorWarningCode.CONSENSUS_INCARNATION_CONFLICT + "|" + cluster.members.get(A).id()))
             .as("C reports the second process under A's id as an operator event").isTrue();
+
+        // The partition heals: C learns X for P from B, and A' (one process from here on) ballots in the next slot, which
+        // closes C's conflict event.
+        cluster.deliverable = _ -> true;
+        cluster.pump();
+        assertThat(cluster.machines.get(C).getProcessedCommands()).as("C learns X for P once the partition heals")
+                                                               .startsWith(new TestCommand("X"));
+        assertThat(cluster.raisedWithin(C + "|" + OperatorWarningCode.CONSENSUS_INCARNATION_RESOLVED + "|" + cluster.members.get(A).id()))
+            .as("C closes the conflict once A's id ballots as one process again").isTrue();
     }
 
     private static Batch<TestCommand> batch(Cluster cluster, String value) {

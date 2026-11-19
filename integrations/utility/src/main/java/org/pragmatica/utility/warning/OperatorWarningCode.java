@@ -671,6 +671,13 @@ public enum OperatorWarningCode {
     /// have refused the restarted process first. Raised once per slot by each receiver that sees the second process; subject
     /// is the restarted node id; the message names the receiver and the slot.
     CONSENSUS_INCARNATION_CONFLICT("consensus-incarnation-conflict", "consensus", WarningLevel.CRITICAL),
+    /// The recovery of [#CONSENSUS_INCARNATION_CONFLICT], same subject (#2625): a later ballot from that node id was admitted in a
+    /// slot under a single incarnation, so the id ballots as one process again at this receiver. INFO, published only after a
+    /// published conflict for the subject (#752 mechanism).
+    CONSENSUS_INCARNATION_RESOLVED("consensus-incarnation-resolved",
+                                   "consensus",
+                                   WarningLevel.INFO,
+                                   CONSENSUS_INCARNATION_CONFLICT),
     /// Background promotion of a storage instance has copied nothing for several consecutive cycles while copies kept
     /// failing: a copy attempt fails when its faster tier rejects the write or its source tier cannot be read. It detects
     /// FAILING COPIES only: a tier sitting above its promotion watermark is skipped without an attempt and raises nothing.
