@@ -710,16 +710,6 @@ class PeerObservationOrderTest {
         assertThat(reads.get()).as("one read for the five removals").isEqualTo(1);
     }
 
-    /// #3047: the manager reports the installed transport view (the wiring pin seam the node assembly is checked by).
-    @Test
-    void hasTransportView_isReportedOnlyAfterTheManagerInstallsIt() {
-        node = new Node(LeaderElectionContext::dormant);
-
-        assertThat(node.manager.hasTransportView()).as("nothing installed yet").isFalse();
-        node.manager.installTransportView(Option::none);
-        assertThat(node.manager.hasTransportView()).isTrue();
-    }
-
     private Option<TransportView> removingOnFirstRead(AtomicInteger reads, AtomicLong sequence, AtomicBoolean applied) {
         if (reads.incrementAndGet() == 1) {
             applied.set(node.ctx.removeFromView(N1));

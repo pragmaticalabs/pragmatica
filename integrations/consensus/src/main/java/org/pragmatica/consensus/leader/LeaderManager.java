@@ -97,12 +97,6 @@ public interface LeaderManager {
         return Unit.unit();
     }
 
-    /// Whether a transport view is installed (#3047; a wiring pin seam: true once [`#installTransportView`] reached an
-    /// election FSM). Default false for implementations without an election FSM.
-    default boolean hasTransportView() {
-        return false;
-    }
-
     /// Turns the leader pre-vote on (#1748): a follower that loses its leader asks the electorate before it
     /// elects, so one follower's broken link cannot depose a leader the rest still reaches. Wired by the
     /// consensus node only — it needs a network to ask over. Default no-op for implementations without one.
@@ -451,11 +445,6 @@ public interface LeaderManager {
             context.installTransportView(view, LeaderElectionContext.DEFAULT_REASSERT_PERIOD);
 
             return Unit.unit();
-        }
-
-        @Override
-        public boolean hasTransportView() {
-            return context.hasTransportView();
         }
 
         @Override

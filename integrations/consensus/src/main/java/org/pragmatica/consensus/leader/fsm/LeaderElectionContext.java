@@ -706,12 +706,6 @@ public final class LeaderElectionContext {
         reassertPeriod.set(period);
     }
 
-    /// True once [`#installTransportView`] ran: a removal then arms a re-assertion.
-    public boolean hasTransportView() {
-        return transportView.get()
-                            .isPresent();
-    }
-
     /// Wires the signal that this node's KV state is still catching up with the committed frontier
     /// (production: the consensus engine's pending-catch-up flag). Replaces the no-sync-pending default.
     @Contract
