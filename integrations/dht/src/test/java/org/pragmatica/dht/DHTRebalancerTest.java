@@ -2222,6 +2222,7 @@ class DHTRebalancerTest {
         private final AtomicReference<Consumer<DHTMessage.MigrationDataAck>> ackSink = new AtomicReference<>(ack -> {});
         private final AtomicReference<Runnable> viewChangeSink = new AtomicReference<>(() -> {});
         private final AtomicReference<Function<TimedSend, Reply>> probeScript = new AtomicReference<>(_ -> Reply.ACK);
+        private final AtomicBoolean probeSendsHang = new AtomicBoolean();
         private final java.util.function.BiFunction<Integer, TimedSend, Reply> script;
         private final Option<ConsistentHashRing<NodeId>> watchedRing;
         private final AtomicReference<Set<NodeId>> lastView;
@@ -2253,6 +2254,11 @@ class DHTRebalancerTest {
             probeScript.set(answer);
         }
 
+        /// Every probe send from now on returns a promise that never resolves (a transport that never reports its outcome).
+        void probeSendsHang() {
+            probeSendsHang.set(true);
+        }
+
         void viewChangeVia(Runnable sink) {
             viewChangeSink.set(sink);
         }
@@ -2273,6 +2279,9 @@ class DHTRebalancerTest {
                 // #3345: an EMPTY page is the pre-exit probe of a holder: kept apart from the data pages, answered as scripted
                 // (by default an ack at once).
                 probes.add(sent);
+                if (probeSendsHang.get()) {
+                    return Promise.promise();
+                }
                 respond(probeScript.get().apply(sent), sent);
                 return Promise.success(new WriteOutcome.Sent(target));
             }

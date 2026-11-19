@@ -71,9 +71,14 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// not a target without an ack. A page of x's previous tenure is dead from the next re-plan on (never sent, split or acked, its keys
 /// are paged again in the current tenure); within one tenure a late ack (its page cancelled by a re-plan) still counts.
 ///
-/// **Live page.** One predicate, [#live(Page)] (registered, not cancelled, current), is asked by send, resend, split and the count of
-/// live chains alike, so a page a re-plan cancelled is dead like a page of an earlier tenure: never sent, resent or split, and it
-/// holds no exit.
+/// **Owed targets (P1).** [#owedTargets] is the ONE definition of whom a key is owed to: the nodes that gain it in V, less its
+/// confirmed holders. The first plan and every re-plan desire exactly those pairs, and a re-plan cancels a page only when its target
+/// is owed none of the keys it carries. Safe at one deliverer is a close condition (the exit and the deadline), never a reason to
+/// cancel: a planned page to a target still owed its key is sent, and no exit starts before its chain ends.
+///
+/// **May act (P2).** One predicate, [#mayAct(Page)] (registered, not cancelled, current: its target in V in the page's tenure),
+/// is asked by send, resend, split and the count of live chains alike, read from V and never from the live ring, so a page a
+/// re-plan cancelled is dead like a page of an earlier tenure: never sent, resent or split, and it holds no exit.
 ///
 /// **Probe.** A probe that gets no answer is sent again while its window lasts and is never a lost holder (no re-push follows);
 /// only a refusal in its answer (a "draining" nack or a token mismatch) is.
@@ -84,8 +89,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// resends a single-key page after a growing one, and an attempt timed out splits likewise without the backoff (P1); a split, a
 /// send and a resend carry only the keys not yet safe at the target, and a page with none left is not sent. A reconcile observes
 /// the ring ONCE (I1: one snapshot gives V, `L = self + drainSet`, the tenures and every target of the re-plan), computes the
-/// desired pages {(t, k): k owed, t a target of k, k not safe at t}, cancels every live page none of whose pairs is desired (it
-/// stays registered, so its late ack still counts), and registers the missing ones.
+/// desired pages {(t, k): t in [#owedTargets](k)}, cancels every live page whose target is owed none of its keys (it stays
+/// registered, so its late ack still counts), and registers the missing ones.
 ///
 /// **Inventory and the fence (#3345 R4, marked guess G3).** Owed is frozen at the fence: owed keys are the keys of the first
 /// inventory plus keys a later re-read finds whose stamp's HLC wall time is before the window's `drainStartMillis`. Anything else a
@@ -544,7 +549,7 @@ final class DeparturePushRun {
     }
 
     /// Under `transitions`, P4: a page lives in ONE tenure of its target. It is current iff its target is in V, the last
-    /// observation, and its tenure tag is the target's tenure there. [#live(Page)] asks it, and so does the ack (`inTenure`).
+    /// observation, and its tenure tag is the target's tenure there. [#mayAct(Page)] asks it, and so does the ack (`inTenure`).
     /// A page that is not current is dead from the observation on: never counted live, sent, split or acked, so its keys are
     /// desired again and paged in the current tenure.
     private boolean current(Page page) {
@@ -556,53 +561,56 @@ final class DeparturePushRun {
         registry.remove(page.correlationId());
     }
 
-    /// Under `transitions`: an owed key wants a page on every target at which it is not safe.
+    /// Under `transitions`: a key wants a page on every target it is owed to ([#owedTargets]).
     private void desire(DepartureKey key, Map<NodeId, List<DepartureKey>> desired) {
-        var targets = drainTargets(key.stamp.key());
-
-        if (!isSafe(key, targets, false)) {
-            targets.all()
-                   .stream()
-                   .filter(target -> !safe(key, target, false))
-                   .forEach(target -> desired.computeIfAbsent(target,
-                                                              _ -> new ArrayList<>())
-                                             .add(key));
-        }
+        owedTargets(key).forEach(target -> desired.computeIfAbsent(target,
+                                                                   _ -> new ArrayList<>())
+                                                  .add(key));
     }
 
-    /// Under `transitions`: the ONE answer to "may this page still act": registered, not cancelled and [#current(Page)].
-    /// A page a re-plan cancelled is dead exactly like a page of an earlier tenure. Send and resend (`probeStopped`), split
-    /// (`halvePage`, `splitPage`) and the count of live chains (`liveInChain`) ask only this; a late ack of a cancelled page still
-    /// counts (`inTenure` does not ask it).
-    private boolean live(Page page) {
+    /// Under `transitions`, P1, the ONE owed-to definition: the nodes that gain `key` in V ([#drainTargets], read from the last
+    /// observation), less its confirmed holders ([#safe] at that target). The plan, every re-plan and the cancel of a page compute
+    /// from it alone.
+    private List<NodeId> owedTargets(DepartureKey key) {
+        return drainTargets(key.stamp.key()).all()
+                           .stream()
+                           .filter(target -> !safe(key, target, false))
+                           .toList();
+    }
+
+    /// Under `transitions`, P2: the ONE answer to "may this page send or resend": registered, not cancelled and [#current(Page)],
+    /// read from V (the last observation), never from the live ring. A page a re-plan cancelled is dead exactly like a page of an
+    /// earlier tenure. Send and resend (`probeStopped`), split (`halvePage`, `splitPage`) and the count of live chains
+    /// (`liveInChain`) ask only this; a late ack of a cancelled page still counts (`inTenure` asks only [#current(Page)]).
+    private boolean mayAct(Page page) {
         return registry.containsKey(page.correlationId())
                && !page.cancelled.get()
                && current(page);
     }
 
-    /// Under `transitions`: a data page of a running chain, not yet run to its end, that is [#live(Page)]. The re-plan keeps or
+    /// Under `transitions`: a data page of a running chain, not yet run to its end, that is [#mayAct(Page)]. The re-plan keeps or
     /// cancels exactly these, and no exit starts while one exists.
     private boolean liveInChain(Page page) {
         return ! page.isProbe()
                && !page.finished.get()
-               && live(page);
+               && mayAct(page);
     }
 
-    /// Under `transitions`: a live page stays when one of its pairs is still desired (those pairs need no new page); otherwise it is
-    /// cancelled and stays registered, so a late ack still counts. Only a [#live(Page)] page gets here (`liveInChain`): one that is
-    /// not covers nothing, so its keys are desired again.
+    /// Under `transitions`: a live page stays when its target is still owed one of its keys ([#owedTargets]), and those pairs need
+    /// no new page; otherwise it is cancelled and stays registered, so a late ack still counts. No other reason cancels it. Only a
+    /// [#mayAct(Page)] page gets here (`liveInChain`): one that is not covers nothing, so its keys are desired again.
     private void keepOrCancel(Page page, Map<NodeId, List<DepartureKey>> desired) {
-        var wanted = desired.getOrDefault(page.target, List.of());
-        var covered = page.keys.stream().filter(wanted::contains).toList();
+        var covered = page.keys.stream().filter(key -> owedTargets(key).contains(page.target)).toList();
 
         if (covered.isEmpty()) {
             page.cancelled.set(true);
         } else {
-            wanted.removeAll(covered);
+            Option.option(desired.get(page.target)).onPresent(wanted -> wanted.removeAll(covered));
         }
     }
 
-    /// Under `transitions`: Safe(k) = k is safe at one of its deliverers.
+    /// Under `transitions`: Safe(k) = k is safe at one of its deliverers. A close condition only (the exit, the deadline): never a
+    /// reason to cancel a page ([#owedTargets] decides that).
     private boolean isSafe(DepartureKey key, Targets targets, boolean atClose) {
         return targets.deliverers()
                       .stream()
@@ -784,9 +792,7 @@ final class DeparturePushRun {
     }
 
     private Promise<Unit> attempt(Page page, List<DHTMessage.KeyValue> entries, TimeSpan nackBackoff) {
-        return shouldStop(page) || !node.ring()
-                                        .nodes()
-                                        .contains(page.target)
+        return shouldStop(page)
                ? Promise.unitPromise()
                : send(page, transition(() -> openEntries(page, entries)), nackBackoff);
     }
@@ -798,7 +804,10 @@ final class DeparturePushRun {
 
         return open.isEmpty()
                ? Promise.unitPromise()
-               : dispatch(page, open).flatMap(dispatched -> afterSend(page, open, dispatched, nackBackoff));
+               : dispatch(page, open, attemptsDeadline).flatMap(dispatched -> afterSend(page,
+                                                                                        open,
+                                                                                        dispatched,
+                                                                                        nackBackoff));
     }
 
     /// Under `transitions`.
@@ -814,8 +823,10 @@ final class DeparturePushRun {
     }
 
     /// The push carries L, the set excluded when choosing its target (#1818 L1), and V, both from the run's last observation (I1),
-    /// so the receiver checks placement against the same view rather than its own.
-    private Promise<Dispatched> dispatch(Page page, List<DHTMessage.KeyValue> entries) {
+    /// so the receiver checks placement against the same view rather than its own. The send itself is bounded by `until` (every wait
+    /// of the run is): FER, a send that fails or is not resolved by then is a dead connection, waited out like one (the data path
+    /// pauses and retries while the window lasts; a probe counts as unanswered), so no chain or probe round outlives its deadline.
+    private Promise<Dispatched> dispatch(Page page, List<DHTMessage.KeyValue> entries, long until) {
         var attempt = page.nextAttempt();
 
         log.debug("Departure-pushing a page of {} chunk(s) to {} (ack {})",
@@ -831,6 +842,7 @@ final class DeparturePushRun {
                                                                  true,
                                                                  List.copyOf(underTransitions(() -> observedLeaving)),
                                                                  List.copyOf(underTransitions(() -> view))))
+                      .timeout(remainingUntil(until))
                       .recover(_ -> new WriteOutcome.ConnectionDead(page.target))
                       .map(outcome -> new Dispatched(attempt, outcome));
     }
@@ -901,9 +913,9 @@ final class DeparturePushRun {
 
     /// Under `transitions`: the page is cancelled and its keys not yet safe at its target (I2: a late ack of an earlier page may
     /// have made some safe) go to at most two pages on the same target, in the page's tenure; none when every key is safe or the
-    /// page is not [#live(Page)] (a page cancelled by a re-plan or of an earlier tenure is never split).
+    /// page is not [#mayAct(Page)] (a page cancelled by a re-plan or of an earlier tenure is never split).
     private List<Page> halvePage(Page page) {
-        var open = live(page)
+        var open = mayAct(page)
                    ? page.keys.stream().filter(key -> !safe(key, page.target, false)).toList()
                    : List.<DepartureKey> of();
 
@@ -942,9 +954,9 @@ final class DeparturePushRun {
         return Unit.unit();
     }
 
-    /// Under `transitions`: single-key pages in the page's tenure; none when the page is not [#live(Page)].
+    /// Under `transitions`: single-key pages in the page's tenure; none when the page is not [#mayAct(Page)].
     private List<Page> splitPage(Page page) {
-        var singles = live(page)
+        var singles = mayAct(page)
                       ? page.keys.stream()
                                  .map(key -> registerPage(page.target,
                                                           page.tenure,
@@ -964,14 +976,14 @@ final class DeparturePushRun {
         return probeStopped(page, attemptsDeadline) || isSettled(page);
     }
 
-    /// A page (a probe: any page) is not sent once the node halted, the page is not [#live(Page)], the run closed, or `until`
+    /// A page (a probe: any page) is not sent once the node halted, the page is not [#mayAct(Page)], the run closed, or `until`
     /// passed.
     private boolean probeStopped(Page page, long until) {
         if (window.halted().getAsBoolean()) {
             onHalt();
         }
 
-        return ! underTransitions(() -> live(page)) || isClosed() || System.nanoTime() >= until;
+        return ! underTransitions(() -> mayAct(page)) || isClosed() || System.nanoTime() >= until;
     }
 
     /// I2: a data page every key of which is already safe at its target is not sent (nor resent).
@@ -1058,13 +1070,10 @@ final class DeparturePushRun {
                                              page.tenure));
     }
 
-    /// Under `transitions`: registered, its target in the ring now, and [#current(Page)] (P4).
+    /// Under `transitions`: registered and [#current(Page)] (P4), read from V like [#mayAct(Page)], never from the live ring; a
+    /// cancelled page's late ack still counts.
     private boolean inTenure(Page page) {
-        return registry.containsKey(page.correlationId())
-               && node.ring()
-                      .nodes()
-                      .contains(page.target)
-               && current(page);
+        return registry.containsKey(page.correlationId()) && current(page);
     }
 
     // --- exit ---
@@ -1158,7 +1167,7 @@ final class DeparturePushRun {
     }
 
     /// Each probe ends answered (ACKED or NACKED), refused (FAILED: a draining nack or a token mismatch) or unanswered (TIMED_OUT,
-    /// once it can no longer be sent: `until` passed, the run closed, or the probe is no longer [#live(Page)]).
+    /// once it can no longer be sent: `until` passed, the run closed, or the probe is no longer [#mayAct(Page)]).
     private Promise<List<Result<AttemptResult>>> sendProbes(List<Page> probes, long until) {
         return Promise.allOf(probes.stream().map(page -> probeOne(page, until)).toList());
     }
@@ -1169,7 +1178,8 @@ final class DeparturePushRun {
         return probeStopped(page, until)
                ? Promise.success(AttemptResult.TIMED_OUT)
                : dispatch(page,
-                          List.of()).flatMap(dispatched -> probeAnswer(dispatched, until))
+                          List.of(),
+                          until).flatMap(dispatched -> probeAnswer(dispatched, until))
                          .flatMap(result -> resendIfSilent(page, result, until));
     }
 
