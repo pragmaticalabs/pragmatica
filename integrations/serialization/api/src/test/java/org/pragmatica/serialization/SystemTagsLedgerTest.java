@@ -22,8 +22,10 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.stream.IntStream;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -34,6 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// without a reservation it is found only by hand-checking every open PR.
 class SystemTagsLedgerTest {
     private static final String LEDGER = "wire-tag-ranges.txt";
+    private static final String ARTIFACT_CONTENT_VALUE = "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue";
 
     /// One ledger line: `<from>..<to> <owner> <date> <note>`.
     record Reservation(int from, int to, String owner, LocalDate date, String note, int line) {
@@ -130,5 +133,25 @@ class SystemTagsLedgerTest {
                    "%s is pinned to %d, which no reservation in %s covers: reserve a range first, then allocate inside it".formatted(name,
                                                                                                                                       tag,
                                                                                                                                       LEDGER));
+    }
+
+    /// #420 T12 TRIPWIRE (current behaviour): `ArtifactContentValue` still holds its placeholder tag 2118. PR-1a
+    /// (PR-1u lane A) re-pins it inside the assigned block 2990..2999 (know `d2ce3461aa`); there this goes red:
+    /// delete it and enable the T12 test below.
+    @Test
+    void artifactContentValue_stillOnPlaceholderTag2118_untilPR1a() {
+        assertEquals(2118,
+                     SystemTags.tagFor(ARTIFACT_CONTENT_VALUE),
+                     "T12 tripwire: ArtifactContentValue left tag 2118; PR-1a landed: delete this tripwire, enable artifactContentValue_movedToAssignedBlock");
+    }
+
+    /// #420 T12 (design r13; run red at rc6 in `red-rows-420.md`): the tag lies in the block assigned to #420.
+    @Disabled("#420 T12: enable in PR-1a (PR-1u lane A), with the T12 tripwire deleted")
+    @Test
+    void artifactContentValue_movedToAssignedBlock() {
+        var tag = SystemTags.tagFor(ARTIFACT_CONTENT_VALUE);
+
+        assertTrue(tag != SystemTags.NOT_PINNED, "PRECONDITION ArtifactContentValue is pinned in SystemTags.TAGS");
+        assertTrue(tag >= 2990 && tag <= 2999, "ArtifactContentValue's tag must be in 2990..2999 but is " + tag);
     }
 }
