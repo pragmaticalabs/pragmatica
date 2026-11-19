@@ -1075,20 +1075,22 @@ class RabiaEngineTest {
             target.processVoteRound2(new VoteRound2(NODE_2, Phase.ZERO, StateValue.V1));
             target.processVoteRound2(new VoteRound2(NODE_3, Phase.ZERO, StateValue.V1));
 
-            assertThat(recorder.decided.await(5, SECONDS)).as("slot decided").isTrue();
+            assertThat(recorder.sampled.await(5, SECONDS)).as("slot decided").isTrue();
             var wall = System.nanoTime() - before;
 
             assertThat(recorder.lastDurationNs.get())
                     .as("duration from the slot's start on this node, within [hold, wall time around the slot]")
                     .isGreaterThanOrEqualTo(MIN_HELD_NANOS)
                     .isLessThanOrEqualTo(wall);
+            assertThat(recorder.decisions.get()).as("a held slot is counted").isEqualTo(1);
+            assertThat(recorder.samples.get()).as("a held slot adds one duration sample").isEqualTo(1);
             target.stop().await();
         }
 
-        /// #2644 (F1): a slot first seen as a Decision was never held on this node: no start point, so no
-        /// sample (a near-zero one would drag the average toward 0). The slot is still decided and applied.
+        /// #2644 (F1 + count ruling): a slot first seen as a Decision was never held on this node: no start point, so
+        /// no sample (a near-zero one would drag the average toward 0). It is still decided, applied and COUNTED.
         @Test
-        void decision_first_slot_records_no_duration_sample() throws InterruptedException {
+        void decision_first_slot_is_counted_and_records_no_duration_sample() throws InterruptedException {
             var recorder = new DecisionRecorder();
             var target = new RabiaEngine<>(topologyManager, network, stateMachine,
                                            ProtocolConfig.testConfig(), recorder, false);
@@ -1099,22 +1101,28 @@ class RabiaEngineTest {
             assertThat(awaitCondition(() -> new Phase(1).equals(target.currentPhaseForTesting())))
                     .as("the decision-first slot is decided and the engine moved past it")
                     .isTrue();
-            assertThat(recorder.samples.get()).as("decisions recorded").isZero();
+            assertThat(recorder.decisions.get()).as("decisions counted").isEqualTo(1);
+            assertThat(recorder.samples.get()).as("duration samples").isZero();
             assertThat(recorder.totalNs.get()).as("duration sum").isZero();
             target.stop().await();
         }
 
         private static final class DecisionRecorder implements ConsensusMetrics {
-            final CountDownLatch decided = new CountDownLatch(1);
+            final CountDownLatch sampled = new CountDownLatch(1);
             final java.util.concurrent.atomic.AtomicLong lastDurationNs = new java.util.concurrent.atomic.AtomicLong(-1);
+            final java.util.concurrent.atomic.AtomicLong decisions = new java.util.concurrent.atomic.AtomicLong();
             final java.util.concurrent.atomic.AtomicLong samples = new java.util.concurrent.atomic.AtomicLong();
             final java.util.concurrent.atomic.AtomicLong totalNs = new java.util.concurrent.atomic.AtomicLong();
 
-            @Override public void recordDecision(NodeId nodeId, Phase phase, StateValue stateValue, long duration) {
+            @Override public void recordDecision(NodeId nodeId, Phase phase, StateValue stateValue) {
+                decisions.incrementAndGet();
+            }
+
+            @Override public void recordDecisionDuration(NodeId nodeId, Phase phase, long duration) {
                 lastDurationNs.set(duration);
                 samples.incrementAndGet();
                 totalNs.addAndGet(duration);
-                decided.countDown();
+                sampled.countDown();
             }
 
             @Override public void recordProposal(NodeId nodeId, Phase phase) {}

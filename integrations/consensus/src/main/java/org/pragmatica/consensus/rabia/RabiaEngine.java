@@ -4696,7 +4696,7 @@ public class RabiaEngine<C extends Command> {
 
     private void commitDecision(PhaseData<C> phaseData, Decision<C> decision, boolean heldLocally) {
         if (phaseData.tryMarkDecided()) {
-            recordDecisionDuration(phaseData, decision, heldLocally);
+            recordDecisionMetrics(phaseData, decision, heldLocally);
             // Apply commands to state machine ONLY if it was a V1 decision with a non-empty batch
             if (decision.stateValue() == StateValue.V1 && !decision.value().commands().isEmpty()) {
                 commitChanges(phaseData, decision);
@@ -4712,10 +4712,12 @@ public class RabiaEngine<C extends Command> {
         }
     }
 
-    /// #2644: a node without a start point has no measurement; a near-zero sample would drag the average toward 0.
-    private void recordDecisionDuration(PhaseData<C> phaseData, Decision<C> decision, boolean heldLocally) {
+    /// #2644: every applied decision is counted; the duration is optional. A node without a start point has no
+    /// measurement, and a near-zero sample would drag the average toward 0.
+    private void recordDecisionMetrics(PhaseData<C> phaseData, Decision<C> decision, boolean heldLocally) {
+        metrics.recordDecision(self, phaseData.phase(), decision.stateValue());
         if (heldLocally) {
-            metrics.recordDecision(self, phaseData.phase(), decision.stateValue(), phaseData.elapsedNanos());
+            metrics.recordDecisionDuration(self, phaseData.phase(), phaseData.elapsedNanos());
         }
     }
 
