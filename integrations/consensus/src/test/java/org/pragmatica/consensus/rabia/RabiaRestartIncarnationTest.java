@@ -27,8 +27,10 @@ import org.pragmatica.consensus.rabia.RabiaEngineTest.TestStateMachine;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestTopologyManager;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.NewBatch;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.RoundRequest;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound1;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound2;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
@@ -91,6 +93,9 @@ class RabiaRestartIncarnationTest {
         // A' restarts under the same id with no memory of its ballots and Y queued; B stays partitioned from everyone.
         cluster.restart(A);
         cluster.deliverable = d -> isPair(d, A, C);
+        // A' synchronizes from C alone, which has not decided P, so A' re-enters P.
+        cluster.pump(d -> isSync(d.message()));
+        assertThat(cluster.engines.get(A).isActive()).as("precondition: A' activates from C's state").isTrue();
         cluster.engines.get(A).handleNewBatch(new NewBatch<>(cluster.members.get(A), y));
         cluster.settle();
         var restartedProposal = cluster.takeParked(d -> d.source() == A && d.target() == C && d.message() instanceof Propose<?>);
@@ -116,6 +121,10 @@ class RabiaRestartIncarnationTest {
 
     private static boolean isBallot(ProtocolMessage message) {
         return message instanceof Propose<?> || message instanceof VoteRound1 || message instanceof VoteRound2;
+    }
+
+    private static boolean isSync(ProtocolMessage message) {
+        return message instanceof SyncRequest || message instanceof SyncResponse<?>;
     }
 
     private record Delivery(int source, int target, ProtocolMessage message) {}
@@ -197,19 +206,24 @@ class RabiaRestartIncarnationTest {
         }
 
         void pump() {
+            pump(_ -> true);
+        }
+
+        /// Delivers, in FIFO order, what `deliverable` and `selector` both admit, until nothing admitted is left.
+        void pump(Predicate<Delivery> selector) {
             for (int step = 0; step < 10_000; step++) {
                 settle();
                 verifyPrefixes();
-                var next = takeFirst();
+                var next = takeFirst(selector);
                 if (next.isEmpty()) { return; }
                 deliver(next.getFirst());
             }
             throw new AssertionError("schedule did not quiesce");
         }
 
-        private synchronized List<Delivery> takeFirst() {
+        private synchronized List<Delivery> takeFirst(Predicate<Delivery> selector) {
             for (var d : parked) {
-                if (!dead.contains(d.source()) && !dead.contains(d.target()) && deliverable.test(d)) {
+                if (!dead.contains(d.source()) && !dead.contains(d.target()) && deliverable.test(d) && selector.test(d)) {
                     parked.remove(d);
                     return List.of(d);
                 }
@@ -245,6 +259,8 @@ class RabiaRestartIncarnationTest {
                 case VoteRound2 m -> engine.processVoteRound2(m);
                 case Decision<?> m -> engine.processDecision((Decision<TestCommand>) m);
                 case RoundRequest m -> engine.handleRoundRequest(m);
+                case SyncRequest m -> engine.handleSyncRequest(m);
+                case SyncResponse<?> m -> engine.processSyncResponse((SyncResponse<TestCommand>) m);
                 default -> {}
             }
             settle();
