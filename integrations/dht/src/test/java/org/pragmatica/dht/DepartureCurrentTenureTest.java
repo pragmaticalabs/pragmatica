@@ -26,7 +26,6 @@ import org.pragmatica.dht.DepartureDirectRuns.Direct;
 
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -40,6 +39,7 @@ import static org.pragmatica.dht.DHTRebalancerTest.value;
 import static org.pragmatica.dht.DepartureDirectRuns.delivererOf;
 import static org.pragmatica.dht.DepartureDirectRuns.direct;
 import static org.pragmatica.dht.DepartureDirectRuns.fiveNodeRing;
+import static org.pragmatica.dht.DepartureDirectRuns.otherTargetKey;
 import static org.pragmatica.dht.DepartureDirectRuns.sameDeliverer;
 import static org.pragmatica.dht.DepartureDirectRuns.soleKey;
 import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine;
@@ -47,12 +47,12 @@ import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine
 /// #3345 P4: a page lives in ONE tenure of its target. The target's first page is silent; meanwhile the target leaves V (a
 /// re-plan observes it) and re-enters the ring. A page of the earlier tenure is dead from the observation of the re-entry on: it
 /// is never split, resent or counted live, so its keys are paged again in the current tenure and acked there. Each test bounds
-/// the data pages the target gets: the earlier tenure's one page, then the current tenure's pages.
+/// the data pages the target gets: the earlier tenure's one page, then the current tenure's pages. A key of another node, which
+/// is silent, keeps the run from an early exit (whose re-plan would page the keys again whatever the dead page did).
 class DepartureCurrentTenureTest {
-    private static final long OBSERVE_AFTER_NANOS = TimeUnit.MILLISECONDS.toNanos(300);
-
     private record Script(ConsistentHashRing<NodeId> ring, NodeId target, AtomicReference<DeparturePushRun> handle,
                           AtomicLong returnedAt, AtomicBoolean observed, AtomicInteger pagesOfTwo) {}
+    private record Outcome(Direct direct, long dataPages) {}
 
     /// The 2-key schedule: the page [a, b] is silent and split after the silence while the re-entry is not yet observed (the
     /// target is acking by then); the re-entry is observed 3 `resendAfter` later. Bound: 2 data pages to the target, [a, b] of
@@ -63,7 +63,7 @@ class DepartureCurrentTenureTest {
     void pageSplitAfterSilence_targetReentersBeforeObservation_nothingOwed() {
         var outcome = runOver("cp", 2, DepartureCurrentTenureTest::observeLater);
 
-        assertThat(outcome.direct().report().owed()).as("acked in the current tenure").isZero();
+        assertThat(outcome.direct().report().owed()).as("only the silent node's key").isEqualTo(1);
         assertThat(outcome.dataPages()).as("[a, b] once per tenure, no halves of the earlier tenure").isLessThanOrEqualTo(2);
     }
 
@@ -74,23 +74,21 @@ class DepartureCurrentTenureTest {
     void singleKeyPage_targetReentersBeforeObservation_isNotResent() {
         var outcome = runOver("cs", 1, DepartureCurrentTenureTest::observeLater);
 
-        assertThat(outcome.direct().report().owed()).as("acked in the current tenure").isZero();
+        assertThat(outcome.direct().report().owed()).as("only the silent node's key").isEqualTo(1);
         assertThat(outcome.dataPages()).as("[a] once per tenure").isLessThanOrEqualTo(2);
     }
 
-    /// The re-entry is observed inside the first page's send, while that page waits for its ack: it is not counted live, so a and
-    /// b are paged again at once in the current tenure; that page is silent too and its halves are acked. Bound: 4 data pages to
-    /// the target, [a, b] of each tenure and the current tenure's halves.
+    /// The re-entry is observed inside the first page's send, while that page waits for its ack: it is not current, so a and b
+    /// are paged again at once in the current tenure; that page is silent too and its halves are acked, and the earlier page is
+    /// never split. Bound: 4 data pages to the target, [a, b] of each tenure and the current tenure's halves.
     @Test
     @Timeout(20)
-    void pageAwaitingItsAck_reentryObserved_isNotCountedLive() {
+    void pageAwaitingItsAck_reentryObserved_isNeverSplit() {
         var outcome = runOver("cl", 2, DepartureCurrentTenureTest::observeAtOnce);
 
-        assertThat(outcome.direct().report().owed()).as("acked in the current tenure").isZero();
+        assertThat(outcome.direct().report().owed()).as("only the silent node's key").isEqualTo(1);
         assertThat(outcome.dataPages()).as("no split of the earlier tenure's page").isLessThanOrEqualTo(4);
     }
-
-    private record Outcome(Direct direct, long dataPages) {}
 
     private static Outcome runOver(String prefix, int keyCount, BiFunction<TimedSend, Script, Reply> schedule) {
         var ring = fiveNodeRing();
@@ -98,12 +96,14 @@ class DepartureCurrentTenureTest {
         var a = soleKey(ring, prefix);
         var keys = keyCount == 1 ? List.of(a) : List.of(a, sameDeliverer(ring, a, prefix + "-b"));
         var target = delivererOf(ring, a, Set.of(LOCAL));
+        node.putLocal(otherTargetKey(ring, target, prefix + "-silent"), value("payload")).await();
         keys.forEach(key -> node.putLocal(key, value("payload")).await());
-        var handle = new AtomicReference<DeparturePushRun>();
-        var script = new Script(ring, target, handle, new AtomicLong(), new AtomicBoolean(), new AtomicInteger());
+        var script = new Script(ring, target, new AtomicReference<>(), new AtomicLong(), new AtomicBoolean(), new AtomicInteger());
         var network = ScriptedNetwork.scripted((_, sent) -> schedule.apply(sent, script));
-        var direct = direct(node, network, 1_500, 100, Set::of, handle);
-        return new Outcome(direct, network.sends().stream().filter(sent -> isTarget(sent, script) && !sent.response().entries().isEmpty()).count());
+        var direct = direct(node, network, 1_500, 100, Set::of, script.handle());
+        return new Outcome(direct, network.sends().stream()
+                                          .filter(sent -> isTarget(sent, script) && !sent.response().entries().isEmpty())
+                                          .count());
     }
 
     /// The target's first page: it leaves V (observed) and re-enters the ring, silent. Any send 300 ms after the return observes
@@ -115,7 +115,7 @@ class DepartureCurrentTenureTest {
             return Reply.DROP;
         }
         if (script.returnedAt().get() != 0
-            && System.nanoTime() - script.returnedAt().get() >= OBSERVE_AFTER_NANOS
+            && System.nanoTime() - script.returnedAt().get() >= 300_000_000L
             && script.observed().compareAndSet(false, true)) {
             script.handle().get().onViewChange();
         }
