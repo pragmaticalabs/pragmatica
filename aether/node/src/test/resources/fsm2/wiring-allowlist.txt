@@ -68,4 +68,4 @@
 1|DrainAssembly.java|an import of the manager type of the drain report listener's LEGACY overload|import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 1|DrainAssembly.java|a parameter carrying the manager to its LEGACY binding sites|ClusterDeploymentManager clusterDeploymentManager) {
 1|DrainAssembly.java|the LEGACY eviction half of the drain report listener (B12), bound through DeploymentWiring.legacy|return drainReportListener(membershipFsm, clusterDeploymentManager::onNodeDraining);
-1|AetherNodeConfig.java|an import of a type the node constructs and hands to DeploymentWiring|import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+1|AetherNodeConfig.java|an import of a type the node constructs and hands to DeploymentWiring|import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
