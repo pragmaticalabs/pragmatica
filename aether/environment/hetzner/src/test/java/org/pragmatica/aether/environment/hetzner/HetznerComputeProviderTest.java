@@ -1563,10 +1563,10 @@ class HetznerComputeProviderTest {
         }
 
         private ProvisionRequest replacementRequest(SourceName sourceName) {
-            return replacementRequestFor(CLUSTER, sourceName);
+            return replacementRequestFor(CLUSTER, sourceName, "node-01");
         }
 
-        private static ProvisionRequest replacementRequestFor(ClusterName cluster, SourceName sourceName) {
+        private static ProvisionRequest replacementRequestFor(ClusterName cluster, SourceName sourceName, String nodeId) {
             return new ProvisionRequest(InstanceType.ON_DEMAND,
                                         "cx22",
                                         "ubuntu-24.04",
@@ -1576,7 +1576,7 @@ class HetznerComputeProviderTest {
                                         ProvisionContext.forReplacement(Option.some(cluster),
                                                                         "core",
                                                                         sourceName,
-                                                                        "node-01",
+                                                                        nodeId,
                                                                         "node-00:10.0.0.1:8090",
                                                                         3));
         }
@@ -1848,7 +1848,10 @@ class HetznerComputeProviderTest {
         }
 
         /// #3292: the cluster-label-lost arm and the source-label-lost arm both match by name, so BOTH are swept over
-        /// every legal cluster-name length (1..63, the [ClusterName] bound) in two shapes. Length 55 is the one where
+        /// every cluster-name length a replacement can reach the firewall check with, in two shapes. The operation id
+        /// `<cluster>-<nodeId>` must fit 63 characters, so with the one-character node id used here that is 1..61;
+        /// lengths 62 and 63 are refused before any firewall lookup, and `FirewallNameTest` sweeps all 1..63 on the name
+        /// match itself. Length 55 is the one where
         /// `aether-<cluster>-` is exactly 63 characters and the cut leaves a trailing hyphen to trim: a hand-built
         /// prefix missed it and a duplicate firewall-less node was provisioned.
         @Test
@@ -1886,7 +1889,7 @@ class HetznerComputeProviderTest {
                                                                                        List.of(),
                                                                                        Map.of())));
 
-            replacementProvider().createFrom(replacementRequestFor(prod, SOURCE))
+            replacementProvider().createFrom(replacementRequestFor(prod, SOURCE, "node-01"))
                                  .await()
                                  .onSuccess(info -> assertThat(info).isNull())
                                  .onFailure(cause -> assertThat(cause.message()).contains("carries no cluster label"));
@@ -1894,8 +1897,11 @@ class HetznerComputeProviderTest {
             assertThat(testClient.lastCreateServerRequest).isNull();
         }
 
+        /// 63 minus the `-` and the one-character node id of the sweep.
+        private static final int MAX_REACHABLE_CLUSTER_LENGTH = FirewallName.MAX_LENGTH - 2;
+
         private List<Integer> lengthsNotRefused(Predicate<ClusterName> refuses) {
-            return IntStream.rangeClosed(1, FirewallName.MAX_LENGTH)
+            return IntStream.rangeClosed(1, MAX_REACHABLE_CLUSTER_LENGTH)
                                              .boxed()
                                              .filter(length -> !refuses.test(plainCluster(length)) || !refuses.test(hyphenatedCluster(length)))
                                              .toList();
@@ -1915,24 +1921,29 @@ class HetznerComputeProviderTest {
         private boolean refusesWhenClusterLabelLost(ClusterName cluster) {
             var name = FirewallName.forSource(cluster, SOURCE).value();
 
-            return refuses(cluster, List.of(), List.of(new Firewall(98, name, List.of(), Map.of())));
+            return refuses(cluster, "carries no cluster label", List.of(), List.of(new Firewall(98, name, List.of(), Map.of())));
         }
 
         private boolean refusesWhenSourceLabelLost(ClusterName cluster) {
             var name = FirewallName.forSource(cluster, SOURCE).value();
             var stripped = new Firewall(94, name, List.of(), Map.of("aether-cluster", cluster.value()));
 
-            return refuses(cluster, List.of(stripped), List.of());
+            return refuses(cluster, "has 1 Aether-managed firewall(s)", List.of(stripped), List.of());
         }
 
-        private boolean refuses(ClusterName cluster, List<Firewall> clusterSelected, List<Firewall> unselected) {
+        /// Refused FOR THE FIREWALL: the failure must carry `reason`, so a provision that fails earlier for an
+        /// unrelated cause (a name bound, say) cannot pass as a refusal.
+        private boolean refuses(ClusterName cluster, String reason, List<Firewall> clusterSelected, List<Firewall> unselected) {
             var selector = "aether-cluster=" + cluster.value();
             testClient.lastCreateServerRequest = null;
             testClient.firewallsBySelector.put(selector + ",aether-source=hetzner-eu", Promise.success(List.of()));
             testClient.firewallsBySelector.put(selector, Promise.success(clusterSelected));
             testClient.listAllFirewallsResponse = Promise.success(unselected);
 
-            return replacementProvider().createFrom(replacementRequestFor(cluster, SOURCE)).await().isFailure()
+            return replacementProvider().createFrom(replacementRequestFor(cluster, SOURCE, "n"))
+                                        .await()
+                                        .fold(cause -> cause.message().contains(reason),
+                                              info -> false)
                    && testClient.lastCreateServerRequest == null;
         }
 
