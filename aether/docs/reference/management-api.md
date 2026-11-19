@@ -1519,8 +1519,9 @@ The response has two halves with different time semantics, deliberately:
 - The `consensus` block (#674) is **live** — cumulative monotonic totals read from the consensus
   collector at request time, present from the node's first request. Consumers measuring load
   difference the totals over their own window (the same contract as `/api/v1/metrics/transport`).
-  `pendingBatches` is a level, not a total; `avgDecisionLatencyMs` is derived over the cumulative
-  counts; `leaderId` is absent until a leader is known.
+  `pendingBatches` is a level, not a total; `avgDecisionLatencyMs` is the mean over the SAMPLED
+  decisions only (those this node held locally, which carry a measured duration), not over `decisionsCount`;
+  `leaderId` is absent until a leader is known.
 
 **Response:**
 The `intervalMeanLatencyP*` fields summarize the distribution of interval means, not
