@@ -203,6 +203,13 @@ class ReplicaFeedClientRelayTest {
             pump();
         }
 
+        /// Hands a slow worker only the entry messages it held (a grant), in order, and drops the rest: the governor was heard once and then fell silent.
+        void releaseEntriesOnly(Worker worker) {
+            List.copyOf(worker.held).stream().filter(ReplicaEntries.class::isInstance).forEach(message -> dispatch(worker.id, message));
+            worker.held.clear();
+            pump();
+        }
+
         void pump() {
             while (!queue.isEmpty()) {
                 queue.poll().run();
@@ -393,6 +400,63 @@ class ReplicaFeedClientRelayTest {
         assertThat(mesh.lastSubscribe(member).unwrap().mode()).isEqualTo(SubscribeMode.FROM_ANCHOR);
         assertThat(member.installs.get()).as("no second snapshot").isEqualTo(1);
         assertThat(member.readiness.ready()).isTrue();
+    }
+
+    /// #2502 pin: a governor that never answers at all costs the member no not-ready dip while the 3 s silence is waited out (the carry grace of 4.5 s
+    /// outlasts it, #2510). Not red on the pre-fix code: the next test is the one that fails there.
+    @Test
+    void aMemberMovedToAGovernorThatNeverAnswers_staysReadyWhileTheSilenceIsWaitedOut() {
+        var mesh = meshWithData();
+        var member = mesh.worker("w-1");
+
+        mesh.run(4);
+        assertThat(member.readiness.ready()).as("precondition: ready on a core").isTrue();
+        var gov = mesh.governorServing("w-gov");
+
+        member.holdInbound.set(true);
+        mesh.announced.set(Option.some(gov.id));
+        for (var i = 0; i < 20; i++) {
+            mesh.advance(300);
+            mesh.step();
+            assertThat(member.readiness.ready()).as("round %d: ready while the governor is silent", i).isTrue();
+        }
+
+        assertThat(mesh.subscribeTargets(member).getLast()).as("left the silent governor for a core").isNotEqualTo(gov.id);
+    }
+
+    /// #2502: the member moves deliberately to the announced governor, the governor answers once (1.8 s later, the grant) and then falls silent with
+    /// its link up. The silence is detected 3 s after that grant, past the end of a carry window armed at the move (4.5 s): the window has expired,
+    /// the old heartbeats stop counting, and a window that has expired is never renewed, so the member is not ready until the core it falls back to
+    /// beats. The window is armed only after a FAILED session; the old heartbeats then count on their 30 s freshness bound through the wait.
+    /// The member's inbound stays held for 18 rounds after the grant (about 7.5 s after the move), so nothing counts for longer than the pre-fix carry
+    /// can last (6.3 s: armed at the move, capped at two silences) and shorter than the fixed one (8.7 s: armed at the silence-triggered fall-back to a
+    /// core); then it is released so the cores' heartbeats count again. Mutation: arm the carry window on every resume (the pre-fix `subscribeTo`), on
+    /// a deliberate end, or never on a failed end.
+    @Test
+    void aMemberMovedToAGovernorThatAnswersOnceThenFallsSilent_staysReadyUntilItFallsBackToACore() {
+        var mesh = meshWithData();
+        var member = mesh.worker("w-1");
+
+        mesh.run(4);
+        assertThat(member.readiness.ready()).as("precondition: ready on a core").isTrue();
+        var gov = mesh.governorServing("w-gov");
+
+        member.holdInbound.set(true);
+        mesh.announced.set(Option.some(gov.id));
+        mesh.run(6);
+        mesh.releaseEntriesOnly(member);
+        final var lastSilentRound = 18;
+        for (var i = 0; i < 40; i++) {
+            mesh.advance(300);
+            mesh.step();
+            assertThat(member.readiness.ready()).as("round %d: ready while the governor is silent", i).isTrue();
+            if (i == lastSilentRound) {
+                mesh.release(member);
+            }
+        }
+
+        assertThat(mesh.subscribeTargets(member)).as("moved to the governor, then back to a core").contains(gov.id);
+        assertThat(mesh.isCore(mesh.subscribeTargets(member).getLast())).isTrue();
     }
 
     /// NT-O21, governor dies mid-relay: the members' last counted heartbeat keeps them ready while they wait out the 3 s silence, then each resubscribes to
