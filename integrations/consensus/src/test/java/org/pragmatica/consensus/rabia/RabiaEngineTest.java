@@ -1039,6 +1039,59 @@ class RabiaEngineTest {
     }
 
     @Nested
+    class DecisionLatency {
+
+        @Test
+        void decided_slot_records_positive_decision_duration() throws InterruptedException {
+            // #2644: commitDecision recorded a hard-coded 0, so every consumer of average decision latency read 0.
+            var recorder = new DecisionRecorder();
+            var target = new RabiaEngine<>(topologyManager, network, stateMachine,
+                                           ProtocolConfig.testConfig(), recorder, false);
+            activate(target, network);
+            network.clearMessages();
+
+            target.<Unit>apply(List.of(new TestCommand("timed")));
+            awaitSent("the batch it was asked to apply", network, newBatch());
+            var batch = network.getMessages().stream()
+                               .filter(m -> m instanceof RabiaProtocolMessage.Asynchronous.NewBatch<?>)
+                               .map(m -> ((RabiaProtocolMessage.Asynchronous.NewBatch<TestCommand>) m).batch())
+                               .findFirst()
+                               .orElseThrow();
+
+            awaitOwnPropose(Phase.ZERO);
+            target.processPropose(new Propose<>(NODE_2, Phase.ZERO, batch));
+            awaitOwnVote1(Phase.ZERO);
+            target.processVoteRound1(new VoteRound1(NODE_2, Phase.ZERO, StateValue.V1));
+            target.processVoteRound1(new VoteRound1(NODE_3, Phase.ZERO, StateValue.V1));
+            awaitOwnVote2(Phase.ZERO);
+            target.processVoteRound2(new VoteRound2(NODE_2, Phase.ZERO, StateValue.V1));
+            target.processVoteRound2(new VoteRound2(NODE_3, Phase.ZERO, StateValue.V1));
+
+            assertThat(recorder.decided.await(5, SECONDS)).as("slot decided").isTrue();
+            assertThat(recorder.durationNs.get())
+                    .as("decision duration measured from slot start, not the constant 0")
+                    .isPositive();
+            target.stop().await();
+        }
+
+        private static final class DecisionRecorder implements ConsensusMetrics {
+            final CountDownLatch decided = new CountDownLatch(1);
+            final java.util.concurrent.atomic.AtomicLong durationNs = new java.util.concurrent.atomic.AtomicLong(-1);
+
+            @Override public void recordDecision(NodeId nodeId, Phase phase, StateValue stateValue, long duration) {
+                durationNs.set(duration);
+                decided.countDown();
+            }
+
+            @Override public void recordProposal(NodeId nodeId, Phase phase) {}
+            @Override public void recordVoteRound1(NodeId nodeId, Phase phase, StateValue stateValue) {}
+            @Override public void recordVoteRound2(NodeId nodeId, Phase phase, StateValue stateValue) {}
+            @Override public void recordSyncAttempt(NodeId nodeId, boolean success) {}
+            @Override public void updatePendingBatches(NodeId nodeId, int count) {}
+        }
+    }
+
+    @Nested
     class ActivationGating {
 
         @Test
