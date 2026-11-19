@@ -4,14 +4,10 @@
 
 package org.pragmatica.aether.slice;
 
-import java.util.Arrays;
 import java.util.Locale;
-import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.Map;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.CsvSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Option.some;
@@ -19,24 +15,31 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class SliceStateTest {
 
-    private static final Set<SliceState> CLASSIFIED = Set.of(SliceState.LOAD, SliceState.LOADING, SliceState.LOADED,
-                                                             SliceState.ACTIVATE, SliceState.ACTIVATING, SliceState.ROUTING,
-                                                             SliceState.ACTIVE, SliceState.DEACTIVATE, SliceState.DEACTIVATING,
-                                                             SliceState.FAILED, SliceState.UNLOAD, SliceState.UNLOADING,
-                                                             SliceState.UNKNOWN);
+    /// Every constant with its expected `isServing` answer; a new `SliceState` fails the coverage test until it is listed.
+    private static final Map<SliceState, Boolean> SERVING = Map.ofEntries(Map.entry(SliceState.LOAD, false),
+                                                                          Map.entry(SliceState.LOADING, false),
+                                                                          Map.entry(SliceState.LOADED, false),
+                                                                          Map.entry(SliceState.ACTIVATE, false),
+                                                                          Map.entry(SliceState.ACTIVATING, true),
+                                                                          Map.entry(SliceState.ROUTING, true),
+                                                                          Map.entry(SliceState.ACTIVE, true),
+                                                                          Map.entry(SliceState.DEACTIVATE, false),
+                                                                          Map.entry(SliceState.DEACTIVATING, false),
+                                                                          Map.entry(SliceState.FAILED, false),
+                                                                          Map.entry(SliceState.UNLOAD, false),
+                                                                          Map.entry(SliceState.UNLOADING, false),
+                                                                          Map.entry(SliceState.UNKNOWN, false));
 
-    @ParameterizedTest
-    @CsvSource({"LOAD,false", "LOADING,false", "LOADED,false", "ACTIVATE,false", "ACTIVATING,true", "ROUTING,true",
-                "ACTIVE,true", "DEACTIVATE,false", "DEACTIVATING,false", "FAILED,false", "UNLOAD,false",
-                "UNLOADING,false", "UNKNOWN,false"})
-    void isServing_isTrueOnlyForActivatingRoutingActive(SliceState state, boolean expected) {
-        assertThat(state.isServing()).isEqualTo(expected);
+    @Test
+    void isServing_isTrueOnlyForActivatingRoutingActive() {
+        SERVING.forEach((state, expected) -> assertThat(state.isServing()).as(state.name())
+                                                                          .isEqualTo(expected));
     }
 
     @Test
     void isServing_classificationCoversEveryState() {
-        assertThat(CLASSIFIED).as("a new SliceState must be classified in isServing_isTrueOnlyForActivatingRoutingActive")
-                              .isEqualTo(Arrays.stream(SliceState.values()).collect(Collectors.toSet()));
+        assertThat(SERVING.keySet()).as("a new SliceState must be classified in SERVING")
+                                    .containsExactlyInAnyOrder(SliceState.values());
     }
 
     @Test
