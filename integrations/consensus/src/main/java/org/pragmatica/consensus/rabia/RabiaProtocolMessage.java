@@ -39,11 +39,14 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
     sealed interface Synchronous extends RabiaProtocolMessage {
         /// One immutable proposal for a log slot in a fixed voter epoch. `epoch` is the sender's voter
         /// epoch for this slot; a carried `reconfiguration` names its own base epoch (Rabia §4).
+        /// `incarnation` is the proposing process's (#2625); a relayed proposal keeps its proposer's. The constructors
+        /// without it stamp [Incarnation#UNSTAMPED] and serve tests; the engine always passes its own.
         record Propose<C extends Command>(NodeId sender,
                                           long epoch,
                                           Phase phase,
                                           Batch<C> value,
-                                          Option<ReconfigurationCommand> reconfiguration) implements Synchronous {
+                                          Option<ReconfigurationCommand> reconfiguration,
+                                          Incarnation incarnation) implements Synchronous {
             public Propose(NodeId sender, Phase phase, Batch<C> value) {
                 this(sender, 0, phase, value, Option.none());
             }
@@ -51,9 +54,23 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
             public Propose(NodeId sender, long epoch, Phase phase, Batch<C> value) {
                 this(sender, epoch, phase, value, Option.none());
             }
+
+            public Propose(NodeId sender,
+                           long epoch,
+                           Phase phase,
+                           Batch<C> value,
+                           Option<ReconfigurationCommand> reconfiguration) {
+                this(sender, epoch, phase, value, reconfiguration, Incarnation.UNSTAMPED);
+            }
         }
 
-        record VoteRound1(NodeId sender, long epoch, Phase phase, long round, StateValue stateValue) implements Synchronous {
+        /// A round-1 ballot. `incarnation` is the voting process's (#2625); see [Propose].
+        record VoteRound1(NodeId sender,
+                          long epoch,
+                          Phase phase,
+                          long round,
+                          StateValue stateValue,
+                          Incarnation incarnation) implements Synchronous {
             public VoteRound1(NodeId sender, Phase phase, StateValue stateValue) {
                 this(sender, 0, phase, 0, stateValue);
             }
@@ -61,15 +78,29 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
             public VoteRound1(NodeId sender, Phase phase, long round, StateValue stateValue) {
                 this(sender, 0, phase, round, stateValue);
             }
+
+            public VoteRound1(NodeId sender, long epoch, Phase phase, long round, StateValue stateValue) {
+                this(sender, epoch, phase, round, stateValue, Incarnation.UNSTAMPED);
+            }
         }
 
-        record VoteRound2(NodeId sender, long epoch, Phase phase, long round, StateValue stateValue) implements Synchronous {
+        /// A round-2 ballot. `incarnation` is the voting process's (#2625); see [Propose].
+        record VoteRound2(NodeId sender,
+                          long epoch,
+                          Phase phase,
+                          long round,
+                          StateValue stateValue,
+                          Incarnation incarnation) implements Synchronous {
             public VoteRound2(NodeId sender, Phase phase, StateValue stateValue) {
                 this(sender, 0, phase, 0, stateValue);
             }
 
             public VoteRound2(NodeId sender, Phase phase, long round, StateValue stateValue) {
                 this(sender, 0, phase, round, stateValue);
+            }
+
+            public VoteRound2(NodeId sender, long epoch, Phase phase, long round, StateValue stateValue) {
+                this(sender, epoch, phase, round, stateValue, Incarnation.UNSTAMPED);
             }
         }
 

@@ -122,10 +122,14 @@ public interface SystemTags {
         pin(table, 28, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.NewBatch");
         pin(table, 29, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest");
         pin(table, 30, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision");
-        pin(table, 31, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose");
+        // RETIRED 2026-11-19 (#2625, flag day, know 3bacab070f): `Propose`, `VoteRound1` and `VoteRound2` moved to 2980..2982
+        // when they gained the sender's process `incarnation`, so a node of an older build fails a ballot on an unknown tag
+        // instead of misparsing it. Pre-GA, no decoder kept. The pins STAY, under names that resolve to no class, so the
+        // tags are never reused.
+        pin(table, 31, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.ProposeRetiredRc6");
         pin(table, 32, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse");
-        pin(table, 33, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound1");
-        pin(table, 34, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound2");
+        pin(table, 33, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound1RetiredRc6");
+        pin(table, 34, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound2RetiredRc6");
         pin(table, 35, "org.pragmatica.consensus.rabia.StateValue");
         // cluster network protocol  [base 36]
         pin(table, 36, "org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes");
@@ -804,6 +808,12 @@ public interface SystemTags {
         // #3345: the HELD report carried on the pong. Inside the dht-3345-3347 reservation 2960..2979 of wire-tag-ranges.txt.
         pin(table, 2960, "org.pragmatica.cluster.metrics.HeldReport");
         pin(table, 2961, "org.pragmatica.cluster.metrics.HeldEnd");
+        // #2625: the flag-day tags of the three ballot messages (old tags 31, 33, 34, retired above) and the incarnation
+        // they carry. Inside the fix2625 reservation 2980..2983 of wire-tag-ranges.txt. Two bytes each: no one-byte slot is free.
+        pin(table, 2980, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose");
+        pin(table, 2981, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound1");
+        pin(table, 2982, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound2");
+        pin(table, 2983, "org.pragmatica.consensus.rabia.Incarnation");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 

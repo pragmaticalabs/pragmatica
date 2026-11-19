@@ -37,7 +37,9 @@ import org.pragmatica.lang.Unit;
 /// process relaunched under a NodeId that already announced a view has forgotten it and can announce a
 /// different one, so the argument also rests on a same-NodeId relaunch being terminal: peers hold the
 /// original boot token and refuse the new process (#1528/#1545). With same-id relaunches allowed, the
-/// verifier formed two overlapping epoch-0 configurations in 11 of 20,000 chaos seeds.
+/// verifier formed two overlapping epoch-0 configurations in 11 of 20,000 chaos seeds. The engine's ballot
+/// incarnation (#2625) does not reach this rule: view announcements are not slot ballots and carry no
+/// incarnation, so this case still rests on the boot token alone.
 ///
 /// **Liveness.** Because views only grow, each node's view changes at most as many times as there are
 /// cores, so flapping visibility cannot keep views churning forever: once every member of the final

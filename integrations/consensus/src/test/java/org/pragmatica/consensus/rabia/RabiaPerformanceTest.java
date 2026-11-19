@@ -268,7 +268,7 @@ class RabiaPerformanceTest {
             // Each node checks if it can vote
             for (var nodeId : nodeIds) {
                 if (!phaseData.hasVotedRound1(nodeId) && phaseData.hasQuorumProposals(quorumSize)) {
-                    var vote = phaseData.evaluateInitialVote(nodeId, quorumSize);
+                    var vote = phaseData.evaluateInitialVote(nodeId, Incarnation.UNSTAMPED, quorumSize);
                     phaseData.registerRound1Vote(nodeId, vote.stateValue());
                     messagesSent.addAndGet(nodeIds.size());
                     pendingMessages.add(vote);
