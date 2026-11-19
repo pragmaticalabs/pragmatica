@@ -41,14 +41,14 @@ class BlueprintForceFieldTest {
     void absentForceField_readsFalse_soTheGuardStaysOn() {
         var parsed = MAPPER.readString("{\"artifact\":\"" + COORDS + "\"}", SliceRoutes.BlueprintDeployRequest.class);
 
-        assertThat(parsed.unwrap().force()).isFalse();
+        assertThat(parsed.unwrap().force().or(false)).isFalse();
     }
 
     @Test
     void forceField_theCliSends_isRead() {
         var parsed = MAPPER.readString("{\"artifact\":\"" + COORDS + "\",\"force\":true}", SliceRoutes.BlueprintDeployRequest.class);
 
-        assertThat(parsed.unwrap().force()).isTrue();
+        assertThat(parsed.unwrap().force().or(false)).isTrue();
         assertThat(parsed.unwrap().artifact()).isEqualTo(COORDS);
     }
 
@@ -151,7 +151,7 @@ class BlueprintForceFieldTest {
         return (RequestContext) Proxy.newProxyInstance(RequestContext.class.getClassLoader(),
                                                        new Class[]{RequestContext.class},
                                                        (proxy, method, args) -> "fromJson".equals(method.getName())
-                                                                                 ? Result.success(new SliceRoutes.BlueprintDeployRequest(COORDS, force))
+                                                                                 ? Result.success(new SliceRoutes.BlueprintDeployRequest(COORDS, Option.some(force)))
                                                                                  : method.isDefault()
                                                                                    ? InvocationHandler.invokeDefault(proxy, method, args)
                                                                                    : unsupported(method.getName()));

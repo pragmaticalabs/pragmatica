@@ -721,7 +721,7 @@ class BlueprintDeployStatusTest {
     private record StubRequestContext() implements RequestContext {
         @Override
         public <T> Result<T> fromJson(TypeToken<T> literal) {
-            return asRequested(new SliceRoutes.BlueprintDeployRequest(COORDS, false));
+            return asRequested(new SliceRoutes.BlueprintDeployRequest(COORDS, Option.none()));
         }
 
         @SuppressWarnings("unchecked")

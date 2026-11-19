@@ -91,7 +91,7 @@ public final class SliceRoutes implements RouteSource {
     record ScaleRequest(String artifact, Integer instances, String placement) {}
 
     /// `force` (#834): accept a publish that re-applies schema versions an operator undid or baselined; absent means false.
-    record BlueprintDeployRequest(String artifact, boolean force) {}
+    record BlueprintDeployRequest(String artifact, Option<Boolean> force) {}
 
     @Override
     public Stream<Route<?>> routes() {
@@ -263,7 +263,7 @@ public final class SliceRoutes implements RouteSource {
                                                     .blueprintService()
                                                     .publishFromArtifact(coords,
                                                                          false,
-                                                                         request.force()))
+                                                                         request.force().or(false)))
                      .withSuccess(this::onBlueprintActivated)
                      .map(this::deployBlueprintResponse)
                      .onFailure(cause -> log.warn("Blueprint artifact deploy failed: {}",
@@ -278,7 +278,7 @@ public final class SliceRoutes implements RouteSource {
                                                     .blueprintService()
                                                     .publishFromArtifact(coords,
                                                                          true,
-                                                                         request.force()))
+                                                                         request.force().or(false)))
                      .map(published -> blueprintResponse("published", published))
                      .onSuccess(r -> log.info("Blueprint {} published (register-only — not activated)",
                                               r.blueprint()))
