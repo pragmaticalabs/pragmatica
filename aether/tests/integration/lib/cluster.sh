@@ -870,6 +870,11 @@ assert_cluster_healthy() {
     assert_eq "$health" "healthy" "$desc"
 }
 
+# Predicate form of assert_cluster_healthy for poll_until (#3424).
+cluster_is_healthy() {
+    [ "$(cluster_health_status_http)" = "healthy" ]
+}
+
 # Raw-HTTP health status — the `status` field of GET /api/v1/health ("healthy" when the
 # node is ready + quorate). HTTP sibling of `aether_field health status`; rotates to
 # a live core via api_get/_resolve_live_endpoint so a killed/drained pinned node does

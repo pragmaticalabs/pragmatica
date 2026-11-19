@@ -1084,6 +1084,24 @@ _wait_for_poll_once() {
 }
 
 # ---------------------------------------------------------------------------
+# poll_until <timeout_s> <cmd> [args...] — wait on the EVENT an assertion reads, never a fixed sleep (#3421, #3424).
+# Runs <cmd> every 0.5s until it exits 0 (rc 0) or the deadline passes (rc 1; the caller's assertion then fails loudly).
+# TIMEOUT_SCALE applies, as in wait_for. POLL_UNTIL_FIRST = rc of the first poll (0 = the wait was vacuous),
+# POLL_UNTIL_ELAPSED = seconds until it returned: record both when a sleep is replaced, so a vacuous wait is visible.
+# ---------------------------------------------------------------------------
+poll_until() {
+    local timeout=$(( ${1:?poll_until: timeout} * ${TIMEOUT_SCALE:-1} )); shift
+    local deadline=$((SECONDS + timeout))
+    POLL_UNTIL_FIRST=""
+    while :; do
+        "$@" > /dev/null 2>&1 && { [ -z "$POLL_UNTIL_FIRST" ] && POLL_UNTIL_FIRST=0; POLL_UNTIL_ELAPSED=$((SECONDS - deadline + timeout)); return 0; }
+        [ -z "$POLL_UNTIL_FIRST" ] && POLL_UNTIL_FIRST=1
+        if [ "$SECONDS" -ge "$deadline" ]; then POLL_UNTIL_ELAPSED=$timeout; return 1; fi
+        sleep 0.5
+    done
+}
+
+# ---------------------------------------------------------------------------
 # Wait for condition with timeout
 # ---------------------------------------------------------------------------
 wait_for() {

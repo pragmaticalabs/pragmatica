@@ -32,8 +32,8 @@ test_apply_config_override() {
 }
 
 test_config_converges() {
-    # Give cluster time to propagate
-    sleep 5
+    # Wait on health itself, not a fixed sleep (#3424); the assertion below fails loudly at the deadline.
+    poll_until 30 cluster_is_healthy
     assert_cluster_healthy "Cluster healthy after config apply"
 }
 
