@@ -698,7 +698,8 @@ public sealed interface MembershipAssembly {
         // JOINED delta → no MembershipDecision.NodeJoined → dhtTopologyListener::onNodeJoined never
         // re-adds it → it stays pruned (the onNodeDeparting prune above) → under-replication. Wire the
         // recovery edge to the symmetric ring RE-ADD, idempotent with onNodeJoined (ConsistentHashRing.addNode
-        // no-ops a node already present), so a concurrent NodeJoined is harmless.
+        // no-ops a node already present), so a concurrent NodeJoined is harmless. The re-add restores only a node the
+        // listener pruned from this ring on the departing edge (#3415): a worker, never a ring member, stays off it.
         membershipFsm.onDepartingRecovery(node -> {
             if (!configuredWorker(config)) {
                 dhtTopologyListener.onNodeRecovered(node);
