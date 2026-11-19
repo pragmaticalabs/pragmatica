@@ -18,7 +18,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class ArtifactResolveTest {
     private void blockMissingOnTheQuorumReplicasOnly(ArtifactTestFixture af) {
         af.dht.readOrder = List.of(1, 2, 0);
-        af.deployOk(af.store1, af.v1, af.bytesA);
+        af.deployOk(af.store1, af.v1, af.bytesA).unwrap();
         af.dropBlocks(1, 2);
         assertThat(af.dht.replicas.get(0).keySet().stream().anyMatch(k -> k.startsWith(BLOCKS)))
             .as("PRECONDITION replica 0 still holds the block")
@@ -34,7 +34,7 @@ class ArtifactResolveTest {
     private ArtifactTestFixture deployedWithASlowFirstBlockRead() {
         var af = new ArtifactTestFixture(400, 100, 800);
 
-        af.deployOk(af.store1, af.v1, af.bytesA);
+        af.deployOk(af.store1, af.v1, af.bytesA).unwrap();
         af.dht.delayFirstGetOf = name -> name.startsWith(BLOCKS);
         af.dht.delayMillis = 4000;
         return af;

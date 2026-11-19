@@ -16,14 +16,14 @@ class ArtifactIdentityTest {
     private final ArtifactTestFixture af = artifactTestFixture();
 
     private void deployedThenMetaKeyDroppedThenRetentionElapsed() {
-        af.deployOk(af.store1, af.v1, af.bytesA);
+        af.deployOk(af.store1, af.v1, af.bytesA).unwrap();
         af.dropKeys("/meta");
         assertThat(af.keyHeld("/meta")).as("PRECONDITION meta key dropped").isFalse();
         af.advanceDays(8);
     }
 
     private void deployedThenFilesKeyDroppedThenRetentionElapsed() {
-        af.deployOk(af.store1, af.v1, af.bytesA);
+        af.deployOk(af.store1, af.v1, af.bytesA).unwrap();
         af.dropKeys("/files");
         assertThat(af.keyHeld("/files")).as("PRECONDITION files key dropped").isFalse();
         af.advanceDays(8);

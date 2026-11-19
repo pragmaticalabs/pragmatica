@@ -53,7 +53,7 @@ class ArtifactStoreLifecycleTest {
 
     @Test
     void T6a_tripwire_deployWritesAFilesKey() {
-        af.deployOk(af.store1, af.v1, af.bytesA);
+        af.deployOk(af.store1, af.v1, af.bytesA).unwrap();
         assertThat(af.dht.puts).as("PRECONDITION deploy wrote puts").isNotEmpty();
 
         assertThat(af.dht.puts.stream().filter(key -> key.endsWith("/files")).toList())
@@ -64,7 +64,7 @@ class ArtifactStoreLifecycleTest {
     @Disabled("PR-3c (registerFile removed): enable when a deploy writes no files key")
     @Test
     void T6a_real_deployWritesNoFilesKey() {
-        af.deployOk(af.store1, af.v1, af.bytesA);
+        af.deployOk(af.store1, af.v1, af.bytesA).unwrap();
         assertThat(af.dht.puts).as("PRECONDITION deploy wrote puts").isNotEmpty();
 
         assertThat(af.dht.puts.stream().filter(key -> key.endsWith("/files")).toList())

@@ -20,7 +20,7 @@ class ArtifactStoreRepairTest {
     private final ArtifactTestFixture af = artifactTestFixture();
 
     private void droppedBlockThenIdenticalRePut() {
-        af.deployOk(af.store1, af.v1, af.bytesA);
+        af.deployOk(af.store1, af.v1, af.bytesA).unwrap();
         assertThat(af.blocksHeld()).as("PRECONDITION block written by first deploy").isTrue();
         assertThat(af.store2.metadata(af.v1).await().unwrap().isPresent()).as("PRECONDITION store 2 sees meta").isTrue();
         af.dropBlocks(0, 1, 2);
@@ -32,7 +32,7 @@ class ArtifactStoreRepairTest {
     }
 
     private void droppedChunkThenDeployOfAnotherCoordinateWithTheSameFirstChunk() {
-        af.deployOk(af.store1, af.v1, af.bytesA);
+        af.deployOk(af.store1, af.v1, af.bytesA).unwrap();
         assertThat(af.dht.union()).as("PRECONDITION chunk c written by deploy A").containsKey(blockKey(af.bytesA));
         af.dropBlocks(0, 1, 2);
         assertThat(af.dht.union()).as("PRECONDITION chunk c dropped").doesNotContainKey(blockKey(af.bytesA));
@@ -40,7 +40,7 @@ class ArtifactStoreRepairTest {
         var bFirstEqualsC = Arrays.copyOf(af.bytesA, CHUNK + 1000);
 
         System.arraycopy(pattern(1000, 5), 0, bFirstEqualsC, CHUNK, 1000);
-        af.deployOk(af.store1, af.v2, bFirstEqualsC);
+        af.deployOk(af.store1, af.v2, bFirstEqualsC).unwrap();
     }
 
     @Test
