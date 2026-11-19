@@ -621,7 +621,9 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                      .flatMap(all -> unmanagedOrUnlabelled(all, cluster, source));
     }
 
-    private static Promise<List<Long>> unmanagedOrUnlabelled(List<Firewall> all, ClusterName cluster, SourceName source) {
+    private static Promise<List<Long>> unmanagedOrUnlabelled(List<Firewall> all,
+                                                             ClusterName cluster,
+                                                             SourceName source) {
         var unlabelled = all.stream().filter(firewall -> isUnlabelledAetherFirewall(firewall, cluster)).count();
 
         if (unlabelled == 0) {
@@ -632,13 +634,13 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     private static boolean isUnlabelledAetherFirewall(Firewall firewall, ClusterName cluster) {
-        return !hasClusterLabel(firewall) && hasAetherName(firewall, cluster);
+        return lacksClusterLabel(firewall) && hasAetherName(firewall, cluster);
     }
 
-    private static boolean hasClusterLabel(Firewall firewall) {
+    private static boolean lacksClusterLabel(Firewall firewall) {
         return Option.option(firewall.labels())
-                     .map(labels -> labels.containsKey(CLUSTER_LABEL))
-                     .or(false);
+                     .filter(labels -> labels.containsKey(CLUSTER_LABEL))
+                     .isEmpty();
     }
 
     /// #1714: an ingress firewall is recognised by the [#SOURCE_LABEL] OR by the Aether name prefix
