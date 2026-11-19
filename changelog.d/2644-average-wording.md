@@ -1,0 +1,2 @@
+### Changed (2026-11-20 — #2644: ConsensusMetrics.recordDecision lost its duration parameter)
+- **`ConsensusMetrics.recordDecision` no longer takes a `durationNs` parameter** (#2644): source-incompatible for external implementers, who must drop it from their override; the duration is reported through the new `recordDecisionDuration`, a default no-op. The management API and its javadoc now describe `avgDecisionLatencyMs` as the average over the sampled decisions, not over the cumulative counts.
