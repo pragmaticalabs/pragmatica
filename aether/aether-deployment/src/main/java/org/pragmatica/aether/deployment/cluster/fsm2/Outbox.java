@@ -587,24 +587,35 @@ public sealed interface Outbox {
     /// \* tx's covered count, always 0 (nothing is held in any mode); refused: the refusal's values re-index the mirror,
     /// \* m.leader := refusal leader, unlanded marks
     /// \* dirty (Outbox.java; Warnings.java); failed: re-drafted by the next reconcile.
+    /// \* #3203 (STAMP # "off"): rule E reads the replacement rows the writer's mirror does not hold at a newer revision (Kept,
+    /// \* Warnings.superseded); each emitted transition goes through this node's sink (Passes, EffectTranslator.ordered), and a
+    /// \* delivered one becomes the operator view's entry for the row. PUTFIRST: a late accepted settlement waits for the mirror.
     /// Settle(s) ==
     ///   /\ s \in settles /\ fsm[s.node] = "Active" /\ s.inc = inc[s.node]
+    ///   /\ (PUTFIRST /\ s.kind = "W" /\ s.out = "acc")
+    ///          => \A x \in DOMAIN s.wrep : kv[x].rv > s.wrep[x].rv => rows[s.node][x].rv > s.wrep[x].rv
     ///   /\ LET n == s.node
     ///          isW == s.kind = "W"
     ///          ref == s.out = "ref"
     ///          dep == ref /\ s.lv[1] # n                   \* routeRefusal: the refusal names another node, nothing is resubmitted
     ///          stale == ref /\ ~dep /\ s.lv # s.tx.lv     \* routeRefusal: names this node under a new witness, resubmit unchanged
-    ///          r == IF isW /\ s.out = "acc" THEN Overlay(rows[n], s.wrep)
-    ///               ELSE IF isW /\ ref THEN Overlay(rows[n], s.seen)
+    ///          r == IF isW /\ s.out = "acc" THEN Mirror(rows[n], s.wrep)
+    ///               ELSE IF isW /\ ref THEN Mirror(rows[n], s.seen)
     ///               ELSE rows[n]
     ///          d == IF isW /\ ref /\ ~dep /\ ~stale THEN TRUE ELSE dirty[n]   \* rederive -> Warnings.unlanded marks dirty
     ///          ld == IF isW /\ s.out = "acc" THEN s.cov ELSE lnd[n]          \* Warnings.committed: landed := covered
     ///          v == IF ref THEN s.lv ELSE view[n]
+    ///          emits == isW /\ s.out = "acc" /\ MODE = "code" /\ MUT # "noruleE" /\ (MUT # "nodeposed" \/ kvLeader = n)
+    ///          kept == Kept(n, s.wrep)
+    ///          tr == IF emits THEN Tr(s.tx.wexp, kept) ELSE {}
+    ///          dl == IF STAMP = "off" THEN {} ELSE {x \in tr : Passes(n, x, kept[x])}   \* delivered by this node's sink
     ///      IN /\ settles' = settles \ {s}
     ///         /\ view' = [view EXCEPT ![n] = v]
     ///         /\ redo' = [redo EXCEPT ![n] = IF stale THEN redo[n] \cup {s.tx} ELSE redo[n]]
-    ///         /\ notes' = IF isW /\ s.out = "acc" /\ MODE = "code" /\ MUT # "noruleE" /\ (MUT # "nodeposed" \/ kvLeader = n)
-    ///                    THEN Emit(notes, s.c, s.tx.wexp, s.wrep) ELSE notes
+    ///         /\ notes' = IF emits THEN Emit(notes, s.c, s.tx.wexp, kept) ELSE notes
+    ///         /\ newest' = [newest EXCEPT ![n] = [x \in Subjects |-> IF x \in tr THEN Max(newest[n][x], Stamp(kept[x]))
+    ///                                                               ELSE newest[n][x]]]
+    ///         /\ opv' = [x \in Subjects |-> IF x \in dl /\ ViewTakes(x, kept[x]) THEN [up |-> kept[x].open, rv |-> kept[x].rv] ELSE opv[x]]
     ///         /\ Apply(n, warned[n], r, d, IF isW THEN stale ELSE wInfl[n], IF isW THEN gInfl[n] ELSE stale,
     ///                  gIntent[n], FALSE, flushQ[n] \/ stale,
     ///                  shown, held[n], ld, v)

@@ -341,9 +341,9 @@ public sealed interface Warnings {
     ///          ad == IF MODE = "code" /\ MUT # "noruleo" THEN {s \in P : kv[s].open /\ kvW[s] # <<n, inc[n]>>} ELSE {}
     ///          ch == {s \in Subjects : rows[n][s].open # kv[s].open /\ \E t \in trans : t.s = s}
     ///      IN /\ notes' = IF MUT = "emitonput" THEN notes \cup {Note(notes, Last(x).c, x, kv[x].open) : x \in ch} ELSE notes
-    ///         /\ Apply(n, warned[n] \cup ad, IF MUT = "nomirror" THEN rows[n] ELSE kv, IF MODE = "code" THEN TRUE ELSE dirty[n], wInfl[n], gInfl[n], gIntent[n],
+    ///         /\ Apply(n, warned[n] \cup ad, IF MUT = "nomirror" THEN rows[n] ELSE Mirror(rows[n], kv), IF MODE = "code" THEN TRUE ELSE dirty[n], wInfl[n], gInfl[n], gIntent[n],
     ///               FALSE, flushQ[n], shown, held[n], lnd[n], view[n])
-    ///   /\ UNCHANGED <<trans, ncommit, kvW, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, net,
+    ///   /\ UNCHANGED <<ovars, trans, ncommit, kvW, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, net,
     ///                  settles, condBudget, faultBudget, redo>>
     /// ```
     /// #3274: a committed row put: `indexRow`, then rule O per member. Every row indexed while Active marks the set dirty, own or not.

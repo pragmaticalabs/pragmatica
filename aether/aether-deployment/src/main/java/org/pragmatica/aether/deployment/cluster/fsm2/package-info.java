@@ -45,10 +45,22 @@
 /// (* "pre3085" the code before #3085: the Warn effect is published in the raising step, before the row commits      *)
 /// (* (`shown`).                                                                                                     *)
 /// (* "pre2834" the code before #2834: Rebuild has no inherit, a successor's family sets start empty.                *)
-/// (* LATE is dead at this spec: it is read only by the publish branch of Apply, which never runs (nothing is held), *)
-/// (* so LATE = TRUE and LATE = FALSE reach the same states (code_inv and code_nolate_agree: the same distinct       *)
-/// (* count). The configs still set it; the LATE = TRUE duplicates of the code_nolate_* rows are removed             *)
-/// (* (models.tsv).                                                                                                  *)
+/// (* LATE (#3203): TRUE lets a writer's accepted WARNINGS settlement land after a newer commit of the same row (the   *)
+/// (* deposed leader's late settle); FALSE excludes that ordering: KvApply does not commit a W write over a key whose  *)
+/// (* earlier accepted settlement is still in transit (KvApply). The code_nolate_* rows run LATE = FALSE.            *)
+/// (* STAMP (#3203, PR #3443) models the operator view `opv` (the last warning entry delivered per subject, across  *)
+/// (* nodes) and the per-node sink order `newest` (EffectTranslator.newestRevision): "off" = neither is modelled and *)
+/// (* rule E is the #3274 one (every pre-#3203 row); "old" = rule E unfiltered, every notification delivered (no     *)
+/// (* stamp); "fixed" = the PR: rule E drops a transition whose row the writer's mirror holds at a higher revision   *)
+/// (* (Warnings.superseded, `>`), and each node's sink drops a stamped warning older than the newest it delivered    *)
+/// (* for the row (EffectTranslator.ordered, `max`); mutants "ge" (superseded with >=) and "nostamp" (the effect      *)
+/// (* carries revision 0, so the sink never reorders); "cand" = the candidate fix: no superseded filter and no per-node  *)
+/// (* gate; the event carries the row revision to the shared view, which applies an entry only if its revision is above *)
+/// (* the one it shows for the row, and every mirror applies a row only if its revision is above the one it holds.      *)
+/// (* PUTFIRST: a late accepted settlement is handled only after    *)
+/// (* the writer's mirror took a newer put of the row (the premise Warnings.superseded needs); FALSE: in any order.  *)
+/// (* The revision is the order key: a per-row counter raised by one at every commit (CAS on the whole row), so it   *)
+/// (* orders writes across terms; the PR's stamp has no term component, and the model gives it none.                *)
 /// (* Abstractions: one subject per family; a row is [open, op, rc, rv]: open or tombstone, two marker fields of the *)
 /// (* #3175 model that no mode sets any more (always FALSE), and the revision; the message text is abstracted;     *)
 /// (* Nil is "no row". Activate and Rebuild are one step; the leader value is <<node, term>> and the fence compares *)
@@ -107,7 +119,9 @@
 ///           RESUME,     \* TRUE: a node may regain leadership while still Active (its CI-1 Deactivate missed or coalesced),
 ///                       \* so it resumes on CI-16 with its old model; FALSE: it is Dormant before it is elected again
 ///           GOALS,      \* TRUE: model the desired/observed pair (target may change); FALSE: target fixed, no goal writes
-///           LATE        \* dead at this spec (header): read only by the publish of held warnings, and nothing is held
+///           LATE,       \* TRUE: an accepted W settlement may land after a newer commit of its row (#3203); FALSE: excluded
+///           STAMP,      \* "off" | "old" | "fixed" | "ge" | "nostamp" | "cand": the #3203 operator view and sink order (header)
+///           PUTFIRST    \* TRUE: a late accepted W settlement waits until the writer's mirror took a newer put of the row
 ///
 /// None == "none"
 ///
@@ -159,14 +173,18 @@
 ///           pend,                    \* per node: a committed WARNINGS put has not yet reached the node (Indexer -> onPut)
 ///           closedOff,               \* history, per node: subjects this incarnation closed on an observed condition-off (Tick),
 ///                                    \* not raised or joined since (NoBlindTombstone)
-///           kvW                      \* per committed row: its writer stamp <<node, incarnation>> (FsmWarningValue writerNode /
+///           kvW,                     \* per committed row: its writer stamp <<node, incarnation>> (FsmWarningValue writerNode /
 ///                                    \* writerProcess; the model's incarnation stands for the process), read by rule O (OnPut)
+///           opv,                     \* #3203 operator view: per subject, the last delivered entry [up, rv] (any node's sink)
+///           newest                   \* #3203 per node, per subject: the newest revision its sink delivered (EffectTranslator)
 ///
-/// nvars == <<notes, trans, ncommit, pend, kvW>>
+/// ovars == <<opv, newest>>
+///
+/// nvars == <<notes, trans, ncommit, pend, kvW, ovars>>
 ///
 /// vars == <<term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, fsm, inc, view,
 ///           warned, rows, dirty, flushQ, wInfl, gInfl, gIntent, fired, held, lnd, net, settles,
-///           condBudget, faultBudget, redo, notes, trans, ncommit, pend, closedOff, kvW>>
+///           condBudget, faultBudget, redo, notes, trans, ncommit, pend, closedOff, kvW, opv, newest>>
 ///
 /// Current == <<kvLeader, term>>
 ///
@@ -255,6 +273,36 @@
 ///
 /// Emit(N, c, exp, rep) == N \cup {Note(N, c, x, rep[x].open) : x \in {y \in DOMAIN rep : exp[y].open # rep[y].open}}
 ///
+/// \* #3203 (Warnings.superseded): node n's mirror holds row x at a higher revision than the replacement r of its own accepted
+/// \* write, so rule E drops the transition. The mirror is read before the write lands (Warnings.accepted: notified, then landed).
+/// \* Mutant "ge" compares with >=. "off" and "old" have no filter.
+/// Sup(n, x, r) == CASE STAMP \in {"fixed", "nostamp"} -> rows[n][x].rv > r.rv
+///                   [] STAMP = "ge" -> rows[n][x].rv >= r.rv
+///                   [] OTHER -> FALSE
+///
+/// \* The replacement rows rule E reads: the superseded ones removed (Warnings.notified: replacement.filter(!superseded)).
+/// Kept(n, rep) == [x \in {y \in DOMAIN rep : ~Sup(n, y, rep[y])} |-> rep[x]]
+///
+/// \* The transitions rule E emits for an accepted write: (expected, kept replacement) pairs whose open bit differs.
+/// Tr(exp, rep) == {y \in DOMAIN rep : exp[y].open # rep[y].open}
+///
+/// \* The stamp the Warn effect carries (ClusterEffect.Warn revision): the row's revision; 0 = unstamped ("old": no stamp at all,
+/// \* "nostamp": the stamp dropped). EffectTranslator.ordered delivers an unstamped warning always, a stamped one iff its revision
+/// \* is not older than the newest delivered for the row on that node (newestRevision.merge(.., Math::max) == revision).
+/// Stamp(r) == IF STAMP \in {"fixed", "ge"} THEN r.rv ELSE 0
+///
+/// Passes(n, x, r) == Stamp(r) = 0 \/ Stamp(r) >= newest[n][x]
+///
+/// Max(a, b) == IF a > b THEN a ELSE b
+///
+/// \* "cand": the shared view takes a delivered entry of row x only if its revision is above the one it shows.
+/// ViewTakes(x, r) == STAMP # "cand" \/ r.rv > opv[x].rv
+///
+/// \* How a mirror takes rows f (an accepted write's replacements, a refusal's values, a put): the code overlays them
+/// \* (Warnings.landed / indexRow); "cand" takes a row only if its revision is above the one the mirror holds.
+/// Mirror(r, f) == IF STAMP = "cand" THEN [s \in Subjects |-> IF s \in DOMAIN f /\ f[s].rv > r[s].rv THEN f[s] ELSE r[s]]
+///                 ELSE Overlay(r, f)
+///
 /// \* The READ (GET /api/v1/warnings, Warnings.java warningRows): what node n answers is the open rows of its mirror.
 /// Read(n) == OpenOf(rows[n])
 ///
@@ -291,6 +339,7 @@
 ///   /\ net = {} /\ settles = {}
 ///   /\ notes = {} /\ trans = {} /\ ncommit = 0 /\ pend = [n \in Nodes |-> FALSE] /\ closedOff = [n \in Nodes |-> {}]
 ///   /\ kvW = [s \in Subjects |-> <<None, 0>>]
+///   /\ opv = [s \in Subjects |-> [up |-> FALSE, rv |-> 0]] /\ newest = [n \in Nodes |-> [s \in Subjects |-> 0]]
 ///   /\ condBudget = MaxCond /\ faultBudget = MaxFault
 ///
 /// \* Environment: the leader process dies at any point between effects.
@@ -299,7 +348,8 @@
 ///   /\ A2834 => (n # kvLeader \/ Quiet(n))
 ///   /\ faultBudget' = faultBudget - 1
 ///   /\ Discard(n)
-///   /\ UNCHANGED <<notes, trans, ncommit, kvW, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, inc, view, net,
+///   /\ newest' = [newest EXCEPT ![n] = [s \in Subjects |-> 0]]   \* a restart empties EffectTranslator.newestRevision
+///   /\ UNCHANGED <<notes, opv, trans, ncommit, kvW, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, shown, inc, view, net,
 ///                  settles, condBudget>>
 ///
 /// \* Environment: consensus elects a leader (possibly the same node again); CI-1 Activate / Deactivate follow it. The
@@ -333,11 +383,14 @@
 ///                   ELSE kvDesired = tx.exp
 ///          ok == fenceOk /\ casOk
 ///          okW == ok /\ tx.kind = "W"
+///          \* LATE = FALSE: no W commit over a row whose earlier accepted settlement is still in transit (no late settle, #3203)
+///          early == \E st \in settles : st.kind = "W" /\ st.out = "acc" /\ DOMAIN st.wrep \cap DOMAIN tx.wrep # {}
 ///          c == IF okW THEN ncommit + 1 ELSE 0
 ///          st == [kind |-> tx.kind, node |-> tx.node, inc |-> tx.inc, out |-> IF ok THEN "acc" ELSE "ref",
 ///                 wrep |-> tx.wrep, seen |-> [s \in DOMAIN tx.wrep |-> kv[s]], lv |-> Current,
 ///                 cov |-> IF tx.kind = "W" THEN tx.cov ELSE 0, tx |-> tx, c |-> c]
-///      IN /\ net' = net \ {tx}
+///      IN /\ LATE \/ ~okW \/ ~early
+///         /\ net' = net \ {tx}
 ///         /\ ncommit' = IF okW THEN c ELSE ncommit
 ///         /\ trans' = IF okW THEN trans \cup {[c |-> c, s |-> x, up |-> tx.wrep[x].open] :
 ///                                              x \in {y \in DOMAIN tx.wrep : kv[y].open # tx.wrep[y].open}}
@@ -347,7 +400,7 @@
 ///         /\ settles' = settles \cup {st}
 ///         /\ kv' = IF ok /\ tx.kind = "W" THEN Overlay(kv, tx.wrep) ELSE kv
 ///         /\ kvDesired' = IF ok /\ tx.kind = "G" THEN tx.val ELSE kvDesired
-///   /\ UNCHANGED <<notes, closedOff, term, kvLeader, elected, lkPend, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty,
+///   /\ UNCHANGED <<notes, ovars, closedOff, term, kvLeader, elected, lkPend, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty,
 ///                  flushQ, wInfl, gInfl, gIntent, fired, held, lnd, condBudget, faultBudget, redo>>
 ///
 /// \* Environment: a definite failure (Settlement.Failed), nothing committed.
@@ -508,7 +561,18 @@
 /// CompleteWhenSettled ==
 ///   [][\A s \in settles \ settles' :
 ///        (s.kind = "W" /\ s.out = "acc" /\ fsm[s.node] = "Active" /\ s.inc = inc[s.node] /\ faultBudget' = faultBudget)
-///            => \A t \in trans : t.c = s.c => \E x \in notes' : x.c = t.c /\ x.s = t.s /\ x.up = t.up]_vars
+///            => \A t \in trans : (t.c = s.c /\ ~(STAMP \in {"fixed", "nostamp", "ge"} /\ rows[s.node][t.s].rv > s.wrep[t.s].rv))
+///                                  => \E x \in notes' : x.c = t.c /\ x.s = t.s /\ x.up = t.up]_vars
+///
+/// \* (#3203: a transition rule E drops because the writer's mirror holds a newer row (Warnings.superseded, at `>`) is exempt above:
+/// \* that settlement is late by construction, its notification is the accepted loss. The exemption is the `>` of the fix, so
+/// \* mutant "ge" still has to notify a write its mirror holds at the same revision, and goes red.)
+///
+/// \* #3203: the operator view never regresses to an older entry of a row: every delivery carries a revision at least the one shown.
+/// ViewNoRegress == [][\A x \in Subjects : opv'[x].rv >= opv[x].rv]_vars
+///
+/// \* #3203: a late opener never re-delivers a key that is committed closed at a newer revision (the successor closed it).
+/// NoLateReopen == [][\A x \in Subjects : (opv'[x] # opv[x] /\ opv'[x].up) => ~(~kv[x].open /\ kv[x].rv > opv'[x].rv)]_vars
 ///
 /// \* Desired/observed converge after the last leader change.
 /// Converges == <>[](kvDesired = target /\ observed = target)
@@ -531,6 +595,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY AcceptedOnlyForLeader
@@ -551,6 +617,8 @@
 /// CONSTANT MaxFault = 2
 /// CONSTANT GOALS = TRUE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {}
 /// CONSTANT EventFam = {}
 /// PROPERTY Converges
@@ -567,6 +635,8 @@
 /// CONSTANT MaxFault = 2
 /// CONSTANT GOALS = TRUE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {}
 /// CONSTANT EventFam = {}
 /// PROPERTY AcceptedOnlyForLeader
@@ -585,6 +655,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY AcceptedOnlyForLeader
@@ -606,6 +678,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY WarningsClose
@@ -622,6 +696,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY WarningsShow
@@ -638,6 +714,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY PersistedOrCleared
@@ -654,6 +732,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e}
 /// CONSTANT EventFam = {e}
 /// PROPERTY WarningsClose
@@ -670,6 +750,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY WarningsShow
@@ -686,6 +768,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY PersistedOrCleared
@@ -702,6 +786,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// INVARIANT OpenSetAgreement
@@ -718,6 +804,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY WarningsClose
@@ -734,6 +822,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// INVARIANT OpenSetAgreement
@@ -750,6 +840,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY AcceptedOnlyForLeader
@@ -771,6 +863,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY NoBlindTombstone
@@ -787,6 +881,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY WarningsClose
@@ -803,6 +899,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY WarningsShow
@@ -819,6 +917,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY PersistedOrCleared
@@ -835,6 +935,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY WarningsShow
@@ -851,6 +953,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY PersistedOrCleared
@@ -867,6 +971,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// INVARIANT AtMostOneLiveLeader
@@ -883,6 +989,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY AcceptedOnlyForLeader
@@ -899,6 +1007,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = TRUE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {}
 /// CONSTANT EventFam = {}
 /// PROPERTY AcceptedOnlyForLeader
@@ -915,6 +1025,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY NoBlindTombstone
@@ -931,6 +1043,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY WarningsShow
@@ -947,6 +1061,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY PersistedOrCleared
@@ -963,6 +1079,8 @@
 /// CONSTANT MaxFault = 2
 /// CONSTANT GOALS = TRUE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {}
 /// CONSTANT EventFam = {}
 /// PROPERTY Converges
@@ -979,6 +1097,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = FALSE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY WarningsClose
@@ -995,6 +1115,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = FALSE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY WarningsShow
@@ -1011,6 +1133,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = FALSE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY PersistedOrCleared
@@ -1027,6 +1151,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = FALSE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// INVARIANT NoPhantom
@@ -1045,6 +1171,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = FALSE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY CompleteWhenSettled
@@ -1061,6 +1189,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = FALSE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY NoBlindTombstone
@@ -1077,6 +1207,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = FALSE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY CompleteWhenSettled
@@ -1093,6 +1225,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = FALSE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// INVARIANT NoDoubleEmit
@@ -1109,6 +1243,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = FALSE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// INVARIANT OpenSetAgreement
@@ -1125,6 +1261,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = FALSE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// INVARIANT OpenSetAgreement
@@ -1141,6 +1279,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = FALSE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// INVARIANT OpenSetAgreement
@@ -1157,6 +1297,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// PROPERTY WarningsClose
@@ -1173,6 +1315,8 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// INVARIANT OpenSetAgreement
@@ -1189,6 +1333,268 @@
 /// CONSTANT MaxFault = 1
 /// CONSTANT GOALS = FALSE
 /// CONSTANT LATE = FALSE
+/// CONSTANT STAMP = "off"
+/// CONSTANT PUTFIRST = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// INVARIANT OpenSetAgreement
+/// ```
+///
+/// ```tlacfg Fsm2Leader:late_old_view
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "old"
+/// CONSTANT PUTFIRST = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY ViewNoRegress
+/// ```
+///
+/// ```tlacfg Fsm2Leader:late_old_reopen
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "old"
+/// CONSTANT PUTFIRST = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY NoLateReopen
+/// ```
+///
+/// ```tlacfg Fsm2Leader:late_oldput_view
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "old"
+/// CONSTANT PUTFIRST = TRUE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY ViewNoRegress
+/// ```
+///
+/// ```tlacfg Fsm2Leader:late_fixed_put
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "fixed"
+/// CONSTANT PUTFIRST = TRUE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY ViewNoRegress
+/// PROPERTY NoLateReopen
+/// INVARIANT NoPhantom
+/// INVARIANT NoDoubleEmit
+/// PROPERTY CompleteWhenSettled
+/// ```
+///
+/// ```tlacfg Fsm2Leader:late_fixed_view
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "fixed"
+/// CONSTANT PUTFIRST = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY ViewNoRegress
+/// ```
+///
+/// ```tlacfg Fsm2Leader:late_ge_complete
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "ge"
+/// CONSTANT PUTFIRST = TRUE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY CompleteWhenSettled
+/// ```
+///
+/// ```tlacfg Fsm2Leader:late_nostamp_put
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "nostamp"
+/// CONSTANT PUTFIRST = TRUE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY ViewNoRegress
+/// PROPERTY NoLateReopen
+/// ```
+///
+/// ```tlacfg Fsm2Leader:nolate_old_view
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = FALSE
+/// CONSTANT STAMP = "old"
+/// CONSTANT PUTFIRST = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY ViewNoRegress
+/// PROPERTY NoLateReopen
+/// ```
+///
+/// ```tlacfg Fsm2Leader:late_fixed_reopen
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "fixed"
+/// CONSTANT PUTFIRST = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY NoLateReopen
+/// ```
+///
+/// ```tlacfg Fsm2Leader:late_old_agree
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "old"
+/// CONSTANT PUTFIRST = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// INVARIANT OpenSetAgreement
+/// ```
+///
+/// ```tlacfg Fsm2Leader:late_cand_view
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "cand"
+/// CONSTANT PUTFIRST = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY ViewNoRegress
+/// ```
+///
+/// ```tlacfg Fsm2Leader:late_cand_reopen
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "cand"
+/// CONSTANT PUTFIRST = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY NoLateReopen
+/// ```
+///
+/// ```tlacfg Fsm2Leader:late_cand_notify
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "cand"
+/// CONSTANT PUTFIRST = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// INVARIANT NoPhantom
+/// INVARIANT NoDoubleEmit
+/// PROPERTY CompleteWhenSettled
+/// ```
+///
+/// ```tlacfg Fsm2Leader:late_cand_agree
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "cand"
+/// CONSTANT PUTFIRST = FALSE
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// INVARIANT OpenSetAgreement
