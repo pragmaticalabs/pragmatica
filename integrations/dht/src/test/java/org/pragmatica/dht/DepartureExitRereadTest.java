@@ -22,6 +22,7 @@ import org.pragmatica.dht.DHTRebalancerTest.Reply;
 import org.pragmatica.dht.DHTRebalancerTest.ScriptedNetwork;
 import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -39,6 +40,7 @@ import static org.pragmatica.dht.DepartureDirectRuns.fiveNodeRing;
 import static org.pragmatica.dht.DepartureDirectRuns.sameDeliverer;
 import static org.pragmatica.dht.DepartureDirectRuns.soleKey;
 import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #3345 exit re-read (R4, G3): owed keys that are all absent do not hold the exit back; the exit's re-read drops a key the store
 /// no longer has, and revives an absent key the store has again, which the re-plan after it pages. Each run ends long before its
@@ -70,7 +72,8 @@ class DepartureExitRereadTest {
     }
 
     /// As above, but the store has `removed` again by the first exit re-read: it is no longer absent, the re-plan after the re-read
-    /// pages it, its ack makes it safe, and only then does a probe round run.
+    /// pages it, and that page is acked a little later: the exit attempt finds it owed and probes nobody; only after the ack does a
+    /// probe round run.
     @Test
     @Timeout(20)
     void absentKeyWrittenAgain_exitReReadRevivesIt_pagedAndDelivered() {
@@ -81,7 +84,7 @@ class DepartureExitRereadTest {
         var node = dhtNode(LOCAL, stampsScripted(memory, removed, true), ring, RF1);
         node.putLocal(kept, value("payload")).await();
         node.putLocal(removed, value("payload")).await();
-        var network = ScriptedNetwork.scripted((_, _) -> Reply.ACK);
+        var network = ScriptedNetwork.scripted((_, sent) -> carriesKey(sent, removed) ? Reply.ACK.later() : Reply.ACK);
         var started = System.nanoTime();
         var direct = direct(node, network, WINDOW_MS, 100, Set::of);
 
@@ -107,13 +110,18 @@ class DepartureExitRereadTest {
     }
 
     private static Promise<?> stamps(StorageEngine memory, byte[] key, boolean writeAgain, int call) {
-        return switch (call) {
+        return later(switch (call) {
             case 0 -> memory.stamps().flatMap(stamps -> memory.remove(key).map(_ -> stamps));
             case 1 -> writeAgain
                       ? memory.put(key, value("again")).flatMap(_ -> memory.stamps())
                       : memory.stamps();
             default -> memory.stamps();
-        };
+        });
+    }
+
+    /// The answer a millisecond later on another thread, as a real store's: an exit attempt never re-enters itself on its own stack.
+    private static <T> Promise<T> later(Promise<T> answer) {
+        return answer.flatMap(value -> Promise.promise(timeSpan(1).millis(), () -> Result.success(value)));
     }
 
     private static Object invoke(Method method, Object target, Object[] args) throws Throwable {
