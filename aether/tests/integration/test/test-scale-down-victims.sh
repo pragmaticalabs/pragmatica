@@ -146,6 +146,19 @@ url="${*: -1}"; echo "$url" >> "${STUB_HITS_TO:-$HITS}"
 case "$url" in http://victim:8075*) printf '503' ;; *) printf '200' ;; esac
 STUB
 chmod +x "$WORK/bin/curl"
+# stop_load kills the load loop but not a $(curl ...) call it already forked: that stub answers and records AFTER stop_load
+# returned (a hit counted as a leak, #3424). drain_load freezes the loop, lists everything below it, stops the loop, then waits
+# (deadline) for exactly those processes to end: no new call can start once the loop is frozen, so the list is complete.
+descendants() { local p c; for p in "$@"; do for c in $(pgrep -P "$p"); do echo "$c"; descendants "$c"; done; done; }
+all_gone() { local p; for p in "$@"; do ! kill -0 "$p" 2> /dev/null || return 1; done; }
+drain_load() {
+    local p kids
+    for p in "${LOAD_PIDS[@]}"; do kill -STOP "$p" 2> /dev/null; done
+    kids=$(descendants "${LOAD_PIDS[@]}")
+    for p in "${LOAD_PIDS[@]}"; do kill -CONT "$p" 2> /dev/null; done
+    stop_load > /dev/null 2>&1
+    poll_until 10 all_gone $kids
+}
 reresolve_run() {  # <label> [deadline of each wait, s: default 60] [file the stub records into: default the hits file]
     : > "$WORK/hits.$1"; rm -f /tmp/load_endpoint_override_$$ "$WORK"/seen.$1.* "$WORK/n.$1"
     ( export PATH="$WORK/bin:$PATH" HITS="$WORK/hits.$1" TARGET_HOST=localhost API_KEY=k APP_ENDPOINT=http://orig:8070 ENV_TYPE=cloud STUB_CURL_DELAY=0.6 STUB_HITS_TO="${3:-$WORK/hits.$1}"
@@ -159,7 +172,7 @@ reresolve_run() {  # <label> [deadline of each wait, s: default 60] [file the st
       n=$(grep -c . "$HITS" 2>/dev/null); n=${n:-0}   # `|| echo 0` made "0\n0" on an empty file and broke the arithmetic below
       echo "$n" > "$WORK/n.$1"
       poll_until "${2:-60}" hits_ge "$HITS" $((n + 8)); seen $1 stays   # STAYS on the new owner: 8 more requests after the first one there
-      stop_load > /dev/null 2>&1 )
+      drain_load )
 }
 reresolve_run rr
 last=$(tail -1 "$WORK/hits.rr")
@@ -170,7 +183,6 @@ else fail "V6w seen: first=$(cat "$WORK/seen.rr.first" 2>/dev/null) owner=$(cat 
 # EMPTY (every wait times out in 2 s) and the arithmetic on its count used to abort the subshell before stop_load (#3424).
 # A leaked loop keeps recording into the other file after the run returns.
 reresolve_run rx 2 "$WORK/hits.rx.elsewhere"
-sleep 1  # sleep-ok: drains the stub call in flight when stop_load returned (the stub answers after 0.6 s): it is not a leak
 a=$(grep -c . "$WORK/hits.rx.elsewhere"); sleep 2  # sleep-ok: a fixed window IS the probe - a leaked loop keeps recording during it
 b=$(grep -c . "$WORK/hits.rx.elsewhere")
 if [ "$a" = "$b" ] && [ "$a" -gt 0 ] && [ "$(seen_rc rx first)" = "1" ] && [ "$(seen_rc rx stays)" = "1" ] && [ ! -s "$WORK/hits.rx" ]; then

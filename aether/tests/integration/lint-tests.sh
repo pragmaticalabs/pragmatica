@@ -239,24 +239,29 @@ done < <(find "$SUITES_DIR" -type f -name "test-*.sh" -exec bash -c "$(declare -
 # ============================================================
 lint_r6_bare_sleep() {
     local file="$1"
-    # `code` = the line up to the first real comment: a `#` opens a comment only outside quotes and at a word start, so
-    # `echo "step #1"; sleep 3` keeps its sleep. The sleep may be reached by any path (`/bin/sleep 9`).
+    # `code` = the line up to the first real comment, with quoted text removed (the quotes stay): a `#` opens a comment only
+    # outside quotes and at a word start, so `echo "step #1"; sleep 3` keeps its sleep, and `echo "a sleep 3"` has none.
+    # Inside a double-quoted string only a `$( ... )` substitution is code. The sleep may be reached by any path (`/bin/sleep 9`).
+    # The `# sleep-ok: <reason>` marker counts only in the real comment (`cmt`), never inside a string.
     awk '
         {
-            line = $0; code = ""; q = ""; n = length(line)
+            line = $0; code = ""; cmt = ""; q = ""; d = 0; n = length(line)
             for (i = 1; i <= n; i++) {
                 c = substr(line, i, 1)
                 if (q == "") {
                     if (c == "\\") { code = code c substr(line, i + 1, 1); i++; continue }
                     if (c == "\047" || c == "\"") q = c
-                    else if (c == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[[:space:];&|(]/)) break
+                    else if (c == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[[:space:];&|(]/)) { cmt = substr(line, i); break }
+                } else if (d > 0) {
+                    if (c == "(") d++; else if (c == ")") d--
                 } else if (c == q) q = ""
-                else if (q == "\"" && c == "\\") { code = code c substr(line, i + 1, 1); i++; continue }
+                else if (q == "\"" && c == "$" && substr(line, i + 1, 1) == "(") { d = 1; code = code "$("; i++; continue }
+                else continue
                 code = code c
             }
         }
-        code ~ /(^|[^[:alnum:]_.\047"^-])(command[[:space:]]+)?sleep[[:space:]]+[0-9$"]/ {
-            if (line !~ /# sleep-ok:[[:space:]]*[^[:space:]]/) print FILENAME ":" NR ":bare-sleep"
+        code ~ /(^|[^[:alnum:]_.\047"^-])(command[[:space:]]+)?sleep[[:space:]]+[0-9$"\047]/ {
+            if (cmt !~ /^#[[:space:]]*sleep-ok:[[:space:]]*[^[:space:]]/) print FILENAME ":" NR ":bare-sleep"
         }
     ' "$file"
 }
