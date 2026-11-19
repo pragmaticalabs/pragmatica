@@ -527,8 +527,7 @@ final class DeparturePushRun {
     /// re-plan observes it. Tenures start at entry into V; a page of an earlier tenure, or of a node no longer in V, is not
     /// [#current(Page)], so it never counts again.
     private void observeView() {
-        var ring = node.ring()
-                       .snapshot();
+        var ring = node.ring().snapshot();
         var now = Set.copyOf(ring.nodes());
 
         now.stream().filter(member -> !view.contains(member)).forEach(member -> tenures.merge(member, 1, Integer::sum));
@@ -601,8 +600,7 @@ final class DeparturePushRun {
     private boolean safe(DepartureKey key, NodeId target, boolean atClose) {
         return view.contains(target) && Option.option(holders.get(target))
                                               .filter(holder -> holder.tenure == tenures.getOrDefault(target, 0))
-                                              .flatMap(holder -> Option.option(holder.copies.get(key.stampId()))
-                                                                       .filter(ackedAt -> !atClose || ackedAt < holder.probedAt))
+                                              .flatMap(holder -> Option.option(holder.copies.get(key.stampId())).filter(ackedAt -> !atClose || ackedAt < holder.probedAt))
                                               .isPresent();
     }
 
@@ -808,7 +806,9 @@ final class DeparturePushRun {
                             .map(DepartureKey::hex)
                             .collect(Collectors.toSet());
 
-        return entries.stream().filter(entry -> open.contains(HEX.formatHex(entry.key()))).toList();
+        return entries.stream()
+                      .filter(entry -> open.contains(HEX.formatHex(entry.key())))
+                      .toList();
     }
 
     /// The push carries L, the set excluded when choosing its target (#1818 L1), and V, both from the run's last observation (I1),
@@ -904,11 +904,12 @@ final class DeparturePushRun {
         page.cancelled.set(true);
         var open = current(page)
                    ? page.keys.stream().filter(key -> !safe(key, page.target, false)).toList()
-                   : List.<DepartureKey>of();
+                   : List.<DepartureKey> of();
         var middle = open.size() / 2;
 
         return Stream.of(open.subList(0, middle),
-                         open.subList(middle, open.size()))
+                         open.subList(middle,
+                                      open.size()))
                      .filter(half -> !half.isEmpty())
                      .map(half -> registerPage(page.target,
                                                page.tenure,
@@ -965,8 +966,7 @@ final class DeparturePushRun {
             onHalt();
         }
 
-        return page.cancelled.get() || !registry.containsKey(page.correlationId()) || !underTransitions(() -> current(page))
-               || isClosed() || System.nanoTime() >= until;
+        return page.cancelled.get() || !registry.containsKey(page.correlationId()) || !underTransitions(() -> current(page)) || isClosed() || System.nanoTime() >= until;
     }
 
     /// I2: a data page every key of which is already safe at its target is not sent (nor resent).
@@ -1024,8 +1024,7 @@ final class DeparturePushRun {
             return AttemptResult.FAILED;
         }
 
-        var holder = holders.compute(page.target,
-                                     (_, known) -> currentHolder(known, page, ack));
+        var holder = holders.compute(page.target, (_, known) -> currentHolder(known, page, ack));
 
         if (holder.token != ack.bootToken()) {
             return AttemptResult.FAILED;
@@ -1046,7 +1045,8 @@ final class DeparturePushRun {
     private static Holder currentHolder(Holder known, Page page, DHTMessage.MigrationDataAck ack) {
         return Option.option(known)
                      .filter(holder -> holder.tenure == page.tenure)
-                     .or(() -> Holder.holder(ack.bootToken(), page.tenure));
+                     .or(() -> Holder.holder(ack.bootToken(),
+                                             page.tenure));
     }
 
     /// Under `transitions`: registered, its target in the ring now, and [#current(Page)] (P4).
@@ -1069,7 +1069,8 @@ final class DeparturePushRun {
 
     /// Under `transitions`.
     private boolean claimExit() {
-        var ready = !closed && !closing && !exitInFlight && liveChains == 0 && owed(false).stream().allMatch(key -> key.absent);
+        var ready = !closed && !closing && !exitInFlight && liveChains == 0 && owed(false).stream()
+                                                                                   .allMatch(key -> key.absent);
 
         exitInFlight = exitInFlight || ready;
 
@@ -1106,8 +1107,8 @@ final class DeparturePushRun {
                ? Option.some(inventory.values()
                                       .stream()
                                       .flatMap(key -> drainTargets(key.stamp.key()).deliverers()
-                                                                                   .stream()
-                                                                                   .filter(target -> safe(key, target, false)))
+                                                                  .stream()
+                                                                  .filter(target -> safe(key, target, false)))
                                       .collect(Collectors.toSet()))
                : Option.none();
     }
@@ -1149,9 +1150,7 @@ final class DeparturePushRun {
 
     /// Every probe answers within `resendAfter` and before `until`, or fails.
     private Promise<List<Result<AttemptResult>>> sendProbes(List<Page> probes, long until) {
-        return Promise.allOf(probes.stream()
-                                   .map(page -> probeOne(page, until))
-                                   .toList());
+        return Promise.allOf(probes.stream().map(page -> probeOne(page, until)).toList());
     }
 
     private Promise<AttemptResult> probeOne(Page page, long until) {
@@ -1169,23 +1168,19 @@ final class DeparturePushRun {
     /// Under `transitions`: every ack counted from here on is numbered above the mark, so a probe registered after it covers only
     /// the acks counted before.
     private long nextMark() {
-        return ++sequence;
+        return++sequence;
     }
 
     @Contract
     private void afterProbe(List<Page> probes, List<Result<AttemptResult>> results, int lossesAtStart, long mark) {
         var passed = passedProbes(probes, results);
-        var failed = probes.stream()
-                           .filter(probe -> !passed.contains(probe))
-                           .map(probe -> probe.target)
-                           .toList();
+        var failed = probes.stream().filter(probe -> !passed.contains(probe)).map(probe -> probe.target).toList();
 
         transition(() -> markProbed(passed, mark));
         transition(() -> retireProbes(probes));
         if (failed.isEmpty() && transition(() -> closeIfClean(lossesAtStart))) {
             return;
         }
-
         // P3: past the deadline the deadline probe round owns the close; a probe the deadline cut short proves no loss.
         if (underTransitions(() -> closing)) {
             return;
@@ -1197,7 +1192,8 @@ final class DeparturePushRun {
     }
 
     private static List<Page> passedProbes(List<Page> probes, List<Result<AttemptResult>> results) {
-        return IntStream.range(0, probes.size())
+        return IntStream.range(0,
+                               probes.size())
                         .filter(i -> results.get(i)
                                             .fold(_ -> false, DeparturePushRun::probePassed))
                         .mapToObj(probes::get)
@@ -1261,16 +1257,15 @@ final class DeparturePushRun {
     /// Under `transitions`: every holder Safe would rely on for a key owed at a close, with an ack for it no passed probe covers.
     private Set<NodeId> uncoveredHolders() {
         return owed(true).stream()
-                         .flatMap(key -> drainTargets(key.stamp.key()).deliverers()
-                                                                      .stream()
-                                                                      .filter(target -> safe(key, target, false)))
-                         .collect(Collectors.toSet());
+                   .flatMap(key -> drainTargets(key.stamp.key()).deliverers()
+                                               .stream()
+                                               .filter(target -> safe(key, target, false)))
+                   .collect(Collectors.toSet());
     }
 
     /// The pre-exit probe path with the probe deadline as its bound; an empty set closes at once.
     private Unit probeAtDeadline(Set<NodeId> uncovered) {
-        var until = System.nanoTime() + tuning.resendAfter()
-                                              .nanos();
+        var until = System.nanoTime() + tuning.resendAfter().nanos();
         var mark = transition(this::nextMark);
         var probes = transition(() -> registerProbes(uncovered));
 
@@ -1382,9 +1377,8 @@ final class DeparturePushRun {
     /// nothing.
     private Unit raiseAtPlan() {
         var soleOwed = owed(false).stream().filter(key -> key.sole).toList();
-        var unpushable = soleOwed.stream()
-                                 .anyMatch(key -> drainTargets(key.stamp.key()).deliverers()
-                                                                               .isEmpty());
+        var unpushable = soleOwed.stream().anyMatch(key -> drainTargets(key.stamp.key()).deliverers()
+                                                                       .isEmpty());
 
         return ! closed && !window.halted()
                                   .getAsBoolean() && !soleOwed.isEmpty() && (unpushable || System.nanoTime() >= attemptsDeadline)
