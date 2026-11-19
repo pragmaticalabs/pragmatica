@@ -611,6 +611,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         // local election has no network to ask over.
         if (useConsensusLeaderElection) {
             leaderManager.enableLeaderPreVote();
+            // #3047: a node SWIM removed while its transport link stayed up returns via the transport's own view.
+            leaderManager.installTransportView(network::sequencedView);
         }
         // Collect sealed hierarchy entries
         var topologyMgmtRoutes = SealedBuilder.from(TopologyManagementMessage.class).route(route(SetClusterSize.class,

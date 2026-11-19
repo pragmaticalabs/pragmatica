@@ -26,6 +26,7 @@ import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
 import org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty;
 import org.pragmatica.consensus.topology.TransportObservation.PeerReconnected;
 import org.pragmatica.consensus.topology.TransportObservation.SelfShutdown;
+import org.pragmatica.consensus.topology.TransportView;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -85,6 +86,14 @@ public interface LeaderManager {
     /// waits for a committed leader to arrive through KV sync instead of electing on a wall-clock grace.
     /// Default no-op for implementations without an election gate.
     default Unit installKvSyncProgress(Supplier<Boolean> pending) {
+        return Unit.unit();
+    }
+
+    /// Wires the transport's sequenced view (#3047): after a view-free removal (SWIM-FAULTY, lost eligibility) the
+    /// election re-reads it a bounded period later, so a node removed while its transport link stayed up returns
+    /// without waiting for the next transport observation. Default no-op for implementations without an election FSM,
+    /// and for local election, which has no such view.
+    default Unit installTransportView(Supplier<Option<TransportView>> view) {
         return Unit.unit();
     }
 
@@ -427,6 +436,13 @@ public interface LeaderManager {
         @Override
         public Unit installKvSyncProgress(Supplier<Boolean> pending) {
             context.installKvSyncPending(pending);
+
+            return Unit.unit();
+        }
+
+        @Override
+        public Unit installTransportView(Supplier<Option<TransportView>> view) {
+            context.installTransportView(view, LeaderElectionContext.DEFAULT_REASSERT_PERIOD);
 
             return Unit.unit();
         }
