@@ -30,7 +30,6 @@ import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
-import org.pragmatica.aether.deployment.cluster.DrainSafetyGrace;
 import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
 import org.pragmatica.aether.deployment.cluster.ReplacementInstanceState;
 import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery.DrainRefusal;
@@ -178,9 +177,6 @@ public final class LeaderReconciler {
     private static final Consumer<ReconcileIntent> NOOP_LISTENER = intent -> {};
 
     private static final TimeSpan DEBOUNCE_DELAY = timeSpan(100L).millis();
-    /// The reason every surplus drain this reconciler dispatches carries; victim selection asks the drain-safety grace
-    /// for the same reason, so the two cannot disagree.
-    private static final DrainReason SURPLUS_DRAIN_REASON = DrainReason.OVERPROVISION_PARTITION_HEAL;
     /// Sentinel for "not yet recorded" on the two single-shot/edge-triggered nanosecond
     /// timestamps below. `Long.MIN_VALUE` is unreachable by any real `timeSource.nanoTime()`
     /// observation, so a sentinel comparison can never alias a legitimate time.
@@ -211,9 +207,7 @@ public final class LeaderReconciler {
     /// time (ANNOUNCE → gossip → Hello descriptor, seconds); ×2 keeps it tied to the single
     /// membership timing constant (`nttDepartureTimeout`) rather than introducing a new literal.
     /// Age source: [`MembershipFsm#memberAgeMs`] (time since first reachability evidence on the FSM's wall clock; 0 before it).
-    /// #1880: the rule itself is [`DrainSafetyGrace`], enforced at [`ClusterTopologyManager#drainNode`] for every drain; this
-    /// instance is the one wired into the CTM, and victim selection asks it so a victim the choke point refuses is never picked.
-    private final DrainSafetyGrace drainSafetyGrace;
+    private final TimeSpan drainSafetyGraceWindow;
     /// Status-poll cadence for in-flight replacements (#1049) — see [`#computeInFlightPollInterval`].
     private final TimeSpan inFlightPollInterval;
     /// How long after its mint a provider-CONFIRMED in-flight replacement may stay unjoined and still count
@@ -340,7 +334,7 @@ public final class LeaderReconciler {
     private final AtomicReference<ScheduledFuture<?>> deficitFollowUpFutureRef = new AtomicReference<>();
     /// At most one pending drain-grace re-evaluation follow-up (drain-safety grace, Wave 2). A
     /// pass that DEFERS part of a surplus drain because every remaining candidate is younger than
-    /// [`#drainSafetyGrace`] schedules one follow-up reconcile after the oldest young
+    /// [`#drainSafetyGraceWindow`] schedules one follow-up reconcile after the oldest young
     /// candidate matures — surplus is stable-state (no SWIM edge re-fires the reconciler while
     /// membership sits unchanged in surplus), so without this the deferred drain would silently
     /// never re-evaluate. Same dedupe/CAS-arm discipline as [`#deficitFollowUpFutureRef`].
@@ -432,8 +426,7 @@ public final class LeaderReconciler {
         this.deficitDebounceWindow = membershipConfig.splitTimeout();
         // Drain-safety grace = nttDepartureTimeout × 2 — see the field doc for the full rationale
         // (role-propagation race window; ≥ deficit debounce; single timing constant).
-        this.drainSafetyGrace = DrainSafetyGrace.drainSafetyGrace(membershipConfig.splitTimeout(),
-                                                                  membershipFsm::memberAgeMs);
+        this.drainSafetyGraceWindow = computeDrainSafetyGrace(membershipConfig.splitTimeout());
         this.inFlightPollInterval = computeInFlightPollInterval(membershipConfig.splitTimeout());
         this.joinGraceWindow = computeJoinGrace(membershipConfig.splitTimeout());
         this.firstListingFloor = SourceProfile.REPLACEMENT_FIRST_LISTING_FLOOR;
@@ -923,13 +916,7 @@ public final class LeaderReconciler {
     /// victim whose membership age ([`MembershipFsm#memberAgeMs`]) is below this window is never
     /// selected; an all-young candidate pool defers the drain (WARN + one follow-up reconcile).
     public TimeSpan drainSafetyGraceWindow() {
-        return drainSafetyGrace.window();
-    }
-
-    /// The drain-safety grace this reconciler selects victims through (#1880). The node wiring installs this same instance
-    /// as the CTM's choke point ([`ClusterTopologyManager#setDrainSafetyGrace`]), so selection and enforcement are one rule.
-    public DrainSafetyGrace drainSafetyGrace() {
-        return drainSafetyGrace;
+        return drainSafetyGraceWindow;
     }
 
     /// Observability — read-only snapshot of the in-flight provisioning map: each tracked id to the
@@ -1515,9 +1502,13 @@ public final class LeaderReconciler {
     /// and the drain set shrinks — down to nothing if confirmed members are already at or
     /// below the configured floor.
     ///
-    /// Drain-safety grace (#1880, [`DrainSafetyGrace`]): a victim whose membership age is below the
-    /// grace is never selected, ephemeral or configured, owner or not — the same rule the CTM's
-    /// `drainNode` enforces for every drain, so selection never picks a victim the choke point would refuse.
+    /// Drain-safety grace (Wave 2 defense in depth): a CONFIGURED-seed victim whose membership
+    /// age is below [`#drainSafetyGraceWindow`] is never drained — a just-joined seed whose role
+    /// labels may still be propagating is shielded. The grace does NOT block an EPHEMERAL
+    /// (CTM-provisioned) candidate that owns no slices: such a node was added for scale-up and is
+    /// always safe to drain (it owns nothing, so there is no role-propagation-into-ownership race),
+    /// which resolves the maturity-grace tension — the recently-added CTM nodes a scale-down wants
+    /// to remove are no longer forced past the grace and the reconciler stops draining stable seeds.
     /// When the eligible pool cannot cover the surplus, the shortfall is DEFERRED (WARN with the
     /// young ages + one scheduled follow-up reconcile via [`#armDrainGraceReEval`]) rather than
     /// silently dropped. Internal — observers see only the count via
@@ -1586,17 +1577,19 @@ public final class LeaderReconciler {
     ///    `DrainProcedure` and would oscillate DEPARTING→MEMBER. When the other members cannot cover
     ///    the surplus the scale-down stops short and the deferral WARN says the leader is excluded.
     ///
-    /// Drain-safety grace (#1880): only candidates [`#drainSafetyGrace`] permits for [`#SURPLUS_DRAIN_REASON`] enter
-    /// the tiers — the rule [`ClusterTopologyManager#drainNode`] enforces, asked here so the choke point never refuses a
-    /// selected victim. Candidates the grace or the availability guard hold back are deferred, never dropped
+    /// Maturity-grace resolution: ephemeral NON-owners are drainable regardless of age — they own
+    /// nothing, so there is no role-propagation-into-ownership race to guard against. Every other
+    /// partition (configured non-owners, and both owner partitions) passes the drain-safety grace
+    /// ([`#pastDrainSafetyGrace`]) first: a just-joined seed's role labels may still be in flight,
+    /// and an ephemeral owner no longer has the "owns nothing" argument that exempts its non-owner
+    /// sibling. Candidates the grace or the availability guard hold back are deferred, never dropped
     /// ([`#deferYoungSurplusDrain`]). Within each partition the legacy stable reversed-id iteration
     /// order is preserved for determinism. A member with no readable age is treated as mature
-    /// ([`DrainSafetyGrace`]).
+    /// (legacy behaviour).
     private Set<NodeId> selectDrainVictims(Set<NodeId> currentMembers, int drainCount, List<DrainRefusal> refusals) {
         var self = presenceSampler.self();
         var others = currentMembers.stream()
                                    .filter(id -> !id.equals(self))
-                                   .filter(id -> drainSafetyGrace.permits(id, SURPLUS_DRAIN_REASON))
                                    .sorted(Comparator.comparing(NodeId::id).reversed())
                                    .toList();
         var victims = new LinkedHashSet<NodeId>();
@@ -1606,8 +1599,8 @@ public final class LeaderReconciler {
         return Set.copyOf(victims);
     }
 
-    /// Append victims from `candidates` in tier order — ephemeral non-owners, configured
-    /// non-owners, then the guarded owner tier (ephemeral, configured) — up to the
+    /// Append victims from `candidates` in tier order — ephemeral non-owners, mature configured
+    /// non-owners, then the guarded owner tier (mature ephemeral, mature configured) — up to the
     /// `drainCount` cap. Owners the guard refuses are recorded in `refusals`.
     @Contract
     private void appendTieredVictims(Set<NodeId> victims,
@@ -1618,9 +1611,9 @@ public final class LeaderReconciler {
         var owners = sliceOwners(candidates);
 
         appendVictims(victims, ephemeralCandidates(nonOwners), drainCount);
-        appendVictims(victims, configuredCandidates(nonOwners), drainCount);
-        appendGuardedVictims(victims, ephemeralCandidates(owners), drainCount, refusals);
-        appendGuardedVictims(victims, configuredCandidates(owners), drainCount, refusals);
+        appendVictims(victims, matureConfiguredCandidates(nonOwners), drainCount);
+        appendGuardedVictims(victims, matureEphemeralCandidates(owners), drainCount, refusals);
+        appendGuardedVictims(victims, matureConfiguredCandidates(owners), drainCount, refusals);
     }
 
     /// The members that own no active slices — the preferred victim tier.
@@ -1690,17 +1683,29 @@ public final class LeaderReconciler {
                         .collect(Collectors.toUnmodifiableSet());
     }
 
-    /// The EPHEMERAL (CTM-provisioned) partition of a tier — preferred over configured seeds.
+    /// The EPHEMERAL (CTM-provisioned) partition of the NON-OWNER tier — drainable regardless of
+    /// age (they own no slices, so the maturity grace does not apply).
     private List<NodeId> ephemeralCandidates(List<NodeId> candidates) {
         return candidates.stream()
                          .filter(this::isEphemeral)
                          .toList();
     }
 
-    /// The CONFIGURED-seed partition of a tier — the fallback victims when ephemeral candidates cannot cover the surplus.
-    private List<NodeId> configuredCandidates(List<NodeId> candidates) {
+    /// The EPHEMERAL partition of the SLICE-OWNER tier that has also passed the drain-safety grace —
+    /// an owner lacks the "owns nothing" argument that exempts [`#ephemeralCandidates`] from it.
+    private List<NodeId> matureEphemeralCandidates(List<NodeId> candidates) {
+        return candidates.stream()
+                         .filter(this::isEphemeral)
+                         .filter(this::pastDrainSafetyGrace)
+                         .toList();
+    }
+
+    /// The CONFIGURED-seed partition of the candidate pool that has also passed the drain-safety
+    /// grace — the fallback victims when ephemeral candidates cannot cover the surplus.
+    private List<NodeId> matureConfiguredCandidates(List<NodeId> candidates) {
         return candidates.stream()
                          .filter(id -> !isEphemeral(id))
+                         .filter(this::pastDrainSafetyGrace)
                          .toList();
     }
 
@@ -1743,6 +1748,14 @@ public final class LeaderReconciler {
         return ULID.parse(raw.substring(lastDash + 1)).option();
     }
 
+    /// Whether `id`'s membership age has reached the drain-safety grace window. Unknown age
+    /// (untracked id) counts as mature — see [`#selectDrainVictims`].
+    private boolean pastDrainSafetyGrace(NodeId id) {
+        return membershipFsm.memberAgeMs(id)
+                            .map(ageMs -> ageMs >= drainSafetyGraceWindow.millis())
+                            .or(true);
+    }
+
     /// Deferral of the un-covered surplus shortfall: WARN with the young candidates' ages (the
     /// operator-facing trace of WHY the surplus was not fully drained) and arm a single
     /// follow-up reconcile for when the oldest young candidate matures. The shortfall can arise
@@ -1761,7 +1774,7 @@ public final class LeaderReconciler {
     private void deferYoungSurplusDrain(Set<NodeId> currentMembers, int deferredCount, List<DrainRefusal> refusals) {
         log.warn("LeaderReconciler deferring surplus drain of {} member(s): remaining candidates are either younger than the drain-safety grace ({} ms — role propagation may still be in flight) or slice owners whose removal would drop a hosted slice below minAvailable, or only the leader remains (the leader is never a drain victim, #1089); youngAgesMs={}, minAvailableRefusals=[{}]",
                  deferredCount,
-                 drainSafetyGrace.window().millis(),
+                 drainSafetyGraceWindow.millis(),
                  youngMemberAgesMs(currentMembers),
                  describeRefusals(refusals));
         armDrainGraceReEval(currentMembers);
@@ -1796,7 +1809,9 @@ public final class LeaderReconciler {
     /// below the drain-safety grace.
     @Contract
     private void recordYoungAge(Map<NodeId, Long> ages, NodeId id) {
-        drainSafetyGrace.youngAgeMs(id).onPresent(ageMs -> ages.put(id, ageMs));
+        membershipFsm.memberAgeMs(id)
+                     .filter(ageMs -> ageMs < drainSafetyGraceWindow.millis())
+                     .onPresent(ageMs -> ages.put(id, ageMs));
     }
 
     /// Arm a single drain-grace re-evaluation follow-up (deferred-surplus re-trigger). Deduped:
@@ -1822,8 +1837,7 @@ public final class LeaderReconciler {
     /// is readable.
     private TimeSpan drainGraceReEvalDelay(Set<NodeId> currentMembers) {
         var oldestYoungAgeMs = youngMemberAgesMs(currentMembers).values().stream().reduce(0L, Math::max);
-        var remainingMs = Math.max(drainSafetyGrace.window().millis() - oldestYoungAgeMs,
-                                   0L);
+        var remainingMs = Math.max(drainSafetyGraceWindow.millis() - oldestYoungAgeMs, 0L);
 
         return timeSpan(remainingMs + DEBOUNCE_DELAY.millis()).millis();
     }
@@ -2038,7 +2052,7 @@ public final class LeaderReconciler {
 
     @Contract
     private void dispatchSingleDrain(NodeId peerId) {
-        ctm.drainNode(peerId, SURPLUS_DRAIN_REASON);
+        ctm.drainNode(peerId, DrainReason.OVERPROVISION_PARTITION_HEAL);
     }
 
     /// #1049 — drop every in-flight entry older than its own per-source ceiling. The one time bound left,
@@ -2394,6 +2408,13 @@ public final class LeaderReconciler {
     /// for a moment, not correctness — whereas a slot masked for the whole ceiling cost a run its budget.
     private static TimeSpan computeJoinGrace(TimeSpan splitTimeout) {
         return timeSpan(splitTimeout.nanos() * 6).nanos();
+    }
+
+    /// Drain-safety grace = `nttDepartureTimeout × 2` — see the [`#drainSafetyGraceWindow`]
+    /// field doc for the sizing rationale (role-propagation race window; ≥ the ×1 deficit
+    /// debounce; single membership timing constant).
+    private static TimeSpan computeDrainSafetyGrace(TimeSpan splitTimeout) {
+        return timeSpan(splitTimeout.nanos() * 2).nanos();
     }
 
     /// Observability — the [`MembershipConfig`] this reconciler was constructed with.

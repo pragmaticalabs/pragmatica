@@ -7,10 +7,9 @@ package org.pragmatica.aether.deployment.cluster;
 /// Membership v2 / E2 — drain-action reason used by both [`ClusterTopologyManager#drainNode`]
 /// (leader-pinned, operator/auto-remediation reasons) and the §8.2 unified [`DrainProcedure`]
 /// (node-local, local-trigger reasons). Surfaces *why* a drain was started so audit/log/metrics
-/// consumers can distinguish operator-initiated from auto-remediation and local-trigger flows. Two
-/// behavioural readings exist: [`#isSurplusTrim`] (#1050) decides whether the CTM's drain-grace
-/// backstop re-checks that the cluster can still spare the node before it reaps, and
-/// [`#subjectToDrainSafetyGrace`] (#1880) decides whether `drainNode` holds a young target.
+/// consumers can distinguish operator-initiated from auto-remediation and local-trigger flows. One
+/// behavioural reading exists (#1050): [`#isSurplusTrim`] decides whether the CTM's drain-grace
+/// backstop re-checks that the cluster can still spare the node before it reaps.
 ///
 /// **Leader-pinned (drainNode) reasons**:
 /// - [`#OPERATOR_COMMAND`] — explicit operator-initiated scale-down or decommission.
@@ -61,23 +60,6 @@ public enum DrainReason {
         return switch (this) {
             case OVERPROVISION_SCALE_DOWN, OVERPROVISION_PARTITION_HEAL -> true;
             case OPERATOR_COMMAND, JOIN_GRACE_REAP, QUORUM_LOSS, COMMANDED, CORE_ABSENCE, DIRECTIVE_RETIRED, REPLACED -> false;
-        };
-    }
-    /// Whether a drain for this reason is held by the drain-safety grace (#1880, [`DrainSafetyGrace`]): its target must
-    /// not be younger than the grace, age counted from first reachability evidence. Every reason is, except two:
-    /// - `JOIN_GRACE_REAP` — its target never became a member (a never-joined zombie), so it has no join age to wait out,
-    ///   and holding it would orphan the very instance the reap exists for.
-    /// - `OPERATOR_COMMAND` — an explicit operator decision about a named node, carried out as issued.
-    ///
-    /// The grace is enforced at [`ClusterTopologyManager#drainNode`], the one path by which a node drains ANOTHER node. The
-    /// local-trigger reasons do not pass it and need not: `COMMANDED` is the target's receipt of a `drainNode` command that
-    /// already passed it, and `QUORUM_LOSS`, `CORE_ABSENCE`, `DIRECTIVE_RETIRED` are a node fencing itself, a decision about
-    /// its own state that no peer's join age bears on (and a node's own age reads 0: it has no reachability evidence of
-    /// itself). They read `true` so that a future route of one of them through `drainNode` is held, not silently exempt.
-    public boolean subjectToDrainSafetyGrace() {
-        return switch (this) {
-            case JOIN_GRACE_REAP, OPERATOR_COMMAND -> false;
-            case OVERPROVISION_SCALE_DOWN, OVERPROVISION_PARTITION_HEAL, QUORUM_LOSS, COMMANDED, CORE_ABSENCE, DIRECTIVE_RETIRED, REPLACED -> true;
         };
     }
 }

@@ -13,7 +13,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
-import org.pragmatica.aether.deployment.cluster.DrainSafetyGrace;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -25,8 +24,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SurplusCoreRetirementHoldTest {
     private static final NodeId SURPLUS_A = new NodeId("surplus-core-a");
     private static final NodeId SURPLUS_B = new NodeId("surplus-core-b");
-
-    private static final HeldCoreWarnings WARNINGS = HeldCoreWarnings.heldCoreWarnings(() -> 0L, _ -> {});
 
     private final List<NodeId> drained = new CopyOnWriteArrayList<>();
     private final List<String> heldSubjects = new CopyOnWriteArrayList<>();
@@ -65,7 +62,7 @@ class SurplusCoreRetirementHoldTest {
     void retireSurplusCores_autoHealDisabled_askedForCore_drainsNothing() {
         var topology = topology(true);
 
-        TopologyAssembly.retireSurplusCores(List.of(SURPLUS_A), topology, DrainSafetyGrace.unwired(), WARNINGS)
+        TopologyAssembly.retireSurplusCores(List.of(SURPLUS_A), topology)
                         .await();
 
         assertThat(heldSubjects).as("the hold is asked for the subject core").containsExactly(ClusterTopologyManager.coreSubject());
@@ -76,7 +73,7 @@ class SurplusCoreRetirementHoldTest {
     void retireSurplusCores_autoHealEnabled_drainsAsOverprovisionScaleDown() {
         var topology = topology(false);
 
-        TopologyAssembly.retireSurplusCores(List.of(SURPLUS_A, SURPLUS_B), topology, DrainSafetyGrace.unwired(), WARNINGS)
+        TopologyAssembly.retireSurplusCores(List.of(SURPLUS_A, SURPLUS_B), topology)
                         .await();
 
         assertThat(heldSubjects).as("the hold is asked for the subject core").containsExactly(ClusterTopologyManager.coreSubject());

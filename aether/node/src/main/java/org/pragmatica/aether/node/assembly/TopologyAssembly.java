@@ -30,7 +30,6 @@ import org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler;
 import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
 import org.pragmatica.aether.deployment.cluster.CoreVoterReconciler;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
-import org.pragmatica.aether.deployment.cluster.DrainSafetyGrace;
 import org.pragmatica.aether.deployment.cluster.MembershipLiveness;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
@@ -326,7 +325,6 @@ public sealed interface TopologyAssembly {
                                                                           FailedVoterEvidence.forNode(metricsCollector,
                                                                                                       membershipFsmRef::get),
                                                                           clusterNode::reconfigure);
-        var heldCoreWarnings = HeldCoreWarnings.heldCoreWarnings(System::currentTimeMillis, LOG::warn);
 
         defer.accept(() -> SharedScheduler.scheduleAtFixedRate(() -> coreVoterReconciler.reconcile()
                                                                                         .flatMap(_ -> retireExcludedCores(clusterNode,
@@ -335,8 +333,6 @@ public sealed interface TopologyAssembly {
                                                                                                                           nodeReplacements,
                                                                                                                           deploymentMap,
                                                                                                                           clusterTopologyManager,
-                                                                                                                          () -> drainSafetyGraceOf(leaderReconcilerRef),
-                                                                                                                          heldCoreWarnings,
                                                                                                                           readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
                                                                                                                                               membershipFsmRef::get)))
                                                                                         .onFailure(cause -> LOG.warn("Core voter reconciliation: {}",
@@ -591,9 +587,6 @@ public sealed interface TopologyAssembly {
                                                                  SharedScheduler::schedule);
 
         leaderReconcilerRef.set(leaderReconciler);
-        // #1880: the reconciler's drain-safety grace is THE choke point every drain passes — installed into the CTM so the
-        // voter-retirement drain, replacement retirement and surplus drain are all held by the one rule selection uses.
-        clusterTopologyManager.setDrainSafetyGrace(leaderReconciler.drainSafetyGrace());
         // Provisioning-stickiness fix — read-only supplier wiring (no consensus). The leader's metrics
         // ping carries its in-flight provisioning set (LeaderReconciler -> ClusterSyncPing.dispatchedNodes);
         // followers retain it term-fenced. On leadership gain LeaderReconciler seeds its in-flight set
@@ -853,8 +846,6 @@ public sealed interface TopologyAssembly {
                                                      NodeReplacementIndex replacements,
                                                      DeploymentMap deployments,
                                                      ClusterTopologyManager topology,
-                                                     Supplier<DrainSafetyGrace> graceSupplier,
-                                                     HeldCoreWarnings warnings,
                                                      Set<NodeId> ready) {
         if (!cluster.leaderManager().isLeader()) {
             return Promise.unitPromise();
@@ -865,45 +856,15 @@ public sealed interface TopologyAssembly {
                                                                   .isEmpty())
                                        .toList();
 
-        return retireSurplusCores(victims, topology, graceSupplier.get(), warnings);
-    }
-
-    private static DrainSafetyGrace drainSafetyGraceOf(AtomicReference<LeaderReconciler> leaderReconcilerRef) {
-        return Option.option(leaderReconcilerRef.get())
-                     .map(LeaderReconciler::drainSafetyGrace)
-                     .or(DrainSafetyGrace.unwired());
+        return retireSurplusCores(victims, topology);
     }
 
     /// #3324: the production wiring of the voter-excluded core retirement: the hold asked is `topology`'s own, for the subject `core`,
     /// and every victim leaves as an `OVERPROVISION_SCALE_DOWN` drain (the reason that keeps the retirement refusal and the grace re-check).
-    static Promise<Unit> retireSurplusCores(List<NodeId> victims,
-                                            ClusterTopologyManager topology,
-                                            DrainSafetyGrace grace,
-                                            HeldCoreWarnings warnings) {
+    static Promise<Unit> retireSurplusCores(List<NodeId> victims, ClusterTopologyManager topology) {
         return drainSurplusCores(victims,
                                  () -> topology.scalingHeld(ClusterTopologyManager.coreSubject()),
-                                 node -> retireCore(node, topology, grace, warnings));
-    }
-
-    /// #1880: every victim is asked of the choke point ([ClusterTopologyManager#drainNode]), which alone enforces the drain-safety
-    /// grace. A victim the grace holds is a deferral, not a failure — the choke point's refusal is absorbed (design-out: the tick
-    /// runs every second, so the node is asked again once it has aged) and announced once per grace window ([HeldCoreWarnings]),
-    /// so one young victim neither fails the tick every second nor ends the chain before the mature victims behind it. Any other
-    /// refusal still fails the tick.
-    private static Promise<Unit> retireCore(NodeId node,
-                                            ClusterTopologyManager topology,
-                                            DrainSafetyGrace grace,
-                                            HeldCoreWarnings warnings) {
-        var held = grace.refusal(node, DrainReason.OVERPROVISION_SCALE_DOWN);
-
-        held.onPresent(message -> warnings.announce(node,
-                                                    grace.window().millis(),
-                                                    "Core retirement held: " + message));
-        var drain = topology.drainNode(node, DrainReason.OVERPROVISION_SCALE_DOWN);
-
-        return held.isPresent()
-               ? drain.recover(_ -> Unit.unit())
-               : drain;
+                                 node -> topology.drainNode(node, DrainReason.OVERPROVISION_SCALE_DOWN));
     }
 
     /// #3324: a core excluded from the voter set is core surplus; with auto-heal disabled it is not drained on the cluster's own
