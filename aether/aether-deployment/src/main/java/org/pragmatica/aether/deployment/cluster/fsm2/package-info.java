@@ -175,7 +175,8 @@
 ///                                    \* not raised or joined since (NoBlindTombstone)
 ///           kvW,                     \* per committed row: its writer stamp <<node, incarnation>> (FsmWarningValue writerNode /
 ///                                    \* writerProcess; the model's incarnation stands for the process), read by rule O (OnPut)
-///           opv,                     \* #3203 operator view: per subject, the last delivered entry [up, rv] (any node's sink)
+///           opv,                     \* #3203 operator view: per subject, the last delivered entry [up, rv] (any node's sink),
+///                                    \* and cl, the highest revision of a close delivered for it (0: none)
 ///           newest                   \* #3203 per node, per subject: the newest revision its sink delivered (EffectTranslator)
 ///
 /// ovars == <<opv, newest>>
@@ -339,7 +340,7 @@
 ///   /\ net = {} /\ settles = {}
 ///   /\ notes = {} /\ trans = {} /\ ncommit = 0 /\ pend = [n \in Nodes |-> FALSE] /\ closedOff = [n \in Nodes |-> {}]
 ///   /\ kvW = [s \in Subjects |-> <<None, 0>>]
-///   /\ opv = [s \in Subjects |-> [up |-> FALSE, rv |-> 0]] /\ newest = [n \in Nodes |-> [s \in Subjects |-> 0]]
+///   /\ opv = [s \in Subjects |-> [up |-> FALSE, rv |-> 0, cl |-> 0]] /\ newest = [n \in Nodes |-> [s \in Subjects |-> 0]]
 ///   /\ condBudget = MaxCond /\ faultBudget = MaxFault
 ///
 /// \* Environment: the leader process dies at any point between effects.
@@ -571,8 +572,10 @@
 /// \* #3203: the operator view never regresses to an older entry of a row: every delivery carries a revision at least the one shown.
 /// ViewNoRegress == [][\A x \in Subjects : opv'[x].rv >= opv[x].rv]_vars
 ///
-/// \* #3203: a late opener never re-delivers a key that is committed closed at a newer revision (the successor closed it).
-/// NoLateReopen == [][\A x \in Subjects : (opv'[x] # opv[x] /\ opv'[x].up) => ~(~kv[x].open /\ kv[x].rv > opv'[x].rv)]_vars
+/// \* #3203: a late opener is never delivered after a close of a higher revision of the same key was delivered (the
+/// \* successor's close reached the operator, then the deposed node's older opener re-opened it). An opener delivered while
+/// \* a newer close is committed but not yet delivered is in order: the close follows it and the view ends closed.
+/// NoLateReopen == [][\A x \in Subjects : (opv'[x] # opv[x] /\ opv'[x].up) => ~(opv[x].cl > opv'[x].rv)]_vars
 ///
 /// \* Desired/observed converge after the last leader change.
 /// Converges == <>[](kvDesired = target /\ observed = target)
