@@ -4730,9 +4730,9 @@ public class RabiaEngine<C extends Command> {
         }
     }
 
-    private void commitDecision(PhaseData<C> phaseData, Decision<C> decision) {
+    private void commitDecision(PhaseData<C> phaseData, Decision<C> decision, boolean heldLocally) {
         if (phaseData.tryMarkDecided()) {
-            metrics.recordDecision(self, phaseData.phase(), decision.stateValue(), 0L);
+            recordDecisionMetrics(phaseData, decision, heldLocally);
             // Apply commands to state machine ONLY if it was a V1 decision with a non-empty batch
             if (decision.stateValue() == StateValue.V1 && !decision.value().commands().isEmpty()) {
                 commitChanges(phaseData, decision);
@@ -4745,6 +4745,15 @@ public class RabiaEngine<C extends Command> {
             }
 
             advancePhase(phaseData.phase());
+        }
+    }
+
+    /// #2644: every applied decision is counted; the duration is optional. A node without a start point has no
+    /// measurement, and a near-zero sample would drag the average toward 0.
+    private void recordDecisionMetrics(PhaseData<C> phaseData, Decision<C> decision, boolean heldLocally) {
+        metrics.recordDecision(self, phaseData.phase(), decision.stateValue());
+        if (heldLocally) {
+            metrics.recordDecisionDuration(self, phaseData.phase(), phaseData.elapsedNanos());
         }
     }
 
@@ -4894,8 +4903,10 @@ public class RabiaEngine<C extends Command> {
 
             return;
         }
+        // #2644: a slot this node never held (its own Decision creates the data) has no start point to measure from.
+        var heldLocally = phases.containsKey(decision.phase());
 
-        commitDecision(getOrCreatePhaseData(decision.phase()), decision);
+        commitDecision(getOrCreatePhaseData(decision.phase()), decision, heldLocally);
     }
 
     /// A Decision past the current slot is not itself a fault: delivery reorders, and the slot in front of
@@ -5097,6 +5108,7 @@ public class RabiaEngine<C extends Command> {
                               (slot, existing) -> currentPhaseData(slot, Option.option(existing), epoch, frontier));
     }
 
+    // #2644: a slot re-created under a newer epoch restarts its duration stamp (the data is new on this node).
     private PhaseData<C> currentPhaseData(Phase slot, Option<PhaseData<C>> existing, long epoch, Phase frontier) {
         return existing.filter(data -> data.epoch() == epoch || slot.compareTo(frontier) < 0)
                        .or(() -> new PhaseData<>(slot, epoch));

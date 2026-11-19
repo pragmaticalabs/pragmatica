@@ -68,6 +68,44 @@ class RabiaMetricsCollectorTest {
         assertThat(second.voteRound2Count()).isZero();
     }
 
+    /// #2644: a sampled decision is counted and its duration is summed; the average is ns / samples in ms.
+    /// Real collector, no stub (the engine's side is pinned in `RabiaEngineTest$DecisionLatency`).
+    @Test
+    void sampledDecisions_reachCountSumAndAverage() {
+        var collector = RabiaMetricsCollector.rabiaMetricsCollector();
+
+        collector.recordDecision(NODE, PHASE, StateValue.V1);
+        collector.recordDecisionDuration(NODE, PHASE, 2_000_000L);
+        collector.recordDecision(NODE, PHASE, StateValue.V1);
+        collector.recordDecisionDuration(NODE, PHASE, 4_000_000L);
+
+        var snapshot = collector.snapshot();
+
+        assertThat(snapshot.decisionsCount()).isEqualTo(2);
+        assertThat(snapshot.durationSamples()).isEqualTo(2);
+        assertThat(snapshot.totalDecisionLatencyNs()).isEqualTo(6_000_000L);
+        assertThat(snapshot.avgDecisionLatencyMs()).isEqualTo(3.0);
+    }
+
+    /// #2644: a decision with no duration (a slot first seen as its own Decision) is counted, adds no sample and
+    /// leaves the average over the sampled decisions untouched.
+    @Test
+    void unsampledDecision_isCountedWithoutASample() {
+        var collector = RabiaMetricsCollector.rabiaMetricsCollector();
+
+        collector.recordDecision(NODE, PHASE, StateValue.V1);
+        collector.recordDecisionDuration(NODE, PHASE, 2_000_000L);
+        collector.recordDecision(NODE, PHASE, StateValue.V0);
+
+        var snapshot = collector.snapshot();
+
+        assertThat(snapshot.decisionsCount()).isEqualTo(2);
+        assertThat(snapshot.durationSamples()).isEqualTo(1);
+        assertThat(snapshot.totalDecisionLatencyNs()).isEqualTo(2_000_000L);
+        assertThat(snapshot.avgDecisionLatencyMs()).isEqualTo(2.0);
+        assertThat(snapshot.counterMap().get("consensus_decisions_total")).isEqualTo(2L);
+    }
+
     /// The wire vocabulary: `counterMap()`'s keys ARE the Prometheus gauge names
     /// (`ObservabilityRegistry.registerConsensusMetrics` binds each by exact key), so a drifted key
     /// silently freezes its gauge at 0. Pinned entry-by-entry with live values.
@@ -76,7 +114,7 @@ class RabiaMetricsCollectorTest {
         var collector = RabiaMetricsCollector.rabiaMetricsCollector();
 
         collector.recordProposal(NODE, PHASE);
-        collector.recordDecision(NODE, PHASE, StateValue.V0, 1_000_000L);
+        collector.recordDecision(NODE, PHASE, StateValue.V0);
         collector.recordVoteRound1(NODE, PHASE, StateValue.V0);
         collector.recordVoteRound2(NODE, PHASE, StateValue.V0);
         collector.recordSyncAttempt(NODE, true);
