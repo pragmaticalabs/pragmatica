@@ -239,10 +239,23 @@ done < <(find "$SUITES_DIR" -type f -name "test-*.sh" -exec bash -c "$(declare -
 # ============================================================
 lint_r6_bare_sleep() {
     local file="$1"
+    # `code` = the line up to the first real comment: a `#` opens a comment only outside quotes and at a word start, so
+    # `echo "step #1"; sleep 3` keeps its sleep. The sleep may be reached by any path (`/bin/sleep 9`).
     awk '
-        { line = $0; code = line }
-        { sub(/^[[:space:]]*#.*/, "", code); sub(/[[:space:]]#.*/, "", code) }
-        code ~ /(^|[^[:alnum:]_.\047"\/^-])(command[[:space:]]+)?sleep[[:space:]]+[0-9$"]/ {
+        {
+            line = $0; code = ""; q = ""; n = length(line)
+            for (i = 1; i <= n; i++) {
+                c = substr(line, i, 1)
+                if (q == "") {
+                    if (c == "\\") { code = code c substr(line, i + 1, 1); i++; continue }
+                    if (c == "\047" || c == "\"") q = c
+                    else if (c == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[[:space:];&|(]/)) break
+                } else if (c == q) q = ""
+                else if (q == "\"" && c == "\\") { code = code c substr(line, i + 1, 1); i++; continue }
+                code = code c
+            }
+        }
+        code ~ /(^|[^[:alnum:]_.\047"^-])(command[[:space:]]+)?sleep[[:space:]]+[0-9$"]/ {
             if (line !~ /# sleep-ok:[[:space:]]*[^[:space:]]/) print FILENAME ":" NR ":bare-sleep"
         }
     ' "$file"
