@@ -6,6 +6,7 @@ package org.pragmatica.consensus.rabia;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
@@ -17,6 +18,7 @@ import org.pragmatica.consensus.rabia.RabiaEngineTest.TestStateMachine;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestTopologyManager;
 import org.pragmatica.consensus.rabia.RabiaPersistence.SavedState;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Option;
@@ -36,8 +38,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// matches; this test observes it. At the moment the announce's two effects run (the notification replay and then the
 /// post-restore listener) it reads the engine's own state and the events published so far: the engine must already
 /// stand in the serving state, and the matching `ConsensusActive` / `ConsensusObserving` event must already have been
-/// emitted. Both transitions that a restore reaches through the engine's one write path are driven, the voter's
-/// activation and the observer's activation.
+/// emitted. All six sites that call the announce are driven: the voter's activation, the observer's activation, a
+/// resume from pause, an observer's promotion to voter, an added voter's promotion out of `Observing`, and a voter
+/// demoted to observer that applies a decision. The first two get their pending restore from a real sync restore; the
+/// other four have no public path that leaves a restore unannounced while the engine is already serving, so the test
+/// marks one pending through the engine's private `restoreAnnouncePending` flag (and, for the last two, flips the
+/// private `observerMode` flag, which a roster change flips in production). That seeding is the only reflection.
 class RabiaAnnounceAfterServingWriteTest {
     private static final NodeId NODE_1 = nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = nodeId("node-2").unwrap();
@@ -60,11 +66,7 @@ class RabiaAnnounceAfterServingWriteTest {
 
         engine.processSyncResponse(cold(NODE_2));
 
-        assertThat(awaitCondition(() -> observation.hookObservation.get() != null)).as("the announce ran").isTrue();
-        assertThat(observation.replayObservation.get()).as("replay: serving state written").startsWith("serving=true");
-        assertThat(observation.replayObservation.get()).as("replay: active event already published").contains("ConsensusActive");
-        assertThat(observation.hookObservation.get()).as("listener: serving state written").startsWith("serving=true");
-        assertThat(observation.hookObservation.get()).as("listener: active event already published").contains("ConsensusActive");
+        assertAnnounced(observation, "state=active last=ConsensusActive");
     }
 
     @Test
@@ -75,11 +77,107 @@ class RabiaAnnounceAfterServingWriteTest {
         engine.processSyncResponse(cold(NODE_2));
         engine.processSyncResponse(cold(NODE_3));
 
-        assertThat(awaitCondition(() -> observation.hookObservation.get() != null)).as("the announce ran").isTrue();
-        assertThat(observation.replayObservation.get()).as("replay: serving state written").startsWith("serving=true");
-        assertThat(observation.replayObservation.get()).as("replay: observing event already published").contains("ConsensusObserving");
-        assertThat(observation.hookObservation.get()).as("listener: serving state written").startsWith("serving=true");
-        assertThat(observation.hookObservation.get()).as("listener: observing event already published").contains("ConsensusObserving");
+        assertAnnounced(observation, "state=observing last=ConsensusObserving");
+    }
+
+    /// `doResumeFromPause`: an activated voter that lost quorum and regained it.
+    @Test
+    void resumeFromPause_announceSeesTheServingStateAndTheActiveEventAlreadyPublished() {
+        var observation = new Observation();
+        var engine = engineWith(observation, false);
+
+        engine.processSyncResponse(cold(NODE_2));
+        assertAnnounced(observation, "state=active last=ConsensusActive");
+        engine.clusterState(ClusterStateNotification.passive());
+        assertThat(awaitCondition(engine::isPaused)).as("quorum loss pauses the activated voter").isTrue();
+        observation.reset();
+        markRestorePending(engine);
+        engine.clusterState(ClusterStateNotification.active());
+
+        assertAnnounced(observation, "state=active last=ConsensusActive");
+    }
+
+    /// `promoteObserverToActive`: an observing node that is authorized to vote is promoted without a re-sync.
+    @Test
+    void observerPromotion_announceSeesTheServingStateAndTheActiveEventAlreadyPublished() {
+        var observation = new Observation();
+        var engine = engineWith(observation, true);
+
+        engine.processSyncResponse(cold(NODE_2));
+        engine.processSyncResponse(cold(NODE_3));
+        assertAnnounced(observation, "state=observing last=ConsensusObserving");
+        observation.reset();
+        markRestorePending(engine);
+        engine.authorizeActivation();
+
+        assertAnnounced(observation, "state=active last=ConsensusActive");
+    }
+
+    /// `promoteAddedVoter`: an observer whose roster entry was added applies the next decision as a voter.
+    @Test
+    void addedVoter_announceSeesTheServingStateAndTheActiveEventAlreadyPublished() {
+        var observation = new Observation();
+        var engine = engineWith(observation, true);
+
+        engine.processSyncResponse(cold(NODE_2));
+        engine.processSyncResponse(cold(NODE_3));
+        assertAnnounced(observation, "state=observing last=ConsensusObserving");
+        observation.reset();
+        markRestorePending(engine);
+        setFlag(engine, "observerMode", false);
+        engine.processDecision(frontierDecision(engine));
+
+        assertAnnounced(observation, "state=active last=ConsensusActive");
+    }
+
+    /// `advancePhaseAsObserver`: a serving voter that a roster change turned into an observer applies a decision and
+    /// moves to `Observing`. From an already-observing node the write changes nothing, so this is the arm that can tell.
+    @Test
+    void demotedVoter_announceSeesTheObservingStateAndTheDemotedEventAlreadyPublished() {
+        var observation = new Observation();
+        var engine = engineWith(observation, false);
+
+        engine.processSyncResponse(cold(NODE_2));
+        assertAnnounced(observation, "state=active last=ConsensusActive");
+        observation.reset();
+        markRestorePending(engine);
+        setFlag(engine, "observerMode", true);
+        engine.processDecision(frontierDecision(engine));
+
+        assertAnnounced(observation, "state=observing last=ConsensusDemoted");
+    }
+
+    /// The replay and then the listener ran, and each saw `expected` at the moment it ran.
+    private static void assertAnnounced(Observation observation, String expected) {
+        assertThat(awaitCondition(() -> !observation.hooks.isEmpty())).as("the announce ran").isTrue();
+        assertThat(observation.replays).as("replay saw the serving state and its event").singleElement().asString().startsWith(expected);
+        assertThat(observation.hooks).as("listener saw the serving state and its event").singleElement().asString().startsWith(expected);
+    }
+
+    private static Decision<TestCommand> frontierDecision(RabiaEngine<TestCommand> engine) {
+        return new Decision<>(NODE_2, engine.currentPhaseForTesting(), StateValue.V0, StateMachine.Batch.<TestCommand>emptyBatch());
+    }
+
+    private static void markRestorePending(RabiaEngine<TestCommand> engine) {
+        try {
+            var field = RabiaEngine.class.getDeclaredField("restoreAnnouncePending");
+
+            field.setAccessible(true);
+            ((AtomicBoolean) field.get(engine)).set(true);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("Cannot mark the restore pending", e);
+        }
+    }
+
+    private static void setFlag(RabiaEngine<TestCommand> engine, String name, boolean value) {
+        try {
+            var field = RabiaEngine.class.getDeclaredField(name);
+
+            field.setAccessible(true);
+            field.setBoolean(engine, value);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("Cannot set " + name, e);
+        }
     }
 
     private RabiaEngine<TestCommand> engineWith(Observation observation, boolean gatedObserver) {
@@ -97,7 +195,7 @@ class RabiaAnnounceAfterServingWriteTest {
 
         engines.add(engine);
         observation.engine.set(engine);
-        engine.onStateRestored(() -> observation.hookObservation.set(observation.describe()));
+        engine.onStateRestored(() -> observation.hooks.add(observation.describe()));
         engine.clusterState(ClusterStateNotification.active());
         if (gatedObserver) {
             engine.authorizeObservation();
@@ -145,17 +243,31 @@ class RabiaAnnounceAfterServingWriteTest {
         return condition.getAsBoolean();
     }
 
-    /// What the engine looked like, and which events it had published, when the announce ran.
+    /// What the engine looked like, and which events it had published, each time the announce ran.
     private static final class Observation {
         final AtomicReference<RabiaEngine<TestCommand>> engine = new AtomicReference<>();
         final List<String> events = new CopyOnWriteArrayList<>();
-        final AtomicReference<String> replayObservation = new AtomicReference<>();
-        final AtomicReference<String> hookObservation = new AtomicReference<>();
+        final List<String> replays = new CopyOnWriteArrayList<>();
+        final List<String> hooks = new CopyOnWriteArrayList<>();
+
+        void reset() {
+            replays.clear();
+            hooks.clear();
+        }
 
         String describe() {
             var current = engine.get();
+            var state = current.isActive()
+                        ? "active"
+                        : current.isObserving()
+                          ? "observing"
+                          : current.isPaused()
+                            ? "paused"
+                            : "other";
 
-            return "serving=" + (current.isActive() || current.isObserving()) + " events=" + events;
+            return "state=" + state + " last=" + (events.isEmpty()
+                                                  ? "none"
+                                                  : events.getLast()) + " events=" + events;
         }
     }
 
@@ -168,7 +280,7 @@ class RabiaAnnounceAfterServingWriteTest {
 
         @Override
         public Unit replayNotifications() {
-            observation.replayObservation.compareAndSet(null, observation.describe());
+            observation.replays.add(observation.describe());
 
             return Unit.unit();
         }
