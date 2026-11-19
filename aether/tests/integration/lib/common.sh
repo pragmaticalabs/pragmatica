@@ -489,10 +489,10 @@ _run_with_timeout() {
     errfile=$(mktemp)
     "$@" >"$outfile" 2>"$errfile" &
     pid=$!
+    proc_track "$pid"
     while kill -0 "$pid" 2>/dev/null; do
         if [ "$waited" -ge "$secs" ]; then
-            kill -9 "$pid" 2>/dev/null || true
-            wait "$pid" 2>/dev/null || true
+            proc_reap "$pid"
             cat "$outfile"
             cat "$errfile" >&2
             rm -f "$outfile" "$errfile"
@@ -507,6 +507,7 @@ _run_with_timeout() {
     # status this function exists to return. Capture it in the condition instead.
     rc=0
     wait "$pid" || rc=$?
+    proc_untrack "$pid"
     cat "$outfile"
     cat "$errfile" >&2
     rm -f "$outfile" "$errfile"
@@ -584,19 +585,26 @@ _fork_bounded() {
     # otherwise be inherited here too, making the watchdog fire in the same instant
     # it forks regardless of $secs and killing "$@" on effectively every call.
     # `command` bypasses shell-function lookup and always reaches the real binary.
-    # Kills below target the process GROUP (`-- -"$cpid"`), not the bare pid, so the
-    # nested `command sleep` cannot outlive the group that owns it.
-    ( command sleep "$secs"; kill -TERM -- -"$cpid" 2>/dev/null || true; command sleep 0.2; kill -KILL -- -"$cpid" 2>/dev/null || true ) &
+    # Both the watched child and the watchdog are registered (proc_track) and ended by proc_reap,
+    # which walks the whole tree, so the nested `command sleep` cannot outlive its owner.
+    proc_track "$cpid"
+    ( command sleep "$secs"; proc_reap "$cpid" ) &
     local wpid=$!
+    proc_track "$wpid"
     local rc
     wait "$cpid" 2>/dev/null && rc=0 || rc=$?
+    # Under `set -m`, `wait` also returns 147 (128+SIGSTOP) while the child is merely STOPPED, and the watchdog's proc_reap
+    # freezes the tree before it ends it: keep waiting until the child is really gone, or the reap is cut off half-way.
+    while [ "$rc" -eq 147 ] && _proc_alive "$cpid"; do
+        command sleep 0.05
+        wait "$cpid" 2>/dev/null && rc=0 || rc=$?
+    done
+    proc_untrack "$cpid"
     # Reap the watchdog now rather than let it sleep out its own budget: this runs
     # once per wait_for poll, so a leaked sleep per iteration adds up over a long
-    # cloud run (see probe-runner-leaks-exhaust-process-cap in memory). Group-kill it
-    # too, for the same reason as above: the watchdog's own `command sleep`/`command
-    # sleep 0.2` is a nested child that a bare-pid kill would orphan.
-    kill -- -"$wpid" 2>/dev/null || true
-    wait "$wpid" 2>/dev/null || true
+    # cloud run (see probe-runner-leaks-exhaust-process-cap in memory). The registry
+    # reaper walks its tree, so the watchdog's own `command sleep` is ended with it.
+    proc_reap "$wpid"
     [ "$had_monitor" -eq 0 ] && set +m
     return "$rc"
 }
