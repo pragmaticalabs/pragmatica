@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #834: `SchemaVersionValue` gained `reachedBy`, and a record is a positional concatenation, so the new shape cannot read the old
 /// bytes. A snapshot decodes as one unit, so one old-shape row under the tag that now meant the new shape would fail the whole
-/// restore. The change is therefore ADDITIVE: the new shape has its own tag (2980), and tag 1638 keeps decoding the old shape, as the
+/// restore. The change is therefore ADDITIVE: the new shape has its own tag (2984), and tag 1638 keeps decoding the old shape, as the
 /// current type with `reachedBy = MIGRATED` (absent = the pre-#834 behaviour: no republish guard, since nothing recorded an undo or
 /// baseline). Encoding always writes the new tag.
 class SchemaVersionValueWireCompatibilityTest {
@@ -43,11 +43,11 @@ class SchemaVersionValueWireCompatibilityTest {
                                                                                            MIGRATED_ROW.owningBlueprint(),
                                                                                            MIGRATED_ROW.attemptCount(),
                                                                                            MIGRATED_ROW.updatedAt());
-    /// Tag 1638 (VLQ e60c) and tag 2980 (VLQ a417), then, after the eight shared components, the new shape's `reachedBy`: the enum's
-    /// tag 2981 (VLQ a517) and its ordinal.
+    /// Tag 1638 (VLQ e60c) and tag 2984 (VLQ a817), then, after the eight shared components, the new shape's `reachedBy`: the enum's
+    /// tag 2985 (VLQ a917) and its ordinal.
     private static final String OLD_TAG = "e60c";
-    private static final String NEW_TAG = "a417";
-    private static final String REACH_TAG = "a517";
+    private static final String NEW_TAG = "a817";
+    private static final String REACH_TAG = "a917";
 
     private static String hex(Object value) {
         return HexFormat.of().formatHex(CODEC.encode(value));
@@ -64,8 +64,8 @@ class SchemaVersionValueWireCompatibilityTest {
     @Test
     void theTagsAreAssigned_theOldTagKeepsTheOldShape_theCurrentShapeTakesANewOne() {
         assertThat(LegacySchemaVersionValue.TAG).isEqualTo(1638);
-        assertThat(AetherValue_SchemaVersionValueCodec.TAG).isEqualTo(2980);
-        assertThat(AetherValue_SchemaReachCodec.TAG).isEqualTo(2981);
+        assertThat(AetherValue_SchemaVersionValueCodec.TAG).isEqualTo(2984);
+        assertThat(AetherValue_SchemaReachCodec.TAG).isEqualTo(2985);
     }
 
     @Test

@@ -21,7 +21,7 @@ import io.netty.buffer.ByteBuf;
 ///
 /// Records are encoded as a positional concatenation with no field count, so a reader of the new shape cannot read the old
 /// bytes, and a snapshot decodes as one unit: ONE old-shape row would fail the whole restore and leave the node syncing. The
-/// new shape therefore has its own tag (2980), and tag 1638 keeps decoding the old one, as the current type with
+/// new shape therefore has its own tag (2984), and tag 1638 keeps decoding the old one, as the current type with
 /// `reachedBy = MIGRATED` (the pre-#834 behaviour of a row: nothing guards a republish over it, because nothing recorded
 /// that an operator undid or baselined it). Encoding never uses this tag for a live value; this record exists so the old
 /// bytes can be named, pinned in the wire baseline and produced by a test.
