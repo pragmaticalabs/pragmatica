@@ -16,8 +16,8 @@
 package org.pragmatica.consensus.rabia;
 
 import java.util.HashMap;
+import java.util.stream.Stream;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.NodeId;
@@ -28,9 +28,12 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.serialization.SystemTags;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.consensus.StateMachine.Batch.emptyBatch;
 import static org.pragmatica.serialization.FrameworkCodecs.frameworkCodecs;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #2625 wire layer: `Propose`, `VoteRound1` and `VoteRound2` carry the sender's process [Incarnation] under flag-day
 /// tags 2980..2982 (old 31, 33 and 34 stay pinned under retired names, so they are never reused), `Incarnation` has 2983,
@@ -40,7 +43,11 @@ class RabiaBallotIncarnationWireTest {
     private static final NodeId NODE = NodeId.nodeId("incarnation-1").unwrap();
     private static final Incarnation INCARNATION = Incarnation.incarnation(0x5EED_CAFE_F00DL);
     private static final Phase PHASE = Phase.phase(41);
-    private static final SliceCodec CODEC = SliceCodec.sliceCodec(frameworkCodecs(), ConsensusCodecs.CODECS);
+
+    private static final SliceCodec CODEC = SliceCodec.sliceCodec(frameworkCodecs(),
+                                                                  Stream.concat(ConsensusCodecs.CODECS.stream(),
+                                                                                RabiaCodecs.CODECS.stream())
+                                                                        .toList());
 
     @Test
     void ballotsAndIncarnation_haveTheirFlagDayTags_andTheOldTagsStayRetired() {
@@ -57,9 +64,7 @@ class RabiaBallotIncarnationWireTest {
     void ballotsAndIncarnation_areRegisteredInTheConsensusCodecUnderTheirPins() {
         var tagsByName = new HashMap<String, Integer>();
 
-        CODEC.registeredTypes()
-             .forEach((type, codec) -> tagsByName.put(type.getCanonicalName(), codec.tag()));
-
+        CODEC.registeredTypes().forEach((type, codec) -> tagsByName.put(type.getCanonicalName(), codec.tag()));
         assertThat(tagsByName.get(PREFIX + "Propose")).isEqualTo(2980);
         assertThat(tagsByName.get(PREFIX + "VoteRound1")).isEqualTo(2981);
         assertThat(tagsByName.get(PREFIX + "VoteRound2")).isEqualTo(2982);
