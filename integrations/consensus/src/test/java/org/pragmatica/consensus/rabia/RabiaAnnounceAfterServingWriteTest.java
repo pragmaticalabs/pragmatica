@@ -113,6 +113,22 @@ class RabiaAnnounceAfterServingWriteTest {
         assertAnnounced(observation, "state=active last=ConsensusActive");
     }
 
+    /// `authorizeActivation`: authorizing a declared observer clears `observerMode`, so the promoted node is a voter
+    /// afterwards. No pending restore is marked and no pause is queued; the announce ordering is not involved.
+    @Test
+    void observerPromotion_clearsObserverMode() {
+        var observation = new Observation();
+        var engine = engineWith(observation, true);
+
+        engine.processSyncResponse(cold(NODE_2));
+        engine.processSyncResponse(cold(NODE_3));
+        assertAnnounced(observation, "state=observing last=ConsensusObserving");
+        assertThat(flag(engine, "observerMode")).as("a gated observer starts in observer mode").isTrue();
+        engine.authorizeActivation();
+
+        assertThat(flag(engine, "observerMode")).as("authorization promotes the observer to a voter").isFalse();
+    }
+
     /// `promoteAddedVoter`: an observer whose roster entry was added applies the next decision as a voter.
     @Test
     void addedVoter_announceSeesTheServingStateAndTheActiveEventAlreadyPublished() {
@@ -166,6 +182,17 @@ class RabiaAnnounceAfterServingWriteTest {
             ((AtomicBoolean) field.get(engine)).set(true);
         } catch (ReflectiveOperationException e) {
             throw new AssertionError("Cannot mark the restore pending", e);
+        }
+    }
+
+    private static boolean flag(RabiaEngine<TestCommand> engine, String name) {
+        try {
+            var field = RabiaEngine.class.getDeclaredField(name);
+
+            field.setAccessible(true);
+            return field.getBoolean(engine);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("Cannot read " + name, e);
         }
     }
 
