@@ -160,6 +160,7 @@ public final class DHTTopologyListener {
         if (ring.nodes().contains(departingNodeId)) {
             pruned.add(departingNodeId);
         }
+
         ring.removeNode(departingNodeId);
     }
 
@@ -179,11 +180,11 @@ public final class DHTTopologyListener {
     @Contract
     public void onNodeRecovered(NodeId recoveredNodeId) {
         departing.remove(recoveredNodeId);
-
         if (pruned.remove(recoveredNodeId)) {
             restoreToRing(recoveredNodeId);
         } else {
-            log.info("DHT: Node {} recovered from DEPARTING, not pruned from this ring, ring unchanged", recoveredNodeId.id());
+            log.info("DHT: Node {} recovered from DEPARTING, not pruned from this ring, ring unchanged",
+                     recoveredNodeId.id());
         }
     }
 
