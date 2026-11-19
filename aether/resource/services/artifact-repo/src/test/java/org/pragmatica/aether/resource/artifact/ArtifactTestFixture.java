@@ -6,6 +6,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.storage.DhtStorageTier;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -71,6 +72,7 @@ final class ArtifactTestFixture {
     }
 
     /// Remove every block key from the given replicas.
+    @Contract
     void dropBlocks(int... replicaIndexes) {
         for (var i : replicaIndexes) {
             dht.replicas.get(i).keySet().removeIf(k -> k.startsWith(BLOCKS));
@@ -78,6 +80,7 @@ final class ArtifactTestFixture {
     }
 
     /// Remove every key ending in `suffix` from every replica.
+    @Contract
     void dropKeys(String suffix) {
         dht.replicas.forEach(r -> r.keySet().removeIf(k -> k.endsWith(suffix)));
     }
@@ -90,6 +93,7 @@ final class ArtifactTestFixture {
         return dht.union().keySet().stream().anyMatch(k -> k.endsWith(suffix));
     }
 
+    @Contract
     void advanceDays(int days) {
         now.addAndGet(days * DAY);
     }
@@ -108,6 +112,7 @@ final class ArtifactTestFixture {
         return out;
     }
 
+    @Contract
     void deployOk(ArtifactStore store, Artifact artifact, byte[] bytes) {
         var result = store.deploy(artifact, bytes).await();
 

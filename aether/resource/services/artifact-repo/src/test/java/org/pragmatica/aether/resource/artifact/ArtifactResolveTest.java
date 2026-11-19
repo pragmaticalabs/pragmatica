@@ -75,7 +75,7 @@ class ArtifactResolveTest {
         assertThat(resolved.isFailure())
             .as("T7t TRIPWIRE (rc6 behaviour: the waterfall read is bounded only by the leg, so a held read times out). PR-4e flips it: delete this test, enable T7t_real. Got: " + resolved)
             .isTrue();
-        assertThat(failureName(resolved)).as("T7t TRIPWIRE failure type").isNotEqualTo("CorruptedArtifact");
+        assertThat(failureName(resolved)).as("T7t TRIPWIRE failure cause must be the Timeout. PR-4e flips it. Got: " + resolved).isEqualTo("Timeout");
     }
 
     @Disabled("PR-4e (locate bounds the read): enable when resolve returns inside the leg")

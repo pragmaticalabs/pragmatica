@@ -35,11 +35,11 @@ class ArtifactIdentityTest {
         var soft = new SoftAssertions();
 
         soft.assertThat(failureName(af.store2.resolve(af.v1).await()))
-            .as("T5 TRIPWIRE resolve")
+            .as("T5 TRIPWIRE resolve (rc6 behaviour: reads the meta key). PR-3b flips it: delete this test, enable T5_real")
             .isEqualTo("NotFound");
-        soft.assertThat(af.store2.exists(af.v1).await().unwrap()).as("T5 TRIPWIRE exists").isFalse();
-        soft.assertThat(af.store2.metadata(af.v1).await().unwrap().isPresent()).as("T5 TRIPWIRE metadata present").isFalse();
-        soft.assertThat(failureName(af.store2.archive(af.v1).await())).as("T5 TRIPWIRE archive").isEqualTo("VersionNotFound");
+        soft.assertThat(af.store2.exists(af.v1).await().unwrap()).as("T5 TRIPWIRE exists (PR-3b flips it)").isFalse();
+        soft.assertThat(af.store2.metadata(af.v1).await().unwrap().isPresent()).as("T5 TRIPWIRE metadata present (PR-3b flips it)").isFalse();
+        soft.assertThat(failureName(af.store2.archive(af.v1).await())).as("T5 TRIPWIRE archive (PR-3b flips it)").isEqualTo("VersionNotFound");
         soft.assertAll();
     }
 
