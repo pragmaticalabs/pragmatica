@@ -623,6 +623,119 @@ class PeerObservationOrderTest {
         assertThat(node.ctx.currentTopology()).containsExactly(N1, N2);
     }
 
+    /// #3047: the re-assertion disarms BEFORE it reads the transport, so a removal that lands during the read arms the
+    /// next re-assertion: the read hook removes node-1, and a second read follows.
+    @Test
+    void reassertion_removalDuringTheRead_armsTheNextReassertion() throws InterruptedException {
+        node = new Node(LeaderElectionContext::dormant);
+        var reads = new AtomicInteger();
+        var sequence = new AtomicLong(6L);
+        var midReadRemovalApplied = new AtomicBoolean();
+        node.ctx.installTransportView(() -> removingOnFirstRead(reads, sequence, midReadRemovalApplied),
+                                      TimeSpan.timeSpan(150).millis());
+        node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, ALL, 6L));
+
+        node.ctx.removeFromView(N3);
+        awaitReads(reads, 2);
+        Thread.sleep(400);
+
+        assertThat(midReadRemovalApplied.get()).as("the removal inside the read was applied").isTrue();
+        assertThat(reads.get()).as("the removal during the read armed exactly one more read").isEqualTo(2);
+        assertThat(node.ctx.currentTopology()).containsExactlyElementsOf(ALL);
+    }
+
+    /// #3047: a removal that does not apply arms nothing. Self is never removed, so no transport read follows.
+    @Test
+    void reassertion_removalOfSelf_armsNothing() throws InterruptedException {
+        node = new Node(LeaderElectionContext::dormant);
+        var reads = new AtomicInteger();
+        var sequence = new AtomicLong(6L);
+        node.ctx.installTransportView(() -> countedView(reads, ALL, sequence), TimeSpan.timeSpan(100).millis());
+        node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, ALL, 6L));
+
+        assertThat(node.ctx.removeFromView(N2)).as("node-2 is self").isFalse();
+        Thread.sleep(400);
+
+        assertThat(reads.get()).as("no read after a removal that did not apply").isZero();
+    }
+
+    /// #3047: a removal that does not apply arms nothing. The last node is never removed, so no transport read follows.
+    @Test
+    void reassertion_removalOfTheLastNode_armsNothing() throws InterruptedException {
+        node = new Node(LeaderElectionContext::dormant);
+        var reads = new AtomicInteger();
+        var sequence = new AtomicLong(6L);
+        node.ctx.installTransportView(() -> countedView(reads, ALL, sequence), TimeSpan.timeSpan(100).millis());
+        node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, List.of(N1), 6L));
+
+        assertThat(node.ctx.removeFromView(N1)).as("removing the last node is not applied").isFalse();
+        Thread.sleep(400);
+
+        assertThat(reads.get()).as("no read after a removal that did not apply").isZero();
+    }
+
+    /// #3047: each re-assertion disarms, so a removal after it arms the next one: three sequential removals are each
+    /// restored. Asserted on the view alone, independent of the read count the burst tests use.
+    @Test
+    void reassertion_sequentialRemovals_eachIsRestored() throws InterruptedException {
+        node = new Node(LeaderElectionContext::dormant);
+        var sequence = new AtomicLong(6L);
+        node.ctx.installTransportView(() -> Option.some(TransportView.transportView(ALL, sequence.incrementAndGet())),
+                                      TimeSpan.timeSpan(150).millis());
+        node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, ALL, 6L));
+
+        for (var round = 0; round < 3; round++) {
+            assertThat(node.ctx.removeFromView(N3)).as("round " + round + " removes node-3").isTrue();
+            awaitTopologyContains(N3);
+            assertThat(node.ctx.currentTopology()).as("round " + round + " restored").containsExactlyElementsOf(ALL);
+        }
+    }
+
+    /// #3047: removals inside one period share one re-assertion, through the context directly (no FSM dispatch): five
+    /// applied removals cost one transport read.
+    @Test
+    void reassertion_directRemovalsInOnePeriod_shareOneRead() throws InterruptedException {
+        node = new Node(LeaderElectionContext::dormant);
+        var reads = new AtomicInteger();
+        var sequence = new AtomicLong(6L);
+        node.ctx.installTransportView(() -> countedView(reads, ALL, sequence), TimeSpan.timeSpan(400).millis());
+        node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, ALL, 6L));
+
+        for (var i = 0; i < 5; i++) {
+            node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, ALL, 7L + i));
+            assertThat(node.ctx.removeFromView(N3)).as("removal " + i + " applies").isTrue();
+        }
+        Thread.sleep(1500);
+
+        assertThat(reads.get()).as("one read for the five removals").isEqualTo(1);
+    }
+
+    /// #3047: the manager reports the installed transport view (the wiring pin seam the node assembly is checked by).
+    @Test
+    void hasTransportView_isReportedOnlyAfterTheManagerInstallsIt() {
+        node = new Node(LeaderElectionContext::dormant);
+
+        assertThat(node.manager.hasTransportView()).as("nothing installed yet").isFalse();
+        node.manager.installTransportView(Option::none);
+        assertThat(node.manager.hasTransportView()).isTrue();
+    }
+
+    private Option<TransportView> removingOnFirstRead(AtomicInteger reads, AtomicLong sequence, AtomicBoolean applied) {
+        if (reads.incrementAndGet() == 1) {
+            applied.set(node.ctx.removeFromView(N1));
+        }
+
+        return Option.some(TransportView.transportView(ALL, sequence.incrementAndGet()));
+    }
+
+    private void awaitTopologyContains(NodeId expected) throws InterruptedException {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+        while (!node.ctx.currentTopology().contains(expected) && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+    }
+
     private static Option<TransportView> countedView(AtomicInteger reads, List<NodeId> view, AtomicLong sequence) {
         reads.incrementAndGet();
         return Option.some(TransportView.transportView(view, sequence.incrementAndGet()));

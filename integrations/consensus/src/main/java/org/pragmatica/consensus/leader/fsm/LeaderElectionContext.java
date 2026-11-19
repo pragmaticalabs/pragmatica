@@ -60,8 +60,9 @@ public final class LeaderElectionContext {
     public static final TimeSpan DEFAULT_MIN_PROPOSAL_TIMEOUT = TimeSpan.timeSpan(10).seconds();
     public static final int DEFAULT_STUCK_ELECTION_THRESHOLD = 10;
     /// Bound on how long a view-free removal keeps a node out of the view while the transport still lists it (#3047).
-    /// A chosen value, not a measurement: the transport is re-read this long after the removal, so SWIM's verdict
-    /// stands meanwhile and a node SWIM wrongly removed is back within this bound.
+    /// A chosen value, not a measurement: the transport is re-read at most this long after any removal, so a node SWIM
+    /// wrongly removed is back within this bound. Only the removal that arms the re-read stands for the whole period; a
+    /// removal inside an armed window shares that re-read and stands for less, down to ~0.
     public static final TimeSpan DEFAULT_REASSERT_PERIOD = TimeSpan.timeSpan(5).seconds();
     /// Grace window after [`LeaderElectionState.QuorumWaiting`] before the FSM gives up on
     /// observing a peer-committed leader and falls through to [`LeaderElectionState.Electing`] /
@@ -703,6 +704,12 @@ public final class LeaderElectionContext {
     public void installTransportView(Supplier<Option<TransportView>> view, TimeSpan period) {
         transportView.set(Option.some(view));
         reassertPeriod.set(period);
+    }
+
+    /// True once [`#installTransportView`] ran: a removal then arms a re-assertion.
+    public boolean hasTransportView() {
+        return transportView.get()
+                            .isPresent();
     }
 
     /// Wires the signal that this node's KV state is still catching up with the committed frontier
