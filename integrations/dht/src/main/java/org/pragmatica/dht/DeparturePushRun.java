@@ -575,13 +575,17 @@ final class DeparturePushRun {
     /// (`halvePage`, `splitPage`) and the count of live chains (`liveInChain`) ask only this; a late ack of a cancelled page still
     /// counts (`inTenure` does not ask it).
     private boolean live(Page page) {
-        return registry.containsKey(page.correlationId()) && !page.cancelled.get() && current(page);
+        return registry.containsKey(page.correlationId())
+               && !page.cancelled.get()
+               && current(page);
     }
 
     /// Under `transitions`: a data page of a running chain, not yet run to its end, that is [#live(Page)]. The re-plan keeps or
     /// cancels exactly these, and no exit starts while one exists.
     private boolean liveInChain(Page page) {
-        return ! page.isProbe() && !page.finished.get() && live(page);
+        return ! page.isProbe()
+               && !page.finished.get()
+               && live(page);
     }
 
     /// Under `transitions`: a live page stays when one of its pairs is still desired (those pairs need no new page); otherwise it is
@@ -730,7 +734,8 @@ final class DeparturePushRun {
     private Promise<Unit> runChain(List<Page> chain, int index) {
         return index >= chain.size()
                ? Promise.unitPromise()
-               : runPage(chain.get(index)).fold(result -> finished(chain.get(index), result))
+               : runPage(chain.get(index)).fold(result -> finished(chain.get(index),
+                                                                   result))
                         .flatMap(_ -> runChain(chain, index + 1));
     }
 
@@ -901,6 +906,7 @@ final class DeparturePushRun {
         var open = live(page)
                    ? page.keys.stream().filter(key -> !safe(key, page.target, false)).toList()
                    : List.<DepartureKey> of();
+
         page.cancelled.set(true);
         var middle = open.size() / 2;
 
@@ -946,6 +952,7 @@ final class DeparturePushRun {
                                                           true))
                                  .toList()
                       : List.<Page> of();
+
         page.cancelled.set(true);
 
         return singles;
@@ -964,7 +971,7 @@ final class DeparturePushRun {
             onHalt();
         }
 
-        return !underTransitions(() -> live(page)) || isClosed() || System.nanoTime() >= until;
+        return ! underTransitions(() -> live(page)) || isClosed() || System.nanoTime() >= until;
     }
 
     /// I2: a data page every key of which is already safe at its target is not sent (nor resent).
@@ -1072,7 +1079,7 @@ final class DeparturePushRun {
     /// Under `transitions`.
     private boolean claimExit() {
         var ready = !closed && !closing && !exitInFlight && pages.stream().noneMatch(this::liveInChain) && owed(false).stream()
-                                                                                   .allMatch(key -> key.absent);
+                                                                                                               .allMatch(key -> key.absent);
 
         exitInFlight = exitInFlight || ready;
 
@@ -1161,8 +1168,9 @@ final class DeparturePushRun {
     private Promise<AttemptResult> probeOne(Page page, long until) {
         return probeStopped(page, until)
                ? Promise.success(AttemptResult.TIMED_OUT)
-               : dispatch(page, List.of()).flatMap(dispatched -> probeAnswer(dispatched, until))
-                                          .flatMap(result -> resendIfSilent(page, result, until));
+               : dispatch(page,
+                          List.of()).flatMap(dispatched -> probeAnswer(dispatched, until))
+                         .flatMap(result -> resendIfSilent(page, result, until));
     }
 
     /// A refusal to take the probe proves nothing: it is waited out like silence.
