@@ -745,7 +745,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Tools the suites use
-        run: bash --version | head -1 && awk --version 2>&1 | head -1 && sed --version | head -1 && command -v mktemp tee perl pgrep mkfifo
+        run: bash --version | head -1 && awk --version 2>&1 | head -1 && sed --version | head -1 && command -v mktemp tee perl pgrep mkfifo unzip javac jar javap
 
       # #2029: run-tests.sh runs lint-tests.sh under `set -euo pipefail`, so a finding that is not in lint-baseline.txt aborts
       # every integration run before anything is provisioned. CI never ran it, so the PR that introduced the finding merged green.
