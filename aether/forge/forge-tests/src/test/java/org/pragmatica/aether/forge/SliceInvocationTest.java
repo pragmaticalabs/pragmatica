@@ -2,22 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
-
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
-import org.awaitility.core.ConditionTimeoutException;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.lang.io.TimeSpan;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
@@ -26,11 +11,27 @@ import java.util.concurrent.Callable;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.aether.ember.EmberCluster;
+
+import org.awaitility.core.ConditionTimeoutException;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
 
 /// Tests for slice method invocation.
 ///
@@ -84,12 +85,12 @@ class SliceInvocationTest {
         cluster.start()
                .await(WAIT_BOUND)
                .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message()
-                                            + "\nCluster state at expiry:\n" + clusterSnapshot());
-               });
-
+                              throw new AssertionError("Cluster start failed: " + cause.message()
+                                                      + "\nCluster state at expiry:\n" + clusterSnapshot());
+                          });
         awaitFormation("cluster leader elected (3 nodes, ports " + BASE_PORT + "+)",
-                       () -> cluster.currentLeader().isPresent());
+                       () -> cluster.currentLeader()
+                                    .isPresent());
         awaitFormation("all 3 nodes report healthy after leader election", this::allNodesHealthy);
     }
 
@@ -117,7 +118,6 @@ class SliceInvocationTest {
 
     @Nested
     class RouteHandling {
-
         @Test
         void invokeNonExistentRoute_returns404() {
             var response = invokeGet("/api/nonexistent");
@@ -142,18 +142,17 @@ class SliceInvocationTest {
         @Test
         void afterSliceDeployment_routesAreAvailable() {
             var deployResponse = deploy(TEST_ARTIFACT, 3);
+
             assertDeploymentSucceeded(deployResponse);
-
             awaitEchoSliceDeployed();
-
             var routes = getRoutes();
+
             assertThat(routes).doesNotContain("\"error\"");
         }
     }
 
     @Nested
     class ErrorHandling {
-
         @Test
         void invokeWithMalformedBody_returnsError() {
             var response = invokePost("/api/test", "not valid json");
@@ -172,30 +171,28 @@ class SliceInvocationTest {
         @Test
         void invokeAfterSliceUndeploy_returnsNotFound() {
             var deployResponse = deploy(TEST_ARTIFACT, 3);
+
             assertDeploymentSucceeded(deployResponse);
-
             awaitEchoSliceDeployed();
-
             undeploy(TEST_ARTIFACT);
             awaitEchoSliceUndeployed();
-
             var response = invokeGet("/api/example");
+
             assertThat(response).containsAnyOf("error", "404", "not found", "Not Found");
         }
     }
 
     @Nested
     class RequestDistribution {
-
         @Test
         void multipleNodes_allCanHandleRequests() {
             var deployResponse = deploy(TEST_ARTIFACT, 3);
+
             assertDeploymentSucceeded(deployResponse);
-
             awaitEchoSliceDeployed();
-
             for (var node : cluster.status().nodes()) {
                 var health = getHealth(node.mgmtPort());
+
                 assertThat(health).contains("\"status\"");
                 assertThat(health).doesNotContain("\"error\"");
             }
@@ -204,7 +201,6 @@ class SliceInvocationTest {
         @Test
         void requestToAnyNode_succeeds() {
             var nodes = cluster.status().nodes();
-
             var node1Response = getStatus(nodes.get(0).mgmtPort());
             var node2Response = getStatus(nodes.get(1).mgmtPort());
             var node3Response = getStatus(nodes.get(2).mgmtPort());
@@ -224,16 +220,11 @@ class SliceInvocationTest {
     // no run above 37s wall, so 240s is ~30x the quiet-box time: not a margin problem, and raising it
     // would only make a stalled formation fail slower. The ceiling stays; the failure now says what
     // it waited for and what every node answered at expiry, which is what the next occurrence needs.
-
     private void awaitFormation(String alias, Callable<Boolean> condition) {
         try {
-            await().alias(alias)
-                   .atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(condition);
+            await().alias(alias).atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(condition);
         } catch (ConditionTimeoutException timeout) {
-            throw new AssertionError(timeout.getMessage() + "\nCluster state at expiry:\n" + clusterSnapshot(),
-                                     timeout);
+            throw new AssertionError(timeout.getMessage() + "\nCluster state at expiry:\n" + clusterSnapshot(), timeout);
         }
     }
 
@@ -251,9 +242,11 @@ class SliceInvocationTest {
     // live entry replicates to the queried node.
     private void failFastOnDeploymentFailure() {
         var status = httpRequest("GET", leaderOrAnyMgmtPort(), "/api/v1/blueprints/status/" + BLUEPRINT_ID, null);
+
         if (isTerminalFailure(status) && outcomeTimestampMs(status) >= applyStartedAtMs) {
             throw new AssertionError("Blueprint " + BLUEPRINT_ID + " failed after apply: " + status);
         }
+
         if (sliceHasFailed(TEST_ARTIFACT)) {
             throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
         }
@@ -280,9 +273,10 @@ class SliceInvocationTest {
 
         if (matcher.find()) {
             throw new AssertionError("Blueprint status carries more than one timestampMs, so the outcome's own "
-                                     + "timestamp is no longer identifiable — this fail-fast needs a precise "
-                                     + "reader before it can be trusted again. Body: " + status);
+                                    + "timestamp is no longer identifiable — this fail-fast needs a precise "
+                                    + "reader before it can be trusted again. Body: " + status);
         }
+
         return first;
     }
 
@@ -304,20 +298,22 @@ class SliceInvocationTest {
     private void awaitSlices(String alias, Predicate<String> condition, Runnable extraFailFast) {
         try {
             await().alias(alias)
-                   .atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .failFast(() -> {
-                       var slices = getSlices();
-                       if (slices.contains("\"error\"")) {
-                           throw new AssertionError("Slice query failed: " + slices);
-                       }
-                       extraFailFast.run();
-                   })
-                   .until(() -> condition.test(getSlices()));
+                 .atMost(WAIT_TIMEOUT)
+                 .pollInterval(POLL_INTERVAL)
+                 .failFast(() -> {
+                               var slices = getSlices();
+
+                               if (slices.contains("\"error\"")) {
+                                   throw new AssertionError("Slice query failed: " + slices);
+                               }
+
+                               extraFailFast.run();
+                           })
+                 .until(() -> condition.test(getSlices()));
         } catch (ConditionTimeoutException timeout) {
             throw new AssertionError(timeout.getMessage()
-                                     + "\nLast /api/v1/slices/status: " + getSlices()
-                                     + "\nCluster state at expiry:\n" + clusterSnapshot(),
+                                    + "\nLast /api/v1/slices/status: " + getSlices()
+                                    + "\nCluster state at expiry:\n" + clusterSnapshot(),
                                      timeout);
         }
     }
@@ -327,18 +323,21 @@ class SliceInvocationTest {
     }
 
     // HTTP helper methods
-
     /// The port every management call in this class goes to. #727 review S2: the deploy fail-fast used
     /// to query [#anyMgmtPort] — always node 1, a follower — while the apply and the delete it must
     /// observe went to the leader. The direction was safe (a lagging follower yields a MISSED fail-fast,
     /// never a false red), but it blunted the fail-fast under exactly the load it targets, where
     /// replication lags. One port for all three now.
     private int leaderOrAnyMgmtPort() {
-        return cluster.getLeaderManagementPort().or(anyMgmtPort());
+        return cluster.getLeaderManagementPort()
+                      .or(anyMgmtPort());
     }
 
     private int anyMgmtPort() {
-        return cluster.status().nodes().getFirst().mgmtPort();
+        return cluster.status()
+                      .nodes()
+                      .getFirst()
+                      .mgmtPort();
     }
 
     private String invokeGet(String path) {
@@ -383,16 +382,19 @@ class SliceInvocationTest {
         // Sound because Forge runs every node in this JVM on this host; it is NOT a portable guard,
         // and the comparison would need a cluster-supplied timestamp against a remote node.
         applyStartedAtMs = System.currentTimeMillis();
+
         return postBlueprintWithRetry(leaderPort, blueprint);
     }
 
     private String postBlueprintWithRetry(int port, String body) {
         String lastResponse = null;
+
         for (int attempt = 1; attempt <= 3; attempt++) {
             lastResponse = httpRequestBlueprint(port, body);
             if (!lastResponse.contains("\"error\"")) {
                 return lastResponse;
             }
+
             if (attempt < 3) {
                 try {
                     Thread.sleep(2000);
@@ -402,6 +404,7 @@ class SliceInvocationTest {
                 }
             }
         }
+
         return lastResponse;
     }
 
@@ -412,6 +415,7 @@ class SliceInvocationTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
+
         return http.sendString(request)
                    .await(HTTP_BOUND)
                    .map(HttpResult::body)
@@ -419,18 +423,19 @@ class SliceInvocationTest {
     }
 
     private void assertDeploymentSucceeded(String response) {
-        assertThat(response)
-            .describedAs("Deployment response")
-            .doesNotContain("\"error\"")
-            .contains("\"status\":\"applied\"");
+        assertThat(response).describedAs("Deployment response")
+                  .doesNotContain("\"error\"")
+                  .contains("\"status\":\"applied\"");
     }
 
     private boolean sliceHasFailed(String artifact) {
         try {
             var slicesStatus = cluster.slicesStatus();
+
             return slicesStatus.stream()
-                               .anyMatch(s -> s.artifact().equals(artifact) &&
-                                              s.state().equals("FAILED"));
+                               .anyMatch(s -> s.artifact()
+                                               .equals(artifact) && s.state()
+                                                                     .equals("FAILED"));
         } catch (Exception e) {
             return false;
         }
@@ -446,6 +451,7 @@ class SliceInvocationTest {
                                  .DELETE()
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
+
         return http.sendString(request)
                    .await(HTTP_BOUND)
                    .map(HttpResult::body)
@@ -458,8 +464,7 @@ class SliceInvocationTest {
                                  .timeout(Duration.ofSeconds(10));
 
         if (body != null) {
-            builder.header("Content-Type", "application/json")
-                   .method(method, HttpRequest.BodyPublishers.ofString(body));
+            builder.header("Content-Type", "application/json").method(method, HttpRequest.BodyPublishers.ofString(body));
         } else {
             builder.method(method, HttpRequest.BodyPublishers.noBody());
         }
@@ -472,15 +477,17 @@ class SliceInvocationTest {
 
     private boolean allNodesHealthy() {
         var status = cluster.status();
-        return status.nodes().stream()
+
+        return status.nodes()
+                     .stream()
                      .allMatch(node -> checkNodeHealth(node.mgmtPort()));
     }
 
     private boolean checkNodeHealth(int port) {
         return http.sendString(ClusterSnapshot.healthRequest(port))
                    .await(HTTP_BOUND)
-                   .map(r -> r.statusCode() == 200 && r.body().contains("\"quorum\":true"))
+                   .map(r -> r.statusCode() == 200 && r.body()
+                                                       .contains("\"quorum\":true"))
                    .or(false);
     }
-
 }

@@ -38,6 +38,7 @@ import org.junit.jupiter.api.parallel.ExecutionMode;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
+
 /// #1652 live path: a community formed by REAL worker admissions (`addWorkerNode`, not a synthetic
 /// `NodeJoined` — the #367 lesson) is observable through `GET /cluster/communities` and the cluster
 /// event log, and so is its degradation when a member is killed.
@@ -59,6 +60,7 @@ import static org.awaitility.Awaitility.await;
 class CommunityObservabilityForgeTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(180).seconds();
     private static final int WORKERS = 3;
+
     private final EmberCluster cluster = EmberCluster.emberCluster(3, 12800, 12950, 13300, "community-obs");
     private final HttpClient http = HttpClient.newHttpClient();
 
@@ -74,59 +76,65 @@ class CommunityObservabilityForgeTest {
         // it). One spare slot is what lets the replacement worker below join; drop it when #2044 is fixed.
         assertThat(cluster.withAdditionalNodeSlots(1).isSuccess()).isTrue();
         LifecycleAwait.settled("start community-obs cluster", cluster, cluster.start());
-        await().atMost(BUDGET.duration())
-               .until(() -> cluster.currentLeader().isPresent());
+        await().atMost(BUDGET.duration()).until(() -> cluster.currentLeader()
+                                                             .isPresent());
         var workers = admitWorkers();
         var community = communityOf(workers.getFirst());
 
         await().atMost(BUDGET.duration())
-               .until(() -> field(communityJson(community), "state").equals(Option.some("ACTIVE"))
-                            && field(communityJson(community), "liveMembers").equals(Option.some(String.valueOf(WORKERS))));
-        await().atMost(BUDGET.duration())
-               .untilAsserted(() -> assertFormationEvents(community, workers));
-
+             .until(() -> field(communityJson(community),
+                                "state").equals(Option.some("ACTIVE")) && field(communityJson(community),
+                                                                                "liveMembers").equals(Option.some(String.valueOf(WORKERS))));
+        await().atMost(BUDGET.duration()).untilAsserted(() -> assertFormationEvents(community, workers));
         var victim = nonGovernor(community, workers);
 
-        LifecycleAwait.nodeSettled("kill worker " + victim.id(), cluster, cluster.killNode(victim.id(), false));
+        LifecycleAwait.nodeSettled("kill worker " + victim.id(),
+                                   cluster,
+                                   cluster.killNode(victim.id(), false));
         await().atMost(BUDGET.duration())
-               .until(() -> field(communityJson(community), "state").equals(Option.some("DEGRADED")));
+             .until(() -> field(communityJson(community),
+                                "state").equals(Option.some("DEGRADED")));
         // An absent liveMembers reads as WORKERS, so it fails the bound rather than passing vacuously.
-        assertThat(field(communityJson(community), "liveMembers").map(Integer::parseInt)
-                                                                 .or(WORKERS)).isLessThan(WORKERS);
+        assertThat(field(communityJson(community), "liveMembers").map(Integer::parseInt).or(WORKERS)).isLessThan(WORKERS);
         await().atMost(BUDGET.duration())
-               .untilAsserted(() -> assertThat(stateChanges(community)).anySatisfy(CommunityObservabilityForgeTest::assertDegradedEdge));
+             .untilAsserted(() -> assertThat(stateChanges(community)).anySatisfy(CommunityObservabilityForgeTest::assertDegradedEdge));
         // #1717: the dead worker leaves every committed surface, and the leave is announced.
         await().atMost(BUDGET.duration())
-               .untilAsserted(() -> assertThat(communityEvents(community)).filteredOn(CommunityMemberLeft.class::isInstance)
-                                                                         .extracting(event -> event.details().get("nodeId"))
-                                                                         .containsExactly(victim.id()));
+             .untilAsserted(() -> assertThat(communityEvents(community)).filteredOn(CommunityMemberLeft.class::isInstance)
+                                            .extracting(event -> event.details()
+                                                                      .get("nodeId"))
+                                            .containsExactly(victim.id()));
         assertThat(directive(victim).isPresent()).as("the killed worker's activation directive is removed").isFalse();
         assertThat(roster(community)).as("the killed worker leaves the committed roster").doesNotContain(victim);
         // Recovery: a replacement worker makes the community whole again, and the transition is announced.
         var replacement = LifecycleAwait.nodeSettled("admit replacement worker", cluster, cluster.addWorkerNode());
 
         await().atMost(BUDGET.duration())
-               .until(() -> field(communityJson(community), "state").equals(Option.some("ACTIVE"))
-                            && field(communityJson(community), "liveMembers").equals(Option.some(String.valueOf(WORKERS))));
+             .until(() -> field(communityJson(community),
+                                "state").equals(Option.some("ACTIVE")) && field(communityJson(community),
+                                                                                "liveMembers").equals(Option.some(String.valueOf(WORKERS))));
         await().atMost(BUDGET.duration())
-               .untilAsserted(() -> assertThat(stateChanges(community)).anySatisfy(event -> assertThat(event.details()).containsEntry("from", "DEGRADED")
-                                                                                                                       .containsEntry("to", "ACTIVE")));
+             .untilAsserted(() -> assertThat(stateChanges(community)).anySatisfy(event -> assertThat(event.details()).containsEntry("from",
+                                                                                                                                    "DEGRADED")
+                                                                                                    .containsEntry("to",
+                                                                                                                   "ACTIVE")));
         await().atMost(BUDGET.duration())
-               .untilAsserted(() -> assertThat(communityEvents(community)).filteredOn(CommunityMemberJoined.class::isInstance)
-                                                                         .extracting(event -> event.details().get("nodeId"))
-                                                                         .contains(replacement.id()));
+             .untilAsserted(() -> assertThat(communityEvents(community)).filteredOn(CommunityMemberJoined.class::isInstance)
+                                            .extracting(event -> event.details()
+                                                                      .get("nodeId"))
+                                            .contains(replacement.id()));
     }
 
     private List<NodeId> roster(String community) {
         return leader().kvStore()
-                       .getTyped(GovernorAnnouncementKey.forCommunity(community), GovernorAnnouncementValue.class)
-                       .map(GovernorAnnouncementValue::members)
-                       .or(List.of());
+                     .getTyped(GovernorAnnouncementKey.forCommunity(community),
+                               GovernorAnnouncementValue.class)
+                     .map(GovernorAnnouncementValue::members)
+                     .or(List.of());
     }
 
     private static void assertDegradedEdge(ClusterEvent event) {
-        assertThat(event.details()).containsEntry("from", "ACTIVE")
-                                   .containsEntry("to", "DEGRADED");
+        assertThat(event.details()).containsEntry("from", "ACTIVE").containsEntry("to", "DEGRADED");
         assertThat(event.severity()).isEqualTo(Severity.WARNING);
     }
 
@@ -141,11 +149,10 @@ class CommunityObservabilityForgeTest {
     }
 
     private String communityOf(NodeId worker) {
-        await().atMost(BUDGET.duration())
-               .until(() -> directive(worker).isPresent());
+        await().atMost(BUDGET.duration()).until(() -> directive(worker).isPresent());
 
         return directive(worker).unwrap()
-                                .communityId();
+                        .communityId();
     }
 
     /// Exactly one MEMBER_JOINED per admitted worker: each worker enters the committed roster once, and the roster
@@ -155,35 +162,36 @@ class CommunityObservabilityForgeTest {
 
         assertThat(events).anyMatch(CommunityMinted.class::isInstance);
         assertThat(events).filteredOn(CommunityMemberJoined.class::isInstance)
-                          .extracting(event -> event.details().get("nodeId"))
-                          .containsExactlyInAnyOrderElementsOf(workers.stream()
-                                                                      .map(NodeId::id)
-                                                                      .toList());
-        assertThat(stateChanges(community)).anySatisfy(event -> assertThat(event.details()).containsEntry("from", "FORMING")
-                                                                                           .containsEntry("to", "ACTIVE"));
+                  .extracting(event -> event.details()
+                                            .get("nodeId"))
+                  .containsExactlyInAnyOrderElementsOf(workers.stream().map(NodeId::id).toList());
+        assertThat(stateChanges(community)).anySatisfy(event -> assertThat(event.details()).containsEntry("from",
+                                                                                                          "FORMING")
+                                                                          .containsEntry("to", "ACTIVE"));
     }
 
     private List<ClusterEvent> stateChanges(String community) {
         return communityEvents(community).stream()
-                                         .filter(CommunityStateChanged.class::isInstance)
-                                         .toList();
+                              .filter(CommunityStateChanged.class::isInstance)
+                              .toList();
     }
 
     private List<ClusterEvent> communityEvents(String community) {
         return leader().eventAggregator()
-                       .events()
-                       .await()
-                       .or(List.of())
-                       .stream()
-                       .filter(event -> community.equals(event.details().get("communityId")))
-                       .toList();
+                     .events()
+                     .await()
+                     .or(List.of())
+                     .stream()
+                     .filter(event -> community.equals(event.details().get("communityId")))
+                     .toList();
     }
 
     private NodeId nonGovernor(String community, List<NodeId> workers) {
         var governor = leader().kvStore()
-                               .getTyped(GovernorAnnouncementKey.forCommunity(community), GovernorAnnouncementValue.class)
-                               .unwrap()
-                               .governorId();
+                             .getTyped(GovernorAnnouncementKey.forCommunity(community),
+                                       GovernorAnnouncementValue.class)
+                             .unwrap()
+                             .governorId();
 
         return workers.stream()
                       .filter(worker -> !worker.equals(governor))
@@ -193,8 +201,10 @@ class CommunityObservabilityForgeTest {
 
     private Option<ActivationDirectiveValue> directive(NodeId worker) {
         return leader().kvStore()
-                       .getTyped(ActivationDirectiveKey.activationDirectiveKey(worker), ActivationDirectiveValue.class)
-                       .filter(value -> !value.communityId().isEmpty());
+                     .getTyped(ActivationDirectiveKey.activationDirectiveKey(worker),
+                               ActivationDirectiveValue.class)
+                     .filter(value -> !value.communityId()
+                                            .isEmpty());
     }
 
     private AetherNode leader() {
@@ -212,8 +222,11 @@ class CommunityObservabilityForgeTest {
                                  .GET()
                                  .build();
 
-        return Result.lift(Causes::fromThrowable, () -> http.send(request, HttpResponse.BodyHandlers.ofString()))
-                     .filter(Causes.cause("community route did not answer 200"), response -> response.statusCode() == 200)
+        return Result.lift(Causes::fromThrowable,
+                           () -> http.send(request,
+                                           HttpResponse.BodyHandlers.ofString()))
+                     .filter(Causes.cause("community route did not answer 200"),
+                             response -> response.statusCode() == 200)
                      .map(HttpResponse::body)
                      .or("");
     }

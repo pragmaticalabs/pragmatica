@@ -18,6 +18,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Functions.Fn3;
 
+
 /// #1406 — a timed append loop that measures a STEADY ownership epoch, and says so when it did not.
 ///
 /// The baseline test used to start a 2,000-write loop straight after materialising the stream, so initial
@@ -29,13 +30,10 @@ public sealed interface SteadyEpochAppends {
     /// The caller's readiness did not hold at the gate, so no append was issued.
     enum NotReady implements Cause {
         OWNERSHIP_NOT_READY("Ownership readiness did not hold when the measurement started; no append was issued");
-
         private final String message;
-
         NotReady(String message) {
             this.message = message;
         }
-
         @Override
         public String message() {
             return message;
@@ -62,9 +60,11 @@ public sealed interface SteadyEpochAppends {
         public String report() {
             return refusals.isEmpty()
                    ? "no refusals in " + attempts + " appends"
-                   : refusals.size() + " refused of " + attempts + ": " + refusals.stream()
-                                                                                  .map(Outcome::describe)
-                                                                                  .collect(Collectors.joining("; "));
+                   : refusals.size()
+                    + " refused of " + attempts
+                    + ": " + refusals.stream()
+                                     .map(Outcome::describe)
+                                     .collect(Collectors.joining("; "));
         }
 
         @Override
@@ -73,7 +73,12 @@ public sealed interface SteadyEpochAppends {
         }
 
         private static String describe(Refusal refusal) {
-            return "append #" + refusal.index() + " -> " + refusal.cause().getClass().getSimpleName() + ": " + refusal.cause().message();
+            return "append #" + refusal.index()
+                 + " -> " + refusal.cause()
+                                   .getClass()
+                                   .getSimpleName()
+                 + ": " + refusal.cause()
+                                 .message();
         }
     }
 
@@ -88,7 +93,9 @@ public sealed interface SteadyEpochAppends {
                : NotReady.OWNERSHIP_NOT_READY.result();
     }
 
-    private static <E> Result<Outcome> runWithEpochCheck(Supplier<E> epoch, int attempts, IntFunction<Result<Long>> append) {
+    private static <E> Result<Outcome> runWithEpochCheck(Supplier<E> epoch,
+                                                         int attempts,
+                                                         IntFunction<Result<Long>> append) {
         var before = epoch.get();
         var outcome = run(attempts, append);
         var after = epoch.get();
@@ -100,7 +107,8 @@ public sealed interface SteadyEpochAppends {
 
     private static Outcome run(int attempts, IntFunction<Result<Long>> append) {
         var refusals = IntStream.range(0, attempts)
-                                .mapToObj(index -> refusalOf(index, append.apply(index)))
+                                .mapToObj(index -> refusalOf(index,
+                                                             append.apply(index)))
                                 .flatMap(Option::stream)
                                 .toList();
 

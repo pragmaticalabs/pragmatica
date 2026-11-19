@@ -241,8 +241,8 @@ class BlueprintSecurityOverrideClusterWideTest {
         // Aggregate deployment status and a listening app port do not imply this route's
         // asynchronous publication has reached every node. Establish the exact positive control.
         var control = awaitEveryNodeAnswers(GOVERNED_PATH,
-                                           SERVED,
-                                           "positive-control echo route published on every node before any override");
+                                            SERVED,
+                                            "positive-control echo route published on every node before any override");
 
         assertThat(control.stream().map(Probe::nodeId).toList()).describedAs("each probed app-HTTP port must answer from a DIFFERENT node: %s",
                                                                              control)
@@ -320,7 +320,6 @@ class BlueprintSecurityOverrideClusterWideTest {
     void overrideWithdrawal_reachesEveryNode_whenTheCarrierBlueprintIsDeleted() {
         resetToCleanSlate();
         var leaderMgmtPort = leaderManagementPort();
-
         // ---- Setup: the route is deployed by one blueprint, the override supplied by another.
         applyBlueprint(leaderMgmtPort, blueprintWithoutOverride());
         awaitSliceDeployed();
@@ -345,8 +344,8 @@ class BlueprintSecurityOverrideClusterWideTest {
         var nodeIds = cluster.status().nodes().stream().map(NodeStatus::id).toList();
 
         assertThat(served.stream().map(Probe::nodeId).toList()).describedAs("the 200s must come from all %d distinct nodes: %s",
-                                                                           NODES,
-                                                                           served)
+                                                                            NODES,
+                                                                            served)
                   .containsExactlyInAnyOrderElementsOf(nodeIds);
         served.forEach(probe -> assertThat(probe.body()).describedAs("SERVED must mean the echo route really answered, not an empty 200 — %s",
                                                                      probe)
@@ -415,9 +414,9 @@ class BlueprintSecurityOverrideClusterWideTest {
                                  .filter(node -> !node.isLeader())
                                  .findFirst()
                                  .orElseThrow(() -> new AssertionError("no non-leader node to kill among " + rosterBefore));
-
         // ---- Kill a non-leader, then bring a REPLACEMENT up. It never observed the override's put.
-        LifecycleAwait.nodeSettled("kill non-leader " + victim.id() + " in nodeThatRejoinsAfterTheOverrideWasCommitted_stillEnforcesIt()",
+        LifecycleAwait.nodeSettled("kill non-leader " + victim.id()
+                                  + " in nodeThatRejoinsAfterTheOverrideWasCommitted_stillEnforcesIt()",
                                    cluster,
                                    cluster.killNode(victim.id()));
         await().alias("victim " + victim.id() + " leaves the cluster roster")
@@ -426,12 +425,12 @@ class BlueprintSecurityOverrideClusterWideTest {
              .until(() -> cluster.status()
                                  .nodes()
                                  .stream()
-                                 .noneMatch(node -> node.id().equals(victim.id())));
+                                 .noneMatch(node -> node.id()
+                                                        .equals(victim.id())));
         var joined = cluster.addNode()
                             .await(LifecycleAwait.NODE_BOUND)
                             .fold(cause -> {
-                                      throw new AssertionError("Replacement node could not join, so the rejoin claim was never exercised: "
-                                                              + cause.message());
+                                      throw new AssertionError("Replacement node could not join, so the rejoin claim was never exercised: " + cause.message());
                                   },
                                   nodeId -> nodeId.id());
 
@@ -451,9 +450,11 @@ class BlueprintSecurityOverrideClusterWideTest {
                           "echo ACTIVE on exactly the post-rejoin roster (departed " + victim.id() + " withdrawn)");
         assertEchoSliceRunningOnEveryNode("after " + joined + " replaced " + victim.id());
         var replacement = rosterAfter.stream()
-                                     .filter(node -> node.id().equals(joined))
+                                     .filter(node -> node.id()
+                                                         .equals(joined))
                                      .findFirst()
-                                     .orElseThrow(() -> new AssertionError("replacement " + joined + " vanished from " + rosterAfter));
+                                     .orElseThrow(() -> new AssertionError("replacement " + joined
+                                                                          + " vanished from " + rosterAfter));
         var replacementPort = appHttpPortOf(replacement);
         // ---- CONTROL: the same slice's ungoverned route must be SERVED on the replacement, so a 403
         // ---- on the governed route cannot be a missing route or an undeployed slice.
@@ -510,21 +511,23 @@ class BlueprintSecurityOverrideClusterWideTest {
              .until(() -> echoInstanceNodeIds().size() == HOSTS);
         var hosts = Set.copyOf(echoInstanceNodeIds());
         // CONTROL: every node, including the two that only forward, serves the route before any override.
-        awaitEveryNodeAnswers(GOVERNED_PATH, SERVED, "every node serves /echo/* before the override, the non-hosting ones by forwarding");
+        awaitEveryNodeAnswers(GOVERNED_PATH,
+                              SERVED,
+                              "every node serves /echo/* before the override, the non-hosting ones by forwarding");
         // ---- The claim: the override added now reaches the nodes that do not host the route.
         applyBlueprint(leaderMgmtPort, overrideCarrierBlueprint());
         var refusals = awaitEveryNodeAnswers(GOVERNED_PATH,
                                              REFUSED,
                                              "every node, including those not hosting the route, enforces an override added after it registered");
-        var nonHosting = refusals.stream()
-                                 .filter(probe -> !hosts.contains(probe.nodeId()))
-                                 .toList();
+        var nonHosting = refusals.stream().filter(probe -> !hosts.contains(probe.nodeId())).toList();
 
-        assertThat(nonHosting).describedAs("CONTROL: two nodes do not host the route (hosts %s): %s", hosts, refusals)
+        assertThat(nonHosting).describedAs("CONTROL: two nodes do not host the route (hosts %s): %s",
+                                           hosts,
+                                           refusals)
                   .hasSize(NODES - HOSTS);
         nonHosting.forEach(probe -> assertThat(probe.body()).describedAs("a non-hosting node's refusal must be the OVERRIDE's own role check — %s",
-                                                                          probe)
-                                             .contains(INSUFFICIENT_ROLE_DETAIL));
+                                                                         probe)
+                                              .contains(INSUFFICIENT_ROLE_DETAIL));
         // ---- Relaxation: withdrawing the override returns the route to SERVED on the non-hosting nodes too, so
         // a node's stale strict entry cannot pin the route closed once the committed override is gone.
         deleteBlueprint(leaderMgmtPort, OVERRIDE_CARRIER_BLUEPRINT_ID);
@@ -534,9 +537,9 @@ class BlueprintSecurityOverrideClusterWideTest {
                                            SERVED,
                                            "every node, including those not hosting the route, relaxes once the override is withdrawn");
 
-        assertThat(served.stream()
-                         .filter(probe -> !hosts.contains(probe.nodeId()))
-                         .toList()).describedAs("CONTROL: the two non-hosting nodes relaxed too (hosts %s): %s", hosts, served)
+        assertThat(served.stream().filter(probe -> !hosts.contains(probe.nodeId())).toList()).describedAs("CONTROL: the two non-hosting nodes relaxed too (hosts %s): %s",
+                                                                                                          hosts,
+                                                                                                          served)
                   .hasSize(NODES - HOSTS);
         served.forEach(probe -> assertThat(probe.body()).describedAs("SERVED must mean the echo route really answered — %s",
                                                                      probe)
@@ -581,12 +584,16 @@ class BlueprintSecurityOverrideClusterWideTest {
         await().alias("cluster back to " + NODES + " nodes with a leader, including replacement " + joinedNodeId)
              .atMost(WAIT_TIMEOUT)
              .pollInterval(POLL_INTERVAL)
-             .until(() -> cluster.currentLeader().isPresent()
-                          && cluster.status().nodes().size() == NODES
+             .until(() -> cluster.currentLeader()
+                                 .isPresent()
+                          && cluster.status()
+                                    .nodes()
+                                    .size() == NODES
                           && cluster.status()
                                     .nodes()
                                     .stream()
-                                    .anyMatch(node -> node.id().equals(joinedNodeId)));
+                                    .anyMatch(node -> node.id()
+                                                          .equals(joinedNodeId)));
         awaitAllAppHttpPortsReady();
         await().alias("echo slice reports a live instance on replacement " + joinedNodeId)
              .atMost(WAIT_TIMEOUT)
@@ -597,8 +604,10 @@ class BlueprintSecurityOverrideClusterWideTest {
     private List<String> echoInstanceNodeIds() {
         return cluster.slicesStatus()
                       .stream()
-                      .filter(slice -> slice.artifact().equals(TEST_ARTIFACT))
-                      .flatMap(slice -> slice.instances().stream())
+                      .filter(slice -> slice.artifact()
+                                            .equals(TEST_ARTIFACT))
+                      .flatMap(slice -> slice.instances()
+                                             .stream())
                       .filter(instance -> !"FAILED".equals(instance.state()))
                       .map(EmberCluster.SliceInstanceStatus::nodeId)
                       .toList();
@@ -625,8 +634,10 @@ class BlueprintSecurityOverrideClusterWideTest {
     private List<String> echoActiveNodeIds() {
         return cluster.slicesStatus()
                       .stream()
-                      .filter(slice -> slice.artifact().equals(TEST_ARTIFACT))
-                      .flatMap(slice -> slice.instances().stream())
+                      .filter(slice -> slice.artifact()
+                                            .equals(TEST_ARTIFACT))
+                      .flatMap(slice -> slice.instances()
+                                             .stream())
                       .filter(instance -> "ACTIVE".equals(instance.state()))
                       .map(EmberCluster.SliceInstanceStatus::nodeId)
                       .toList();
@@ -640,7 +651,7 @@ class BlueprintSecurityOverrideClusterWideTest {
         var nodeIds = cluster.status().nodes().stream().map(NodeStatus::id).toList();
 
         assertThat(hosting).describedAs("CONTROL: the echo slice must still be deployed on every node %s — otherwise a non-403 "
-                                        + "answer means the route is gone, not that the override changed. Slice status: %s",
+                                       + "answer means the route is gone, not that the override changed. Slice status: %s",
                                         when,
                                         slicesStatus())
                   .containsExactlyInAnyOrderElementsOf(nodeIds);
@@ -667,7 +678,8 @@ class BlueprintSecurityOverrideClusterWideTest {
         } catch (ConditionTimeoutException timeout) {
             throw new AssertionError(timeout.getMessage()
                                     + "\nFAILED EXPECTATION: " + what
-                                    + "\nEvery node was expected to answer " + expected + " for " + path
+                                    + "\nEvery node was expected to answer " + expected
+                                    + " for " + path
                                     + "\nLast observed responses: " + last.get()
                                     + "\nLast /api/v1/slices/status: " + slicesStatus()
                                     + "\nCluster state at expiry:\n" + ClusterSnapshot.render(cluster, http),
@@ -694,7 +706,8 @@ class BlueprintSecurityOverrideClusterWideTest {
         } catch (ConditionTimeoutException timeout) {
             throw new AssertionError(timeout.getMessage()
                                     + "\nFAILED EXPECTATION: " + what
-                                    + "\nApp-HTTP port " + appHttpPort + " was expected to answer " + expected
+                                    + "\nApp-HTTP port " + appHttpPort
+                                    + " was expected to answer " + expected
                                     + " for " + GOVERNED_PATH
                                     + "\nLast observed response: " + last.get()
                                     + "\nLast /api/v1/slices/status: " + slicesStatus()
@@ -856,7 +869,8 @@ class BlueprintSecurityOverrideClusterWideTest {
     /// synchronizer's withdrawal hook is deleted — which is the case it exists to disambiguate.
     private void awaitCarrierSliceUndeployed() {
         try {
-            await().alias("carrier slice " + CARRIER_ARTIFACT_MARKER + " leaves /api/v1/slices/status, proving the DELETE landed")
+            await().alias("carrier slice " + CARRIER_ARTIFACT_MARKER
+                         + " leaves /api/v1/slices/status, proving the DELETE landed")
                  .atMost(WAIT_TIMEOUT)
                  .pollInterval(POLL_INTERVAL)
                  .until(() -> !slicesStatus().contains(CARRIER_ARTIFACT_MARKER));

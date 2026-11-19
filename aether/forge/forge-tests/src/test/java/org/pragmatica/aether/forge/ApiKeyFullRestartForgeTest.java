@@ -132,18 +132,16 @@ class ApiKeyFullRestartForgeTest {
              .until(() -> userStreamConfigured());
         awaitBackupHeadContains("api-key/" + MINTED_KEY_ID);
         awaitBackupHeadContains("app-blueprint/" + BLUEPRINT_ID);
-        awaitBackupHeadContains(StreamConfigKey.streamConfigKey(USER_STREAM)
-                                               .asString());
+        awaitBackupHeadContains(StreamConfigKey.streamConfigKey(USER_STREAM).asString());
         var incarnationA = incarnationOf(cluster);
 
         LifecycleAwait.settled("stop of every node of cluster A", cluster, cluster.stop());
-
         cluster = startCluster(PREFIX_B, RestoreMode.AUTO);
         assertAccepted(MINTED_KEY, nodeIds(PREFIX_B));
         assertThat(listKeys(PREFIX_B + "-2")).as("cluster B lists the restored cluster-held key")
                   .contains("\"keyId\":\"" + MINTED_KEY_ID + "\"", "\"source\":\"cluster\"");
         assertThat(incarnationOf(cluster)).as("the restore moves the incarnation past cluster A's")
-                                          .isGreaterThan(incarnationA);
+                  .isGreaterThan(incarnationA);
         await().alias("the restored slice is ACTIVE on cluster B's own nodes")
              .atMost(WAIT_TIMEOUT)
              .pollInterval(POLL_INTERVAL)
@@ -152,9 +150,7 @@ class ApiKeyFullRestartForgeTest {
              .atMost(WAIT_TIMEOUT)
              .pollInterval(POLL_INTERVAL)
              .until(() -> userStreamOwnersOnlyOn(PREFIX_B));
-
         LifecycleAwait.settled("stop of every node of cluster B", cluster, cluster.stop());
-
         cluster = startCluster(PREFIX_C, RestoreMode.FRESH);
         assertRefused(MINTED_KEY, nodeIds(PREFIX_C));
         assertThat(userStreamConfigured()).as("a fresh cluster has no user stream").isFalse();
@@ -164,7 +160,6 @@ class ApiKeyFullRestartForgeTest {
     // --- clusters -----------------------------------------------------------
     private EmberCluster startCluster(String prefix, RestoreMode restore) {
         var next = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, prefix);
-
         // MUST precede start(): every node reads the mode, the key map and the backup config at construction.
         next.withAppHttpSecurity(SecurityMode.API_KEY,
                                  Map.of(CONFIG_API_KEY,
@@ -188,7 +183,8 @@ class ApiKeyFullRestartForgeTest {
         return cluster.allNodes()
                       .getFirst()
                       .kvStore()
-                      .getTyped(ClusterIncarnationKey.clusterIncarnationKey(), ClusterIncarnationValue.class)
+                      .getTyped(ClusterIncarnationKey.clusterIncarnationKey(),
+                                ClusterIncarnationValue.class)
                       .map(ClusterIncarnationValue::incarnation)
                       .or(0L);
     }
@@ -211,8 +207,7 @@ class ApiKeyFullRestartForgeTest {
                                  .build();
         var response = send(request, "deploy " + BLUEPRINT_ID);
 
-        assertThat(response.body()).as("blueprint deploy: %s", response.body())
-                                   .doesNotContain("\"error\"");
+        assertThat(response.body()).as("blueprint deploy: %s", response.body()).doesNotContain("\"error\"");
     }
 
     private boolean sliceActive() {
@@ -239,20 +234,21 @@ class ApiKeyFullRestartForgeTest {
                                  .uri(URI.create("http://localhost:" + leaderMgmtPort() + "/api/v1/streams"))
                                  .header("Content-Type", "application/json")
                                  .header(API_KEY_HEADER, CONFIG_API_KEY)
-                                 .POST(HttpRequest.BodyPublishers.ofString("{\"name\":\"" + USER_STREAM + "\",\"partitions\":2}"))
+                                 .POST(HttpRequest.BodyPublishers.ofString("{\"name\":\"" + USER_STREAM
+                                                                          + "\",\"partitions\":2}"))
                                  .timeout(Duration.ofSeconds(15))
                                  .build();
         var response = send(request, "create " + USER_STREAM);
 
-        assertThat(response.statusCode()).as("create %s: %s", USER_STREAM, response.body())
-                  .isEqualTo(200);
+        assertThat(response.statusCode()).as("create %s: %s", USER_STREAM, response.body()).isEqualTo(200);
     }
 
     private boolean userStreamConfigured() {
         return cluster.allNodes()
                       .getFirst()
                       .kvStore()
-                      .getTyped(StreamConfigKey.streamConfigKey(USER_STREAM), StreamConfigValue.class)
+                      .getTyped(StreamConfigKey.streamConfigKey(USER_STREAM),
+                                StreamConfigValue.class)
                       .isPresent();
     }
 
@@ -267,8 +263,7 @@ class ApiKeyFullRestartForgeTest {
                         (key, value) -> {
                             if (key.stream()
                                    .equals(USER_STREAM)) {
-                                owners.add(value.owner()
-                                                .id());
+                                owners.add(value.owner().id());
                             }
                         });
 
@@ -278,8 +273,8 @@ class ApiKeyFullRestartForgeTest {
     private boolean userStreamOwnersOnlyOn(String prefix) {
         var owners = userStreamOwners();
 
-        return !owners.isEmpty() && owners.stream()
-                                          .allMatch(owner -> owner.startsWith(prefix + "-"));
+        return ! owners.isEmpty() && owners.stream()
+                                           .allMatch(owner -> owner.startsWith(prefix + "-"));
     }
 
     // --- mint / accept ------------------------------------------------------
@@ -467,18 +462,15 @@ class ApiKeyFullRestartForgeTest {
 
         command.addAll(List.of(args));
         try {
-            var process = new ProcessBuilder(command).redirectErrorStream(true)
-                                                     .start();
-            var output = new String(process.getInputStream()
-                                           .readAllBytes(),
+            var process = new ProcessBuilder(command).redirectErrorStream(true).start();
+            var output = new String(process.getInputStream().readAllBytes(),
                                     StandardCharsets.UTF_8);
 
             return new GitResult(process.waitFor(), output);
         } catch (IOException e) {
             throw new AssertionError("could not run git", e);
         } catch (InterruptedException e) {
-            Thread.currentThread()
-                  .interrupt();
+            Thread.currentThread().interrupt();
 
             throw new AssertionError("interrupted running git", e);
         }

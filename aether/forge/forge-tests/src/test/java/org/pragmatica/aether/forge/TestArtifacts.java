@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
 /// Shared test artifact constants with version derived from the Maven project version.
@@ -15,16 +14,16 @@ final class TestArtifacts {
     static final String VERSION = System.getProperty("project.version", "UNKNOWN");
     static final String ECHO_SLICE = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + VERSION;
     static final String VERSIONED_SLICE = "org.pragmatica-lite.aether.test:versioned-slice-versioned-echo:" + VERSION;
+
     static final String STRICT_VERSIONED_SLICE = "org.pragmatica-lite.aether.test:versioned-slice-strict-versioned-echo:" + VERSION;
+
     static final String URL_SHORTENER = "org.pragmatica.aether.example:url-shortener-url-shortener:" + VERSION;
     static final String ANALYTICS = "org.pragmatica.aether.example:url-shortener-analytics:" + VERSION;
-
     /// Minimal stream-only blueprint (no database), used by `StreamFanoutConsumerTest` for the
     /// #265 STEP 0 streaming fan-out baseline. Unlike platform artifacts above, the
     /// `aether/tests/blueprints/test-*` blueprints carry a fixed `1.0.0` artifact version
     /// (independent of the platform `project.version`), so the coordinate is hardcoded.
     static final String STREAM_SLICE = "org.pragmatica.aether.test:test-stream-stream-slice:1.0.0";
-
     /// RF=3 / min-sync-replicas=2 replicated stream blueprint (`test-stream-repl`), used by
     /// `StreamOwnerFailoverTest` for the #457 in-JVM owner-kill failover proof (RF=2 until #1547 made 3
     /// the stream replication minimum). Mirrors the default-RF [#STREAM_SLICE]
@@ -32,7 +31,6 @@ final class TestArtifacts {
     /// local Maven repo) — the sibling `aether/tests/blueprints/test-stream-repl` module the cloud
     /// suite `02-chaos/test-stream-replica-failover.sh` deploys.
     static final String STREAM_REPL_SLICE = "org.pragmatica.aether.test:test-stream-repl-stream-slice:1.0.0";
-
     /// replicas=3 / min-sync-replicas=3 stream blueprint (`test-stream-acked`), used by
     /// `StreamAckedRecordsOwnerKillTest` for the #1549 acked-record proof: every acked event is on every
     /// replica, and the declared min-sync reaches the runtime only since #1549. A dedicated fixture so no
@@ -58,7 +56,6 @@ final class TestArtifacts {
     /// `1.0.0` blueprint version, resolved from the local Maven repo) — the sibling
     /// `aether/tests/blueprints/test-stream-consumer` module.
     static final String STREAM_CONSUMER_SLICE = "org.pragmatica.aether.test:test-stream-consumer-consumer-slice:1.0.0";
-
     /// The FIRST blueprint in the repository that declares a `DurableEntity` resource
     /// (`aether/tests/blueprints/test-entity`, #345 increment I0). Until it existed no
     /// `resources.toml` anywhere named a durable entity, so the whole `resource/durable-entity`
@@ -75,7 +72,6 @@ final class TestArtifacts {
     /// [#STREAM_CONSUMER_SLICE] coordinate (fixed `1.0.0` blueprint version, resolved from the local
     /// Maven repo).
     static final String ENTITY_SLICE = "org.pragmatica.aether.test:test-entity-entity-slice:1.0.0";
-
     /// The FIRST blueprint in the repository that declares a topic with `durability = "durable"`
     /// (`aether/tests/blueprints/test-durable-topic`, #386 D-series). Every other fixture declares
     /// `[streams.X]` sections; this one declares TOPIC sections, which are a different resource with a
@@ -92,12 +88,10 @@ final class TestArtifacts {
     /// dead-letter claims need. Mirrors the [#STREAM_CONSUMER_SLICE] coordinate (fixed `1.0.0`
     /// blueprint version, resolved from the local Maven repo).
     static final String DURABLE_TOPIC_SLICE = "org.pragmatica.aether.test:test-durable-topic-durable-topic-slice:1.0.0";
-
     /// The second slice of the same fixture module (#1333): a [Projection] over the single-partition
     /// durable topic `projection-events`, attached through the provisioned `ProjectionRuntime`, with an
     /// order-sensitive fold and a poison arm — what `DurableProjectionRebuildForgeTest` drives.
     static final String DURABLE_PROJECTION_SLICE = "org.pragmatica.aether.test:test-durable-topic-projection-slice:1.0.0";
-
     /// The version every `[streams.X]` declaration in `aether/tests/blueprints` leaves implicit —
     /// `ResourceVersion.defaultVersion()`. It is the STREAM's version, not the blueprint's; the two
     /// merely coincide in this repository (`BlueprintStreamAddresses` on why they need not).

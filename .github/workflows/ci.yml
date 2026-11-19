@@ -182,6 +182,12 @@ jobs:
         run: mvn org.pragmatica-lite:jbct-maven-plugin:check -B -pl '!jbct'
         timeout-minutes: 15
 
+      # #1629: forge-tests is outside the default reactor (profile with-e2e) and its sources are tests, so the step above
+      # examines neither; its pom sets jbct.includeTests=true.
+      - name: JBCT format + lint gate, forge-tests
+        run: mvn org.pragmatica-lite:jbct-maven-plugin:check -B -Pwith-e2e -pl aether/forge/forge-tests
+        timeout-minutes: 15
+
   # build-and-test's module tests, split into groups that run in parallel. In one reactor each module's tests waited for
   # its upstream modules' tests: node started 25 min into run 41351583462's 45 min reactor. A group installs its modules'
   # upstream with -DskipTests (which still builds the statemachine test-jar) and then tests only its own modules, so every

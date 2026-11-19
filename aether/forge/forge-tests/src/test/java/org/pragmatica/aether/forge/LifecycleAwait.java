@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge;
 
+import java.util.regex.Pattern;
+
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -11,12 +13,11 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
-import java.util.regex.Pattern;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.assertj.core.api.Assertions.fail;
+
 
 /// #915 — every lifecycle await in this module is bounded, and every expiry NAMES its step.
 ///
@@ -91,7 +92,6 @@ final class LifecycleAwait {
     /// The named absence for a field that was never assigned — a `@BeforeAll` that threw before the
     /// constructor ran leaves `cluster` null, and `null` printed into a dump reads as a value.
     static final String NO_CLUSTER = "  no cluster: the field was never assigned";
-
     /// Cluster-wide start and stop.
     static final TimeSpan LIFECYCLE_BOUND = TimeSpan.timeSpan(240).seconds();
     /// Single-node join, kill and blackhole.
@@ -107,7 +107,10 @@ final class LifecycleAwait {
     /// method this is.
     static <T> T settled(String step, EmberCluster cluster, TimeSpan bound, Promise<T> promise) {
         return promise.await(bound)
-                      .fold(cause -> fail(report(step, bound, cause.message(), cluster)),
+                      .fold(cause -> fail(report(step,
+                                                 bound,
+                                                 cause.message(),
+                                                 cluster)),
                             value -> value);
     }
 
@@ -130,8 +133,11 @@ final class LifecycleAwait {
     static Result<Unit> bestEffort(String step, EmberCluster cluster, TimeSpan bound, Promise<?> promise) {
         return promise.await(bound)
                       .onFailure(cause -> log.error("#915 lifecycle step did not settle (not failing the test — "
-                                                    + "this step's result was discarded before #915):\n{}",
-                                                    report(step, bound, cause.message(), cluster)))
+                                                   + "this step's result was discarded before #915):\n{}",
+                                                    report(step,
+                                                           bound,
+                                                           cause.message(),
+                                                           cluster)))
                       .mapToUnit();
     }
 
@@ -146,10 +152,10 @@ final class LifecycleAwait {
     }
 
     static String report(String step, TimeSpan bound, String cause, EmberCluster cluster) {
-        return step + " did not settle within " + bound
-               + ": " + cause
-               + bindAttribution(cause)
-               + "\nCluster state when the wait ended:\n" + snapshot(cluster);
+        return step
+             + " did not settle within " + bound
+             + ": " + cause + bindAttribution(cause)
+             + "\nCluster state when the wait ended:\n" + snapshot(cluster);
     }
 
     private static final Pattern PORT_IN_CAUSE = Pattern.compile("port (\\d+)");
@@ -163,17 +169,21 @@ final class LifecycleAwait {
         }
 
         var port = PORT_IN_CAUSE.matcher(cause);
-        var named = port.find() ? "port " + port.group(1) : "a port the transport did not name (see the snapshot)";
+        var named = port.find()
+                    ? "port " + port.group(1)
+                    : "a port the transport did not name (see the snapshot)";
 
-        return "\n=> bind collision on " + named + ": a fixed test-port block, see check-test-ports.py"
-               + " and TEST_PORT_ALLOCATION.md; a block hit in CI should be converted to probe-and-skip";
+        return "\n=> bind collision on " + named
+             + ": a fixed test-port block, see check-test-ports.py"
+             + " and TEST_PORT_ALLOCATION.md; a block hit in CI should be converted to probe-and-skip";
     }
 
     /// Delegates to [ClusterSnapshot], which is the module's one renderer. The only thing decided
     /// here is the case that renderer cannot be asked about: a cluster reference that is null.
     static String snapshot(EmberCluster cluster) {
         return Option.option(cluster)
-                     .map(present -> snapshot(present.status(), present.lastStartFailure()))
+                     .map(present -> snapshot(present.status(),
+                                              present.lastStartFailure()))
                      .or(NO_CLUSTER);
     }
 
