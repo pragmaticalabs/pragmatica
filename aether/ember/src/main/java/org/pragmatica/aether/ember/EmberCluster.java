@@ -900,18 +900,16 @@ public final class EmberCluster {
             }
 
             nodes.put(nodeIdStr, node);
-            startPromises.add(node.start()
-                                  .onFailure(cause -> startFailures.put(nodeIdStr,
-                                                                        cause.message()))
-                                  .onFailure(firstFailure::fail)
-                                  .map(_ -> NodeStartResult.nodeStartResult(nodeIdStr,
-                                                                            port,
-                                                                            mgmtPort,
-                                                                            Option.none()))
-                                  .recover(cause -> NodeStartResult.nodeStartResult(nodeIdStr,
-                                                                                    port,
-                                                                                    mgmtPort,
-                                                                                    Option.some(cause))));
+            var recorded = recordFailureThenSignal(node.start(), nodeIdStr, startFailures, firstFailure);
+
+            startPromises.add(recorded.map(_ -> NodeStartResult.nodeStartResult(nodeIdStr,
+                                                                                port,
+                                                                                mgmtPort,
+                                                                                Option.none()))
+                                      .recover(cause -> NodeStartResult.nodeStartResult(nodeIdStr,
+                                                                                        port,
+                                                                                        mgmtPort,
+                                                                                        Option.some(cause))));
         }
 
         var outcome = Promise.<Unit> promise();
@@ -922,6 +920,19 @@ public final class EmberCluster {
         firstFailure.onFailure(cause -> abortStart(cause, startFailures).onResult(outcome::resolve));
 
         return outcome;
+    }
+
+    /// #1611: record the failing node, THEN signal the abort. The abort snapshots `startFailures`, so
+    /// the entry must already be there when `firstFailure` fires; the two handlers sit on the same
+    /// promise and run in registration order, so the order below is the guarantee. Package-visible so
+    /// `EmberClusterStartFailureOrderTest` pins it with a delayed map put.
+    static <T> Promise<T> recordFailureThenSignal(Promise<T> start,
+                                                  String nodeIdStr,
+                                                  Map<String, String> startFailures,
+                                                  Promise<Unit> firstFailure) {
+        return start.onFailure(cause -> startFailures.put(nodeIdStr,
+                                                          cause.message()))
+                    .onFailure(firstFailure::fail);
     }
 
     /// #727: the first node-start failure aborts the whole start, instead of waiting for every node.
