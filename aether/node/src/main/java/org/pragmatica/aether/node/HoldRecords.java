@@ -206,7 +206,6 @@ public interface HoldRecords {
 
     /// `clock` is a monotonic millisecond source (H6), for example `System.nanoTime()` in milliseconds; a read earlier than an
     /// episode's first sighting is taken as the `reportAfterMs` delay having passed.
-
     static HoldRecords holdRecords(HeldReports reports,
                                    WarningRaiser raiser,
                                    LandedEvents log,
@@ -289,8 +288,7 @@ public interface HoldRecords {
             /// the lock; the order of two reports is settled under it by their own asOf (H6).
             @Contract
             private void refresh(NodeId nodeId) {
-                reports.latestHeldReport(nodeId)
-                       .onPresent(report -> observe(nodeId, report));
+                reports.latestHeldReport(nodeId).onPresent(report -> observe(nodeId, report));
             }
 
             @Contract
@@ -304,16 +302,14 @@ public interface HoldRecords {
 
             /// The record of `nodeId`, or an empty one; called under the lock.
             private Drainer known(NodeId nodeId) {
-                return Option.option(drainers.get(nodeId))
-                             .or(() -> Drainer.unseen(nodeId));
+                return Option.option(drainers.get(nodeId)).or(() -> Drainer.unseen(nodeId));
             }
 
             /// Apply `change` to the record of `nodeId`, if any. A finished record stays as the tombstone of its closed episode.
             @Contract
             private void update(NodeId nodeId, Fn1<Drainer, Drainer> change) {
                 synchronized (drainers) {
-                    Option.option(drainers.get(nodeId))
-                          .onPresent(current -> drainers.put(nodeId, change.apply(current)));
+                    Option.option(drainers.get(nodeId)).onPresent(current -> drainers.put(nodeId, change.apply(current)));
                 }
             }
 
@@ -332,8 +328,9 @@ public interface HoldRecords {
                                        .map(current -> current.dueRaises(now, reportAfterMs))
                                        .or(List.of());
 
-                    raises.forEach(raise -> update(nodeId, current -> current.changed(raise.episode(),
-                                                                                       episode -> episode.raising(true))));
+                    raises.forEach(raise -> update(nodeId,
+                                                   current -> current.changed(raise.episode(),
+                                                                              episode -> episode.raising(true))));
 
                     return raises;
                 }
@@ -354,7 +351,8 @@ public interface HoldRecords {
             /// A raise that did not land only clears the in-flight mark: the next pong or tick raises it again (re-raised until landed).
             @Contract
             private void settleRaise(Raise raise, boolean landed) {
-                update(raise.nodeId(), current -> current.changed(raise.episode(), episode -> episode.settled(raise, landed)));
+                update(raise.nodeId(),
+                       current -> current.changed(raise.episode(), episode -> episode.settled(raise, landed)));
             }
 
             private int seed(List<ClusterEvent> events) {
@@ -381,20 +379,23 @@ public interface HoldRecords {
 
                 drainers.put(nodeId, after);
 
-                return before.find(episode).isEmpty() && after.find(episode).filter(Episode::open).isPresent();
+                return before.find(episode)
+                             .isEmpty() && after.find(episode)
+                                                .filter(Episode::open)
+                                                .isPresent();
             }
 
             /// Check the override against the record (refreshed from the FAN first, kept past its sweep: H3) and mark it in flight.
             private Result<LossAccepted> claimAcceptance(NodeId nodeId, String episode, LossConfirmation confirmation) {
                 refresh(nodeId);
-
                 synchronized (drainers) {
                     return Option.option(drainers.get(nodeId))
                                  .flatMap(Drainer::current)
                                  .toResult(HoldRefusal.NotHeld.FACTORY.apply(nodeId))
                                  .flatMap(current -> current.acceptable(nodeId, episode, confirmation))
-                                 .onSuccess(_ -> update(nodeId, current -> current.changed(episode,
-                                                                                            held -> held.accepting(true))));
+                                 .onSuccess(_ -> update(nodeId,
+                                                        current -> current.changed(episode,
+                                                                                   held -> held.accepting(true))));
                 }
             }
 
@@ -413,7 +414,8 @@ public interface HoldRecords {
                                                      landed);
 
                     update(accepted.nodeId(),
-                           current -> current.changed(accepted.episode(), episode -> episode.acceptanceSettled(accepted, landed)));
+                           current -> current.changed(accepted.episode(),
+                                                      episode -> episode.acceptanceSettled(accepted, landed)));
 
                     return outcome;
                 }
@@ -566,15 +568,14 @@ public interface HoldRecords {
             return closed.relay()
                          .isPresent()
                    ? reportedCloser(report).map(reported -> withClosing(closed.acknowledged(reported)))
-                                           .or(this)
+                                   .or(this)
                    : this;
         }
 
         /// The drainer is past this episode (death, or a newer episode): the open episode closes as `whenOpen`; a decision
         /// awaiting the drainer is released; any other closing stands.
         Episode ended(Closing whenOpen) {
-            return withClosing(closing.map(Closing::released)
-                                      .or(whenOpen));
+            return withClosing(closing.map(Closing::released).or(whenOpen));
         }
 
         /// The acceptance's record landed while the episode is open: closed LOSS_ACCEPTED, `AcceptLoss` awaits the drainer.
@@ -596,12 +597,18 @@ public interface HoldRecords {
 
         /// The outcome of a raise of this episode: clears the in-flight mark; a landed closer marks the closing landed.
         Episode settled(Raise raise, boolean landed) {
-            var closed = raise.closer()
-                              .isPresent()
+            var closed = raise.closer().isPresent()
                          ? closing.map(current -> current.landed(landed))
                          : closing;
 
-            return episode(episode, lastReport, firstSeenMillis, seeded, warningLanded || landed, closed, accepting, false);
+            return episode(episode,
+                           lastReport,
+                           firstSeenMillis,
+                           seeded,
+                           warningLanded || landed,
+                           closed,
+                           accepting,
+                           false);
         }
 
         private Episode withClosing(Closing closed) {
@@ -647,8 +654,7 @@ public interface HoldRecords {
         /// Reportable at once when seeded, unenumerated or undeliverable, else after `reportAfterMs`. A clock read earlier than
         /// the first sighting (a step back) is read as the delay having passed: a late warning is the harm, an early one is not.
         private boolean reportable(HeldReport report, long now, long reportAfterMs) {
-            return seeded || report.owedCount() < 0 || report.undeliverable() > 0 || now < firstSeenMillis
-                   || now - firstSeenMillis >= reportAfterMs;
+            return seeded || report.owedCount() < 0 || report.undeliverable() > 0 || now < firstSeenMillis || now - firstSeenMillis >= reportAfterMs;
         }
 
         /// The override check against this episode's own last report (H3): the episode named, still open, no acceptance
@@ -742,9 +748,8 @@ public interface HoldRecords {
         }
 
         Option<Episode> find(String episode) {
-            return Option.from(episodes.stream()
-                                       .filter(known -> known.episode().equals(episode))
-                                       .findFirst());
+            return Option.from(episodes.stream().filter(known -> known.episode()
+                                                                      .equals(episode)).findFirst());
         }
 
         boolean latched() {
@@ -777,7 +782,7 @@ public interface HoldRecords {
 
         Drainer reported(HeldReport report, long now) {
             return find(report.episode()).map(_ -> changed(report.episode(),
-                                                               episode -> episode.reported(report)))
+                                                           episode -> episode.reported(report)))
                        .or(() -> unknownReported(report, now));
         }
 
@@ -796,14 +801,13 @@ public interface HoldRecords {
 
             return newer(episode)
                    ? opened(Episode.seededAt(episode, now))
-                   : withOlder(Episode.seededAt(episode, now)
-                                      .ended(Closing.supersededBy(current().map(Episode::episode)
-                                                                           .or(episode))));
+                   : withOlder(Episode.seededAt(episode, now).ended(Closing.supersededBy(current().map(Episode::episode)
+                                                                                                .or(episode))));
         }
 
         private boolean newer(String episode) {
             return current().map(known -> Episode.stamp(episode) > Episode.stamp(known.episode()))
-                            .or(true);
+                          .or(true);
         }
 
         private Drainer opened(Episode next) {
@@ -827,9 +831,7 @@ public interface HoldRecords {
 
         Drainer died() {
             return drainer(nodeId,
-                           episodes.stream()
-                                   .map(known -> known.ended(Closing.closedBy(Closer.DEATH)))
-                                   .toList(),
+                           episodes.stream().map(known -> known.ended(Closing.closedBy(Closer.DEATH))).toList(),
                            true);
         }
 
@@ -841,7 +843,8 @@ public interface HoldRecords {
         Drainer changed(String episode, Fn1<Episode, Episode> change) {
             return drainer(nodeId,
                            pruned(episodes.stream()
-                                          .map(known -> known.episode().equals(episode)
+                                          .map(known -> known.episode()
+                                                             .equals(episode)
                                                         ? change.apply(known)
                                                         : known)
                                           .toList()),
@@ -850,17 +853,17 @@ public interface HoldRecords {
 
         List<Raise> dueRaises(long now, long reportAfterMs) {
             return episodes.stream()
-                           .flatMap(episode -> episode.dueRaise(nodeId, now, reportAfterMs).stream())
+                           .flatMap(episode -> episode.dueRaise(nodeId, now, reportAfterMs)
+                                                      .stream())
                            .toList();
         }
 
         private static List<Episode> pruned(List<Episode> all) {
-            var newestDone = Option.from(all.stream()
-                                            .filter(Episode::done)
-                                            .reduce((_, later) -> later));
+            var newestDone = Option.from(all.stream().filter(Episode::done).reduce((_, later) -> later));
 
             return all.stream()
-                      .filter(episode -> !episode.done() || newestDone.filter(episode::equals).isPresent())
+                      .filter(episode -> !episode.done() || newestDone.filter(episode::equals)
+                                                                      .isPresent())
                       .toList();
         }
 
