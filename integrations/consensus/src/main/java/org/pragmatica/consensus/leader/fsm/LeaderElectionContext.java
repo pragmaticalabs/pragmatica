@@ -23,6 +23,7 @@ import java.util.stream.Stream;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
+import org.pragmatica.consensus.topology.TransportView;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
@@ -57,6 +58,10 @@ public final class LeaderElectionContext {
     /// so the election layer doesn't conclude "lost election" while Rabia is still resolving.
     public static final TimeSpan DEFAULT_MIN_PROPOSAL_TIMEOUT = TimeSpan.timeSpan(10).seconds();
     public static final int DEFAULT_STUCK_ELECTION_THRESHOLD = 10;
+    /// Bound on how long a view-free removal keeps a node out of the view while the transport still lists it (#3047).
+    /// A chosen value, not a measurement: the transport is re-read this long after the removal, so SWIM's verdict
+    /// stands meanwhile and a node SWIM wrongly removed is back within this bound.
+    public static final TimeSpan DEFAULT_REASSERT_PERIOD = TimeSpan.timeSpan(5).seconds();
     /// Grace window after [`LeaderElectionState.QuorumWaiting`] before the FSM gives up on
     /// observing a peer-committed leader and falls through to [`LeaderElectionState.Electing`] /
     /// [`LeaderElectionState.ReElecting`]. Sized to absorb the typical KV-sync propagation
@@ -242,6 +247,12 @@ public final class LeaderElectionContext {
     /// that delivery instead of electing on the grace's wall clock. Installed by the consensus wiring
     /// ([`#installKvSyncPending`]); the default reports no pending sync, which keeps the plain grace.
     private final AtomicReference<Supplier<Boolean>> kvSyncPending = new AtomicReference<>(() -> false);
+
+    /// The transport's current sequenced view (#3047), read by the re-assertion a removal arms. Absent until
+    /// [`#installTransportView`]: a host without a sequencing transport (local election, stubs) never re-asserts.
+    private final AtomicReference<Option<Supplier<Option<TransportView>>>> transportView = new AtomicReference<>(Option.none());
+
+    private final AtomicReference<TimeSpan> reassertPeriod = new AtomicReference<>(DEFAULT_REASSERT_PERIOD);
     /// Leader pre-vote (#1748). Absent until [`#enablePreVote`]: without it a follower that loses the leader
     /// re-elects immediately, which is what local-election mode and the stubs that never wire a network need.
     private final AtomicReference<Option<LeaderPreVote>> preVote = new AtomicReference<>(Option.none());
@@ -682,6 +693,14 @@ public final class LeaderElectionContext {
     /// this much, never forbid it.
     public TimeSpan kvSyncMaxWait() {
         return TimeSpan.timeSpan(kvSyncGraceDelay.millis() * KV_SYNC_MAX_WAIT_GRACES).millis();
+    }
+
+    /// Wires the transport's sequenced view (#3047), re-read `period` after a view-free removal. Production:
+    /// `ClusterNetwork#sequencedView`. Replaces the no-re-assertion default.
+    @Contract
+    public void installTransportView(Supplier<Option<TransportView>> view, TimeSpan period) {
+        transportView.set(Option.some(view));
+        reassertPeriod.set(period);
     }
 
     /// Wires the signal that this node's KV state is still catching up with the committed frontier

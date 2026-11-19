@@ -11,7 +11,6 @@
 package org.pragmatica.consensus.leader.fsm;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -31,6 +30,7 @@ import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
 import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
 import org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty;
 import org.pragmatica.consensus.topology.TransportObservation.PeerReconnected;
+import org.pragmatica.consensus.topology.TransportView;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -552,10 +552,14 @@ class PeerObservationOrderTest {
         assertThat(node.ctx.currentTopology()).as("the next transport view restores the node").containsExactlyElementsOf(ALL);
     }
 
-    @Disabled("needs periodic sequenced re-assertion")
+    /// #3047: the transport still lists the removed node, so the re-assertion a removal arms re-reads the transport view
+    /// under a fresh sequence and the node returns within the bound, with no other transport observation.
     @Test
     void removalAfterNewerRestore_nodeReturnsWithinBound() throws InterruptedException {
         node = new Node(LeaderElectionContext::dormant);
+        var sequence = new AtomicLong(6L);
+        node.ctx.installTransportView(() -> Option.some(TransportView.transportView(ALL, sequence.incrementAndGet())),
+                                      TimeSpan.timeSpan(200).millis());
         node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N3, List.of(N1, N2), 5L));
         node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N3, ALL, 6L));
 
