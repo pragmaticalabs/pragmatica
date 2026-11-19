@@ -1715,9 +1715,8 @@ class DHTRebalancerTest {
             }
 
             /// A nack that says "draining" is a holder lost: the run re-plans with the target now in L and pages the next node.
-            /// P1 (owed = the nodes gaining the key in V less its holders): the draining target is a named-prefix target, so the exit's
-            /// re-read re-plan pages it once more after the key is safe at the next node (the old rule skipped it as "safe at one
-            /// deliverer"): at most one extra page, so at most one extra loss; never an unbounded repeat.
+            /// ac517fb077: the loss is terminal for the target within the run (owed = planned minus delivered minus lost), so no
+            /// re-plan, the exit's re-read re-plan included, pages it again: one loss, exactly one send to it.
             @Test
             @Timeout(20)
             void drainingNackIsHolderLost() {
@@ -1731,9 +1730,9 @@ class DHTRebalancerTest {
                 var network = ScriptedNetwork.scripted((_, sent) -> drainingAt(target, sent, drainSet));
                 var run = direct(node, network, 1_500, 100, drainSet::get);
 
-                assertThat(run.run().holderLosses()).isBetween(1, 2);
-                assertThat(network.sends().stream().filter(sent -> sent.target().equals(target))).as("the draining target: no repeat beyond one re-plan")
-                                                                                                 .hasSizeLessThanOrEqualTo(2);
+                assertThat(run.run().holderLosses()).isEqualTo(1);
+                assertThat(network.sends().stream().filter(sent -> sent.target().equals(target))).as("the draining target: paged once, never again")
+                                                                                                 .hasSize(1);
                 assertThat(network.sends()).anyMatch(sent -> sent.target().equals(next));
                 assertThat(run.report().owed()).isZero();
             }

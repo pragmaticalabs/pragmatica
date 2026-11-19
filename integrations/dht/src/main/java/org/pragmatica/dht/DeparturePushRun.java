@@ -273,6 +273,8 @@ final class DeparturePushRun {
     private final Map<NodeId, Holder> holders = new HashMap<>();
     private final Map<NodeId, Integer> tenures = new HashMap<>();
     private final List<Page> pages = new ArrayList<>();
+    // The targets lost to a "draining" nack (ac517fb077): terminal within the run, so they leave every owed set ([#owedTargets]).
+    private final Set<NodeId> lost = new HashSet<>();
     // The one observation of the last re-plan (I1): the ring, its members V and L, read together; every target, tenure tag and
     // page of a re-plan, and every Safe decision until the next one, come from it.
     private ConsistentHashRing<NodeId> observed = ConsistentHashRing.consistentHashRing();
@@ -568,13 +570,15 @@ final class DeparturePushRun {
                                                   .add(key));
     }
 
-    /// Under `transitions`, P1, the ONE owed-to definition: the nodes that gain `key` in V ([#drainTargets], read from the last
-    /// observation), less its confirmed holders ([#safe] at that target). The plan, every re-plan and the cancel of a page compute
-    /// from it alone.
+    /// Under `transitions`, P1, the ONE owed-to definition: planned minus delivered minus lost. Planned: the nodes that gain `key`
+    /// in V ([#drainTargets], read from the last observation); delivered: its confirmed holders ([#safe] at that target); lost: the
+    /// targets that refused with a "draining" nack, terminal within the run, so no re-plan (the exit's re-read re-plan included)
+    /// pages them again. The plan, every re-plan and the cancel of a page compute from it alone; no caller filters again.
     private List<NodeId> owedTargets(DepartureKey key) {
         return drainTargets(key.stamp.key()).all()
                            .stream()
                            .filter(target -> !safe(key, target, false))
+                           .filter(target -> !lost.contains(target))
                            .toList();
     }
 
@@ -1016,6 +1020,14 @@ final class DeparturePushRun {
     }
 
     // --- acks ---
+    /// Under `transitions`: a "draining" nack (data page or probe) refuses the target for the rest of the run; it leaves the owed
+    /// set ([#owedTargets]).
+    private AttemptResult drained(NodeId target) {
+        lost.add(target);
+
+        return AttemptResult.FAILED;
+    }
+
     /// An ack for one of this run's pages. It counts (records a holder of the stamps its page carried) only when the page belongs
     /// to the target's current tenure, the target is in V, and the token matches the one recorded in that tenure. A "draining" nack
     /// or a token mismatch is a holder lost. Never a re-plan by itself.
@@ -1042,7 +1054,7 @@ final class DeparturePushRun {
         }
 
         if (ack.draining()) {
-            return AttemptResult.FAILED;
+            return drained(page.target);
         }
 
         var holder = holders.compute(page.target, (_, known) -> currentHolder(known, page, ack));
