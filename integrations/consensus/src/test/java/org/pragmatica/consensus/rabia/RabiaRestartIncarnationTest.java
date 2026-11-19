@@ -17,6 +17,7 @@ package org.pragmatica.consensus.rabia;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.StateMachine.Batch;
@@ -34,10 +35,12 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncRespo
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound1;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound2;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -61,6 +64,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class RabiaRestartIncarnationTest {
     private static final int A = 0, B = 1, C = 2;
     private final List<Cluster> clusters = new ArrayList<>();
+    @TempDir
+    Path markers;
 
     @AfterEach
     void stopAll() {
@@ -90,8 +95,10 @@ class RabiaRestartIncarnationTest {
         assertThat(inFlightToC).as("precondition: A's P ballots toward C are in flight").isNotEmpty();
         cluster.crash(A);
 
-        // A' restarts under the same id with no memory of its ballots and Y queued; B stays partitioned from everyone.
-        cluster.restart(A);
+        // A' restarts under the same id with no memory of its ballots and Y queued; B stays partitioned from everyone. A' is
+        // re-created on a wiped disk by whatever creates nodes, which asserts creation, so its first-boot marker reads NEVER
+        // and it may adopt on one live response (#1212).
+        cluster.restart(A, ParticipationMarker.fileBacked(markers.resolve("restarted-" + A), true));
         cluster.deliverable = d -> isPair(d, A, C);
         // A' synchronizes from C alone, which has not decided P, so A' re-enters P.
         cluster.pump(d -> isSync(d.message()));
@@ -141,11 +148,11 @@ class RabiaRestartIncarnationTest {
         Cluster() {
             for (int i = 0; i < 3; i++) {
                 machines.add(new TestStateMachine());
-                engines.add(create(i));
+                engines.add(create(i, Option.none()));
             }
         }
 
-        RabiaEngine<TestCommand> create(int index) {
+        RabiaEngine<TestCommand> create(int index, Option<ParticipationMarker> marker) {
             var topology = new TestTopologyManager(members.get(index), 3) {
                 @Override public Set<NodeId> coreNodes() { return Set.copyOf(members); }
                 @Override public boolean isConsensusMember(NodeId id) { return members.contains(id); }
@@ -169,7 +176,7 @@ class RabiaRestartIncarnationTest {
                 }
             };
             var engine = new RabiaEngine<>(topology, network, machines.get(index),
-                                           ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds()));
+                                           ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds(), marker));
             assertThat(engine.initializeVoters(new VoterConfiguration(0, new ClusterConfig(members))).isSuccess()).isTrue();
             return engine;
         }
@@ -191,9 +198,9 @@ class RabiaRestartIncarnationTest {
         }
 
         /// A fresh in-memory engine under the same NodeId: nothing it balloted before the crash survives.
-        void restart(int index) {
+        void restart(int index, ParticipationMarker marker) {
             machines.set(index, new TestStateMachine());
-            engines.set(index, create(index));
+            engines.set(index, create(index, Option.some(marker)));
             dead.remove(index);
             engines.get(index).clusterState(ClusterStateNotification.active());
             settle();
