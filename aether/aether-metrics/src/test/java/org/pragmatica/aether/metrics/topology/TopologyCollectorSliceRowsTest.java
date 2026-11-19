@@ -32,7 +32,7 @@ import org.pragmatica.serialization.Serializer;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #3411: the topology snapshot counts the slice distribution from the row source it is given (under FSM2 the current
-/// `SliceObservedKey` rows, [SliceRowSource#observed]), not from `SliceNodeKey` rows, which FSM2 never writes.
+/// `SliceObservedKey` rows, [SliceRowSource#observed]), not from `SliceNodeKey` rows, which no engine writes.
 class TopologyCollectorSliceRowsTest {
     private static final NodeId SELF = new NodeId("node-a");
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:orders-worker:1.0.0").unwrap();

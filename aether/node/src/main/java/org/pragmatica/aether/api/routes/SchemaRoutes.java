@@ -248,7 +248,7 @@ public final class SchemaRoutes implements RouteSource {
     /// re-arm race a slice that is seconds from going live. Counting ACTIVATING/ROUTING/ACTIVE alike
     /// is deliberately over-inclusive rather than under: a false-positive refusal costs the operator a
     /// retry, a false-negative would strand the very migration this guard exists to protect. The set is
-    /// [SliceState#isServing]; the rows are the engine's ([ManageableNode#sliceRows], #3411: FSM2 writes no
+    /// [SliceState#isServing]; the rows are the engine's ([ManageableNode#sliceRows], #3411: no engine writes a
     /// `SliceNodeKey` row, so a count over those read 0 and never refused).
     ///
     /// This count is a snapshot read against a live KV store with no lock spanning it and the

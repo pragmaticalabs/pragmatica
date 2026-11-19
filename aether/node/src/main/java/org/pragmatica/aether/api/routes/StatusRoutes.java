@@ -432,7 +432,7 @@ public final class StatusRoutes implements RouteSource {
         for (NodeId nodeId : metrics.keySet()) {
             nodeIds.add(nodeId.id());
         }
-        // #3411: the engine's per-node slice rows (FSM2 writes no `SliceNodeKey` row), so a node hosting only slices is listed.
+        // #3411: the engine's per-node slice rows (no engine writes a `SliceNodeKey` row), so a node hosting only slices is listed.
         node.sliceRows().forEachRow(node.kvStore(),
                                     (nodeId, _, _) -> nodeIds.add(nodeId.id()));
         var roleOverrides = collectRoleOverrides(node);

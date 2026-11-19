@@ -37,7 +37,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 /// #3411: under FSM2 (the default engine) the `/schema/migrate` re-arm of a COMPLETED record must be refused while slices of the record's
-/// owning blueprint are serving (#760 guard). The guard used to count `SliceNodeKey` rows, which FSM2 never writes, so on an FSM2 cluster it
+/// owning blueprint are serving (#760 guard). The guard used to count `SliceNodeKey` rows, which no engine writes, so it
 /// counted 0 and accepted the re-arm. Here a slice is brought to ACTIVE on three cores (FSM2 commits one `SliceObservedKey` row per core), a
 /// COMPLETED record owned by its blueprint is committed, and the re-arm is sent to every node: each must answer the typed refusal and the record
 /// must stay COMPLETED.
@@ -85,8 +85,6 @@ class SchemaMigrateGuardFsm2Test {
 
         for (var node : cluster.status().nodes()) {
             var response = post(node.mgmtPort(), "/api/v1/schema/migrate/" + DATASOURCE);
-
-            System.out.println("F3411 node=" + node.id() + " migrate response: " + response);
             assertThat(response).as("node %s: the re-arm of a COMPLETED schema serving %d ACTIVE slices", node.id(), NODES)
                                 .contains(REFUSAL);
         }

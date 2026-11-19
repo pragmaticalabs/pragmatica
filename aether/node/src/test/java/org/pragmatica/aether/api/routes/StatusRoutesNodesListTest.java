@@ -35,7 +35,7 @@ import org.pragmatica.serialization.Serializer;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #3411: `GET /api/nodes` lists every node that hosts a slice, read through the engine's per-node slice rows. Under FSM2
-/// those are `SliceObservedKey` rows ([SliceRowSource#observed]); the route used to scan `SliceNodeKey`, which FSM2 never
+/// those are `SliceObservedKey` rows ([SliceRowSource#observed]); the route used to scan `SliceNodeKey`, which no engine
 /// writes, so a node known only by the slices it hosts (not the local node, not a connected peer, no metrics yet) was dropped.
 class StatusRoutesNodesListTest {
     private static final NodeId SELF = new NodeId("node-a");
