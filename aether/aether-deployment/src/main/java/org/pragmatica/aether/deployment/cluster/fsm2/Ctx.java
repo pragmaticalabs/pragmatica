@@ -62,6 +62,11 @@ final class Ctx {
         return emit(new ClusterEffect.Warn(code, subject, message));
     }
 
+    /// A warning backed by a committed row: stamped with the row's key code and revision (#3203).
+    Ctx warn(String code, String subject, String message, String rowCode, long revision) {
+        return emit(new ClusterEffect.Warn(code, subject, message, rowCode, revision));
+    }
+
     Ctx route(RoutedEvent event) {
         return emit(new ClusterEffect.Route(event));
     }

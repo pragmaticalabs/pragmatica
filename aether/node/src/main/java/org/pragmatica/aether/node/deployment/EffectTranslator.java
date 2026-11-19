@@ -79,6 +79,7 @@ public final class EffectTranslator {
     private final Targets targets;
     private final Map<String, AtomicLong> gauges = new ConcurrentHashMap<>();
     private final Map<String, List<String>> blockedSlices = new ConcurrentHashMap<>();
+    private final Map<String, Long> newestRevision = new ConcurrentHashMap<>();
 
     private EffectTranslator(Targets targets) {
         this.targets = targets;
@@ -206,7 +207,7 @@ public final class EffectTranslator {
     private Unit translate(ClusterEffect effect) {
         switch (effect) {
             case ClusterEffect.Route route -> targets.events().accept(clusterEvent(route.event()));
-            case ClusterEffect.Warn warn -> raise(warn.code(), warn.subject(), warn.message());
+            case ClusterEffect.Warn warn -> ordered(warn);
             case ClusterEffect.Audit audit -> audited(audit.action(), audit.detail());
             case ClusterEffect.Log line -> clusterLog.info("{}", line.message());
             case ClusterEffect.Metric metric -> counted(metric.name(), metric.tags(), metric.delta());
@@ -290,6 +291,29 @@ public final class EffectTranslator {
     }
 
     // -- shared -----------------------------------------------------------------------------------------------------
+    /// #3203: a family warning is delivered only when its row revision is not older than the newest one delivered for its
+    /// `(rowCode, subject)`; an unstamped warning (revision 0) is never reordered. Revisions grow per key with every committed write, so
+    /// an older one is a deposed leader's late settle. Equal revisions pass: the opener and the recovery of one transition are one write.
+    private void ordered(ClusterEffect.Warn warn) {
+        if (warn.revision() == 0L || fresh(warn)) {
+            raise(warn.code(), warn.subject(), warn.message());
+        } else {
+            log.info("{} {}: dropped, revision {} is older than the newest delivered for {}",
+                     warn.code(),
+                     warn.subject(),
+                     warn.revision(),
+                     warn.rowCode());
+        }
+    }
+
+    private boolean fresh(ClusterEffect.Warn warn) {
+        var newest = newestRevision.merge(warn.rowCode() + "|" + warn.subject(),
+                                          warn.revision(),
+                                          Math::max);
+
+        return newest == warn.revision();
+    }
+
     private void raise(String code, String subject, String message) {
         Arrays.stream(OperatorWarningCode.values())
               .filter(known -> known.code()

@@ -44,4 +44,27 @@ class WarningLateSettleOrderingTest {
 
         assertThat(ctx.effects()).isEmpty();
     }
+
+    /// Positive control: the same opener with no newer committed row is delivered, stamped with its revision.
+    @Test
+    void opener_withNoNewerCommittedRow_isDeliveredWithItsRevision() {
+        var m = new ClusterModel();
+        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
+
+        Warnings.accepted(m, ctx, draft(Option.none(), row(true, "opener", 1L)));
+
+        assertThat(ctx.effects()).containsExactly(new ClusterEffect.Warn(OPENER, ORDERS.asString(), "opener", OPENER, 1L));
+    }
+
+    /// Red when the deposed leader's late recovery (revision 2) is delivered after the successor re-raised the key (revision 3).
+    @Test
+    void lateRecovery_afterTheSuccessorReRaisedTheKey_isNotDelivered() {
+        var m = new ClusterModel();
+        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
+
+        Warnings.onPut(m, ctx, KEY, row(true, "re-raised by the successor", 3L));
+        Warnings.accepted(m, ctx, draft(Option.some(row(true, "opener", 1L)), row(false, "late recovery", 2L)));
+
+        assertThat(ctx.effects()).isEmpty();
+    }
 }

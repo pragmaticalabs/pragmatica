@@ -39,8 +39,14 @@ public sealed interface ClusterEffect {
     /// Route an event to the rest of the node.
     record Route(RoutedEvent event) implements ClusterEffect {}
 
-    /// An operator warning (spec 1.3), by code, about a subject.
-    record Warn(String code, String subject, String message) implements ClusterEffect {}
+    /// An operator warning (spec 1.3), by code, about a subject. A family warning (an opener or a recovery of a committed WARNINGS row)
+    /// carries the row's key code (`rowCode`) and its per-key `revision` (#3203): the sink drops a warning older than the newest revision
+    /// it delivered for that `(rowCode, subject)`. `rowCode` is empty and `revision` 0 for a warning no row backs: never reordered.
+    record Warn(String code, String subject, String message, String rowCode, long revision) implements ClusterEffect {
+        public Warn(String code, String subject, String message) {
+            this(code, subject, message, "", 0L);
+        }
+    }
 
     /// An audit line.
     record Audit(String action, String detail) implements ClusterEffect {}

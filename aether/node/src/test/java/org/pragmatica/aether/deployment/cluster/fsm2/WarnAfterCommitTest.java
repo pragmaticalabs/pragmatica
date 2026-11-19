@@ -173,7 +173,7 @@ class WarnAfterCommitTest {
                                                                          row),
                                                 new KVCommand.Mutation<>(KEY, Option.<AetherValue>none(), row))));
 
-        assertThat(ctx.effects()).containsExactly(new ClusterEffect.Warn(OPENER, ORDERS.asString(), "a family"));
+        assertThat(ctx.effects()).containsExactly(new ClusterEffect.Warn(OPENER, ORDERS.asString(), "a family", OPENER, 1L));
     }
 
     /// #3274: a raise on a key absent from the mirror drafts a write of the key over "no row" and publishes nothing at once: the opener

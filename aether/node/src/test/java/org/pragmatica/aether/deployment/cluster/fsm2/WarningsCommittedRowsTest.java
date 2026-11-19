@@ -584,7 +584,7 @@ class WarningsCommittedRowsTest {
                         .replacement()
                         .map(FsmWarningValue.class::cast)
                         .map(FsmWarningValue::members)).isEqualTo(Option.some(Map.of(CORE_1.id(), "sig-own")));
-        assertThat(ctx.effects()).containsExactly(new ClusterEffect.Warn(Warnings.SCHEMA_HOLD, ORDERS.asString(), "own hold"));
+        assertThat(ctx.effects()).containsExactly(new ClusterEffect.Warn(Warnings.SCHEMA_HOLD, ORDERS.asString(), "own hold", Warnings.SCHEMA_HOLD, 2L));
     }
 
     /// A new SCHEMA_HOLD signature on a held member is a new opener: the raise passes and takes the text. Red when the opener check
@@ -670,21 +670,21 @@ class WarningsCommittedRowsTest {
     /// replacement's message. Red when any of the four is not announced.
     @Test
     void accepted_replacementHoldingANewMemberOrValue_emitsTheOpener() {
-        var opener = new ClusterEffect.Warn(Warnings.STRAY, ORDERS.asString(), "new");
+        var opener = new ClusterEffect.Warn(Warnings.STRAY, ORDERS.asString(), "new", Warnings.STRAY, 1L);
 
         assertThat(notified(Option.none(), strays(true, "new", CORE_1), STRAY_KEY)).containsExactly(opener);
         assertThat(notified(Option.some(strays(false, "closed")), strays(true, "new", CORE_1), STRAY_KEY)).containsExactly(opener);
         assertThat(notified(Option.some(strays(true, "one", CORE_1)), strays(true, "new", CORE_1, CORE_3), STRAY_KEY)).containsExactly(opener);
         assertThat(notified(Option.some(row(FsmHarness.SELF, INCARNATION, Map.of(CORE_1.id(), "s1"), true, "h1")),
                             row(FsmHarness.SELF, INCARNATION, Map.of(CORE_1.id(), "s2"), true, "h2"),
-                            HOLD_KEY)).containsExactly(new ClusterEffect.Warn(Warnings.SCHEMA_HOLD, ORDERS.asString(), "h2"));
+                            HOLD_KEY)).containsExactly(new ClusterEffect.Warn(Warnings.SCHEMA_HOLD, ORDERS.asString(), "h2", Warnings.SCHEMA_HOLD, 1L));
     }
 
     /// Rule E, the recovery: the expected open and the replacement closed, with the replacement's message. Red when the close is silent.
     @Test
     void accepted_openToClosed_emitsTheRecovery() {
         assertThat(notified(Option.some(strays(true, "open", CORE_1)), strays(false, "gone"), STRAY_KEY))
-                  .containsExactly(new ClusterEffect.Warn(Warnings.FAMILIES.get(Warnings.STRAY), ORDERS.asString(), "gone"));
+                  .containsExactly(new ClusterEffect.Warn(Warnings.FAMILIES.get(Warnings.STRAY), ORDERS.asString(), "gone", Warnings.STRAY, 1L));
     }
 
     /// Rule E, nothing: a member leaves while another stays, and a rewrite of the same content. Red when either is announced.

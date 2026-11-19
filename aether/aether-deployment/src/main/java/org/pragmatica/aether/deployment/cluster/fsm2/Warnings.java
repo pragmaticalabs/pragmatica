@@ -629,21 +629,31 @@ public sealed interface Warnings {
 
         var family = TABLE.get(key.code());
         var expected = rowOf(mutation.expected());
-        var replacement = rowOf(mutation.replacement());
+        var replacement = rowOf(mutation.replacement()).filter(row -> !superseded(m, key, row));
         var before = expected.map(row -> rowHeld(family, row)).or(Map.of());
         var after = replacement.map(row -> rowHeld(family, row)).or(Map.of());
 
         if (after.entrySet()
                  .stream()
                  .anyMatch(entry -> !Option.option(before.get(entry.getKey())).equals(Option.some(entry.getValue())))) {
-            replacement.onPresent(row -> ctx.warn(key.code(), key.subject(), row.message()));
+            replacement.onPresent(row -> ctx.warn(key.code(), key.subject(), row.message(), key.code(), row.revision()));
         } else if (!before.isEmpty() && after.isEmpty()) {
             replacement.onPresent(row -> ctx.warn(FAMILIES.get(key.code()),
                                                   key.subject(),
-                                                  row.message()));
+                                                  row.message(),
+                                                  key.code(),
+                                                  row.revision()));
         }
 
         return m;
+    }
+
+    /// #3203: the mirror already holds a newer committed row of the key, so the successor (or a later write) has spoken since this write
+    /// was drafted: its settlement is late and must not reach the operator. Revisions grow per key with every committed write.
+    private static boolean superseded(ClusterModel m, FsmWarningKey key, FsmWarningValue row) {
+        return m.warningRows.get(key)
+                            .map(held -> held.revision() > row.revision())
+                            .or(false);
     }
 
     private static Option<FsmWarningValue> rowOf(Option<AetherValue> value) {
