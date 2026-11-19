@@ -172,7 +172,8 @@ public final class SchemaRoutes implements RouteSource {
         var kvStore = node.kvStore();
 
         node.sliceRows()
-            .forEachRow(kvStore, (_, artifact, state) -> collectIfHeldBySchema(schema, artifact, state, kvStore, held));
+            .forEachRow(kvStore,
+                        (_, artifact, state) -> collectIfHeldBySchema(schema, artifact, state, kvStore, held));
 
         return List.copyOf(held);
     }
@@ -259,19 +260,19 @@ public final class SchemaRoutes implements RouteSource {
     /// already-serving version), not to provide a linearizable barrier.
     private int activeSliceCount(BlueprintId owner) {
         var count = new AtomicInteger();
-
         var node = nodeSupplier.get();
 
         node.sliceRows()
-            .forEachRow(node.kvStore(), (_, artifact, state) -> countIfActiveAndOwnedBy(owner, artifact, state, count));
+            .forEachRow(node.kvStore(),
+                        (_, artifact, state) -> countIfActiveAndOwnedBy(owner, artifact, state, count));
 
         return count.get();
     }
 
     private void countIfActiveAndOwnedBy(BlueprintId owner, Artifact artifact, SliceState state, AtomicInteger count) {
         if (state.isServing() && sliceOwner(artifact).map(actualOwner -> actualOwner.base()
-                                                                               .equals(owner.base()))
-                                             .or(false)) {
+                                                                                    .equals(owner.base()))
+                                           .or(false)) {
             count.incrementAndGet();
         }
     }
