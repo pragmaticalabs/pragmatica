@@ -4,15 +4,40 @@
 
 package org.pragmatica.aether.slice;
 
+import java.util.Arrays;
 import java.util.Locale;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class SliceStateTest {
+
+    private static final Set<SliceState> CLASSIFIED = Set.of(SliceState.LOAD, SliceState.LOADING, SliceState.LOADED,
+                                                             SliceState.ACTIVATE, SliceState.ACTIVATING, SliceState.ROUTING,
+                                                             SliceState.ACTIVE, SliceState.DEACTIVATE, SliceState.DEACTIVATING,
+                                                             SliceState.FAILED, SliceState.UNLOAD, SliceState.UNLOADING,
+                                                             SliceState.UNKNOWN);
+
+    @ParameterizedTest
+    @CsvSource({"LOAD,false", "LOADING,false", "LOADED,false", "ACTIVATE,false", "ACTIVATING,true", "ROUTING,true",
+                "ACTIVE,true", "DEACTIVATE,false", "DEACTIVATING,false", "FAILED,false", "UNLOAD,false",
+                "UNLOADING,false", "UNKNOWN,false"})
+    void isServing_isTrueOnlyForActivatingRoutingActive(SliceState state, boolean expected) {
+        assertThat(state.isServing()).isEqualTo(expected);
+    }
+
+    @Test
+    void isServing_classificationCoversEveryState() {
+        assertThat(CLASSIFIED).as("a new SliceState must be classified in isServing_isTrueOnlyForActivatingRoutingActive")
+                              .isEqualTo(Arrays.stream(SliceState.values()).collect(Collectors.toSet()));
+    }
 
     @Test
     void transitional_states_have_timeouts() {

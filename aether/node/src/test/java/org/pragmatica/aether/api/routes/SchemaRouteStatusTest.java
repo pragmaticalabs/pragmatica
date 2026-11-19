@@ -362,6 +362,28 @@ class SchemaRouteStatusTest {
                       .isEqualTo(HttpStatus.CONFLICT);
         }
 
+        /// A row of the schema's own blueprint that is not serving (LOADED waits at the gate, it occupies nothing) must not
+        /// block a re-migration: pins `SliceState.isServing` as the guard's filter, not "any row of the blueprint".
+        @Test
+        void migrateRoute_succeeds_whenOwnedSliceIsInNonServingState() {
+            seed(SchemaStatus.COMPLETED);
+            seedSliceInState(ACTIVE_SLICE, OWNER, SliceObservedState.LOADED);
+
+            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("A LOADED slice of the owning blueprint serves nothing and must not block re-migration: "
+                                                                                                                    + cause.message()));
+        }
+
+        /// Rule under test: a serving row whose artifact has no owner is not counted (unowned means not provably this
+        /// blueprint's), so the migration proceeds. This is the current default; flipping it must be a deliberate change.
+        @Test
+        void migrateRoute_succeeds_whenServingSliceHasNoOwner() {
+            seed(SchemaStatus.COMPLETED);
+            seedSliceInState(ACTIVE_SLICE, Option.<BlueprintId>none(), SliceObservedState.ACTIVE);
+
+            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("A serving slice with no owner must not block re-migration: "
+                                                                                                                    + cause.message()));
+        }
+
         /// #760/#724 review round 2 item l pinning test — before the fix, `guardReactivation` special-
         /// cased only COMPLETED and let every other status (PENDING included) fall through to
         /// `writeMigratingStatus`, silently re-arming a PENDING record to MIGRATING with no dispatch
@@ -887,11 +909,15 @@ class SchemaRouteStatusTest {
     /// The row is the one the FSM2 node commits (`SliceObservedKey(self, artifact)` -> `SliceObservedValue`), with an unknown
     /// boot token (0), which the shared read takes as current.
     private void seedSliceInState(String artifactBaseString, BlueprintId owner, SliceObservedState state) {
+        seedSliceInState(artifactBaseString, Option.some(owner), state);
+    }
+
+    private void seedSliceInState(String artifactBaseString, Option<BlueprintId> owner, SliceObservedState state) {
         var artifactBase = ArtifactBase.artifactBase(artifactBaseString).unwrap();
         var artifact = Artifact.artifact(artifactBase, SLICE_VERSION);
 
         store.put(SliceTargetKey.sliceTargetKey(artifactBase),
-                  SliceTargetValue.sliceTargetValue(SLICE_VERSION, 1, Option.some(owner)));
+                  SliceTargetValue.sliceTargetValue(SLICE_VERSION, 1, owner));
         store.put(SliceObservedKey.sliceObservedKey(NODE, artifact), observedRow(state));
     }
 
