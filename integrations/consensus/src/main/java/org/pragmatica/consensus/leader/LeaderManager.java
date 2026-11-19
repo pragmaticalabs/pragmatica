@@ -535,9 +535,14 @@ public interface LeaderManager {
         /// notification (#3044). The view is applied first, through the same fence the FSM uses: a stale eviction
         /// (older than a view already applied) neither adopts nor dispatches. An applied one adopts from the STORED
         /// view, then dispatches; the FSM's own `applyTopology` finds the event already applied, so `Led` does not
-        /// lose the leader the adoption has just moved.
+        /// lose the leader the adoption has just moved. An eviction whose eligible view is EMPTY adopts nothing (#3092):
+        /// the stored view keeps its content under an empty view and still holds the evicted leader, so adopting from
+        /// it would re-adopt a node absent from the eligible view. It goes straight to the FSM, which applies the view
+        /// through the same fence and loses the leader (re-election pending).
         private void disconnectLocally(ClusterFsmEvent.NodeGone nodeGone) {
-            if (context.applyTopology(nodeGone)) {
+            if (nodeGone.topology().isEmpty()) {
+                fsm.dispatch(nodeGone);
+            } else if (context.applyTopology(nodeGone)) {
                 electLocallyIfPossible();
                 fsm.dispatch(nodeGone);
             }
