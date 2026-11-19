@@ -176,7 +176,7 @@ class DhtDeparturePushTest {
     /// risk; replicated keys unconfirmed are repaired from their survivor and are not.
     @Test
     void outcome_soleCopyKeysUnconfirmed_isCompletedWithDataAtRisk() {
-        assertThat(DhtDeparturePush.outcome(new DeparturePushReport(1, 0, true))).isEqualTo(DepartureOutcome.COMPLETED_WITH_DATA_AT_RISK);
+        assertThat(DhtDeparturePush.outcome(DeparturePushReport.departurePushReport(1, 0))).isEqualTo(DepartureOutcome.COMPLETED_WITH_DATA_AT_RISK);
     }
 
     @Test
@@ -186,7 +186,7 @@ class DhtDeparturePushTest {
 
     @Test
     void outcome_onlyReplicatedKeysUnconfirmed_isCompleted() {
-        assertThat(DhtDeparturePush.outcome(new DeparturePushReport(0, 3, true))).isEqualTo(DepartureOutcome.COMPLETED);
+        assertThat(DhtDeparturePush.outcome(DeparturePushReport.departurePushReport(0, 3))).isEqualTo(DepartureOutcome.COMPLETED);
     }
 
     @Test

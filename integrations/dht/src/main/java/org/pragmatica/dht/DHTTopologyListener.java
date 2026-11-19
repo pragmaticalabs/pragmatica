@@ -91,6 +91,7 @@ public final class DHTTopologyListener {
         departing.remove(addedNodeId);
         log.info("DHT: Node added {}, updating ring", addedNodeId.id());
         node.changeRing(ring -> ring.addNode(addedNodeId));
+        rebalancer.onPresent(DHTRebalancer::onViewChange);
         antiEntropy.onPresent(DHTAntiEntropy::synchronizeNow);
     }
 
@@ -156,6 +157,7 @@ public final class DHTTopologyListener {
         log.info("DHT: Node {} recovered from DEPARTING, re-adding to ring", recoveredNodeId.id());
         departing.remove(recoveredNodeId);
         node.changeRing(ring -> ring.addNode(recoveredNodeId));
+        rebalancer.onPresent(DHTRebalancer::onViewChange);
         // Same shape as a join: the re-added node counts toward RF again; a round settles what it
         // missed while pruned (issue #420).
         antiEntropy.onPresent(DHTAntiEntropy::synchronizeNow);
@@ -197,6 +199,7 @@ public final class DHTTopologyListener {
     private void removeFromRing(NodeId removedNodeId) {
         log.info("DHT: Node removed {}, updating ring", removedNodeId.id());
         node.changeRing(ring -> ring.removeNode(removedNodeId));
+        rebalancer.onPresent(DHTRebalancer::onViewChange);
         rebalancer.onPresent(r -> r.onNodeRemoved(removedNodeId));
         antiEntropy.onPresent(DHTAntiEntropy::catchUpNow);
     }

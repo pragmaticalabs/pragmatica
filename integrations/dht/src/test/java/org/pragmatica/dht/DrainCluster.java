@@ -120,8 +120,8 @@ final class DrainCluster {
         };
         drainers.forEach(d -> pushes.add(members.get(d).rebalancer()
                                                 .pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + BUDGET.nanos()),
-                                                                 DeparturePushTuning.forBudget(BUDGET),
-                                                                 drainSet,
+                                                                 DeparturePushes.tuningFor(BUDGET),
+                                                                 () -> drainSet,
                                                                  observer)));
         release().forEach(e -> route(e.getKey(), e.getValue()));
         var bound = BUDGET.plus(TimeSpan.timeSpan(5).seconds());
@@ -149,7 +149,9 @@ final class DrainCluster {
             sentTo.add(target);
             entriesTo.merge(target, response.entries().size(), Integer::sum);
             if (target.equals(removeOnFirstSend)) {
+                // As DHTTopologyListener.removeFromRing: prune the ring, then onViewChange (#3345's re-plan trigger).
                 members.get(from).node().ring().removeNode(target);
+                members.get(from).rebalancer().onViewChange();
                 removeOnFirstSend = null;
             }
         }
