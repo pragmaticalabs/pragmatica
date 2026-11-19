@@ -131,4 +131,13 @@ class SystemTagsLedgerTest {
                                                                                                                                       tag,
                                                                                                                                       LEDGER));
     }
+
+    /// EVIDENCE ONLY (#420 red row T12, design r7 Q5): ArtifactContentValue's tag moves to the assigned block.
+    @Test
+    void artifactContentValue_movedToAssignedBlock() {
+        var tag = SystemTags.TAGS.get("org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue");
+
+        assertTrue(tag != null, "PRECONDITION ArtifactContentValue is pinned in SystemTags.TAGS");
+        assertTrue(tag >= 2990 && tag <= 2999, "ArtifactContentValue's tag must be in 2990..2999 but is " + tag);
+    }
 }

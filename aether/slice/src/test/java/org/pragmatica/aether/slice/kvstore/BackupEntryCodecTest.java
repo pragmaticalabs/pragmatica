@@ -295,6 +295,37 @@ class BackupEntryCodecTest {
             assertThat(FIXTURES).allMatch(fixture -> BackupEntryCodec.isBackedUp(fixture.key()));
         }
 
+        // EVIDENCE ONLY (#420 red row T11, design r7 Q5): artifact keys leave the backup (RR-4 / D-6).
+        @Test
+        void T11a_encode_hasNoArtifactLine() {
+            var artifactFixtures = FIXTURES.stream()
+                                           .filter(f -> f.key() instanceof AetherKey.ArtifactContentKey || f.key() instanceof AetherKey.ArtifactVersionsKey)
+                                           .toList();
+            var entries = new HashMap<AetherKey, AetherValue>();
+
+            artifactFixtures.forEach(f -> entries.put(f.key(), f.value()));
+            assertThat(artifactFixtures).as("PRECONDITION the fixtures carry both artifact keys").hasSize(2);
+
+            var encoded = CODEC.encode(REVISION, entries);
+
+            assertThat(encoded.isSuccess()).as("PRECONDITION encode succeeds: " + encoded).isTrue();
+            assertThat(entryLines(encoded.unwrap())).as("T11a the encoded document has no artifact line").isEmpty();
+        }
+
+        @Test
+        void T11b_decode_refusesAnArtifactLine() {
+            var fixture = FIXTURES.stream()
+                                  .filter(f -> f.key() instanceof AetherKey.ArtifactContentKey)
+                                  .findFirst()
+                                  .orElseThrow();
+            var document = sealedDocument(line(fixture.value(), fixture.key().asString()));
+            var failures = failures(CODEC.decode(document));
+
+            assertThat(failures).as("T11b decode of a document with an artifact line must fail").isNotEmpty();
+            assertThat(failures).as("T11b ... with KeyNotBackedUp").singleElement()
+                                .isInstanceOf(BackupError.KeyNotBackedUp.class);
+        }
+
         /// A hand-edited document cannot smuggle node-scoped state into a restore.
         @Test
         void decode_refusesANodeScopedConfigEntry() {
