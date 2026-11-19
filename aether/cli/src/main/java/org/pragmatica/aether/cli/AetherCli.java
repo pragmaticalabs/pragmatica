@@ -781,6 +781,14 @@ public class AetherCli implements Runnable {
         return "{\"error\":\"HTTP " + response.statusCode() + ": " + escaped + "\"}";
     }
 
+    private static final String FORCE_REAPPLY_DESCRIPTION = "Accept re-applying schema versions an operator undid or baselined (refused with 409 otherwise)";
+
+    private static String forceField(boolean force) {
+        return force
+               ? ",\"force\":true"
+               : "";
+    }
+
     private static String escapeJsonValue(String s) {
         if (s == null) return "";
 
@@ -2363,13 +2371,16 @@ public class AetherCli implements Runnable {
             @CommandLine.Option(names = "--timeout", description = "Timeout in seconds when waiting", defaultValue = "300")
             private int timeoutSeconds;
 
+            @CommandLine.Option(names = "--force", description = FORCE_REAPPLY_DESCRIPTION)
+            private boolean force;
+
             @Override
             @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
                 var fullCoords = coords.split(":").length == 3
                                  ? coords + ":blueprint"
                                  : coords;
-                var body = "{\"artifact\":\"" + escapeJsonValue(fullCoords) + "\"}";
+                var body = "{\"artifact\":\"" + escapeJsonValue(fullCoords) + "\"" + forceField(force) + "}";
                 var response = blueprintParent.parent.post(BLUEPRINT_DEPLOY, body);
                 var errorCode = OutputFormatter.checkResponseError(response,
                                                                    blueprintParent.parent.outputOptions(),
@@ -2438,6 +2449,9 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Artifact coordinates (group:artifact:version)")
             private String coordinates;
 
+            @CommandLine.Option(names = "--force", description = FORCE_REAPPLY_DESCRIPTION)
+            private boolean force;
+
             @Override
             @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
@@ -2450,7 +2464,7 @@ public class AetherCli implements Runnable {
                 }
 
                 var fullCoords = coordinates + ":blueprint";
-                var body = "{\"artifact\":\"" + escapeJsonValue(fullCoords) + "\"}";
+                var body = "{\"artifact\":\"" + escapeJsonValue(fullCoords) + "\"" + forceField(force) + "}";
                 var response = blueprintParent.parent.post(BLUEPRINT_PUBLISH_ARTIFACT, body);
                 var errorCode = OutputFormatter.checkResponseError(response,
                                                                    blueprintParent.parent.outputOptions(),

@@ -29,6 +29,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaMigrationLockKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
@@ -463,11 +464,20 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                             SchemaStatus.COMPLETED,
                                                             value.artifactCoords(),
                                                             value.owningBlueprint(),
-                                                            0);
+                                                            0,
+                                                            reachedBy(operation));
         KVCommand<AetherKey> command = new Put<>(key, updated);
 
         return cluster.apply(List.of(command))
                       .mapToUnit();
+    }
+
+    /// #834: the outcome of an undo or baseline is the version an operator left behind, and a republish declaring a higher one is
+    /// guarded by it.
+    private static SchemaReach reachedBy(String operation) {
+        return "baseline".equals(operation)
+               ? SchemaReach.BASELINED
+               : SchemaReach.UNDONE;
     }
 
     /// A synthetic marker, not a claim about which real script file ran: `appliedCount` can be
@@ -1103,7 +1113,8 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                             newStatus,
                                                             current.artifactCoords(),
                                                             current.owningBlueprint(),
-                                                            current.attemptCount());
+                                                            current.attemptCount(),
+                                                            current.reachedBy());
         KVCommand<AetherKey> command = new Put<>(key, updated);
 
         return cluster.apply(List.of(command))
@@ -1121,7 +1132,8 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                             newStatus,
                                                             current.artifactCoords(),
                                                             current.owningBlueprint(),
-                                                            attemptCount);
+                                                            attemptCount,
+                                                            current.reachedBy());
         KVCommand<AetherKey> command = new Put<>(key, updated);
 
         return cluster.apply(List.of(command))

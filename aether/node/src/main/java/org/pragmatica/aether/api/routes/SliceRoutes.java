@@ -90,7 +90,8 @@ public final class SliceRoutes implements RouteSource {
 
     record ScaleRequest(String artifact, Integer instances, String placement) {}
 
-    record BlueprintDeployRequest(String artifact) {}
+    /// `force` (#834): accept a publish that re-applies schema versions an operator undid or baselined; absent means false.
+    record BlueprintDeployRequest(String artifact, boolean force) {}
 
     @Override
     public Stream<Route<?>> routes() {
@@ -260,7 +261,9 @@ public final class SliceRoutes implements RouteSource {
                      .async()
                      .flatMap(coords -> nodeSupplier.get()
                                                     .blueprintService()
-                                                    .publishFromArtifact(coords))
+                                                    .publishFromArtifact(coords,
+                                                                             false,
+                                                                             request.force()))
                      .withSuccess(this::onBlueprintActivated)
                      .map(this::deployBlueprintResponse)
                      .onFailure(cause -> log.warn("Blueprint artifact deploy failed: {}",
@@ -273,7 +276,9 @@ public final class SliceRoutes implements RouteSource {
                      .async()
                      .flatMap(coords -> nodeSupplier.get()
                                                     .blueprintService()
-                                                    .publishFromArtifact(coords, true))
+                                                    .publishFromArtifact(coords,
+                                                                             true,
+                                                                             request.force()))
                      .map(published -> blueprintResponse("published", published))
                      .onSuccess(r -> log.info("Blueprint {} published (register-only — not activated)",
                                               r.blueprint()))

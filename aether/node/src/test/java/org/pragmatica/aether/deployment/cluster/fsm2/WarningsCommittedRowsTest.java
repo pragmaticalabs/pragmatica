@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
@@ -400,7 +401,7 @@ class WarningsCommittedRowsTest {
     }
 
     private static SchemaVersionValue schema(SchemaStatus status) {
-        return new SchemaVersionValue("ds", 1, "m1", status, "g:a:1", BLUEPRINT, 2, FsmHarness.START_WALL);
+        return new SchemaVersionValue("ds", 1, "m1", status, "g:a:1", BLUEPRINT, 2, FsmHarness.START_WALL, SchemaReach.MIGRATED);
     }
 
     /// Hold-test row SCHEMA_UNKNOWN: admitted while the status is UNKNOWN; refused when the record is gone, and closed with "the status

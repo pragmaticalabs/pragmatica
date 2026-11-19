@@ -444,7 +444,9 @@ public final class SchemaRoutes implements RouteSource {
                                                             current.lastMigration(),
                                                             SchemaStatus.MIGRATING,
                                                             current.artifactCoords(),
-                                                            current.owningBlueprint());
+                                                            current.owningBlueprint(),
+                                                            0,
+                                                            current.reachedBy());
 
         return applySchemaUpdate(datasource, updated).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
                                                                                                            "Migration triggered for " + datasource));
@@ -478,7 +480,8 @@ public final class SchemaRoutes implements RouteSource {
                                                             SchemaStatus.PENDING,
                                                             current.artifactCoords(),
                                                             current.owningBlueprint(),
-                                                            0);
+                                                            0,
+                                                            current.reachedBy());
 
         return applySchemaUpdate(datasource, updated).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
                                                                                                            "Retry initiated for " + datasource));

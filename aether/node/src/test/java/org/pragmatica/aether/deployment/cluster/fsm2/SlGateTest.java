@@ -10,6 +10,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
@@ -85,7 +86,8 @@ class SlGateTest {
                                           "org.example:migrations:1.0.0",
                                           blueprintId(APP),
                                           0,
-                                          FsmHarness.START_WALL);
+                                          FsmHarness.START_WALL,
+                                          SchemaReach.MIGRATED);
         }
 
         private FsmHarness heldByPendingSchema() {
