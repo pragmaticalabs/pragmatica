@@ -273,7 +273,7 @@ final class DeparturePushRun {
     private final Map<NodeId, Holder> holders = new HashMap<>();
     private final Map<NodeId, Integer> tenures = new HashMap<>();
     private final List<Page> pages = new ArrayList<>();
-    // The targets lost to a "draining" nack (ac517fb077): terminal within the run, so they leave every owed set ([#owedTargets]).
+    // The targets lost to a "draining" nack to a data page (ac517fb077): terminal within the run, so they leave every owed set ([#owedTargets]).
     private final Set<NodeId> lost = new HashSet<>();
     // The one observation of the last re-plan (I1): the ring, its members V and L, read together; every target, tenure tag and
     // page of a re-plan, and every Safe decision until the next one, come from it.
@@ -1020,8 +1020,9 @@ final class DeparturePushRun {
     }
 
     // --- acks ---
-    /// Under `transitions`: a "draining" nack (data page or probe) refuses the target for the rest of the run; it leaves the owed
-    /// set ([#owedTargets]).
+    /// Under `transitions`: a "draining" nack to a data page refuses the target for the rest of the run; it leaves the owed set
+    /// ([#owedTargets]). A probe's draining answer is a probe failure, not this: the holder is cleared and re-paged
+    /// (`DepartureProbeLossTest`), as ac517fb077 rules on the data-page refusal only.
     private AttemptResult drained(NodeId target) {
         lost.add(target);
 
@@ -1054,7 +1055,9 @@ final class DeparturePushRun {
         }
 
         if (ack.draining()) {
-            return drained(page.target);
+            return page.isProbe()
+                   ? AttemptResult.FAILED
+                   : drained(page.target);
         }
 
         var holder = holders.compute(page.target, (_, known) -> currentHolder(known, page, ack));
