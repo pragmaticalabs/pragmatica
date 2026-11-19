@@ -212,6 +212,25 @@ class DurableEntityForgeTest {
         // throwaway key rather than sleeping: a sleep would either flake on a slow tick or hide a driver
         // that never ran at all.
         awaitOwnershipConvergence();
+        awaitOwnershipViewComplete();
+    }
+
+    /// #3391 item 4. `/api/v1/ownership/stream` reads the committed records of the ONE node it is asked (the node's own applied
+    /// KV store), and the convergence probe above is satisfied by a create accepted on ANY node's app port, so it proves an owner
+    /// exists, not that this node has applied every arc. The tests assert on [#entityArcOwners] read from [#anyMgmtPort]; wait
+    /// for that view itself. It reads [#anyMgmtPort], the node the assertions read, not the routing nodes, so it can pass while another node
+    /// still lacks an arc; the all-port probe in [#awaitOwnershipConvergence] is what covers the owner. The slice-host view needs no such wait: [#awaitFullSlicePlacement] polls the same node and the
+    /// same endpoint the assertions read.
+    private void awaitOwnershipViewComplete() {
+        try {
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .failFast(this::failIfSliceFailed)
+                   .until(() -> entityArcOwners().size() == ENTITY_PARTITIONS);
+        } catch (ConditionTimeoutException e) {
+            throw new AssertionError("The ownership view of the node on port " + anyMgmtPort() + " never carried all " + ENTITY_PARTITIONS
+                                     + " entity arcs; arcs seen: " + entityArcOwners(), e);
+        }
     }
 
     /// Wait until the blueprint's full instance count is ACTIVE cluster-wide, reporting WHICH hosts were
@@ -299,7 +318,7 @@ class DurableEntityForgeTest {
     void get_returnsTheCreatedState_onTheSameNode() {
         var owner = createOnOwner("order-get", "placed", 250).port();
 
-        var response = get(owner, "order-get");
+        var response = getReadable(owner, "order-get");
 
         assertThat(outcome(response)).isEqualTo("found");
         assertThat(text(response, "status")).isEqualTo("placed");
@@ -318,8 +337,11 @@ class DurableEntityForgeTest {
         assertThat(outcome(updated)).isEqualTo("updated");
         assertThat(number(updated, "amount")).isEqualTo(999);
         assertThat(text(updated, "status")).describedAs("the mutator changes amount only").isEqualTo("placed");
-        assertThat(number(get(owner, "order-update"), "amount")).describedAs("the mutation is committed, not just returned")
-                                                                 .isEqualTo(999);
+        var reread = getReadable(owner, "order-update");
+
+        assertThat(outcome(reread)).isEqualTo("found");
+        assertThat(number(reread, "amount")).describedAs("the mutation is committed, not just returned")
+                                            .isEqualTo(999);
     }
 
     /// Delete removes the instance, and the subsequent read reports absence rather than failing.
@@ -329,7 +351,7 @@ class DurableEntityForgeTest {
         var owner = createOnOwner("order-delete", "placed", 5).port();
 
         assertThat(outcome(delete(owner, "order-delete"))).isEqualTo("deleted");
-        assertThat(outcome(get(owner, "order-delete"))).isEqualTo("absent");
+        assertThat(outcome(getReadable(owner, "order-delete"))).isEqualTo("absent");
     }
 
     // --- typed failures are real, not decorative -------------------------------
@@ -630,7 +652,7 @@ class DurableEntityForgeTest {
     void state_survivesTheLossOfTheNodeThatOwnedIt() {
         var ownerPort = createOnOwner("order-durability", "placed", 77).port();
 
-        assertThat(outcome(get(ownerPort, "order-durability"))).isEqualTo("found");
+        assertThat(outcome(getReadable(ownerPort, "order-durability"))).isEqualTo("found");
 
         var ownerNodeId = nodeIdForAppPort(ownerPort);
 
@@ -779,6 +801,41 @@ class DurableEntityForgeTest {
 
     private String get(int port, String key) {
         return httpPost(port, "/api/entity/get", "{\"orderId\":\"" + key + "\"}");
+    }
+
+    /// A read answered by the node that ACCEPTED the create, which is not necessarily the owner: a non-owner that holds the
+    /// partition serves the bounded-stale read from its own replica fold, and while that fold is being rebuilt (the log was cut)
+    /// it refuses with a typed transient failure, `FoldInProgress` among them, whose shape carries `amount` 0 like an absent key
+    /// (#3398). One rule decides what is retried: the product's own classification, `Cause.isTransient()`, which the test
+    /// blueprint reports as `transientFailure`. Polls at once, then backs off. A transient refusal is retried until WAIT_TIMEOUT,
+    /// when the test fails naming the key, the port and the last response; any other failure ends the wait and fails the test
+    /// at once; any other answer is returned for the caller's assertions to judge.
+    private String getReadable(int port, String key) {
+        var deadline = System.nanoTime() + WAIT_TIMEOUT.toNanos();
+        var backoffMillis = 20L;
+        var retries = 0;
+        String last;
+
+        while (true) {
+            last = get(port, key);
+
+            if (!"failed".equals(outcome(last))) {
+                LOG.log(System.Logger.Level.INFO, "getReadable key={0} port={1} transientRetries={2}", key, port, retries);
+                return last;
+            }
+
+            if (!last.matches("(?s).*\"transientFailure\"\\s*:\\s*true.*")) {
+                throw new AssertionError("read of '" + key + "' on port " + port + " failed with a non-transient failure: " + last);
+            }
+
+            if (System.nanoTime() >= deadline) {
+                throw new AssertionError("read of '" + key + "' on port " + port + " still refused transiently after " + WAIT_TIMEOUT
+                                         + "; last response: " + last);
+            }
+            retries++;
+            LockSupport.parkNanos(Duration.ofMillis(backoffMillis).toNanos());
+            backoffMillis = Math.min(backoffMillis * 2, POLL_INTERVAL.toMillis());
+        }
     }
 
     private String update(int port, String key, int amount) {

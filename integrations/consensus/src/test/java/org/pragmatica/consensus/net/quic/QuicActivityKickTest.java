@@ -86,12 +86,43 @@ class QuicActivityKickTest {
         Thread.sleep(millis);
     }
 
+    private static final long AWAIT_MS = 30_000;
+
+    /// Waits for the event itself (a tick that sent a kick), with a deadline and a message. The kick window is measured against
+    /// wall time inside the product (`QuicActivityKick#windowOpen`, `System.nanoTime`), so a loop stalled past the whole window
+    /// sends nothing at all: that case is reported here as a stall, and only an injectable clock would remove it.
+    private static void awaitKicks(java.util.function.LongSupplier kicks, String what) throws InterruptedException {
+        var deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(AWAIT_MS);
+
+        while (System.nanoTime() < deadline && kicks.getAsLong() <= 0) {
+            sleep(5);
+        }
+        assertThat(kicks.getAsLong()).as(what + ": no kick was sent (event loop stalled past the window?)").isPositive();
+    }
+
+    /// Waits until the window closed by itself (the kick stopped rescheduling), instead of sleeping to a multiple of the window.
+    private static void awaitWindowClosed(BooleanSupplier running, String what) throws InterruptedException {
+        var deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(AWAIT_MS);
+
+        while (System.nanoTime() < deadline && running.getAsBoolean()) {
+            sleep(5);
+        }
+        assertThat(running.getAsBoolean()).as(what + ": the kick must stop by itself once the idle window passed").isFalse();
+    }
+
+    /// Everything queued on the loop before this call has run when it returns (the loop is single-threaded).
+    private void drainLoop() throws Exception {
+        loop.submit(() -> { }).get(10, TimeUnit.SECONDS);
+    }
+
     /// An idle connection sends nothing: the kick is driven only by data writes.
     @Test
     void idleConnection_sendsZeroKicks() throws Exception {
         var control = controlStream();
         var connection = withKick(channel(), control, INTERVAL_MS, WINDOW_MS);
 
+        // Negative assertion over a bounded quiet period: there is no event to wait for. Thread.sleep never returns early
+        // (an interrupt throws), so the period cannot be cut short; a late kick would only make it red, never green.
         sleep(3 * WINDOW_MS);
 
         assertThat(connection.activityKicksSent()).isZero();
@@ -105,12 +136,11 @@ class QuicActivityKickTest {
         var connection = withKick(channel(), controlStream(), INTERVAL_MS, WINDOW_MS);
 
         connection.noteLaneWrite();
-        sleep(WINDOW_MS / 2);
-        assertThat(connection.activityKicksSent()).as("kicking inside the window").isPositive();
-
-        sleep(2 * WINDOW_MS);
+        awaitKicks(connection::activityKicksSent, "kicking inside the window");
+        awaitWindowClosed(connection::activityKickRunning, "after one data write");
         var settled = connection.activityKicksSent();
 
+        // Negative half: nothing more once the window has closed; a new write is the only thing that restarts the kick.
         sleep(WINDOW_MS);
 
         assertThat(connection.activityKicksSent()).as("no kick after the window closed").isEqualTo(settled);
@@ -121,11 +151,12 @@ class QuicActivityKickTest {
     @Test
     void continuousWrites_keepTheKickRunningPastTheWindow() throws Exception {
         var connection = withKick(channel(), controlStream(), INTERVAL_MS, WINDOW_MS);
-        var end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(3 * WINDOW_MS);
+        var deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(AWAIT_MS);
         var atOneWindow = -1L;
         var start = System.nanoTime();
 
-        while (System.nanoTime() < end) {
+        // Keep writing past one window, then wait for the event itself: kicks still rising after the window has passed.
+        while (System.nanoTime() < deadline && (atOneWindow < 0 || connection.activityKicksSent() <= atOneWindow + 5)) {
             connection.noteLaneWrite();
             if (atOneWindow < 0 && System.nanoTime() - start > TimeUnit.MILLISECONDS.toNanos(WINDOW_MS)) {
                 atOneWindow = connection.activityKicksSent();
@@ -133,7 +164,7 @@ class QuicActivityKickTest {
             sleep(5);
         }
 
-        assertThat(connection.activityKicksSent()).isGreaterThan(atOneWindow + 5);
+        assertThat(connection.activityKicksSent()).as("kicks keep rising past one window while writes continue").isGreaterThan(atOneWindow + 5);
     }
 
     /// A connection that is no peer's active connection still kicks: the kick is
@@ -144,9 +175,8 @@ class QuicActivityKickTest {
         var connection = withKick(channel(), control, INTERVAL_MS, WINDOW_MS);
 
         connection.noteLaneWrite();
-        sleep(WINDOW_MS / 2);
+        awaitKicks(connection::activityKicksSent, "connection attached to no peer");
 
-        assertThat(connection.activityKicksSent()).isPositive();
         verify(control, org.mockito.Mockito.atLeastOnce()).writeAndFlush(any());
     }
 
@@ -157,7 +187,7 @@ class QuicActivityKickTest {
         var connection = withKick(channel(), controlStream(), INTERVAL_MS, 10 * WINDOW_MS);
 
         connection.noteLaneWrite();
-        sleep(WINDOW_MS / 2);
+        awaitKicks(connection::activityKicksSent, "running before close");
         assertThat(connection.activityKickStopped()).as("running before close").isFalse();
 
         connection.close().await(org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds());
@@ -179,13 +209,14 @@ class QuicActivityKickTest {
                                         10 * WINDOW_MS);
 
         kick.noteDataWrite();
-        sleep(WINDOW_MS / 2);
+        awaitKicks(kick::kicksSent, "before stop");
         kick.stop();
-        sleep(INTERVAL_MS * 3);
+        drainLoop();
         var atStop = kick.kicksSent();
 
         kick.noteDataWrite();
-        sleep(WINDOW_MS);
+        drainLoop();
+        sleep(INTERVAL_MS * 3);
 
         assertThat(atStop).isPositive();
         assertThat(kick.kicksSent()).isEqualTo(atStop);

@@ -293,7 +293,12 @@ class OwnerActivationTest {
 
         activation.admit(STREAM, PARTITION);
         record.set(Option.some(ownedBy(PEER_B, 2)));
-        LockSupport.parkNanos(1_500_000_000L);
+        // The re-drive is a SharedScheduler task one REDRIVE_INITIAL_BACKOFF (250 ms) after the failed attempt; under load it can land
+        // late, so the second round is awaited as an event (deadline, message), never assumed after a fixed park.
+        assertThat(awaitRounds(2, 30_000L)).as("the re-drive that finds ownership gone must run its round; rounds so far: " + rounds.get()).isTrue();
+        // Negative half: "no further round" is a bounded quiet period. With the stop ignored the loop would order its next round one
+        // doubled backoff (500 ms) later, so the quiet period spans two of them; it is parked out to its deadline, not one park.
+        quietFor(1_000L);
 
         assertThat(activation.isActivated(STREAM, PARTITION)).isFalse();
         assertThat(rounds.get()).as("first attempt, then one re-drive that finds ownership gone").isEqualTo(2);
@@ -474,6 +479,25 @@ class OwnerActivationTest {
                                                                            HlcTimestamp.ZERO,
                                                                            List.of(SELF, PEER_A, PEER_B),
                                                                            5L);
+    }
+
+    private boolean awaitRounds(int expected, long millis) {
+        var deadline = System.nanoTime() + millis * 1_000_000L;
+
+        while (System.nanoTime() < deadline && rounds.get() < expected) {
+            LockSupport.parkNanos(10_000_000L);
+        }
+
+        return rounds.get() >= expected;
+    }
+
+    /// Parks until the deadline: an early return of one park (spurious wake-up, interrupt) must not shorten the quiet period.
+    private static void quietFor(long millis) {
+        var deadline = System.nanoTime() + millis * 1_000_000L;
+
+        while (System.nanoTime() < deadline) {
+            LockSupport.parkNanos(deadline - System.nanoTime());
+        }
     }
 
     private boolean eventuallyActivatedWithin(long millis) {
