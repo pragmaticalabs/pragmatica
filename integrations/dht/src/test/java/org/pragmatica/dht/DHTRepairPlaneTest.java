@@ -17,6 +17,7 @@ package org.pragmatica.dht;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.OutboundMessageLimit;
 import org.pragmatica.dht.storage.KeyStamp;
@@ -311,7 +312,10 @@ class DHTRepairPlaneTest {
         }
     }
 
+    /// Each test here runs in under a second. A run past the deadline means the departure push never resolved
+    /// (a page or probe is awaited for ever), not a slow machine.
     @Nested
+    @Timeout(60)
     class DeparturePush {
         /// A departing node's large partition reaches its newcomer in pages within the budget, every page acked, so
         /// the push completes with nothing reported at risk. Red when the byte budget is dropped.

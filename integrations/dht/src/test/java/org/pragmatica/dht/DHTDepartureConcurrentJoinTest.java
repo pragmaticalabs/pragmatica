@@ -1,6 +1,7 @@
 package org.pragmatica.dht;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.lang.Option;
@@ -39,7 +40,10 @@ class DHTDepartureConcurrentJoinTest {
     private static final byte[] V0 = "v0".getBytes(StandardCharsets.UTF_8);
     private static final int KEYS = 400;
 
+    /// Runs in about 50 s (480 topologies). A run past the deadline means a departure push never resolved
+    /// (a page or probe is awaited for ever), not a slow machine.
     @Test
+    @Timeout(300)
     void concurrentJoinAndDrain_receiverKnowsJoinersThePusherDoesNot() {
         int lostWithJoins = 0, controlTotal = 0;
         for (int joins = 0; joins <= 3; joins++) {
