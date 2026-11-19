@@ -93,6 +93,21 @@ class PassiveEntryLeaderPullTest {
     }
 
     @Test
+    void passiveReentry_sameLeaderHigherObservedSequence_announcesNothing() {
+        startDormant();
+        manager.onLeaderCommitted(LEADER, 5);
+        harness.dispatch(new PassiveDirectory(CORES));
+        ctx.observeViewSequence(6L);
+
+        harness.dispatch(new PassiveDirectory(CORES));
+
+        assertThat(manager.leader()).as("same leader already in view: nothing adopted")
+                                    .isEqualTo(Option.some(LEADER));
+        assertThat(ctx.adoptedViewSequence()).as("same leader already in view: nothing adopted").isEqualTo(5L);
+        assertThat(changes).as("same leader already in view: nothing announced").containsExactly(Option.some(LEADER));
+    }
+
+    @Test
     void passiveEntry_committedSequenceOlderThanAdopted_notAdopted() {
         startDormant();
         manager.onLeaderCommitted(LEADER, 3);
