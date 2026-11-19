@@ -130,6 +130,7 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
     private final AtomicLong droppedMessages = new AtomicLong();
     private volatile boolean followsCore;
     private boolean wasGovernor;
+    private boolean previousSessionFailed = true;
     private Session session;
     private volatile Option<NodeId> currentSource = Option.none();
     private long requestCounter;
@@ -352,7 +353,7 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
         session = new Session(++requestCounter, source, mode, nanos.getAsLong());
         currentSource = Option.some(source);
         if (resume) {
-            readiness.carryBeatsFor(limits.carryGraceMillis() * NANOS_PER_MILLI);
+            carryAfterFailure();
             applier.beginLive();
         } else {
             readiness.sourceChanged();
@@ -361,6 +362,15 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
 
         subscribed.incrementAndGet();
         send.accept(source, subscribeMessage(session, held, resume));
+    }
+
+    /// The carry window (readiness) is armed only when the previous session FAILED: a deliberate move (rebalance, election hand-off) keeps the old
+    /// counted heartbeats on their ordinary freshness bound, so a new source that stays silent costs no not-ready dip before the silence is detected
+    /// (#2502).
+    private void carryAfterFailure() {
+        if (previousSessionFailed) {
+            readiness.carryBeatsFor(limits.carryGraceMillis() * NANOS_PER_MILLI);
+        }
     }
 
     private ReplicaSubscribe subscribeMessage(Session open, ReplicaPosition held, boolean resume) {
@@ -606,17 +616,18 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
             governorRetryAt.put(open.source, nanos.getAsLong() + GOVERNOR_RETRY_MILLIS * NANOS_PER_MILLI);
         }
 
-        retire(open, retryAfterMillis);
+        retire(open, retryAfterMillis, true);
     }
 
     /// Retires a session because the selector (or the hand-off) chose another source: the old one did nothing wrong and is not penalized.
     private void endDeliberately(Session open) {
-        retire(open, 0L);
+        retire(open, 0L, false);
     }
 
     /// The replica keeps its place across a re-parent: readiness (e) is lost only when the position was discarded and a snapshot must follow.
-    private void retire(Session open, long retryAfterMillis) {
+    private void retire(Session open, long retryAfterMillis, boolean failed) {
         session = null;
+        previousSessionFailed = failed;
         retryAtNanos = nanos.getAsLong() + retryAfterMillis * NANOS_PER_MILLI;
         if (!applier.position().isResumable()) {
             readiness.caughtUp(false);
