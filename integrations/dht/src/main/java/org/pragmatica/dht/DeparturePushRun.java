@@ -271,7 +271,6 @@ final class DeparturePushRun {
     // The attempts deadline passed (P3): no exit starts, and the deadline probe round owns the close.
     private boolean closing;
     private boolean exitInFlight;
-    private int liveChains;
     private int enumeratedKeys;
     private boolean atRiskRaised;
     private int atRiskCount;
@@ -511,7 +510,7 @@ final class DeparturePushRun {
                  .stream()
                  .filter(key -> !key.absent && !key.undeliverable)
                  .forEach(key -> desire(key, desired));
-        pages.stream().filter(this::isLive).forEach(page -> keepOrCancel(page, desired));
+        pages.stream().filter(this::liveInChain).forEach(page -> keepOrCancel(page, desired));
 
         return new Plan(desired.entrySet()
                                .stream()
@@ -537,8 +536,7 @@ final class DeparturePushRun {
     }
 
     /// Under `transitions`, P4: a page lives in ONE tenure of its target. It is current iff its target is in V, the last
-    /// observation, and its tenure tag is the target's tenure there. This is the one answer to "does this page still count":
-    /// re-plan (`keepOrCancel`), send and resend (`probeStopped`), split (`halvePage`, `splitPage`) and ack (`inTenure`) ask it.
+    /// observation, and its tenure tag is the target's tenure there. [#live(Page)] asks it, and so does the ack (`inTenure`).
     /// A page that is not current is dead from the observation on: never counted live, sent, split or acked, so its keys are
     /// desired again and paged in the current tenure.
     private boolean current(Page page) {
@@ -564,17 +562,23 @@ final class DeparturePushRun {
         }
     }
 
-    /// Under `transitions`.
-    private boolean isLive(Page page) {
-        return ! page.isProbe()
-               && !page.cancelled.get()
-               && !page.finished.get()
-               && current(page);
+    /// Under `transitions`, #3345 P5: the ONE answer to "may this page still act": registered, not cancelled and [#current(Page)].
+    /// A page a re-plan cancelled is dead exactly like a page of an earlier tenure. Send and resend (`probeStopped`), split
+    /// (`halvePage`, `splitPage`) and the count of live chains (`liveInChain`) ask only this; a late ack of a cancelled page still
+    /// counts (`inTenure` does not ask it).
+    private boolean live(Page page) {
+        return registry.containsKey(page.correlationId()) && !page.cancelled.get() && current(page);
+    }
+
+    /// Under `transitions`: a data page of a running chain, not yet run to its end, that is [#live(Page)]. The re-plan keeps or
+    /// cancels exactly these, and no exit starts while one exists.
+    private boolean liveInChain(Page page) {
+        return ! page.isProbe() && !page.finished.get() && live(page);
     }
 
     /// Under `transitions`: a live page stays when one of its pairs is still desired (those pairs need no new page); otherwise it is
-    /// cancelled and stays registered, so a late ack still counts. Only a page that is [#current(Page)] gets here (P4, `isLive`): one
-    /// that is not covers nothing, so its keys are desired again; it is not cancelled, as the predicate keeps it from every send.
+    /// cancelled and stays registered, so a late ack still counts. Only a [#live(Page)] page gets here (`liveInChain`): one that is
+    /// not covers nothing, so its keys are desired again.
     private void keepOrCancel(Page page, Map<NodeId, List<DepartureKey>> desired) {
         var wanted = desired.getOrDefault(page.target, List.of());
         var covered = page.keys.stream().filter(wanted::contains).toList();
@@ -709,30 +713,10 @@ final class DeparturePushRun {
         return page;
     }
 
+    /// The end of a chain is an exit trigger; whether a chain still counts is [#liveInChain(Page)]'s answer, not a counter.
     @Contract
     private void startChain(List<Page> chain) {
-        transition(this::chainStarted);
-        runChain(chain, 0).onResultRun(this::chainEnded);
-    }
-
-    /// Under `transitions`.
-    private Unit chainStarted() {
-        liveChains++;
-
-        return Unit.unit();
-    }
-
-    @Contract
-    private void chainEnded() {
-        transition(this::chainStopped);
-        maybeExit();
-    }
-
-    /// Under `transitions`.
-    private Unit chainStopped() {
-        liveChains--;
-
-        return Unit.unit();
+        runChain(chain, 0).onResultRun(this::maybeExit);
     }
 
     private Promise<Unit> runChain(List<Page> chain, int index) {
@@ -899,12 +883,12 @@ final class DeparturePushRun {
 
     /// Under `transitions`: the page is cancelled and its keys not yet safe at its target (I2: a late ack of an earlier page may
     /// have made some safe) go to at most two pages on the same target, in the page's tenure; none when every key is safe or the
-    /// page is not [#current(Page)] (P4: its keys are desired again at the next re-plan, in the current tenure).
+    /// page is not [#live(Page)] (P5: a page cancelled by a re-plan or of an earlier tenure is never split).
     private List<Page> halvePage(Page page) {
-        page.cancelled.set(true);
-        var open = current(page)
+        var open = live(page)
                    ? page.keys.stream().filter(key -> !safe(key, page.target, false)).toList()
                    : List.<DepartureKey> of();
+        page.cancelled.set(true);
         var middle = open.size() / 2;
 
         return Stream.of(open.subList(0, middle),
@@ -939,18 +923,19 @@ final class DeparturePushRun {
         return Unit.unit();
     }
 
-    /// Under `transitions`: single-key pages in the page's tenure; none when the page is not [#current(Page)] (P4).
+    /// Under `transitions`: single-key pages in the page's tenure; none when the page is not [#live(Page)] (P5).
     private List<Page> splitPage(Page page) {
+        var singles = live(page)
+                      ? page.keys.stream()
+                                 .map(key -> registerPage(page.target,
+                                                          page.tenure,
+                                                          List.of(key),
+                                                          true))
+                                 .toList()
+                      : List.<Page> of();
         page.cancelled.set(true);
 
-        return current(page)
-               ? page.keys.stream()
-                          .map(key -> registerPage(page.target,
-                                                   page.tenure,
-                                                   List.of(key),
-                                                   true))
-                          .toList()
-               : List.of();
+        return singles;
     }
 
     /// No data page or exit probe starts once the attempts window is used up: the deadline resolves the run (P3: after its own
@@ -959,14 +944,14 @@ final class DeparturePushRun {
         return probeStopped(page, attemptsDeadline) || isSettled(page);
     }
 
-    /// A page (a probe: any page) is not sent once the node halted, the page is cancelled, retired or not [#current(Page)] (P4),
-    /// the run closed, or `until` passed.
+    /// A page (a probe: any page) is not sent once the node halted, the page is not [#live(Page)] (P5), the run closed, or `until`
+    /// passed.
     private boolean probeStopped(Page page, long until) {
         if (window.halted().getAsBoolean()) {
             onHalt();
         }
 
-        return page.cancelled.get() || !registry.containsKey(page.correlationId()) || !underTransitions(() -> current(page)) || isClosed() || System.nanoTime() >= until;
+        return !underTransitions(() -> live(page)) || isClosed() || System.nanoTime() >= until;
     }
 
     /// I2: a data page every key of which is already safe at its target is not sent (nor resent).
@@ -980,7 +965,11 @@ final class DeparturePushRun {
     }
 
     private Promise<Unit> pause(TimeSpan delay) {
-        return Promise.promise(timeSpan(Math.min(delay.nanos(), remainingNanos(attemptsDeadline))).nanos(),
+        return pause(delay, attemptsDeadline);
+    }
+
+    private Promise<Unit> pause(TimeSpan delay, long until) {
+        return Promise.promise(timeSpan(Math.min(delay.nanos(), remainingNanos(until))).nanos(),
                                Result::unitResult);
     }
 
@@ -1069,7 +1058,7 @@ final class DeparturePushRun {
 
     /// Under `transitions`.
     private boolean claimExit() {
-        var ready = !closed && !closing && !exitInFlight && liveChains == 0 && owed(false).stream()
+        var ready = !closed && !closing && !exitInFlight && pages.stream().noneMatch(this::liveInChain) && owed(false).stream()
                                                                                    .allMatch(key -> key.absent);
 
         exitInFlight = exitInFlight || ready;
@@ -1127,8 +1116,8 @@ final class DeparturePushRun {
         return Unit.unit();
     }
 
-    /// Send an EMPTY page to every holder Safe relies on; pass iff each answers within `resendAfter` in its tenure with its token,
-    /// and no holder was lost meanwhile (a loss between a passed probe and the close re-opens the run).
+    /// Send an EMPTY page to every holder Safe relies on; pass iff each answers in its tenure with its token before the attempts
+    /// deadline, and no holder was lost meanwhile (a loss between a passed probe and the close re-opens the run).
     private Unit probe(Set<NodeId> reliedOn) {
         var lossesAtStart = holderLosses.get();
         var mark = transition(this::nextMark);
@@ -1148,21 +1137,32 @@ final class DeparturePushRun {
                        .toList();
     }
 
-    /// Every probe answers within `resendAfter` and before `until`, or fails.
+    /// Each probe ends answered (ACKED or NACKED), refused (FAILED: a draining nack or a token mismatch) or unanswered (TIMED_OUT,
+    /// once it can no longer be sent: `until` passed, the run closed, or the probe is no longer [#live(Page)]).
     private Promise<List<Result<AttemptResult>>> sendProbes(List<Page> probes, long until) {
         return Promise.allOf(probes.stream().map(page -> probeOne(page, until)).toList());
     }
 
+    /// #3345 P6: a probe not answered within `resendAfter` is sent again, on the same page, while it may be sent; a late answer
+    /// to an earlier send counts. Silence is never a loss.
     private Promise<AttemptResult> probeOne(Page page, long until) {
         return probeStopped(page, until)
-               ? Promise.success(AttemptResult.FAILED)
-               : dispatch(page, List.of()).flatMap(dispatched -> probeAnswer(dispatched, until));
+               ? Promise.success(AttemptResult.TIMED_OUT)
+               : dispatch(page, List.of()).flatMap(dispatched -> probeAnswer(dispatched, until))
+                                          .flatMap(result -> resendIfSilent(page, result, until));
     }
 
+    /// A refusal to take the probe proves nothing (H2): it is waited out like silence.
     private Promise<AttemptResult> probeAnswer(Dispatched dispatched, long until) {
         return dispatched.outcome() instanceof WriteOutcome.Sent
                ? awaitAttempt(dispatched, until)
-               : Promise.success(AttemptResult.FAILED);
+               : pause(tuning.resendAfter(), until).map(_ -> AttemptResult.TIMED_OUT);
+    }
+
+    private Promise<AttemptResult> resendIfSilent(Page page, AttemptResult result, long until) {
+        return result == AttemptResult.TIMED_OUT
+               ? probeOne(page, until)
+               : Promise.success(result);
     }
 
     /// Under `transitions`: every ack counted from here on is numbered above the mark, so a probe registered after it covers only
@@ -1174,11 +1174,11 @@ final class DeparturePushRun {
     @Contract
     private void afterProbe(List<Page> probes, List<Result<AttemptResult>> results, int lossesAtStart, long mark) {
         var passed = passedProbes(probes, results);
-        var failed = probes.stream().filter(probe -> !passed.contains(probe)).map(probe -> probe.target).toList();
+        var refused = refusedProbes(probes, results);
 
         transition(() -> markProbed(passed, mark));
         transition(() -> retireProbes(probes));
-        if (failed.isEmpty() && transition(() -> closeIfClean(lossesAtStart))) {
+        if (passed.size() == probes.size() && transition(() -> closeIfClean(lossesAtStart))) {
             return;
         }
         // P3: past the deadline the deadline probe round owns the close; a probe the deadline cut short proves no loss.
@@ -1187,8 +1187,19 @@ final class DeparturePushRun {
         }
 
         transition(this::releaseExit);
-        failed.forEach(target -> holderLost(target, "probe failed"));
+        // P6: only an explicit refusal is a lost holder; an unanswered probe is not, and triggers no re-push.
+        refused.forEach(target -> holderLost(target, "probe refused"));
         maybeExit();
+    }
+
+    /// The targets whose probe answer refused it (a draining nack or a token mismatch).
+    private static List<NodeId> refusedProbes(List<Page> probes, List<Result<AttemptResult>> results) {
+        return IntStream.range(0,
+                               probes.size())
+                        .filter(i -> results.get(i)
+                                            .fold(_ -> false, result -> result == AttemptResult.FAILED))
+                        .mapToObj(i -> probes.get(i).target)
+                        .toList();
     }
 
     private static List<Page> passedProbes(List<Page> probes, List<Result<AttemptResult>> results) {
