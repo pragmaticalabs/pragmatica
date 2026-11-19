@@ -19,6 +19,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
+import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.io.TimeSpan;
@@ -73,7 +74,17 @@ class WorkerJoiningDuringCoreJoinLearnsLeaderTest {
 
         awaitCondition("the worker's leader view equals the cluster's leader", LEADER_VIEW_BOUND_MS, () -> knowsLeader(worker), () -> views(worker));
 
+        var leaderNode = cluster.getNode(cluster.currentLeader().unwrap()).unwrap();
+
+        awaitCondition("the leader sees the worker READY (the drain route admits only a READY node)", READY_BOUND_MS,
+                       () -> leaderNode.metricsCollector().reportedStates().get(worker.self()) == NodeReportedState.READY,
+                       () -> "leader view " + leaderNode.metricsCollector().reportedStates() + "; " + views(worker));
+
         var procedure = drainProcedureOf(worker);
+
+        assertThat(procedure.state()).as("instrument: the worker's drain procedure is INACTIVE before the drain")
+                                     .isEqualTo(DrainProcedure.DrainState.INACTIVE);
+
         var answer = postDrain(worker.self().id(), cluster.getLeaderManagementPort().or(-1));
 
         assertThat(answer.status()).as("the worker drain is admitted by the route, answered: " + answer).isEqualTo(200);
