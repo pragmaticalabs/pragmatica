@@ -860,6 +860,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
             ctx.installVoters(members);
             previous.filter(node -> !ctx.isEligible(node)).onPresent(_ -> clearLeaderAndNotify(ctx));
+            // #3414: Passive can be entered after the committed leader's notification passed (Dormant drops it), so the
+            // entry reads the committed leader key, as the other entry states do.
+            observeCommittedLeaderFromKv(ctx);
         }
 
         @Override
@@ -885,6 +888,23 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         ctx.setAdoptedViewSequence(committed.viewSequence());
         ctx.setCurrentLeader(Option.some(committed.leader()));
         notifyLeaderChange(ctx);
+    }
+
+    /// Passive's pull of the committed `LeaderKey` (#3414), the counterpart of [#adoptLeaderFromKvIfPresent] for a
+    /// state that observes leadership instead of transitioning on it. The commit carries the highest committed
+    /// sequence this node has observed rather than [`LeaderCommitted#NO_SEQUENCE`], which [#observeCommittedLeader]
+    /// refuses, so the pull passes the same sequence gate as the push. A key naming the leader already in view does
+    /// nothing, and the gate refuses an older or an equal-sequence different leader, so the entry repeated on every
+    /// directory refresh adopts, announces and logs nothing new.
+    private static void observeCommittedLeaderFromKv(LeaderElectionContext ctx) {
+        ctx.currentLeaderFromKvSupplier()
+           .get()
+           .filter(leader -> ctx.currentLeader()
+                                .filter(leader::equals)
+                                .isEmpty())
+           .map(leader -> new LeaderCommitted(leader,
+                                              ctx.committedViewSequence()))
+           .onPresent(committed -> observeCommittedLeader(ctx, committed));
     }
 
     // --- Shared action helpers ---
