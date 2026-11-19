@@ -86,4 +86,20 @@ class HoldRecordsClosedEpisodeTest {
         assertThat(fx.closersOf(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED)).hasSize(1);
         assertThat(fx.records.heldLatched(NODE)).isFalse();
     }
+
+    /// H5: the drainer dies after the acceptance landed and before it echoed the end: no AcceptLoss is relayed for an episode
+    /// that has a closer.
+    @Test
+    void deathAfterAcceptanceReleasesTheRelay() {
+        fx.pong(held(3, "d1"));
+        fx.records.acceptLoss(NODE, EPISODE, LossConfirmation.Digest.digest("d1")).await();
+        var relayedBeforeDeath = fx.records.decisionFor(NODE);
+
+        fx.records.onDead(NODE);
+
+        assertThat(relayedBeforeDeath).as("the accepted loss is relayed while the drainer lives")
+                                      .isEqualTo(Option.some(HoldDecision.AcceptLoss.acceptLoss(EPISODE, LossConfirmation.Digest.digest("d1"))));
+        assertThat(fx.records.decisionFor(NODE).filter(HoldDecision.AcceptLoss.class::isInstance))
+            .as("no AcceptLoss relayed after the death closed the episode").isEqualTo(Option.none());
+    }
 }
