@@ -43,7 +43,8 @@ public sealed interface StreamSection {
     /// Whether the section declares the sub-table `name` (`[streams.<alias>.<name>]`), empty or not. The dotted
     /// keys carry a non-empty table; an empty one is visible only where the source records its headers.
     default boolean hasTable(String name) {
-        return keys().stream().anyMatch(key -> key.startsWith(name + "."));
+        return keys().stream()
+                   .anyMatch(key -> key.startsWith(name + "."));
     }
 
     /// `consumers.<group>...` belongs to the consumer parser, never to this section.
@@ -86,7 +87,8 @@ public sealed interface StreamSection {
 
         @Override
         public Option<String> string(String key) {
-            return doc.getString(section, key).orElse(() -> subTableValue(key));
+            return doc.getString(section, key)
+                      .orElse(() -> subTableValue(key));
         }
 
         /// `<sub>.<key>` read from the `[streams.<alias>.<sub>]` table, the form [#keys] reports it in.
@@ -100,7 +102,8 @@ public sealed interface StreamSection {
 
         @Override
         public boolean hasTable(String name) {
-            return doc.sectionNames().contains(section + "." + name) || StreamSection.super.hasTable(name);
+            return doc.sectionNames()
+                      .contains(section + "." + name) || StreamSection.super.hasTable(name);
         }
     }
 

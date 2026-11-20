@@ -153,8 +153,8 @@ public sealed interface StreamDeclarationError extends Cause {
         public String message() {
             return "Stream resource '" + alias
                  + "' declares retention.max_count = " + maxCount
-                 + " without retention.max_bytes: add max_bytes; max_count alone bounds this stream only at max_count x max_event_size ("
-                 + maxEventSize + " bytes per event)";
+                 + " without retention.max_bytes: add max_bytes; max_count alone bounds this stream only at max_count x max_event_size (" + maxEventSize
+                 + " bytes per event)";
         }
     }
 
@@ -163,7 +163,9 @@ public sealed interface StreamDeclarationError extends Cause {
     record NotYetAvailable(String alias, String key, String release) implements StreamDeclarationError {
         @Override
         public String message() {
-            return "Stream resource '" + alias + "' declares " + key + " with a value that is not available before release " + release;
+            return "Stream resource '" + alias
+                 + "' declares " + key
+                 + " with a value that is not available before release " + release;
         }
     }
 

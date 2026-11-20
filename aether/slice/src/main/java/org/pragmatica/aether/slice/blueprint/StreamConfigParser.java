@@ -467,7 +467,8 @@ public interface StreamConfigParser {
         return refuseUnknownKeys(section).flatMap(valid -> parseStreamSection(valid, defaults))
                                 .flatMap(declared -> validatePartitionCeiling(section.alias(),
                                                                               declared.config()).map(_ -> declared))
-                                .flatMap(declared -> refuseNotYetAvailable(section.alias(), declared));
+                                .flatMap(declared -> refuseNotYetAvailable(section.alias(),
+                                                                           declared));
     }
 
     /// The T-146 gate: `truncation.policy = "until_consumed"` is refused, not stored, until release S3 lands the behaviour
@@ -559,9 +560,7 @@ public interface StreamConfigParser {
                                                     "hot.max_count");
 
     /// Every key a stream section may carry, for the unknown-key refusal and its nearest-key suggestion.
-    List<String> KNOWN_KEYS = Stream.concat(STREAM_SECTION_KEYS.stream(),
-                                            DECLARATION_SECTION_KEYS.stream())
-                                    .toList();
+    List<String> KNOWN_KEYS = Stream.concat(STREAM_SECTION_KEYS.stream(), DECLARATION_SECTION_KEYS.stream()).toList();
 
     /// Every key read from a `[streams.<alias>.consumers.<group>]` section. Snake_case like the stream keys; the dashed
     /// spelling of one of them is refused ([#refuseDashedConsumerKeys]) rather than ignored, which would default it.
@@ -670,7 +669,9 @@ public interface StreamConfigParser {
         var consistency = optionalEnum(section, "consistency", List.of("eventual", "strong"), "eventual");
         var compression = optionalEnum(section, "compression", List.of("none", "lz4", "zstd"), "none");
         var retention = parseRetention(section);
-        var storageDeclaration = Result.all(partitions, maxEventSize).flatMap((count, size) -> parseDeclaration(section, count, size));
+        var storageDeclaration = Result.all(partitions, maxEventSize).flatMap((count, size) -> parseDeclaration(section,
+                                                                                                                count,
+                                                                                                                size));
 
         return firstFailure(List.of(partitions,
                                     factor,
@@ -680,7 +681,7 @@ public interface StreamConfigParser {
                                     compression,
                                     retention,
                                     storageDeclaration)).map(failure -> failure.<DeclaredStream> map(_ -> new DeclaredStream(StreamConfig.DEFAULT,
-                                                                                                                                                                                              List.of())))
+                                                                                                                             List.of())))
                            .or(() -> Result.all(factor, confirmation)
                                            .map(ReplicationDeclaration::replicationDeclaration)
                                            .flatMap(declaration -> declaration.resolve(defaults))
@@ -693,7 +694,7 @@ public interface StreamConfigParser {
                                                                          resolved.factors(),
                                                                          compression,
                                                                          storageDeclaration).map(config -> new DeclaredStream(config,
-                                                                                                                       resolved.warnings()))));
+                                                                                                                              resolved.warnings()))));
     }
 
     private static Result<StreamConfig> assemble(StreamSection section,
@@ -705,17 +706,17 @@ public interface StreamConfigParser {
                                                  Result<String> compression,
                                                  Result<StreamDeclaration> declaration) {
         return Result.all(partitions, retention, maxEventSize, consistency, compression, declaration).map((p, r, size, mode, codec, declared) -> StreamConfig.streamConfig(section.alias(),
-                                                                                                                                                                         p,
-                                                                                                                                                                         r,
-                                                                                                                                                                         section.string("auto_offset_reset")
-                                                                                                                                                                                .or("earliest"),
-                                                                                                                                                                         size,
-                                                                                                                                                                         parseConsistencyMode(mode),
-                                                                                                                                                                         factors.replicationFactor(),
-                                                                                                                                                                         factors.confirmationFactor(),
-                                                                                                                                                                         parseCompression(codec),
-                                                                                                                                                                         section.string("encryption_key_id"))
-                                                                                                                                                         .withDeclaration(declared));
+                                                                                                                                                                           p,
+                                                                                                                                                                           r,
+                                                                                                                                                                           section.string("auto_offset_reset")
+                                                                                                                                                                                  .or("earliest"),
+                                                                                                                                                                           size,
+                                                                                                                                                                           parseConsistencyMode(mode),
+                                                                                                                                                                           factors.replicationFactor(),
+                                                                                                                                                                           factors.confirmationFactor(),
+                                                                                                                                                                           parseCompression(codec),
+                                                                                                                                                                           section.string("encryption_key_id"))
+                                                                                                                                                             .withDeclaration(declared));
     }
 
     private static Option<Result<?>> firstFailure(List<Result<?>> results) {
@@ -846,17 +847,18 @@ public interface StreamConfigParser {
     /// declares no `[retention]` block takes the default bounds; a block takes exactly what it declares (a bound it does not
     /// name stays absent) plus the default `mode`. `[hot]` resolves each key it does not name, `[truncation]` its `policy`.
     /// The first refusal in key order is the cause, as for the rest of the section.
-    private static Result<StreamDeclaration> parseDeclaration(StreamSection section, int partitions, long maxEventSize) {
+    private static Result<StreamDeclaration> parseDeclaration(StreamSection section,
+                                                              int partitions,
+                                                              long maxEventSize) {
         var retention = parseRetentionDeclaration(section, partitions, maxEventSize);
         var truncation = parseTruncationDeclaration(section);
         var hot = parseHotDeclaration(section, maxEventSize);
 
         return firstRefusalOr(List.of(retention, truncation, hot),
-                              () -> Result.all(retention, truncation, hot)
-                                          .map((r, t, h) -> StreamDeclaration.streamDeclaration(some(r),
-                                                                                                some(t),
-                                                                                                some(h),
-                                                                                                none())));
+                              () -> Result.all(retention, truncation, hot).map((r, t, h) -> StreamDeclaration.streamDeclaration(some(r),
+                                                                                                                                some(t),
+                                                                                                                                some(h),
+                                                                                                                                none())));
     }
 
     /// The first refusal of `parts`, else `parsed`: the typed cause of one key, never a composite of several.
@@ -889,22 +891,32 @@ public interface StreamConfigParser {
         return firstRefusalOr(List.of(maxAge, maxBytes, maxCount, mode),
                               () -> Result.all(maxAge, maxBytes, maxCount, mode)
                                           .map((age, bytes, count, named) -> RetentionDeclaration.retentionDeclaration(age,
-                                                                                                                      bytes,
-                                                                                                                      count,
-                                                                                                                      some(named.or(DeclarationDefaults.DEFAULT_MODE))))
-                                          .flatMap(declared -> boundedRetention(section.alias(), maxEventSize, declared)));
+                                                                                                                       bytes,
+                                                                                                                       count,
+                                                                                                                       some(named.or(DeclarationDefaults.DEFAULT_MODE))))
+                                          .flatMap(declared -> boundedRetention(section.alias(),
+                                                                                maxEventSize,
+                                                                                declared)));
     }
 
     /// A block that names no bound is refused, and so is a `max_count` with no `max_bytes` (a `max_count` beside only a
     /// `max_age` is not enough: stream-storage-design 2.2 row "`max_count` with no `max_bytes`").
-    private static Result<RetentionDeclaration> boundedRetention(String alias, long maxEventSize, RetentionDeclaration declared) {
-        return declared.maxAgeMs().isEmpty() && declared.maxBytes().isEmpty() && declared.maxCount().isEmpty()
+    private static Result<RetentionDeclaration> boundedRetention(String alias,
+                                                                 long maxEventSize,
+                                                                 RetentionDeclaration declared) {
+        return declared.maxAgeMs()
+                       .isEmpty() && declared.maxBytes()
+                                             .isEmpty() && declared.maxCount()
+                                                                   .isEmpty()
                ? new StreamDeclarationError.RetentionUndeclared(alias).result()
                : refuseCountOnly(alias, maxEventSize, declared);
     }
 
-    private static Result<RetentionDeclaration> refuseCountOnly(String alias, long maxEventSize, RetentionDeclaration declared) {
-        return declared.maxBytes().isEmpty()
+    private static Result<RetentionDeclaration> refuseCountOnly(String alias,
+                                                                long maxEventSize,
+                                                                RetentionDeclaration declared) {
+        return declared.maxBytes()
+                       .isEmpty()
                ? declared.maxCount()
                          .<Result<RetentionDeclaration>> map(count -> new StreamDeclarationError.RetentionCountOnly(alias,
                                                                                                                     count,
@@ -918,9 +930,8 @@ public interface StreamConfigParser {
         var idleExpiry = declaredValue(section, "truncation.group_idle_expiry", StreamValues::duration);
 
         return firstRefusalOr(List.of(policy, idleExpiry),
-                              () -> Result.all(policy, idleExpiry)
-                                          .map((declared, idle) -> TruncationDeclaration.truncationDeclaration(some(declared.or(TruncationPolicy.WINDOW)),
-                                                                                                               idle)));
+                              () -> Result.all(policy, idleExpiry).map((declared, idle) -> TruncationDeclaration.truncationDeclaration(some(declared.or(TruncationPolicy.WINDOW)),
+                                                                                                                                       idle)));
     }
 
     private static Result<HotWindowDeclaration> parseHotDeclaration(StreamSection section, long maxEventSize) {
@@ -928,9 +939,8 @@ public interface StreamConfigParser {
         var maxCount = declaredValue(section, "hot.max_count", StreamValues::count);
 
         return firstRefusalOr(List.of(maxBytes, maxCount),
-                              () -> Result.all(maxBytes, maxCount)
-                                          .map((bytes, count) -> HotWindowDeclaration.hotWindowDeclaration(some(bytes.or(DeclarationDefaults.defaultHotMaxBytes(maxEventSize))),
-                                                                                                           some(count.or(DeclarationDefaults.defaultHotMaxCount())))));
+                              () -> Result.all(maxBytes, maxCount).map((bytes, count) -> HotWindowDeclaration.hotWindowDeclaration(some(bytes.or(DeclarationDefaults.defaultHotMaxBytes(maxEventSize))),
+                                                                                                                                   some(count.or(DeclarationDefaults.defaultHotMaxCount())))));
     }
 
     /// `Success(None)` when the key is absent, else the value read by `parser`, refused when malformed.
@@ -940,7 +950,8 @@ public interface StreamConfigParser {
         return section.string(key)
                       .map(raw -> parser.apply(section.alias(),
                                                key,
-                                               raw).map(Option::some))
+                                               raw)
+                                        .map(Option::some))
                       .or(success(none()));
     }
 
@@ -949,7 +960,8 @@ public interface StreamConfigParser {
                       .map(raw -> StreamValues.oneOf(section.alias(),
                                                      "retention.mode",
                                                      raw,
-                                                     List.of("any", "all")).map(StreamConfigParser::parseRetentionMode)
+                                                     List.of("any", "all"))
+                                              .map(StreamConfigParser::parseRetentionMode)
                                               .map(Option::some))
                       .or(success(none()));
     }
@@ -959,7 +971,8 @@ public interface StreamConfigParser {
                       .map(raw -> StreamValues.oneOf(section.alias(),
                                                      "truncation.policy",
                                                      raw,
-                                                     List.of("window", "until_consumed")).map(StreamConfigParser::parseTruncationPolicy)
+                                                     List.of("window", "until_consumed"))
+                                              .map(StreamConfigParser::parseTruncationPolicy)
                                               .map(Option::some))
                       .or(success(none()));
     }
