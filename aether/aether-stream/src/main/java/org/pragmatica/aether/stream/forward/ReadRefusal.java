@@ -60,10 +60,11 @@ public record ReadRefusal(Kind kind,
         RING_INDEX_CORRUPTED,
         SEAL_IN_FLIGHT,
         SEALED_RANGE_MISSING,
-        /// The stream's existence is confirmed but this node's engine does not hold it yet (503, a repeat may succeed).
-        STREAM_NOT_MATERIALIZED,
         /// A code this node does not know, sent by a newer one (#964): rebuilt as the owner's text.
-        UNKNOWN;
+        UNKNOWN,
+        /// The stream's existence is confirmed but this node's engine does not hold it yet (503, a repeat may succeed).
+        /// Appended after UNKNOWN so no existing wire tag moves.
+        STREAM_NOT_MATERIALIZED;
 
         /// The row this kind answers with: the ONE switch from a kind to what a node does with a failed read. A switch
         /// EXPRESSION with no default branch, so a kind added to the enum does not compile until it has a row.
