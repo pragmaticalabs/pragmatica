@@ -175,15 +175,17 @@ abstract class ReplicationBatchingFixture {
                            replicas.stream().map(id -> replicatedEvents.get(id).get() - before.get(id)[1]).toList());
     }
 
-    /// #3477: the replication batch window of the cluster under measurement. The production default (1 ms) is shorter than
-    /// the time 16 callers need for 192 publishes on a loaded runner, so a window closed after a handful of events and the
-    /// messages-per-replica count measured the scheduler (101 for 192 on one CI run, bound 96). Held at 500 ms, a window
-    /// closes by size (100 events) or after the burst, so the message count is the batcher's structure: about 3 per
-    /// replica (the idle first event alone, one full batch, the rest), and the bound is exceeded only if the burst
-    /// itself outlasts about 95 windows (47 s). The batcher's own window logic is pinned with a hand-driven clock in
+    /// #3477: the replication batch window of the cluster under measurement. A publish waits for its replicas' acks, so 16
+    /// callers are a closed loop: each round of 16 events is one window, 12 rounds make 192 events, and the structural
+    /// count is about 12 messages per replica. The production default (1 ms) is shorter than the skew between 16 callers on
+    /// a loaded runner, so a round split across windows and the count measured the scheduler (101 for 192 on one CI run,
+    /// bound 96). At 20 ms a round splits only when a caller lags the others by more than 20 ms, and the bound needs about
+    /// half the rounds split. Not longer, on purpose: 100 ms and 500 ms windows made 1 and 4 of 30 repeated runs stall for the
+    /// 5 s ack timeout (`PublishOutcomeUnknown`, REPLICATION_TIMEOUT) with nothing logged, a separate defect of long windows
+    /// that this test must not trip over. The batcher's own window logic is pinned with a hand-driven clock in
     /// `ProductionReplicationBatchingTest`.
     static StreamingConfig batchWindow() {
-        return StreamingConfig.streamingConfig().withReplicationBatch(StreamingConfig.DEFAULT_REPLICATION_BATCH_MAX_EVENTS, TimeSpan.timeSpan(500).millis());
+        return StreamingConfig.streamingConfig().withReplicationBatch(StreamingConfig.DEFAULT_REPLICATION_BATCH_MAX_EVENTS, TimeSpan.timeSpan(20).millis());
     }
 
     /// The partition's owner, once [#boot] ran.
