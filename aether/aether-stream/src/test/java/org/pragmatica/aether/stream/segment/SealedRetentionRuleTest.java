@@ -112,6 +112,16 @@ class SealedRetentionRuleTest {
         assertThat(prefix(segments, policy)).isZero();
     }
 
+    /// A bound of 0 is not shared (a share never rounds it up to 1): nothing newer is needed to reclaim, so the newest
+    /// segment goes too, for each bounded dimension (#3490 lane-b s1).
+    @Test
+    void zeroBound_isNotShared_reclaimsTheNewestSegmentToo() {
+        var bytesZero = RetentionPolicy.retentionPolicy(UNBOUNDED, 0, UNBOUNDED).withDeclared(RetentionDimensions.BYTES);
+
+        assertThat(prefix(List.of(fresh(0, 9)), count(0))).as("count 0").isEqualTo(1);
+        assertThat(prefix(List.of(segment(0, 9, NOW, 100)), bytesZero)).as("bytes 0").isEqualTo(1);
+    }
+
     /// NT-115: the entity floor (and the contiguous sealed watermark) caps the prefix; a straddling segment is kept whole.
     @Test
     void deletableThrough_capsThePrefix() {
