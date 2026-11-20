@@ -792,6 +792,10 @@ public final class AppendLog implements AutoCloseable {
         return acked.restorePending();
     }
 
+    public static String historyDigestOf(List<EpochStart> history) {
+        return "placeholder";
+    }
+
     /// The owner epoch the history attributes `offset` to: the last entry starting at or below it, [Option#none] when none
     /// does. Reads memory only.
     public Option<EpochKey> attributedEpoch(long offset) {
@@ -1809,6 +1813,18 @@ public final class AppendLog implements AutoCloseable {
 
     /// See [#inspect]. `lowOffset`/`headOffset` are `-1` when the log holds no valid record.
     public record LogExtent(long lowOffset, long headOffset, long validBytes, long fileBytes) {
+        public Option<EpochKey> lastEpoch() {
+            return Option.none();
+        }
+
+        public long firstStart() {
+            return -2L;
+        }
+
+        public String historyDigest() {
+            return "placeholder";
+        }
+
         /// The extent of a log that does not exist: no valid record, no bytes.
         public static final LogExtent EMPTY = new LogExtent(-1L, -1L, 0L, 0L);
     }
