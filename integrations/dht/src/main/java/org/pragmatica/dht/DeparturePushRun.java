@@ -1020,9 +1020,8 @@ final class DeparturePushRun {
     }
 
     // --- acks ---
-    /// Under `transitions`: a "draining" nack to a data page refuses the target for the rest of the run; it leaves the owed set
-    /// ([#owedTargets]). A probe's draining answer is a probe failure, not this: the holder is cleared and re-paged
-    /// (`DepartureProbeLossTest`), as ac517fb077 rules on the data-page refusal only.
+    /// Under `transitions`: a "draining" nack, on a data page or on a probe alike (the class comes from the nack's cause, never
+    /// from the page type, ac517fb077), refuses the target for the rest of the run; it leaves the owed set ([#owedTargets]).
     private AttemptResult drained(NodeId target) {
         lost.add(target);
 
@@ -1055,9 +1054,7 @@ final class DeparturePushRun {
         }
 
         if (ack.draining()) {
-            return page.isProbe()
-                   ? AttemptResult.FAILED
-                   : drained(page.target);
+            return drained(page.target);
         }
 
         var holder = holders.compute(page.target, (_, known) -> currentHolder(known, page, ack));
