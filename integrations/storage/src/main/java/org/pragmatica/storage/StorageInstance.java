@@ -84,6 +84,17 @@ public interface StorageInstance {
         return Promise.success(false);
     }
 
+    /// Whether a node-private durable tier of this instance holds `id`: a tier that is neither cluster-shared nor a cache
+    /// ([StorageTier#isShared], [StorageTier#isDurable]). Unlike [#exists], a shared tier never answers, so `true` here means
+    /// this node itself keeps the block across a restart; and unlike the check [#warm] makes, a cache copy (one a read or a
+    /// warm promoted from the shared tier) does not count either.
+    ///
+    /// The default answers `false`: an implementation that cannot tell holds no private durable copy, so a caller that
+    /// skips work on `true` does that work.
+    default Promise<Boolean> holdsPrivateDurableCopy(BlockId id) {
+        return Promise.success(false);
+    }
+
     /// Adds a named reference to a block this instance ALREADY holds, crediting one reference for the
     /// new name. This is the aliasing primitive -- a second (third, ...) name for a block that some
     /// other reference is already keeping alive.
@@ -740,6 +751,16 @@ final class DefaultStorageInstance implements StorageInstance {
     @Override
     public Promise<Boolean> warm(BlockId id) {
         return checkTiersForExistence(id, 0, tier -> !tier.isShared()).flatMap(held -> fetchUnlessHeld(held, id));
+    }
+
+    /// Asks only the tiers that are neither shared nor caches; see [StorageInstance#holdsPrivateDurableCopy].
+    @Override
+    public Promise<Boolean> holdsPrivateDurableCopy(BlockId id) {
+        return checkTiersForExistence(id, 0, DefaultStorageInstance::isPrivateDurableTier);
+    }
+
+    private static boolean isPrivateDurableTier(StorageTier tier) {
+        return ! tier.isShared() && tier.isDurable();
     }
 
     private Promise<Boolean> fetchUnlessHeld(boolean held, BlockId id) {

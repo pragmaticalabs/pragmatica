@@ -12,6 +12,20 @@ final class SharedTestTier implements StorageTier {
     private final MemoryTier backing = MemoryTier.memoryTier(Long.MAX_VALUE / 4, TierLevel.REMOTE);
     private final AtomicInteger gets = new AtomicInteger();
     private final AtomicInteger deletes = new AtomicInteger();
+    private final boolean durable;
+
+    SharedTestTier() {
+        this(false);
+    }
+
+    private SharedTestTier(boolean durable) {
+        this.durable = durable;
+    }
+
+    /// A shared tier that is also durable, as the production remote tier is ([RemoteTier#isDurable]).
+    static SharedTestTier sharedDurableTestTier() {
+        return new SharedTestTier(true);
+    }
 
     int gets() {
         return gets.get();
@@ -63,5 +77,10 @@ final class SharedTestTier implements StorageTier {
     @Override
     public boolean isShared() {
         return true;
+    }
+
+    @Override
+    public boolean isDurable() {
+        return durable;
     }
 }

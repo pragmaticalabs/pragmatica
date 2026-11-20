@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -28,6 +29,13 @@ import org.pragmatica.lang.Result;
 /// that layout, so no two checkpoint pointers can name one block: content addressing gives byte-identical folds one id, and a writer that
 /// deletes the block its pointer swap displaced would otherwise delete another pointer's block with it. A block without the header (written
 /// before PR-3c) is read as before.
+///
+/// Since #3303 A4a the header is `CKPTID02`, a 16-byte per-put nonce, then the keyspace, the partition and the claim: every put draws a fresh
+/// random nonce (128 bits from one [SecureRandom] per JVM; no counter, nothing persisted), so re-saving identical content yields a distinct
+/// block id. That is probabilistic, not structural: two puts of identical content collide only when their nonces do, about `n^2 / 2^129`
+/// over `n` puts (the birthday bound, near 2^64 puts), so with overwhelming probability no put lands on a block an earlier put (or another
+/// pointer) holds.
+/// The nonce is persisted nowhere else. Both markers are read (`CKPTID01` blocks stay readable); writers emit `CKPTID02` only.
 final class CheckpointFrame {
     /// Records the lineage digest covers: up to this many, ending at the checkpoint's claim.
     static final int LINEAGE_WINDOW = 8;
@@ -38,22 +46,42 @@ final class CheckpointFrame {
     /// Opens the identity header. Its first byte, `'C'`, is neither snapshot version (1, 2) nor the first byte of [#MARKER], so a build
     /// that predates the header reads the block as a fold with no lineage that does not decode: "no usable checkpoint", and the partition
     /// is rebuilt from its log (the block-layout flag day of PR-3c).
-    private static final byte[] IDENTITY_MARKER = "CKPTID01".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] IDENTITY_MARKER = "CKPTID02".getBytes(StandardCharsets.US_ASCII);
+    /// The marker of blocks written before the per-put nonce: read, never written.
+    private static final byte[] IDENTITY_MARKER_V1 = "CKPTID01".getBytes(StandardCharsets.US_ASCII);
+    private static final int NONCE_BYTES = 16;
+    private static final SecureRandom RANDOM = new SecureRandom();
 
     private CheckpointFrame() {}
 
     static byte[] frame(String keyspace, int partition, long throughOffset, byte[] snapshot, Option<byte[]> lineage) {
         var name = keyspace.getBytes(StandardCharsets.UTF_8);
         var body = withLineage(snapshot, lineage);
+        var nonce = new byte[NONCE_BYTES];
 
-        return ByteBuffer.allocate(IDENTITY_MARKER.length + Integer.BYTES + name.length + Integer.BYTES + Long.BYTES + body.length)
+        RANDOM.nextBytes(nonce);
+
+        return ByteBuffer.allocate(IDENTITY_MARKER.length + NONCE_BYTES + Integer.BYTES + name.length + Integer.BYTES + Long.BYTES + body.length)
                          .put(IDENTITY_MARKER)
+                         .put(nonce)
                          .putInt(name.length)
                          .put(name)
                          .putInt(partition)
                          .putLong(throughOffset)
                          .put(body)
                          .array();
+    }
+
+    /// Whether two `CKPTID02` blocks carry the same content: equal in everything but the per-put nonce (keyspace, partition, claim, lineage and
+    /// snapshot). A block of another format compares unequal, so the caller re-saves.
+    static boolean sameContent(byte[] left, byte[] right) {
+        var from = IDENTITY_MARKER.length + NONCE_BYTES;
+
+        return startsWith(left, IDENTITY_MARKER)
+               && startsWith(right, IDENTITY_MARKER)
+               && left.length == right.length
+               && left.length >= from
+               && Arrays.equals(left, from, left.length, right, from, right.length);
     }
 
     private static byte[] withLineage(byte[] snapshot, Option<byte[]> lineage) {
@@ -73,29 +101,40 @@ final class CheckpointFrame {
     /// `block` without its identity header; a block that has none (written before PR-3c), or whose header does not parse, whole.
     private static byte[] withoutIdentity(byte[] block) {
         return hasIdentity(block)
-               ? Arrays.copyOfRange(block, (int) bodyStart(block), block.length)
+               ? Arrays.copyOfRange(block, (int) bodyStart(block, prefixLength(block)), block.length)
                : block;
     }
 
     private static boolean hasIdentity(byte[] block) {
-        if (block.length < IDENTITY_MARKER.length + Integer.BYTES || !Arrays.equals(block,
-                                                                                    0,
-                                                                                    IDENTITY_MARKER.length,
-                                                                                    IDENTITY_MARKER,
-                                                                                    0,
-                                                                                    IDENTITY_MARKER.length)) {
-            return false;
+        var prefix = prefixLength(block);
+
+        return prefix > 0
+               && block.length >= prefix + Integer.BYTES
+               && nameLength(block, prefix) >= 0
+               && bodyStart(block, prefix) <= block.length;
+    }
+
+    /// Bytes ahead of the keyspace length: the marker found, plus the nonce for `CKPTID02`; 0 when the block opens with neither marker.
+    private static int prefixLength(byte[] block) {
+        if (startsWith(block, IDENTITY_MARKER)) {
+            return IDENTITY_MARKER.length + NONCE_BYTES;
         }
 
-        return nameLength(block) >= 0 && bodyStart(block) <= block.length;
+        return startsWith(block, IDENTITY_MARKER_V1)
+               ? IDENTITY_MARKER_V1.length
+               : 0;
     }
 
-    private static int nameLength(byte[] block) {
-        return ByteBuffer.wrap(block, IDENTITY_MARKER.length, Integer.BYTES).getInt();
+    private static boolean startsWith(byte[] block, byte[] marker) {
+        return block.length >= marker.length && Arrays.equals(block, 0, marker.length, marker, 0, marker.length);
     }
 
-    private static long bodyStart(byte[] block) {
-        return (long) IDENTITY_MARKER.length + Integer.BYTES + nameLength(block) + Integer.BYTES + Long.BYTES;
+    private static int nameLength(byte[] block, int prefix) {
+        return ByteBuffer.wrap(block, prefix, Integer.BYTES).getInt();
+    }
+
+    private static long bodyStart(byte[] block, int prefix) {
+        return (long) prefix + Integer.BYTES + nameLength(block, prefix) + Integer.BYTES + Long.BYTES;
     }
 
     /// The pointer the identity header of `block` names it for (its keyspace and partition); none for a block that has no header (written
@@ -105,11 +144,10 @@ final class CheckpointFrame {
             return Option.none();
         }
 
-        var keyspace = new String(block,
-                                  IDENTITY_MARKER.length + Integer.BYTES,
-                                  nameLength(block),
-                                  StandardCharsets.UTF_8);
-        var partition = ByteBuffer.wrap(block, IDENTITY_MARKER.length + Integer.BYTES + nameLength(block), Integer.BYTES).getInt();
+        var prefix = prefixLength(block);
+        var length = nameLength(block, prefix);
+        var keyspace = new String(block, prefix + Integer.BYTES, length, StandardCharsets.UTF_8);
+        var partition = ByteBuffer.wrap(block, prefix + Integer.BYTES + length, Integer.BYTES).getInt();
 
         return Option.some(EntityCheckpointKey.entityCheckpointKey(keyspace, partition));
     }
