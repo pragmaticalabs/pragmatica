@@ -620,7 +620,9 @@ class EmberArtifactFlagDayRestoreTest {
     }
 
     private static Result<String> exitCheck(Process process, String text) {
-        return Result.lift(Causes::fromThrowable, () -> process.waitFor()).flatMap(code -> verdict(code, text));
+        return Result.lift(Causes::fromThrowable,
+                           () -> process.waitFor())
+                     .flatMap(code -> verdict(code, text));
     }
 
     private static Result<String> verdict(int code, String text) {
