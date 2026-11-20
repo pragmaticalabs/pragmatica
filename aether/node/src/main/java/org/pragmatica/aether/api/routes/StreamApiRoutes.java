@@ -1120,11 +1120,13 @@ public final class StreamApiRoutes implements RouteSource {
     /// (the registered retention is the enforced one): that is refused with 409 naming both, because an online change
     /// goes through the declaration path (ST §2.5), never through a repeat create. A repeat with no retention field
     /// declares nothing and so changes nothing.
-    private Result<CreateResponse> existsOrConflict(ResourceAddress addr, StreamRegistryEntry entry, CreateRequest request) {
+    private Result<CreateResponse> existsOrConflict(ResourceAddress addr,
+                                                    StreamRegistryEntry entry,
+                                                    CreateRequest request) {
         return declaresRetention(request)
                ? declaredRetention(partitionsOf(request), request).flatMap(requested -> sameRetentionOrConflict(addr,
-                                                                                                                  entry.retention(),
-                                                                                                                  requested))
+                                                                                                                entry.retention(),
+                                                                                                                requested))
                : Result.success(new CreateResponse(addr.asString(), "exists"));
     }
 
@@ -1133,9 +1135,10 @@ public final class StreamApiRoutes implements RouteSource {
                                                                   RetentionPolicy requested) {
         return committed.equals(requested)
                ? Result.success(new CreateResponse(addr.asString(), "exists"))
-               : new ManagementServerError.Conflict("Stream '" + addr.asString() + "' exists with retention " + committed
-                                                    + "; refusing the differing retention " + requested
-                                                    + ": change retention through the stream declaration").result();
+               : new ManagementServerError.Conflict("Stream '" + addr.asString()
+                                                   + "' exists with retention " + committed
+                                                   + "; refusing the differing retention " + requested
+                                                   + ": change retention through the stream declaration").result();
     }
 
     /// Registers a PERMANENT catalog reference ([StreamRegistryEntry.RegisteredByKind#OPERATOR]): no
@@ -1156,8 +1159,8 @@ public final class StreamApiRoutes implements RouteSource {
                                                                                            engineKey,
                                                                                            partitions,
                                                                                            retention))
-                                                     .map(_ -> new CreateResponse(addr.asString(),
-                                                                                  "created"));
+                                .map(_ -> new CreateResponse(addr.asString(),
+                                                             "created"));
     }
 
     private static int partitionsOf(CreateRequest request) {
@@ -1169,16 +1172,16 @@ public final class StreamApiRoutes implements RouteSource {
                                                         int partitions,
                                                         RetentionPolicy retention) {
         return mintWithRetention(engineKey, partitions, retention).flatMap(_ -> registerCatalogEntry(addr,
-                                                                                                      enforcedRetention(engineKey,
-                                                                                                                        retention)));
+                                                                                                     enforcedRetention(engineKey,
+                                                                                                                       retention)));
     }
 
     /// What the engine enforces for the stream: the retention it holds when the stream already existed (an
     /// earlier publish auto-created it, `tolerateAlreadyExists`), else the one just minted.
     private RetentionPolicy enforcedRetention(String engineKey, RetentionPolicy minted) {
         return streamManager().enforcedConfig(engineKey)
-                              .map(StreamConfig::retention)
-                              .or(minted);
+                            .map(StreamConfig::retention)
+                            .or(minted);
     }
 
     private Result<Unit> mintWithRetention(String engineKey, int partitions, RetentionPolicy retention) {
@@ -1223,7 +1226,9 @@ public final class StreamApiRoutes implements RouteSource {
 
     private static Result<Option<Long>> parsedAgeMs(CreateRequest request) {
         return Option.option(request.maxAge())
-                     .map(age -> TimeSpan.timeSpan(age).map(TimeSpan::toMillis).map(Option::option))
+                     .map(age -> TimeSpan.timeSpan(age)
+                                         .map(TimeSpan::toMillis)
+                                         .map(Option::option))
                      .or(() -> Result.success(Option.none()));
     }
 

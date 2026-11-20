@@ -127,7 +127,8 @@ public interface DurableTopicSubstrate {
     static StreamConfig dlqStreamConfig(String topicAddress, DurableTopicSpec spec) {
         return StreamConfig.streamConfig(DurableTopicNames.dlqStream(topicAddress),
                                          1,
-                                         dlqRetention(DLQ_RETENTION_DEFAULT, DeclarationDefaults.defaultMaxBytes(spec.partitions())),
+                                         dlqRetention(DLQ_RETENTION_DEFAULT,
+                                                      DeclarationDefaults.defaultMaxBytes(spec.partitions())),
                                          "earliest",
                                          StreamConfig.DEFAULT.maxEventSizeBytes(),
                                          StreamConfig.DEFAULT.consistencyMode(),
