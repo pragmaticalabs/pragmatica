@@ -186,7 +186,6 @@ public final class AppendLog implements AutoCloseable {
     /// [#historyDigestOf] is unreachable. Were it reached, this value equals no real digest, so an inventory compared on it
     /// reads as a different history -- closed, never open.
     private static final String DIGEST_UNAVAILABLE = "sha-256-unavailable";
-
     /// Fixed framing header: u32 payloadLen + u64 offset + u64 timestampMillis + u32 crc32.
     private static final int HEADER_BYTES = 4 + 8 + 8 + 4;
     /// CRC pre-image header (offset + timestampMillis); payload is appended after it.
@@ -820,7 +819,8 @@ public final class AppendLog implements AutoCloseable {
 
     private static byte[] digestInput(List<EpochStart> history) {
         return history.stream()
-                      .map(entry -> entry.key().token() + " " + entry.startOffset() + "\n")
+                      .map(entry -> entry.key()
+                                         .token() + " " + entry.startOffset() + "\n")
                       .collect(Collectors.joining())
                       .getBytes(StandardCharsets.UTF_8);
     }
@@ -1872,10 +1872,7 @@ public final class AppendLog implements AutoCloseable {
         }
 
         private static Option<EpochKey> lastReached(List<EpochStart> history, long head) {
-            return Option.from(history.stream()
-                                      .filter(entry -> entry.startOffset() <= head)
-                                      .reduce((_, later) -> later))
-                         .map(EpochStart::key);
+            return Option.from(history.stream().filter(entry -> entry.startOffset() <= head).reduce((_, later) -> later)).map(EpochStart::key);
         }
 
         private static long firstStartOf(List<EpochStart> history) {
