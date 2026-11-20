@@ -602,10 +602,12 @@ class EntityCheckpointReclaimTest {
     void aHeldBlockWhoseReadFindsNothing_isReSaved() {
         var durable = new FaultyDurableTier(privateDurableTier());
         storage.shutdown();
-        storage = storageOver(MemoryTier.memoryTier(ONE_GB), durable);
+        var cache = new FaultyDurableTier(MemoryTier.memoryTier(ONE_GB));
+        storage = storageOver(cache, durable);
         var committed = save(substrate(checkpointReclaim(LONG_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
         var putsBeforeRestart = shared.puts.size();
 
+        cache.hideGets = true;
         durable.hideGets = true;
         shared.hideGets = true;
         var resaved = save(substrate(checkpointReclaim(LONG_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
