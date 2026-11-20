@@ -12,6 +12,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import java.net.SocketAddress;
 import java.time.Instant;
 import java.util.List;
+import java.util.stream.IntStream;
 
 public record TestTopologyManager(int clusterSize, NodeInfo self) implements TopologyManager {
     @Override
@@ -46,7 +47,9 @@ public record TestTopologyManager(int clusterSize, NodeInfo self) implements Top
 
     @Override
     public List<NodeId> topology() {
-        return List.of(self.id());
+        return IntStream.rangeClosed(1, clusterSize)
+                        .mapToObj(index -> NodeId.nodeId("node-" + index).unwrap())
+                        .toList();
     }
 
     @Override

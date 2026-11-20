@@ -6,8 +6,8 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.consensus.topology.TopologyConfig;
+import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
@@ -25,7 +25,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class ClusterTopologyManagerIT {
     private final MessageRouter.MutableRouter router = MessageRouter.mutable();
 
-    private TopologyManager topologyManager;
+    private TopologyObserver topologyManager;
     private NodeId nodeId1;
     private NodeId nodeId2;
     private NodeId nodeId3;
@@ -72,8 +72,14 @@ class ClusterTopologyManagerIT {
     }
 
     @Test
-    void getReturnsCorrectValueForExistingNodeId() {
+    void getReturnsSelfAndPeersOnlyOnceDiscovered() {
+        // Contract (TopologyObserver.java:405-407, a97a9e753c): a configured core peer is NOT seeded into the dial set; it
+        // resolves only after SWIM discovery (`handleDiscoveredNodes`). Self is present from construction.
         assertEquals(Option.some(nodeInfo1), topologyManager.get(nodeId1));
+        assertEquals(Option.none(), topologyManager.get(nodeId2));
+
+        topologyManager.handleDiscoveredNodes(new NetworkMessage.DiscoveredNodes(nodeId1, List.of(nodeInfo2)));
+
         assertEquals(Option.some(nodeInfo2), topologyManager.get(nodeId2));
     }
 
@@ -83,8 +89,13 @@ class ClusterTopologyManagerIT {
     }
 
     @Test
-    void reverseLookupReturnsExistingAddress() {
+    void reverseLookupResolvesSelfAndPeersOnlyOnceDiscovered() {
+        // Contract as in getReturnsSelfAndPeersOnlyOnceDiscovered: a configured core peer's address resolves after discovery only.
         assertEquals(Option.some(nodeId1), topologyManager.reverseLookup(socketAddress1));
+        assertEquals(Option.none(), topologyManager.reverseLookup(socketAddress2));
+
+        topologyManager.handleDiscoveredNodes(new NetworkMessage.DiscoveredNodes(nodeId1, List.of(nodeInfo2)));
+
         assertEquals(Option.some(nodeId2), topologyManager.reverseLookup(socketAddress2));
     }
 
