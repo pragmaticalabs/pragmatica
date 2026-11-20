@@ -94,6 +94,20 @@ class JoinGenerationGuardTest {
                            .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.WireGenerationRefused(B, 1, 3)));
     }
 
+    /// The bump's own arm: a peer one generation behind this binary is refused (#3303 RA-2 raised it to 3).
+    @Test
+    void handshakenMemberOneGenerationBehindThisBinary_refused() {
+        var behind = JoinGenerationGuard.WIRE_GENERATION - 1;
+        handshaken.put(A, generation(Integer.toString(behind)));
+
+        JoinGenerationGuard.admit(Set.of(A), this::labelsOf, LONG, JoinGenerationGuard.WIRE_GENERATION)
+                           .await(AWAIT)
+                           .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("must be refused"))
+                           .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.WireGenerationRefused(A,
+                                                                                                                    behind,
+                                                                                                                    JoinGenerationGuard.WIRE_GENERATION)));
+    }
+
     @Test
     void unparseableLabel_countsAsGenerationOne() {
         assertThat(JoinGenerationGuard.generationOf(generation("two"))).isEqualTo(1);

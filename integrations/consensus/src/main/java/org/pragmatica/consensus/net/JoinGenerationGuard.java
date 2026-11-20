@@ -42,8 +42,10 @@ import org.pragmatica.lang.utils.SharedScheduler;
 /// Protects only the NEW node; an old binary rejoining an upgraded cluster is stopped only by the operator
 /// procedure (`aether/upgrade.sh`).
 public interface JoinGenerationGuard {
-    /// This binary's wire generation. Bump on every wire/codec change that an older node cannot decode.
-    int WIRE_GENERATION = 2;
+    /// This binary's wire generation. Bump on every wire/codec change that an older node cannot decode; the
+    /// `GENERATION` line of `wire-assignment-baseline.txt` records it and `scripts/wire-generation-check.sh` gates it.
+    /// 3: #3303 RA-2 (`TransactionResult` gained its refusal).
+    int WIRE_GENERATION = 3;
     /// Bound on waiting for core members to handshake [guess: taste; a constant, not configuration].
     TimeSpan JOIN_GENERATION_WAIT = TimeSpan.timeSpan(10).seconds();
     /// Handshake poll cadence while waiting.
