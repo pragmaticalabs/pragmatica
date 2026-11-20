@@ -299,6 +299,141 @@ class GitBackupRepositoryTest {
         throw new AssertionError("the worker never reached the output read");
     }
 
+    // --- three-valued reads (#3464) ---
+    private static final String COMMIT_ID = "0123456789abcdef0123456789abcdef01234567";
+
+    /// Every primitive, fed every answer that is not a definite one: exit 0 whose output was lost, a failure (128), a timeout (-1). None may read as
+    /// absent: absent is a claim about the repository, and these are the cases where git said nothing about it.
+    @Test
+    void everyPrimitive_readsLostOutputAndFailures_asUnreadable_neverAbsent() {
+        var lost = Option.<String>none();
+
+        for (var exit : List.of(0, 128, -1)) {
+            var output = exit == 0 ? lost : Option.some("fatal: boom\n");
+
+            assertThat(GitBackupRepository.classifyRemoteBranch(exit, output, "backup")).as("P1 remote %d", exit).isInstanceOf(GitRead.Unreadable.class);
+            assertThat(GitBackupRepository.classifyLocalBranch(exit, output)).as("P1 local %d", exit).isInstanceOf(GitRead.Unreadable.class);
+            assertThat(GitBackupRepository.classifyCommitId(exit, output)).as("P2 %d", exit).isInstanceOf(GitRead.Unreadable.class);
+            assertThat(GitBackupRepository.classifyPath(exit, output, "declared-lineage.txt")).as("P3 %d", exit).isInstanceOf(GitRead.Unreadable.class);
+            assertThat(GitBackupRepository.classifyFile(exit, output)).as("P4 %d", exit).isInstanceOf(GitRead.Unreadable.class);
+        }
+    }
+
+    /// Exit 2 is the only definite "no such branch" (`ls-remote --exit-code`, `show-ref --exists`) — and only when the output came back with it.
+    @Test
+    void branchRead_exit2_isAbsent_butNotWhenItsOutputWasLost() {
+        assertThat(GitBackupRepository.classifyRemoteBranch(2, Option.some(""), "backup")).isInstanceOf(GitRead.Absent.class);
+        assertThat(GitBackupRepository.classifyLocalBranch(2, Option.some(""))).isInstanceOf(GitRead.Absent.class);
+        assertThat(GitBackupRepository.classifyRemoteBranch(2, Option.none(), "backup")).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyLocalBranch(2, Option.none())).isInstanceOf(GitRead.Unreadable.class);
+    }
+
+    @Test
+    void branchRead_isPresent_onlyForALineEndingInTheBranch() {
+        assertThat(GitBackupRepository.classifyRemoteBranch(0, Option.some(COMMIT_ID + "\trefs/heads/backup\n"), "backup")).isInstanceOf(GitRead.Present.class);
+        assertThat(GitBackupRepository.classifyRemoteBranch(0, Option.some(COMMIT_ID + "\trefs/heads/other/backup\n"), "backup")).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyRemoteBranch(0, Option.some(""), "backup")).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyLocalBranch(0, Option.some(""))).isInstanceOf(GitRead.Present.class);
+    }
+
+    /// The listing names [GitBackupRepository#FILE] as a control: only then does a missing path mean the path is not in the tree.
+    @Test
+    void pathRead_isAbsent_onlyWhenTheControlEntryWasListed() {
+        var path = "declared-lineage.txt";
+
+        assertThat(GitBackupRepository.classifyPath(0, Option.some(GitBackupRepository.FILE + "\n"), path)).isInstanceOf(GitRead.Absent.class);
+        assertThat(GitBackupRepository.classifyPath(0, Option.some(""), path)).as("empty listing").isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyPath(0, Option.some("other.txt\n"), path)).as("other names").isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyPath(0, Option.some(GitBackupRepository.FILE + "\n" + path + "\n"), path)).isInstanceOf(GitRead.Present.class);
+        assertThat(GitBackupRepository.classifyPath(0, Option.some(""), GitBackupRepository.FILE)).as("no control for the control").isInstanceOf(GitRead.Unreadable.class);
+    }
+
+    @Test
+    void commitIdAndFileReads_areUnreadable_whenBlank_andPresent_whenRead() {
+        assertThat(GitBackupRepository.classifyCommitId(0, Option.some("\n"))).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyCommitId(0, Option.some("not-a-commit\n"))).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyCommitId(0, Option.some(COMMIT_ID + "\n"))).isEqualTo(GitRead.present(COMMIT_ID));
+        assertThat(GitBackupRepository.classifyFile(0, Option.some(""))).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyFile(0, Option.some("state\n"))).isEqualTo(GitRead.present("state\n"));
+    }
+
+    @Test
+    void readBranch_isAbsent_onABrandNewRemote_andPresentOncePushed() {
+        var repository = repository("local", Option.some(bareRemote(temp.resolve("remote.git"))));
+
+        repository.prepare();
+        assertThat(repository.readBranch()).isInstanceOf(GitRead.Absent.class);
+
+        repository.commit("state-1\n", "first")
+                  .flatMap(_ -> repository.push())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readBranch()).isInstanceOf(GitRead.Present.class);
+    }
+
+    @Test
+    void readBranch_withNoRemote_isAbsentOnAFreshInit_andPresentOnceCommitted() {
+        var repository = repository("local", Option.none());
+
+        repository.prepare();
+        assertThat(repository.readBranch()).isInstanceOf(GitRead.Absent.class);
+
+        repository.commit("state-1\n", "first")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readBranch()).isInstanceOf(GitRead.Present.class);
+    }
+
+    @Test
+    @Timeout(90)
+    void readBranch_overAHungRemote_isUnreadable() {
+        var repository = sshRepository(HANGING_SSH, TimeSpan.timeSpan(2).seconds());
+
+        repository.prepare();
+
+        assertThat(repository.readBranch()).isInstanceOf(GitRead.Unreadable.class);
+    }
+
+    @Test
+    void readPath_isAbsentForAPathTheCommitLacks_andPresentForOneItHas() {
+        var repository = repository("local", Option.none());
+
+        repository.prepare();
+        repository.commit("state-1\n", "first")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readPath("HEAD", GitBackupRepository.DECLARATION)).isInstanceOf(GitRead.Absent.class);
+        assertThat(repository.readPath("HEAD", GitBackupRepository.FILE)).isInstanceOf(GitRead.Present.class);
+        assertThat(repository.readFile("HEAD", GitBackupRepository.FILE)).isEqualTo(GitRead.present("state-1\n"));
+    }
+
+    /// A commit whose tree object is gone: git fails (128) where the old reads said "no such file".
+    @Test
+    void readPath_withTheTreeObjectDeleted_isUnreadable() throws IOException {
+        var repository = repository("local", Option.none());
+
+        repository.prepare();
+        repository.commit("state-1\n", "first")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        var tree = git(temp.resolve("local"), "rev-parse", "HEAD^{tree}").strip();
+
+        Files.delete(temp.resolve("local").resolve(".git/objects").resolve(tree.substring(0, 2)).resolve(tree.substring(2)));
+
+        assertThat(repository.readPath("HEAD", GitBackupRepository.DECLARATION)).isInstanceOf(GitRead.Unreadable.class);
+    }
+
+    @Test
+    void readCommitId_onAnUnknownRef_isUnreadable_andOnAKnownOne_isTheId() {
+        var repository = repository("local", Option.none());
+
+        repository.prepare();
+        repository.commit("state-1\n", "first")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readCommitId("refs/heads/nope")).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(repository.readCommitId("HEAD")).isEqualTo(GitRead.present(git(temp.resolve("local"), "rev-parse", "HEAD").strip()));
+    }
+
     private GitBackupRepository repository(String name, Option<String> remote) {
         return GitBackupRepository.gitBackupRepository(temp.resolve(name), remote, "backup", TIMEOUT);
     }
