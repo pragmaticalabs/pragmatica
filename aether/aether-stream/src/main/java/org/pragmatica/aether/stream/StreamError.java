@@ -9,6 +9,7 @@ import java.util.regex.Pattern;
 
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -108,18 +109,60 @@ public sealed interface StreamError extends Cause {
         }
     }
 
-    /// A cursor whose offset is no longer readable. `reason` says why: [Reason#EXPIRED] (retention reclaimed it) or
-    /// [Reason#LOST] (the data is gone with no retention decision behind it). The two-argument form is [Reason#EXPIRED], so
-    /// every raise site that predates the reason keeps its meaning. On the forward the reason rides `ReadRefusal`'s `flag`
-    /// slot (`false` = [Reason#EXPIRED]).
-    record CursorExpired(long requestedOffset, long tailOffset, Reason reason) implements StreamError {
+    /// A cursor whose offset is no longer readable. `reason` says why in two classes: [Reason#EXPIRED] (retention reclaimed
+    /// it) or [Reason#LOST] (the data is gone with no retention decision behind it); `cause` names the removal itself
+    /// ([RemovalCause]). The two agree: [#reasonOf] gives the reason a cause fixes, and the compact constructor refuses a
+    /// pair that disagrees and refuses [RemovalCause#NOT_APPLICABLE] (a refusal that is not a removal is never a
+    /// `CursorExpired`). [RemovalCause#UNRECORDED] and [RemovalCause#UNKNOWN] fix no reason and go with either; no
+    /// constructor here writes `UNKNOWN`, it is reserved for decoding. The refusal guards a programming error only.
+    ///
+    /// The shim forms name no cause and pass [RemovalCause#UNRECORDED]: `(requested, tail, reason)` and `(requested,
+    /// tail)` = ([Reason#EXPIRED], `UNRECORDED`). On the forward the reason rides `ReadRefusal`'s `flag` slot (`false` =
+    /// [Reason#EXPIRED]) and the cause its own `cause` slot.
+    record CursorExpired(long requestedOffset, long tailOffset, Reason reason, RemovalCause cause) implements StreamError {
         public enum Reason {
             EXPIRED,
             LOST
         }
 
+        public CursorExpired {
+            if (disagrees(reason, cause)) {
+                throw new IllegalArgumentException("CursorExpired reason " + reason + " does not match cause " + cause);
+            }
+        }
+
+        public CursorExpired(long requestedOffset, long tailOffset, RemovalCause cause) {
+            this(requestedOffset, tailOffset, fixedReason(cause), cause);
+        }
+
+        public CursorExpired(long requestedOffset, long tailOffset, Reason reason) {
+            this(requestedOffset, tailOffset, reason, RemovalCause.UNRECORDED);
+        }
+
         public CursorExpired(long requestedOffset, long tailOffset) {
-            this(requestedOffset, tailOffset, Reason.EXPIRED);
+            this(requestedOffset, tailOffset, Reason.EXPIRED, RemovalCause.UNRECORDED);
+        }
+
+        /// The reason a cause fixes: the ONE switch from a cause to its class, exhaustive with no default branch. The
+        /// three causes that say nothing about a removal's class fix none.
+        public static Option<Reason> reasonOf(RemovalCause cause) {
+            return switch (cause) {
+                case RETENTION, AGE, COUNT, BYTES -> Option.some(Reason.EXPIRED);
+                case RING_FROZEN, OVER_SHARE, DROPPED_RUN, BLOCK_PUT_FAILED, BLOCK_ABSENT, UNLISTED_TAIL, LIFE_LOST -> Option.some(Reason.LOST);
+                case UNRECORDED, NOT_APPLICABLE, UNKNOWN -> Option.none();
+            };
+        }
+
+        private static boolean disagrees(Reason reason, RemovalCause cause) {
+            return cause == RemovalCause.NOT_APPLICABLE || reasonOf(cause).fold(() -> false, fixed -> fixed != reason);
+        }
+
+        private static Reason fixedReason(RemovalCause cause) {
+            return reasonOf(cause).fold(() -> refusedNoReason(cause), fixed -> fixed);
+        }
+
+        private static Reason refusedNoReason(RemovalCause cause) {
+            throw new IllegalArgumentException("Cause " + cause + " fixes no reason: name the reason too");
         }
 
         @Override

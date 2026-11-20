@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream.forward;
 
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.segment.SegmentError;
 import org.pragmatica.consensus.NodeId;
@@ -22,7 +23,11 @@ import static org.pragmatica.lang.Option.some;
 /// refusal to a status maps the forwarded one identically.
 ///
 /// The slots are positional and each [Kind] fixes which it uses; the others stay at their defaults (`""`, `0`, `false`,
-/// [Epoch#ZERO]). The set of refusals carried is the set a read can raise on the serving node -- the owner role gate, the
+/// [Epoch#ZERO], [RemovalCause#NOT_APPLICABLE]). `cause` is the removal's cause: only `CURSOR_EXPIRED` carries one, and the
+/// compact constructor is the ONE table by kind that a constructed or decoded value passes through (never throwing, so a
+/// decoded value always builds): `CURSOR_EXPIRED` keeps a cause that names a removal and turns `NOT_APPLICABLE` into
+/// [RemovalCause#UNRECORDED] (a removal whose cause nobody stated); every other kind carries `NOT_APPLICABLE`.
+/// [RemovalCause#UNKNOWN], which only the decoding of an unrecognised code writes, is kept for `CURSOR_EXPIRED`. The set of refusals carried is the set a read can raise on the serving node -- the owner role gate, the
 /// ring read, the verified-copy gate, the linearizable pipeline, the held-partition naming, the sealed tier -- and
 /// [#readRefusal(Cause)] is an exhaustive switch over [StreamError] with no default branch, so a new stream error fails
 /// compilation here until someone decides whether a read can raise it. A cause that is not carried (a failed tier read, a
@@ -41,7 +46,51 @@ public record ReadRefusal(Kind kind,
                           String peerFirst,
                           String peerSecond,
                           Epoch epochFirst,
-                          Epoch epochSecond) {
+                          Epoch epochSecond,
+                          RemovalCause cause) {
+    public ReadRefusal {
+        cause = causeOf(kind, cause);
+    }
+
+    /// The form that predates `cause`: [RemovalCause#NOT_APPLICABLE], which a `CURSOR_EXPIRED` turns into
+    /// [RemovalCause#UNRECORDED] because it names no removal cause.
+    public ReadRefusal(Kind kind,
+                       String stream,
+                       int partition,
+                       long first,
+                       long second,
+                       boolean flag,
+                       String detail,
+                       String peerFirst,
+                       String peerSecond,
+                       Epoch epochFirst,
+                       Epoch epochSecond) {
+        this(kind,
+             stream,
+             partition,
+             first,
+             second,
+             flag,
+             detail,
+             peerFirst,
+             peerSecond,
+             epochFirst,
+             epochSecond,
+             RemovalCause.NOT_APPLICABLE);
+    }
+
+    private static RemovalCause causeOf(Kind kind, RemovalCause cause) {
+        return kind == Kind.CURSOR_EXPIRED
+               ? removalCauseOf(cause)
+               : RemovalCause.NOT_APPLICABLE;
+    }
+
+    private static RemovalCause removalCauseOf(RemovalCause cause) {
+        return cause == RemovalCause.NOT_APPLICABLE
+               ? RemovalCause.UNRECORDED
+               : cause;
+    }
+
     /// The wire form of a carried refusal. The ordinal is the encoding: append only, never reorder.
     @Codec
     public enum Kind {
@@ -200,11 +249,7 @@ public record ReadRefusal(Kind kind,
             case PARTITION_OUT_OF_RANGE -> new StreamError.PartitionOutOfRange(stream, partition, (int) first);
             case PARTITION_NOT_LOCAL -> StreamError.General.PARTITION_NOT_LOCAL;
             case BUFFER_CLOSED -> StreamError.General.BUFFER_CLOSED;
-            case CURSOR_EXPIRED -> new StreamError.CursorExpired(first,
-                                                                 second,
-                                                                 flag
-                                                                 ? StreamError.CursorExpired.Reason.LOST
-                                                                 : StreamError.CursorExpired.Reason.EXPIRED);
+            case CURSOR_EXPIRED -> new StreamError.CursorExpired(first, second, reasonOfCursor(), cause);
             case STREAM_NOT_MATERIALIZED -> new StreamError.StreamNotMaterialized(stream);
             case OWNER_NOT_ACTIVATED -> new StreamError.OwnerNotActivated(stream, partition);
             case REPLICA_NOT_VERIFIED -> new StreamError.ReplicaNotVerified(stream, partition, first);
@@ -226,6 +271,18 @@ public record ReadRefusal(Kind kind,
         };
     }
 
+    /// The reason a cursor refusal carries: the cause's own when it fixes one (the cause wins over `flag`), else the flag's.
+    private StreamError.CursorExpired.Reason reasonOfCursor() {
+        return StreamError.CursorExpired.reasonOf(cause)
+                          .fold(this::flagReason, reason -> reason);
+    }
+
+    private StreamError.CursorExpired.Reason flagReason() {
+        return flag
+               ? StreamError.CursorExpired.Reason.LOST
+               : StreamError.CursorExpired.Reason.EXPIRED;
+    }
+
     /// Exhaustive over [StreamError]: every constant and record is either carried or named in the second group as a
     /// refusal no read raises. No default branch.
     private static Option<ReadRefusal> ofStreamError(StreamError error) {
@@ -235,9 +292,12 @@ public record ReadRefusal(Kind kind,
             case StreamError.PartitionOutOfRange(var stream, var partition, var count) -> some(readRefusal(Kind.PARTITION_OUT_OF_RANGE,
                                                                                                            stream,
                                                                                                            partition).withFirst(count));
-            case StreamError.CursorExpired(var requested, var tail, var reason) -> some(readRefusal(Kind.CURSOR_EXPIRED,
-                                                                                                    "",
-                                                                                                    0).withFirst(requested).withSecond(tail).withFlag(reason == StreamError.CursorExpired.Reason.LOST));
+            case StreamError.CursorExpired(var requested, var tail, var reason, var cause) -> some(readRefusal(Kind.CURSOR_EXPIRED,
+                                                                                                           "",
+                                                                                                           0).withFirst(requested)
+                                                                                                             .withSecond(tail)
+                                                                                                             .withFlag(reason == StreamError.CursorExpired.Reason.LOST)
+                                                                                                             .withCause(cause));
             case StreamError.StreamNotMaterialized(var stream) -> some(readRefusal(Kind.STREAM_NOT_MATERIALIZED,
                                                                                    stream,
                                                                                    0));
@@ -287,7 +347,22 @@ public record ReadRefusal(Kind kind,
     }
 
     private static ReadRefusal readRefusal(Kind kind, String stream, int partition) {
-        return new ReadRefusal(kind, stream, partition, 0L, 0L, false, "", "", "", Epoch.ZERO, Epoch.ZERO);
+        return new ReadRefusal(kind, stream, partition, 0L, 0L, false, "", "", "", Epoch.ZERO, Epoch.ZERO, RemovalCause.NOT_APPLICABLE);
+    }
+
+    private ReadRefusal withCause(RemovalCause value) {
+        return new ReadRefusal(kind,
+                               stream,
+                               partition,
+                               first,
+                               second,
+                               flag,
+                               detail,
+                               peerFirst,
+                               peerSecond,
+                               epochFirst,
+                               epochSecond,
+                               value);
     }
 
     private ReadRefusal withFirst(long value) {
@@ -301,7 +376,8 @@ public record ReadRefusal(Kind kind,
                                peerFirst,
                                peerSecond,
                                epochFirst,
-                               epochSecond);
+                               epochSecond,
+                               cause);
     }
 
     private ReadRefusal withSecond(long value) {
@@ -315,7 +391,8 @@ public record ReadRefusal(Kind kind,
                                peerFirst,
                                peerSecond,
                                epochFirst,
-                               epochSecond);
+                               epochSecond,
+                               cause);
     }
 
     private ReadRefusal withFlag(boolean value) {
@@ -329,7 +406,8 @@ public record ReadRefusal(Kind kind,
                                peerFirst,
                                peerSecond,
                                epochFirst,
-                               epochSecond);
+                               epochSecond,
+                               cause);
     }
 
     private ReadRefusal withDetail(String value) {
@@ -343,7 +421,8 @@ public record ReadRefusal(Kind kind,
                                peerFirst,
                                peerSecond,
                                epochFirst,
-                               epochSecond);
+                               epochSecond,
+                               cause);
     }
 
     private ReadRefusal withPeers(String peer1, String peer2) {
@@ -357,7 +436,8 @@ public record ReadRefusal(Kind kind,
                                peer1,
                                peer2,
                                epochFirst,
-                               epochSecond);
+                               epochSecond,
+                               cause);
     }
 
     private ReadRefusal withEpochs(Epoch epoch1, Epoch epoch2) {
@@ -371,6 +451,7 @@ public record ReadRefusal(Kind kind,
                                peerFirst,
                                peerSecond,
                                epoch1,
-                               epoch2);
+                               epoch2,
+                               cause);
     }
 }
