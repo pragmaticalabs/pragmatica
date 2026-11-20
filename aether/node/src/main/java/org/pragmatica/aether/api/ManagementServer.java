@@ -289,7 +289,6 @@ class ManagementServerImpl implements ManagementServer {
     private static final TimeSpan UNBUDGETED_REPLY_WINDOW = TimeSpan.timeSpan(10).seconds();
 
     private final ForwardReplyResender replyResender = ForwardReplyResender.forwardReplyResender();
-    private final NodeLifecycleRoutes.DrainPort drainPort;
     private final NodeLifecycleRoutes.SliceFloor sliceFloor;
     private final NodeLifecycleRoutes nodeLifecycleRoutes;
 
@@ -360,7 +359,6 @@ class ManagementServerImpl implements ManagementServer {
         this.forwardSerializer = serializer;
         this.forwardDeserializer = deserializer;
         this.forwardingTimeouts = forwardingTimeouts;
-        this.drainPort = drainPort;
         this.wsAuthenticator = WebSocketAuthenticator.webSocketAuthenticator(securityValidator, securityEnabled);
         this.thresholdEvaluator = AlertThresholdEvaluator.alertThresholdEvaluator(nodeSupplier, alertManager);
         this.statusWsHandler = new StatusWebSocketHandler(wsAuthenticator);

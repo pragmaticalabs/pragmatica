@@ -81,7 +81,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// drains cannot be admitted in lockstep into a quorum-losing cascade. Because a drain does NO lifecycle/KV write,
     /// the target stays SWIM-present until it physically halts, so live `presentMembers()` alone cannot see a
     /// previously-commanded drain. The registry is leader-owned and drains are leader-routed, so the read reflects the
-    /// authoritative pending set. Defaults to [DrainPort#none()] for legacy callers / test fixtures.
+    /// authoritative pending set. A null port becomes [DrainPort#none()]; the single-arg legacy factory wires an inert [DrainPort#registry] (no-op sink, empty pending set).
     private final DrainPort drainPort;
     /// #1720: the slice `minAvailable` floor guard for operator drain and shutdown, absent for legacy callers and
     /// fixtures that wire no slice ownership (they keep the budget-only admission they always had).
