@@ -10,6 +10,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -34,6 +35,7 @@ class InventoryProvenanceTest {
     private static final Epoch E1 = Epoch.epoch(0, 1, 0);
     private static final Epoch E2 = Epoch.epoch(0, 2, 0);
     private static final Epoch E3 = Epoch.epoch(0, 3, 0);
+    private static final long HOUR_MS = 3_600_000L;
     private static final byte[] PAYLOAD = "e".getBytes(UTF_8);
 
     @TempDir
@@ -80,7 +82,7 @@ class InventoryProvenanceTest {
         manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
         manager.ensureStreamMaterialized(aged()).onFailure(cause -> fail(cause.message()));
         for (var i = 0; i < 3; i++) {
-            manager.publishLocal(STREAM, PARTITION, PAYLOAD, 1L, E1).onFailure(cause -> fail(cause.message()));
+            manager.publishLocal(STREAM, PARTITION, PAYLOAD, System.currentTimeMillis() - 2 * HOUR_MS, E1).onFailure(cause -> fail(cause.message()));
         }
         for (var i = 0; i < 4; i++) {
             manager.publishLocal(STREAM, PARTITION, PAYLOAD, System.currentTimeMillis(), E2).onFailure(cause -> fail(cause.message()));
@@ -96,7 +98,7 @@ class InventoryProvenanceTest {
     }
 
     private static StreamConfig aged() {
-        return StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(1_000L, 64 * 1024L, 60_000L), "latest");
+        return StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(1_000L, 64 * 1024L, HOUR_MS).withDeclared(RetentionDimensions.AGE), "latest");
     }
 
     private static List<EpochStart> asLogEntries(List<ProvenanceEntry> history) {
