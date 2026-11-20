@@ -17,6 +17,8 @@ import java.util.Map;
 import org.pragmatica.aether.node.backup.GitBackupRepository.BackupRepositoryError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
 import com.sun.net.httpserver.HttpServer;
@@ -460,6 +462,13 @@ class GitBackupRepositoryTest {
         Files.delete(temp.resolve(name).resolve(".git").resolve("hooks").resolve("pre-commit"));
     }
 
+    private static int gitExitCode(Result<Unit> result) {
+        return result.fold(cause -> cause instanceof BackupRepositoryError.GitFailed failed
+                                    ? failed.exitCode()
+                                    : - 1,
+                           _ -> 0);
+    }
+
     private String committedRecord(String name) {
         return git(temp.resolve(name), "show", "HEAD:" + GitBackupRepository.REJECTION_FILE);
     }
@@ -591,8 +600,7 @@ class GitBackupRepositoryTest {
         assertThat(repository.readPath("HEAD", GitBackupRepository.FILE)).isInstanceOf(GitRead.Present.class);
         assertThat(subjectOfHead("local")).isEqualTo("restore rejection cleared");
         assertThat(commitCount("local")).isEqualTo(3);
-        assertThat(repository.removeRejection()
-                             .fold(cause -> cause instanceof BackupRepositoryError.GitFailed failed && failed.exitCode() == 128, _ -> false)).as("an absent record is git rm's exit 128").isTrue();
+        assertThat(gitExitCode(repository.removeRejection())).as("an absent record is git rm's exit 128").isEqualTo(128);
         assertThat(commitCount("local")).isEqualTo(3);
     }
 
