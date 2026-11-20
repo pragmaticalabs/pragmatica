@@ -11,10 +11,12 @@ public enum TokenCompare {
     UNKNOWN;
     /// UNKNOWN if either side is 0, otherwise equal or different by value.
     public static TokenCompare compare(long a, long b) {
-        return a == 0 || b == 0
-               ? UNKNOWN
-               : a == b
-                 ? KNOWN_EQUAL
-                 : KNOWN_DIFFERENT;
+        if (a == 0 || b == 0) {
+            return UNKNOWN;
+        }
+
+        return a == b
+               ? KNOWN_EQUAL
+               : KNOWN_DIFFERENT;
     }
 }

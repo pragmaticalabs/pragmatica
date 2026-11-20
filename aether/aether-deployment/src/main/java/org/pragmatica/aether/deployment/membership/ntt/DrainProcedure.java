@@ -88,8 +88,9 @@ public final class DrainProcedure {
     private final Function<DrainWindow, Promise<DepartureOutcome>> departurePush;
     private final Runnable jvmExit;
     private final TimeSpan drainTimeout;
-    /// The hold seam (D1 C3): the quiesced fork exits only on [HoldAnswer#NOT_HELD]; HELD and UNKNOWN wait. The grace fork
-    /// ignores it, as it ignores both flags above. Every factory but the hold-aware one defaults it to NOT_HELD.
+    /// The hold seam (D1 C3): read ONCE, when the departure push settles. NOT_HELD there takes the quiesced exit; HELD or
+    /// UNKNOWN forgo it for good (the answer is never re-read) and only the grace fork exits. The grace fork never reads it,
+    /// as it ignores both flags above. Every factory but the hold-aware one defaults it to NOT_HELD.
     private final Supplier<HoldAnswer> holdAnswer;
     private final AtomicReference<DrainState> state = new AtomicReference<>(DrainState.INACTIVE);
     /// Why this node is draining, set by the single winning [#initiate] BEFORE anything the drain triggers
@@ -140,19 +141,6 @@ public final class DrainProcedure {
                                   NO_DEPARTURE_PUSH,
                                   jvmExit,
                                   drainTimeout,
-                                  NOT_HELD);
-    }
-
-    /// Convenience factory using the spec §14 default drain timeout (30s).
-    public static DrainProcedure drainProcedure(InFlightRequestTracker tracker,
-                                                Runnable swimLeaveEmitter,
-                                                Runnable jvmExit) {
-        return new DrainProcedure(tracker,
-                                  swimLeaveEmitter,
-                                  reason -> {},
-                                  NO_DEPARTURE_PUSH,
-                                  jvmExit,
-                                  DEFAULT_DRAIN_TIMEOUT,
                                   NOT_HELD);
     }
 
@@ -260,14 +248,15 @@ public final class DrainProcedure {
                               holdAnswer);
     }
 
-    /// Fully-explicit variant of the hold-aware factory with a caller-supplied drain grace window.
-    public static DrainProcedure drainProcedure(InFlightRequestTracker tracker,
-                                                Runnable swimLeaveEmitter,
-                                                Consumer<DrainReason> drainInitiatedEmitter,
-                                                Function<DrainWindow, Promise<DepartureOutcome>> departurePush,
-                                                Runnable jvmExit,
-                                                TimeSpan drainTimeout,
-                                                Supplier<HoldAnswer> holdAnswer) {
+    /// Fully-explicit variant of the hold-aware factory with a caller-supplied drain grace window. Package-private: production
+    /// uses the hold-aware factory above, and tests in this package need the short grace.
+    static DrainProcedure drainProcedure(InFlightRequestTracker tracker,
+                                         Runnable swimLeaveEmitter,
+                                         Consumer<DrainReason> drainInitiatedEmitter,
+                                         Function<DrainWindow, Promise<DepartureOutcome>> departurePush,
+                                         Runnable jvmExit,
+                                         TimeSpan drainTimeout,
+                                         Supplier<HoldAnswer> holdAnswer) {
         return new DrainProcedure(tracker,
                                   swimLeaveEmitter,
                                   drainInitiatedEmitter,
@@ -383,8 +372,9 @@ public final class DrainProcedure {
         maybeExit();
     }
 
-    /// Quiesced-fork exit: both the in-flight tracker AND the departure push must have settled, and the hold seam must answer
-    /// NOT_HELD (HELD and UNKNOWN wait; never NOT_HELD by absence). The grace-deadline fork bypasses this entirely (see
+    /// Quiesced-fork exit: both the in-flight tracker AND the departure push must have settled, and the hold seam, read once
+    /// here when the push settles, must answer NOT_HELD. HELD or UNKNOWN (never NOT_HELD by absence) forgo the quiesced exit:
+    /// the answer is not re-read, so only the grace fork exits. The grace-deadline fork bypasses this entirely (see
     /// [#onGraceExpired]).
     private void maybeExit() {
         if (trackerDrained.get() && pushSettled.get() && holdAnswer.get() == HoldAnswer.NOT_HELD) {
