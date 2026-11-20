@@ -123,16 +123,19 @@ class EntityArcKeysTest {
     }
 
     /// Both are cluster state and backed up: losing either on a cold restart would silently drop an arc decision.
+    /// Typed as [AetherKey] so a key moved to the runtime class fails here by assertion, not by a missing method.
     @Test
     void bothKeys_areClusterStateAndBackedUp() {
-        var offer = EntitySeedOfferKey.entitySeedOfferKey("orders", 7);
-        var waiver = EntityArcWaiverKey.entityArcWaiverKey("orders", 7);
+        AetherKey offer = EntitySeedOfferKey.entitySeedOfferKey("orders", 7);
+        AetherKey waiver = EntityArcWaiverKey.entityArcWaiverKey("orders", 7);
 
-        assertThat(offer).isInstanceOf(ClusterStateKey.class);
-        assertThat(waiver).isInstanceOf(ClusterStateKey.class);
-        assertThat(offer).isNotInstanceOf(RuntimeKey.class);
-        assertThat(waiver).isNotInstanceOf(RuntimeKey.class);
-        assertThat(offer.isBackedUp()).isTrue();
-        assertThat(waiver.isBackedUp()).isTrue();
+        assertClusterStateAndBackedUp(offer);
+        assertClusterStateAndBackedUp(waiver);
+    }
+
+    private static void assertClusterStateAndBackedUp(AetherKey key) {
+        assertThat(key).isNotInstanceOf(RuntimeKey.class);
+        assertThat(key).isInstanceOf(ClusterStateKey.class);
+        assertThat(((ClusterStateKey) key).isBackedUp()).isTrue();
     }
 }
