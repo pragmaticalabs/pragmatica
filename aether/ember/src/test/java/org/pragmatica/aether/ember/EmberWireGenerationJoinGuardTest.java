@@ -7,6 +7,7 @@ package org.pragmatica.aether.ember;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.consensus.net.JoinGenerationGuard;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -18,7 +19,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///
 /// Three initial nodes boot advertising generation 1 (`EmberCluster.nodeWireGeneration`, the seam an older binary stands for) and form
 /// a cluster: a cold start of one generation is never refused. A node added afterwards advertises nothing, so the consensus layer stamps
-/// this binary's generation 2 into its Hello; it sees core members at generation 1 and refuses to join, naming one of them.
+/// this binary's generation (`WIRE_GENERATION`) into its Hello; it sees core members at generation 1 and refuses to join, naming one of them.
 @PortBudget
 class EmberWireGenerationJoinGuardTest {
     private static final int MGMT_OFFSET = 40;
@@ -58,6 +59,8 @@ class EmberWireGenerationJoinGuardTest {
         joined.onSuccess(id -> fail("node " + id + " joined a generation-1 cluster"))
               .onFailure(cause -> assertThat(cause.message()).as("the refusal names a generation-1 member")
                                                              .matches("(?s).*Refusing to join: member " + PREFIX
-                                                                      + "-\\d+ runs wire generation 1, this node runs 2.*"));
+                                                                      + "-\\d+ runs wire generation 1, this node runs "
+                                                                      + JoinGenerationGuard.WIRE_GENERATION
+                                                                      + ".*"));
     }
 }
