@@ -353,6 +353,10 @@ class SealedHistoryRecoveryTest {
                 return Promise.success(Option.some(checkpoint));
             }
 
+            if (method.getName().equals("loadCheckpointOutcome")) {
+                return Promise.success(EntityLogSubstrate.CheckpointLoad.loaded(checkpoint));
+            }
+
             try {
                 return method.invoke(delegate, args);
             } catch (InvocationTargetException e) {

@@ -176,10 +176,56 @@ public interface EntityLogSubstrate {
     /// Durably record the fold of `(keyspace, partition)` as of `throughOffset`, on storage another node
     /// can read. Advancing the checkpoint is what lets the tier reclaim the log below it.
     Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot);
-
     /// The newest checkpoint for `(keyspace, partition)`, or [Option#none] when the partition has never
     /// been checkpointed and must fold from the beginning of its log.
     Promise<Option<EntityCheckpoint>> loadCheckpoint(String keyspace, int partition);
+
+    /// The checkpoint for `(keyspace, partition)` as a typed answer (#3303 I-LOST): [CheckpointLoad.Loaded] when
+    /// readable, [CheckpointLoad.Absent] when no pointer exists, and [CheckpointLoad.Unreadable] when a
+    /// committed pointer names a block that cannot be produced, so a lost block is never confused with a
+    /// partition that was never checkpointed. The default wraps [#loadCheckpoint], which cannot tell the two
+    /// apart; a substrate that can overrides it.
+    default Promise<CheckpointLoad> loadCheckpointOutcome(String keyspace, int partition) {
+        return loadCheckpoint(keyspace, partition).map(found -> found.fold(CheckpointLoad::absent,
+                                                                           CheckpointLoad::loaded));
+    }
+
+    /// The answer of [#loadCheckpointOutcome].
+    sealed interface CheckpointLoad {
+        /// A readable checkpoint.
+        record Loaded(EntityCheckpoint checkpoint) implements CheckpointLoad {}
+
+        /// No pointer: the partition was never checkpointed.
+        record Absent() implements CheckpointLoad {}
+
+        /// A committed pointer whose block could not be produced.
+        ///
+        /// @param cause      why the block is unreadable
+        /// @param blockIdHex the block the pointer names, as the pointer carries it
+        record Unreadable(UnreadableCause cause, String blockIdHex) implements CheckpointLoad {}
+
+        static CheckpointLoad loaded(EntityCheckpoint checkpoint) {
+            return new Loaded(checkpoint);
+        }
+
+        static CheckpointLoad absent() {
+            return new Absent();
+        }
+
+        static CheckpointLoad unreadable(UnreadableCause cause, String blockIdHex) {
+            return new Unreadable(cause, blockIdHex);
+        }
+    }
+
+    /// Why a committed checkpoint pointer's block is unreadable.
+    enum UnreadableCause {
+        /// Storage answered that the block does not exist.
+        BLOCK_LOST,
+        /// The storage read failed.
+        FETCH_FAILED,
+        /// The pointer's block id is not a valid block id.
+        UNDECODABLE
+    }
 
     /// A folded partition as of an offset.
     ///
