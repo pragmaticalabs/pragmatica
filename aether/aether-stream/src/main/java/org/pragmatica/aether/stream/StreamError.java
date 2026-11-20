@@ -456,15 +456,17 @@ public sealed interface StreamError extends Cause {
         }
     }
 
-    /// A retention count the ring cannot index (#1549): the ring's index is sized from `maxCount`, and a count
-    /// past [OffHeapRingBuffer#MAX_CAPACITY] overflows the allocation size. Rejected PRE-COMMIT on create
-    /// rather than built over a truncated index; a fatal config error, never retried.
+    /// A hot-window count the ring cannot index (#1549): the ring's index is sized from the stream's hot-window count
+    /// (`hot.max_count`, or the window a `system:` or `entity:` ring keeps), and a count past
+    /// [org.pragmatica.aether.slice.stream.RingGeometry#maxCapacity] of the ring's first data region overflows the
+    /// allocation size. Rejected PRE-COMMIT on create rather than built over a truncated index; a fatal config error, never
+    /// retried. `maxCount` is the window's count; retention's count no longer sizes the ring.
     record RetentionCountUnindexable(String streamName, long maxCount, long maxCapacity) implements StreamError {
         @Override
         public String message() {
-            return "Stream '%s' retention max_count %d exceeds the indexable ring capacity %d".formatted(streamName,
-                                                                                                         maxCount,
-                                                                                                         maxCapacity);
+            return "Stream '%s' hot window max_count %d exceeds the indexable ring capacity %d".formatted(streamName,
+                                                                                                          maxCount,
+                                                                                                          maxCapacity);
         }
     }
 
