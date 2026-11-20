@@ -172,14 +172,15 @@ public record GitBackupRepository(Path dir,
         return commitFile(FILE, document, message);
     }
 
-    /// Write `content` as `file` and commit it on the local branch.
+    /// Write `content` as `file` and commit it on the local branch. The commit is scoped to `file` (`-- file`): anything else staged in the index
+    /// stays staged and uncommitted (#3473, beside the rejection commits scoped by [#commitRejection]).
     public Result<Unit> commitFile(String file, String content, String message) {
         return Result.lift(cause -> BackupRepositoryError.GitUnavailable.FACTORY.apply(Causes.fromThrowable(cause)),
                            () -> Files.writeString(dir.resolve(file),
                                                    content,
                                                    StandardCharsets.UTF_8))
-                     .flatMap(_ -> git("add", file))
-                     .flatMap(_ -> git("commit", "--quiet", "-m", message))
+                     .flatMap(_ -> git("add", "--", file))
+                     .flatMap(_ -> git("commit", "--quiet", "-m", message, "--", file))
                      .mapToUnit();
     }
 

@@ -576,6 +576,37 @@ class GitBackupRepositoryTest {
         assertThat(commitCount("local")).isEqualTo(2);
     }
 
+    /// The record reaches the committed blob as UTF-8: a non-ASCII value read back from the commit equals the one written.
+    @Test
+    void commitRejection_withNonAsciiValues_commitsThemThroughTheFileAsUtf8() {
+        var repository = committedRepository("local", Option.none());
+        var nonAscii = recordOf("línea-Ж", 3L, 41L, "инк-9", "c-é");
+
+        repository.commitRejection(nonAscii)
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(RejectionRecord.parse(committedRecord("local"))).isEqualTo(Option.some(nonAscii));
+    }
+
+    /// commit/commitFile are scoped to their own file: a foreign staged file stays staged and uncommitted.
+    @Test
+    void commitAndCommitFile_leaveAForeignStagedFileUncommitted() throws IOException {
+        var repository = committedRepository("local", Option.none());
+        var dir = temp.resolve("local");
+
+        Files.writeString(dir.resolve("foreign.txt"), "foreign\n");
+        git(dir, "add", "foreign.txt");
+
+        repository.commit("state-2\n", "second")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        assertThat(filesOfHead("local")).isEqualTo(GitBackupRepository.FILE);
+
+        repository.commitFile("beside.txt", "beside\n", "third")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        assertThat(filesOfHead("local")).isEqualTo("beside.txt");
+        assertThat(git(dir, "diff", "--cached", "--name-only").strip()).as("the foreign file is never committed").isEqualTo("foreign.txt");
+    }
+
     @Test
     void commitRejection_ofTheSameRecordTwice_failsAndAddsNoCommit() {
         var repository = committedRepository("local", Option.none());
