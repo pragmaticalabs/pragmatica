@@ -8,6 +8,7 @@ import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentToken;
 import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.lang.Option;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
 import org.pragmatica.serialization.FrameworkCodecs;
@@ -49,7 +50,7 @@ class StreamCursorCheckpointValueCodecTest {
         var node = NodeId.nodeId("node-1").unwrap();
         var epoch = Epoch.epoch(0L, 1L, 1L);
 
-        for (var member : List.of(some("m-a"), none())) {
+        for (var member : List.<Option<String>>of(some("m-a"), none())) {
             var token = AssignmentToken.assignmentToken(node, epoch, member);
             var assignment = ConsumerAssignmentValue.consumerAssignmentValue(node, epoch, 5L, HlcTimestamp.ZERO, member);
             var checkpoint = StreamCursorCheckpointValue.streamCursorCheckpointValue(7L, token);
