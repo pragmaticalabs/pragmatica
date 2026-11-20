@@ -15,6 +15,7 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.api.AlertManager;
+import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
@@ -109,10 +110,15 @@ public sealed interface DrainAssembly {
                             BooleanSupplier isLeaderSupplier,
                             DrainCommandRegistry drainCommandRegistry,
                             OperatorWarningSink operatorWarningSink,
-                            Consumer<Supplier<ScheduledFuture<?>>> defer) {}
+                            Consumer<Supplier<ScheduledFuture<?>>> defer,
+                            KVStore<AetherKey, AetherValue> kvStore,
+                            ClusterSyncPongSignalFan pongSignalFan) {}
 
     /// The quorum-loss listener chain and the core-absence detector, which the assembly later reads again.
-    record QuorumLossDrain(Consumer<QuorumLossIntent> quorumLossChain, CoreAbsenceDetector coreAbsenceDetector) {}
+    /// `drainPort` is the leader's DRAIN channel the management server takes from here (C6-W0).
+    record QuorumLossDrain(Consumer<QuorumLossIntent> quorumLossChain,
+                           CoreAbsenceDetector coreAbsenceDetector,
+                           NodeLifecycleRoutes.DrainPort drainPort) {}
 
     /// Drain infrastructure: the in-flight tracker, the invocation admission gate, the DHT departure push and the `DrainProcedure`.
     static Infrastructure drainInfrastructure(InfrastructureInputs in) {
@@ -298,7 +304,9 @@ public sealed interface DrainAssembly {
         metricsCollector.setCorePingObserver(coreAbsenceDetector::recordCorePing);
         coreAbsenceDetector.start();
 
-        return new QuorumLossDrain(quorumLossChain, coreAbsenceDetector);
+        return new QuorumLossDrain(quorumLossChain,
+                                   coreAbsenceDetector,
+                                   drainPort(drainCommandRegistry, membershipFsm));
     }
 
     /// Operator/controller drain sink (M10, cluster-topology-overhaul Wave 7): every drain command
@@ -315,6 +323,16 @@ public sealed interface DrainAssembly {
                                        NodeId target) {
         drainCommandRegistry.requestDrain(target);
         Option.option(membershipFsmRef.get()).onPresent(fsm -> fsm.onDrainRequested(target));
+    }
+
+    /// The leader's DRAIN channel for the management server (C6-W0, moved from the management unit): a request goes through
+    /// the FSM-aware sink (`requestDrainThroughFsm`), the pending read is the registry's commanded-but-not-departed set. A
+    /// seam of its own so a test can pin both halves without building the quorum-loss inputs.
+    static NodeLifecycleRoutes.DrainPort drainPort(DrainCommandRegistry drainCommandRegistry, MembershipFsm membershipFsm) {
+        return NodeLifecycleRoutes.DrainPort.registry(target -> requestDrainThroughFsm(drainCommandRegistry,
+                                                                                       new AtomicReference<>(membershipFsm),
+                                                                                       target),
+                                                      drainCommandRegistry::drainTargets);
     }
 
     /// #2063: an operator drain target stays in the leader's `DrainCommandRegistry` until something clears it, and only the

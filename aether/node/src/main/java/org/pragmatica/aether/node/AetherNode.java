@@ -3365,7 +3365,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                isLeaderSupplier,
                                                                                                drainCommandRegistry,
                                                                                                operatorWarningSink,
-                                                                                               periodicTasks::defer));
+                                                                                               periodicTasks::defer,
+                                                                                               kvStore,
+                                                                                               pongSignalFan));
         var quorumLossChain = quorumLossDrain.quorumLossChain();
         var coreAbsenceDetector = quorumLossDrain.coreAbsenceDetector();
         var communityLiveness = WorkerHierarchyAssembly.communityReachability(new WorkerHierarchyAssembly.CommunityReachabilityInputs(config,
@@ -3864,14 +3866,13 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                clusterNode,
                                                                                                                                                                serializer,
                                                                                                                                                                deserializer,
-                                                                                                                                                               membershipFsmRef,
                                                                                                                                                                resourceProviderSetup,
                                                                                                                                                                logLevelRegistry,
                                                                                                                                                                traceStore,
                                                                                                                                                                configRegistry,
                                                                                                                                                                scheduledTaskRegistry,
                                                                                                                                                                scheduledTaskStateRegistry,
-                                                                                                                                                               drainCommandRegistry,
+                                                                                                                                                               quorumLossDrain.drainPort(),
                                                                                                                                                                alertManager,
                                                                                                                                                                dynamicConfigManager,
                                                                                                                                                                operatorWarningSink,
