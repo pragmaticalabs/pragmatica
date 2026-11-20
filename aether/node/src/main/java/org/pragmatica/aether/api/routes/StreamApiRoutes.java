@@ -994,7 +994,7 @@ public final class StreamApiRoutes implements RouteSource {
     /// #1282: the management default is never fabricated under a reserved kind prefix — a `topic`/`entity`
     /// namespace address yields a `topic:`/`entity:` engine key, which only internal provisioning may
     /// mint. A committed config for such a name is the real resource's and is still adopted.
-    private Result<Unit> ensureStreamExists(String streamName) {
+    Result<Unit> ensureStreamExists(String streamName) {
         return nodeSupplier.get()
                            .kvStore()
                            .getTyped(StreamConfigKey.streamConfigKey(streamName),
