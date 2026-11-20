@@ -151,6 +151,13 @@ class ScheduledTaskDrainWiringBootTest {
                        + "through DrainAssembly.drainInitiatedEmitter — round 1 keyed this on an event with "
                        + "no producer, so nothing got here")
                    .anyMatch(line -> line.contains(TIMERS_CANCELLED)));
+
+        // M5 pin (#3465): the hold seam DrainAssembly binds is NOT_HELD, so the drain exits at quiescence, well inside the
+        // 30 s grace. A HELD or UNKNOWN binding forgoes the quiesced exit and exits only at the grace fork, past this bound.
+        await().atMost(LINE_BOUND)
+               .untilAsserted(() -> assertThat(jvmExits.get())
+                   .as("DrainAssembly must bind NOT_HELD: the quiesced exit (jvmExit) is reached before the grace fork")
+                   .isEqualTo(1));
     }
 
     private void boot() {

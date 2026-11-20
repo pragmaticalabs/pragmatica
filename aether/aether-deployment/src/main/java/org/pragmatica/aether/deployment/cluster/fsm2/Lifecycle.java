@@ -61,7 +61,7 @@ public sealed interface Lifecycle {
     ///         /\ pend' = [pend EXCEPT ![n] = FALSE]   \* the snapshot is the committed set: no put is pending
     ///         /\ closedOff' = [closedOff EXCEPT ![n] = {}]
     ///         /\ shown' = IF rp THEN Pubd(shown, ReplaySeq(Subjects, kv)) ELSE shown
-    ///   /\ UNCHANGED <<notes, trans, ncommit, kvW, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, net, settles, condBudget,
+    ///   /\ UNCHANGED <<notes, ovars, trans, ncommit, kvW, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, net, settles, condBudget,
     ///                  faultBudget>>
     /// ```
     static ClusterModel rebuild(Ctx ctx, long incarnation, Snapshot snapshot) {

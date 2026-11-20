@@ -581,11 +581,14 @@ class WarningsCommittedRowsTest {
 
         assertThat(write).hasSize(1);
         Warnings.accepted(m, ctx, TxDraft.draft(WARNINGS, HOLD_KEY, write));
-        assertThat(write.getFirst()
-                        .replacement()
-                        .map(FsmWarningValue.class::cast)
-                        .map(FsmWarningValue::members)).isEqualTo(Option.some(Map.of(CORE_1.id(), "sig-own")));
-        assertThat(ctx.effects()).containsExactly(new ClusterEffect.Warn(Warnings.SCHEMA_HOLD, ORDERS.asString(), "own hold"));
+        var replacement = write.getFirst()
+                               .replacement()
+                               .map(FsmWarningValue.class::cast);
+
+        assertThat(replacement.map(FsmWarningValue::members)).isEqualTo(Option.some(Map.of(CORE_1.id(), "sig-own")));
+        assertThat(ctx.effects()).as("#3203: the settlement notifies nothing").isEmpty();
+        assertThat(replacement.flatMap(row -> Warnings.committedNotice(HOLD_KEY, Option.some(theirs), row)))
+                  .isEqualTo(Option.some(Warnings.Notice.notice(Warnings.SCHEMA_HOLD, ORDERS.asString(), "own hold")));
     }
 
     /// A new SCHEMA_HOLD signature on a held member is a new opener: the raise passes and takes the text. Red when the opener check
@@ -645,16 +648,11 @@ class WarningsCommittedRowsTest {
         assertThat(m.openText.get(KEY)).isEqualTo(Option.some("o2"));
     }
 
-    // -- rule E: a function of one accepted committed pair --------------------------------------------------------------------------------
-    private static List<ClusterEffect> notified(Option<FsmWarningValue> expected, FsmWarningValue replacement, FsmWarningKey key) {
-        var ctx = ctx();
-        var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key,
-                                                                      expected.map(AetherValue.class::cast),
-                                                                      Option.some(replacement));
-
-        Warnings.accepted(model(), ctx, TxDraft.draft(WARNINGS, key, List.of(mutation)));
-
-        return ctx.effects();
+    // -- rule E: a function of one committed pair (#3203: the committed put, Warnings.committedNotice) --------------------------------------
+    private static List<ClusterEffect> notified(Option<FsmWarningValue> before, FsmWarningValue after, FsmWarningKey key) {
+        return Warnings.committedNotice(key, before, after)
+                       .map(notice -> List.<ClusterEffect>of(new ClusterEffect.Warn(notice.code(), notice.subject(), notice.message())))
+                       .or(List.of());
     }
 
     private static FsmWarningValue strays(boolean open, String message, NodeId... nodes) {
