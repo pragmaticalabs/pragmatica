@@ -582,13 +582,13 @@ public sealed interface Outbox {
     // the submission's pending entries were already released and its intent is re-derived level-triggered from the mirror.
     /// ```tla Fsm2Leader:Settle
     /// \* WriteSettled of this incarnation: Outbox.java. W accepted (code): rule E notifies from the committed pair, a deposed
-    /// \* writer included (Warnings.accepted / notified; mutant "nodeposed": a writer that is not the committed leader emits
+    /// \* writer included (Warnings.accepted, Warnings.notified until ruling B; mutant "nodeposed": a writer that is not the committed leader emits
     /// \* nothing; mutant "noruleE": no notification at all), and the mirror takes the mutations; the landed prefix (ld) is the
     /// \* tx's covered count, always 0 (nothing is held in any mode); refused: the refusal's values re-index the mirror,
     /// \* m.leader := refusal leader, unlanded marks
     /// \* dirty (Outbox.java; Warnings.java); failed: re-drafted by the next reconcile.
     /// \* #3203 (STAMP # "off"): rule E reads the replacement rows the writer's mirror does not hold at a newer revision (Kept,
-    /// \* Warnings.superseded); each emitted transition goes through this node's sink (Passes, EffectTranslator.ordered), and a
+    /// \* Warnings.superseded at 34c4517a15); each emitted transition goes through this node's sink (Passes, EffectTranslator.ordered at 34c4517a15), and a
     /// \* delivered one becomes the operator view's entry for the row; "cand" (ruling B): rule E emits nothing here, the committed
     /// \* put published the transition at KvApply. PUTFIRST: a late accepted settlement waits for the mirror.
     /// Settle(s) ==
