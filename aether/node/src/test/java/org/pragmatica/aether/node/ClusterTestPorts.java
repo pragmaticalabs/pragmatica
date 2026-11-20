@@ -6,6 +6,7 @@ package org.pragmatica.aether.node;
 
 import java.util.Locale;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
+import org.pragmatica.lang.Option;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -20,9 +21,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.BooleanSupplier;
 import java.util.function.IntSupplier;
 
 /// #2016 / #2731: ports for node tests that boot a real [AetherNode].
@@ -73,7 +77,45 @@ public final class ClusterTestPorts {
                            + " (" + WINDOW.size() + " ports); locks under " + LOCK_DIR);
     }
 
+    /// #3471: why the allocator last refused a candidate. The control "released, so accepted again" asserts on this cause, never on
+    /// a re-probe after the fact: a re-probe races a contender that binds and releases inside the allocator's own probe.
+    enum Refusal {
+        /// The cross-JVM lock on a port of the candidate was held elsewhere.
+        LOCK_HELD,
+        /// A probe of the candidate's own sockets saw one of them busy.
+        PROBE_SAW_BUSY,
+        /// Refused although every probe that ran said free: a defect of the allocator.
+        PROBES_ALL_FREE
+    }
+
+    /// #3471: test-only wrapper around one probe of `port`; lets a test run a contender that binds the port for exactly the duration
+    /// of the probe. Thread-bound, so no other test's probes meet it.
+    @FunctionalInterface
+    interface ProbeSeam {
+        boolean around(int port, BooleanSupplier probe);
+    }
+
+    private static final Map<Integer, Refusal> REFUSALS = new ConcurrentHashMap<>();
+    private static final ThreadLocal<ProbeSeam> SEAM = new ThreadLocal<>();
+    /// Ports whose probe came back busy during the claim running on this thread; null outside a claim.
+    private static final ThreadLocal<Set<Integer>> BUSY_SEEN = new ThreadLocal<>();
+
     private ClusterTestPorts() {}
+
+    /// The cause of the last refusal of `candidate` (its first port); empty when it was issued or never offered.
+    static Option<Refusal> refusalCause(int candidate) {
+        return Option.option(REFUSALS.get(candidate));
+    }
+
+    /// Runs `body` with every probe on this thread passing through `seam`.
+    static void withProbeSeam(ProbeSeam seam, Runnable body) {
+        SEAM.set(seam);
+        try {
+            body.run();
+        } finally {
+            SEAM.remove();
+        }
+    }
 
     /// The host's ephemeral range and where it was read from.
     record EphemeralRange(int first, int last, String source) {
@@ -212,6 +254,34 @@ public final class ClusterTestPorts {
     }
 
     static boolean udpFree(int port) {
+        return probed(port, () -> bindsUdp(port));
+    }
+
+    static boolean tcpFree(int port) {
+        return probed(port, () -> bindsTcp(port));
+    }
+
+    private static boolean probed(int port, BooleanSupplier probe) {
+        var seam = SEAM.get();
+        var free = seam == null
+                   ? probe.getAsBoolean()
+                   : seam.around(port, probe);
+
+        if (!free) {
+            noteBusy(port);
+        }
+        return free;
+    }
+
+    private static void noteBusy(int port) {
+        var seen = BUSY_SEEN.get();
+
+        if (seen != null) {
+            seen.add(port);
+        }
+    }
+
+    private static boolean bindsUdp(int port) {
         try (var socket = new DatagramSocket(null)) {
             socket.setReuseAddress(false);
             socket.bind(new InetSocketAddress(port));
@@ -221,7 +291,7 @@ public final class ClusterTestPorts {
         }
     }
 
-    static boolean tcpFree(int port) {
+    private static boolean bindsTcp(int port) {
         try (var socket = new ServerSocket()) {
             socket.setReuseAddress(false);
             socket.bind(new InetSocketAddress(port));
@@ -262,23 +332,37 @@ public final class ClusterTestPorts {
         }
     }
 
-    /// Locks every port in `ports`, then probes them; on any refusal, releases what this call locked.
+    /// Locks every port in `ports`, then probes them; on any refusal, releases what this call locked and records the cause (#3471).
     private static synchronized boolean claimAll(boolean adoptReserved, int first, int... rest) {
         var ports = new int[rest.length + 1];
 
         ports[0] = first;
         System.arraycopy(rest, 0, ports, 1, rest.length);
+        var seen = new HashSet<Integer>();
+
+        BUSY_SEEN.set(seen);
+        try {
+            return claim(adoptReserved, ports, seen);
+        } finally {
+            BUSY_SEEN.remove();
+        }
+    }
+
+    private static boolean claim(boolean adoptReserved, int[] ports, Set<Integer> seen) {
         for (int i = 0; i < ports.length; i++) {
             if (!(adoptReserved && RESERVED.containsKey(ports[i])) && !lock(ports[i], HELD)) {
                 releaseFirst(ports, i);
+                REFUSALS.put(ports[0], Refusal.LOCK_HELD);
                 return false;
             }
         }
         if (allFree(ports)) {
             adoptReserved(ports);
+            REFUSALS.remove(ports[0]);
             return true;
         }
         releaseFirst(ports, ports.length);
+        REFUSALS.put(ports[0], seen.isEmpty() ? Refusal.PROBES_ALL_FREE : Refusal.PROBE_SAW_BUSY);
         return false;
     }
 

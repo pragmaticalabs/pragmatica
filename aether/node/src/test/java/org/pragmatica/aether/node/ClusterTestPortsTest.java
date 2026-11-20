@@ -5,9 +5,11 @@
 package org.pragmatica.aether.node;
 
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
+import org.pragmatica.lang.Option;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.io.InputStreamReader;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -24,6 +26,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import java.util.function.IntSupplier;
 import java.util.stream.Stream;
 
@@ -138,46 +141,72 @@ class ClusterTestPortsTest {
             var got = ClusterTestPorts.freeClusterPort(offering(taken));
 
             assertThat(got).as("a port with cluster UDP held must not be issued").isNotEqualTo(taken);
+            assertRefusedBecauseProbeSawBusy(taken);
         }
-        assertAcceptedUnlessTakenMeanwhile(ClusterTestPorts.freeClusterPort(offering(taken)), taken, ClusterTestPorts.isFreeClusterPort(taken), "control: the same port, released");
+        assertAcceptedUnlessProbeSawBusy(ClusterTestPorts.freeClusterPort(offering(taken)), taken, "control: the same port, released");
     }
 
-    /// #3188: the released-port control cannot promise the SAME port back. The lock held since [#occupiableClusterCandidate] keeps every
-    /// cooperating allocator out, but a process that binds an explicit window port without the lock (another module under `-T 1C`) can take the
-    /// released port between the release and the re-probe, and the allocator then correctly issues another one. This forces that contender into
-    /// the window deterministically: the control must hold, and the allocator must have skipped the port because it is taken.
+    /// #3188 / #3471: the released-port control cannot promise the SAME port back: a process that binds an explicit window port without the
+    /// lock can take it, or hold it for an instant, around the allocator's probe. The control therefore asserts on what the allocator OBSERVED
+    /// (the recorded refusal cause), never on a re-probe after the fact. Here the contender is inside the probe itself: it binds the port,
+    /// the probe sees it busy, the contender releases. A re-probe afterwards finds the port free; the recorded cause still says busy.
     @Test
-    void releasedPortControl_holdsWhenAThirdPartyTakesThePortInTheWindow() throws IOException {
+    void releasedPortControl_holdsWhenAContenderBindsAndReleasesInsideTheProbe() {
         var taken = occupiableClusterCandidate(true);
+        var got = new int[1];
 
-        try (var contender = new DatagramSocket(new InetSocketAddress(taken))) {
-            var got = ClusterTestPorts.freeClusterPort(offering(taken));
+        ClusterTestPorts.withProbeSeam((port, probe) -> contendedProbe(taken, port, probe),
+                                       () -> got[0] = ClusterTestPorts.freeClusterPort(offering(taken)));
 
-            assertThat(got).as("the contender holds " + taken + ", so it must not be issued").isNotEqualTo(taken);
-            assertAcceptedUnlessTakenMeanwhile(got, taken, ClusterTestPorts.isFreeClusterPort(taken), "control: the same port, released");
-        }
+        assertThat(got[0]).as("the contender held " + taken + " during the probe").isNotEqualTo(taken);
+        assertThat(ClusterTestPorts.isFreeClusterPort(taken)).as("the contender is gone: a re-probe now sees the port free").isTrue();
+        assertAcceptedUnlessProbeSawBusy(got[0], taken, "control: contender inside the probe");
     }
 
-    /// The control still bites: a port reported free that the allocator refused fails it, so it cannot pass vacuously.
+    /// The control still bites: a port refused although every probe said free fails it, so it cannot pass vacuously; a refusal whose probe
+    /// saw the port busy passes.
     @Test
     void releasedPortControl_failsWhenAFreePortWasRefused() {
         var taken = occupiableClusterCandidate(true);
 
-        assertThatThrownBy(() -> assertAcceptedUnlessTakenMeanwhile(taken + 1, taken, true, "refused"))
+        assertThatThrownBy(() -> assertRefusalCause(taken + 1, taken, Option.some(ClusterTestPorts.Refusal.PROBES_ALL_FREE), "refused"))
             .isInstanceOf(AssertionError.class);
+        assertThatThrownBy(() -> assertRefusalCause(taken + 1, taken, Option.some(ClusterTestPorts.Refusal.LOCK_HELD), "refused"))
+            .isInstanceOf(AssertionError.class);
+        assertRefusalCause(taken + 1, taken, Option.some(ClusterTestPorts.Refusal.PROBE_SAW_BUSY), "refused");
+        assertRefusalCause(taken, taken, Option.none(), "accepted");
     }
 
-    /// #3188: "released, so accepted again" holds unless another process took the port after the release. Either the allocator returned the
-    /// port, or the port is observably taken by now; a free port that was refused is a real defect and still fails. The residual: a contender
-    /// that binds and releases the port inside the allocator's probe leaves a free port refused. No retry hides that.
-    private static void assertAcceptedUnlessTakenMeanwhile(int got, int taken, boolean stillFree, String label) {
-        if (got != taken) {
-            assertThat(stillFree).as(label + ": " + taken + " was refused although it is free").isFalse();
+    /// The contender binds `taken` for exactly the duration of the one probe of it, then releases.
+    private static boolean contendedProbe(int taken, int port, BooleanSupplier probe) {
+        if (port != taken) {
+            return probe.getAsBoolean();
+        }
+        try (var contender = new DatagramSocket(new InetSocketAddress(taken))) {
+            return probe.getAsBoolean();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
         }
     }
 
-    private static boolean isFreeOnBothProtocols(int port) {
-        return ClusterTestPorts.udpFree(port) && ClusterTestPorts.tcpFree(port);
+    private static void assertRefusedBecauseProbeSawBusy(int taken) {
+        assertThat(ClusterTestPorts.refusalCause(taken).or(ClusterTestPorts.Refusal.PROBES_ALL_FREE))
+            .as(taken + " was refused: its cause must be a probe that saw it busy")
+            .isEqualTo(ClusterTestPorts.Refusal.PROBE_SAW_BUSY);
+    }
+
+    /// #3471: "released, so accepted again" holds unless the allocator saw the port busy. Either it returned the port, or the probe that
+    /// refused it saw a socket on it; a refusal while every probe said free is a real defect and fails. Nothing is re-probed.
+    private static void assertAcceptedUnlessProbeSawBusy(int got, int taken, String label) {
+        assertRefusalCause(got, taken, ClusterTestPorts.refusalCause(taken), label);
+    }
+
+    private static void assertRefusalCause(int got, int taken, Option<ClusterTestPorts.Refusal> cause, String label) {
+        if (got != taken) {
+            assertThat(cause.or(ClusterTestPorts.Refusal.PROBES_ALL_FREE))
+                .as(label + ": " + taken + " was refused although every probe said free")
+                .isEqualTo(ClusterTestPorts.Refusal.PROBE_SAW_BUSY);
+        }
     }
 
     @Test
@@ -187,7 +216,7 @@ class ClusterTestPortsTest {
         try (var held = new DatagramSocket(new InetSocketAddress(taken + SWIM))) {
             assertThat(ClusterTestPorts.freeClusterPort(offering(taken))).as("SWIM UDP held").isNotEqualTo(taken);
         }
-        assertAcceptedUnlessTakenMeanwhile(ClusterTestPorts.freeClusterPort(offering(taken)), taken, ClusterTestPorts.isFreeClusterPort(taken), "control: SWIM released");
+        assertAcceptedUnlessProbeSawBusy(ClusterTestPorts.freeClusterPort(offering(taken)), taken, "control: SWIM released");
     }
 
     /// The both-protocol helper must skip a candidate whose TCP side is taken, and one whose UDP side is taken.
@@ -199,7 +228,7 @@ class ClusterTestPortsTest {
             held.bind(new InetSocketAddress(taken));
             assertThat(ClusterTestPorts.freeTcpAndUdpPort(offering(taken))).as("TCP held").isNotEqualTo(taken);
         }
-        assertAcceptedUnlessTakenMeanwhile(ClusterTestPorts.freeTcpAndUdpPort(offering(taken)), taken, isFreeOnBothProtocols(taken), "control: TCP released");
+        assertAcceptedUnlessProbeSawBusy(ClusterTestPorts.freeTcpAndUdpPort(offering(taken)), taken, "control: TCP released");
     }
 
     @Test
@@ -209,7 +238,7 @@ class ClusterTestPortsTest {
         try (var held = new DatagramSocket(new InetSocketAddress(taken))) {
             assertThat(ClusterTestPorts.freeTcpAndUdpPort(offering(taken))).as("UDP held").isNotEqualTo(taken);
         }
-        assertAcceptedUnlessTakenMeanwhile(ClusterTestPorts.freeTcpAndUdpPort(offering(taken)), taken, isFreeOnBothProtocols(taken), "control: UDP released");
+        assertAcceptedUnlessProbeSawBusy(ClusterTestPorts.freeTcpAndUdpPort(offering(taken)), taken, "control: UDP released");
     }
 
     /// #2731 proof (cooperating allocators in two JVMs): a child JVM allocates ports and holds them WITHOUT binding, i.e.
