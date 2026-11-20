@@ -221,8 +221,12 @@ public class MessageSemanticsIT {
         await().atMost(TIMEOUT)
                .pollInterval(100, TimeUnit.MILLISECONDS)
                .until(() -> cluster.allNodesHaveValue(hot, "first"));
-        await().atMost(TIMEOUT)
-               .until(() -> ballotsOf(laggingNode).size() == 3);
+        await().atMost(Duration.ofSeconds(20))
+               .untilAsserted(() -> assertEquals(3, ballotsOf(laggingNode).size(), () -> "recorded: " + cluster.deliveredTo(laggingNode)
+                                                                                                          .stream()
+                                                                                                          .map(m -> m.getClass().getSimpleName() + "@" + m.sender())
+                                                                                                          .distinct()
+                                                                                                          .toList()));
 
         // Everything recorded so far belongs to phases that are decided from here on.
         var stale = ballotsOf(laggingNode);
