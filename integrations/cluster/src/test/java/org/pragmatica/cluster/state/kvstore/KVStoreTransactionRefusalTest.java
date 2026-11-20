@@ -199,6 +199,39 @@ class KVStoreTransactionRefusalTest {
                       Option.some(DUPLICATED));
     }
 
+    /// WITNESS precedes EXPECTED: a stale guard and a stale expected value together report the guard.
+    @Test
+    void order_staleGuardAndStaleExpected_isWitness() {
+        electLeaderAndCommitGuard();
+
+        assertRefused(transaction(LEADER, List.of(staleGuard(GUARDED)), List.of(staleExpected(TARGET))),
+                      RefusalKind.WITNESS,
+                      Option.some(GUARDED));
+    }
+
+    /// LEADER precedes WITNESS: a stale leader and a stale guard together report the leader.
+    @Test
+    void order_staleLeaderAndStaleGuard_isLeader() {
+        electLeaderAndCommitGuard();
+
+        assertRefused(transaction(STALE_LEADER, List.of(staleGuard(GUARDED)), List.of(create(TARGET, "value"))),
+                      RefusalKind.LEADER,
+                      Option.none());
+    }
+
+    /// DISTINCT names the key at its SECOND occurrence: in [TARGET, DUPLICATED, DUPLICATED, TARGET] the first repeat met
+    /// is DUPLICATED, not TARGET (whose first occurrence leads the list).
+    @Test
+    void distinct_namesTheFirstRepeatMet_notTheFirstKeyThatRepeats() {
+        electLeaderAndCommitGuard();
+
+        assertRefused(transaction(LEADER,
+                                  List.of(),
+                                  List.of(create(TARGET, "a"), create(DUPLICATED, "b"), create(DUPLICATED, "c"), create(TARGET, "d"))),
+                      RefusalKind.DISTINCT,
+                      Option.some(DUPLICATED));
+    }
+
     // Accepted.
 
     @Test
