@@ -551,6 +551,21 @@ class EntityCheckpointReclaimTest {
         assertThat(readable(advanced)).as("the block the pointer names is kept").isTrue();
     }
 
+    /// #3480 A5: the skip also needs equal content. A restart over a private durable copy at the committed claim, whose lineage differs (the
+    /// sealed floor now rides in it), RE-SAVES: the pointer moves to a block of its own and the committed block is no longer the one named.
+    @Test
+    void anEqualClaimWithChangedLineage_isReSaved_evenWithAPrivateDurableCopyHeld() {
+        useStorageWithAPrivateDurableTier();
+        var committed = save(substrate(checkpointReclaim(LONG_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.some(LINEAGE));
+        var putsBeforeRestart = shared.puts.size();
+        var changed = "another lineage".getBytes(StandardCharsets.UTF_8);
+
+        var resaved = save(substrate(checkpointReclaim(LONG_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.some(changed));
+
+        assertThat(shared.puts).as("the changed lineage was written").hasSize(putsBeforeRestart + 1);
+        assertThat(resaved).as("the pointer names the block carrying the changed lineage").isNotEqualTo(committed);
+    }
+
     /// #3480 handover safety: a new owner whose storage holds the committed block only in the cluster-shared tier still writes a durable
     /// block of its own at the committed claim. A shared copy is not this node's: `exists` would answer for the whole cluster.
     @Test

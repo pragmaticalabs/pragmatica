@@ -72,6 +72,18 @@ final class CheckpointFrame {
                          .array();
     }
 
+    /// Whether two `CKPTID02` blocks carry the same content: equal in everything but the per-put nonce (keyspace, partition, claim, lineage and
+    /// snapshot). A block of another format compares unequal, so the caller re-saves.
+    static boolean sameContent(byte[] left, byte[] right) {
+        var from = IDENTITY_MARKER.length + NONCE_BYTES;
+
+        return startsWith(left, IDENTITY_MARKER)
+               && startsWith(right, IDENTITY_MARKER)
+               && left.length == right.length
+               && left.length >= from
+               && Arrays.equals(left, from, left.length, right, from, right.length);
+    }
+
     private static byte[] withLineage(byte[] snapshot, Option<byte[]> lineage) {
         return lineage.map(identity -> ByteBuffer.allocate(MARKER.length + Integer.BYTES + identity.length + snapshot.length)
                                                  .put(MARKER)
