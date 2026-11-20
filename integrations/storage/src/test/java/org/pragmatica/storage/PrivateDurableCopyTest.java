@@ -5,6 +5,7 @@ import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -30,7 +31,7 @@ class PrivateDurableCopyTest {
 
     @AfterEach
     void tearDown() {
-        List.of(writer, reader).stream().filter(instance -> instance != null).forEach(StorageInstance::shutdown);
+        Stream.of(writer, reader).filter(instance -> instance != null).forEach(StorageInstance::shutdown);
     }
 
     @Test
