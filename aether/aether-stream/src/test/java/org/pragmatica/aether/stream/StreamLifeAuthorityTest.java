@@ -137,7 +137,7 @@ class StreamLifeAuthorityTest {
     }
 
     /// #1883: why a committed config is not applied over the enforced one follows the adoption rule exactly, and names
-    /// the actual cause: a partition-count change (either direction) first, otherwise weaker-or-equal durability.
+    /// the actual cause: a partition-count change (either direction) first, otherwise either factor lowered (#3490).
     @Test
     void notAppliedReason_followsTheAdoptionRule_andNamesTheCause() {
         var enforced = config().withIncarnation(COMMITTED_LIFE).withReplication(new ReplicationFactors(3, 3));
@@ -148,7 +148,9 @@ class StreamLifeAuthorityTest {
         assertThat(StreamPartitionManager.notAppliedReason(weaker, enforced).or("")).startsWith("durability only increases online");
         assertThat(StreamPartitionManager.notAppliedReason(enforced, enforced).isEmpty()).as("unchanged").isTrue();
         assertThat(StreamPartitionManager.notAppliedReason(stronger, enforced).isEmpty()).as("adopted").isTrue();
-        assertThat(StreamPartitionManager.notAppliedReason(mixedRfUp, enforced).isEmpty()).as("RF up adopts the whole config").isTrue();
+        assertThat(StreamPartitionManager.notAppliedReason(mixedRfUp, enforced).or("")).as("RF up with CF down is not adopted, named")
+                                                                                     .startsWith("durability only increases online");
+        assertThat(enforcedAfter(enforced, mixedRfUp)).as("the CF lowering is not enforced").isEqualTo(enforced);
         assertThat(StreamPartitionManager.notAppliedReason(enforced.withIncarnation(COMMITTED_LIFE + 1).withReplication(new ReplicationFactors(3, 1)), enforced).isEmpty())
             .as("another life is a recreate").isTrue();
         var morePartitions = new StreamConfig(STREAM, enforced.partitions() * 2, enforced.retention(), enforced.autoOffsetReset(), enforced.maxEventSizeBytes(),
@@ -161,7 +163,7 @@ class StreamLifeAuthorityTest {
 
     /// T-162 (#3334, ST 2.5): a committed change of `[retention]`, `[hot]` or `expected_ingress` at equal partitions and
     /// equal durability is ADOPTED; stronger durability is adopted too; weaker durability is not; a `[truncation]` change
-    /// alone is not. `notAppliedReason` stays silent for each storage change (nothing to refuse) and speaks for the weaker one.
+    /// alone is not, and neither is a retention change that rides with a `[truncation]`, `max_event_size` or `encryption_key_id` change (#3490). `notAppliedReason` stays silent for each storage change (nothing to refuse) and speaks for the weaker one.
     @Test
     void storageKeyChanges_areAdoptedAtEqualDurability_weakerIsNot_truncationAloneIsNot() {
         var life = config().withIncarnation(COMMITTED_LIFE).withReplication(new ReplicationFactors(3, 2));
@@ -182,6 +184,16 @@ class StreamLifeAuthorityTest {
         assertThat(enforcedAfter(life, strongerWithBiggerRetention)).as("stronger durability").isEqualTo(strongerWithBiggerRetention);
         assertThat(enforcedAfter(life, weakerWithBiggerRetention)).as("weaker durability with a storage change is not adopted").isEqualTo(life);
         assertThat(enforcedAfter(life, truncation)).as("a truncation change alone is not adopted").isEqualTo(life);
+
+        var retentionAndTruncation = variant(life, biggerRetention.retention(), truncation.declaration());
+        var retentionAndMaxEvent = withMaxEvent(biggerRetention, life.maxEventSizeBytes() * 2);
+        var retentionAndKey = withKey(biggerRetention, Option.some("key-2"));
+        var strongerAndTruncation = variant(life.withReplication(new ReplicationFactors(4, 2)), biggerRetention.retention(), truncation.declaration());
+
+        assertThat(enforcedAfter(life, retentionAndTruncation)).as("retention + truncation change is not adopted").isEqualTo(life);
+        assertThat(enforcedAfter(life, retentionAndMaxEvent)).as("retention + max_event_size change is not adopted").isEqualTo(life);
+        assertThat(enforcedAfter(life, retentionAndKey)).as("retention + encryption_key_id change is not adopted").isEqualTo(life);
+        assertThat(enforcedAfter(life, strongerAndTruncation)).as("stronger durability + truncation change is not adopted").isEqualTo(life);
 
         for (var changed : List.of(biggerRetention, hot, ingress, truncation, strongerWithBiggerRetention)) {
             assertThat(StreamPartitionManager.notAppliedReason(changed, life).isEmpty()).as("nothing to refuse: %s", changed).isTrue();
@@ -220,6 +232,18 @@ class StreamLifeAuthorityTest {
         node.close();
 
         return enforced;
+    }
+
+    private static StreamConfig withMaxEvent(StreamConfig base, long maxEventSizeBytes) {
+        return new StreamConfig(STREAM, base.partitions(), base.retention(), base.autoOffsetReset(), maxEventSizeBytes, base.consistencyMode(),
+                                base.replicationFactor(), base.confirmationFactor(), base.compression(), base.encryptionKeyId(), base.incarnation(),
+                                base.declaration());
+    }
+
+    private static StreamConfig withKey(StreamConfig base, Option<String> encryptionKeyId) {
+        return new StreamConfig(STREAM, base.partitions(), base.retention(), base.autoOffsetReset(), base.maxEventSizeBytes(), base.consistencyMode(),
+                                base.replicationFactor(), base.confirmationFactor(), base.compression(), encryptionKeyId, base.incarnation(),
+                                base.declaration());
     }
 
     private static StreamConfig variant(StreamConfig base, RetentionPolicy retention, Option<StreamDeclaration> declaration) {
