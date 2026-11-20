@@ -1541,11 +1541,13 @@ public class RabiaEngine<C extends Command> {
     /// Testing the state on the caller thread let a quorum-loss pause queued ahead of the promotion be overwritten to
     /// `Idle`. From any other state it is a no-op: `observerMode` is already cleared, so the authorization is not lost —
     /// a paused observer resumes as a voter ([#resumesAsObserver]), and a syncing one activates as one ([#activate]).
+    /// The role is tested here too: a self-removal applied after the caller queued the promotion leaves the engine
+    /// `Observing` as a removed node, which must stay an observer.
     private void promoteObserverToActive() {
         var current = engineState.get();
 
-        if (!current.isObserving()) {
-            log.debug("Node {}: observer promotion not applied in {}", self, current);
+        if (!current.isObserving() || role().isRemoved()) {
+            log.debug("Node {}: observer promotion not applied in {} as {}", self, current, role());
 
             return;
         }

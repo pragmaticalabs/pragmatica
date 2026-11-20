@@ -20,12 +20,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestClusterNetwork;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestCommand;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestStateMachine;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestTopologyManager;
 import org.pragmatica.consensus.rabia.RabiaPersistence.SavedState;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Option;
@@ -55,6 +57,7 @@ class RabiaObserverPromotionRaceTest {
     private static final NodeId NODE_1 = nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = nodeId("node-2").unwrap();
     private static final NodeId NODE_3 = nodeId("node-3").unwrap();
+    private static final NodeId NODE_4 = nodeId("node-4").unwrap();
     private final List<RabiaEngine<TestCommand>> engines = new CopyOnWriteArrayList<>();
 
     @AfterEach
@@ -134,6 +137,68 @@ class RabiaObserverPromotionRaceTest {
 
         assertThat(engine.isPaused()).as("a quorum return queued after the pause must resume it; events=" + events).isFalse();
         assertThat(engine.isActive()).as("events=" + events).isTrue();
+    }
+
+    /// F2: the caller decides the promotion on a roster that still holds this node, and a self-removal is applied on the
+    /// executor before the promotion runs (it was queued ahead of it). The removal leaves the engine `Observing` as a
+    /// removed node; a promotion that tested the state alone moved it to `Idle` and published ConsensusActive.
+    @Test
+    void promotionRunningAfterASelfRemoval_neverActivatesTheRemovedNode() throws InterruptedException {
+        var events = new CopyOnWriteArrayList<String>();
+        var engine = rosterObservingEngine(events);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+
+        engine.safeExecuteForTesting(() -> parked(entered, release));
+        assertThat(entered.await(5, TimeUnit.SECONDS)).as("the executor must be parked before anything is queued").isTrue();
+        engine.processDecision(selfRemoval());
+        engine.authorizeActivation();
+        release.countDown();
+        quiesce(engine);
+
+        assertThat(engine.role()).as("precondition: the removal applied; events=" + events).isEqualTo(RabiaEngine.Role.REMOVED);
+        assertThat(engine.isActive()).as("a removed node must not be promoted; events=" + events).isFalse();
+        assertThat(engine.isObserving()).as("events=" + events).isTrue();
+        assertThat(events).as("no activation is published for a removed node").doesNotContain("ConsensusActive");
+    }
+
+    /// An observer of an installed roster `{1, 2, 3}`, restored from an empty answer at slot 0.
+    private RabiaEngine<TestCommand> rosterObservingEngine(List<String> events) {
+        var network = new TestClusterNetwork();
+        var engine = new RabiaEngine<>(new TestTopologyManager(NODE_1, 3),
+                                       network,
+                                       new TestStateMachine(),
+                                       ProtocolConfig.consensusConfig(timeSpan(60).seconds(), timeSpan(60).seconds()),
+                                       ConsensusMetrics.noop(),
+                                       true,
+                                       emptyDisk(),
+                                       timeSpan(50).millis(),
+                                       event -> events.add(event.getClass().getSimpleName()));
+
+        engines.add(engine);
+        assertThat(engine.initializeVoters(VoterConfiguration.voterConfiguration(0, List.of(NODE_1, NODE_2, NODE_3)).unwrap())
+                         .isSuccess()).isTrue();
+        engine.clusterState(ClusterStateNotification.active());
+        engine.authorizeObservation();
+        assertThat(await(() -> network.getMessages().stream().anyMatch(SyncRequest.class::isInstance))).isTrue();
+        engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty(), ResponderState.COLD));
+        engine.processSyncResponse(new SyncResponse<>(NODE_3, SavedState.empty(), ResponderState.COLD));
+        assertThat(await(engine::isObserving)).as("observing; events=" + events).isTrue();
+        assertThat(engine.role()).as("events=" + events).isEqualTo(RabiaEngine.Role.ROSTER_OBSERVER);
+
+        return engine;
+    }
+
+    /// Slot 0 decides a roster without this node.
+    private static Decision<TestCommand> selfRemoval() {
+        var target = ClusterConfig.clusterConfig(List.of(NODE_2, NODE_3, NODE_4)).unwrap();
+
+        return new Decision<>(NODE_2,
+                              0,
+                              Phase.phase(0),
+                              StateValue.V1,
+                              Batch.emptyBatch(),
+                              Option.some(ReconfigurationCommand.reconfigurationCommand(0, target)));
     }
 
     private RabiaEngine<TestCommand> observingEngine(List<String> events) {
