@@ -10,6 +10,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.pragmatica.lang.Option;
+
 
 /// Metadata snapshot -- a point-in-time capture of all block lifecycle entries and named references.
 /// Used for crash recovery and node restart.
@@ -21,12 +23,15 @@ import java.util.Map;
 /// @param refs all named reference mappings at snapshot time, in file order
 /// @param contentHash SHA-256 integrity hash of the body as written: the epoch, then every lifecycle line and
 /// every ref line in file order, exactly what a restore installs (#2257)
+/// @param storageId #2836: the identity of the storage that wrote the snapshot, or none for a snapshot written
+/// before an identity existed. It is a header, outside the hashed body.
 public record MetadataSnapshot(long epoch,
                                long timestamp,
                                String nodeId,
                                List<BlockLifecycle> lifecycles,
                                Map<String, BlockId> refs,
-                               byte[] contentHash) {
+                               byte[] contentHash,
+                               Option<String> storageId) {
     private static final HexFormat HEX = HexFormat.of();
     private static final int CHUNK = 16 * 1024;
 
@@ -52,6 +57,16 @@ public record MetadataSnapshot(long epoch,
         contentHash = contentHash.clone();
     }
 
+    /// A snapshot that carries no storage identity: what every snapshot was before #2836.
+    public MetadataSnapshot(long epoch,
+                            long timestamp,
+                            String nodeId,
+                            List<BlockLifecycle> lifecycles,
+                            Map<String, BlockId> refs,
+                            byte[] contentHash) {
+        this(epoch, timestamp, nodeId, lifecycles, refs, contentHash, Option.none());
+    }
+
     @Override
     public byte[] contentHash() {
         return contentHash.clone();
@@ -75,7 +90,13 @@ public record MetadataSnapshot(long epoch,
     /// verified against [#legacyContentHash] at parse time and is re-sealed here, so every in-memory
     /// snapshot answers [#isValid] under one scheme.
     MetadataSnapshot resealed() {
-        return new MetadataSnapshot(epoch, timestamp, nodeId, lifecycles, refs, render(epoch, lifecycles, refs).hash());
+        return new MetadataSnapshot(epoch,
+                                    timestamp,
+                                    nodeId,
+                                    lifecycles,
+                                    refs,
+                                    render(epoch, lifecycles, refs).hash(),
+                                    storageId);
     }
 
     /// One lifecycle line of the snapshot body.

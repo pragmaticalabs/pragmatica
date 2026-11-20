@@ -252,7 +252,8 @@ final class DefaultSnapshotManager implements SnapshotManager {
                                                 config.nodeId(),
                                                 lifecycles,
                                                 refs,
-                                                body.hash()),
+                                                body.hash(),
+                                                config.storageId()),
                            body);
     }
 

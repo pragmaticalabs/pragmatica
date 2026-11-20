@@ -146,6 +146,20 @@ public sealed interface StorageError extends Cause {
         }
     }
 
+    /// #2836: a log name whose first `/`-segment is one of the names the storage keeps for its own files
+    /// (`STORAGE_ID`, `CLAIM`, `LOCK`, `aside`). A stream log is `<stream>@<incarnation>/<partition>`, so
+    /// `aside@1/0` is an ordinary log name; only the bare segment is reserved.
+    record ReservedLogName(String name) implements StorageError {
+        static ReservedLogName reservedLogName(String name) {
+            return new ReservedLogName(name);
+        }
+
+        @Override
+        public String message() {
+            return "Append-log name '" + name + "' is reserved for the storage's own files";
+        }
+    }
+
     /// [StorageInstance#seal] on an instance with no durable tier ([StorageTier#isDurable]): the block
     /// could not be made to survive a power loss, so the range is not sealed and its log keeps it (#1567).
     /// Recovery: configure a local-disk tier for the instance; the sealer retries.

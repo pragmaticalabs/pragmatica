@@ -97,6 +97,20 @@ public sealed interface SnapshotError extends Cause {
         }
     }
 
+    /// #2836: the snapshot chosen for restore was written by another storage than the one configured. The
+    /// retained older files sit on the same foreign volume, so no fallback is attempted.
+    record StorageIdMismatch(String expected, String found) implements SnapshotError {
+        static StorageIdMismatch storageIdMismatch(String expected, String found) {
+            return new StorageIdMismatch(expected, found);
+        }
+
+        @Override
+        public String message() {
+            return "Snapshot was written by storage " + found + ", but this storage is " + expected
+                 + "; refusing to start with another storage's metadata. Mount the original volume";
+        }
+    }
+
     /// #1473: the volume-identity sentinel outside the volume says this node wrote a snapshot
     /// directory before, and the directory now in front of it is empty or carries another volume's
     /// id. An unmounted mount point looks exactly like this; a first boot never does, because it has
