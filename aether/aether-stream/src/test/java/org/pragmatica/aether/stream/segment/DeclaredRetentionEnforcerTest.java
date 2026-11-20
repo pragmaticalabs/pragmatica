@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.stream.segment.StreamRetentionSource.EnforcedRetention;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -188,7 +189,7 @@ class DeclaredRetentionEnforcerTest {
     @Test
     void aStreamTheSourceDoesNotAnswer_isWithheld_raisedOnce_andReclaimedOnceThePolicyAppears() {
         var index = sealed(STREAM, 3, System.currentTimeMillis() - 2 * DAY);
-        var answers = new ConcurrentHashMap<String, RetentionPolicy>();
+        var answers = new ConcurrentHashMap<String, EnforcedRetention>();
         var enforcer = enforcer(index, stream -> Option.option(answers.get(stream)), Option.none());
 
         for (var pass = 0; pass < 12; pass++) {
@@ -200,7 +201,7 @@ class DeclaredRetentionEnforcerTest {
         assertThat(codes()).containsExactly(OperatorWarningCode.STREAM_RETENTION_WITHHELD);
         assertThat(warnings.getFirst().subject()).isEqualTo("node node-1 stream orders");
 
-        answers.put(STREAM, RetentionPolicy.retentionPolicy());
+        answers.put(STREAM, EnforcedRetention.enforcedRetention(RetentionPolicy.retentionPolicy(), 1));
         enforcer.enforceNow().await();
 
         assertThat(remaining(index, STREAM)).as("the node default age reclaims the 2-day-old segments").isZero();
@@ -235,7 +236,7 @@ class DeclaredRetentionEnforcerTest {
         var enforcer = enforcer(index,
                                 _ -> answered.getAndIncrement() == 0
                                      ? Option.none()
-                                     : Option.some(RetentionPolicy.retentionPolicy()),
+                                     : Option.some(EnforcedRetention.enforcedRetention(RetentionPolicy.retentionPolicy(), 1)),
                                 Option.none());
 
         enforcer.enforceNow().await();
