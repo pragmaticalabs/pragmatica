@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.util.Arrays;
+
 import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -49,11 +51,11 @@ class ArtifactVersionsPutCodecTest {
     @Test
     void contentBinding_hasPinnedTags_andRoundTripsThroughTheNodeCodec() {
         assertThat(SystemTags.tagFor("org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactContentKey")).isEqualTo(2117);
-        assertThat(SystemTags.tagFor("org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue")).isEqualTo(2118);
+        assertThat(SystemTags.tagFor("org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue")).isEqualTo(2990);
 
         var codec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
         var key = AetherKey.ArtifactContentKey.artifactContentKey(ArtifactBase.artifactBase("org.example:lib").unwrap(), "1.0.0", "sources.jar");
-        var value = new AetherValue.ArtifactContentValue(42L, "md5hex", "sha1hex", "sha256hex", 1_700_000_000_000L);
+        var value = new AetherValue.ArtifactContentValue(42L, "md5hex", "sha1hex", "sha256hex", 1_700_000_000_000L, manifest((byte) 7));
         var buf = Unpooled.buffer();
 
         codec.write(buf, new KVCommand.Put<AetherKey, AetherValue>(key, value));
@@ -61,7 +63,36 @@ class ArtifactVersionsPutCodecTest {
 
         assertThat(decoded.key()).isEqualTo(key);
         assertThat(decoded.value()).isEqualTo(value);
+        assertThat(((AetherValue.ArtifactContentValue) decoded.value()).blocks()).isEqualTo(manifest((byte) 7));
         assertThat(AetherKey.ArtifactContentKey.artifactContentKey(key.asString()).unwrap()).isEqualTo(key);
+    }
+
+    /// #420 T16 (R-2): value equality of `ArtifactContentValue`, which holds a `byte[]`. A decoded copy equals the original
+    /// (the comparison KV replay makes), equal content gives equal hash codes, and a different manifest is a different value.
+    @Test
+    void contentValue_withManifest_hasValueEquality_acrossTheNodeCodecAndAHandBuiltCopy() {
+        var codec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
+        var key = AetherKey.ArtifactContentKey.artifactContentKey(ArtifactBase.artifactBase("org.example:lib").unwrap(), "1.0.0", "lib.jar");
+        var original = new AetherValue.ArtifactContentValue(42L, "md5hex", "sha1hex", "sha256hex", 1_700_000_000_000L, manifest((byte) 7));
+        var handBuilt = new AetherValue.ArtifactContentValue(42L, "md5hex", "sha1hex", "sha256hex", 1_700_000_000_000L, manifest((byte) 7));
+        var other = new AetherValue.ArtifactContentValue(42L, "md5hex", "sha1hex", "sha256hex", 1_700_000_000_000L, manifest((byte) 8));
+        var buf = Unpooled.buffer();
+
+        codec.write(buf, new KVCommand.Put<AetherKey, AetherValue>(key, original));
+        KVCommand.Put<?, ?> decoded = codec.read(buf);
+
+        assertThat(decoded.value()).isEqualTo(original);
+        assertThat(decoded.value().hashCode()).isEqualTo(original.hashCode());
+        assertThat(handBuilt).isEqualTo(original);
+        assertThat(handBuilt.hashCode()).isEqualTo(original.hashCode());
+        assertThat(other).isNotEqualTo(original);
+    }
+
+    private static byte[] manifest(byte fill) {
+        var ids = new byte[64];
+
+        Arrays.fill(ids, fill);
+        return ids;
     }
 
     @Test
