@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node.backup;
 
 import java.util.List;
+import java.util.Map;
 
 import org.pragmatica.aether.api.routes.ManagementStatus;
 import org.pragmatica.aether.node.NodeCodecs;
@@ -43,7 +44,6 @@ class RestoreGateTest {
     private static final ConfigValue STATE_VALUE = ConfigValue.configValue("state", "v");
 
     private KVStore<AetherKey, AetherValue> kvStore;
-    private long slot;
 
     @BeforeEach
     void setUp() {
@@ -104,7 +104,8 @@ class RestoreGateTest {
         for (var terminal : List.of(BackupRestoreOutcome.RESTORED,
                                     BackupRestoreOutcome.FRESH,
                                     BackupRestoreOutcome.SKIPPED_EXISTING_STATE,
-                                    BackupRestoreOutcome.DISABLED)) {
+                                    BackupRestoreOutcome.DISABLED,
+                                    BackupRestoreOutcome.ABANDONED)) {
             decide(terminal);
             assertThat(RestoreGate.admit(kvStore, List.of(new KVCommand.Put<>(STATE_KEY, STATE_VALUE))).isSuccess()).as("%s opens the gate",
                                                                                                                        terminal)
@@ -112,10 +113,16 @@ class RestoreGateTest {
         }
     }
 
+    /// #3303 RA-3b: the walk IN_PROGRESS, UNKNOWN, RESTORED, FRESH... is no row sequence of restore-authority r3.1 §2 (a bare
+    /// `Put` of the authority is dropped), so each state gets its own store with the decision installed by snapshot.
     private void decide(BackupRestoreOutcome outcome) {
-        kvStore.processCommitted(kvStore.createBatch(List.of(new KVCommand.Put<>(BackupRestoreKey.backupRestoreKey(),
-                                                                                 BackupRestoreValue.decided(outcome)))),
-                                 ++slot);
+        var decision = BackupRestoreValue.decided(outcome);
+
+        kvStore = new KVStore<>(MessageRouter.mutable(), NODE_CODEC, NODE_CODEC);
+        assertThat(kvStore.restoreSnapshot(NODE_CODEC.canonical()
+                                                     .encode(Map.of(BackupRestoreKey.backupRestoreKey(), decision)))
+                          .isSuccess()).isTrue();
+        assertThat(kvStore.get(BackupRestoreKey.backupRestoreKey())).isEqualTo(Option.some(decision));
     }
 
     private static KVCommand<AetherKey> transaction(String id) {

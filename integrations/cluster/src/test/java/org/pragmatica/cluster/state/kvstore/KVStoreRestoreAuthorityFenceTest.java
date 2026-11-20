@@ -170,6 +170,16 @@ class KVStoreRestoreAuthorityFenceTest {
         assertThat(put("control", PLAIN_KEY, Option.none(), new Plain("ordinary"))).isTrue();
     }
 
+    /// F-B1: the F-HOME arm judges the RestoreAuthority type, not the leader-authorized marker. `Bare` is a restore
+    /// authority only, so an arm keyed on `LeaderAuthorized` lets it land at a plain key; `Marker` is both and cannot tell.
+    @Test
+    void fHome_bareAuthorityAtAPlainKey_isRefused() {
+        electLeader();
+
+        assertThat(put("away", PLAIN_KEY, Option.none(), new Bare("away", true))).isFalse();
+        assertThat(store.get(PLAIN_KEY).isEmpty()).isTrue();
+    }
+
     // Row 13: an authorized transaction may not delete K_A (F-NODEL).
 
     @Test
