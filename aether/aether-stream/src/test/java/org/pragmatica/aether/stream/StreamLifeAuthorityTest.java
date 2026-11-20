@@ -10,6 +10,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.StreamDeclaration;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
@@ -153,6 +154,38 @@ class StreamLifeAuthorityTest {
 
         assertThat(StreamPartitionManager.notAppliedReason(morePartitions, enforced).or("")).as("a stronger config with another partition count is not adopted")
                                                                                           .startsWith("partition count of an existing stream cannot change");
+    }
+
+    /// The hazard behind adoption (#3334): adoption swaps the whole config, so a held-floor release that read
+    /// `entry.config()` would return other bytes than were reserved. The ring's own control bytes are released, so a
+    /// stream adopted over a larger retention still returns the budget to zero when its life ends.
+    @Test
+    void adoptingALargerRetention_thenEndingTheLife_returnsExactlyWhatWasReserved() {
+        var node = manager(new RecordingClusterNode(), AppendLog.Opener.directory(walDir));
+        var life = config().withIncarnation(COMMITTED_LIFE).withReplication(new ReplicationFactors(3, 2));
+        var larger = variant(life.withReplication(new ReplicationFactors(4, 2)), RetentionPolicy.retentionPolicy(100_000, 64L * 1024 * 1024, 600_000), life.declaration());
+
+        node.onStreamConfigPut(committed(life));
+        var reserved = node.totalAllocatedBytes();
+        node.onStreamConfigPut(committed(larger));
+        assertThat(node.enforcedConfig(STREAM).or(life).retention()).as("the larger retention was adopted").isEqualTo(larger.retention());
+        node.onStreamConfigRemove(new ValueRemove<>(new KVCommand.Remove<StreamConfigKey>(StreamConfigKey.streamConfigKey(STREAM)), Option.empty()));
+
+        assertThat(reserved).as("the stream reserved its floor").isGreaterThan(0L);
+        assertThat(node.totalAllocatedBytes()).as("released bytes equal reserved bytes").isZero();
+        node.close();
+    }
+
+    private static StreamConfig variant(StreamConfig base, RetentionPolicy retention, Option<StreamDeclaration> declaration) {
+        return new StreamConfig(STREAM, base.partitions(), retention, base.autoOffsetReset(), base.maxEventSizeBytes(), base.consistencyMode(),
+                                base.replicationFactor(), base.confirmationFactor(), base.compression(), base.encryptionKeyId(), base.incarnation(),
+                                declaration);
+    }
+
+    private static Option<StreamDeclaration> declaration(Option<HotWindowDeclaration> hot,
+                                                         Option<TruncationDeclaration> truncation,
+                                                         Option<Long> ingress) {
+        return Option.some(StreamDeclaration.streamDeclaration(Option.none(), truncation, hot, ingress));
     }
 
     private static StreamPartitionManager manager(RecordingClusterNode cluster, AppendLog.Opener opener) {
