@@ -4,7 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.schema;
 
+import java.util.List;
+
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
@@ -274,6 +277,39 @@ public sealed interface SchemaError extends Cause {
                  + "' is already migrated by blueprint '" + currentOwner.asString()
                  + "'. Declare the migrations in one blueprint only, or give this blueprint its own"
                  + " datasource section.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #834: a publish declares a version above a schema record an operator left by undo or baseline, so `migrate()` would re-apply
+    /// the versions listed in `reapplied`. Surfaces as HTTP 409 on the publish endpoints: the request is well-formed and the conflict is
+    /// with existing cluster state. Recovery: deploy a blueprint that declares the version the operator left (`currentVersion`), or
+    /// repeat the publish with `force` (`--force`) to accept the re-application.
+    record RepublishWouldReapply(String datasource,
+                                 SchemaReach reachedBy,
+                                 int currentVersion,
+                                 List<Integer> reapplied) implements SchemaError, HttpStatusAware {
+        public static RepublishWouldReapply republishWouldReapply(String datasource,
+                                                                  SchemaReach reachedBy,
+                                                                  int currentVersion,
+                                                                  List<Integer> reapplied) {
+            return new RepublishWouldReapply(datasource, reachedBy, currentVersion, List.copyOf(reapplied));
+        }
+
+        @Override
+        public String message() {
+            return "Publish refused — datasource '" + datasource
+                 + "' was left at version " + currentVersion
+                 + " by an operator " + (reachedBy == SchemaReach.UNDONE
+                                         ? "undo"
+                                         : "baseline")
+                 + ", and this blueprint declares versions " + reapplied
+                 + " which would be applied again. Deploy a blueprint that declares version " + currentVersion
+                 + ", or repeat the publish with force to accept the re-application.";
         }
 
         @Override

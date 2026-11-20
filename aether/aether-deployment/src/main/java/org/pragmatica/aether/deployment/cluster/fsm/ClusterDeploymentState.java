@@ -823,7 +823,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                 SchemaStatus.PENDING,
                                                                 value.artifactCoords(),
                                                                 value.owningBlueprint(),
-                                                                value.attemptCount());
+                                                                value.attemptCount(),
+                                                                value.reachedBy());
             // The lock is NOT removed here (#806): this runs only for an EXPIRED lock, which the next
             // acquire takes over, and a bare Remove of a `WitnessedRemoval` value is refused anyway.
             termWriter.writeUnder(WriteSite.SCHEMA_STALLED_RESET,

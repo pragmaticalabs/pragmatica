@@ -63,7 +63,8 @@ class V2174bDeltaTest {
                                                                                      "g:a:1",
                                                                                      blueprintId("org.example:app:1.0.0"),
                                                                                      2,
-                                                                                     FsmHarness.START_WALL));
+                                                                                     FsmHarness.START_WALL,
+                                                                                     org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach.MIGRATED));
         h.drain();
         assertThat(h.model().schemas.containsKey("ds")).as("precondition: indexed while suspended").isTrue();
         h.commitLeader(FsmHarness.SELF, 2L);

@@ -18,6 +18,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
@@ -247,7 +248,8 @@ class WarnAfterCommitTest {
 
     private static SchemaVersionValue pendingSchema() {
         return new SchemaVersionValue("orders-db", 1, "V1", SchemaStatus.PENDING, "org.example:migrations:1.0.0", blueprintId(APP), 0,
-                                      FsmHarness.START_WALL);
+                                      FsmHarness.START_WALL,
+                                      SchemaReach.MIGRATED);
     }
 
     /// ORDERS placed and held by its pending schema; the leader's hold opener committed (every write applied so far).

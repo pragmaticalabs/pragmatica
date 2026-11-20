@@ -2391,7 +2391,8 @@ public sealed interface AetherValue {
                               String artifactCoords,
                               BlueprintId owningBlueprint,
                               int attemptCount,
-                              long updatedAt) implements AetherValue {
+                              long updatedAt,
+                              SchemaReach reachedBy) implements AetherValue {
         public static SchemaVersionValue schemaVersionValue(String datasourceName,
                                                             int currentVersion,
                                                             String lastMigration,
@@ -2405,7 +2406,8 @@ public sealed interface AetherValue {
                                           artifactCoords,
                                           owningBlueprint,
                                           0,
-                                          System.currentTimeMillis());
+                                          System.currentTimeMillis(),
+                                          SchemaReach.MIGRATED);
         }
 
         public static SchemaVersionValue schemaVersionValue(String datasourceName,
@@ -2422,7 +2424,29 @@ public sealed interface AetherValue {
                                           artifactCoords,
                                           owningBlueprint,
                                           attemptCount,
-                                          System.currentTimeMillis());
+                                          System.currentTimeMillis(),
+                                          SchemaReach.MIGRATED);
+        }
+
+        /// The record of a status or attempt change, or of an undo or baseline outcome: `reachedBy` is stated, never defaulted, so a
+        /// writer that only moves the status cannot silently turn an undone or baselined version back into a forward-migrated one (#834).
+        public static SchemaVersionValue schemaVersionValue(String datasourceName,
+                                                            int currentVersion,
+                                                            String lastMigration,
+                                                            SchemaStatus status,
+                                                            String artifactCoords,
+                                                            BlueprintId owningBlueprint,
+                                                            int attemptCount,
+                                                            SchemaReach reachedBy) {
+            return new SchemaVersionValue(datasourceName,
+                                          currentVersion,
+                                          lastMigration,
+                                          status,
+                                          artifactCoords,
+                                          owningBlueprint,
+                                          attemptCount,
+                                          System.currentTimeMillis(),
+                                          reachedBy);
         }
 
         /// The typed reading of `artifactCoords`: [MigrationSourceError.Absent] when blank,
@@ -2440,7 +2464,8 @@ public sealed interface AetherValue {
                                           artifactCoords,
                                           owningBlueprint,
                                           attemptCount,
-                                          updatedAt);
+                                          updatedAt,
+                                          reachedBy);
         }
     }
 
@@ -2487,6 +2512,23 @@ public sealed interface AetherValue {
         @Override
         public long fenceVersion() {
             return lockVersion;
+        }
+    }
+
+    /// How a datasource's `currentVersion` was reached (#834): by a forward migration, by an operator undo, or by an operator
+    /// baseline. A publish that declares a version above an `UNDONE` or `BASELINED` record would re-apply what the operator removed or
+    /// skipped, so `BlueprintService` refuses it unless forced.
+    @Codec
+    enum SchemaReach {
+        MIGRATED,
+        UNDONE,
+        BASELINED,
+        /// Wire sentinel, same contract as `SchemaStatus.UNKNOWN`: an ordinal this node cannot name decodes here. Treated as
+        /// forward-migrated (no guard), because an unreadable value must not block a publish. Must stay LAST.
+        UNKNOWN;
+        /// Whether a publish declaring a higher version would re-apply what an operator intervention left out.
+        public boolean guardsRepublish() {
+            return this == UNDONE || this == BASELINED;
         }
     }
 

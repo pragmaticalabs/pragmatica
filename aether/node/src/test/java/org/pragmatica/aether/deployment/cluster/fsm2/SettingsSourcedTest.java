@@ -14,6 +14,7 @@ import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
@@ -186,7 +187,7 @@ class SettingsSourcedTest {
         h.activate();
         publish(h, blueprint("org.example:app:1.0.0", false, ATTEMPT, slice(ORDERS, 1, 1, Set.of())), Option.none());
         h.seed(new SchemaVersionKey("orders-db"),
-               new SchemaVersionValue("orders-db", 1, "V1", SchemaStatus.FAILED, "org.example:migrations:1.0.0", owner, 3, FsmHarness.START_WALL));
+               new SchemaVersionValue("orders-db", 1, "V1", SchemaStatus.FAILED, "org.example:migrations:1.0.0", owner, 3, FsmHarness.START_WALL, SchemaReach.MIGRATED));
         h.drain();
         var blocked = h.effects(ClusterEffect.Route.class)
                        .stream()

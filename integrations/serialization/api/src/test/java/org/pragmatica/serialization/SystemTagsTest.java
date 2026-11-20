@@ -36,6 +36,16 @@ class SystemTagsTest {
         assertFalse(SystemTags.TAGS.isEmpty());
     }
 
+    /// #834: the three pins of the SchemaVersionValue change, asserted record class -> tag straight on the table. A reverted or dropped
+    /// pin must fail HERE by assertion, not only at registry init: 1638 stays the old shape's tag (decode-only), the current shape and
+    /// its reach enum sit in block 2984..2985 (RQ-TAGS-3).
+    @Test
+    void schemaVersionValuePins_areTheAssignedTags() {
+        assertEquals(1638, SystemTags.tagFor("org.pragmatica.aether.slice.kvstore.LegacySchemaVersionValue"));
+        assertEquals(2984, SystemTags.tagFor("org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue"));
+        assertEquals(2985, SystemTags.tagFor("org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach"));
+    }
+
     /// The disjointness the whole split rests on. A system tag that strayed into the user range would
     /// be reachable by a slice type's hash, which is the collision this design exists to make
     /// structurally impossible.
