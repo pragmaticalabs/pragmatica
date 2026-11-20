@@ -191,6 +191,21 @@ class SystemTagsLedgerTest {
         assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherKey.EntityArcWaiverKey");
     }
 
+    /// #3303 A3b: the arc values take the next four numbers of the same reservation, 3020..3023.
+    @Test
+    void arcValues_areInsideTheArcReservation() throws Exception {
+        var owned = ledger().stream()
+                            .filter(reservation -> reservation.owner()
+                                                              .equals("arc-3303"))
+                            .toList();
+
+        assertEquals(1, owned.size(), "arc-3303 must hold exactly one reservation in " + LEDGER);
+        assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue");
+        assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue.OfferEntry");
+        assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue");
+        assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue.WaiverCase");
+    }
+
     private static void assertArcPinInside(Reservation reservation, String name) {
         var tag = SystemTags.tagFor(name);
 

@@ -48,7 +48,9 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntityArcWaiverKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntitySeedOfferKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.LogLevelKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ObservabilityConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.PreviousVersionKey;
@@ -74,7 +76,11 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue.WaiverCase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue.OfferEntry;
 import org.pragmatica.aether.slice.kvstore.AetherValue.LogLevelValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ObservabilityConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
@@ -245,6 +251,14 @@ final class BackupFixtures {
                                    BlueprintStreamBindingsValue.blueprintStreamBindingsValue(List.of(NamedAddress.namedAddress("stock", topic)))),
                        new Fixture(EntityCheckpointKey.entityCheckpointKey("orders/by-customer", 5),
                                    EntityFoldCheckpointValue.entityFoldCheckpointValue(4_242L, "00ff10ab")),
+                       new Fixture(EntitySeedOfferKey.entitySeedOfferKey("orders/by-customer", 5),
+                                   EntitySeedOfferValue.entitySeedOfferValue(3L,
+                                                                             4L,
+                                                                             9L,
+                                                                             "00ff10ab",
+                                                                             List.of(OfferEntry.offerEntry(6, 120L, 2L), OfferEntry.offerEntry(7, 0L, 0L)))),
+                       new Fixture(EntityArcWaiverKey.entityArcWaiverKey("orders/by-customer", 6),
+                                   EntityArcWaiverValue.entityArcWaiverValue(4L, WaiverCase.BLOCK_LOST, List.of("00ff10ab", "ab10ff00"))),
                        new Fixture(ClusterIncarnationKey.clusterIncarnationKey(),
                                    ClusterIncarnationValue.clusterIncarnationValue("01K4ZT9Q6W3X8Y2B7C5D1E0F9G", 3, "01K4ZTA0000000000000000000")),
                        new Fixture(DeploymentEngineKey.deploymentEngineKey(),

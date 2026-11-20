@@ -30,12 +30,20 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntityArcWaiverKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntitySeedOfferKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GossipKeyRotationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.PreviousVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue.WaiverCase;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue.OfferEntry;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GossipKeyRotationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.LogLevelValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
@@ -419,6 +427,65 @@ class BackupEntryCodecTest {
 
             assertThat(CODEC.encode(REVISION, Map.of(key, value))
                             .isSuccess()).isTrue();
+        }
+    }
+
+    /// #3303 A3b: the seed-offer and arc-waiver keys are bound by their PREFIXED parsers. A binding to `fromIdentity` would accept
+    /// every entity key's full string (`orders/7` parses as an identity of all four), and every backup would be refused AmbiguousKey.
+    @Nested
+    class ArcBindings {
+        private final EntitySeedOfferKey offerKey = EntitySeedOfferKey.entitySeedOfferKey("orders/by-customer", 5);
+        private final EntityArcWaiverKey waiverKey = EntityArcWaiverKey.entityArcWaiverKey("orders/by-customer", 6);
+        private final EntitySeedOfferValue offerValue = EntitySeedOfferValue.entitySeedOfferValue(3L,
+                                                                                                  4L,
+                                                                                                  9L,
+                                                                                                  "00ff10ab",
+                                                                                                  List.of(OfferEntry.offerEntry(6, 120L, 2L)));
+        private final EntityArcWaiverValue waiverValue = EntityArcWaiverValue.entityArcWaiverValue(4L,
+                                                                                                   WaiverCase.CANNOT_REPRODUCE,
+                                                                                                   List.of("00ff10ab"));
+
+        @Test
+        void encode_thenDecode_roundTripsACheckpointAndBothArcKeysTogether() {
+            var checkpointKey = EntityCheckpointKey.entityCheckpointKey("orders/by-customer", 5);
+            var entries = Map.<AetherKey, AetherValue> of(checkpointKey,
+                                                          EntityFoldCheckpointValue.entityFoldCheckpointValue(4_242L, "00ff10ab"),
+                                                          offerKey,
+                                                          offerValue,
+                                                          waiverKey,
+                                                          waiverValue);
+
+            CODEC.encode(REVISION, entries)
+                 .flatMap(CODEC::decode)
+                 .onFailure(cause -> Assertions.fail(cause.message()))
+                 .onSuccess(document -> assertThat(document.entries()).containsExactlyInAnyOrderEntriesOf(entries));
+        }
+
+        @Test
+        void parseCandidates_ofEachArcKey_isExactlyOne() {
+            assertThat(BackupEntryCodec.parseCandidates(offerKey.asString())).containsExactly(offerKey);
+            assertThat(BackupEntryCodec.parseCandidates(waiverKey.asString())).containsExactly(waiverKey);
+        }
+
+        @Test
+        void parseCandidates_ofACheckpointKey_isNotClaimedByTheArcKeys() {
+            var checkpointKey = EntityCheckpointKey.entityCheckpointKey("orders/by-customer", 5);
+
+            assertThat(BackupEntryCodec.parseCandidates(checkpointKey.asString())).containsExactly(checkpointKey);
+        }
+
+        @Test
+        void decode_refusesAnOfferKeyCarryingAWaiverValue() {
+            var document = sealedDocument(line(waiverValue, offerKey.asString()));
+
+            assertThat(failures(CODEC.decode(document))).singleElement()
+                                                        .isInstanceOf(BackupError.ValueTypeMismatch.class);
+        }
+
+        @Test
+        void encode_refusesAWaiverKeyCarryingAnOfferValue() {
+            assertThat(failures(CODEC.encode(REVISION, Map.<AetherKey, AetherValue> of(waiverKey, offerValue)))).singleElement()
+                                                                                                                 .isInstanceOf(BackupError.ValueTypeRefused.class);
         }
     }
 
