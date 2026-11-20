@@ -37,6 +37,7 @@ ENUM org.pragmatica.aether.slice.kvstore.AetherValue$DepartureState DEPARTED=0,A
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentEngine LEGACY=0,FSM2=1,UNKNOWN=2
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentOutcomeStatus SUCCEEDED=0,FAILED=1,ROLLED_BACK=2,IN_PROGRESS=3,UNKNOWN=4
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$DhtReplicationStage APPLYING=0,WRITERS_SWITCHED=1,SETTLED=2,UNKNOWN=3
+ENUM org.pragmatica.aether.slice.kvstore.AetherValue$EntityArcWaiverValue$WaiverCase BLOCK_LOST=0,UNDECODABLE=1,SEED_CORRUPT=2,CANNOT_REPRODUCE=3,FETCH_FAILED=4,UNKNOWN=5
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$FreedCause REFUSED=0,ABSENT_CONFIRMED=1,OPERATOR_CLEAR=2,TERMINATED=3,EXTERNAL_RELEASED=4,UNKNOWN=5
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$IdentityCause OPERATOR=0,OPERATOR_FORCE=1,REPLACED=2,RETIRED=3,DRAINED=4,GONE=5,UNKNOWN=6
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$IdentityState ADMITTED=0,DEPARTED=1,TERMINATED=2,UNKNOWN=3
@@ -297,8 +298,11 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$DhtReplicationChangeValue 
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$DhtReplicationReportValue (appliedVersion:long,caughtUpVersion:long,replica:boolean)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$DrainDeadlineValue (deadlineMs:long,setAt:org.pragmatica.hlc.HlcTimestamp)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$EndpointValue (nodeId:org.pragmatica.consensus.NodeId)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$EntityArcWaiverValue (childLife:long,waiverCase:org.pragmatica.aether.slice.kvstore.AetherValue$EntityArcWaiverValue$WaiverCase,discarded:java.util.List<java.lang.String>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$EntityFoldCheckpointValue (throughOffset:long,blockIdHex:java.lang.String,timestamp:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$EntityKeyspaceRegistrationValue (partitionCount:int)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$EntitySeedOfferValue (parentLife:long,L:long,parentOwnerEpoch:long,blockIdHex:java.lang.String,entries:java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue$EntitySeedOfferValue$OfferEntry>)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$EntitySeedOfferValue$OfferEntry (child:int,keyCount:long,timerCount:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$EpochStart (epoch:org.pragmatica.aether.slice.generation.Epoch,startOffset:long,coversFrom:org.pragmatica.aether.slice.generation.Epoch,owner:org.pragmatica.lang.Option<org.pragmatica.consensus.NodeId>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$FsmWarningValue (members:java.util.Map<java.lang.String, java.lang.String>,open:boolean,message:java.lang.String,revision:long,writerNode:org.pragmatica.consensus.NodeId,writerProcess:org.pragmatica.aether.slice.kvstore.AetherValue$ProcessIncarnation,writerIncarnation:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$Generation (viewSequence:long,counter:long)
@@ -768,8 +772,12 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$DhtReplicationReportValue 2
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$DhtReplicationStage 2126
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$DrainDeadlineValue 1618
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$EndpointValue 1619
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$EntityArcWaiverValue 3022
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$EntityArcWaiverValue$WaiverCase 3023
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$EntityFoldCheckpointValue 1620
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$EntityKeyspaceRegistrationValue 1621
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$EntitySeedOfferValue 3020
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$EntitySeedOfferValue$OfferEntry 3021
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$EpochStart 1748
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$FreedCause 2200
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$FsmWarningValue 2903
