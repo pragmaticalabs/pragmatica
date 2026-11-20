@@ -223,8 +223,11 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
         }
 
         /// A LINEARIZABLE consumer read that also carries the owner epoch the consumer last read under (stream-mem M-9a0): the
-        /// serving node re-runs the owner-side serve pipeline of a `linearizable` read and answers the epoch it served under.
-        /// Same components as every other read: no wire change.
+        /// serving node re-runs the owner-side serve pipeline of a `linearizable` read. It does not yet honour the epoch or
+        /// answer the one it served under: until M-9a2 the handler answers [Epoch#ZERO].
+        /// Same components as every other read: no wire change. Named apart from [#readForward] because its parameter list is
+        /// that of [#validatedReadForward]: the name carries the read class, so JBCT-NAM-01 stays a warning here, like the
+        /// sibling factory's.
         public static ReadForward linearizableValidatedReadForward(NodeId sender,
                                                                    String correlationId,
                                                                    String streamName,

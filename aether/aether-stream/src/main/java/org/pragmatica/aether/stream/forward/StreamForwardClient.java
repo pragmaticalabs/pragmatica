@@ -95,10 +95,17 @@ public interface StreamForwardClient {
         return readRemote(ownerId, streamName, partition, fromOffset, maxEvents);
     }
 
-    /// Stream-mem M-9a0: forward a LINEARIZABLE read carrying the owner epoch (`life`) the caller last read under; the answer
-    /// carries the epoch it was served under in [ReadForwardResult#ownerEpoch]. The default falls back to the plain
-    /// `LINEARIZABLE`-tagged forward and reports no epoch; only the production transport ([DefaultStreamForwardClient])
-    /// stamps the epoch into the [ReadForward].
+    /// Stream-mem M-9a0: forward a LINEARIZABLE read carrying the owner epoch (`life`) the caller last read under. The
+    /// production transport ([DefaultStreamForwardClient]) stamps `life` into the [ReadForward].
+    ///
+    /// **Not yet usable.** The owner does not honour `life` until M-9a2 lands: today the handler routes a linearizable read
+    /// through `LinearizableOwnerServe#serveForwarded`, which takes no epoch, and answers [Epoch#ZERO] in
+    /// [ReadForwardResult#ownerEpoch] whatever it was served under, without validating `life` (pinned by the tripwire in
+    /// `StreamForwardLifeReadsHandlerTest`). Once M-9a2 lands the answer carries the epoch the read was served under. No
+    /// caller may use this method before then; none does at this head.
+    ///
+    /// The default falls back to `readRemote(..., ReadPreference.LINEARIZABLE)` and silently drops `life`, so it reports
+    /// no epoch.
     default Promise<ReadForwardResult> readRemoteLinearizable(NodeId ownerId,
                                                               String streamName,
                                                               int partition,
