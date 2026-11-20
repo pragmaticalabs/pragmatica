@@ -4,10 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.backup;
 
+import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.FutureTask;
@@ -559,7 +561,7 @@ public record GitBackupRepository(Path dir,
     private ProcessBuilder processBuilder(List<String> args) {
         var command = new ArrayList<String>();
 
-        command.add("git");
+        command.add(gitExecutable());
         command.addAll(FOREGROUND_MAINTENANCE);
         command.add("-C");
         command.add(dir.toString());
@@ -573,6 +575,22 @@ public record GitBackupRepository(Path dir,
                                batchModeSsh(Option.option(processEnvironment.get("GIT_SSH_COMMAND"))));
 
         return builder;
+    }
+
+    /// `git` as the process environment's `PATH` resolves it: Java looks a bare command up on the parent's `PATH`, so a `PATH` in `environment` (a test's
+    /// `git` shim, #3464) would otherwise reach only the processes git itself spawns. Empty `environment` (production): plain `git`.
+    private String gitExecutable() {
+        return Option.option(environment.get("PATH"))
+                     .flatMap(GitBackupRepository::gitOn)
+                     .or("git");
+    }
+
+    private static Option<String> gitOn(String path) {
+        return Option.from(Arrays.stream(path.split(File.pathSeparator))
+                                 .map(entry -> Path.of(entry).resolve("git"))
+                                 .filter(Files::isExecutable)
+                                 .findFirst()
+                                 .map(Path::toString));
     }
 
     /// Output is drained on its own thread: a blocking read here would outlive the timeout of a git that
