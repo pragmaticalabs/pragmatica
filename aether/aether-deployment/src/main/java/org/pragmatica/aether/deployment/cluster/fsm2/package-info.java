@@ -54,9 +54,11 @@
 /// (* stamp); "fixed" = the PR: rule E drops a transition whose row the writer's mirror holds at a higher revision   *)
 /// (* (Warnings.superseded, `>`), and each node's sink drops a stamped warning older than the newest it delivered    *)
 /// (* for the row (EffectTranslator.ordered, `max`); mutants "ge" (superseded with >=) and "nostamp" (the effect      *)
-/// (* carries revision 0, so the sink never reorders); "cand" = the candidate fix: no superseded filter and no per-node  *)
-/// (* gate; the event carries the row revision to the shared view, which applies an entry only if its revision is above *)
-/// (* the one it shows for the row, and every mirror applies a row only if its revision is above the one it holds.      *)
+/// (* carries revision 0, so the sink never reorders); "cand" = the fix (CTO ruling B): rule E emits nothing at the    *)
+/// (* settle; a family warning is published from the committed FsmWarningKey put (ClusterEventAggregator.emitCommitted, *)
+/// (* one emitter per KV index), so the view takes the transitions in commit order (KvApply); every mirror applies a row *)
+/// (* only if its revision is above the one it holds. Abstraction: the committed emitter is atomic with the commit; its  *)
+/// (* own limits (a dead owner suppresses until the next ownership record; replay suppresses) are emitCommitted's.      *)
 /// (* PUTFIRST: a late accepted settlement is handled only after    *)
 /// (* the writer's mirror took a newer put of the row (the premise Warnings.superseded needs); FALSE: in any order.  *)
 /// (* The revision is the order key: a per-row counter raised by one at every commit (CAS on the whole row), so it   *)
@@ -296,8 +298,13 @@
 ///
 /// Max(a, b) == IF a > b THEN a ELSE b
 ///
-/// \* "cand": the shared view takes a delivered entry of row x only if its revision is above the one it shows.
-/// ViewTakes(x, r) == STAMP # "cand" \/ r.rv > opv[x].rv
+/// \* "cand" (ruling B): the committed emitter publishes; rule E at the settle does not.
+/// CommitPub == STAMP = "cand" /\ MODE = "code" /\ MUT # "noruleE"
+///
+/// \* The operator view after delivering the committed transitions tr of replacement rows f.
+/// View(tr, f) == [x \in Subjects |-> IF x \in tr THEN [up |-> f[x].open, rv |-> f[x].rv,
+///                                                    cl |-> IF f[x].open THEN opv[x].cl ELSE Max(opv[x].cl, f[x].rv)]
+///                                   ELSE opv[x]]
 ///
 /// \* How a mirror takes rows f (an accepted write's replacements, a refusal's values, a put): the code overlays them
 /// \* (Warnings.landed / indexRow); "cand" takes a row only if its revision is above the one the mirror holds.
@@ -396,12 +403,15 @@
 ///         /\ trans' = IF okW THEN trans \cup {[c |-> c, s |-> x, up |-> tx.wrep[x].open] :
 ///                                              x \in {y \in DOMAIN tx.wrep : kv[y].open # tx.wrep[y].open}}
 ///                     ELSE trans
+///         \* ruling B: the committed put is published here, in commit order (emitCommitted on the FsmWarningKey put)
+///         /\ notes' = IF okW /\ CommitPub THEN Emit(notes, c, kv, tx.wrep) ELSE notes
+///         /\ opv' = IF okW /\ CommitPub THEN View(Tr(kv, tx.wrep), tx.wrep) ELSE opv
 ///         /\ pend' = IF okW THEN [m \in Nodes |-> pend[m] \/ fsm[m] = "Active"] ELSE pend
 ///         /\ kvW' = IF okW THEN [x \in Subjects |-> IF x \in DOMAIN tx.wrep THEN <<tx.node, tx.inc>> ELSE kvW[x]] ELSE kvW
 ///         /\ settles' = settles \cup {st}
 ///         /\ kv' = IF ok /\ tx.kind = "W" THEN Overlay(kv, tx.wrep) ELSE kv
 ///         /\ kvDesired' = IF ok /\ tx.kind = "G" THEN tx.val ELSE kvDesired
-///   /\ UNCHANGED <<notes, ovars, closedOff, term, kvLeader, elected, lkPend, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty,
+///   /\ UNCHANGED <<newest, closedOff, term, kvLeader, elected, lkPend, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty,
 ///                  flushQ, wInfl, gInfl, gIntent, fired, held, lnd, condBudget, faultBudget, redo>>
 ///
 /// \* Environment: a definite failure (Settlement.Failed), nothing committed.
