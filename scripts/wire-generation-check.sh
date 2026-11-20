@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Pull-request check: a wire break bumps JoinGenerationGuard.WIRE_GENERATION by exactly one (#3303).
+#
+#   scripts/wire-generation-check.sh <base-ref>
+#
+# Compares the wire-assignment baseline committed at HEAD with the one at the merge base of <base-ref> and HEAD.
+# A SHAPE or ENUM line of the base that is changed or removed at HEAD is a wire break: an old peer decodes the new
+# bytes wrongly, so HEAD's GENERATION line must equal the base generation + 1 and the join guard refuses the old
+# peer. Any other change (added TAG, SHAPE or ENUM lines only, or no change) must leave GENERATION unchanged.
+# The base generation is the base baseline's GENERATION line; a base baseline without one (before the line
+# existed) counts as WIRE_GENERATION read from JoinGenerationGuard.java at the merge base.
+# A runtime test cannot do this: it never sees the base commit's constant, and a relative assertion stays green
+# when the bump is missing (know ea094e261d). The baseline test pins HEAD's GENERATION line to the constant.
+#
+# Reads committed content only (git show), never the working tree, so the verdict is a function of the two commits.
+# Exit codes, as in changelog-check.sh: 1 means the check LOOKED and refused, 2 means it COULD NOT LOOK and reports
+# no verdict.
+set -euo pipefail
+
+base="${1:?usage: wire-generation-check.sh <base-ref>}"
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+baseline="aether/node/src/test/resources/wire-assignment-baseline.txt"
+guard="integrations/consensus/src/main/java/org/pragmatica/consensus/net/JoinGenerationGuard.java"
+
+cannot_look() {
+    echo "wire-generation-check: $1, so nothing was compared and this check EXAMINED NOTHING; refusing to report success" >&2
+    exit 2
+}
+
+git rev-parse --verify --quiet "$base^{commit}" >/dev/null || cannot_look "base ref '$base' does not resolve to a commit"
+merge_base="$(git merge-base "$base" HEAD)" || cannot_look "no merge base between '$base' and HEAD"
+
+base_file="$(git show "$merge_base:$baseline")" || cannot_look "$baseline is absent at the merge base $merge_base"
+head_file="$(git show "HEAD:$baseline")" || cannot_look "$baseline is absent at HEAD"
+
+generation_line() {
+    grep -E '^GENERATION ' <<<"$1" | awk '{print $2}' || true
+}
+
+base_generation="$(generation_line "$base_file")"
+if [[ -z "$base_generation" ]]; then
+    guard_file="$(git show "$merge_base:$guard")" || cannot_look "$guard is absent at the merge base $merge_base"
+    base_generation="$(sed -nE 's/^[[:space:]]*int WIRE_GENERATION = ([0-9]+);.*/\1/p' <<<"$guard_file")"
+    [[ -n "$base_generation" ]] || cannot_look "no GENERATION line in the base baseline and no WIRE_GENERATION in $guard at $merge_base"
+    base_source="WIRE_GENERATION in $guard at the merge base"
+else
+    base_source="the GENERATION line at the merge base"
+fi
+[[ "$base_generation" =~ ^[0-9]+$ ]] || cannot_look "base generation '$base_generation' is not a number"
+
+head_generation="$(generation_line "$head_file")"
+if [[ ! "$head_generation" =~ ^[0-9]+$ ]]; then
+    echo "wire-generation-check: HEAD's $baseline has no numeric GENERATION line; re-record it with WireAssignmentBaselineWriter" >&2
+    exit 1
+fi
+
+wire_lines() {
+    grep -E '^(SHAPE|ENUM) ' <<<"$1" | tr -s ' ' | sort -u || true
+}
+
+broken="$(comm -23 <(wire_lines "$base_file") <(wire_lines "$head_file"))"
+
+echo "wire-generation-check: merge base $merge_base, base generation $base_generation ($base_source), HEAD generation $head_generation"
+if [[ -n "$broken" ]]; then
+    echo "wire-generation-check: $(wc -l <<<"$broken" | tr -d ' ') SHAPE/ENUM line(s) of the base changed or removed at HEAD (a wire break):"
+    sed 's/^/  - /' <<<"$broken"
+    required=$((base_generation + 1))
+    reason="a wire break requires GENERATION = base + 1 = $required (bump JoinGenerationGuard.WIRE_GENERATION, then re-record the baseline)"
+else
+    echo "wire-generation-check: no SHAPE/ENUM line of the base changed or removed (added-only or no wire change)"
+    required=$base_generation
+    reason="a change without a wire break requires GENERATION unchanged = $required"
+fi
+
+if [[ "$head_generation" -ne "$required" ]]; then
+    echo "wire-generation-check: REFUSED: HEAD generation is $head_generation; $reason" >&2
+    exit 1
+fi
+echo "wire-generation-check: OK: HEAD generation $head_generation; $reason"
