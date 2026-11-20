@@ -19,13 +19,17 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.awaitility.Awaitility.await;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey.key;
 
 /// Test Suite 2: Message Semantics
 ///
 /// Tests message-level behaviors like duplication, out-of-order delivery,
-/// message loss, and stale view numbers.
+/// message loss, and stale-phase redelivery after a crashed node reconnects.
+/// The faults are crash faults and message-level faults (duplicate, delay, loss); no arm makes a node
+/// send forged or conflicting messages.
 public class MessageSemanticsIT {
     private static final Logger log = LoggerFactory.getLogger(MessageSemanticsIT.class);
     private static final int CLUSTER_SIZE = 5;
@@ -54,7 +58,9 @@ public class MessageSemanticsIT {
     }
 
     /// Test 2.1: Duplicate PROPOSE broadcasts
-    /// Assertion: Replicas ignore/coalesce duplicates; continued progress
+    /// Assertion: Replicas ignore/coalesce duplicates; continued progress, and each committed key is applied
+    /// exactly once per replica (a key applied twice emits its put notification twice; the stored value alone
+    /// cannot tell, a Put being idempotent)
     @Test
     void duplicateProposeBroadcasts() {
         log.info("Starting duplicate PROPOSE broadcasts test");
@@ -82,6 +88,18 @@ public class MessageSemanticsIT {
             var expectedValue = "value-" + i;
             assertTrue(cluster.allNodesHaveValue(k, expectedValue),
                        "All nodes should have key " + k + " with value " + expectedValue);
+        }
+
+        // The put notifications are delivered asynchronously: let every store drain before counting.
+        await().atMost(TIMEOUT)
+               .until(() -> cluster.ids().stream().noneMatch(cluster::hasPendingNotifications));
+
+        for (var id : cluster.ids()) {
+            for (int i = 0; i < COMMAND_COUNT; i++) {
+                var k = key("duplicate-" + i);
+
+                assertEquals(1, cluster.putCount(id, k), "Node " + id + " must apply " + k + " exactly once");
+            }
         }
 
         // Disable message duplication
@@ -183,59 +201,60 @@ public class MessageSemanticsIT {
         assertTrue(throughputWithLoss > 0, "System should continue to make progress with message loss");
     }
 
-    /// Test 2.4: Stale view numbers
-    /// Assertion: Messages discarded; no regression
+    /// Test 2.4: Stale-phase messages after a reconnect
+    /// Assertion: a message of an already-decided phase, delivered late to a reconnected node and to the rest of the
+    /// cluster, is discarded; the later value of the key is not regressed and the cluster keeps committing.
+    /// The stale messages are the proposals and votes recorded at the start (carrying the first value of the key),
+    /// replayed after the node crashed, missed phases, and reconnected.
     @Test
     void staleViewNumbers() {
-        log.info("Starting stale view numbers test");
+        log.info("Starting stale phase redelivery test");
 
-        // First, establish a baseline state with some commands
         var clientNode = cluster.getFirst();
-        var initialCommands = generatePutCommands(50, "initial-"); // Reduced from 100
-        submitCommands(clientNode, initialCommands);
+        var laggingNode = cluster.ids().get(1);
+        var hot = key("hot");
 
+        cluster.submitAndWait(clientNode, new KVCommand.Put<>(hot, "first"));
         await().atMost(TIMEOUT)
-               .pollInterval(1, TimeUnit.SECONDS)
-               .until(() -> cluster.allNodesHaveValue(key("initial-49"), "value-49"));
+               .pollInterval(100, TimeUnit.MILLISECONDS)
+               .until(() -> cluster.allNodesHaveValue(hot, "first"));
 
-        // Force a view change by temporarily disconnecting a node
-        var disconnectNode = cluster.ids().get(1);
-        cluster.disconnect(disconnectNode);
+        // Everything delivered so far belongs to phases that are decided from here on.
+        var stale = cluster.deliveredTo(laggingNode);
 
-        // Submit more commands to advance to a new view
-        var advanceCommands = generatePutCommands(50, "advance-"); // Reduced from 100
-        submitCommands(clientNode, advanceCommands);
+        assertFalse(stale.isEmpty(), "The recording must have captured the first phase's messages");
 
-        await().atMost(TIMEOUT)
-               .pollInterval(1, TimeUnit.SECONDS)
-               .until(() -> cluster.allNodesHaveValue(key("advance-49"), "value-49"));
+        cluster.disconnect(laggingNode);
 
-        // Reconnect the disconnected node, which will have a stale view
-        // The actual reconnection is implementation-specific and might require
-        // adding methods to TestCluster, but for now we'll assume the implementation
-        // handles this correctly
-
-        // Submit final commands to verify the system continues to function correctly
-        var finalCommands = generatePutCommands(50, "final-"); // Reduced from 100
-        submitCommands(clientNode, finalCommands);
-
-        await().atMost(TIMEOUT)
-               .pollInterval(1, TimeUnit.SECONDS)
-               .until(() -> cluster.allNodesHaveValue(key("final-49"), "value-49"));
-
-        // Verify all commands were processed correctly
-        for (int i = 0; i < 50; i++) {
-            var initialKey = key("initial-" + i);
-            var advanceKey = key("advance-" + i);
-            var finalKey = key("final-" + i);
-
-            assertTrue(cluster.allNodesHaveValue(initialKey, "value-" + i),
-                       "All nodes should have initial key " + initialKey);
-            assertTrue(cluster.allNodesHaveValue(advanceKey, "value-" + i),
-                       "All nodes should have advance key " + advanceKey);
-            assertTrue(cluster.allNodesHaveValue(finalKey, "value-" + i),
-                       "All nodes should have final key " + finalKey);
+        // Advance several phases while the node is away, overwriting the key.
+        for (int i = 0; i < 5; i++) {
+            cluster.submitAndWait(clientNode, new KVCommand.Put<>(hot, "advanced-" + i));
         }
+
+        await().atMost(TIMEOUT)
+               .pollInterval(100, TimeUnit.MILLISECONDS)
+               .until(() -> cluster.allNodesHaveValue(hot, "advanced-4"));
+
+        cluster.reconnect(laggingNode);
+        cluster.submitAndWait(clientNode, new KVCommand.Put<>(hot, "latest"));
+        await().atMost(TIMEOUT)
+               .pollInterval(100, TimeUnit.MILLISECONDS)
+               .until(() -> cluster.allNodesHaveValue(hot, "latest"));
+
+        // Redeliver the stale messages everywhere; the key must not go back to "first".
+        for (var id : cluster.ids()) {
+            stale.forEach(message -> cluster.deliver(id, message));
+        }
+
+        await().during(Duration.ofSeconds(3))
+               .atMost(TIMEOUT)
+               .until(() -> cluster.allNodesHaveValue(hot, "latest"));
+
+        // The cluster still commits after the stale traffic.
+        cluster.submitAndWait(clientNode, new KVCommand.Put<>(key("after-stale"), "ok"));
+        await().atMost(TIMEOUT)
+               .pollInterval(100, TimeUnit.MILLISECONDS)
+               .until(() -> cluster.allNodesHaveValue(key("after-stale"), "ok"));
     }
 
     private List<KVCommand<StringKey>> generatePutCommands(int count, String keyPrefix) {

@@ -16,8 +16,11 @@ import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey.key;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// Test Suite 4: Byzantine Behaviors
-/// Tests the resilience of Rabia consensus algorithm under Byzantine fault scenarios.
+/// Test Suite 4: Faulty-node behaviors
+/// Pins what the cluster does when one node crashes or goes silent. Every fault here is a CRASH fault: the node is
+/// disconnected from the network (`TestCluster.disconnect`), never made to send forged, conflicting or malformed
+/// messages, so no Byzantine behavior is exercised; a test that did would need a node that emits such messages.
+/// Convergence checks read the connected nodes only (a disconnected node is excluded by design).
 public class ByzantineBehaviorsIT {
     private static final Logger log = LoggerFactory.getLogger(ByzantineBehaviorsIT.class);
     private static final int CLUSTER_SIZE = 5; // f=1 in 3f+1 model allows handling one Byzantine node
@@ -31,9 +34,9 @@ public class ByzantineBehaviorsIT {
         log.info("Cluster started with {} nodes", CLUSTER_SIZE);
     }
 
-    /// Test 4.1: Equivocation (conflicting COMMIT messages)
-    /// Setup: Simulated Byzantine node sending conflicting COMMIT (VoteRound2) messages
-    /// Expected: Signature aggregation fails; traitor excluded; progress continues
+    /// Test 4.1: A node crashes after the first commit
+    /// Setup: one node is disconnected (a crash fault; it sends no conflicting COMMIT (VoteRound2) messages)
+    /// Expected: the remaining quorum keeps committing, sequentially and for ten further writes
     @Test
     void equivocationTest() {
         log.info("Starting equivocation test with byzantine node sending conflicting commits");
@@ -49,7 +52,7 @@ public class ByzantineBehaviorsIT {
         await().atMost(10, TimeUnit.SECONDS)
                .until(() -> cluster.allNodesHaveValue(key("key-honest"), "value-honest"));
 
-        // Mark one node as Byzantine by disconnecting it
+        // Crash one node by disconnecting it (no Byzantine behavior is simulated)
         var byzantineNode = cluster.ids().get(1);
         cluster.disconnect(byzantineNode);
         log.info("Disconnected Byzantine node: {}", byzantineNode);
@@ -88,9 +91,9 @@ public class ByzantineBehaviorsIT {
         }
     }
 
-    /// Test 4.2: Malformed threshold-signature share
-    /// Setup: Simulated node sending malformed signature shares
-    /// Expected: Verification fails; round aborted, next view started
+    /// Test 4.2: A different node crashes after the first commit
+    /// Setup: one node is disconnected (a crash fault; no malformed signature share is ever sent)
+    /// Expected: the remaining quorum keeps committing five further writes
     @Test
     void malformedSignatureTest() {
         log.info("Starting malformed signature test");
@@ -102,7 +105,7 @@ public class ByzantineBehaviorsIT {
         await().atMost(10, TimeUnit.SECONDS)
                .until(() -> cluster.allNodesHaveValue(key("initial-key"), "initial-value"));
 
-        // Disconnect a node to simulate it sending malformed signatures
+        // Crash a node by disconnecting it (no malformed signatures are simulated)
         var maliciousNode = cluster.ids().get(2);
         cluster.disconnect(maliciousNode);
         log.info("Disconnected malicious node (simulating malformed signatures): {}", maliciousNode);
@@ -130,8 +133,8 @@ public class ByzantineBehaviorsIT {
         log.info("Successfully processed commands in {} seconds despite malformed signatures", executionTime);
     }
 
-    /// Test 4.3: Silent replica (receive-only)
-    /// Setup: Node that receives messages but doesn't respond
+    /// Test 4.3: Silent replica
+    /// Setup: a node is disconnected, so it neither receives nor sends (a crash; a receive-only node is not simulated)
     /// Expected: Liveness maintained with remaining quorum
     @Test
     void silentReplicaTest() {

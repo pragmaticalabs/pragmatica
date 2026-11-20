@@ -21,10 +21,11 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+import java.io.IOException;
+import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -36,16 +37,18 @@ import static org.assertj.core.api.Assertions.fail;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 import static org.pragmatica.net.tcp.ServerConfig.serverConfig;
 
-@EnabledIfEnvironmentVariable(named = "TCP_INTEGRATION_TESTS", matches = "true")
+/// Every test binds an ephemeral port (asked of the OS, never a fixed number), so the class is safe under the
+/// module-parallel `-T 1C` build and needs no environment gate.
 class ServerIT {
 
     @Test
     void server_starts_and_accepts_connections() throws InterruptedException {
         var receivedMessage = new AtomicReference<String>();
         var messageLatch = new CountDownLatch(1);
+        var port = freeTcpPort();
 
         // Create server with simple handler
-        Server.server("test-server", 19080, () -> List.of(
+        Server.server("test-server", port, () -> List.of(
             new ChannelInboundHandlerAdapter() {
                 @Override
                 public void channelRead(ChannelHandlerContext ctx, Object msg) {
@@ -62,7 +65,7 @@ class ServerIT {
             .onSuccess(server -> {
                 try {
                     // Connect and send message
-                    server.connectTo(nodeAddress("localhost", 19080).unwrap())
+                    server.connectTo(nodeAddress("localhost", port).unwrap())
                         .await()
                         .onFailure(cause -> fail(cause.message()))
                         .onSuccess(channel -> {
@@ -85,7 +88,8 @@ class ServerIT {
 
     @Test
     void server_with_tls_starts_successfully() {
-        var config = serverConfig("tls-server", 19443)
+        var port = freeTcpPort();
+        var config = serverConfig("tls-server", port)
             .withTls(TlsConfig.selfSigned());
 
         Server.server(config, () -> List.of(
@@ -94,7 +98,7 @@ class ServerIT {
             .onFailure(cause -> fail(cause.message()))
             .onSuccess(server -> {
                 assertThat(server.name()).isEqualTo("tls-server");
-                assertThat(server.port()).isEqualTo(19443);
+                assertThat(server.port()).isEqualTo(port);
                 server.stop(() -> Promise.success(Unit.unit())).await();
             });
     }
@@ -102,8 +106,9 @@ class ServerIT {
     @Test
     void server_stop_executes_intermediate_operation() {
         var intermediateExecuted = new AtomicReference<>(false);
+        var port = freeTcpPort();
 
-        Server.server("stop-test", 19081, () -> List.of(
+        Server.server("stop-test", port, () -> List.of(
             new ChannelInboundHandlerAdapter()
         )).await()
             .onFailure(cause -> fail(cause.message()))
@@ -117,5 +122,13 @@ class ServerIT {
                         assertThat(intermediateExecuted.get()).isTrue();
                     });
             });
+    }
+
+    private static int freeTcpPort() {
+        try (var socket = new ServerSocket(0)) {
+            return socket.getLocalPort();
+        } catch (IOException e) {
+            throw new AssertionError(e);
+        }
     }
 }
