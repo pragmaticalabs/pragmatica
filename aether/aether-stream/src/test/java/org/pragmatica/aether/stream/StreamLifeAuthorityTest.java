@@ -20,6 +20,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
+import org.pragmatica.aether.stream.segment.StreamRetentionSource.EnforcedRetention;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -31,6 +32,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -218,6 +220,20 @@ class StreamLifeAuthorityTest {
 
         assertThat(reserved).as("the stream reserved its floor").isGreaterThan(0L);
         assertThat(node.totalAllocatedBytes()).as("released bytes equal reserved bytes").isZero();
+        node.close();
+    }
+
+    /// #3490 F1: a node whose hydration was refused (a WAL open refusal leaves no entry) holds only the applied config, so
+    /// the retention seam falls back to ITS partition count; with an entry the life's count answers.
+    @Test
+    void committedRetention_withoutAnEntry_followsTheAppliedConfigsPartitionCount() {
+        var node = manager(new RecordingClusterNode(), name -> Causes.cause("open refused").result());
+        var declared = StreamConfig.streamConfig(STREAM, 4, RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 600_000), "earliest");
+
+        node.onStreamConfigPut(committed(declared));
+
+        assertThat(node.enforcedConfig(STREAM).isEmpty()).as("hydration refused: no entry").isTrue();
+        assertThat(node.committedRetention(STREAM)).isEqualTo(Option.some(EnforcedRetention.enforcedRetention(declared.retention(), 4)));
         node.close();
     }
 
