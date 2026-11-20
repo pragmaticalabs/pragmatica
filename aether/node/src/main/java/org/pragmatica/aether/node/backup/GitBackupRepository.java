@@ -67,6 +67,9 @@ public record GitBackupRepository(Path dir,
 
     private static final String REMOTE_NAME = "origin";
     private static final String REMOTE_REF = "refs/remotes/" + REMOTE_NAME + "/";
+    /// `ls-remote --exit-code` and `show-ref --exists` answer "no such ref" with exit 2 and nothing else does.
+    private static final int NO_SUCH_REF = 2;
+    private static final Pattern COMMIT_ID = Pattern.compile("[0-9a-f]{40}([0-9a-f]{24})?");
 
     private static final Pattern REJECTION_STATUS = Pattern.compile("^!\\t[^\\t]*\\t(\\[rejected\\]|\\[remote rejected\\] \\((failed to update ref|reference already exists|incorrect old value provided|reference does not exist)\\))",
                                                                     Pattern.MULTILINE);
@@ -294,71 +297,106 @@ public record GitBackupRepository(Path dir,
     public GitRead<Unit> readBranch() {
         return hasRemote()
                ? read(List.of("ls-remote", "--exit-code", "--heads", REMOTE_NAME, branch),
-                      result -> classifyRemoteBranch(result.exitCode(),
-                                                     result.output(),
-                                                     branch))
+                      result -> classifyRemoteBranch(result.exitCode(), result.output(), branch))
                : read(List.of("show-ref", "--exists", "refs/heads/" + branch),
-                      result -> classifyLocalBranch(result.exitCode(),
-                                                    result.output()));
+                      result -> classifyLocalBranch(result.exitCode(), result.output()));
     }
 
     /// The commit id `ref` names. Never [GitRead.Absent]: `rev-parse --verify` fails the same way for a missing ref and for a damaged repository.
     public GitRead<String> readCommitId(String ref) {
         return read(List.of("rev-parse", "--verify", ref + "^{commit}"),
-                    result -> classifyCommitId(result.exitCode(),
-                                               result.output()));
+                    result -> classifyCommitId(result.exitCode(), result.output()));
     }
 
     /// Whether `path` is listed in the tree of `commit`. [GitRead.Absent] only when git listed [#FILE] (the control entry, so the listing is known to
     /// have worked) and not `path`; for `path` equal to [#FILE] there is no control and so no [GitRead.Absent].
     public GitRead<Unit> readPath(String commit, String path) {
         return read(List.of("ls-tree", "--name-only", commit, "--", path, FILE),
-                    result -> classifyPath(result.exitCode(),
-                                           result.output(),
-                                           path));
+                    result -> classifyPath(result.exitCode(), result.output(), path));
     }
 
     /// The content of `path` at `commit`. Never [GitRead.Absent]: `show` fails the same way for a missing path and for a damaged object; ask
     /// [#readPath] first to tell them apart.
     public GitRead<String> readFile(String commit, String path) {
         return read(List.of("show", commit + ":" + path),
-                    result -> classifyFile(result.exitCode(),
-                                           result.output()));
+                    result -> classifyFile(result.exitCode(), result.output()));
     }
 
     private <T> GitRead<T> read(List<String> args, Fn1<GitRead<T>, GitResult> classifier) {
-        return run(args).fold(cause -> GitRead.unreadable(cause.message()), classifier::apply);
-    }
-
-    /// The mapping the two-valued reads have at base: exit 0 with output is present, everything else is absent.
-    private static <T> GitRead<T> asAtBase(int exit, Option<String> output, Fn1<T, String> value) {
-        var text = output.or("");
-
-        return exit == 0 && !text.isBlank()
-               ? GitRead.present(value.apply(text))
-               : GitRead.absent();
+        return run(args).fold(cause -> GitRead.unreadable(cause.message()),
+                              classifier::apply);
     }
 
     static GitRead<Unit> classifyRemoteBranch(int exit, Option<String> output, String branch) {
-        return asAtBase(exit, output, _ -> Unit.unit());
+        return output.fold(() -> lostOutput(exit), text -> remoteBranchOf(exit, text, branch));
     }
 
     static GitRead<Unit> classifyLocalBranch(int exit, Option<String> output) {
-        return exit == 0
-               ? GitRead.present(Unit.unit())
-               : GitRead.absent();
+        return output.fold(() -> lostOutput(exit), text -> localBranchOf(exit, text));
     }
 
     static GitRead<String> classifyCommitId(int exit, Option<String> output) {
-        return asAtBase(exit, output, String::strip);
+        return output.fold(() -> lostOutput(exit), text -> commitIdOf(exit, text));
     }
 
     static GitRead<Unit> classifyPath(int exit, Option<String> output, String path) {
-        return asAtBase(exit, output, _ -> Unit.unit());
+        return output.fold(() -> lostOutput(exit), text -> pathOf(exit, text, path));
     }
 
     static GitRead<String> classifyFile(int exit, Option<String> output) {
-        return asAtBase(exit, output, text -> text);
+        return output.fold(() -> lostOutput(exit), text -> fileOf(exit, text));
+    }
+
+    private static GitRead<Unit> remoteBranchOf(int exit, String text, String branch) {
+        return exit == NO_SUCH_REF
+               ? GitRead.absent()
+               : exit == 0 && listsBranch(text, branch)
+                 ? GitRead.present(Unit.unit())
+                 : unexpected(exit, text);
+    }
+
+    private static GitRead<Unit> localBranchOf(int exit, String text) {
+        return exit == NO_SUCH_REF
+               ? GitRead.absent()
+               : exit == 0
+                 ? GitRead.present(Unit.unit())
+                 : unexpected(exit, text);
+    }
+
+    private static boolean listsBranch(String text, String branch) {
+        return text.lines()
+                   .anyMatch(line -> line.endsWith("\trefs/heads/" + branch));
+    }
+
+    private static GitRead<String> commitIdOf(int exit, String text) {
+        return exit == 0 && COMMIT_ID.matcher(text.strip()).matches()
+               ? GitRead.present(text.strip())
+               : unexpected(exit, text);
+    }
+
+    /// The control entry [#FILE] is asked for beside `path`: a listing that names it proves the listing worked, so a missing `path` is then a fact.
+    private static GitRead<Unit> pathOf(int exit, String text, String path) {
+        var names = text.lines().map(String::strip).toList();
+
+        return exit == 0 && names.contains(path)
+               ? GitRead.present(Unit.unit())
+               : exit == 0 && !path.equals(FILE) && names.contains(FILE)
+                 ? GitRead.absent()
+                 : unexpected(exit, text);
+    }
+
+    private static GitRead<String> fileOf(int exit, String text) {
+        return exit == 0 && !text.isBlank()
+               ? GitRead.present(text)
+               : unexpected(exit, text);
+    }
+
+    private static <T> GitRead<T> lostOutput(int exit) {
+        return GitRead.unreadable("git exited " + exit + " and its output was lost");
+    }
+
+    private static <T> GitRead<T> unexpected(int exit, String text) {
+        return GitRead.unreadable("git exited " + exit + ": " + text.strip());
     }
 
     private Result<Unit> classifyPush(GitResult result) {
