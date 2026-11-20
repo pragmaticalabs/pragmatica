@@ -21,11 +21,13 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ReadPreference;
+import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.stream.DeclarationDefaults;
 import org.pragmatica.aether.slice.stream.PublishOutcome;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.slice.stream.StreamRegistry;
@@ -53,6 +55,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.parse.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 
@@ -196,10 +199,29 @@ public final class StreamApiRoutes implements RouteSource {
 
     /// #1224: `partitions` is optional (absent/`null` on the wire keeps [#DEFAULT_PARTITIONS], the
     /// same default `aether streams create`'s legacy body-carried form used).
-    public record CreateRequest(Integer partitions) {}
+    ///
+    /// #3334 (G36): the optional declaration fields `maxAge` (a time span, `"24h"`), `maxBytes` and `maxCount` bound the
+    /// stream's retention like `[retention]` does in TOML; absent keeps the declaration defaults
+    /// ([DeclarationDefaults]), and a field given is DECLARED so `RetentionEnforcer` cuts by it.
+    public record CreateRequest(Integer partitions, String maxAge, Long maxBytes, Long maxCount) {
+        /// The pre-#3334 shape: partitions only, every declaration field at its default.
+        public CreateRequest(Integer partitions) {
+            this(partitions, null, null, null);
+        }
+    }
 
     /// Legacy body-carried `POST /streams` (#968): `name` is a catalog address `namespace:stream:version`.
-    public record StreamCreateRequest(String name, Integer partitions) {}
+    /// The declaration fields are those of [CreateRequest] (#3334).
+    public record StreamCreateRequest(String name,
+                                      Integer partitions,
+                                      String maxAge,
+                                      Long maxBytes,
+                                      Long maxCount) {
+        /// The pre-#3334 shape: name and partitions only.
+        public StreamCreateRequest(String name, Integer partitions) {
+            this(name, partitions, null, null, null);
+        }
+    }
 
     public record StreamCreateResponse(String name, int partitions, String status) {}
 
@@ -1027,7 +1049,10 @@ public final class StreamApiRoutes implements RouteSource {
                      .flatMap(StreamApiRoutes::requireCreatableName)
                      .flatMap(StreamApiRoutes::catalogAddressOf)
                      .flatMap(addr -> createAtAddress(addr,
-                                                      new CreateRequest(request.partitions())).map(response -> legacyResponse(request,
+                                                      new CreateRequest(request.partitions(),
+                                                                                                                                                                request.maxAge(),
+                                                                                                                                                                request.maxBytes(),
+                                                                                                                                                                request.maxCount())).map(response -> legacyResponse(request,
                                                                                                                               addr,
                                                                                                                               response)));
     }
@@ -1120,12 +1145,39 @@ public final class StreamApiRoutes implements RouteSource {
     private Result<Unit> mintOperatorStream(String engineKey, CreateRequest request) {
         var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
 
+        return declaredRetention(partitions,
+                                 request).flatMap(retention -> mintWithRetention(engineKey, partitions, retention));
+    }
+
+    private Result<Unit> mintWithRetention(String engineKey, int partitions, RetentionPolicy retention) {
         return ManagementStreamReplication.withClusterDefaults(nodeSupplier.get().kvStore(),
                                                                StreamConfig.streamConfig(engineKey,
                                                                                          partitions,
-                                                                                         MANAGEMENT_API_RETENTION,
+                                                                                         retention,
                                                                                          "latest"))
                                           .flatMap(config -> StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config)));
+    }
+
+    /// The retention of an API-created stream, resolved as a TOML stream's is (#3334): `max_age` 24 h and
+    /// `max_bytes = DeclarationDefaults.defaultMaxBytes(partitions)` unless the request declares them; the age and the
+    /// bytes are always declared, the count only when the request gives it.
+    private static Result<RetentionPolicy> declaredRetention(int partitions, CreateRequest request) {
+        return Option.option(request.maxAge())
+                     .map(age -> TimeSpan.timeSpan(age).map(TimeSpan::toMillis))
+                     .or(() -> Result.success(DeclarationDefaults.DEFAULT_MAX_AGE_MS))
+                     .map(ageMs -> retentionOf(partitions, request, ageMs));
+    }
+
+    private static RetentionPolicy retentionOf(int partitions, CreateRequest request, long ageMs) {
+        var sizingDefaults = RetentionPolicy.retentionPolicy();
+        var count = Option.option(request.maxCount());
+
+        return RetentionPolicy.retentionPolicy(count.or(sizingDefaults.maxCount()),
+                                               Option.option(request.maxBytes())
+                                                     .or(DeclarationDefaults.defaultMaxBytes(partitions)),
+                                               ageMs,
+                                               DeclarationDefaults.DEFAULT_MODE)
+                              .withDeclared(RetentionDimensions.retentionDimensions(count.isPresent(), true, true));
     }
 
     private Result<StreamRegistryEntry> registerCatalogEntry(ResourceAddress addr) {

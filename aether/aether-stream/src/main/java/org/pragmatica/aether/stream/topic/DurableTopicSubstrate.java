@@ -8,11 +8,11 @@ import org.pragmatica.aether.resource.DurableTopicSpec;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.Publisher;
 import org.pragmatica.aether.slice.RetentionDimensions;
-import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.StreamPublisher;
+import org.pragmatica.aether.slice.stream.DeclarationDefaults;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPublisherFactory;
@@ -112,7 +112,8 @@ public interface DurableTopicSubstrate {
     static StreamConfig topicStreamConfig(String topicAddress, DurableTopicSpec spec) {
         return StreamConfig.streamConfig(DurableTopicNames.topicStream(topicAddress),
                                          spec.partitions(),
-                                         timeBoundedRetention(spec.retention()),
+                                         topicRetention(spec.retention(),
+                                                       spec.partitions()),
                                          "earliest",
                                          StreamConfig.DEFAULT.maxEventSizeBytes(),
                                          StreamConfig.DEFAULT.consistencyMode(),
@@ -125,7 +126,7 @@ public interface DurableTopicSubstrate {
     static StreamConfig dlqStreamConfig(String topicAddress, DurableTopicSpec spec) {
         return StreamConfig.streamConfig(DurableTopicNames.dlqStream(topicAddress),
                                          1,
-                                         timeBoundedRetention(DLQ_RETENTION_DEFAULT),
+                                         ageOnlyRetention(DLQ_RETENTION_DEFAULT),
                                          "earliest",
                                          StreamConfig.DEFAULT.maxEventSizeBytes(),
                                          StreamConfig.DEFAULT.consistencyMode(),
@@ -135,15 +136,29 @@ public interface DurableTopicSubstrate {
                                          none());
     }
 
-    /// A topic's retention is a max age: it declares the age only (#2201 Q6 = B). The count and bytes are the ring's
-    /// sizing defaults, never a declaration, so they do not cut the topic's sealed history (review R32-04).
-    private static RetentionPolicy timeBoundedRetention(TimeSpan retention) {
+    /// A topic's retention is its max age plus the declaration default byte bound (#3334): the age is the topic's own
+    /// (7 d by default), the bytes are `DeclarationDefaults.defaultMaxBytes(partitions)`, the same default a TOML stream
+    /// gets. Both are DECLARED so `RetentionEnforcer` cuts by them; the count stays the ring's sizing default, undeclared,
+    /// so it does not cut a topic's sealed history (review R32-04).
+    private static RetentionPolicy topicRetention(TimeSpan retention, int partitions) {
+        var sizingDefaults = RetentionPolicy.retentionPolicy();
+
+        return RetentionPolicy.retentionPolicy(sizingDefaults.maxCount(),
+                                               DeclarationDefaults.defaultMaxBytes(partitions),
+                                               retention.toMillis(),
+                                               DeclarationDefaults.DEFAULT_MODE)
+                              .withDeclared(RetentionDimensions.retentionDimensions(false, true, true));
+    }
+
+    /// A dead-letter stream's retention is its age only: its byte bound is the source-derived rule of its own design
+    /// row (#3334, a later step), not the topic default, so the count and bytes stay the ring's sizing defaults.
+    private static RetentionPolicy ageOnlyRetention(TimeSpan retention) {
         var sizingDefaults = RetentionPolicy.retentionPolicy();
 
         return RetentionPolicy.retentionPolicy(sizingDefaults.maxCount(),
                                                sizingDefaults.maxBytes(),
                                                retention.toMillis(),
-                                               RetentionMode.ANY)
+                                               DeclarationDefaults.DEFAULT_MODE)
                               .withDeclared(RetentionDimensions.AGE);
     }
 }
