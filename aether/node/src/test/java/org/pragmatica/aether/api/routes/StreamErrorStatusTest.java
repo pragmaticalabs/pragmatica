@@ -330,6 +330,11 @@ class StreamErrorStatusTest {
     /// T-P8's status arms and T-P12(b), stream-mem M-1b: the ONE answer switch reaches the status of every failed read.
     @Nested
     class AnswerStatus {
+        /// The kinds whose cause is a `SegmentError` or the rebuilt text of `UNKNOWN`; the pin's switch has no row for them.
+        private static final Set<ReadRefusal.Kind> NOT_STREAM_ERROR_KINDS = Set.of(ReadRefusal.Kind.SEAL_IN_FLIGHT,
+                                                                                   ReadRefusal.Kind.SEALED_RANGE_MISSING,
+                                                                                   ReadRefusal.Kind.UNKNOWN);
+
         /// Arm (1), the status half: every row has a status, counted against `values()`.
         @Test
         void everyRow_hasAStatus() {
@@ -348,10 +353,12 @@ class StreamErrorStatusTest {
                 if (causeOf(kind) instanceof StreamError error) {
                     assertThat(StreamErrorStatus.statusOf(kind.answer())).as(kind.name()).isEqualTo(StreamErrorStatus.statusOf(error));
                     checked++;
+                } else {
+                    assertThat(NOT_STREAM_ERROR_KINDS).as("a kind whose cause is not a StreamError: " + kind).contains(kind);
                 }
             }
 
-            assertThat(checked).isEqualTo(ReadRefusal.Kind.values().length - 1);
+            assertThat(checked).as("kinds whose cause is a StreamError").isEqualTo(ReadRefusal.Kind.values().length - NOT_STREAM_ERROR_KINDS.size());
             assertThat(StreamErrorStatus.statusOf(ReadRefusal.Answer.L_EPOCH)).isEqualTo(StreamErrorStatus.statusOf(new StreamError.EpochDiverged(EPOCH, 3, 3)));
             assertThat(StreamErrorStatus.statusOf(ReadRefusal.Answer.NN_DEGRADE)).isEqualTo(StreamErrorStatus.statusOf(ReadRefusal.Answer.NN_SURFACE));
             assertThat(StreamErrorStatus.statusOf(ReadRefusal.Answer.NN_RETRY)).isEqualTo(StreamErrorStatus.statusOf(ReadRefusal.Answer.NN_SURFACE));
