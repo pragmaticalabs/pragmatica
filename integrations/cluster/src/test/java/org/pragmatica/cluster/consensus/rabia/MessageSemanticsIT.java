@@ -17,9 +17,9 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Stream;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -279,18 +279,9 @@ public class MessageSemanticsIT {
                          .filter(message -> message.sender().equals(sender))
                          .toList();
 
-        return List.of(first(own, Synchronous.Propose.class),
-                       first(own, Synchronous.VoteRound1.class),
-                       first(own, Synchronous.VoteRound2.class))
-                   .stream()
-                   .flatMap(Optional::stream)
-                   .toList();
-    }
-
-    private static Optional<RabiaProtocolMessage> first(List<RabiaProtocolMessage> messages, Class<?> type) {
-        return messages.stream()
-                       .filter(type::isInstance)
-                       .findFirst();
+        return Stream.of(Synchronous.Propose.class, Synchronous.VoteRound1.class, Synchronous.VoteRound2.class)
+                     .flatMap(type -> own.stream().filter(type::isInstance).limit(1))
+                     .toList();
     }
 
     private long decisionsFrom(NodeId receiver, NodeId sender) {

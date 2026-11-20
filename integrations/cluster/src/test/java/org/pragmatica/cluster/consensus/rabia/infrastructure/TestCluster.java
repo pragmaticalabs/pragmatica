@@ -15,6 +15,7 @@ import org.pragmatica.consensus.rabia.RabiaCodecs;
 import org.pragmatica.consensus.rabia.RabiaEngine;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.messaging.MessageRouter;
@@ -118,6 +119,7 @@ public class TestCluster {
     }
 
     /// Puts a disconnected node back on the network with its existing engine and store.
+    @Contract
     public void reconnect(NodeId id) {
         network.addNode(id, handlers.get(id));
     }
@@ -128,6 +130,7 @@ public class TestCluster {
     }
 
     /// Hands `message` straight to `id`'s engine, bypassing the network and its fault injection.
+    @Contract
     public void deliver(NodeId id, RabiaProtocolMessage message) {
         handlers.get(id).accept(message);
     }
