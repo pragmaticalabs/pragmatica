@@ -27,6 +27,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// In a closed loop with `n` callers a partition sees about `n x window / L` events per 1 ms window, `L` the publish
 /// latency; with a WAL `L` is about the owner fsync, so the ratio depends on the disk (overhaul 7.2, L-04). Without one,
 /// appends are microseconds apart and the wiring is what is measured.
+/// - Window (#3477): the cluster runs with a 500 ms batch window ([ReplicationBatchingFixture#batchWindow]), not the 1 ms
+///   default, so the count does not depend on how fast the callers are scheduled; delivery is awaited, not slept for.
 /// - Acceptance: at most 0.5 messages per event per replica (96 for 192). Before #263 the production manager sent one
 ///   message per event per replica (the deleted tripwire asserted at least 0.9).
 @PortBudget
@@ -81,10 +83,14 @@ class EmberReplicationBatchingTest extends ReplicationBatchingFixture {
 
     @Override
     EmberCluster threeNodes(int basePort) {
-        return EmberCluster.emberCluster(StreamTripwireSupport.CLUSTER_SIZE,
+        var built = EmberCluster.emberCluster(StreamTripwireSupport.CLUSTER_SIZE,
                                          basePort,
                                          basePort + StreamTripwireSupport.MGMT_OFFSET,
                                          basePort + StreamTripwireSupport.APP_HTTP_OFFSET,
                                          "c04");
+
+        built.withStreamingConfig(batchWindow());
+
+        return built;
     }
 }
