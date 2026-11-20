@@ -695,10 +695,10 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
         var frame = CheckpointFrame.frame(keyspace, partition, throughOffset, snapshot, lineage);
 
         return alreadyHeldAt(replaced, throughOffset, frame).flatMap(held -> writeUnlessHeld(held,
-                                                                                      key,
-                                                                                      replaced,
-                                                                                      frame,
-                                                                                      throughOffset));
+                                                                                             key,
+                                                                                             replaced,
+                                                                                             frame,
+                                                                                             throughOffset));
     }
 
     private Promise<Boolean> alreadyHeldAt(Option<ClaimedBlock> committed, long throughOffset, byte[] frame) {
