@@ -511,8 +511,8 @@ class GitBackupRepositoryTest {
         assertThat(presentValue(repository.readCommitId("v1"))).isEqualTo(commitId);
     }
 
-    /// `ls-remote` matches a pattern by suffix: a remote holding only `refs/heads/x/backup`, or only a tag named `backup`, has no `refs/heads/backup`,
-    /// and git says so with exit 2.
+    /// `ls-remote` matches a pattern by suffix: a remote holding only `refs/heads/x/backup`, a tag named `backup`, or a tag named `refs/heads/backup`
+    /// (listed as `refs/tags/refs/heads/backup`, which ends in the pattern) has no `refs/heads/backup`; the answer is absent, never a listing hit.
     @Test
     void readBranch_isAbsent_whenTheRemoteHoldsOnlyANestedBranchOrATagOfThatName() {
         var remote = bareRemote(temp.resolve("remote.git"));
@@ -522,10 +522,11 @@ class GitBackupRepositoryTest {
         writer.prepare();
         writer.commit("state-1\n", "first")
               .onFailure(cause -> Assertions.fail(cause.message()));
-        git(temp.resolve("writer"), "push", remote, "HEAD:refs/heads/x/backup", "HEAD:refs/tags/backup");
+        git(temp.resolve("writer"), "push", remote, "HEAD:refs/heads/x/backup", "HEAD:refs/tags/backup", "HEAD:refs/tags/refs/heads/backup");
         reader.prepare();
 
-        assertThat(git(Path.of(remote), "for-each-ref", "--format=%(refname)").lines().toList()).containsExactlyInAnyOrder("refs/heads/x/backup", "refs/tags/backup");
+        assertThat(git(Path.of(remote), "for-each-ref", "--format=%(refname)").lines().toList()).containsExactlyInAnyOrder("refs/heads/x/backup", "refs/tags/backup",
+                                                                                                                  "refs/tags/refs/heads/backup");
         assertThat(reader.readBranch()).isInstanceOf(GitRead.Absent.class);
     }
 
@@ -593,6 +594,33 @@ class GitBackupRepositoryTest {
 
         assertThat(reasonOf(repository.readBranch())).contains("timed out after").doesNotContain("stderr");
         assertThat(repository.push().fold(Cause::message, _ -> "pushed")).contains("timed out after");
+    }
+
+    /// Output lost after exit 0 reads unreadable with the lost-output reason on every primitive, through the real collection path: the mutation "lost
+    /// output is an empty text" would still read unreadable on the commit id, path and file, but with a different reason.
+    @Test
+    void everyPrimitive_whenTheOutputIsLostAfterExit0_namesTheLostOutput_throughTheRealWiring() {
+        var repository = scripted(process(0, brokenPipe()));
+
+        assertThat(reasonOf(repository.readCommitId("HEAD"))).isEqualTo("git exited 0 and its output was lost");
+        assertThat(reasonOf(repository.readPath("HEAD", GitBackupRepository.FILE))).isEqualTo("git exited 0 and its output was lost");
+        assertThat(reasonOf(repository.readFile("HEAD", GitBackupRepository.FILE))).isEqualTo("git exited 0 and its output was lost");
+    }
+
+    /// The path is listed in the commit it is asked about, not in the checked-out one.
+    @Test
+    void readPath_readsTheNamedCommit_notTheCheckedOutOne() {
+        var repository = repository("local", Option.none());
+
+        repository.prepare();
+        repository.commitFile(GitBackupRepository.DECLARATION, "lineage 1\n", "genesis")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        var genesis = git(temp.resolve("local"), "rev-parse", "HEAD").strip();
+        repository.commit("state-1\n", "first")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readPath(genesis, GitBackupRepository.FILE)).isInstanceOf(GitRead.Absent.class);
+        assertThat(repository.readPath("HEAD", GitBackupRepository.FILE)).isInstanceOf(GitRead.Present.class);
     }
 
     /// A legacy command whose output was lost reads it as empty: the failure names the exit and nothing after it.
