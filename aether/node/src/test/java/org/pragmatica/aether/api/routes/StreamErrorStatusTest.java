@@ -389,7 +389,75 @@ class StreamErrorStatusTest {
                 var refused = (ManagementServerError.StreamRefused) typed;
 
                 assertThat(refused.refusal()).isSameAs(cause);
-                assertThat(refused.status()).as(cause.message()).isEqualTo(StreamErrorStatus.statusOf(ReadRefusal.answerOf(cause)));
+                assertThat(refused.status()).as(cause.message()).isEqualTo(decidedOrRowStatus(cause));
+            }
+        }
+
+        /// The one invariant: a StreamError's pinned status is decided, every other cause takes its row.
+        private static HttpStatus decidedOrRowStatus(Cause cause) {
+            return cause instanceof StreamError error
+                   ? StreamErrorStatus.statusOf(error)
+                   : StreamErrorStatus.statusOf(ReadRefusal.answerOf(cause));
+        }
+
+        private static List<StreamError> pinnedAt500() {
+            return List.of(new StreamError.WalReplayMismatch("orders", 0, WAL, 1L, 2L),
+                           new StreamError.WalHeadLost("orders", 0, WAL, 5L, 9L),
+                           new StreamError.SeedRejected(3L, 4L),
+                           new StreamError.ProvenanceMismatch("orders", 0, 7L),
+                           StreamError.General.BUFFER_EMPTY);
+        }
+
+        /// Item 1 (#3481 fix round): a cause with a decided status passes through UNCHANGED. A route's own `StreamRefused(NOT_FOUND)`
+        /// is the same instance afterwards, on the helper and on route `:615`. Mutant: `typedRead` re-rows every cause (503).
+        @Test
+        void anAlreadyTypedCause_keepsItsStatus() {
+            var decided = new ManagementServerError.StreamRefused(HttpStatus.NOT_FOUND, new StreamError.StreamNotFound("ns/orders"));
+
+            assertThat(StreamErrorStatus.typedRead((Cause) decided)).isSameAs(decided);
+            assertThat(statusOfReadFailing(decided)).isEqualTo(HttpStatus.NOT_FOUND);
+        }
+
+        /// Item 1: a kindless StreamError pinned at 500 stays 500 on the helper and on routes `:615` and `:716`, holding the
+        /// cause itself (not nested). Mutant: re-row it under `UNKNOWN`'s 503.
+        @Test
+        void aStreamErrorPinnedAt500_keeps500_onTheHelperAndOnBothReadRoutes() {
+            for (var error : pinnedAt500()) {
+                assertThat(StreamErrorStatus.statusOf(error)).as(error.message()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+                assertThat(((ManagementServerError.StreamRefused) StreamErrorStatus.typedRead((Cause) error)).status()).as(error.message())
+                                                                                                                      .isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+                assertThat(statusOfReadFailing(error)).as(":615 " + error.message()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+                assertThat(statusOfEventsReadFailing(error)).as(":716 " + error.message()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+            }
+        }
+
+        /// Item 1: a cause outside both decided classes takes the `UNKNOWN` row, 503, on the helper and both routes.
+        @Test
+        void aStorageError_takesTheUnknownRow_503() {
+            var storage = new StorageError.ReadError("disk");
+
+            assertThat(((ManagementServerError.StreamRefused) StreamErrorStatus.typedRead((Cause) storage)).status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+            assertThat(statusOfReadFailing(storage)).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+            assertThat(statusOfEventsReadFailing(storage)).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        }
+
+        /// Item 1: nothing is nested. A second pass is the same instance, and no `StreamRefused` holds a `StreamRefused`.
+        /// Mutant: re-wrap an `HttpStatusAware` cause.
+        @Test
+        void typedRead_neverNests() {
+            var causes = new ArrayList<Cause>(pinnedAt500());
+
+            causes.add(new StorageError.ReadError("disk"));
+            causes.add(new StreamError.CursorExpired(1L, 2L, StreamError.CursorExpired.Reason.LOST));
+            causes.add(new ManagementServerError.StreamRefused(HttpStatus.SERVICE_UNAVAILABLE, new StreamError.StreamNotFound("ns/orders")));
+
+            for (var cause : causes) {
+                var once = StreamErrorStatus.typedRead(cause);
+                var twice = StreamErrorStatus.typedRead(once);
+
+                assertThat(twice).as(cause.message()).isSameAs(once);
+                assertThat(((ManagementServerError.StreamRefused) once).refusal()).as(cause.message())
+                                                                                  .isNotInstanceOf(ManagementServerError.StreamRefused.class);
             }
         }
 
@@ -399,8 +467,7 @@ class StreamErrorStatusTest {
         @Test
         void aKindlessCause_answersTheSameStatusLocallyAndOnceForwarded() {
             var kindless = List.<Cause> of(new StorageError.ReadError("disk"),
-                                           new SegmentError.WalRangeMissing("orders", 0, 1L, 2L, 0),
-                                           new StreamError.WalReplayMismatch("orders", 0, WAL, 1L, 2L));
+                                           new SegmentError.WalRangeMissing("orders", 0, 1L, 2L, 0));
 
             for (var x : kindless) {
                 var forwarded = new StreamForwardError.ReadForwardFailed(x.message());
@@ -440,6 +507,28 @@ class StreamErrorStatusTest {
 
         private static Cause causeOf(ReadRefusal.Kind kind) {
             return new ReadRefusal(kind, "orders", 1, 0L, 0L, false, "", "p1", "p2", Epoch.ZERO, Epoch.ZERO).toCause("");
+        }
+
+        /// Route `:716` (STREAMS_EVENTS) with the catalog confirming the stream and the read failing with `cause`.
+        private HttpStatus statusOfEventsReadFailing(Cause cause) {
+            var manager = StreamPartitionManager.streamPartitionManager();
+            var namespaces = org.pragmatica.aether.slice.stream.StreamNamespacesService.inMemory();
+            var address = ResourceAddress.resourceAddress("ns", "orders", "1.0.0").unwrap();
+
+            try {
+                namespaces.registry()
+                          .register(org.pragmatica.aether.slice.stream.StreamRegistryEntry.operator(address,
+                                                                                                   RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000),
+                                                                                                   java.time.Instant.now()))
+                          .onFailure(failure -> fail(failure.message()));
+
+                return RouteProbe.problemStatus(RouteProbe.failureOf(apiRoutes(manager, namespaces, routerFailingWith(cause)),
+                                                                     ManagementRoute.STREAMS_EVENTS,
+                                                                     List.of("ns", "orders", "1.0.0", "events"),
+                                                                     Map.of()));
+            } finally {
+                manager.close();
+            }
         }
 
         private HttpStatus statusOfReadFailing(Cause cause) {

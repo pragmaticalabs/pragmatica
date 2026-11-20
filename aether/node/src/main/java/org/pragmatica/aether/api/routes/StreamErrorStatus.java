@@ -8,6 +8,7 @@ import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.forward.ReadRefusal;
 import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -68,14 +69,22 @@ public final class StreamErrorStatus {
         };
     }
 
-    /// A failed stream READ becomes a [ManagementServerError.StreamRefused] under the status of the row
-    /// [ReadRefusal#answerOf(Cause)] gives its cause, for EVERY cause with no test of the cause's type: the node that raised a
-    /// cause and the node that received it over a forward answer the same status. The pin's [#typed(Cause)] stays for what is
-    /// not a read of records (the metadata lookups). Two things stay outside the row: `StreamApiRoutes.notMaterializedHere`
-    /// decides a status itself (a `StreamNotFound` the catalog contradicts answers 503, the same status and body this method
-    /// then keeps), and the hop to the STREAMING task group before the read route runs is not a read answer at all.
+    /// A failed stream READ keeps a status somebody already decided and classifies only a cause that carries none. The invariant:
+    /// `typedRead` classifies ONLY a cause that carries no decided status. A cause with a decided status passes through UNCHANGED:
+    /// never re-rowed, never nested. A decided status is (a) an [HttpStatusAware] cause (a [ManagementServerError.StreamRefused] a
+    /// route already built, `notMaterializedHere`'s 503 included), or (b) a [StreamError], whose pinned [#statusOf(StreamError)] is
+    /// total and is what the raising node always answered; a kindless one pinned at 500 (`WalReplayMismatch`, `WalHeadLost`,
+    /// `SeedRejected`, `ProvenanceMismatch`, ...) therefore stays 500. For every kinded [StreamError] the pin and the row of
+    /// [ReadRefusal#answerOf(Cause)] agree (`StreamErrorStatusTest`), so the node that raised a cause and the node that received
+    /// it over a forward answer the same status. Only a cause outside both (`StorageError` and the like) takes the row of
+    /// [ReadRefusal#answerOf(Cause)], which is `UNKNOWN`'s (503), what the wire does with it. The pin's [#typed(Cause)] stays for
+    /// what is not a read of records (the metadata lookups); the hop to the STREAMING task group is not a read answer at all.
     public static Cause typedRead(Cause cause) {
-        return new ManagementServerError.StreamRefused(statusOf(ReadRefusal.answerOf(cause)), cause);
+        return switch (cause) {
+            case HttpStatusAware decided -> decided;
+            case StreamError error -> typed(error);
+            default -> new ManagementServerError.StreamRefused(statusOf(ReadRefusal.answerOf(cause)), cause);
+        };
     }
 
     public static <T> Promise<T> typedRead(Promise<T> promise) {
