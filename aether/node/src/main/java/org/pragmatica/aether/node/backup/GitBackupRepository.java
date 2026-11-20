@@ -55,6 +55,8 @@ public record GitBackupRepository(Path dir,
     /// The operator's genesis declaration: `<lineage> <incarnation>`. Committed beside [#FILE] by
     /// `aether backup declare-genesis`; the only thing that lets a different lineage replace the head.
     public static final String DECLARATION = "declared-lineage.txt";
+    /// The rejection record beside [#FILE] (#3303): why a restore candidate was refused (name is a guess).
+    public static final String REJECTION_FILE = "restore-rejected.txt";
     /// Bound on any single git command — long enough for a push over a slow link, short enough that a
     /// hung remote cannot stall the backup worker indefinitely.
     public static final TimeSpan DEFAULT_TIMEOUT = TimeSpan.timeSpan(60).seconds();
@@ -192,14 +194,15 @@ public record GitBackupRepository(Path dir,
         return commitFile(FILE, document, message);
     }
 
-    /// Write `content` as `file` and commit it on the local branch.
+    /// Write `content` as `file` and commit it on the local branch. The commit is scoped to `file` (`-- file`): anything else staged in the index
+    /// stays staged and uncommitted (#3473, beside the rejection commits scoped by [#commitRejection]).
     public Result<Unit> commitFile(String file, String content, String message) {
         return Result.lift(cause -> BackupRepositoryError.GitUnavailable.FACTORY.apply(Causes.fromThrowable(cause)),
                            () -> Files.writeString(dir.resolve(file),
                                                    content,
                                                    StandardCharsets.UTF_8))
                      .flatMap(_ -> git("add", "--", file))
-                     .flatMap(_ -> git("commit", "--quiet", "-m", message))
+                     .flatMap(_ -> git("commit", "--quiet", "-m", message, "--", file))
                      .mapToUnit();
     }
 
@@ -281,6 +284,47 @@ public record GitBackupRepository(Path dir,
                     .map(output -> output.lines()
                                          .filter(line -> !line.isBlank())
                                          .toList());
+    }
+
+    /// Write `record` as [#REJECTION_FILE] and commit it on the local branch (#3303). Never pushes: the push is [#push]. Committing a record
+    /// identical to the committed one is `git`'s empty commit: exit 1, a [BackupRepositoryError.GitFailed].
+    /// The commit is scoped to [#REJECTION_FILE]: it never carries, and never leaves staged, anything else (see [#scopedToRejection]).
+    public Result<Unit> commitRejection(RejectionRecord record) {
+        return scopedToRejection(writeRejection(record).flatMap(_ -> git("add", "--", REJECTION_FILE))
+                                               .flatMap(_ -> commitOnlyRejection("restore rejected: " + record.lineageId()
+                                                                                + " " + record.incarnation()
+                                                                                + "/" + record.revision())));
+    }
+
+    /// Remove [#REJECTION_FILE] and commit the removal on the local branch (#3303). Never pushes: the push is [#push]. Removing an absent
+    /// record is `git rm`'s exit 128, a [BackupRepositoryError.GitFailed], never a success. `-f`: a record file that differs from the index or the
+    /// committed record (a record left staged or modified by a failed or crashed commit) is still removed; it needs no prior `git reset`.
+    public Result<Unit> removeRejection() {
+        return scopedToRejection(git("rm", "-f", "--quiet", "--", REJECTION_FILE).flatMap(_ -> commitOnlyRejection("restore rejection cleared")));
+    }
+
+    /// BER for a failed rejection commit: the compensation is `git reset` of [#REJECTION_FILE], the inverse of the staging done on the way in. The
+    /// guarantee it earns is that the index holds no rejection change after a failure, so the next [#commitFile] (unscoped) cannot sweep one into a
+    /// backup commit and the retried primitive starts from the committed state. The original failure is returned; a failed reset replaces it
+    /// with the reset's own failure.
+    private Result<Unit> scopedToRejection(Result<Unit> outcome) {
+        return outcome.fold(cause -> unstageRejection().flatMap(_ -> cause.<Unit> result()), _ -> outcome);
+    }
+
+    private Result<Unit> unstageRejection() {
+        return git("reset", "--quiet", "--", REJECTION_FILE).mapToUnit();
+    }
+
+    private Result<Unit> commitOnlyRejection(String message) {
+        return git("commit", "--quiet", "-m", message, "--", REJECTION_FILE).mapToUnit();
+    }
+
+    private Result<Unit> writeRejection(RejectionRecord record) {
+        return Result.lift(cause -> BackupRepositoryError.GitUnavailable.FACTORY.apply(Causes.fromThrowable(cause)),
+                           () -> Files.writeString(dir.resolve(REJECTION_FILE),
+                                                   record.render(),
+                                                   StandardCharsets.UTF_8))
+                     .mapToUnit();
     }
 
     // --- internals ---

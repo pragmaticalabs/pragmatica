@@ -120,6 +120,42 @@ class SealedHistoryRecoveryTest {
             assertThat(missingKeys(fold)).as("every key written must be in the rebuilt fold with its value").isZero();
         }
 
+        /// #3303 A0b (T-A4 (f) analogue): a committed pointer whose block is unreadable is named by the substrate as `Unreadable`, and a
+        /// root fold still rebuilds from the log, as it did when that case was an undistinguished none.
+        @Test
+        void ready_rebuildsFromTheLog_whenTheCheckpointOutcomeIsUnreadable() {
+            var unreadable = EntityLogSubstrate.CheckpointLoad.unreadable(EntityLogSubstrate.UnreadableCause.BLOCK_LOST, "00ff");
+            var proxy = (EntityLogSubstrate) Proxy.newProxyInstance(EntityLogSubstrate.class.getClassLoader(),
+                                                                    new Class<?>[]{EntityLogSubstrate.class},
+                                                                    (_, method, args) -> unreadableOutcome(unreadable, method, args));
+            var fold = EntityFold.entityFold(KEYSPACE, proxy);
+
+            fold.ready(PARTITION)
+                .await()
+                .onFailure(cause -> fail("an unreadable checkpoint must fold from the log: " + cause.message()));
+            assertThat(missingKeys(fold)).as("every key rebuilt from the log").isZero();
+        }
+
+        /// Only `loadCheckpointOutcome` and `recordsLineage` are answered differently; the real substrate answers everything else. The real
+        /// substrate records lineage and so discards any lineage-less seed: were that left on, a fold that wrongly turned the unreadable
+        /// outcome into a seed would be discarded here and the test could not tell. Answering `false` keeps such a seed, so the rebuild
+        /// from the log is the only way the fold is complete.
+        private Object unreadableOutcome(EntityLogSubstrate.CheckpointLoad unreadable, Method method, Object[] args) throws Throwable {
+            if (method.getName().equals("loadCheckpointOutcome")) {
+                return Promise.success(unreadable);
+            }
+
+            if (method.getName().equals("recordsLineage")) {
+                return false;
+            }
+
+            try {
+                return method.invoke(substrate, args);
+            } catch (InvocationTargetException e) {
+                throw e.getCause();
+            }
+        }
+
         @Test
         void read_returnsEveryOffsetExactlyOnce_acrossTheSealedToRingBoundary() {
             var ringEarliest = partitionManager.earliestRetainedOffset(STREAM, PARTITION);
@@ -351,6 +387,10 @@ class SealedHistoryRecoveryTest {
                                      Object[] args) throws Throwable {
             if (method.getName().equals("loadCheckpoint")) {
                 return Promise.success(Option.some(checkpoint));
+            }
+
+            if (method.getName().equals("loadCheckpointOutcome")) {
+                return Promise.success(EntityLogSubstrate.CheckpointLoad.loaded(checkpoint));
             }
 
             try {

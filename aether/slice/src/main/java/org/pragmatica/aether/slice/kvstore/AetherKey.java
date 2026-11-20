@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.cluster.state.kvstore.AssignmentGuarded;
 import org.pragmatica.cluster.state.kvstore.HolderGuarded;
+import org.pragmatica.cluster.state.kvstore.RestoreAuthorityKey;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -44,7 +45,9 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     /// hand-maintained list that a new key could silently miss.
     sealed interface ClusterStateKey extends AetherKey {
         /// Whether this particular entry goes into a backup. True for every cluster-state key except
-        /// where the key type mixes cluster-wide and node-scoped rows (see [ConfigKey#isBackedUp]).
+        /// where the key type mixes cluster-wide and node-scoped rows (see [ConfigKey#isBackedUp]), and
+        /// except the artifact keys, which are type-wide exceptions (see [ArtifactContentKey#isBackedUp] and
+        /// [ArtifactVersionsKey#isBackedUp]).
         default boolean isBackedUp() {
             return true;
         }
@@ -85,8 +88,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
 
     /// The versions of one artifact in the built-in artifact store (#1778): a grow-only set whose entries carry
     /// the archived flag, kept in consensus so concurrent publishes are folded by the applier instead of racing
-    /// as a read-modify-write on the DHT. The artifact bytes and per-version metadata stay in the DHT. Backed up
-    /// with the rest of the cluster state, because the DHT keys it indexes survive a restart.
+    /// as a read-modify-write on the DHT. The artifact bytes and per-version metadata stay in the DHT. Not backed up
+    /// (#420): after a restart the operator re-uploads, and the listing and archived flags are gone.
     record ArtifactVersionsKey(ArtifactBase artifactBase) implements ClusterStateKey {
         private static final String PREFIX = "artifact-versions/";
 
@@ -110,6 +113,13 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
             }
 
             return ArtifactBase.artifactBase(key.substring(PREFIX.length())).map(ArtifactVersionsKey::new);
+        }
+
+        /// Not backed up (#420, RR-4): the artifact store is rebuilt by re-upload after a restart, so a backup does
+        /// not carry the binding. Moves together with [ArtifactContentKey#isBackedUp] (one commit, D-11).
+        @Override
+        public boolean isBackedUp() {
+            return false;
         }
     }
 
@@ -144,6 +154,13 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
             return parts.length != 3
                    ? ARTIFACT_CONTENT_KEY_FORMAT_ERROR.apply(key).result()
                    : ArtifactBase.artifactBase(parts[0]).map(base -> new ArtifactContentKey(base, parts[1], parts[2]));
+        }
+
+        /// Not backed up (#420, RR-4): the artifact store is rebuilt by re-upload after a restart, so a backup does
+        /// not carry the binding. Moves together with [ArtifactVersionsKey#isBackedUp] (one commit, D-11).
+        @Override
+        public boolean isBackedUp() {
+            return false;
         }
     }
 
@@ -2652,7 +2669,7 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     /// path refuses writes to backed-up keys until it holds a terminal outcome, so no seeder can race a
     /// restore. Runtime, so never backed up: after a cold restart it is absent and the decision is taken
     /// again; within an incarnation it survives leader changes, which makes the restore exactly-once.
-    record BackupRestoreKey() implements RuntimeKey {
+    record BackupRestoreKey() implements RuntimeKey, RestoreAuthorityKey {
         private static final String KEY = "backup-restore";
 
         @SuppressWarnings("JBCT-VO-02")

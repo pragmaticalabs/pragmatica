@@ -4,11 +4,14 @@
 package org.pragmatica.aether.slice.kvstore;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -39,6 +42,7 @@ import org.pragmatica.cluster.state.kvstore.HolderFenced;
 import org.pragmatica.cluster.state.kvstore.OwnerFenced;
 import org.pragmatica.cluster.state.kvstore.ScopedMonotonic;
 import org.pragmatica.cluster.state.kvstore.LeaderAuthorized;
+import org.pragmatica.cluster.state.kvstore.RestoreAuthority;
 import org.pragmatica.cluster.state.kvstore.VersionFenced;
 import org.pragmatica.cluster.state.kvstore.WitnessedRemoval;
 import org.pragmatica.hlc.HlcTimestamp;
@@ -57,9 +61,54 @@ import static org.pragmatica.lang.Option.some;
 @SuppressWarnings("JBCT-NAM-01")
 public sealed interface AetherValue {
     /// The digest (size, MD5, SHA-1, SHA-256) of the content bound to one file of one coordinate, keyed by `AetherKey.ArtifactContentKey`
-    /// (#1778). The applier keeps the FIRST committed value ([GrowOnlyMergeable]: a later write merges into the
-    /// committed one and yields it unchanged), so the binding is decided once, by the consensus log.
-    record ArtifactContentValue(long size, String md5, String sha1, String sha256, long deployedAt) implements AetherValue, GrowOnlyMergeable<ArtifactContentValue> {
+    /// (#1778), with the block manifest of that content (#420): `blocks` is ONE array of 32 * n bytes, the raw SHA-256
+    /// block ids concatenated in chunk order (empty for a binding that carries no manifest). The applier keeps the FIRST
+    /// committed value ([GrowOnlyMergeable]: a later write merges into the committed one and yields it unchanged), so the
+    /// binding is decided once, by the consensus log.
+    ///
+    /// **Value equality (R-2).** A record's generated `equals` compares an array component by identity, and `KVStore`'s
+    /// replay compares a stored value with the one it last delivered by `equals`, so every binding would be re-delivered
+    /// as a changed put after a state transfer. This record therefore overrides `equals`, `hashCode` and `toString` over
+    /// the array's contents, and copies the array on construction and on access.
+    record ArtifactContentValue(long size, String md5, String sha1, String sha256, long deployedAt, byte[] blocks) implements AetherValue, GrowOnlyMergeable<ArtifactContentValue> {
+        public ArtifactContentValue {
+            blocks = blocks.clone();
+        }
+
+        /// A binding without a block manifest: `blocks` is empty.
+        public ArtifactContentValue(long size, String md5, String sha1, String sha256, long deployedAt) {
+            this(size, md5, sha1, sha256, deployedAt, new byte[0]);
+        }
+
+        @Override
+        public byte[] blocks() {
+            return blocks.clone();
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof ArtifactContentValue that
+                   && sameDigest(that)
+                   && deployedAt == that.deployedAt
+                   && Arrays.equals(blocks, that.blocks);
+        }
+
+        @Override
+        public int hashCode() {
+            return 31 * Objects.hash(size, md5, sha1, sha256, deployedAt) + Arrays.hashCode(blocks);
+        }
+
+        @Override
+        public String toString() {
+            return "ArtifactContentValue[size=" + size
+                 + ", md5=" + md5
+                 + ", sha1=" + sha1
+                 + ", sha256=" + sha256
+                 + ", deployedAt=" + deployedAt
+                 + ", blocks=" + HexFormat.of().formatHex(blocks)
+                 + "]";
+        }
+
         /// Whether `other` describes the same CONTENT: size, MD5, SHA-1 and SHA-256, not the deploy time. The deploy
         /// time is the FIRST proposer's, kept with the binding so that completing an interrupted write rewrites the
         /// file's metadata with its original time instead of a new one.
@@ -1830,39 +1879,171 @@ public sealed interface AetherValue {
         SKIPPED_EXISTING_STATE,
         /// The deciding leader has no `[backup]` enabled.
         DISABLED,
+        /// A blocked restore was abandoned (#3303, restore-authority r3.1 §2 row 10): the gated keys it wrote were removed
+        /// and the header is cleared; `removedKeys` counts them.
+        ABANDONED,
         /// Wire sentinel: an ordinal this node cannot name decodes here instead of throwing. Not terminal,
         /// so a node that cannot name the outcome keeps its restore gate closed. Must stay LAST.
         UNKNOWN;
         /// Whether the decision is final — the restore gate opens only on these.
         public boolean isTerminal() {
-            return this == RESTORED || this == FRESH || this == SKIPPED_EXISTING_STATE || this == DISABLED;
+            return this == RESTORED || this == FRESH || this == SKIPPED_EXISTING_STATE || this == DISABLED || this == ABANDONED;
         }
     }
 
     /// The committed restore decision (#1533). `lineageId`/`incarnation`/`revision` are the restored
     /// document's header and `commit` its backup commit, for [BackupRestoreOutcome#IN_PROGRESS] and
     /// [BackupRestoreOutcome#RESTORED]; empty and zero otherwise.
+    ///
+    /// The one restore-authority value (#3303, restore-authority r3.1 §2-§3), so it lives only at [AetherKey.BackupRestoreKey]
+    /// and every write of it is a leader transaction judged by [#admitsAfter]. An `IN_PROGRESS` marker is split by two
+    /// fields: `rejection` (some key `k`: the restore was refused at `k`, REJECTED) and `abandon` (a blocked restore is
+    /// being abandoned). `removedKeys` is the count an [BackupRestoreOutcome#ABANDONED] decision records. `rejection` is
+    /// none, `abandon` false and `removedKeys` zero unless set.
     record BackupRestoreValue(BackupRestoreOutcome outcome,
                               String lineageId,
                               long incarnation,
                               long revision,
-                              String commit) implements AetherValue {
+                              String commit,
+                              Option<String> rejection,
+                              boolean abandon,
+                              long removedKeys) implements AetherValue, LeaderAuthorized, RestoreAuthority {
+        public static BackupRestoreValue backupRestoreValue(BackupRestoreOutcome outcome,
+                                                            String lineageId,
+                                                            long incarnation,
+                                                            long revision,
+                                                            String commit,
+                                                            Option<String> rejection,
+                                                            boolean abandon,
+                                                            long removedKeys) {
+            return new BackupRestoreValue(outcome,
+                                          lineageId,
+                                          incarnation,
+                                          revision,
+                                          commit,
+                                          rejection,
+                                          abandon,
+                                          removedKeys);
+        }
+
+        /// A decision with no `rejection`, no `abandon` and no removed keys.
         public static BackupRestoreValue backupRestoreValue(BackupRestoreOutcome outcome,
                                                             String lineageId,
                                                             long incarnation,
                                                             long revision,
                                                             String commit) {
-            return new BackupRestoreValue(outcome, lineageId, incarnation, revision, commit);
+            return backupRestoreValue(outcome, lineageId, incarnation, revision, commit, none(), false, 0L);
         }
 
         /// A decision that restores nothing.
         public static BackupRestoreValue decided(BackupRestoreOutcome outcome) {
-            return new BackupRestoreValue(outcome, "", 0L, 0L, "");
+            return backupRestoreValue(outcome, "", 0L, 0L, "");
         }
 
-        /// The same restore, finished.
+        /// The abandoned decision (row 10): the header is cleared, only the count of removed keys remains.
+        public static BackupRestoreValue abandoned(long removedKeys) {
+            return backupRestoreValue(BackupRestoreOutcome.ABANDONED, "", 0L, 0L, "", none(), false, removedKeys);
+        }
+
+        /// The same restore, finished (rows 5 and 8): a `rejection` is dropped.
         public BackupRestoreValue restored() {
-            return new BackupRestoreValue(BackupRestoreOutcome.RESTORED, lineageId, incarnation, revision, commit);
+            return backupRestoreValue(BackupRestoreOutcome.RESTORED, lineageId, incarnation, revision, commit);
+        }
+
+        /// Restore-unit writes are admitted only under an `IN_PROGRESS` marker that is not being abandoned (r3.1 §3).
+        @Override
+        public boolean admitsUnits() {
+            return outcome == BackupRestoreOutcome.IN_PROGRESS && !abandon;
+        }
+
+        /// Exactly the `Put` rows of r3.1 §2 (1-10); every other replacement is refused. A committed value that is not a
+        /// `BackupRestoreValue` admits nothing.
+        @Override
+        public boolean admitsAfter(Option<RestoreAuthority> committed) {
+            return committed.fold(this::isFirstDecision,
+                                  previous -> previous instanceof BackupRestoreValue value && admitsReplacing(value));
+        }
+
+        /// Rows 1-4: absent -> (c), FRESH, SKIPPED_EXISTING_STATE, DISABLED.
+        private boolean isFirstDecision() {
+            return unmarked() && opensADecision(outcome);
+        }
+
+        /// The outcomes a first decision may carry; exhaustive, so a new outcome does not compile until it is placed.
+        private static boolean opensADecision(BackupRestoreOutcome outcome) {
+            return switch (outcome) {
+                case IN_PROGRESS, FRESH, SKIPPED_EXISTING_STATE, DISABLED -> true;
+                case RESTORED, ABANDONED, UNKNOWN -> false;
+            };
+        }
+
+        /// Rows 5-7 from (c), rows 8-9 from (c,r), row 10 from (c,a).
+        private boolean admitsReplacing(BackupRestoreValue committed) {
+            return replacesRestoring(committed) || replacesRejected(committed) || replacesAbandoning(committed);
+        }
+
+        /// Rows 5-7: (c) -> RESTORED, (c,r), (c,a), header equal.
+        private boolean replacesRestoring(BackupRestoreValue committed) {
+            return committed.isRestoring()
+                   && sameHeader(committed)
+                   && (isFinished() || isRejected() || isAbandoning());
+        }
+
+        /// Rows 8-9: (c,r) -> RESTORED, or (c,r) refused at another key, header equal.
+        private boolean replacesRejected(BackupRestoreValue committed) {
+            return committed.isRejected()
+                   && sameHeader(committed)
+                   && (isFinished() || isRejectedElsewhere(committed));
+        }
+
+        /// Row 10: (c,a) -> ABANDONED.
+        private boolean replacesAbandoning(BackupRestoreValue committed) {
+            return committed.isAbandoning() && isAbandoned();
+        }
+
+        /// Row 9's `k' != k`.
+        private boolean isRejectedElsewhere(BackupRestoreValue committed) {
+            return isRejected() && !rejection.equals(committed.rejection);
+        }
+
+        /// (c): `IN_PROGRESS`, neither refused nor being abandoned.
+        private boolean isRestoring() {
+            return outcome == BackupRestoreOutcome.IN_PROGRESS && unmarked();
+        }
+
+        /// (c,r): `IN_PROGRESS` refused at some key, not being abandoned.
+        private boolean isRejected() {
+            return outcome == BackupRestoreOutcome.IN_PROGRESS
+                   && rejection.isPresent()
+                   && !abandon;
+        }
+
+        /// (c,a): `IN_PROGRESS` being abandoned, never refused.
+        private boolean isAbandoning() {
+            return outcome == BackupRestoreOutcome.IN_PROGRESS
+                   && rejection.isEmpty()
+                   && abandon;
+        }
+
+        private boolean isFinished() {
+            return outcome == BackupRestoreOutcome.RESTORED && unmarked();
+        }
+
+        private boolean isAbandoned() {
+            return outcome == BackupRestoreOutcome.ABANDONED && unmarked();
+        }
+
+        /// Neither field set: a decision other than `IN_PROGRESS` carrying one is no state of §1 and matches no row.
+        private boolean unmarked() {
+            return rejection.isEmpty() && !abandon;
+        }
+
+        /// "header equal" of §2: the restored document's header and its backup commit.
+        private boolean sameHeader(BackupRestoreValue other) {
+            return lineageId.equals(other.lineageId)
+                   && incarnation == other.incarnation
+                   && revision == other.revision
+                   && commit.equals(other.commit);
         }
     }
 

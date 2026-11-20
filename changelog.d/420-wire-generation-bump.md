@@ -1,0 +1,2 @@
+### Changed (2026-11-20 — #420: wire generation 3 to 4)
+- **`WIRE_GENERATION` is bumped from 3 to 4: a node of the previous generation is refused at join.** `ArtifactContentValue` changed its wire tag (2118 to 2990) and its shape, which an older node cannot decode, so the join guard now rejects a handshaken member advertising a lower generation with `WireGenerationRefused`. Upgrade by restarting the whole cluster.

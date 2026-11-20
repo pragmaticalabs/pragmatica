@@ -13,7 +13,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.locks.LockSupport;
@@ -22,11 +21,11 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.node.backup.BackupGenesis.DeclareGenesisError;
+import org.pragmatica.aether.node.backup.BackupWarning;
 import org.pragmatica.aether.node.backup.KvBackupService;
 import org.pragmatica.aether.node.backup.RestoreGate;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -46,10 +45,11 @@ import org.pragmatica.lang.parse.Text;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.testlogging.LogCapture;
 
+import org.apache.logging.log4j.Level;
 import org.assertj.core.api.SoftAssertions;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -72,10 +72,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// subject `kv backup lineage=... incarnation=... revision=...`, and not through the live codec, so it stays an old document
 /// from PR-1a on.
 ///
-/// **Tripwires.** Arm 2 and arm 3's first half assert TODAY's value and are ENABLED; each message names the PR that flips it
-/// (PR-1a, the record and tag half of PR-1u). The flipped assertions are the same walk run under [Era#PR_1A] in
-/// [#theOldBackup_afterPr1a_isRefusedAtEveryStep], `@Disabled` until then. Arm 1 (`fresh` opens the gate and serves) and arms 3 /
-/// 3b second halves (the operator steps reach a new head) hold at every head.
+/// **The flip (PR-1a, the record and tag half of PR-1u, lane A).** Tag 2118 is retired, so the old document cannot be decoded: arm 2
+/// asserts "cluster-state writes refused `RestorePending`", and arm 3's first half asserts backup status `HEAD_UNREADABLE` and
+/// `declare-genesis` refused `HeadUnreadable`. At lane A's head this is T17's control reading: the refusal is attributable to the
+/// retired tag alone. Arm 1 (`fresh` opens the gate and serves) and arms 3 / 3b second halves (the operator steps reach a new head)
+/// hold at every head.
 @PortBudget
 class EmberArtifactFlagDayRestoreTest {
     private static final int CLUSTER_SIZE = 3;
@@ -105,13 +106,13 @@ class EmberArtifactFlagDayRestoreTest {
     private static final String POM = "<project><modelVersion>4.0.0</modelVersion><groupId>org.aether.flagday420</groupId>"
                                     + "<artifactId>probe</artifactId><version>1.0.0</version></project>";
 
-    private static final String ARM2_FLIPPED = "arm 2 (restore = auto): today the frozen document restores (decision RESTORED, blueprint line present)."
-                                             + " PR-1a (tag 2118 retired) flips this to 'cluster-state writes refused RestorePending': replace this"
-                                             + " tripwire with the @Disabled arm 2 assertion and enable it.";
+    private static final String ARM2_BLOCKED = "arm 2: the restore is BLOCKED at the decode step (backup-restore-blocked, document undecodable),"
+                                             + " not blocked at another step and not restored; restored=";
 
-    private static final String ARM2_BLOCKED = "arm 2: the restore is BLOCKED (backup-restore-blocked, document undecodable), not still running"
-                                             + " and not restored; restored=";
-
+    /// The `[code]` prefix `OperatorWarnings.raise` puts on the warning's log line, and the decode step's label
+    /// (`BackupRestoreCoordinator.RestoreError.Blocked.Step.DOCUMENT_UNDECODABLE`).
+    private static final String BLOCKED_LINE = "[backup-restore-blocked]";
+    private static final String DECODE_STEP = "blocked at step document undecodable";
     private static final URL FIXTURE_URL = EmberArtifactFlagDayRestoreTest.class.getResource("/" + RESOURCE);
 
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
@@ -119,49 +120,37 @@ class EmberArtifactFlagDayRestoreTest {
     private static final long POLL_NANOS = 250_000_000L;
     private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(10);
 
-    /// Which release's value the walk asserts: today's (PR-1r) or the one PR-1a flips it to.
-    enum Era {
-        PR_1R,
-        PR_1A
-    }
-
     @TempDir
     Path temp;
 
     private EmberCluster cluster;
     private Path baseDir;
+    private LogCapture backupWarnings;
 
     @AfterEach
     void tearDown() {
         option(cluster).onPresent(_ -> stopCluster());
+        option(backupWarnings).onPresent(LogCapture::close);
     }
 
+    /// T17 arms 2, 1, 3, 3b (#420, R-7 gate): the old document is refused at every backup step that reads it.
     @Test
-    @Timeout(1200)
-    void theOldBackup_acrossTheUpgrade_walksEachBackupStep_asItDoesToday() {
-        walk(Era.PR_1R);
-    }
-
-    @Test
-    @Disabled("T17 arms 2 and 3 (#420): enable in PR-1a, when the retired tag 2118 makes the old document undecodable; then arm 2 is"
-             + " 'cluster-state writes refused RestorePending' and arm 3's first half is HEAD_UNREADABLE with declare-genesis refused"
-             + " HeadUnreadable, and the PR_1R test above is deleted")
     @Timeout(1200)
     void theOldBackup_afterPr1a_isRefusedAtEveryStep() {
-        walk(Era.PR_1A);
+        walk();
     }
 
-    private void walk(Era era) {
+    private void walk() {
         var remote = temp.resolve("remote.git");
-        var flipped = new ArrayList<String>();
 
         baseDir = temp.resolve("nodes");
         var seeded = seedRemote(remote);
 
         controlsOnTheFixture();
-        // arm 2: restore = "auto" over the old remote
+        // arm 2: restore = "auto" over the old remote; the restore's warnings are captured from before the boot
+        backupWarnings = LogCapture.capture(BackupWarning.class, Level.WARN, true);
         startCluster(remote, RestoreMode.AUTO);
-        arm2(era, flipped);
+        arm2Refused();
         stopCluster();
         // control before arms 1 and 3: the remote head is the seeded commit, or a re-encoding that still decodes and still
         // carries the blueprint line; recorded so that a red can be attributed
@@ -170,7 +159,7 @@ class EmberArtifactFlagDayRestoreTest {
         restart(remote, RestoreMode.FRESH);
         arm1();
         // arm 3, first half: the old remote after arm 1's boot
-        arm3First(era, flipped);
+        arm3First();
         stopCluster();
         // arm 3, second half: step (2) re-point the remote at a new empty repository, (3) fresh, (4) re-apply, (5) the flush writes
         var repointed = temp.resolve("remote-new.git");
@@ -183,41 +172,39 @@ class EmberArtifactFlagDayRestoreTest {
         git(remote, "branch", "-m", BRANCH, BRANCH + "-aside");
         restart(remote, RestoreMode.FRESH);
         reapplyAndAwaitHead(remote, "arm 3b: the first flush on the original branch name");
-        assertThat(flipped).as("T17 tripwires that no longer hold today's value").isEmpty();
     }
 
     // --- arms ---
-    private void arm2(Era era, List<String> flipped) {
-        if (era == Era.PR_1R) {
-            arm2Today(flipped);
-        } else {
-            arm2Refused();
-        }
-    }
-
-    private void arm2Today(List<String> flipped) {
-        var restored = awaitFor(() -> allHold(BackupRestoreOutcome.RESTORED), SHORT_WAIT_MS);
-        var blueprint = restored && cluster.allNodes()
-                                           .stream()
-                                           .allMatch(EmberArtifactFlagDayRestoreTest::holdsBlueprint);
-
-        if (! (restored && blueprint)) {
-            flipped.add(ARM2_FLIPPED + " Found restored=" + restored + " blueprint=" + blueprint);
-        }
-    }
-
-    /// Arm 2 after PR-1a: the old document cannot be decoded. The restore runs asynchronously after the leader is elected, so the
-    /// check first awaits the TERMINAL decision (blocked, or restored) under a deadline: asserting "refused" while the restore is
-    /// still running would pass vacuously, and would pass at a head where the restore succeeds.
+    /// Arm 2 holds when the decode-step `backup-restore-blocked` line has been logged, and on EVERY node a cluster-state write is refused
+    /// `RestorePending`, the restore gate is still shut (no terminal decision) and no blueprint is applied. One invariant, one positive wait:
+    /// the wait is for the DECODE_STEP line itself (a block at any other step, or no line yet, never satisfies it), and everything after it is an
+    /// assertion on every node. The line is raised by the deciding leader only (`BackupRestoreCoordinator#onLeaderChange`, "only the leader
+    /// decides") and carries no node id, so the line is awaited once for the cluster; the per-node obligations are the refusal and the absences.
+    ///
+    /// **Blocked is read from the `backup-restore-blocked` log line, never from the cluster event log** (t420C). While the restore
+    /// is undecided, `RestoreGate` refuses every backed-up write, the cluster-events `StreamConfigKey` included, so on this cold
+    /// cluster the warning's `OperatorWarning` event cannot land until the gate opens ("the log line is the floor",
+    /// `OperatorWarnings`); a wait on the event log never ends while blocked.
     private void arm2Refused() {
-        var terminal = awaitFor(() -> blockedWarningRaised() || allHold(BackupRestoreOutcome.RESTORED), LONG_WAIT_MS);
+        var logged = awaitFor(() -> blockedLineLogged(line -> line.contains(DECODE_STEP)), LONG_WAIT_MS);
 
-        assertThat(terminal).as("arm 2: the restore reaches a terminal state (blocked, or restored) within the deadline")
+        assertThat(logged).as(ARM2_BLOCKED + allHold(BackupRestoreOutcome.RESTORED) + "; blocked lines: " + blockedLines())
                   .isTrue();
-        assertThat(blockedWarningRaised()).as(ARM2_BLOCKED + allHold(BackupRestoreOutcome.RESTORED)).isTrue();
-        assertThat(applyProbe(cluster.allNodes().getFirst())).as("arm 2: the old document cannot be decoded, so the write is refused")
+        // the per-node assertions below hold on a cold cluster whether or not the line exists, so the line is asserted on its own, read
+        // straight from the capture and not through the wait's predicate: a wait that returns early cannot pass this
+        assertThat(blockedLines()).as(ARM2_BLOCKED + "the decode-step line is logged before the per-node checks")
+                  .anyMatch(line -> line.contains(DECODE_STEP));
+        cluster.allNodes()
+               .forEach(EmberArtifactFlagDayRestoreTest::arm2NodeRefused);
+    }
+
+    private static void arm2NodeRefused(AetherNode node) {
+        var who = "arm 2, node " + node.self().id() + ": ";
+
+        assertThat(applyProbe(node)).as(who + "the old document cannot be decoded, so the write is refused")
                   .isInstanceOf(RestoreGate.RestorePending.class);
-        assertThat(allHold(BackupRestoreOutcome.RESTORED)).isFalse();
+        assertThat(RestoreGate.isOpen(node.kvStore())).as(who + "no terminal restore decision exists").isFalse();
+        assertThat(holdsBlueprint(node)).as(who + "no blueprint is applied").isFalse();
     }
 
     /// Arm 1 evaluates every assertion (soft), so each one is reachable and goes red on its own mutation: the decision,
@@ -276,24 +263,12 @@ class EmberArtifactFlagDayRestoreTest {
                       .unwrap();
     }
 
-    private void arm3First(Era era, List<String> flipped) {
-        var expected = era == Era.PR_1R
-                       ? KvBackupService.Status.GATED
-                       : KvBackupService.Status.HEAD_UNREADABLE;
-        var reached = awaitFor(() -> leaderStatus() == expected, LONG_WAIT_MS);
-
-        if (!reached) {
-            flipped.add("arm 3 (first half, the old remote after arm 1's boot): expected backup status " + expected
-                       + ", found " + leaderStatus()
-                       + ". Today the frozen document decodes and names another cluster identity, so GATED. PR-1a flips it to"
-                       + " HEAD_UNREADABLE and adds the declare-genesis refusal HeadUnreadable: replace this tripwire with the"
-                       + " @Disabled assertion and enable it");
-        }
-
-        if (era == Era.PR_1A) {
-            assertThat(declareGenesis()).as("arm 3: declare-genesis against the undecodable head")
-                      .isInstanceOf(DeclareGenesisError.HeadUnreadable.class);
-        }
+    private void arm3First() {
+        assertThat(awaitFor(() -> leaderStatus() == KvBackupService.Status.HEAD_UNREADABLE,
+                            LONG_WAIT_MS)).as("arm 3 (first half, the old remote after arm 1's boot): backup status HEAD_UNREADABLE; found " + leaderStatus())
+                  .isTrue();
+        assertThat(declareGenesis()).as("arm 3: declare-genesis against the undecodable head")
+                  .isInstanceOf(DeclareGenesisError.HeadUnreadable.class);
     }
 
     private void reapplyAndAwaitHead(Path remote, String what) {
@@ -393,28 +368,16 @@ class EmberArtifactFlagDayRestoreTest {
                             LONG_WAIT_MS)).as("a leader is elected").isTrue();
     }
 
-    private boolean blockedWarningRaised() {
-        return cluster.allNodes()
-                      .stream()
-                      .anyMatch(EmberArtifactFlagDayRestoreTest::hasBlockedWarning);
+    private boolean blockedLineLogged(Predicate<String> step) {
+        return blockedLines().stream()
+                           .anyMatch(step);
     }
 
-    private static boolean hasBlockedWarning(AetherNode node) {
-        return node.eventAggregator()
-                   .events()
-                   .await(APPLY_BOUND)
-                   .map(EmberArtifactFlagDayRestoreTest::anyBlocked)
-                   .or(false);
-    }
-
-    private static boolean anyBlocked(List<ClusterEvent> events) {
-        return events.stream()
-                     .anyMatch(EmberArtifactFlagDayRestoreTest::isBlockedRestoreWarning);
-    }
-
-    private static boolean isBlockedRestoreWarning(ClusterEvent event) {
-        return event instanceof ClusterEvent.OperatorWarning warning && "backup-restore-blocked".equals(warning.details()
-                                                                                                               .get("code"));
+    private List<String> blockedLines() {
+        return backupWarnings.messages()
+                             .stream()
+                             .filter(line -> line.startsWith(BLOCKED_LINE))
+                             .toList();
     }
 
     private AetherNode leaderNode() {

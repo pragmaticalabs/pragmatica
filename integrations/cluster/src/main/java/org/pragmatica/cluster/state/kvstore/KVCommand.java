@@ -33,9 +33,50 @@ public sealed interface KVCommand<K extends StructuredKey> extends Command {
     record Mutation<K extends StructuredKey, V>(K key, Option<V> expected, Option<V> replacement) {}
 
     /// Correlation survives consensus batch merging; callers must select their own transaction ID.
-    /// Refusal identifies the transaction, not the conflicting key; callers may re-read to diagnose it.
+    /// A refused transaction carries its [Refusal]: the first check that failed and, where the check names one, the key it
+    /// failed on (#3303). `accepted` holds exactly when `refusal` is empty for every result the applier produces.
     @Codec
-    record TransactionResult(String transactionId, boolean accepted) {}
+    record TransactionResult(String transactionId, boolean accepted, Option<Refusal> refusal) {
+        /// A result without a refusal kind; the applier never builds one (see [#transactionResult]).
+        public TransactionResult(String transactionId, boolean accepted) {
+            this(transactionId, accepted, Option.none());
+        }
+
+        /// The applier's result: accepted exactly when nothing refused it.
+        public static TransactionResult transactionResult(String transactionId, Option<Refusal> refusal) {
+            return new TransactionResult(transactionId, refusal.isEmpty(), refusal);
+        }
+    }
+
+    /// Why a transaction was refused: the first failing check, in the applier's order, and the key it names (none for
+    /// [RefusalKind#LEADER]). Refusal kinds are diagnostic: a refused transaction changed nothing, whatever its kind.
+    @Codec
+    record Refusal(RefusalKind kind, Option<Object> key) {
+        public static Refusal refusal(RefusalKind kind, Option<Object> key) {
+            return new Refusal(kind, key);
+        }
+    }
+
+    /// The applier's checks, in the order it runs them (#3303). LEADER, WITNESS and EXPECTED are transient (a re-read and
+    /// retry may pass); DISTINCT, ARM and UNIT are deterministic for the same mutations. The ordinal IS the encoding:
+    /// add a kind only before [#UNKNOWN].
+    @Codec
+    enum RefusalKind {
+        /// The transaction's leader is not the committed one.
+        LEADER,
+        /// A read witness does not equal the committed value at its key.
+        WITNESS,
+        /// A mutation's expected value does not equal the committed value at its key.
+        EXPECTED,
+        /// Two mutations name the same key.
+        DISTINCT,
+        /// A committed-state fence refuses the mutation at its key.
+        ARM,
+        /// A restore-unit check refuses the mutation at its key (reserved for #3303 RA-4b; not produced yet).
+        UNIT,
+        /// Decoded from an ordinal this build does not know (a newer peer).
+        UNKNOWN
+    }
 
     record Get<K extends StructuredKey>(K key) implements KVCommand<K> {}
 
