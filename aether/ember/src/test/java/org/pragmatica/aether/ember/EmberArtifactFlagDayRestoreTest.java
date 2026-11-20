@@ -21,11 +21,11 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.node.backup.BackupGenesis.DeclareGenesisError;
+import org.pragmatica.aether.node.backup.BackupWarning;
 import org.pragmatica.aether.node.backup.KvBackupService;
 import org.pragmatica.aether.node.backup.RestoreGate;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -45,7 +45,9 @@ import org.pragmatica.lang.parse.Text;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.testlogging.LogCapture;
 
+import org.apache.logging.log4j.Level;
 import org.assertj.core.api.SoftAssertions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -104,9 +106,13 @@ class EmberArtifactFlagDayRestoreTest {
     private static final String POM = "<project><modelVersion>4.0.0</modelVersion><groupId>org.aether.flagday420</groupId>"
                                     + "<artifactId>probe</artifactId><version>1.0.0</version></project>";
 
-    private static final String ARM2_BLOCKED = "arm 2: the restore is BLOCKED (backup-restore-blocked, document undecodable), not still running"
-                                             + " and not restored; restored=";
+    private static final String ARM2_BLOCKED = "arm 2: the restore is BLOCKED at the decode step (backup-restore-blocked, document undecodable),"
+                                             + " not blocked at another step and not restored; restored=";
 
+    /// The `[code]` prefix `OperatorWarnings.raise` puts on the warning's log line, and the decode step's label
+    /// (`BackupRestoreCoordinator.RestoreError.Blocked.Step.DOCUMENT_UNDECODABLE`).
+    private static final String BLOCKED_LINE = "[backup-restore-blocked]";
+    private static final String DECODE_STEP = "blocked at step document undecodable";
     private static final URL FIXTURE_URL = EmberArtifactFlagDayRestoreTest.class.getResource("/" + RESOURCE);
 
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
@@ -119,10 +125,12 @@ class EmberArtifactFlagDayRestoreTest {
 
     private EmberCluster cluster;
     private Path baseDir;
+    private LogCapture backupWarnings;
 
     @AfterEach
     void tearDown() {
         option(cluster).onPresent(_ -> stopCluster());
+        option(backupWarnings).onPresent(LogCapture::close);
     }
 
     /// T17 arms 2, 1, 3, 3b (#420, R-7 gate): the old document is refused at every backup step that reads it.
@@ -139,7 +147,8 @@ class EmberArtifactFlagDayRestoreTest {
         var seeded = seedRemote(remote);
 
         controlsOnTheFixture();
-        // arm 2: restore = "auto" over the old remote
+        // arm 2: restore = "auto" over the old remote; the restore's warnings are captured from before the boot
+        backupWarnings = LogCapture.capture(BackupWarning.class, Level.WARN, true);
         startCluster(remote, RestoreMode.AUTO);
         arm2Refused();
         stopCluster();
@@ -169,12 +178,20 @@ class EmberArtifactFlagDayRestoreTest {
     /// Arm 2: the old document cannot be decoded. The restore runs asynchronously after the leader is elected, so the
     /// check first awaits the TERMINAL decision (blocked, or restored) under a deadline: asserting "refused" while the restore is
     /// still running would pass vacuously, and would pass at a head where the restore succeeds.
+    ///
+    /// **Blocked is read from the `backup-restore-blocked` log line, never from the cluster event log** (t420C). While the restore
+    /// is undecided, `RestoreGate` refuses every backed-up write, the cluster-events `StreamConfigKey` included, so on this cold
+    /// cluster the warning's `OperatorWarning` event cannot land until the gate opens ("the log line is the floor",
+    /// `OperatorWarnings`); a terminal wait on the event log never ends while blocked.
     private void arm2Refused() {
-        var terminal = awaitFor(() -> blockedWarningRaised() || allHold(BackupRestoreOutcome.RESTORED), LONG_WAIT_MS);
+        var terminal = awaitFor(() -> blockedLineLogged(_ -> true) || allHold(BackupRestoreOutcome.RESTORED),
+                                LONG_WAIT_MS);
 
         assertThat(terminal).as("arm 2: the restore reaches a terminal state (blocked, or restored) within the deadline")
                   .isTrue();
-        assertThat(blockedWarningRaised()).as(ARM2_BLOCKED + allHold(BackupRestoreOutcome.RESTORED)).isTrue();
+        assertThat(blockedLineLogged(line -> line.contains(DECODE_STEP))).as(ARM2_BLOCKED + allHold(BackupRestoreOutcome.RESTORED)
+                                                                            + "; blocked lines: " + blockedLines())
+                  .isTrue();
         assertThat(applyProbe(cluster.allNodes().getFirst())).as("arm 2: the old document cannot be decoded, so the write is refused")
                   .isInstanceOf(RestoreGate.RestorePending.class);
         assertThat(allHold(BackupRestoreOutcome.RESTORED)).isFalse();
@@ -341,28 +358,16 @@ class EmberArtifactFlagDayRestoreTest {
                             LONG_WAIT_MS)).as("a leader is elected").isTrue();
     }
 
-    private boolean blockedWarningRaised() {
-        return cluster.allNodes()
-                      .stream()
-                      .anyMatch(EmberArtifactFlagDayRestoreTest::hasBlockedWarning);
+    private boolean blockedLineLogged(Predicate<String> step) {
+        return blockedLines().stream()
+                           .anyMatch(step);
     }
 
-    private static boolean hasBlockedWarning(AetherNode node) {
-        return node.eventAggregator()
-                   .events()
-                   .await(APPLY_BOUND)
-                   .map(EmberArtifactFlagDayRestoreTest::anyBlocked)
-                   .or(false);
-    }
-
-    private static boolean anyBlocked(List<ClusterEvent> events) {
-        return events.stream()
-                     .anyMatch(EmberArtifactFlagDayRestoreTest::isBlockedRestoreWarning);
-    }
-
-    private static boolean isBlockedRestoreWarning(ClusterEvent event) {
-        return event instanceof ClusterEvent.OperatorWarning warning && "backup-restore-blocked".equals(warning.details()
-                                                                                                               .get("code"));
+    private List<String> blockedLines() {
+        return backupWarnings.messages()
+                             .stream()
+                             .filter(line -> line.startsWith(BLOCKED_LINE))
+                             .toList();
     }
 
     private AetherNode leaderNode() {
