@@ -31,7 +31,10 @@ import org.pragmatica.lang.Result;
 /// before PR-3c) is read as before.
 ///
 /// Since #3303 A4a the header is `CKPTID02`, a 16-byte per-put nonce, then the keyspace, the partition and the claim: every put draws a fresh
-/// nonce, so re-saving identical content yields a distinct block id and no put can land on a block an earlier put (or another pointer) holds.
+/// random nonce (128 bits from one [SecureRandom] per JVM; no counter, nothing persisted), so re-saving identical content yields a distinct
+/// block id. That is probabilistic, not structural: two puts of identical content collide only when their nonces do, about `n^2 / 2^129`
+/// over `n` puts (the birthday bound, near 2^64 puts), so with overwhelming probability no put lands on a block an earlier put (or another
+/// pointer) holds.
 /// The nonce is persisted nowhere else. Both markers are read (`CKPTID01` blocks stay readable); writers emit `CKPTID02` only.
 final class CheckpointFrame {
     /// Records the lineage digest covers: up to this many, ending at the checkpoint's claim.

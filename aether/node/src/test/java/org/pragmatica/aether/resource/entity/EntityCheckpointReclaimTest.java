@@ -6,6 +6,7 @@ package org.pragmatica.aether.resource.entity;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -20,7 +21,9 @@ import java.util.function.Function;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.StreamEntityLogSubstrate;
 import org.pragmatica.aether.node.StreamEntityLogSubstrate.CheckpointReclaim;
@@ -45,6 +48,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.storage.BlockId;
+import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.StorageInstance;
@@ -84,6 +88,11 @@ class EntityCheckpointReclaimTest {
     private KVStore<AetherKey, AetherValue> kv;
     /// Full scans of `kv` (`forEach`), which the delete-time check runs for a block without a readable identity header.
     private final AtomicInteger scans = new AtomicInteger();
+    /// Names the storage instances and durable tiers a test builds beyond the fixture's.
+    private final AtomicInteger durables = new AtomicInteger();
+    @TempDir
+    Path diskRoot;
+    private final List<StorageInstance> extraStorages = new CopyOnWriteArrayList<>();
 
     @BeforeEach
     void setUp() {
@@ -105,6 +114,7 @@ class EntityCheckpointReclaimTest {
     void tearDown() {
         manager.close();
         storage.shutdown();
+        extraStorages.stream().filter(extra -> extra != storage).forEach(StorageInstance::shutdown);
     }
 
     /// NT-61: the block the replaced pointer named is deleted after the grace, and not before; the block the new pointer names is kept.
@@ -227,33 +237,22 @@ class EntityCheckpointReclaimTest {
         assertThat(deletesOf(first)).as("a deferred block is handed to one delete").isEqualTo(1L);
     }
 
-    /// Hazard: a late publish of an equal-claim block (an abandoned in-flight save landing after a newer swap) names its own block. With the
-    /// per-put nonce (#3303 A4a) that is a block of its own, not the one an earlier save of identical bytes wrote, and it must still be there.
+    /// Hazard (#3480 P1, replaces the re-aimed late-duplicate test, which a per-put nonce made vacuous): ONE publish command applied twice.
+    /// A block displaced at an equal claim is not dead: the fence accepts an equal claim, so a duplicate of the publish that first named it
+    /// can name it again after the grace, and it must still be there. Only a strictly higher committed claim proves it dead.
     @Test
-    void aLateDuplicatePublishAtAnEqualClaim_findsItsBlockStillThere() {
-        var substrate = substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY));
-        var parked = new AtomicReference<Promise<List<Object>>>();
-        var parkedCommands = new AtomicReference<List<KVCommand<AetherKey>>>();
-        var late = substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY), commands -> {
-            parkedCommands.set(commands);
-            parked.set(Promise.promise());
+    void aDuplicatedPublishAtAnEqualClaim_afterTheGrace_findsTheBlockItNamesStillThere() {
+        var recorded = new AtomicReference<List<KVCommand<AetherKey>>>();
+        var recording = substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY), commands -> recordThenApply(recorded, commands));
+        var first = save(recording, 0, 5L, snapshot("x"), Option.none());
+        var second = save(substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY)), 0, 5L, snapshot("x"), Option.none());
 
-            return parked.get();
-        });
-        var block = save(substrate, 0, 5L, snapshot("x"), Option.none());
-        var lateSave = late.saveCheckpoint(KEYSPACE, 0, 5L, snapshot("x"), Option.none());
-
-        eventually("the late save's publish is parked", 5_000L, () -> parked.get() != null);
-        save(substrate, 0, 5L, snapshot("y"), Option.none());
+        assertThat(second).as("control: the equal-claim save displaced the first block").isNotEqualTo(first);
         pause(PAST_SHORT_GRACE_MS);
-        apply(parkedCommands.get());
-        parked.get().succeed(List.of());
-        assertThat(lateSave.await().isSuccess()).isTrue();
-        var named = pointed(0);
-
-        assertThat(named).as("control: the late publish named its own block, not the earlier save's").isNotEqualTo(block);
+        apply(recorded.get());
+        assertThat(pointed(0)).as("control: the duplicated publish names the first block again").isEqualTo(first);
         pause(PAST_SHORT_GRACE_MS);
-        assertThat(readable(named)).as("the block the current pointer names is readable").isTrue();
+        assertThat(readable(first)).as("the block the current pointer names is readable").isTrue();
     }
 
     /// Hazard: a re-read that lags the publish (the local KV applies the swap after the applier answered) shows a LOWER claim or none.
@@ -534,6 +533,121 @@ class EntityCheckpointReclaimTest {
         assertThat(readable(legacy)).as("the block only another keyspace's pointer names").isTrue();
     }
 
+    /// #3480 P2a: a restart over a storage whose private durable tier holds the committed block re-saves nothing at the committed claim, so
+    /// nothing is displaced at an equal claim and nothing is parked in a deferral a further restart loses. Three node lifetimes (three fresh
+    /// substrates over one storage): save at 5, restart and save at 5 again, restart and advance to 6. Every block the claim 6 passed goes.
+    @Test
+    void aRestartOverAPrivateDurableCopy_writesNothingAtTheCommittedClaim_andTheNextAdvanceReclaimsEveryBlock() {
+        useStorageWithAPrivateDurableTier();
+        var committed = save(substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
+        var putsBeforeRestart = shared.puts.size();
+
+        assertThat(save(substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none()))
+            .as("the restart's save at the committed claim keeps the committed block").isEqualTo(committed);
+        assertThat(shared.puts).as("the restart's save wrote nothing").hasSize(putsBeforeRestart);
+        var advanced = save(substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY)), 0, 6L, snapshot("later"), Option.none());
+
+        eventually("every block the claim 6 passed is reclaimed", 5_000L, () -> leaked(advanced).isEmpty());
+        assertThat(readable(advanced)).as("the block the pointer names is kept").isTrue();
+    }
+
+    /// #3480 handover safety: a new owner whose storage holds the committed block only in the cluster-shared tier still writes a durable
+    /// block of its own at the committed claim. A shared copy is not this node's: `exists` would answer for the whole cluster.
+    @Test
+    void aNewOwnerHoldingTheBlockOnlyInTheSharedTier_writesItsOwnDurableBlock() {
+        var previous = save(substrate(checkpointReclaim(LONG_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
+        var newOwner = privateDurableTier();
+        var newOwnerStorage = storageOver(MemoryTier.memoryTier(ONE_GB), newOwner);
+
+        assertThat(newOwnerStorage.exists(previous).await().unwrap()).as("control: the shared tier answers for the new owner").isTrue();
+        assertNewOwnerWritesItsOwnDurableBlock(newOwnerStorage, newOwner, previous);
+    }
+
+    /// #3480 handover safety: a new owner whose storage holds the committed block in the shared tier AND its own cache (the copy the
+    /// restore's read, or a warm, promoted) still writes a durable block of its own: a cache copy does not survive a restart.
+    @Test
+    void aNewOwnerHoldingTheBlockInTheSharedTierAndItsCache_writesItsOwnDurableBlock() {
+        var previous = save(substrate(checkpointReclaim(LONG_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
+        var cache = MemoryTier.memoryTier(ONE_GB);
+        var newOwner = privateDurableTier();
+        var newOwnerStorage = storageOver(cache, newOwner);
+
+        assertThat(newOwnerStorage.warm(previous).await().unwrap()).as("control: the warm copied the block into the cache").isTrue();
+        assertThat(cache.exists(previous).await().unwrap()).as("control: the new owner's cache holds the block").isTrue();
+        assertNewOwnerWritesItsOwnDurableBlock(newOwnerStorage, newOwner, previous);
+    }
+
+    /// #3480 P2b, ENABLED tripwire for the residual #3482 tracks: a handover with no advance. The new owner holds no private durable copy, so
+    /// it re-saves at the committed claim and parks the displaced block in its in-memory deferral; the next owner advances, and that block
+    /// leaks (L-12: nothing sweeps it). The fixture's storage, whose only private tier is a cache, stands in for each owner's: none of them
+    /// holds a private durable copy. This asserts the leak as it is today. When #3482 closes it, this goes red: delete it and enable
+    /// [#aHandoverWithoutAnAdvance_reclaimsEveryBlockTheNextAdvancePasses].
+    @Test
+    void aHandoverWithoutAnAdvance_leaksTheBlockTheNewOwnerDisplacedAtAnEqualClaim_tripwire3482() {
+        var displaced = save(substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
+        var newOwnerCopy = save(substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
+
+        assertThat(newOwnerCopy).as("control: the new owner wrote a block of its own").isNotEqualTo(displaced);
+        var advanced = save(substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY)), 0, 6L, snapshot("later"), Option.none());
+
+        eventually("the claim 6 reclaims the block it displaced", 5_000L, () -> !readable(newOwnerCopy));
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(leaked(advanced)).as("tripwire #3482: the block the new owner displaced leaks; if this fails, #3482 fixed it: delete this"
+                                        + " test and enable aHandoverWithoutAnAdvance_reclaimsEveryBlockTheNextAdvancePasses")
+                                    .containsExactly(displaced);
+    }
+
+    /// #3480 P2b, the real assertion: a handover without an advance leaks nothing once the next advance passes it.
+    @Disabled("#3482: the equal-claim deferral lives in one node's memory and nothing sweeps a lost entry (L-12)")
+    @Test
+    void aHandoverWithoutAnAdvance_reclaimsEveryBlockTheNextAdvancePasses() {
+        save(substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
+        save(substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
+        var advanced = save(substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY)), 0, 6L, snapshot("later"), Option.none());
+
+        eventually("every block the claim 6 passed is reclaimed", 5_000L, () -> leaked(advanced).isEmpty());
+    }
+
+    private void assertNewOwnerWritesItsOwnDurableBlock(StorageInstance newOwnerStorage, StorageTier newOwner, BlockId previous) {
+        assertThat(newOwner.exists(previous).await().unwrap()).as("control: the new owner's durable tier lacks the block").isFalse();
+        var written = save(substrate(checkpointReclaim(LONG_GRACE, FAST_RETRY), newOwnerStorage), 0, 5L, snapshot("same"), Option.none());
+
+        assertThat(written).as("the new owner's save at the committed claim wrote a block of its own").isNotEqualTo(previous);
+        assertThat(newOwner.exists(written).await().unwrap()).as("on its own durable tier").isTrue();
+    }
+
+    /// Every block the shared tier was given that is still readable, other than `current`.
+    private List<BlockId> leaked(BlockId current) {
+        return shared.puts.stream().distinct().filter(id -> !id.equals(current)).filter(this::readable).toList();
+    }
+
+    private Promise<List<Object>> recordThenApply(AtomicReference<List<KVCommand<AetherKey>>> recorded, List<KVCommand<AetherKey>> commands) {
+        recorded.set(commands);
+
+        return apply(commands);
+    }
+
+    /// Replaces the fixture's storage, whose only private tier is a cache, with one that has a private durable tier too.
+    private void useStorageWithAPrivateDurableTier() {
+        storage.shutdown();
+        storage = storageOver(MemoryTier.memoryTier(ONE_GB), privateDurableTier());
+    }
+
+    /// A node's storage: a private cache, a private durable tier and the cluster-shared tier every node in the test sees. Shut down in
+    /// [#tearDown].
+    private StorageInstance storageOver(StorageTier cache, StorageTier durable) {
+        var name = "entity-ckpt-" + durables.incrementAndGet();
+        var built = StorageInstance.storageInstance(name, List.of(cache, durable, shared), MetadataStore.inMemoryMetadataStore(name));
+
+        extraStorages.add(built);
+
+        return built;
+    }
+
+    private StorageTier privateDurableTier() {
+        return LocalDiskTier.localDiskTier(diskRoot.resolve("node-" + durables.incrementAndGet()), ONE_GB).unwrap();
+    }
+
     private EntityLogSubstrate substrate(CheckpointReclaim reclaim) {
         return substrate(reclaim, this::apply);
     }
@@ -542,7 +656,18 @@ class EntityCheckpointReclaimTest {
         return substrate(reclaim, kv, applier);
     }
 
+    private EntityLogSubstrate substrate(CheckpointReclaim reclaim, StorageInstance over) {
+        return substrate(reclaim, over, kv, this::apply);
+    }
+
     private EntityLogSubstrate substrate(CheckpointReclaim reclaim,
+                                         KVStore<AetherKey, AetherValue> reads,
+                                         Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
+        return substrate(reclaim, storage, reads, applier);
+    }
+
+    private EntityLogSubstrate substrate(CheckpointReclaim reclaim,
+                                         StorageInstance over,
                                          KVStore<AetherKey, AetherValue> reads,
                                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
         return StreamEntityLogSubstrate.streamEntityLogSubstrate(manager,
@@ -550,7 +675,7 @@ class EntityCheckpointReclaimTest {
                                                                  null,
                                                                  new SegmentIndex(),
                                                                  EvictionListener.NOOP,
-                                                                 storage,
+                                                                 over,
                                                                  reads,
                                                                  applier,
                                                                  reclaim);
