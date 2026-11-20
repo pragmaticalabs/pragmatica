@@ -4156,6 +4156,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         log.info("CTM: Deactivated");
     }
 
+    /// The activation epoch while active, 0 otherwise. Lock-free: never called under the KVStore monitor, so it must not
+    /// take this manager's monitor (`activate`/`deactivate` are synchronized). A bare-site leftover reads visible between
+    /// the `active` flip and the epoch bump in `activate`: the previous activation's epoch is returned for that window.
+    @Override
+    public long drainTenure() {
+        return active.get()
+               ? activationEpoch.get()
+               : 0;
+    }
+
     @Override
     public TopologyObserver observer() {
         return observer;

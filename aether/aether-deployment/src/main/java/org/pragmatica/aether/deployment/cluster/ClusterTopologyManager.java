@@ -89,6 +89,14 @@ public interface ClusterTopologyManager extends TopologyManager {
     void onClusterPhaseChanged(ClusterPhase newPhase);
     void activate();
     void deactivate();
+
+    /// The tenure of this node's current activation: a positive value that changes on every activation, or 0 while the
+    /// manager is not active. The drain-ledger consumers compare it to decide whether a drain entry belongs to the
+    /// activation that issued it. Default 0, so implementations that never activate (test fakes) are untouched.
+    default long drainTenure() {
+        return 0;
+    }
+
     TopologyObserver observer();
 
     record CircuitBreakerState(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped) {}
