@@ -88,6 +88,19 @@ class ArtifactVersionsPutCodecTest {
         assertThat(other).isNotEqualTo(original);
     }
 
+    /// #420 R-2: the array is copied on construction and on access, so neither the caller's source array nor an array
+    /// read back through the accessor can change the binding.
+    @Test
+    void contentValue_copiesItsManifest_onConstructionAndOnAccess() {
+        var source = manifest((byte) 7);
+        var value = new AetherValue.ArtifactContentValue(42L, "md5hex", "sha1hex", "sha256hex", 1_700_000_000_000L, source);
+
+        source[0] = 0;
+        value.blocks()[1] = 0;
+
+        assertThat(value.blocks()).isEqualTo(manifest((byte) 7));
+    }
+
     private static byte[] manifest(byte fill) {
         var ids = new byte[64];
 
