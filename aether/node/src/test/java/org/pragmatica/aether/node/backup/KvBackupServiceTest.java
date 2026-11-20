@@ -1643,6 +1643,8 @@ class KvBackupServiceTest {
                                                                  TimeSpan.timeSpan(30).seconds(),
                                                                  environment);
 
+        repository.prepare()
+                  .onFailure(cause -> Assertions.fail(cause.message()));
         return KvBackupService.kvBackupService(kvStore, CODEC, repository, scheduler, scheduler::now, warnings::add, TIMING);
     }
 
