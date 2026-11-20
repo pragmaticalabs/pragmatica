@@ -603,8 +603,8 @@ class GitBackupRepositoryTest {
         assertThat(unreadableReason(GitBackupRepository.classifyHistory(128, Option.some("fatal: bad revision")))).contains("128");
         assertThat(unreadableReason(GitBackupRepository.classifyHistory(0, Option.some("")))).contains("git exited 0");
         assertThat(unreadableReason(GitBackupRepository.classifyHistory(0, Option.none()))).contains("output was lost");
-        assertThat(shimmedHistory(SHIM_FAILS)).isInstanceOf(GitRead.Unreadable.class);
-        assertThat(shimmedHistory(SHIM_PRINTS_NOTHING)).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(shimmedHistory("fails", SHIM_FAILS)).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(shimmedHistory("prints-nothing", SHIM_PRINTS_NOTHING)).isInstanceOf(GitRead.Unreadable.class);
     }
 
     @Test
@@ -628,9 +628,9 @@ class GitBackupRepositoryTest {
         assertThat(repository.restoreRef().isFailure()).isTrue();
     }
 
-    private GitRead<List<String>> shimmedHistory(String behaviour) {
-        var env = gitShim(temp.resolve("bin"), "log", behaviour);
-        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"), Option.none(), "backup", TIMEOUT, env);
+    private GitRead<List<String>> shimmedHistory(String name, String behaviour) {
+        var env = gitShim(temp.resolve("bin-" + name), "log", behaviour);
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local-" + name), Option.none(), "backup", TIMEOUT, env);
 
         repository.prepare()
                   .flatMap(_ -> repository.commit("one\n", "first"))
