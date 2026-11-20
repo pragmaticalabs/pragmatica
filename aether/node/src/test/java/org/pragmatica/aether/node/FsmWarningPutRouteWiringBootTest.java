@@ -19,6 +19,8 @@ import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
+import org.pragmatica.aether.deployment.cluster.fsm2.Warnings;
+import org.pragmatica.aether.deployment.cluster.fsm2.Warnings.Verdict;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
@@ -62,7 +64,8 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// #3503: this node is also the cluster FSM's leader, and its `Warnings.difference` closes a mirrored open row whose family hold test
 /// refuses the subject. The close is a live committed put whose recovery notice passes the gate, at a time the test does not control. So
 /// the rows these tests count use a family whose hold test admits every subject (`worker-absence-unjudgeable`), which the leader keeps
-/// open and never rewrites; the orphan case is pinned on its own, by waiting for the close itself.
+/// open and writes nothing that passes the gate; the orphan case is pinned on its own, by waiting for the close itself. The fixture's
+/// family choice is pinned directly, by the hold test's verdict for each code (`fixtureCodes_...`), with no wait.
 class FsmWarningPutRouteWiringBootTest {
     @TempDir
     Path tempDir;
@@ -71,7 +74,7 @@ class FsmWarningPutRouteWiringBootTest {
     private static final TimeSpan START_BOUND = timeSpan(30).seconds();
     private static final TimeSpan DELIVERY_BOUND = timeSpan(10).seconds();
     private static final SliceCodec CODEC = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
-    /// A catalogued opener whose family hold test admits every subject, so the leader keeps the row open and writes nothing after it.
+    /// A catalogued opener whose family hold test admits every subject, so the leader keeps the row open and writes nothing that passes the gate.
     private static final String CATALOGUED_CODE = "worker-absence-unjudgeable";
     /// A catalogued opener whose hold test refuses a subject that is not an artifact: the leader closes the row (#3503).
     private static final String ORPHANED_CODE = "retry-exhausted-unsettled";
@@ -155,6 +158,23 @@ class FsmWarningPutRouteWiringBootTest {
                                    .anyMatch(line -> line.contains("replay in progress") && line.contains(subject));
         assertThat(passed() - before).as("the replay passes nothing; the leader's close of the orphaned row passes once")
                                      .isEqualTo(1L);
+    }
+
+    /// #3503 (m11): what keeps the leader from closing the replay test's row is the family of `CATALOGUED_CODE`, and the counts above pass
+    /// on one run even with a family the leader closes. This pins the choice with no wait: the family's hold test, asked about the fixture
+    /// subject (not an artifact, so no model is consulted), admits for `CATALOGUED_CODE` and refuses for `ORPHANED_CODE`.
+    @Test
+    void fixtureCodes_areAFamilyTheLeaderKeepsOpen_andOneItCloses() {
+        assertThat(holdVerdict(CATALOGUED_CODE)).as("the leader's hold test admits the replay fixture's subject, so it never closes the row")
+                                                .isInstanceOf(Verdict.Admitted.class);
+        assertThat(holdVerdict(ORPHANED_CODE)).as("control: the orphan fixture's code is refused, so the leader closes its row")
+                                              .isInstanceOf(Verdict.Refused.class);
+    }
+
+    private Verdict holdVerdict(String code) {
+        return Warnings.TABLE.get(code)
+                             .test()
+                             .test(null, subject, Warnings.SINGLE, Warnings.SINGLE);
     }
 
     private void awaitClosed(FsmWarningKey key) {
