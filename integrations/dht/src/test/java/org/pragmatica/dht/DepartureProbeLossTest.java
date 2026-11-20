@@ -34,16 +34,48 @@ import static org.pragmatica.dht.DepartureDirectRuns.soleKey;
 import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine;
 
 /// #3345: a failed pre-exit probe is ONE holder loss. The probe's own failing answer (a "draining" nack or a token mismatch) is not
-/// a loss by itself: the probe round reports it once, as "probe failed".
+/// a loss by itself: the probe round reports it once, as "probe failed". A "draining" answer is terminal for the target within the
+/// run, whatever the page type (ac517fb077): the target leaves the owed set and is never paged again.
 class DepartureProbeLossTest {
     private static final DHTConfig RF1 = new DHTConfig(1, 1, 1, DHTConfig.DEFAULT_TIMEOUT);
 
-    /// The key is acked; the first probe is answered by a "draining" nack, every later one by an ack. One loss, the key re-paged
-    /// and acked, nothing owed.
+    /// The key is acked; the first probe is answered by a "draining" nack. One loss, the target terminal: never paged again, not owed.
     @Test
     @Timeout(20)
     void drainingNackToTheFirstProbe_countsOneHolderLoss() {
-        assertOneLossWhenTheFirstProbeAnswers(Reply.DRAINING_NACK);
+        var ring = fiveNodeRing();
+        var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+        var key = soleKey(ring, "pd");
+        node.putLocal(key, value("payload")).await();
+        var network = ScriptedNetwork.scripted((_, _) -> Reply.ACK);
+        network.probesAnswer(_ -> Reply.DRAINING_NACK);
+        var direct = direct(node, network, 1_500, 100, Set::of);
+        var holderLosses = direct.run().holderLosses();
+        var target = network.probes().getFirst().target();
+
+        assertThat(holderLosses).as("one loss for the draining probe").isEqualTo(1);
+        assertThat(network.sends().stream().filter(sent -> sent.target().equals(target))).as("data sends to the draining target: no re-page")
+                                                                                         .hasSize(1);
+        assertThat(network.probes().stream().filter(sent -> sent.target().equals(target))).as("probes to the draining target").hasSize(1);
+        assertThat(direct.report().owed()).as("the draining target is not owed").isZero();
+    }
+
+    /// The key is acked, the probe answered "draining", and any later data page to the same node would be answered "draining" too.
+    /// One loss, and no second data page: the probe's refusal already made the target terminal.
+    @Test
+    @Timeout(20)
+    void probeThenDataDraining_sameNode_countsOneLoss() {
+        var ring = fiveNodeRing();
+        var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+        node.putLocal(soleKey(ring, "pt"), value("payload")).await();
+        var network = ScriptedNetwork.scripted((index, _) -> index == 0
+                                                             ? Reply.ACK
+                                                             : Reply.DRAINING_NACK);
+        network.probesAnswer(_ -> Reply.DRAINING_NACK);
+        var direct = direct(node, network, 1_500, 100, Set::of);
+
+        assertThat(direct.run().holderLosses()).as("probe draining then data draining, same node: one loss").isEqualTo(1);
+        assertThat(network.sends()).as("sends to the draining node: the first data page only").hasSize(1);
     }
 
     /// As above, the first probe answered by an ack carrying another boot token.
