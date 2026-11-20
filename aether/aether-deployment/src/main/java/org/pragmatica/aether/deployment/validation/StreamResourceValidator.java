@@ -390,10 +390,13 @@ public sealed interface StreamResourceValidator {
                                                                             + ": the truncation policy of an existing stream cannot change"));
     }
 
+    /// A row with no stored declaration, or a declaration with no policy, is a `window` stream: `window` is the policy the
+    /// parser resolves for a section that names none, so a stream committed before the declaration existed can be redeployed.
     private static Option<TruncationPolicy> truncationPolicy(StreamConfig config) {
-        return config.declaration()
-                     .flatMap(StreamDeclaration::truncation)
-                     .flatMap(TruncationDeclaration::policy);
+        return Option.some(config.declaration()
+                                 .flatMap(StreamDeclaration::truncation)
+                                 .flatMap(TruncationDeclaration::policy)
+                                 .or(TruncationPolicy.WINDOW));
     }
 
     private static Option<StreamValidationFailure> maxEventSizeFailure(String field,

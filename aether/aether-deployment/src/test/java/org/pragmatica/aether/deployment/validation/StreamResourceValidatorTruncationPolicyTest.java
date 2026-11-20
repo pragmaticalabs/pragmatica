@@ -101,6 +101,18 @@ class StreamResourceValidatorTruncationPolicyTest {
             assertThat(accepted(ORDERS + WINDOW, committedWith(TruncationPolicy.UNTIL_CONSUMED))).doesNotContain("orders");
         }
 
+        /// A stream committed before the declaration existed carries no stored policy; it is a `window` stream, so a
+        /// `window` redeploy is accepted and an `until_consumed` one is still not.
+        @Test
+        void aRowWithNoDeclaration_isAWindowStream() {
+            Function<String, Option<StreamConfig>> legacy = key -> ENGINE_KEY.equals(key)
+                                                                   ? Option.some(StreamConfig.DEFAULT.withName(ENGINE_KEY)
+                                                                                                     .withPartitions(4))
+                                                                   : Option.none();
+
+            assertThat(refusals(ORDERS + WINDOW, legacy)).isEmpty();
+        }
+
         /// Control: an unchanged `window` redeploy is accepted, so the tripwire's refusal is the gate's, not the row's.
         @Test
         void windowToWindow_isAccepted() {
