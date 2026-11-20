@@ -649,8 +649,7 @@ public sealed interface Warnings {
     /// every node derives the same notice at one index; the node publishes it through its committed-event gate (one publisher per
     /// index, `ClusterEventAggregator.emitCommitted`), so notices reach the operator in commit order.
     static Option<Notice> committedNotice(FsmWarningKey key, Option<FsmWarningValue> before, FsmWarningValue after) {
-        return Option.option(TABLE.get(key.code()))
-                     .flatMap(family -> transition(family, key, before, after));
+        return Option.option(TABLE.get(key.code())).flatMap(family -> transition(family, key, before, after));
     }
 
     private static Option<Notice> transition(Family family,
@@ -664,8 +663,10 @@ public sealed interface Warnings {
             return Option.some(Notice.notice(key.code(), key.subject(), after.message()));
         }
 
-        return !held.isEmpty() && holds.isEmpty()
-               ? Option.some(Notice.notice(FAMILIES.get(key.code()), key.subject(), after.message()))
+        return ! held.isEmpty() && holds.isEmpty()
+               ? Option.some(Notice.notice(FAMILIES.get(key.code()),
+                                           key.subject(),
+                                           after.message()))
                : Option.none();
     }
 

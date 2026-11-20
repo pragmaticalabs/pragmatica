@@ -2047,10 +2047,9 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
         return Option.from(Arrays.stream(OperatorWarningCode.values())
                                  .filter(code -> code.code()
                                                      .equals(notice.code()))
-                                 .findFirst())
-                     .map(code -> OperatorWarning.operatorWarning(code,
-                                                                  notice.subject(),
-                                                                  notice.message()));
+                                 .findFirst()).map(code -> OperatorWarning.operatorWarning(code,
+                                                                                           notice.subject(),
+                                                                                           notice.message()));
     }
 
     @Contract
