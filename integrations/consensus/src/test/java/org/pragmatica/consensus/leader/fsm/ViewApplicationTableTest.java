@@ -681,16 +681,19 @@ class ViewApplicationTableTest {
         assertThat(node.state() + " " + node.leader()).as("the rescheduled tick elected").isEqualTo("Led N1");
     }
 
-    /// Item 6: a reconnect that restores the view goes through the view path, so a local node elects from the
-    /// restored view (I3: the first node) instead of keeping the leader the eviction left.
+    /// Item 6: a reconnect that restores the view stores it, but never elects, in local mode either (#3044: a
+    /// reconnect never adopts). The leader the eviction left is in the restored view (I2 holds), so it stays; electing
+    /// from the restored view would swap it for the view's first node (integrations/cluster
+    /// `LeaderManagerLocalModeOrderTest.localMode_staleEvictionAfterLowerNodeReconnect_keepsTheAdoptedLeader`).
     @Test
-    void item6_localReconnectRestoringTheView_electsFromIt() {
+    void item6_localReconnectRestoringTheView_storesItAndKeepsTheLeader() {
         node = Node.startedIn(StartState.LED, Mode.LOCAL);
         node.manager.peerDisconnected(new PeerDisconnected(N1, List.of(N2), ObservationSource.QUIC, 2L));
         assertThat(node.state() + " " + node.leader()).as("control").isEqualTo("Led N2");
 
         node.manager.peerReconnected(new PeerReconnected(N1, INITIAL_VIEW, ObservationSource.QUIC, 3L));
 
-        assertThat(node.state() + " " + node.leader()).isEqualTo("Led N1");
+        assertThat(node.ctx.currentTopology()).as("the reconnect restored the view").contains(N1);
+        assertThat(node.state() + " " + node.leader()).as("a reconnect never elects").isEqualTo("Led N2");
     }
 }

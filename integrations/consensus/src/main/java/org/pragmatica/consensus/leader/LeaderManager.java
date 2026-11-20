@@ -532,9 +532,9 @@ public interface LeaderManager {
         /// of going `Led` -> `ReElecting` -> `Led`, which would emit an intermediate "no leader" notification (#3044):
         /// the change is applied first, through the storage the FSM uses, then the local leader is elected from the
         /// stored view, then the event is dispatched. A change the storage does not apply (a stale view; a removal of an
-        /// absent node, of self or of the last node) neither elects nor dispatches: a local leader is a function of the
-        /// stored view (I3's election rule), so an unchanged view moves nothing. The FSM finds the change already
-        /// applied and holds the leader to the stored view (I2): an empty view elects nothing, so `Led` loses it.
+        /// absent node, of self or of the last node) neither elects nor dispatches: an unchanged view moves nothing. The
+        /// FSM finds the change already applied and holds the leader to the stored view (I2): an empty view elects
+        /// nothing, so `Led` loses it. A reconnect never takes this path (see [#peerReconnected]): it never elects.
         private void dispatchViewChange(BooleanSupplier applyLocally, ClusterFsmEvent event) {
             if (!localMode) {
                 fsm.dispatch(event);
@@ -567,8 +567,12 @@ public interface LeaderManager {
             // reschedule an Electing node's rank staircase for no reason. Its sequence is still recorded (#2971): the
             // stored view already equals this reconnect's, so the write changes no content, but an older eviction
             // routed late must find the fence moved past it, or its view would drop a peer whose link is back.
+            // A reconnect never elects, in local mode either (#3044): it is dispatched to the FSM, which stores the view
+            // and holds the leader to it (I2), but it never swaps a leader that is still in the view for the view's first
+            // node. A lower node coming back is not a reason to move the leader; I3's election ticks cover a node that
+            // holds no leader.
             if (restoresTheView(peerReconnected.nodeId(), peerReconnected.topology())) {
-                dispatchView(nodeAdded(peerReconnected.nodeId(), peerReconnected.topology(), peerReconnected.sequence()));
+                fsm.dispatch(nodeAdded(peerReconnected.nodeId(), peerReconnected.topology(), peerReconnected.sequence()));
             } else {
                 context.applyTopology(nodeAdded(peerReconnected.nodeId(),
                                                 peerReconnected.topology(),
