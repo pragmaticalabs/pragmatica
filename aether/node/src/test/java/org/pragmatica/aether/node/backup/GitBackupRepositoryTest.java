@@ -434,6 +434,98 @@ class GitBackupRepositoryTest {
         assertThat(repository.readCommitId("HEAD")).isEqualTo(GitRead.present(git(temp.resolve("local"), "rev-parse", "HEAD").strip()));
     }
 
+    private static RejectionRecord record() {
+        return RejectionRecord.rejectionRecord("lineage-a", 3L, 41L, "inc-9", "abc123");
+    }
+
+    private GitBackupRepository committedRepository(String name, Option<String> remote) {
+        var repository = repository(name, remote);
+
+        repository.prepare();
+        repository.commit("state-1\n", "first")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        return repository;
+    }
+
+    private int commitCount(String name) {
+        return Integer.parseInt(git(temp.resolve(name), "rev-list", "--count", "HEAD").strip());
+    }
+
+    @Test
+    void rejectionRecord_roundTrips_andEveryUnparseableTextIsNone() {
+        var original = record();
+
+        assertThat(RejectionRecord.parse(original.render())).isEqualTo(Option.some(original));
+        assertThat(RejectionRecord.parse("")).isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse("garbage\nlineageId=x")).isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(original.render().replace("rejection-record/1", "rejection-record/2"))).isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(original.render().replace("revision=41", "revision=forty-one"))).isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(original.render().replace("commit=abc123", ""))).isEqualTo(Option.none());
+        assertThat(original.render()).contains("commit=abc123");
+    }
+
+    @Test
+    void commitRejection_commitsTheRecordBesideFile_andLeavesTheFileBlobAlone() {
+        var repository = committedRepository("local", Option.none());
+        var dir = temp.resolve("local");
+        var blobBefore = git(dir, "rev-parse", "HEAD:" + GitBackupRepository.FILE).strip();
+
+        repository.commitRejection(record())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(git(dir, "show", "HEAD:" + GitBackupRepository.REJECTION_FILE)).isEqualTo(record().render());
+        assertThat(git(dir, "rev-parse", "HEAD:" + GitBackupRepository.FILE).strip()).isEqualTo(blobBefore);
+        assertThat(repository.readPath("HEAD", GitBackupRepository.REJECTION_FILE)).isInstanceOf(GitRead.Present.class);
+        assertThat(commitCount("local")).isEqualTo(2);
+    }
+
+    @Test
+    void commitRejection_ofTheSameRecordTwice_failsAndAddsNoCommit() {
+        var repository = committedRepository("local", Option.none());
+
+        repository.commitRejection(record())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.commitRejection(record())
+                             .isFailure()).isTrue();
+        assertThat(commitCount("local")).isEqualTo(2);
+    }
+
+    @Test
+    void removeRejection_removesTheRecord_andAnAbsentOneIsAFailureWithNoCommit() {
+        var repository = committedRepository("local", Option.none());
+
+        repository.commitRejection(record())
+                  .flatMap(_ -> repository.removeRejection())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readPath("HEAD", GitBackupRepository.REJECTION_FILE)).isInstanceOf(GitRead.Absent.class);
+        assertThat(repository.readPath("HEAD", GitBackupRepository.FILE)).isInstanceOf(GitRead.Present.class);
+        assertThat(commitCount("local")).isEqualTo(3);
+        assertThat(repository.removeRejection()
+                             .isFailure()).isTrue();
+        assertThat(commitCount("local")).isEqualTo(3);
+    }
+
+    @Test
+    void rejectionPrimitives_neverPush_thePushIsPushOnly() {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var repository = committedRepository("local", Option.some(remote));
+
+        repository.push()
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        var head = git(temp.resolve("remote.git"), "rev-parse", "backup").strip();
+
+        repository.commitRejection(record())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        assertThat(git(temp.resolve("remote.git"), "rev-parse", "backup").strip()).isEqualTo(head);
+
+        repository.removeRejection()
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        assertThat(git(temp.resolve("remote.git"), "rev-parse", "backup").strip()).isEqualTo(head);
+    }
+
     private GitBackupRepository repository(String name, Option<String> remote) {
         return GitBackupRepository.gitBackupRepository(temp.resolve(name), remote, "backup", TIMEOUT);
     }

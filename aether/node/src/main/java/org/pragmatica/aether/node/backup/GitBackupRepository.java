@@ -52,6 +52,8 @@ public record GitBackupRepository(Path dir,
     /// The operator's genesis declaration: `<lineage> <incarnation>`. Committed beside [#FILE] by
     /// `aether backup declare-genesis`; the only thing that lets a different lineage replace the head.
     public static final String DECLARATION = "declared-lineage.txt";
+    /// The rejection record beside [#FILE] (#3303): why a restore candidate was refused (name is a guess).
+    public static final String REJECTION_FILE = "restore-rejected.txt";
     /// Bound on any single git command — long enough for a push over a slow link, short enough that a
     /// hung remote cannot stall the backup worker indefinitely.
     public static final TimeSpan DEFAULT_TIMEOUT = TimeSpan.timeSpan(60).seconds();
@@ -240,6 +242,16 @@ public record GitBackupRepository(Path dir,
         return git("log", "--format=%H %s", ref).map(output -> output.lines()
                                                                      .filter(line -> !line.isBlank())
                                                                      .toList());
+    }
+
+    /// STUB (red commit).
+    public Result<Unit> commitRejection(RejectionRecord record) {
+        return Result.unitResult();
+    }
+
+    /// STUB (red commit).
+    public Result<Unit> removeRejection() {
+        return Result.unitResult();
     }
 
     // --- internals ---
