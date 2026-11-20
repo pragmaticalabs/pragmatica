@@ -10,6 +10,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
@@ -68,6 +69,34 @@ class InventoryProvenanceTest {
         assertThat(extent.firstStart()).isEqualTo(local.history().getFirst().startOffset());
         assertThat(extent.lastEpoch()).isEqualTo(Option.some(reached.key().unwrap()));
         assertThat(extent.historyDigest()).isEqualTo(AppendLog.historyDigestOf(asLogEntries(local.history())));
+    }
+
+    /// Ruling on T27's `low`: the inventory's `low` is the WAL's on-disk lowOffset, never the in-memory ring tail
+    /// (`earliestRetainedOffset`), which an age eviction moves while the WAL keeps every record until a seal-truncate.
+    /// Red under "the inventory reads SPM's earliestRetainedOffset" (3 vs 0).
+    @Test
+    void inspectLog_afterRingEviction_reportsTheWalLow_notTheRingTail() {
+        manager.close();
+        manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+        manager.ensureStreamMaterialized(aged()).onFailure(cause -> fail(cause.message()));
+        for (var i = 0; i < 3; i++) {
+            manager.publishLocal(STREAM, PARTITION, PAYLOAD, 1L, E1).onFailure(cause -> fail(cause.message()));
+        }
+        for (var i = 0; i < 4; i++) {
+            manager.publishLocal(STREAM, PARTITION, PAYLOAD, System.currentTimeMillis(), E2).onFailure(cause -> fail(cause.message()));
+        }
+        manager.evictRingsByAge();
+
+        var local = manager.localProvenance(STREAM, PARTITION).unwrap().unwrap();
+        var extent = AppendLog.Opener.directory(walDir).inspect(logName()).unwrap();
+
+        assertThat(local.low()).as("the ring tail moved past the three aged-out events").isEqualTo(3L);
+        assertThat(extent.lowOffset()).as("the WAL still holds them").isZero();
+        assertThat(extent.headOffset()).isEqualTo(local.head());
+    }
+
+    private static StreamConfig aged() {
+        return StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, 60_000L), "latest");
     }
 
     private static List<EpochStart> asLogEntries(List<ProvenanceEntry> history) {
