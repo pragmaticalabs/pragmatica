@@ -922,17 +922,25 @@ public final class EmberCluster {
         return outcome;
     }
 
-    /// #1611: record the failing node, THEN signal the abort. The abort snapshots `startFailures`, so
-    /// the entry must already be there when `firstFailure` fires; the two handlers sit on the same
-    /// promise and run in registration order, so the order below is the guarantee. Package-visible so
-    /// `EmberClusterStartFailureOrderTest` pins it with a delayed map put.
+    /// #1611: record the failing node, THEN signal the abort, in ONE `onFailure` handler. The abort
+    /// snapshots `startFailures`, so the entry must already be there when `firstFailure` fires. With two
+    /// registrations on `start`, a `start` that resolved between them ran the second inline in `push()`
+    /// while the first was still queued, so the signal could precede the put; one handler has no such
+    /// window. Package-visible so `EmberClusterStartFailureOrderTest` pins it with a delayed map put.
     static <T> Promise<T> recordFailureThenSignal(Promise<T> start,
                                                   String nodeIdStr,
                                                   Map<String, String> startFailures,
                                                   Promise<Unit> firstFailure) {
-        return start.onFailure(cause -> startFailures.put(nodeIdStr,
-                                                          cause.message()))
-                    .onFailure(firstFailure::fail);
+        return start.onFailure(cause -> recordThenSignal(cause, nodeIdStr, startFailures, firstFailure));
+    }
+
+    private static Promise<Unit> recordThenSignal(Cause cause,
+                                                  String nodeIdStr,
+                                                  Map<String, String> startFailures,
+                                                  Promise<Unit> firstFailure) {
+        startFailures.put(nodeIdStr, cause.message());
+
+        return firstFailure.fail(cause);
     }
 
     /// #727: the first node-start failure aborts the whole start, instead of waiting for every node.

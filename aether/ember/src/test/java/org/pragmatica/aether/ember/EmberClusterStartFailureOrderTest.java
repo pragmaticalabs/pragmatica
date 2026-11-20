@@ -25,8 +25,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// exactly as `captureStartFailure` does. The handlers may run off the test thread, so the snapshot is awaited
 /// with a bound rather than read at once (a plain read passed or failed on a null, never on the order).
 ///
-/// Red-before is a hunk swap: in `EmberCluster.recordFailureThenSignal`, move `.onFailure(firstFailure::fail)`
-/// above the `startFailures.put` handler and the snapshot read here is empty.
+/// Red-before is a swap inside the single handler (`EmberCluster.recordThenSignal`): fire the signal before the
+/// `startFailures.put` and the snapshot read here is empty, on both the pending and the already-resolved path.
+///
+/// The already-resolved test pins the inline path (`start` resolved before registration). It is NOT red at the
+/// former two-handler head 1ee671a6c9: there both handlers run inline in registration order, and the old window
+/// (start resolving between the two registrations) is a few instructions wide with no hook a test can reach
+/// (`Promise` is sealed, so it cannot be proxied). It pins the shape, not the former race.
 class EmberClusterStartFailureOrderTest {
     private static final long PUT_DELAY_MILLIS = 200;
     private static final TimeSpan BOUND = TimeSpan.timeSpan(10).seconds();
@@ -44,6 +49,21 @@ class EmberClusterStartFailureOrderTest {
         start.fail(cause("bind failed"));
         assertThat(snapshot.await(BOUND).unwrap()).describedAs("the snapshot taken when the abort fires must already name the triggering node")
                   .containsEntry("node-2", "bind failed");
+    }
+
+    @Test
+    void signal_seesTheFailingNodeEntry_whenStartIsAlreadyResolved() {
+        var failures = new DelayedPutMap();
+        var firstFailure = Promise.<Unit> promise();
+        var snapshot = Promise.<Map<String, String>> promise();
+
+        firstFailure.onFailure(_ -> snapshot.succeed(Map.copyOf(failures)));
+        var start = Promise.<Unit> promise();
+
+        start.fail(cause("bind failed"));
+        EmberCluster.recordFailureThenSignal(start, "node-3", failures, firstFailure);
+        assertThat(snapshot.await(BOUND).unwrap()).describedAs("the inline path must record the node before it signals")
+                  .containsEntry("node-3", "bind failed");
     }
 
     @Test
