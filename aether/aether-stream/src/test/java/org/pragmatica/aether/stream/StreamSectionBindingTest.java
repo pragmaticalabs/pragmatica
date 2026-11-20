@@ -132,6 +132,18 @@ class StreamSectionBindingTest {
                                                                     .withDeclared(RetentionDimensions.BYTES));
         }
 
+        /// F4 (#3491): a TOML-declared stream's ring is sized by its declared count and bytes, as before this PR (the TOML
+        /// path never took the declaration defaults for a declared key). EVERY_KEY declares count 5 000 and bytes 8 MB =
+        /// 8 388 608: floor = 64 + 24 x 5 000 + min(8 388 608, 256 KiB) = 64 + 120 000 + 262 144 = 382 208; cap =
+        /// 64 + 120 000 + 8 388 608 = 8 508 672.
+        @Test
+        void declaredToml_ringFloorAndCapEqualTheDeclaredValues() {
+            var retention = bindWith(new StreamPublisherFactory(), EVERY_KEY).retention();
+
+            assertThat(OffHeapRingBuffer.floorBytes(retention.maxCount(), retention.maxBytes())).isEqualTo(382_208L);
+            assertThat(OffHeapRingBuffer.capBytes(retention.maxCount(), retention.maxBytes())).isEqualTo(8_508_672L);
+        }
+
         private static void assertEveryKeyBound(StreamConfig config) {
             assertThat(config.name()).isEqualTo(ALIAS);
             assertThat(config.partitions()).isEqualTo(3);

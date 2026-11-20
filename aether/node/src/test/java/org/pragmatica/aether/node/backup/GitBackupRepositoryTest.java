@@ -4,19 +4,26 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.backup;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import org.pragmatica.aether.node.backup.GitBackupRepository.BackupRepositoryError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
 import com.sun.net.httpserver.HttpServer;
@@ -128,6 +135,7 @@ class GitBackupRepositoryTest {
         boolean rejected = pushed.fold(cause -> cause instanceof BackupRepositoryError.PushRejected, _ -> false);
 
         assertThat(rejected).isTrue();
+        assertThat(pushed.fold(Cause::message, _ -> "pushed")).as("the message carries git's own status line").contains("[rejected]");
         assertThat(git(Path.of(remote), "show", "backup:" + GitBackupRepository.FILE)).isEqualTo("first\n");
     }
 
@@ -299,6 +307,810 @@ class GitBackupRepositoryTest {
         throw new AssertionError("the worker never reached the output read");
     }
 
+    // --- three-valued reads (#3464) ---
+    private static final String COMMIT_ID = "0123456789abcdef0123456789abcdef01234567";
+
+    /// Every primitive, fed every answer that is not a definite one: exit 0 whose output was lost, a failure (128), a timeout (-1). None may read as
+    /// absent: absent is a claim about the repository, and these are the cases where git said nothing about it.
+    @Test
+    void everyPrimitive_readsLostOutputAndFailures_asUnreadable_neverAbsent() {
+        var lost = Option.<String>none();
+
+        for (var exit : List.of(0, 128, -1)) {
+            var output = exit == 0 ? lost : Option.some("fatal: boom\n");
+
+            assertThat(GitBackupRepository.classifyRemoteBranch(exit, output, "backup")).as("P1 remote %d", exit).isInstanceOf(GitRead.Unreadable.class);
+            assertThat(GitBackupRepository.classifyLocalBranch(exit, output)).as("P1 local %d", exit).isInstanceOf(GitRead.Unreadable.class);
+            assertThat(GitBackupRepository.classifyCommitId(exit, output)).as("P2 %d", exit).isInstanceOf(GitRead.Unreadable.class);
+            assertThat(GitBackupRepository.classifyPath(exit, output, "declared-lineage.txt")).as("P3 %d", exit).isInstanceOf(GitRead.Unreadable.class);
+            assertThat(GitBackupRepository.classifyFile(exit, output)).as("P4 %d", exit).isInstanceOf(GitRead.Unreadable.class);
+            assertThat(reasonOf(GitBackupRepository.classifyFile(exit, output))).as("the reason names why, %d", exit).contains("git exited " + exit);
+        }
+    }
+
+    /// A non-zero exit is never an answer, whatever the output looks like: output that would classify as present or absent under exit 0 is unreadable.
+    @Test
+    void everyPrimitive_readsANonZeroExit_asUnreadable_whateverTheOutputLooksLike() {
+        var listing = Option.some(GitBackupRepository.FILE + "\n");
+
+        assertThat(GitBackupRepository.classifyRemoteBranch(128, Option.some(COMMIT_ID + "\trefs/heads/backup\n"), "backup")).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyLocalBranch(128, Option.some(""))).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyCommitId(128, Option.some(COMMIT_ID + "\n"))).as("C1").isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyPath(128, listing, GitBackupRepository.FILE)).as("P1 would be present").isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyPath(128, listing, "declared-lineage.txt")).as("P2 would be absent").isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyFile(128, Option.some("state\n"))).isInstanceOf(GitRead.Unreadable.class);
+    }
+
+    /// Exit 2 is the only definite "no such branch" (`ls-remote --exit-code`, `show-ref --exists`) — and only when the output came back with it.
+    @Test
+    void branchRead_exit2_isAbsent_butNotWhenItsOutputWasLost() {
+        assertThat(GitBackupRepository.classifyRemoteBranch(2, Option.some(""), "backup")).isInstanceOf(GitRead.Absent.class);
+        assertThat(GitBackupRepository.classifyLocalBranch(2, Option.some(""))).isInstanceOf(GitRead.Absent.class);
+        assertThat(GitBackupRepository.classifyRemoteBranch(2, Option.none(), "backup")).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyLocalBranch(2, Option.none())).isInstanceOf(GitRead.Unreadable.class);
+    }
+
+    @Test
+    void branchRead_isPresent_onlyForALineEndingInTheBranch() {
+        assertThat(GitBackupRepository.classifyRemoteBranch(0, Option.some(COMMIT_ID + "\trefs/heads/backup\n"), "backup")).isInstanceOf(GitRead.Present.class);
+        assertThat(GitBackupRepository.classifyRemoteBranch(0, Option.some(COMMIT_ID + "\trefs/heads/other/backup\n"), "backup")).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyRemoteBranch(0, Option.some(""), "backup")).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyLocalBranch(0, Option.some(""))).isInstanceOf(GitRead.Present.class);
+    }
+
+    /// The whole listing is read: a non-empty one that names the path is present, one that does not is absent, an empty one is lost output (every
+    /// commit holds a file).
+    @Test
+    void pathRead_isAbsent_onlyForANonEmptyListingWithoutThePath() {
+        var path = "declared-lineage.txt";
+
+        assertThat(GitBackupRepository.classifyPath(0, Option.some(GitBackupRepository.FILE + "\n"), path)).isInstanceOf(GitRead.Absent.class);
+        assertThat(GitBackupRepository.classifyPath(0, Option.some("other.txt\n"), path)).as("other names").isInstanceOf(GitRead.Absent.class);
+        assertThat(GitBackupRepository.classifyPath(0, Option.some(""), path)).as("empty listing").isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyPath(0, Option.some("\n"), path)).as("blank listing").isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyPath(0, Option.some(GitBackupRepository.FILE + "\n" + path + "\n"), path)).isInstanceOf(GitRead.Present.class);
+        assertThat(GitBackupRepository.classifyPath(0, Option.some(GitBackupRepository.FILE + "\n"), GitBackupRepository.FILE)).isInstanceOf(GitRead.Present.class);
+        assertThat(GitBackupRepository.classifyPath(0, Option.some(path + ".bak\n"), path)).as("a longer name is another entry").isInstanceOf(GitRead.Absent.class);
+        assertThat(GitBackupRepository.classifyPath(0, Option.some(""), GitBackupRepository.FILE)).isInstanceOf(GitRead.Unreadable.class);
+    }
+
+    @Test
+    void commitIdAndFileReads_areUnreadable_whenBlank_andPresent_whenRead() {
+        assertThat(GitBackupRepository.classifyCommitId(0, Option.some("\n"))).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(GitBackupRepository.classifyCommitId(0, Option.some("not-a-commit\n"))).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(presentValue(GitBackupRepository.classifyCommitId(0, Option.some(COMMIT_ID + "\n")))).isEqualTo("0123456789abcdef0123456789abcdef01234567");
+        assertThat(presentValue(GitBackupRepository.classifyCommitId(0, Option.some(COMMIT_ID + COMMIT_ID.substring(0, 24) + "\n")))).as("a SHA-256 id").hasSize(64);
+        assertThat(GitBackupRepository.classifyFile(0, Option.some(""))).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(presentValue(GitBackupRepository.classifyFile(0, Option.some("state\n")))).isEqualTo("state\n");
+    }
+
+    @Test
+    void readBranch_isAbsent_onABrandNewRemote_andPresentOncePushed() {
+        var repository = repository("local", Option.some(bareRemote(temp.resolve("remote.git"))));
+
+        repository.prepare();
+        assertThat(repository.readBranch()).isInstanceOf(GitRead.Absent.class);
+
+        repository.commit("state-1\n", "first")
+                  .flatMap(_ -> repository.push())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readBranch()).isInstanceOf(GitRead.Present.class);
+    }
+
+    @Test
+    void readBranch_withNoRemote_isAbsentOnAFreshInit_andPresentOnceCommitted() {
+        var repository = repository("local", Option.none());
+
+        repository.prepare();
+        assertThat(repository.readBranch()).isInstanceOf(GitRead.Absent.class);
+
+        repository.commit("state-1\n", "first")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readBranch()).isInstanceOf(GitRead.Present.class);
+    }
+
+    @Test
+    @Timeout(90)
+    void readBranch_overAHungRemote_isUnreadable() {
+        var repository = sshRepository(HANGING_SSH, TimeSpan.timeSpan(2).seconds());
+
+        repository.prepare();
+
+        assertThat(repository.readBranch()).isInstanceOf(GitRead.Unreadable.class);
+    }
+
+    @Test
+    void readPath_isAbsentForAPathTheCommitLacks_andPresentForOneItHas() {
+        var repository = repository("local", Option.none());
+
+        repository.prepare();
+        repository.commit("state-1\n", "first")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readPath("HEAD", GitBackupRepository.DECLARATION)).isInstanceOf(GitRead.Absent.class);
+        assertThat(repository.readPath("HEAD", GitBackupRepository.FILE)).isInstanceOf(GitRead.Present.class);
+        assertThat(presentValue(repository.readFile("HEAD", GitBackupRepository.FILE))).isEqualTo("state-1\n");
+    }
+
+    /// The genesis commit holds only the declaration, before any [GitBackupRepository#FILE] commit: the file is genuinely absent there, and that is
+    /// an answer, not lost output.
+    @Test
+    void readPath_onTheGenesisOnlyCommit_isAbsentForTheFile_andPresentForTheDeclaration() {
+        var repository = repository("local", Option.none());
+
+        repository.prepare();
+        repository.commitFile(GitBackupRepository.DECLARATION, "lineage 1\n", "genesis")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readPath("HEAD", GitBackupRepository.FILE)).isInstanceOf(GitRead.Absent.class);
+        assertThat(repository.readPath("HEAD", GitBackupRepository.DECLARATION)).isInstanceOf(GitRead.Present.class);
+    }
+
+    @Test
+    void readPath_onACommitWithBothFiles_isPresentForBoth() {
+        var repository = repository("local", Option.none());
+
+        repository.prepare();
+        repository.commitFile(GitBackupRepository.DECLARATION, "lineage 1\n", "genesis")
+                  .flatMap(_ -> repository.commit("state-1\n", "first"))
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readPath("HEAD", GitBackupRepository.FILE)).isInstanceOf(GitRead.Present.class);
+        assertThat(repository.readPath("HEAD", GitBackupRepository.DECLARATION)).isInstanceOf(GitRead.Present.class);
+    }
+
+    /// A listing that arrives empty is lost output, never an empty tree: no commit of this repository is empty.
+    @Test
+    void readPath_overAnEmptyListing_isUnreadable_throughTheRealWiring() {
+        var repository = scripted(process(0, InputStream.nullInputStream()));
+
+        assertThat(repository.readPath("HEAD", GitBackupRepository.FILE)).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(repository.readPath("HEAD", GitBackupRepository.DECLARATION)).isInstanceOf(GitRead.Unreadable.class);
+    }
+
+    /// A commit whose tree object is gone: git fails (128) where the old reads said "no such file".
+    @Test
+    void readPath_withTheTreeObjectDeleted_isUnreadable() throws IOException {
+        var repository = repository("local", Option.none());
+
+        repository.prepare();
+        repository.commit("state-1\n", "first")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        var tree = git(temp.resolve("local"), "rev-parse", "HEAD^{tree}").strip();
+
+        Files.delete(temp.resolve("local").resolve(".git/objects").resolve(tree.substring(0, 2)).resolve(tree.substring(2)));
+
+        assertThat(repository.readPath("HEAD", GitBackupRepository.DECLARATION)).isInstanceOf(GitRead.Unreadable.class);
+    }
+
+    @Test
+    void readCommitId_onAnUnknownRef_isUnreadable_andOnAKnownOne_isTheId() {
+        var repository = repository("local", Option.none());
+
+        repository.prepare();
+        repository.commit("state-1\n", "first")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readCommitId("refs/heads/nope")).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(presentValue(repository.readCommitId("HEAD"))).isEqualTo(git(temp.resolve("local"), "rev-parse", "HEAD").strip());
+    }
+
+    /// `^{commit}` peels an annotated tag to the commit it points at; without it `rev-parse` answers the tag object's own id.
+    @Test
+    void readCommitId_onAnAnnotatedTag_isTheCommitId_notTheTagId() {
+        var repository = repository("local", Option.none());
+
+        repository.prepare();
+        repository.commit("state-1\n", "first")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        git(temp.resolve("local"), "tag", "-a", "-m", "annotated", "v1");
+        var commitId = git(temp.resolve("local"), "rev-parse", "HEAD").strip();
+
+        assertThat(git(temp.resolve("local"), "rev-parse", "v1").strip()).as("the tag object has an id of its own").isNotEqualTo(commitId);
+        assertThat(presentValue(repository.readCommitId("v1"))).isEqualTo(commitId);
+    }
+
+    /// `ls-remote` matches a pattern by suffix: a remote holding only `refs/heads/x/backup`, or only a tag named `backup`, has no `refs/heads/backup`,
+    /// and git says so with exit 2.
+    @Test
+    void readBranch_isAbsent_whenTheRemoteHoldsOnlyANestedBranchOrATagOfThatName() {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var writer = repository("writer", Option.some(remote));
+        var reader = repository("reader", Option.some(remote));
+
+        writer.prepare();
+        writer.commit("state-1\n", "first")
+              .onFailure(cause -> Assertions.fail(cause.message()));
+        git(temp.resolve("writer"), "push", remote, "HEAD:refs/heads/x/backup", "HEAD:refs/tags/backup");
+        reader.prepare();
+
+        assertThat(git(Path.of(remote), "for-each-ref", "--format=%(refname)").lines().toList()).containsExactlyInAnyOrder("refs/heads/x/backup", "refs/tags/backup");
+        assertThat(reader.readBranch()).isInstanceOf(GitRead.Absent.class);
+    }
+
+    /// A tag named `refs/heads/backup` is listed as `refs/tags/refs/heads/backup`, which ends in the pattern: git answers exit 0 with a line that is not
+    /// the branch. Only a line ending exactly in a tab and the full ref is the branch, so this is never present; it reads unreadable (git did answer, but
+    /// not with a definite "absent" or "present"). Rule: an ambiguous ls-remote answer fails closed and never reads as absent, which would open the
+    /// fresh-branch path.
+    @Test
+    void readBranch_failsClosed_neverPresentNorAbsent_whenTheRemoteHoldsOnlyATagWhoseNameEndsInTheBranchRef() {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var writer = repository("writer", Option.some(remote));
+        var reader = repository("reader", Option.some(remote));
+
+        writer.prepare();
+        writer.commit("state-1\n", "first")
+              .onFailure(cause -> Assertions.fail(cause.message()));
+        git(temp.resolve("writer"), "push", remote, "HEAD:refs/tags/refs/heads/backup");
+        reader.prepare();
+
+        assertThat(git(Path.of(remote), "for-each-ref", "--format=%(refname)").lines().toList()).containsExactly("refs/tags/refs/heads/backup");
+        assertThat(reader.readBranch()).isInstanceOf(GitRead.Unreadable.class);
+    }
+
+    /// A warning git writes to stderr under exit 0 never enters a present value (the merged reads of the older commands would carry it). The control:
+    /// the merged read of the same file does.
+    @Test
+    void readFile_underAStderrWarningAndExit0_returnsStdoutOnly() {
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"), Option.none(), "backup", TIMEOUT, Map.of("GIT_TRACE", "1"));
+
+        repository.prepare();
+        repository.commit("state-1\n", "first")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.localFile(GitBackupRepository.FILE).unwrap().or("")).as("control: the merged read carries the trace").contains("trace:");
+        assertThat(presentValue(repository.readFile("HEAD", GitBackupRepository.FILE))).isEqualTo("state-1\n");
+        assertThat(presentValue(repository.readCommitId("HEAD"))).hasSize(40);
+    }
+
+    /// git writes its fatal message to stderr: it stays visible, as the reason of the unreadable read.
+    @Test
+    void anUnreadableRead_carriesStderrInItsReason() {
+        var repository = repository("local", Option.none());
+
+        repository.prepare();
+
+        assertThat(reasonOf(repository.readFile("HEAD", GitBackupRepository.FILE))).contains("stderr: ").contains("fatal");
+    }
+
+    /// git cannot be spawned (no binary, a stopped repository): unreadable, never absent.
+    @Test
+    void everyRead_whenGitCannotBeRun_isUnreadable() {
+        Result<Process> refused = GitBackupRepository.unavailable(new IOException("no git here")).result();
+        var remote = scripted(refused);
+        var local = new GitBackupRepository(temp.resolve("local"), Option.none(), "backup", TIMEOUT, Map.of(), new Scripted(refused));
+
+        assertThat(reasonOf(remote.readBranch())).contains("git could not be run");
+        assertThat(reasonOf(local.readBranch())).contains("git could not be run");
+        assertThat(reasonOf(remote.readCommitId("HEAD"))).contains("git could not be run");
+        assertThat(reasonOf(remote.readPath("HEAD", GitBackupRepository.FILE))).contains("git could not be run");
+        assertThat(reasonOf(remote.readFile("HEAD", GitBackupRepository.FILE))).contains("git could not be run");
+    }
+
+    /// Git exited 2 (the exit that means "no such branch") but its output was lost on the way: the read goes through the real collection path, where
+    /// the loss happens, and must not read as absent.
+    @Test
+    void readBranch_whenTheOutputIsLostAfterExit2_isUnreadable_throughTheRealWiring() {
+        var repository = scripted(process(2, brokenPipe()));
+
+        assertThat(reasonOf(repository.readBranch())).isEqualTo("git exited 2 and its output was lost");
+    }
+
+    /// stdout and stderr are read apart: the reason of an unreadable read is the stdout text, then what git said on stderr; a stderr that was lost adds
+    /// nothing.
+    @Test
+    void anUnreadableRead_namesStdout_thenStderr_andALostStderrAddsNothing() {
+        assertThat(reasonOf(scripted(process(128, text("out\n"), text("boom\n"))).readFile("HEAD", GitBackupRepository.FILE))).isEqualTo("git exited 128: out; stderr: boom");
+        assertThat(reasonOf(scripted(process(128, text("out\n"), brokenPipe())).readFile("HEAD", GitBackupRepository.FILE))).isEqualTo("git exited 128: out");
+        assertThat(reasonOf(scripted(process(128, text(""), text("  \n"))).readFile("HEAD", GitBackupRepository.FILE))).isEqualTo("git exited 128: ");
+    }
+
+    /// A git that outlives its bound has no output but its own words: the timeout text reaches the unreadable reason and the legacy command's failure.
+    @Test
+    void aTimedOutGit_saysSo_onTheReadsAndOnTheLegacyCommands() {
+        var repository = scripted(Result.<Process>success(new ScriptedGit(0, InputStream.nullInputStream(), InputStream.nullInputStream(), false)));
+
+        assertThat(reasonOf(repository.readBranch())).contains("timed out after").doesNotContain("stderr");
+        assertThat(repository.push().fold(Cause::message, _ -> "pushed")).contains("timed out after");
+    }
+
+    /// Output lost after exit 0 reads unreadable with the lost-output reason on every primitive, through the real collection path: the mutation "lost
+    /// output is an empty text" would still read unreadable on the commit id, path and file, but with a different reason.
+    @Test
+    void everyPrimitive_whenTheOutputIsLostAfterExit0_namesTheLostOutput_throughTheRealWiring() {
+        var repository = scripted(process(0, brokenPipe()));
+
+        assertThat(reasonOf(repository.readCommitId("HEAD"))).isEqualTo("git exited 0 and its output was lost");
+        assertThat(reasonOf(repository.readPath("HEAD", GitBackupRepository.FILE))).isEqualTo("git exited 0 and its output was lost");
+        assertThat(reasonOf(repository.readFile("HEAD", GitBackupRepository.FILE))).isEqualTo("git exited 0 and its output was lost");
+    }
+
+    /// The path is listed in the commit it is asked about, not in the checked-out one.
+    @Test
+    void readPath_readsTheNamedCommit_notTheCheckedOutOne() {
+        var repository = repository("local", Option.none());
+
+        repository.prepare();
+        repository.commitFile(GitBackupRepository.DECLARATION, "lineage 1\n", "genesis")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        var genesis = git(temp.resolve("local"), "rev-parse", "HEAD").strip();
+        repository.commit("state-1\n", "first")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readPath(genesis, GitBackupRepository.FILE)).isInstanceOf(GitRead.Absent.class);
+        assertThat(repository.readPath("HEAD", GitBackupRepository.FILE)).isInstanceOf(GitRead.Present.class);
+    }
+
+    /// A legacy command whose output was lost reads it as empty: the failure names the exit and nothing after it.
+    @Test
+    void aLegacyCommand_whoseOutputWasLost_failsWithAnEmptyText() {
+        var repository = scripted(process(1, brokenPipe()));
+
+        assertThat(repository.push().fold(Cause::message, _ -> "pushed")).isEqualTo("git push exited 1: ");
+    }
+
+    private static <T> T presentValue(GitRead<T> read) {
+        return switch (read) {
+            case GitRead.Present<T>(var value) -> value;
+            default -> throw new AssertionError("expected a present read, got " + read);
+        };
+    }
+
+    private static String reasonOf(GitRead<?> read) {
+        return switch (read) {
+            case GitRead.Unreadable<?>(var reason) -> reason;
+            default -> throw new AssertionError("expected an unreadable read, got " + read);
+        };
+    }
+
+    private GitBackupRepository scripted(Result<Process> started) {
+        return new GitBackupRepository(temp.resolve("local"), Option.some("remote"), "backup", TimeSpan.timeSpan(2).seconds(), Map.of(), new Scripted(started));
+    }
+
+    private static Result<Process> process(int exit, InputStream stdout) {
+        return process(exit, stdout, InputStream.nullInputStream());
+    }
+
+    private static Result<Process> process(int exit, InputStream stdout, InputStream stderr) {
+        return Result.<Process>success(new ScriptedGit(exit, stdout, stderr, true));
+    }
+
+    private static InputStream text(String content) {
+        return new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static InputStream brokenPipe() {
+        return new InputStream() {
+            @Override
+            public int read() throws IOException {
+                throw new IOException("pipe broke");
+            }
+        };
+    }
+
+    /// A git that is a script: it exits with `exit` and prints `stdout`, or does not finish within the bound when `finishes` is false.
+    private static final class ScriptedGit extends Process {
+        private final int exit;
+        private final InputStream stdout;
+        private final InputStream stderr;
+        private final boolean finishes;
+
+        ScriptedGit(int exit, InputStream stdout, InputStream stderr, boolean finishes) {
+            this.exit = exit;
+            this.stdout = stdout;
+            this.stderr = stderr;
+            this.finishes = finishes;
+        }
+
+        @Override
+        public OutputStream getOutputStream() {
+            return OutputStream.nullOutputStream();
+        }
+
+        @Override
+        public InputStream getInputStream() {
+            return stdout;
+        }
+
+        @Override
+        public InputStream getErrorStream() {
+            return stderr;
+        }
+
+        @Override
+        public int waitFor() {
+            return exit;
+        }
+
+        @Override
+        public boolean waitFor(long timeout, TimeUnit unit) {
+            return finishes;
+        }
+
+        @Override
+        public int exitValue() {
+            return exit;
+        }
+
+        @Override
+        public void destroy() {}
+    }
+
+    /// Hands out `started` for every git the repository starts, and finds every tree dead.
+    private static final class Scripted extends GitProcesses {
+        private final Result<Process> started;
+
+        Scripted(Result<Process> started) {
+            this.started = started;
+        }
+
+        @Override
+        Result<Process> start(ProcessBuilder builder) {
+            return started;
+        }
+
+        @Override
+        boolean endTree(Process process, long boundMillis) {
+            return true;
+        }
+    }
+
+    private static RejectionRecord record() {
+        return recordOf("lineage-a", 3L, 41L, "inc-9", "abc123");
+    }
+
+    private static RejectionRecord recordOf(String lineageId, long incarnation, long revision, String incarnationId, String commit) {
+        return RejectionRecord.rejectionRecord(lineageId, incarnation, revision, incarnationId, commit)
+                              .fold(cause -> Assertions.fail(cause.message()), value -> value);
+    }
+
+    private static boolean refused(String lineageId, long incarnation, long revision, String incarnationId, String commit) {
+        return RejectionRecord.rejectionRecord(lineageId, incarnation, revision, incarnationId, commit)
+                              .isFailure();
+    }
+
+    /// A pre-commit hook that refuses every commit: the induced commit failure the staged state survives (vRR1 probe 1).
+    private void refuseCommits(String name) throws IOException {
+        var hook = temp.resolve(name).resolve(".git").resolve("hooks").resolve("pre-commit");
+
+        Files.writeString(hook, "#!/bin/sh\nexit 1\n");
+        Files.setPosixFilePermissions(hook, PosixFilePermissions.fromString("rwxr-xr-x"));
+    }
+
+    private void allowCommits(String name) throws IOException {
+        Files.delete(temp.resolve(name).resolve(".git").resolve("hooks").resolve("pre-commit"));
+    }
+
+    private static int gitExitCode(Result<Unit> result) {
+        return result.fold(cause -> cause instanceof BackupRepositoryError.GitFailed failed
+                                    ? failed.exitCode()
+                                    : - 1,
+                           _ -> 0);
+    }
+
+    private String committedRecord(String name) {
+        return git(temp.resolve(name), "show", "HEAD:" + GitBackupRepository.REJECTION_FILE);
+    }
+
+    private String subjectOfHead(String name) {
+        return git(temp.resolve(name), "log", "-1", "--format=%s").strip();
+    }
+
+    private String filesOfHead(String name) {
+        return git(temp.resolve(name), "show", "--name-only", "--format=", "HEAD").strip();
+    }
+
+    private GitBackupRepository committedRepository(String name, Option<String> remote) {
+        var repository = repository(name, remote);
+
+        repository.prepare();
+        repository.commit("state-1\n", "first")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        return repository;
+    }
+
+    private int commitCount(String name) {
+        return Integer.parseInt(git(temp.resolve(name), "rev-list", "--count", "HEAD").strip());
+    }
+
+    @Test
+    void rejectionRecord_roundTrips_andEveryUnparseableTextIsNone() {
+        var original = record();
+
+        assertThat(RejectionRecord.parse(original.render())).isEqualTo(Option.some(original));
+        assertThat(RejectionRecord.parse("")).isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse("garbage\nlineageId=x")).isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(original.render().replace("rejection-record/1", "rejection-record/2"))).isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(original.render().replace("revision=41", "revision=forty-one"))).isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(original.render().replace("commit=abc123", ""))).isEqualTo(Option.none());
+        assertThat(original.render()).contains("commit=abc123");
+    }
+
+    @Test
+    void rejectionRecord_roundTrips_equalsInValues_nonAsciiAndTheExtremeNumbers() {
+        var tricky = recordOf("a=b=c", Long.MAX_VALUE, 0L, "\u0416 \u0436", "x y");
+
+        assertThat(RejectionRecord.parse(tricky.render())).isEqualTo(Option.some(tricky));
+    }
+
+    @Test
+    void render_endsInExactlyOneLineFeed() {
+        assertThat(record().render()).endsWith("\n").doesNotEndWith("\n\n");
+    }
+
+    @Test
+    void theRejectionFileName_isTheLiteralName() {
+        assertThat(GitBackupRepository.REJECTION_FILE).isEqualTo("restore-rejected.txt");
+    }
+
+    @Test
+    void rejectionRecordFactory_refusesAValueTheTextFormCannotCarry() {
+        for (var bad : List.of("", "a\rb", "a\nb", " a", "a ", "\n", "a\r")) {
+            assertThat(refused(bad, 1L, 1L, "i", "c")).as("lineageId [%s]", bad).isTrue();
+            assertThat(refused("l", 1L, 1L, bad, "c")).as("incarnationId [%s]", bad).isTrue();
+            assertThat(refused("l", 1L, 1L, "i", bad)).as("commit [%s]", bad).isTrue();
+        }
+        assertThat(refused("l", - 1L, 1L, "i", "c")).as("negative incarnation").isTrue();
+        assertThat(refused("l", 1L, - 1L, "i", "c")).as("negative revision").isTrue();
+        assertThat(refused("l", 0L, 0L, "i", "c")).as("zero is a number").isFalse();
+    }
+
+    @Test
+    void parse_refusesEveryTextRenderCannotProduce() {
+        var text = record().render();
+
+        assertThat(RejectionRecord.parse(text + "commit=other\n")).as("duplicate key").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("commit=", "commit=x\nlineageId=forged\ncommit="))).as("forged duplicate").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("revision=41", "commit=x"))).as("five lines, one key twice").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text + "extra=1\n")).as("unknown key").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("commit=abc123", "extra=abc123"))).as("unknown key for a missing one").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text + "garbage\n")).as("line with no '='").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text + "=x\n")).as("leading '='").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("commit=abc123", "=abc123"))).as("a key-less line in place of a field").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("\n", "\r\n"))).as("CRLF").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("abc123", "abc\r123"))).as("CR inside a value").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.substring(0, text.length() - 1))).as("no trailing LF").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text + "\n")).as("a blank trailing line").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("incarnation=3", "incarnation=+3"))).as("plus sign").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("incarnation=3", "incarnation=\u0663"))).as("Arabic-Indic digit").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("incarnation=3", "incarnation=-3"))).as("negative").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("incarnation=3", "incarnation=0003"))).as("leading zeros are a number").isEqualTo(Option.some(record()));
+        assertThat(RejectionRecord.parse(text.replace("commit=abc123", "commit= abc123"))).as("a value the factory refuses").isEqualTo(Option.none());
+    }
+
+    @Test
+    void commitRejection_commitsTheRecordBesideFile_andLeavesTheFileBlobAlone() {
+        var repository = committedRepository("local", Option.none());
+        var dir = temp.resolve("local");
+        var blobBefore = git(dir, "rev-parse", "HEAD:" + GitBackupRepository.FILE).strip();
+
+        repository.commitRejection(record())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(git(dir, "show", "HEAD:" + GitBackupRepository.REJECTION_FILE)).isEqualTo(record().render());
+        assertThat(subjectOfHead("local")).isEqualTo("restore rejected: lineage-a 3/41");
+        assertThat(git(dir, "rev-parse", "HEAD:" + GitBackupRepository.FILE).strip()).isEqualTo(blobBefore);
+        assertThat(repository.readPath("HEAD", GitBackupRepository.REJECTION_FILE)).isInstanceOf(GitRead.Present.class);
+        assertThat(commitCount("local")).isEqualTo(2);
+    }
+
+    /// The record reaches the committed blob as UTF-8: a non-ASCII value read back from the commit equals the one written.
+    @Test
+    void commitRejection_withNonAsciiValues_commitsThemThroughTheFileAsUtf8() {
+        var repository = committedRepository("local", Option.none());
+        var nonAscii = recordOf("línea-Ж", 3L, 41L, "инк-9", "c-é");
+
+        repository.commitRejection(nonAscii)
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(RejectionRecord.parse(committedRecord("local"))).isEqualTo(Option.some(nonAscii));
+    }
+
+    /// commit/commitFile are scoped to their own file: a foreign staged file stays staged and uncommitted.
+    @Test
+    void commitAndCommitFile_leaveAForeignStagedFileUncommitted() throws IOException {
+        var repository = committedRepository("local", Option.none());
+        var dir = temp.resolve("local");
+
+        Files.writeString(dir.resolve("foreign.txt"), "foreign\n");
+        git(dir, "add", "foreign.txt");
+
+        repository.commit("state-2\n", "second")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        assertThat(filesOfHead("local")).isEqualTo(GitBackupRepository.FILE);
+
+        repository.commitFile("beside.txt", "beside\n", "third")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        assertThat(filesOfHead("local")).isEqualTo("beside.txt");
+        assertThat(git(dir, "diff", "--cached", "--name-only").strip()).as("the foreign file is never committed").isEqualTo("foreign.txt");
+    }
+
+    @Test
+    void commitRejection_ofTheSameRecordTwice_failsAndAddsNoCommit() {
+        var repository = committedRepository("local", Option.none());
+
+        repository.commitRejection(record())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.commitRejection(record())
+                             .isFailure()).isTrue();
+        assertThat(commitCount("local")).isEqualTo(2);
+    }
+
+    @Test
+    void removeRejection_removesTheRecord_andAnAbsentOneIsAFailureWithNoCommit() {
+        var repository = committedRepository("local", Option.none());
+
+        repository.commitRejection(record())
+                  .flatMap(_ -> repository.removeRejection())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readPath("HEAD", GitBackupRepository.REJECTION_FILE)).isInstanceOf(GitRead.Absent.class);
+        assertThat(repository.readPath("HEAD", GitBackupRepository.FILE)).isInstanceOf(GitRead.Present.class);
+        assertThat(subjectOfHead("local")).isEqualTo("restore rejection cleared");
+        assertThat(commitCount("local")).isEqualTo(3);
+        assertThat(gitExitCode(repository.removeRejection())).as("an absent record is git rm's exit 128").isEqualTo(128);
+        assertThat(commitCount("local")).isEqualTo(3);
+    }
+
+    @Test
+    void rejectionPrimitives_neverPush_thePushIsPushOnly() {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var repository = committedRepository("local", Option.some(remote));
+
+        repository.push()
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        var head = git(temp.resolve("remote.git"), "rev-parse", "backup").strip();
+
+        repository.commitRejection(record())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        assertThat(git(temp.resolve("remote.git"), "rev-parse", "backup").strip()).isEqualTo(head);
+
+        repository.removeRejection()
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        assertThat(git(temp.resolve("remote.git"), "rev-parse", "backup").strip()).isEqualTo(head);
+    }
+
+    /// vRR1 F1, probe 1: a failing pre-commit hook leaves the staged removal behind. (a) The retried removal clears the record.
+    @Test
+    void removeRejection_afterAFailedCommit_whenRetried_clearsTheRecord() throws IOException {
+        var repository = committedRepository("local", Option.none());
+
+        repository.commitRejection(record())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        refuseCommits("local");
+        assertThat(repository.removeRejection().isFailure()).isTrue();
+        assertThat(committedRecord("local")).as("a failed removal changes nothing committed").isEqualTo(record().render());
+        allowCommits("local");
+
+        repository.removeRejection()
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readPath("HEAD", GitBackupRepository.REJECTION_FILE)).isInstanceOf(GitRead.Absent.class);
+        assertThat(commitCount("local")).isEqualTo(3);
+    }
+
+    /// (b) A record B left staged over the committed A by a failed commit: the retried commit of B works, and so does the removal.
+    @Test
+    void commitRejection_afterAFailedCommitOfAnotherRecord_whenRetried_commitsIt() throws IOException {
+        var repository = committedRepository("local", Option.none());
+        var other = recordOf("lineage-a", 4L, 50L, "inc-10", "def456");
+
+        repository.commitRejection(record())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        refuseCommits("local");
+        assertThat(repository.commitRejection(other).isFailure()).isTrue();
+        allowCommits("local");
+
+        repository.commitRejection(other)
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(committedRecord("local")).isEqualTo(other.render());
+        assertThat(commitCount("local")).isEqualTo(3);
+    }
+
+    @Test
+    void removeRejection_afterAFailedCommitOfAnotherRecord_clearsTheCommittedOne() throws IOException {
+        var repository = committedRepository("local", Option.none());
+
+        repository.commitRejection(record())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        refuseCommits("local");
+        assertThat(repository.commitRejection(recordOf("lineage-a", 4L, 50L, "inc-10", "def456")).isFailure()).isTrue();
+        allowCommits("local");
+
+        repository.removeRejection()
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readPath("HEAD", GitBackupRepository.REJECTION_FILE)).isInstanceOf(GitRead.Absent.class);
+    }
+
+    /// (c) A rejection commit that failed leaves nothing staged: the next backup commit carries the backup file only.
+    @Test
+    void aFailedRejectionCommit_isNotSweptIntoTheNextBackupCommit() throws IOException {
+        var repository = committedRepository("local", Option.none());
+
+        refuseCommits("local");
+        assertThat(repository.commitRejection(record()).isFailure()).isTrue();
+        allowCommits("local");
+
+        repository.commit("state-2\n", "second")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(filesOfHead("local")).isEqualTo(GitBackupRepository.FILE);
+        assertThat(subjectOfHead("local")).isEqualTo("second");
+    }
+
+    @Test
+    void aFailedRemoval_isNotSweptIntoTheNextBackupCommit() throws IOException {
+        var repository = committedRepository("local", Option.none());
+
+        repository.commitRejection(record())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        refuseCommits("local");
+        assertThat(repository.removeRejection().isFailure()).isTrue();
+        allowCommits("local");
+
+        repository.commit("state-2\n", "second")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(filesOfHead("local")).isEqualTo(GitBackupRepository.FILE);
+        assertThat(committedRecord("local")).isEqualTo(record().render());
+    }
+
+    @Test
+    void rejectionCommits_carryOnlyTheRejectionFile_whateverElseIsStaged() throws IOException {
+        var repository = committedRepository("local", Option.none());
+        var dir = temp.resolve("local");
+
+        Files.writeString(dir.resolve(GitBackupRepository.FILE), "state-staged\n");
+        git(dir, "add", GitBackupRepository.FILE);
+
+        repository.commitRejection(record())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        assertThat(filesOfHead("local")).isEqualTo(GitBackupRepository.REJECTION_FILE);
+
+        repository.removeRejection()
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        assertThat(filesOfHead("local")).isEqualTo(GitBackupRepository.REJECTION_FILE);
+        assertThat(git(dir, "diff", "--cached", "--name-only").strip()).as("the staged backup change is left staged").isEqualTo(GitBackupRepository.FILE);
+    }
+
+    /// A record left staged (or modified) by a crashed commit is removed all the same.
+    @Test
+    void removeRejection_clearsARecordLeftStagedOverTheCommittedOne() throws IOException {
+        var repository = committedRepository("local", Option.none());
+        var dir = temp.resolve("local");
+
+        repository.commitRejection(record())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        Files.writeString(dir.resolve(GitBackupRepository.REJECTION_FILE), recordOf("lineage-a", 4L, 50L, "inc-10", "def456").render());
+        git(dir, "add", GitBackupRepository.REJECTION_FILE);
+
+        repository.removeRejection()
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readPath("HEAD", GitBackupRepository.REJECTION_FILE)).isInstanceOf(GitRead.Absent.class);
+        assertThat(git(dir, "status", "--porcelain").strip()).isEmpty();
+    }
+
+    /// The compensation after a failed rejection commit unstages the rejection file only.
+    @Test
+    void aFailedRejectionCommit_leavesAnUnrelatedStagedChangeStaged() throws IOException {
+        var repository = committedRepository("local", Option.none());
+        var dir = temp.resolve("local");
+
+        Files.writeString(dir.resolve(GitBackupRepository.FILE), "state-staged\n");
+        git(dir, "add", GitBackupRepository.FILE);
+        refuseCommits("local");
+
+        assertThat(repository.commitRejection(record()).isFailure()).isTrue();
+
+        assertThat(git(dir, "diff", "--cached", "--name-only").strip()).isEqualTo(GitBackupRepository.FILE);
+    }
     private GitBackupRepository repository(String name, Option<String> remote) {
         return GitBackupRepository.gitBackupRepository(temp.resolve(name), remote, "backup", TIMEOUT);
     }

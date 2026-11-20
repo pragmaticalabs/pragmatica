@@ -157,24 +157,15 @@ class WarnAfterCommitTest {
         assertThat(openedSubjects(h)).containsExactly(ORDERS.asString(), BILLING.asString());
     }
 
-    /// Rule E, the pair alone (#3274 §0): a mutation over a key with no family notifies nothing, a family key notifies its opener. Red when
-    /// a non-family row is notified, or the family row is not (positive control).
+    /// Rule E, the pair alone (#3274 §0; #3203: over the committed put): a put of a key with no family notifies nothing, a family key
+    /// notifies its opener. Red when a non-family row is notified, or the family row is not (positive control).
     @Test
     void nonFamilyMutation_isNotNotified() {
-        var m = new ClusterModel();
-        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
-        var row = Option.<AetherValue>some(otherNodesRow(Map.of(), true, "a family"));
+        var row = otherNodesRow(Map.of(), true, "a family");
 
-        Warnings.accepted(m,
-                          ctx,
-                          TxDraft.draft(WARNINGS,
-                                        KEY,
-                                        List.of(new KVCommand.Mutation<>(FsmWarningKey.fsmWarningKey("some-other-code", ORDERS.asString()),
-                                                                         Option.<AetherValue>none(),
-                                                                         row),
-                                                new KVCommand.Mutation<>(KEY, Option.<AetherValue>none(), row))));
-
-        assertThat(ctx.effects()).containsExactly(new ClusterEffect.Warn(OPENER, ORDERS.asString(), "a family"));
+        assertThat(Warnings.committedNotice(FsmWarningKey.fsmWarningKey("some-other-code", ORDERS.asString()), Option.none(), row)).isEqualTo(Option.none());
+        assertThat(Warnings.committedNotice(KEY, Option.none(), row))
+                  .isEqualTo(Option.some(Warnings.Notice.notice(OPENER, ORDERS.asString(), "a family")));
     }
 
     /// #3274: a raise on a key absent from the mirror drafts a write of the key over "no row" and publishes nothing at once: the opener
@@ -570,12 +561,55 @@ class WarnAfterCommitTest {
         var h = suspendedSuccessor(Option.some(otherNodesRow(Map.of(), true, "open")));
 
         assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("precondition: the open row was adopted").isTrue();
-        h.seed(KEY, otherNodesRow(Map.of(), false, "late close"));
+        h.seed(KEY, Fixtures.otherNodesRow(Map.of(), false, "late close", 2L));
         h.drain();
         resume(h);
 
         assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("the closed row was applied").isFalse();
         assertThat(h.warns(OPENER)).as("no opener is raised").isEmpty();
+    }
+
+    // -- rule E is a live-apply rule (#3203, CTO ruling 2026-11-20) ----------------------------------------------------------------------
+    /// `ORDERS` one failure short on core-1, with the committed leader naming this node: the committed gate passes for every put, so only
+    /// the adoption point decides what this node publishes.
+    private static FsmHarness committedLeaderSelf() {
+        var h = LcSupport.leader(DeploymentAtomicity.ALL_OR_NOTHING, 0.5d, CORE_1);
+
+        SlFixtures.seedTarget(h, ORDERS, 1, 1);
+        SlFixtures.seedGoal(h, CORE_1, ORDERS, SliceGoal.LOADED, SlFixtures.G1);
+        SlFixtures.seedRow(h, CORE_1, ORDERS, SliceObservedState.LOADING, SlFixtures.G1, 11L);
+        SlFixtures.seedJudgment(h, ORDERS, new ArtifactJudgmentValue(false, Map.of(CORE_1, 5), Map.of(), Set.of()));
+
+        return h;
+    }
+
+    /// An open row committed before this node's Rebuild is adopted (rule O over the snapshot) and installed silently: the node publishes
+    /// nothing for it. Red when the node publishes every committed put it takes, an adopted one included (the harness at d008c2f393,
+    /// whose copy of the publication lacked emitCommitted's replay gate), and when emitCommitted's replay gate is removed.
+    @Test
+    void openRowAdoptedAtRebuild_publishesNothing() {
+        var h = committedLeaderSelf();
+
+        h.seed(KEY, otherNodesRow(Map.of(), true, "adopted"));
+        h.activate();
+        h.drain();
+
+        assertThat(h.model().retryExhaustedWarned.contains(ORDERS)).as("precondition: the open row was adopted").isTrue();
+        assertThat(h.warns(OPENER)).as("an adopted row is installed silently").isEmpty();
+    }
+
+    /// Positive control for the adoption point: the adopted row's close, committed after the Rebuild and applied live, publishes its
+    /// recovery once. Red when the adoption point silences live puts too.
+    @Test
+    void closeCommittedAfterRebuild_publishesItsRecoveryOnce() {
+        var h = committedLeaderSelf();
+
+        h.seed(KEY, otherNodesRow(Map.of(), true, "adopted"));
+        h.activate();
+        h.seed(KEY, Fixtures.otherNodesRow(Map.of(), false, "closed", 2L));
+        h.drain();
+
+        assertThat(h.warns(RECOVERY)).as("the live close is published once").hasSize(1);
     }
 
     // -- the family state and the mirror ----------------------------------------------------------------------------------------------------

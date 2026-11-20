@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
+import org.pragmatica.aether.stream.segment.StreamRetentionSource.EnforcedRetention;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.lang.Option;
@@ -43,7 +44,7 @@ class CommittedRetentionTest {
     void aLocallyCommittedEntry_answersItsRetention() {
         manager.createDeclaredStream(config(LOCAL)).onFailure(cause -> fail(cause.message()));
 
-        assertThat(manager.committedRetention(STREAM)).isEqualTo(Option.some(LOCAL));
+        assertThat(manager.committedRetention(STREAM)).isEqualTo(Option.some(enforced(LOCAL)));
     }
 
     @Test
@@ -51,14 +52,14 @@ class CommittedRetentionTest {
         manager.createDeclaredStream(config(LOCAL)).onFailure(cause -> fail(cause.message()));
         manager.onStreamConfigPut(committedPut(config(APPLIED)));
 
-        assertThat(manager.committedRetention(STREAM)).isEqualTo(Option.some(APPLIED));
+        assertThat(manager.committedRetention(STREAM)).isEqualTo(Option.some(enforced(APPLIED)));
     }
 
     @Test
     void anAppliedConfigAlone_answers() {
         manager.onStreamConfigPut(committedPut(config(APPLIED)));
 
-        assertThat(manager.committedRetention(STREAM)).isEqualTo(Option.some(APPLIED));
+        assertThat(manager.committedRetention(STREAM)).isEqualTo(Option.some(enforced(APPLIED)));
     }
 
     @Test
@@ -74,8 +75,40 @@ class CommittedRetentionTest {
         assertThat(manager.committedRetention(STREAM)).isEqualTo(Option.none());
     }
 
+    @Test
+    void theShare_followsThePartitionCountOfTheConfigAnswered() {
+        manager.createDeclaredStream(config(LOCAL, 4)).onFailure(cause -> fail(cause.message()));
+
+        assertThat(manager.committedRetention(STREAM)).isEqualTo(Option.some(EnforcedRetention.enforcedRetention(LOCAL, 4)));
+    }
+
+    @Test
+    void anAppliedConfigAlone_answersItsPartitionCount() {
+        manager.onStreamConfigPut(committedPut(config(APPLIED, 4)));
+
+        assertThat(manager.committedRetention(STREAM)).isEqualTo(Option.some(EnforcedRetention.enforcedRetention(APPLIED, 4)));
+    }
+
+    /// #3490 F1: a committed config of the same life with another partition count is not adopted, so the enforced share
+    /// keeps dividing over the rings the stream has, never over the declared count of the unadopted config.
+    @Test
+    void anUnadoptedConfigWithTwiceThePartitions_doesNotMoveTheShare() {
+        manager.createDeclaredStream(config(LOCAL, 4)).onFailure(cause -> fail(cause.message()));
+        manager.onStreamConfigPut(committedPut(config(APPLIED, 8)));
+
+        assertThat(manager.committedRetention(STREAM)).isEqualTo(Option.some(EnforcedRetention.enforcedRetention(APPLIED, 4)));
+    }
+
+    private static EnforcedRetention enforced(RetentionPolicy retention) {
+        return EnforcedRetention.enforcedRetention(retention, 1);
+    }
+
     private static StreamConfig config(RetentionPolicy retention) {
-        return StreamConfig.streamConfig(STREAM, 1, retention, "earliest");
+        return config(retention, 1);
+    }
+
+    private static StreamConfig config(RetentionPolicy retention, int partitions) {
+        return StreamConfig.streamConfig(STREAM, partitions, retention, "earliest");
     }
 
     private static ValuePut<StreamConfigKey, StreamConfigValue> committedPut(StreamConfig config) {

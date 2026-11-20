@@ -136,9 +136,11 @@ public record BackupEntryCodec(SliceCodec codec) {
 
     private static final Comparator<Map.Entry<AetherKey, AetherValue>> BY_KEY = Comparator.comparing(BackupEntryCodec::keyString);
 
-    /// One binding per backed-up key type: the value type it holds and the parser accepting only its own
-    /// prefix. Kept exhaustive by `BackupEntryCodecTest`, which requires a round-tripping fixture for
-    /// every [ClusterStateKey][AetherKey.ClusterStateKey] type — a type missing here fails that test.
+    /// One binding per key type a backup can hold or must name when refusing: the value type it holds and the
+    /// parser accepting only its own prefix. `BackupEntryCodecTest` requires a round-tripping fixture for every
+    /// backed-up [ClusterStateKey][AetherKey.ClusterStateKey] type. The two artifact keys (#420) are bound but not
+    /// backed up: `decodeKey` finds an old document's artifact line here, then refuses it `KeyNotBackedUp`
+    /// instead of failing it as an unknown key.
     private static final List<KeyBinding> BINDINGS = List.of(KeyBinding.keyBinding(SliceTargetKey.class,
                                                                                    SliceTargetValue.class,
                                                                                    SliceTargetKey::sliceTargetKey),

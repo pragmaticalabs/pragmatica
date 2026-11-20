@@ -17,6 +17,7 @@ import org.pragmatica.cluster.state.kvstore.CommitRing.RefusalReason;
 import org.pragmatica.cluster.state.kvstore.IncarnationTag;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.ReplicaEntry;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.cluster.replica.FeedFixtures.Key;
@@ -153,6 +154,32 @@ class ReplicaFeedClientGuardsTest {
         assertThat(net.readiness.ready()).as("re-parented from its anchor: still ready").isTrue();
         net.advance(30_001);
         assertThat(net.readiness.ready()).as("no heartbeat from the new source in 30 s: not ready").isFalse();
+    }
+
+    /// A client with no session of its own treats its first resume as one after a failure: started over a replica that already holds a resumable
+    /// position and counted heartbeats (no session of this client vouches for them), it carries them for the grace only, not for the 30 s
+    /// freshness bound. Mutation: start `previousSessionFailed` false.
+    @Test
+    void theFirstResumeOfAClient_carriesTheCountedHeartbeatsForTheGraceOnly() {
+        var net = joinedOnTwoCores();
+        var limits = ReplicaClientLimits.DEFAULT;
+        var second = ReplicaFeedClient.replicaFeedClient(ClientFixtures.CLIENT,
+                                                         net.applier,
+                                                         net.readiness,
+                                                         (_, _) -> {},
+                                                         () -> net.cores.stream().map(core -> core.id).toList(),
+                                                         Runnable::run,
+                                                         net.nanos::get,
+                                                         limits,
+                                                         () -> {},
+                                                         new ReplicaFeedClient.GovernorArm(() -> false, Option::none));
+
+        second.tick();
+
+        assertThat(second.source().isPresent()).as("resumed onto a core").isTrue();
+        assertThat(net.readiness.ready()).as("inside the grace: carried").isTrue();
+        net.advance(limits.carryGraceMillis() + 1);
+        assertThat(net.readiness.ready()).as("past the grace, no heartbeat of the new source: the carry ended").isFalse();
     }
 
     /// A re-based replica (the position was discarded, a snapshot follows) does not keep the old source's heartbeats. Mutation: drop

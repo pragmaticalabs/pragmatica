@@ -317,8 +317,7 @@ class ManagementServerSecurityCouplingTest {
                                         Option.some(network),
                                         Option.some(serializer),
                                         Option.some(new StubDeserializer(forwarded)),
-                                        _ -> {},
-                                        Set::of,
+                                        NodeLifecycleRoutes.DrainPort.none(),
                                         NodeLifecycleRoutes.SliceFloor.sliceFloor((_, _) -> List.of(), OperatorWarningSink.logOnly()));
     }
 

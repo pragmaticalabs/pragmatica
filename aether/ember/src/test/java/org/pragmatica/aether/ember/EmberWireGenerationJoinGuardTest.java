@@ -19,7 +19,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///
 /// Three initial nodes boot advertising generation 1 (`EmberCluster.nodeWireGeneration`, the seam an older binary stands for) and form
 /// a cluster: a cold start of one generation is never refused. A node added afterwards advertises nothing, so the consensus layer stamps
-/// this binary's generation (`WIRE_GENERATION`) into its Hello; it sees core members at generation 1 and refuses to join, naming one of them.
+/// this binary's generation 2 into its Hello; it sees core members at generation 1 and refuses to join, naming one of them.
 @PortBudget
 class EmberWireGenerationJoinGuardTest {
     private static final int MGMT_OFFSET = 40;
@@ -60,7 +60,6 @@ class EmberWireGenerationJoinGuardTest {
               .onFailure(cause -> assertThat(cause.message()).as("the refusal names a generation-1 member")
                                                              .matches("(?s).*Refusing to join: member " + PREFIX
                                                                       + "-\\d+ runs wire generation 1, this node runs "
-                                                                      + JoinGenerationGuard.WIRE_GENERATION
-                                                                      + ".*"));
+                                                                      + JoinGenerationGuard.WIRE_GENERATION + ".*"));
     }
 }

@@ -291,6 +291,26 @@ class ReplicaClientAssemblyTest {
         return readiness;
     }
 
+    /// A replica caught up, with one fresh heartbeat claiming `nextSlot` (the replica has applied 10) and the worker role on or off. Behind the heartbeat
+    /// inside the lag window `ready` tolerates it (readiness (c)) and `servable` does not (the NEWEST heartbeat must be reached); without the worker
+    /// role `servable` ignores it and `ready` requires it.
+    private static org.pragmatica.cluster.replica.ReplicaReadiness readinessWithBeat(long nextSlot, boolean worker) {
+        var position = org.pragmatica.cluster.replica.ReplicaPosition.replicaPosition(TAG,
+                                                                                       10,
+                                                                                       List.of(new org.pragmatica.cluster.state.kvstore.AnchorPair(9, "x")));
+        var readiness = org.pragmatica.cluster.replica.ReplicaReadiness.replicaReadiness(System::nanoTime,
+                                                                                         () -> position,
+                                                                                         () -> worker,
+                                                                                         () -> true,
+                                                                                         _ -> {},
+                                                                                         org.pragmatica.cluster.replica.ReplicaClientLimits.DEFAULT);
+
+        readiness.caughtUp(true);
+        readiness.onHeartbeat(TAG, nextSlot, true);
+
+        return readiness;
+    }
+
     /// A client that has chosen a core uplink (`followsCore` true), or one that has chosen nothing.
     private static org.pragmatica.cluster.replica.ReplicaFeedClient<AetherKey, org.pragmatica.aether.slice.kvstore.AetherValue> client(boolean followingACore) {
         var store = new org.pragmatica.cluster.state.kvstore.KVStore<AetherKey, org.pragmatica.aether.slice.kvstore.AetherValue>(org.pragmatica.messaging.MessageRouter.mutable(),
@@ -330,5 +350,22 @@ class ReplicaClientAssemblyTest {
         assertThat(ReplicaClientAssembly.serveGate(arm, following, readiness(false)).mayServeMembers()).as("its replica is not current").isFalse();
         governor.set(false);
         assertThat(ReplicaClientAssembly.serveGate(arm, following, readiness(true)).mayServeMembers()).as("it is not the governor").isFalse();
+    }
+
+    /// B5 (#2502): the serve term is `servable`, not `ready`. A replica behind a fresh heartbeat is ready (the lag window forgives it) yet must not be
+    /// relayed to members; a replica that is current but not a worker is servable though not ready. Mutation: substitute `readiness::ready` for
+    /// `readiness::servable` in `serveGate`.
+    @Test
+    void serveGate_usesServableNotReady() {
+        var arm = new org.pragmatica.cluster.replica.ReplicaFeedClient.GovernorArm(() -> true, Option::none);
+        var following = client(true);
+        var behind = readinessWithBeat(11, true);
+        var notWorker = readinessWithBeat(10, false);
+
+        assertThat(behind.ready()).as("precondition: ready inside the lag window").isTrue();
+        assertThat(behind.servable()).as("precondition: not servable while behind the newest heartbeat").isFalse();
+        assertThat(ReplicaClientAssembly.serveGate(arm, following, behind).mayServeMembers()).as("behind a fresh heartbeat: closed").isFalse();
+        assertThat(notWorker.ready()).as("precondition: not ready without the worker role").isFalse();
+        assertThat(ReplicaClientAssembly.serveGate(arm, following, notWorker).mayServeMembers()).as("current but not a worker: open").isTrue();
     }
 }

@@ -13,6 +13,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -55,7 +56,6 @@ import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
 import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -70,9 +70,14 @@ class BackupEntryCodecTest {
     static final String INCARNATION_ID = "01K4ZT9Q6W3X8Y2B7C5D1INST0";
     private static final BackupEntryCodec CODEC = BackupEntryCodec.backupEntryCodec(BackupFixtures.codec());
     private static final long REVISION = 42L;
+    private static final ArtifactBase ARTIFACT_BASE = ArtifactBase.artifactBase("org.example:orders-slice").unwrap();
     private static final NodeId NODE = NodeId.nodeId("node-1")
                                              .unwrap();
     private static final int FIRST_ENTRY_LINE = 8;
+    /// Cluster-state key types whose every entry is outside the backup (#420, RR-4): exempt from the round-trip
+    /// fixture coverage, and pinned out by T11 instead.
+    private static final Set<Class<?>> NEVER_BACKED_UP = Set.of(AetherKey.ArtifactVersionsKey.class,
+                                                                AetherKey.ArtifactContentKey.class);
 
     @Nested
     class RoundTrip {
@@ -85,6 +90,7 @@ class BackupEntryCodecTest {
                                                          .getClass())
                                   .collect(Collectors.toSet());
             var missing = Arrays.stream(ClusterStateKey.class.getPermittedSubclasses())
+                                .filter(type -> !NEVER_BACKED_UP.contains(type))
                                 .filter(type -> !covered.contains(type))
                                 .map(Class::getSimpleName)
                                 .sorted()
@@ -296,29 +302,7 @@ class BackupEntryCodecTest {
             assertThat(FIXTURES).allMatch(fixture -> BackupEntryCodec.isBackedUp(fixture.key()));
         }
 
-        /// #420 T11 TRIPWIRE (current behaviour): both artifact keys are still backed up, encoded and restored.
-        /// PR-6 (PR-1u lane B) takes them out of the backup in one commit; there this goes red: delete it and
-        /// enable the two T11 tests below.
-        @Test
-        void T11_tripwire_artifactKeysAreStillBackedUp_untilPR6() {
-            var entries = artifactEntries();
-            var content = fixtureOf(AetherKey.ArtifactContentKey.class);
-
-            assertThat(entries.keySet()).as("T11 tripwire: artifact keys left the backup; PR-6 landed: delete this tripwire, enable T11a/T11b")
-                                        .allMatch(BackupEntryCodec::isBackedUp);
-            assertThat(CODEC.encode(REVISION, entries)
-                            .map(BackupEntryCodecTest::entryLines)
-                            .unwrap()).as("T11 tripwire: the encoded document still carries both artifact lines until PR-6")
-                                      .hasSize(2);
-            assertThat(failures(CODEC.decode(sealedDocument(line(content.value(),
-                                                                 content.key()
-                                                                        .asString())))))
-                .as("T11 tripwire: a document with an artifact line still decodes until PR-6")
-                .isEmpty();
-        }
-
         /// #420 T11 (design r13; run red at rc6 in `red-rows-420.md`): the encoded document has no artifact line.
-        @Disabled("#420 T11: enable in PR-6 (PR-1u lane B), with the T11 tripwire deleted")
         @Test
         void T11a_encode_hasNoArtifactLine() {
             var entries = artifactEntries();
@@ -331,15 +315,27 @@ class BackupEntryCodecTest {
         }
 
         /// #420 T11: an old document with an artifact line is refused `KeyNotBackedUp`.
-        @Disabled("#420 T11: enable in PR-6 (PR-1u lane B), with the T11 tripwire deleted")
         @Test
         void T11b_decode_refusesAnArtifactLine() {
-            var content = fixtureOf(AetherKey.ArtifactContentKey.class);
+            var content = artifactContentFixture();
             var document = sealedDocument(line(content.value(),
                                                content.key()
                                                       .asString()));
 
             assertThat(failures(CODEC.decode(document))).as("T11b decode of a document with an artifact line is refused KeyNotBackedUp")
+                                                        .singleElement()
+                                                        .isInstanceOf(BackupError.KeyNotBackedUp.class);
+        }
+
+        /// #420 T11b, versions half: the same refusal for an `ArtifactVersionsKey` line, read directly.
+        @Test
+        void T11b_decode_refusesAnArtifactVersionsLine() {
+            var versions = artifactVersionsFixture();
+            var document = sealedDocument(line(versions.value(),
+                                               versions.key()
+                                                       .asString()));
+
+            assertThat(failures(CODEC.decode(document))).as("T11b decode of a document with an artifact-versions line is refused KeyNotBackedUp")
                                                         .singleElement()
                                                         .isInstanceOf(BackupError.KeyNotBackedUp.class);
         }
@@ -712,11 +708,26 @@ class BackupEntryCodecTest {
                        .collect(Collectors.toMap(Fixture::key, Fixture::value, (first, _) -> first, LinkedHashMap::new));
     }
 
-    /// The two artifact fixtures (#420 T11), keyed for `encode`.
+    /// The two artifact fixtures (#420 T11), keyed for `encode`. They are not in `FIXTURES`: those hold backed-up types.
     private static Map<AetherKey, AetherValue> artifactEntries() {
-        return Stream.of(fixtureOf(AetherKey.ArtifactContentKey.class),
-                         fixtureOf(AetherKey.ArtifactVersionsKey.class))
+        return Stream.of(artifactContentFixture(), artifactVersionsFixture())
                      .collect(Collectors.toMap(Fixture::key, Fixture::value, (first, _) -> first, LinkedHashMap::new));
+    }
+
+    private static Fixture artifactContentFixture() {
+        return new Fixture(AetherKey.ArtifactContentKey.artifactContentKey(ARTIFACT_BASE, "1.0.0", "sources.jar"),
+                           new AetherValue.ArtifactContentValue(1234L,
+                                                                "d41d8cd98f00b204e9800998ecf8427e",
+                                                                "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+                                                                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                                                                1_700_000_000_000L));
+    }
+
+    private static Fixture artifactVersionsFixture() {
+        return new Fixture(AetherKey.ArtifactVersionsKey.artifactVersionsKey(ARTIFACT_BASE),
+                           new AetherValue.ArtifactVersionsValue(List.of(new AetherValue.ArtifactVersionEntry("1.0.0", true),
+                                                                         new AetherValue.ArtifactVersionEntry("1.1.0", false)),
+                                                                 AetherValue.ArtifactVersionsValue.DEFAULT_MAX_LIVE));
     }
 
     private static Fixture fixtureOf(Class<?> keyType) {

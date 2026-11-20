@@ -14,11 +14,24 @@ import org.pragmatica.lang.Option;
 /// applied the committed config would otherwise delete in-retention history).
 @FunctionalInterface
 public interface StreamRetentionSource {
-    Option<RetentionPolicy> policyOf(String streamName);
+    Option<EnforcedRetention> policyOf(String streamName);
 
-    /// Every stream answers `policy`.
+    /// What a stream's enforcer judges by: its retention policy and the partition count the `max_bytes` and `max_count`
+    /// bounds are shared over (#3334, ST 3.1 O2). Never serialised.
+    record EnforcedRetention(RetentionPolicy policy, int partitions) {
+        public static EnforcedRetention enforcedRetention(RetentionPolicy policy, int partitions) {
+            return new EnforcedRetention(policy, partitions);
+        }
+    }
+
+    /// Every stream answers `policy`, one partition's worth: the bounds are not shared.
     static StreamRetentionSource fixed(RetentionPolicy policy) {
-        var answer = Option.some(policy);
+        return fixed(policy, 1);
+    }
+
+    /// Every stream answers `policy` shared over `partitions`.
+    static StreamRetentionSource fixed(RetentionPolicy policy, int partitions) {
+        var answer = Option.some(EnforcedRetention.enforcedRetention(policy, partitions));
 
         return _ -> answer;
     }

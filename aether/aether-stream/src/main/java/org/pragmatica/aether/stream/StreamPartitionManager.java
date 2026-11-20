@@ -39,9 +39,11 @@ import java.util.stream.LongStream;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.ReplicationFactorsError;
+import org.pragmatica.aether.slice.HotWindowDeclaration;
 import org.pragmatica.aether.slice.RetentionMode;
-import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.StreamDeclaration;
+import org.pragmatica.aether.slice.TruncationDeclaration;
 import org.pragmatica.aether.slice.fence.OwnershipDomain;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -54,6 +56,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.StreamFootprint;
+import org.pragmatica.aether.stream.segment.StreamRetentionSource.EnforcedRetention;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass;
@@ -1712,10 +1715,20 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// The retention policy of the committed config this node has applied for `streamName`, else of a locally committed
-    /// entry (#2201 3.2 item 2): the source sealed-tier retention reads. None while this node has neither, and retention
-    /// then withholds the stream.
-    public Option<RetentionPolicy> committedRetention(String streamName) {
-        return committedConfigOf(streamName).map(StreamConfig::retention);
+    /// entry (#2201 3.2 item 2, #3334), with the partition count of the LIFE it enforces (#3490): the source sealed-tier
+    /// retention reads; the enforcer shares the byte and count bounds over the partitions the stream has, never over the
+    /// count of a committed config that was not adopted. The count of the committed config answers only while this node
+    /// holds no entry. None while this node has neither, and retention then withholds the stream.
+    public Option<EnforcedRetention> committedRetention(String streamName) {
+        return committedConfigOf(streamName).map(config -> EnforcedRetention.enforcedRetention(config.retention(),
+                                                                                               lifePartitions(streamName,
+                                                                                                              config)));
+    }
+
+    private int lifePartitions(String streamName, StreamConfig committed) {
+        return option(streams.get(streamName)).map(entry -> entry.config()
+                                                                 .partitions())
+                     .or(committed.partitions());
     }
 
     /// The partition count of the committed config this node has applied for `streamName`, else of a locally committed
@@ -2313,11 +2326,49 @@ public final class StreamPartitionManager implements AutoCloseable {
                : existing;
     }
 
-    /// The one rule that decides whether a committed config of the SAME life replaces the local one: same partition
-    /// count and strictly stronger durability. [#confirmationFactorAfter] reads it too, so what is announced about a
-    /// factor change cannot differ from what [#confirmationFactorFor] then enforces.
+    /// The one rule that decides whether a committed config of the SAME life replaces the local one (ST 2.5 L251, #3334):
+    /// the same partition count, durability not weaker (neither the replication factor nor the confirmation factor
+    /// lowers), no immutable key changed (`[truncation]`, `max_event_size`, `encryption_key_id`), and either stronger
+    /// durability or a changed storage key (`[retention]`, `[hot]`, `expected_ingress`). Adoption swaps the whole config,
+    /// so an immutable change would ride along with a storage change; it is not adopted (the deploy validation refuses
+    /// it before commit). [#confirmationFactorAfter] reads it too, so what is announced about a factor change cannot
+    /// differ from what [#confirmationFactorFor] then enforces.
     private static boolean adopts(StreamConfig incoming, StreamConfig existing) {
-        return incoming.partitions() == existing.partitions() && strongerDurability(incoming, existing);
+        return incoming.partitions() == existing.partitions()
+               && notWeaker(incoming, existing)
+               && immutableUnchanged(incoming, existing)
+               && (strongerDurability(incoming, existing) || storageChanged(incoming, existing));
+    }
+
+    private static boolean notWeaker(StreamConfig incoming, StreamConfig existing) {
+        return incoming.replicationFactor() >= existing.replicationFactor() && incoming.confirmationFactor() >= existing.confirmationFactor();
+    }
+
+    private static boolean immutableUnchanged(StreamConfig incoming, StreamConfig existing) {
+        return incoming.maxEventSizeBytes() == existing.maxEventSizeBytes()
+               && incoming.encryptionKeyId()
+                          .equals(existing.encryptionKeyId())
+               && truncationOf(incoming).equals(truncationOf(existing));
+    }
+
+    private static Option<TruncationDeclaration> truncationOf(StreamConfig config) {
+        return config.declaration()
+                     .flatMap(StreamDeclaration::truncation);
+    }
+
+    private static boolean storageChanged(StreamConfig incoming, StreamConfig existing) {
+        return ! incoming.retention()
+                         .equals(existing.retention()) || !hotOf(incoming).equals(hotOf(existing)) || !ingressOf(incoming).equals(ingressOf(existing));
+    }
+
+    private static Option<HotWindowDeclaration> hotOf(StreamConfig config) {
+        return config.declaration()
+                     .flatMap(StreamDeclaration::hot);
+    }
+
+    private static Option<Long> ingressOf(StreamConfig config) {
+        return config.declaration()
+                     .flatMap(StreamDeclaration::expectedIngressBytesPerSecond);
     }
 
     /// The config this node ENFORCES for `streamName`, if it holds the stream.
@@ -2328,9 +2379,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Why a committed config of the SAME life does not take effect over the one this node enforces, or none when it
     /// takes effect or asks for nothing durable to change. The operator asked for something the system will not do:
     /// a different partition count cannot be re-shaped onto the existing rings and WALs (whatever else the config
-    /// changes), and, with the same partition count, a config that is not strictly stronger than the enforced one is
-    /// not adopted (durability only increases online). The same rule as [#adopts] decides, so what is announced cannot
-    /// differ from what [#confirmationFactorFor] then enforces.
+    /// changes), and, with the same partition count, a config with either factor lowered is not adopted (durability only
+    /// increases online); a storage-key change at equal durability asks for nothing durable to refuse and so is none
+    /// here, and so is an immutable-key change (the deploy validation refuses it before commit) (#3334). The same rule
+    /// as [#adopts] decides durability, so what is announced cannot differ from what [#confirmationFactorFor] then
+    /// enforces.
     public static Option<String> notAppliedReason(StreamConfig incoming, StreamConfig enforced) {
         if (incoming.incarnation() != enforced.incarnation()) {
             return Option.none();
@@ -2342,8 +2395,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                               + ")");
         }
 
-        return incoming.replication()
-                       .equals(enforced.replication()) || strongerDurability(incoming, enforced)
+        return notWeaker(incoming, enforced)
                ? Option.none()
                : Option.some("durability only increases online (requested replication/confirmation factor " + incoming.replicationFactor()
                             + "/" + incoming.confirmationFactor()
@@ -2366,12 +2418,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private StreamEntry adoptConfig(StreamConfig config, StreamEntry existing) {
-        log.info("Adopting committed config for stream '{}' over prior local default: replication_factor {}->{}, confirmation_factor {}->{}",
+        log.info("Adopting committed config for stream '{}' over prior local default: replication_factor {}->{}, confirmation_factor {}->{}, retention {}->{}",
                  config.name(),
                  existing.config().replicationFactor(),
                  config.replicationFactor(),
                  existing.config().confirmationFactor(),
-                 config.confirmationFactor());
+                 config.confirmationFactor(),
+                 existing.config().retention(),
+                 config.retention());
 
         return existing.withConfig(config);
     }

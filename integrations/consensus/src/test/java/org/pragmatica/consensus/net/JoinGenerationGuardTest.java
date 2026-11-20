@@ -94,6 +94,22 @@ class JoinGenerationGuardTest {
                            .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.WireGenerationRefused(B, 1, 3)));
     }
 
+    /// #3303 RA-3b bumped WIRE_GENERATION: a peer still at the previous generation cannot decode BackupRestoreValue's new
+    /// shape, so it is refused at this binary's own generation.
+    @Test
+    void handshakenMemberAtThePreviousGeneration_isRefusedAtThisBinarysGeneration() {
+        var previous = JoinGenerationGuard.WIRE_GENERATION - 1;
+        handshaken.put(A, generation(Integer.toString(previous)));
+        handshaken.put(B, generation(Integer.toString(JoinGenerationGuard.WIRE_GENERATION)));
+
+        JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, JoinGenerationGuard.WIRE_GENERATION)
+                           .await(AWAIT)
+                           .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("must be refused"))
+                           .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.WireGenerationRefused(A,
+                                                                                                                  previous,
+                                                                                                                  JoinGenerationGuard.WIRE_GENERATION)));
+    }
+
     @Test
     void unparseableLabel_countsAsGenerationOne() {
         assertThat(JoinGenerationGuard.generationOf(generation("two"))).isEqualTo(1);
@@ -157,11 +173,11 @@ class JoinGenerationGuardTest {
                .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.WireGenerationRefused(B, 1, 2)));
     }
 
-    /// Pin: the generation is bumped to 3 by #3458 (ReadRefusal.Kind: UNKNOWN moved 15 to 16, so an older node decodes
-    /// the new ordinal 16 as out of range and reads a newer node's STREAM_NOT_MATERIALIZED (15) as its own UNKNOWN, i.e. as text). A literal, so a revert to 2 goes red.
+    /// Pin: the generation is bumped to 6 by #3458/#3481 M1b (ReadRefusal.Kind: UNKNOWN moved 15 to 16, so an older node decodes
+    /// the new ordinal 16 as out of range and reads a newer node's STREAM_NOT_MATERIALIZED (15) as its own UNKNOWN, i.e. as text). A literal, so a revert to 5 goes red.
     @Test
-    void thisBinarysGeneration_isThreeAfterTheReadRefusalKindRenumber() {
-        assertThat(JoinGenerationGuard.WIRE_GENERATION).isEqualTo(3);
+    void thisBinarysGeneration_isSixAfterTheReadRefusalKindRenumber() {
+        assertThat(JoinGenerationGuard.WIRE_GENERATION).isEqualTo(6);
     }
 
     @Test
