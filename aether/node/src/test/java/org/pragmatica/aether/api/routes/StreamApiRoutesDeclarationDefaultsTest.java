@@ -287,6 +287,24 @@ class StreamApiRoutesDeclarationDefaultsTest {
         }
     }
 
+    /// F2, the already-materialized arm: a stream a publish auto-created keeps the retention the engine holds, and the
+    /// catalog entry (so GET metadata) reports that enforced retention, not the retention this create declared.
+    @Test
+    void createAfterPublishAutoCreate_registersTheEnforcedRetention() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+        try {
+            var routes = routesFor(manager, StreamNamespacesService.inMemory());
+            routes.ensureStreamExists(ADDRESS).onFailure(cause -> fail("auto-create must succeed: " + cause.message()));
+            routes.createStream(NAMESPACE, STREAM, VERSION, new StreamApiRoutes.CreateRequest(null, "2h", null, null))
+                  .onFailure(cause -> fail("create must succeed: " + cause.message()));
+
+            assertThat(routes.streamMetadata(NAMESPACE, STREAM, VERSION).unwrap().maxAgeMs()).isEqualTo(DAY_MS);
+            assertThat(retentionAfter(manager).maxAgeMs()).isEqualTo(DAY_MS);
+        } finally {
+            manager.close();
+        }
+    }
+
     /// F3: publish auto-create mints the declaration default on BOTH routes (it minted a 1 h / 4 MiB policy that
     /// declared nothing).
     @Test
