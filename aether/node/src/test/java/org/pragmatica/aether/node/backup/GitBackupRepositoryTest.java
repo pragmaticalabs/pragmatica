@@ -11,6 +11,7 @@ import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -289,7 +290,7 @@ class GitBackupRepositoryTest {
     /// Git has exited and the caller waits for the output pipe: the parked frame is the output future's.
     private static void awaitReadingOutput(Thread worker) throws InterruptedException {
         for (var attempt = 0; attempt < 600; attempt++) {
-            if (java.util.Arrays.stream(worker.getStackTrace()).anyMatch(frame -> frame.getClassName().equals("java.util.concurrent.FutureTask"))) {
+            if (Arrays.stream(worker.getStackTrace()).anyMatch(frame -> frame.getClassName().equals("java.util.concurrent.FutureTask"))) {
                 return;
             }
 
@@ -548,5 +549,47 @@ class GitBackupRepositoryTest {
                                                        "backup",
                                                        timeout,
                                                        Map.of("PATH", bin + ":" + System.getenv("PATH")));
+    }
+
+    /// What a shimmed git subcommand does: refuse as a damaged or unreachable repository would (exit 128), or exit 0 with nothing on stdout.
+    static final String SHIM_FAILS = "echo 'fatal: shim' >&2\n    exit 128";
+    static final String SHIM_PRINTS_NOTHING = "exit 0";
+
+    /// An environment whose PATH starts with a `git` that runs `behaviour` (shell) when its subcommand is `subcommand` (the first argument after the
+    /// `-c`/`-C` pairs, so `--version` counts) and the real git for everything else (#3464). The repository still runs real git for every other step.
+    static Map<String, String> gitShim(Path bin, String subcommand, String behaviour) {
+        var shim = bin.resolve("git");
+        var script = """
+                     #!/bin/sh
+                     sub=""
+                     skip=0
+                     for arg in "$@"; do
+                       if [ "$skip" = 1 ]; then skip=0; continue; fi
+                       case "$arg" in -c|-C) skip=1;; *) sub="$arg"; break;; esac
+                     done
+                     if [ "$sub" = "%s" ]; then
+                         %s
+                     fi
+                     exec %s "$@"
+                     """.formatted(subcommand, behaviour, realGit());
+
+        try {
+            Files.createDirectories(bin);
+            Files.writeString(shim, script);
+            Files.setPosixFilePermissions(shim, PosixFilePermissions.fromString("rwxr-xr-x"));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+
+        return Map.of("PATH", bin + ":" + System.getenv("PATH"));
+    }
+
+    private static String realGit() {
+        return Arrays.stream(System.getenv("PATH").split(":"))
+                   .map(entry -> Path.of(entry).resolve("git"))
+                   .filter(Files::isExecutable)
+                   .findFirst()
+                   .orElseThrow()
+                   .toString();
     }
 }

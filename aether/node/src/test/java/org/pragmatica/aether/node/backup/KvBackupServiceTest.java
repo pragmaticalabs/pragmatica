@@ -819,6 +819,56 @@ class KvBackupServiceTest {
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(8);
         }
 
+        // --- #3464: the floor is read through the three-valued reads; an unreadable history is a failure, never a low floor ---
+
+        /// The control: a readable history yields the highest incarnation recorded for the lineage.
+        @Test
+        void highestRecorded_overARealHistory_isTheMaximumRecorded() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 7, INCARNATION_ID, 30), recordedSubject(LINEAGE, 7, 30));
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 5, INCARNATION_ID, 40), recordedSubject(LINEAGE, 5, 40));
+
+            assertThat(shimmedService(remote, Map.of()).highestRecordedForLineage(LINEAGE, 1)
+                                                       .unwrap()).isEqualTo(7L);
+        }
+
+        @Test
+        void highestRecorded_whenGitFailsToListTheHistory_isAFailure_notTheFloor() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 7, INCARNATION_ID, 30), recordedSubject(LINEAGE, 7, 30));
+            var service = shimmedService(remote, GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "log", GitBackupRepositoryTest.SHIM_FAILS));
+
+            assertThat(service.highestRecordedForLineage(LINEAGE, 1)
+                              .isFailure()).isTrue();
+        }
+
+        /// Lost output: git exits 0 with nothing. The old read took that for an empty history and returned the floor, below the recorded 7.
+        @Test
+        void highestRecorded_whenTheHistoryComesBackEmpty_isAFailure_notTheFloor() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 7, INCARNATION_ID, 30), recordedSubject(LINEAGE, 7, 30));
+            var service = shimmedService(remote,
+                                         GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "log", GitBackupRepositoryTest.SHIM_PRINTS_NOTHING));
+
+            assertThat(service.highestRecordedForLineage(LINEAGE, 1)
+                              .isFailure()).isTrue();
+        }
+
+        /// A commit whose subject is a backup's but names no header is decoded from its document; when `git show` cannot read it, that is a failure.
+        @Test
+        void highestRecorded_whenAnUnnamedSubjectCommitCannotBeShown_isAFailure() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), "kv backup damaged");
+            var service = shimmedService(remote, GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "show", GitBackupRepositoryTest.SHIM_FAILS));
+
+            assertThat(service.highestRecordedForLineage(LINEAGE, 1)
+                              .isFailure()).isTrue();
+        }
+
         /// #1625 meets #1532: the declared incarnation is a new incarnation, so it carries a fresh
         /// incarnation id — reusing the superseded one would make incarnations 9 and 10 compare equal.
         @Test
@@ -1581,6 +1631,17 @@ class KvBackupServiceTest {
                                                                  remote,
                                                                  "backup",
                                                                  TimeSpan.timeSpan(30).seconds());
+
+        return KvBackupService.kvBackupService(kvStore, CODEC, repository, scheduler, scheduler::now, warnings::add, TIMING);
+    }
+
+    /// A service whose git runs with `environment` (a shimmed `git` on the PATH).
+    private KvBackupService shimmedService(String remote, Map<String, String> environment) {
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"),
+                                                                 Option.some(remote),
+                                                                 "backup",
+                                                                 TimeSpan.timeSpan(30).seconds(),
+                                                                 environment);
 
         return KvBackupService.kvBackupService(kvStore, CODEC, repository, scheduler, scheduler::now, warnings::add, TIMING);
     }
