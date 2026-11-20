@@ -2919,4 +2919,102 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
                          .map(partition -> new EntityCheckpointKey(keyspace, partition));
         }
     }
+
+    /// The offer of a parent arc's seed to a child arc of one entity keyspace `(keyspace, parent)` (#3303 A3a).
+    ///
+    /// `keyspace` is the RAW name from `resources.toml`, as in [EntityCheckpointKey]. Cluster state, backed up (design r8.2 l.476).
+    /// Wire-tagged in A3a; the value is A3b's.
+    record EntitySeedOfferKey(String keyspace, int parent) implements ClusterStateKey {
+        private static final String PREFIX = "entity-seed-offer/";
+        private static final String SEP = "/";
+        private static final Fn1<Cause, String> ENTITY_SEED_OFFER_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid entity-seed-offer key format: %s");
+
+        @Override
+        public String asString() {
+            return PREFIX + keyspace + SEP + parent;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static EntitySeedOfferKey entitySeedOfferKey(String keyspace, int parent) {
+            return new EntitySeedOfferKey(keyspace, parent);
+        }
+
+        /// Rebuild from the full [#asString] form, the inverse a backup needs.
+        public static Result<EntitySeedOfferKey> entitySeedOfferKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return ENTITY_SEED_OFFER_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return fromIdentity(key.substring(PREFIX.length()));
+        }
+
+        /// Rebuild from the snapshot IDENTITY `<keyspace>/<parent>`, splitting on the LAST separator: the keyspace is
+        /// author-supplied and stored raw, so the id is always the final component.
+        public static Result<EntitySeedOfferKey> fromIdentity(String identity) {
+            var lastSep = identity.lastIndexOf(SEP);
+
+            if (lastSep <= 0 || lastSep == identity.length() - 1) {
+                return ENTITY_SEED_OFFER_KEY_FORMAT_ERROR.apply(PREFIX + identity).result();
+            }
+
+            var keyspace = identity.substring(0, lastSep);
+
+            return Number.parseInt(identity.substring(lastSep + 1))
+                         .mapError(_ -> ENTITY_SEED_OFFER_KEY_FORMAT_ERROR.apply(PREFIX + identity))
+                         .map(parent -> new EntitySeedOfferKey(keyspace, parent));
+        }
+    }
+
+    /// The operator waiver of the loss of one child arc of an entity keyspace `(keyspace, child)` (#3303 A3a).
+    ///
+    /// `keyspace` is the RAW name from `resources.toml`, as in [EntityCheckpointKey]. Cluster state, backed up (design r8.2 l.476).
+    /// Wire-tagged in A3a; the value is A3b's.
+    record EntityArcWaiverKey(String keyspace, int child) implements ClusterStateKey {
+        private static final String PREFIX = "entity-arc-waiver/";
+        private static final String SEP = "/";
+        private static final Fn1<Cause, String> ENTITY_ARC_WAIVER_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid entity-arc-waiver key format: %s");
+
+        @Override
+        public String asString() {
+            return PREFIX + keyspace + SEP + child;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static EntityArcWaiverKey entityArcWaiverKey(String keyspace, int child) {
+            return new EntityArcWaiverKey(keyspace, child);
+        }
+
+        /// Rebuild from the full [#asString] form, the inverse a backup needs.
+        public static Result<EntityArcWaiverKey> entityArcWaiverKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return ENTITY_ARC_WAIVER_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return fromIdentity(key.substring(PREFIX.length()));
+        }
+
+        /// Rebuild from the snapshot IDENTITY `<keyspace>/<child>`, splitting on the LAST separator: the keyspace is
+        /// author-supplied and stored raw, so the id is always the final component.
+        public static Result<EntityArcWaiverKey> fromIdentity(String identity) {
+            var lastSep = identity.lastIndexOf(SEP);
+
+            if (lastSep <= 0 || lastSep == identity.length() - 1) {
+                return ENTITY_ARC_WAIVER_KEY_FORMAT_ERROR.apply(PREFIX + identity).result();
+            }
+
+            var keyspace = identity.substring(0, lastSep);
+
+            return Number.parseInt(identity.substring(lastSep + 1))
+                         .mapError(_ -> ENTITY_ARC_WAIVER_KEY_FORMAT_ERROR.apply(PREFIX + identity))
+                         .map(child -> new EntityArcWaiverKey(keyspace, child));
+        }
+    }
 }

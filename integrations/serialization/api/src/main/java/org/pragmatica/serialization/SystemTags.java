@@ -811,6 +811,9 @@ public interface SystemTags {
         // belong to #2625); the range is reserved in wire-tag-ranges.txt first.
         pin(table, 2984, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue");
         pin(table, 2985, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach");
+        // #3303 A3a: the entity seed-offer and arc-waiver keys. Inside the arc-3303 reservation 3018..3037 of wire-tag-ranges.txt (know f3033886ee).
+        pin(table, 3018, "org.pragmatica.aether.slice.kvstore.AetherKey.EntitySeedOfferKey");
+        pin(table, 3019, "org.pragmatica.aether.slice.kvstore.AetherKey.EntityArcWaiverKey");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 
