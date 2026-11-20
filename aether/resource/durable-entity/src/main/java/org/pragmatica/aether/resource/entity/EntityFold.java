@@ -664,7 +664,9 @@ final class EntityFold {
         record AppliedMismatch(int partition, long applied, long lastOffset) implements CaptureRefusal {
             @Override
             public String message() {
-                return "Entity partition " + partition + " fold applied through " + applied + " is not the closed offset " + lastOffset;
+                return "Entity partition " + partition
+                     + " fold applied through " + applied
+                     + " is not the closed offset " + lastOffset;
             }
         }
 
@@ -672,7 +674,9 @@ final class EntityFold {
         record NotCommitted(int partition, long committed, long lastOffset) implements CaptureRefusal {
             @Override
             public String message() {
-                return "Entity partition " + partition + " log committed through " + committed + ", below the closed offset " + lastOffset;
+                return "Entity partition " + partition
+                     + " log committed through " + committed
+                     + ", below the closed offset " + lastOffset;
             }
         }
 
@@ -680,7 +684,8 @@ final class EntityFold {
         record Cut(int partition) implements CaptureRefusal {
             @Override
             public String message() {
-                return "Entity partition " + partition + " log was cut since its fold was built; the fold may hold removed records";
+                return "Entity partition " + partition
+                     + " log was cut since its fold was built; the fold may hold removed records";
             }
         }
     }
@@ -699,7 +704,9 @@ final class EntityFold {
         var fold = partitionFold(partition);
 
         return rebuilt(partition, fold).flatMap(_ -> logEndsAt(partition, lastOffset))
-                       .flatMap(_ -> captureOf(partition, fold.published.get(), lastOffset));
+                      .flatMap(_ -> captureOf(partition,
+                                              fold.published.get(),
+                                              lastOffset));
     }
 
     private Result<Unit> rebuilt(int partition, PartitionFold fold) {
