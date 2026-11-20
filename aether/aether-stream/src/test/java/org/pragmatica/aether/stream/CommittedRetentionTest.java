@@ -82,6 +82,13 @@ class CommittedRetentionTest {
         assertThat(manager.committedRetention(STREAM)).isEqualTo(Option.some(EnforcedRetention.enforcedRetention(LOCAL, 4)));
     }
 
+    @Test
+    void anAppliedConfigAlone_answersItsPartitionCount() {
+        manager.onStreamConfigPut(committedPut(config(APPLIED, 4)));
+
+        assertThat(manager.committedRetention(STREAM)).isEqualTo(Option.some(EnforcedRetention.enforcedRetention(APPLIED, 4)));
+    }
+
     /// #3490 F1: a committed config of the same life with another partition count is not adopted, so the enforced share
     /// keeps dividing over the rings the stream has, never over the declared count of the unadopted config.
     @Test
