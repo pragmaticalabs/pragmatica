@@ -76,8 +76,9 @@ public final class StreamErrorStatus {
     /// total and is what the raising node always answered; a kindless one pinned at 500 (`WalReplayMismatch`, `WalHeadLost`,
     /// `SeedRejected`, `ProvenanceMismatch`, ...) therefore stays 500. For every kinded [StreamError] the pin and the row of
     /// [ReadRefusal#answerOf(Cause)] agree (`StreamErrorStatusTest`), so the node that raised a cause and the node that received
-    /// it over a forward answer the same status. Only a cause outside both (`StorageError` and the like) takes the row of
-    /// [ReadRefusal#answerOf(Cause)], which is `UNKNOWN`'s (503), what the wire does with it. The pin's [#typed(Cause)] stays for
+    /// it over a forward answer the same status. Only a cause outside both takes the row of
+    /// [ReadRefusal#answerOf(Cause)]: `UNKNOWN`'s (503) for `StorageError` and the like, which is what the wire does with it, and its
+    /// own row for a `SegmentError` or a `StreamForwardError`. The pin's [#typed(Cause)] stays for
     /// what is not a read of records (the metadata lookups); the hop to the STREAMING task group is not a read answer at all.
     public static Cause typedRead(Cause cause) {
         return switch (cause) {
