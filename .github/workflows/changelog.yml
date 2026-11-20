@@ -33,6 +33,10 @@ jobs:
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: scripts/changelog-check.sh "origin/${{ github.base_ref }}"
 
+      - name: Check the wire-generation bump
+        if: github.event_name == 'pull_request'
+        run: scripts/wire-generation-check.sh "origin/${{ github.base_ref }}"
+
       - name: Merge queue - fragment verified on the pull request
         if: github.event_name == 'merge_group'
-        run: echo "changelog fragment not re-checked on merge_group (needs PR labels and base ref), the pull_request run of this check gates entry to the queue"
+        run: echo "changelog fragment and wire-generation bump not re-checked on merge_group (they need PR labels and the base ref), the pull_request run of this check gates entry to the queue"
