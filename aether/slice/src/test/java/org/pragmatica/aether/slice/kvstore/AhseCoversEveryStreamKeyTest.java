@@ -153,7 +153,7 @@ class AhseCoversEveryStreamKeyTest {
         assertThat(leaves).containsAll(KEY_ROWS.keySet());
         assertThat(streamSide(leafRecords(AetherKey.class))).as("stream-side records found by the census")
                                                              .contains("StreamConfigKey", "ConsumerAssignmentKey", "StorageStatusKey", "TopicPublisherKey");
-        assertThat(KEY_ROWS.values()).allMatch(row -> row >= 1 && row <= 39);
+        assertThat(KEY_ROWS.values()).allMatch(row -> row >= 1 && row <= 43);
     }
 
     private static Set<String> uncoveredBy(List<Class<?>> candidates) {
