@@ -86,6 +86,8 @@ class FsmWarningCatalogueTest {
         // WARN-V2 (design §0): the 13 leader-local families are raised from the Warnings family table, not from a ctx.warn site, so the source scan
         // cannot see them; their opener codes join the scanned set from that table.
         scan.codes().addAll(Warnings.FAMILIES.keySet());
+        // #3203: the recovery codes too, since the committed-put publisher (ClusterEventAggregator.onFsmWarningPut) drops an uncatalogued one.
+        scan.codes().addAll(Warnings.FAMILIES.values());
         var catalogue = Arrays.stream(OperatorWarningCode.values()).collect(Collectors.toMap(OperatorWarningCode::code, code -> code));
 
         assertThat(scan.files()).as("the scan covered the FSM sources").isGreaterThan(40);
