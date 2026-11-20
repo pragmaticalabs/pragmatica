@@ -2334,8 +2334,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// it before commit). [#confirmationFactorAfter] reads it too, so what is announced about a factor change cannot
     /// differ from what [#confirmationFactorFor] then enforces.
     private static boolean adopts(StreamConfig incoming, StreamConfig existing) {
-        return incoming.partitions() == existing.partitions() && notWeaker(incoming, existing) && immutableUnchanged(incoming,
-                                                                                                                      existing)
+        return incoming.partitions() == existing.partitions()
+               && notWeaker(incoming, existing)
+               && immutableUnchanged(incoming, existing)
                && (strongerDurability(incoming, existing) || storageChanged(incoming, existing));
     }
 
