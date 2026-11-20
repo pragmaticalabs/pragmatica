@@ -179,6 +179,29 @@ class CheckpointFrameTest {
         assertThat(pointerOf(block)).isEqualTo("entity-checkpoint/orders/3");
     }
 
+    /// #3480 A5 (t3480t, kills sc-ignoreLastByte and sc-skipFirst8): `sameContent` ignores only the nonce. Two frames of identical input
+    /// are the same content, and a difference in any one field after the nonce makes them differ: the first byte of the keyspace name (the
+    /// first bytes after the nonce are its length and name), the partition, the claim, the lineage, and the last byte of the snapshot.
+    @Test
+    void sameContent_ignoresOnlyTheNonce_andSeesADifferenceInAnyFieldAfterIt() {
+        var base = CheckpointFrame.frame("orders", 3, 7L, bytes("the fold"), Option.some(bytes("lineage")));
+
+        assertThat(CheckpointFrame.sameContent(base, CheckpointFrame.frame("orders", 3, 7L, bytes("the fold"), Option.some(bytes("lineage")))))
+            .as("identical input, another nonce").isTrue();
+        assertThat(CheckpointFrame.sameContent(base, CheckpointFrame.frame("arders", 3, 7L, bytes("the fold"), Option.some(bytes("lineage")))))
+            .as("first byte of the keyspace").isFalse();
+        assertThat(CheckpointFrame.sameContent(base, CheckpointFrame.frame("orders", 4, 7L, bytes("the fold"), Option.some(bytes("lineage")))))
+            .as("partition").isFalse();
+        assertThat(CheckpointFrame.sameContent(base, CheckpointFrame.frame("orders", 3, 8L, bytes("the fold"), Option.some(bytes("lineage")))))
+            .as("claim").isFalse();
+        assertThat(CheckpointFrame.sameContent(base, CheckpointFrame.frame("orders", 3, 7L, bytes("the fold"), Option.some(bytes("lineagf")))))
+            .as("last byte of the lineage").isFalse();
+        assertThat(CheckpointFrame.sameContent(base, CheckpointFrame.frame("orders", 3, 7L, bytes("the folc"), Option.some(bytes("lineage")))))
+            .as("last byte of the snapshot").isFalse();
+        assertThat(CheckpointFrame.sameContent(base, CheckpointFrame.frame("orders", 3, 7L, bytes("the fold"), Option.none())))
+            .as("no lineage").isFalse();
+    }
+
     /// A hand-built `CKPTID01` block (written before the nonce) still reads: snapshot, lineage and pointer.
     @Test
     void aHandBuiltV1Block_stillReads_snapshotLineageAndPointer() {

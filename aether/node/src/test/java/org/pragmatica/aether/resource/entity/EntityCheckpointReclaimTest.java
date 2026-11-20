@@ -566,6 +566,70 @@ class EntityCheckpointReclaimTest {
         assertThat(resaved).as("the pointer names the block carrying the changed lineage").isNotEqualTo(committed);
     }
 
+    /// #3480 A5 (t3480t, kills sc-ignoreLastByte): a snapshot-only change at the committed claim, the lineage unchanged, re-saves too.
+    @Test
+    void anEqualClaimWithChangedSnapshot_isReSaved_evenWithAPrivateDurableCopyHeld() {
+        useStorageWithAPrivateDurableTier();
+        var committed = save(substrate(checkpointReclaim(LONG_GRACE, FAST_RETRY)), 0, 5L, snapshot("fold-a"), Option.some(LINEAGE));
+        var putsBeforeRestart = shared.puts.size();
+
+        var resaved = save(substrate(checkpointReclaim(LONG_GRACE, FAST_RETRY)), 0, 5L, snapshot("fold-b"), Option.some(LINEAGE));
+
+        assertThat(shared.puts).as("the changed snapshot was written").hasSize(putsBeforeRestart + 1);
+        assertThat(resaved).as("the pointer names the block carrying the changed snapshot").isNotEqualTo(committed);
+    }
+
+    /// #3480 A5 (t3480t, kills A5-failedCheckSkips), FER "when unsure, re-save": a check on the private durable tier that fails is not an
+    /// answer that the block is held, so the save at the committed claim writes its block.
+    @Test
+    void aFailedCheckOnThePrivateDurableTier_isReSaved() {
+        var durable = new FaultyDurableTier(privateDurableTier());
+        storage.shutdown();
+        storage = storageOver(MemoryTier.memoryTier(ONE_GB), durable);
+        var committed = save(substrate(checkpointReclaim(LONG_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
+        var putsBeforeRestart = shared.puts.size();
+
+        durable.failExists = true;
+        var resaved = save(substrate(checkpointReclaim(LONG_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
+
+        assertThat(shared.puts).as("the unanswered check was not taken as held").hasSize(putsBeforeRestart + 1);
+        assertThat(resaved).isNotEqualTo(committed);
+    }
+
+    /// #3480 A5 (t3480t, kills A5-unknownBlockSkips): a tier that says it holds the committed block but whose read finds nothing gives no
+    /// content to compare, so the save at the committed claim writes its block.
+    @Test
+    void aHeldBlockWhoseReadFindsNothing_isReSaved() {
+        var durable = new FaultyDurableTier(privateDurableTier());
+        storage.shutdown();
+        storage = storageOver(MemoryTier.memoryTier(ONE_GB), durable);
+        var committed = save(substrate(checkpointReclaim(LONG_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
+        var putsBeforeRestart = shared.puts.size();
+
+        durable.hideGets = true;
+        shared.hideGets = true;
+        var resaved = save(substrate(checkpointReclaim(LONG_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
+
+        assertThat(storage.get(committed).await().unwrap()).as("control: the committed block reads as absent").isEmpty();
+        assertThat(durable.exists(committed).await().unwrap()).as("control: the private durable tier still says it holds it").isTrue();
+        assertThat(shared.puts).as("the absent block was not taken as the same content").hasSize(putsBeforeRestart + 1);
+        assertThat(resaved).isNotEqualTo(committed);
+    }
+
+    /// #3480 handover safety (t3480t, kills A1-dropNotShared): the production remote tier is shared AND durable. A new owner whose storage
+    /// holds the committed block only there still writes a durable block of its own.
+    @Test
+    void aNewOwnerHoldingTheBlockOnlyInASharedDurableTier_writesItsOwnDurableBlock() {
+        var previous = save(substrate(checkpointReclaim(LONG_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
+        var newOwner = privateDurableTier();
+
+        shared.durable = true;
+        var newOwnerStorage = storageOver(MemoryTier.memoryTier(ONE_GB), newOwner);
+
+        assertThat(newOwnerStorage.exists(previous).await().unwrap()).as("control: the shared durable tier answers for the new owner").isTrue();
+        assertNewOwnerWritesItsOwnDurableBlock(newOwnerStorage, newOwner, previous);
+    }
+
     /// #3480 handover safety: a new owner whose storage holds the committed block only in the cluster-shared tier still writes a durable
     /// block of its own at the committed claim. A shared copy is not this node's: `exists` would answer for the whole cluster.
     @Test
@@ -797,10 +861,21 @@ class EntityCheckpointReclaimTest {
         final List<BlockId> puts = new CopyOnWriteArrayList<>();
         final List<BlockId> deletes = new CopyOnWriteArrayList<>();
         final AtomicInteger refuseDeletes = new AtomicInteger();
+        /// Answers as the production remote tier does: shared and durable.
+        volatile boolean durable;
+        /// Reads find nothing, whatever the tier holds.
+        volatile boolean hideGets;
 
         @Override
         public Promise<Option<byte[]>> get(BlockId id) {
-            return delegate.get(id);
+            return hideGets
+                   ? Promise.success(Option.none())
+                   : delegate.get(id);
+        }
+
+        @Override
+        public boolean isDurable() {
+            return durable;
         }
 
         @Override
@@ -842,6 +917,67 @@ class EntityCheckpointReclaimTest {
         @Override
         public boolean isShared() {
             return true;
+        }
+    }
+
+    /// A private durable tier over a real one, whose answers a test can spoil: `failExists` makes the existence check fail, `hideGets`
+    /// makes a read find nothing while `exists` still says the block is there.
+    private static final class FaultyDurableTier implements StorageTier {
+        private final StorageTier delegate;
+        volatile boolean failExists;
+        volatile boolean hideGets;
+
+        FaultyDurableTier(StorageTier delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Promise<Option<byte[]>> get(BlockId id) {
+            return hideGets
+                   ? Promise.success(Option.none())
+                   : delegate.get(id);
+        }
+
+        @Override
+        public Promise<Unit> put(BlockId id, byte[] content) {
+            return delegate.put(id, content);
+        }
+
+        @Override
+        public Promise<Unit> delete(BlockId id) {
+            return delegate.delete(id);
+        }
+
+        @Override
+        public Promise<Boolean> exists(BlockId id) {
+            return failExists
+                   ? Causes.cause("tier unreachable").promise()
+                   : delegate.exists(id);
+        }
+
+        @Override
+        public TierLevel level() {
+            return delegate.level();
+        }
+
+        @Override
+        public long usedBytes() {
+            return delegate.usedBytes();
+        }
+
+        @Override
+        public long maxBytes() {
+            return delegate.maxBytes();
+        }
+
+        @Override
+        public boolean isDurable() {
+            return delegate.isDurable();
+        }
+
+        @Override
+        public Unit release() {
+            return delegate.release();
         }
     }
 

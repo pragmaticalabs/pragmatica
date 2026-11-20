@@ -53,6 +53,20 @@ class PrivateDurableCopyTest {
         assertThat(reader.holdsPrivateDurableCopy(id).await().unwrap()).isFalse();
     }
 
+    /// #3480 (t3480t, kills A1-dropNotShared): the production remote tier is shared AND durable, so the shared term of the private-durable
+    /// test is what keeps a block only that tier holds from counting as held.
+    @Test
+    void aBlockOnlyASharedDurableTierHolds_isNotHeld_althoughItExists() {
+        var remote = SharedTestTier.sharedDurableTestTier();
+        writer = storageOver(remote, "writer");
+        reader = storageOver(remote, "reader");
+        var id = writer.put(CONTENT).await().unwrap();
+
+        assertThat(reader.exists(id).await().unwrap()).as("control: the shared durable tier answers exists for the cluster").isTrue();
+        assertThat(remote.exists(id).await().unwrap()).as("control: the shared durable tier holds it").isTrue();
+        assertThat(reader.holdsPrivateDurableCopy(id).await().unwrap()).isFalse();
+    }
+
     @Test
     void aBlockOnlyACacheTierHolds_isNotHeld() {
         writer = storageWithADisk("writer");
@@ -88,6 +102,16 @@ class PrivateDurableCopyTest {
         var id = BlockId.blockId(CONTENT).unwrap();
 
         assertThat(bare.holdsPrivateDurableCopy(id).await().unwrap()).isFalse();
+    }
+
+    private StorageInstance storageOver(StorageTier remote, String name) {
+        return StorageInstance.storageInstance(name,
+                                               List.of(MemoryTier.memoryTier(ONE_GB),
+                                                       LocalDiskTier.localDiskTier(diskRoot.resolve(name),
+                                                                                   ONE_GB)
+                                                                    .unwrap(),
+                                                       remote),
+                                               MetadataStore.inMemoryMetadataStore(name));
     }
 
     private StorageInstance storageWithADisk(String name) {
