@@ -72,21 +72,23 @@ class ManagementAssemblyDrainPortSeamTest {
         var code = NodeDepartureWiringTest.assemblyCode();
 
         assertThat(code).containsOnlyOnce("DrainPort.registry(");
-        assertThat(drainAssemblyCode()).as("the FSM-aware sink is built once in DrainAssembly, as a lambda")
+        assertThat(assemblyFileCode("DrainAssembly.java")).as("the FSM-aware sink is built once in DrainAssembly, as a lambda")
                                        .containsOnlyOnce("->requestDrainThroughFsm(");
-        assertThat(code).containsOnlyOnce("in.drainPort()");
+        assertThat(assemblyFileCode("ManagementAssembly.java")).as("the management unit takes the port from its inputs")
+                                                               .containsOnlyOnce("in.drainPort()");
         assertThat(code).doesNotContain("DrainPort.none(");
         assertThat(code).containsOnlyOnce("quorumLossDrain.drainPort()");
     }
 
-    /// `DrainAssembly.java` alone, normalised as [AssemblySource#stripped()] does (line comments removed, whitespace
-    /// stripped): the topology unit builds its own sink with the same call, so this pin is scoped to the one file.
-    private static String drainAssemblyCode() {
+    /// One assembly file alone, normalised as [AssemblySource#stripped()] does (line comments removed, whitespace
+    /// stripped). The topology unit builds its own sink with the same call, and `quorumLossDrain.drainPort()` contains
+    /// `in.drainPort()`, so these two pins are scoped to the one file.
+    private static String assemblyFileCode(String fileName) {
         var file = AssemblySource.files()
                                  .stream()
                                  .filter(path -> path.getFileName()
                                                      .toString()
-                                                     .equals("DrainAssembly.java"))
+                                                     .equals(fileName))
                                  .findFirst()
                                  .orElseThrow();
 
