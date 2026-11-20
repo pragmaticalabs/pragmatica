@@ -534,6 +534,7 @@ class GitBackupRepositoryTest {
 
         assertThat(RejectionRecord.parse(text + "commit=other\n")).as("duplicate key").isEqualTo(Option.none());
         assertThat(RejectionRecord.parse(text.replace("commit=", "commit=x\nlineageId=forged\ncommit="))).as("forged duplicate").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("revision=41", "commit=x"))).as("five lines, one key twice").isEqualTo(Option.none());
         assertThat(RejectionRecord.parse(text + "extra=1\n")).as("unknown key").isEqualTo(Option.none());
         assertThat(RejectionRecord.parse(text.replace("commit=abc123", "extra=abc123"))).as("unknown key for a missing one").isEqualTo(Option.none());
         assertThat(RejectionRecord.parse(text + "garbage\n")).as("line with no '='").isEqualTo(Option.none());
@@ -591,7 +592,7 @@ class GitBackupRepositoryTest {
         assertThat(subjectOfHead("local")).isEqualTo("restore rejection cleared");
         assertThat(commitCount("local")).isEqualTo(3);
         assertThat(repository.removeRejection()
-                             .isFailure()).isTrue();
+                             .fold(cause -> cause instanceof BackupRepositoryError.GitFailed failed && failed.exitCode() == 128, _ -> false)).as("an absent record is git rm's exit 128").isTrue();
         assertThat(commitCount("local")).isEqualTo(3);
     }
 
@@ -716,6 +717,39 @@ class GitBackupRepositoryTest {
                   .onFailure(cause -> Assertions.fail(cause.message()));
         assertThat(filesOfHead("local")).isEqualTo(GitBackupRepository.REJECTION_FILE);
         assertThat(git(dir, "diff", "--cached", "--name-only").strip()).as("the staged backup change is left staged").isEqualTo(GitBackupRepository.FILE);
+    }
+
+    /// A record left staged (or modified) by a crashed commit is removed all the same.
+    @Test
+    void removeRejection_clearsARecordLeftStagedOverTheCommittedOne() throws IOException {
+        var repository = committedRepository("local", Option.none());
+        var dir = temp.resolve("local");
+
+        repository.commitRejection(record())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        Files.writeString(dir.resolve(GitBackupRepository.REJECTION_FILE), recordOf("lineage-a", 4L, 50L, "inc-10", "def456").render());
+        git(dir, "add", GitBackupRepository.REJECTION_FILE);
+
+        repository.removeRejection()
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readPath("HEAD", GitBackupRepository.REJECTION_FILE)).isInstanceOf(GitRead.Absent.class);
+        assertThat(git(dir, "status", "--porcelain").strip()).isEmpty();
+    }
+
+    /// The compensation after a failed rejection commit unstages the rejection file only.
+    @Test
+    void aFailedRejectionCommit_leavesAnUnrelatedStagedChangeStaged() throws IOException {
+        var repository = committedRepository("local", Option.none());
+        var dir = temp.resolve("local");
+
+        Files.writeString(dir.resolve(GitBackupRepository.FILE), "state-staged\n");
+        git(dir, "add", GitBackupRepository.FILE);
+        refuseCommits("local");
+
+        assertThat(repository.commitRejection(record()).isFailure()).isTrue();
+
+        assertThat(git(dir, "diff", "--cached", "--name-only").strip()).isEqualTo(GitBackupRepository.FILE);
     }
 
     private GitBackupRepository repository(String name, Option<String> remote) {

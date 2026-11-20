@@ -87,7 +87,7 @@ public record RejectionRecord(String lineageId, long incarnation, long revision,
     }
 
     private static Option<RejectionRecord> parseLines(String[] lines) {
-        return lines.length > 0 && VERSION.equals(lines[0])
+        return VERSION.equals(lines[0])
                ? fieldsOf(List.of(lines).subList(1, lines.length)).flatMap(RejectionRecord::fromFields)
                : Option.none();
     }

@@ -248,19 +248,17 @@ public record GitBackupRepository(Path dir,
     /// identical to the committed one is `git`'s empty commit: exit 1, a [BackupRepositoryError.GitFailed].
     /// The commit is scoped to [#REJECTION_FILE]: it never carries, and never leaves staged, anything else (see [#scopedToRejection]).
     public Result<Unit> commitRejection(RejectionRecord record) {
-        return scopedToRejection(unstageRejection().flatMap(_ -> writeRejection(record))
-                                                 .flatMap(_ -> git("add", "--", REJECTION_FILE))
-                                                 .flatMap(_ -> commitOnlyRejection("restore rejected: " + record.lineageId()
-                                                                                  + " " + record.incarnation()
-                                                                                  + "/" + record.revision())));
+        return scopedToRejection(writeRejection(record).flatMap(_ -> git("add", "--", REJECTION_FILE))
+                                               .flatMap(_ -> commitOnlyRejection("restore rejected: " + record.lineageId()
+                                                                                + " " + record.incarnation()
+                                                                                + "/" + record.revision())));
     }
 
     /// Remove [#REJECTION_FILE] and commit the removal on the local branch (#3303). Never pushes: the push is [#push]. Removing an absent
-    /// record is `git rm`'s exit 128, a [BackupRepositoryError.GitFailed], never a success. `-f`: a record file a failed [#commitRejection] left
-    /// modified in the work tree is still removed.
+    /// record is `git rm`'s exit 128, a [BackupRepositoryError.GitFailed], never a success. `-f`: a record file that differs from the index or the
+    /// committed record (a record left staged or modified by a failed or crashed commit) is still removed; it needs no prior `git reset`.
     public Result<Unit> removeRejection() {
-        return scopedToRejection(unstageRejection().flatMap(_ -> git("rm", "-f", "--quiet", "--", REJECTION_FILE))
-                                                 .flatMap(_ -> commitOnlyRejection("restore rejection cleared")));
+        return scopedToRejection(git("rm", "-f", "--quiet", "--", REJECTION_FILE).flatMap(_ -> commitOnlyRejection("restore rejection cleared")));
     }
 
     /// BER for a failed rejection commit: the compensation is `git reset` of [#REJECTION_FILE], the inverse of the staging done on the way in. The
