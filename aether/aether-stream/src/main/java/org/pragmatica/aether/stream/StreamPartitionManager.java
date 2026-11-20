@@ -2403,12 +2403,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private StreamEntry adoptConfig(StreamConfig config, StreamEntry existing) {
-        log.info("Adopting committed config for stream '{}' over prior local default: replication_factor {}->{}, confirmation_factor {}->{}",
+        log.info("Adopting committed config for stream '{}' over prior local default: replication_factor {}->{}, confirmation_factor {}->{}, retention {}->{}",
                  config.name(),
                  existing.config().replicationFactor(),
                  config.replicationFactor(),
                  existing.config().confirmationFactor(),
-                 config.confirmationFactor());
+                 config.confirmationFactor(),
+                 existing.config().retention(),
+                 config.retention());
 
         return existing.withConfig(config);
     }
