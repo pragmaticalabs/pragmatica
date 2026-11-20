@@ -14,7 +14,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.function.ToLongFunction;
 import java.util.stream.Collectors;
@@ -218,8 +217,7 @@ public interface ManagementServer {
                                              Option<ClusterNetwork> clusterNetwork,
                                              Option<Serializer> serializer,
                                              Option<Deserializer> deserializer,
-                                             Consumer<NodeId> drainCommandSink,
-                                             Supplier<Set<NodeId>> pendingDrainsSupplier,
+                                             NodeLifecycleRoutes.DrainPort drainPort,
                                              NodeLifecycleRoutes.SliceFloor sliceFloor) {
         return new ManagementServerImpl(port,
                                         nodeSupplier,
@@ -244,8 +242,7 @@ public interface ManagementServer {
                                         clusterNetwork,
                                         serializer,
                                         deserializer,
-                                        drainCommandSink,
-                                        pendingDrainsSupplier,
+                                        drainPort,
                                         sliceFloor);
     }
 }
@@ -292,8 +289,6 @@ class ManagementServerImpl implements ManagementServer {
     private static final TimeSpan UNBUDGETED_REPLY_WINDOW = TimeSpan.timeSpan(10).seconds();
 
     private final ForwardReplyResender replyResender = ForwardReplyResender.forwardReplyResender();
-    private final Consumer<NodeId> drainCommandSink;
-    private final Supplier<Set<NodeId>> pendingDrainsSupplier;
     private final NodeLifecycleRoutes.SliceFloor sliceFloor;
     private final NodeLifecycleRoutes nodeLifecycleRoutes;
 
@@ -343,8 +338,7 @@ class ManagementServerImpl implements ManagementServer {
                          Option<org.pragmatica.consensus.net.ClusterNetwork> clusterNetwork,
                          Option<org.pragmatica.serialization.Serializer> serializer,
                          Option<org.pragmatica.serialization.Deserializer> deserializer,
-                         Consumer<NodeId> drainCommandSink,
-                         Supplier<Set<NodeId>> pendingDrainsSupplier,
+                         NodeLifecycleRoutes.DrainPort drainPort,
                          NodeLifecycleRoutes.SliceFloor sliceFloor) {
         this.sliceFloor = sliceFloor;
         this.port = port;
@@ -365,10 +359,6 @@ class ManagementServerImpl implements ManagementServer {
         this.forwardSerializer = serializer;
         this.forwardDeserializer = deserializer;
         this.forwardingTimeouts = forwardingTimeouts;
-        this.drainCommandSink = drainCommandSink;
-        this.pendingDrainsSupplier = pendingDrainsSupplier == null
-                                     ? Set::of
-                                     : pendingDrainsSupplier;
         this.wsAuthenticator = WebSocketAuthenticator.webSocketAuthenticator(securityValidator, securityEnabled);
         this.thresholdEvaluator = AlertThresholdEvaluator.alertThresholdEvaluator(nodeSupplier, alertManager);
         this.statusWsHandler = new StatusWebSocketHandler(wsAuthenticator);
@@ -398,10 +388,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(MetricsRoutes.metricsRoutes(nodeSupplier, observability));
         routeSources.add(DeployRoutes.deployRoutes(nodeSupplier));
         routeSources.add(AbTestRoutes.abTestRoutes(nodeSupplier));
-        this.nodeLifecycleRoutes = NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier,
-                                                                           drainCommandSink,
-                                                                           pendingDrainsSupplier,
-                                                                           sliceFloor);
+        this.nodeLifecycleRoutes = NodeLifecycleRoutes.withDrainPort(nodeSupplier, drainPort, sliceFloor);
         routeSources.add(nodeLifecycleRoutes);
         routeSources.add(NodeReplacementRoutes.nodeReplacementRoutes(nodeSupplier));
         routeSources.add(UpgradeRunRoutes.upgradeRunRoutes(nodeSupplier));
