@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Cause;
@@ -69,6 +70,11 @@ public record GitBackupRepository(Path dir,
     private static final String REMOTE_REF = "refs/remotes/" + REMOTE_NAME + "/";
     /// `ls-remote --exit-code` and `show-ref --exists` answer "no such ref" with exit 2 and nothing else does.
     private static final int NO_SUCH_REF = 2;
+    /// git's exit status for a usage error: an option the installed git does not know (`show-ref --exists` before 2.43).
+    private static final int USAGE_ERROR = 129;
+    /// What the three-valued reads need from the installed git (`show-ref --exists`, 2.43); every reason that follows from a git older than that names it.
+    private static final String MINIMUM_GIT = "git >= 2.43";
+    private static final Pattern GIT_VERSION = Pattern.compile("^(?:git version )?(\\d+)\\.(\\d+)");
     private static final Pattern COMMIT_ID = Pattern.compile("[0-9a-f]{40}([0-9a-f]{24})?");
 
     private static final Pattern REJECTION_STATUS = Pattern.compile("^!\\t[^\\t]*\\t(\\[rejected\\]|\\[remote rejected\\] \\((failed to update ref|reference already exists|incorrect old value provided|reference does not exist)\\))",
@@ -104,6 +110,12 @@ public record GitBackupRepository(Path dir,
         record GitUnavailable(Cause origin, String message) implements BackupRepositoryError, Cause.Wrapped {
             static final Fn1<GitUnavailable, Cause> FACTORY = Causes.forOneValue("git could not be run: %s",
                                                                                  GitUnavailable::new);
+        }
+
+        /// A [GitRead.Unreadable] seen by a caller that cannot go on without the answer: `reason` is what git (or its absence) said.
+        record GitUnreadable(String reason, String message) implements BackupRepositoryError {
+            static final Fn1<GitUnreadable, String> FACTORY = Causes.forOneValue("git could not be read: %s",
+                                                                                 GitUnreadable::new);
         }
 
         record PushRejected(String output, String message) implements BackupRepositoryError {
@@ -234,6 +246,20 @@ public record GitBackupRepository(Path dir,
         return git("show", commit + ":" + FILE);
     }
 
+    /// The ref a restore reads, three-valued (#3464): absent when the backup branch definitely does not exist; the freshly fetched remote branch when a
+    /// remote is configured, else the local branch. A failure means the branch could not be read or fetched — never read as "absent", so a restore
+    /// over an unreadable source blocks instead of starting fresh. Replaces [#fetchRestoreRef].
+    public Result<Option<String>> restoreRef() {
+        return found(readBranch()).flatMap(present -> present.fold(() -> success(Option.<String> none()),
+                                                                   _ -> fetchedRestoreRef().map(Option::some)));
+    }
+
+    private Result<String> fetchedRestoreRef() {
+        return hasRemote()
+               ? fetchBranch().map(_ -> REMOTE_REF + branch)
+               : success("refs/heads/" + branch);
+    }
+
     /// `<sha> <subject>` for every commit reachable from `ref`, newest first — the backup's own record of
     /// every `(lineage, incarnation, revision)` it has written.
     public Result<List<String>> history(String ref) {
@@ -322,6 +348,35 @@ public record GitBackupRepository(Path dir,
                     result -> classifyFile(result.exitCode(), result.output()));
     }
 
+    /// `<sha> <subject>` for every commit reachable from `ref`, newest first. Never [GitRead.Absent]: a ref that exists reaches at least one commit,
+    /// so an empty listing is lost output, and so is a non-zero exit; neither reads as an empty history (whose floor would come back low).
+    public GitRead<List<String>> readHistory(String ref) {
+        return read(List.of("log", "--format=%H %s", ref),
+                    result -> classifyHistory(result.exitCode(), result.output()));
+    }
+
+    /// The installed git's `--version` line, when it is at least 2.43 (the floor [#readBranch] needs); older, unparseable or lost output is
+    /// [GitRead.Unreadable] naming that requirement. Runs in the repository directory's parent chain, so the directory is created first.
+    public GitRead<String> readGitVersion() {
+        return createDirectory().fold(cause -> GitRead.unreadable(cause.message()),
+                                      _ -> read(List.of("--version"),
+                                                result -> classifyGitVersion(result.exitCode(), result.output())));
+    }
+
+    /// The three-valued read as a [Result]: [GitRead.Absent] is `none`, [GitRead.Unreadable] a failure.
+    static <T> Result<Option<T>> found(GitRead<T> read) {
+        return switch (read) {
+            case GitRead.Present<T> present -> success(Option.some(present.value()));
+            case GitRead.Absent<T>_ -> success(Option.none());
+            case GitRead.Unreadable<T> unreadable -> BackupRepositoryError.GitUnreadable.FACTORY.apply(unreadable.reason()).result();
+        };
+    }
+
+    /// The three-valued read of a thing that must be there: anything but [GitRead.Present] is a failure.
+    static <T> Result<T> required(GitRead<T> read) {
+        return found(read).flatMap(value -> value.toResult(BackupRepositoryError.GitUnreadable.FACTORY.apply("git found nothing where a value was required")));
+    }
+
     private <T> GitRead<T> read(List<String> args, Fn1<GitRead<T>, GitResult> classifier) {
         return run(args).fold(cause -> GitRead.unreadable(cause.message()),
                               classifier::apply);
@@ -343,6 +398,14 @@ public record GitBackupRepository(Path dir,
         return output.fold(() -> lostOutput(exit), text -> pathOf(exit, text, path));
     }
 
+    static GitRead<List<String>> classifyHistory(int exit, Option<String> output) {
+        return output.fold(() -> lostOutput(exit), text -> historyOf(exit, text));
+    }
+
+    static GitRead<String> classifyGitVersion(int exit, Option<String> output) {
+        return output.fold(() -> lostOutput(exit), text -> versionOf(exit, text));
+    }
+
     static GitRead<String> classifyFile(int exit, Option<String> output) {
         return output.fold(() -> lostOutput(exit), text -> fileOf(exit, text));
     }
@@ -358,9 +421,45 @@ public record GitBackupRepository(Path dir,
     private static GitRead<Unit> localBranchOf(int exit, String text) {
         return exit == NO_SUCH_REF
                ? GitRead.absent()
-               : exit == 0
-                 ? GitRead.present(Unit.unit())
-                 : unexpected(exit, text);
+               : localBranchPresence(exit, text);
+    }
+
+    private static GitRead<Unit> localBranchPresence(int exit, String text) {
+        return exit == 0
+               ? GitRead.present(Unit.unit())
+               : unexpected(exit, text, usageHint(exit));
+    }
+
+    /// Exit 129 on `show-ref --exists` is git refusing the option: it needs 2.43.
+    private static String usageHint(int exit) {
+        return exit == USAGE_ERROR
+               ? "show-ref --exists needs " + MINIMUM_GIT + ": "
+               : "";
+    }
+
+    private static GitRead<List<String>> historyOf(int exit, String text) {
+        var lines = text.lines().filter(line -> !line.isBlank()).toList();
+
+        return exit == 0 && !lines.isEmpty()
+               ? GitRead.present(lines)
+               : unexpected(exit, text);
+    }
+
+    private static GitRead<String> versionOf(int exit, String text) {
+        var matcher = GIT_VERSION.matcher(text.strip());
+
+        return exit == 0 && matcher.find() && atLeastMinimum(matcher)
+               ? GitRead.present(text.strip())
+               : GitRead.unreadable(MINIMUM_GIT
+                                   + " is required, but `git --version` exited " + exit
+                                   + ": " + text.strip());
+    }
+
+    private static boolean atLeastMinimum(Matcher version) {
+        var major = Integer.parseInt(version.group(1));
+        var minor = Integer.parseInt(version.group(2));
+
+        return major > 2 || major == 2 && minor >= 43;
     }
 
     private static boolean listsBranch(String text, String branch) {
@@ -396,7 +495,11 @@ public record GitBackupRepository(Path dir,
     }
 
     private static <T> GitRead<T> unexpected(int exit, String text) {
-        return GitRead.unreadable("git exited " + exit + ": " + text.strip());
+        return unexpected(exit, text, "");
+    }
+
+    private static <T> GitRead<T> unexpected(int exit, String text, String hint) {
+        return GitRead.unreadable("git exited " + exit + ": " + hint + text.strip());
     }
 
     private Result<Unit> classifyPush(GitResult result) {

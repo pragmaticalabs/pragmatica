@@ -551,6 +551,100 @@ class GitBackupRepositoryTest {
                                                        Map.of("PATH", bin + ":" + System.getenv("PATH")));
     }
 
+    // --- #3464: version probe, history read, restore ref ---
+
+    @Test
+    void classifyGitVersion_acceptsFrom243_andNamesTheRequirementOtherwise() {
+        assertThat(unreadableReason(GitBackupRepository.classifyGitVersion(0, Option.some("git version 2.42.0\n")))).contains("git >= 2.43");
+        assertThat(unreadableReason(GitBackupRepository.classifyGitVersion(0, Option.some("2.42.0")))).contains("git >= 2.43");
+        assertThat(GitBackupRepository.classifyGitVersion(0, Option.some("git version 2.43.0\n"))).isEqualTo(GitRead.present("git version 2.43.0"));
+        assertThat(GitBackupRepository.classifyGitVersion(0, Option.some("git version 2.50.1 (Apple Git-155)\n")))
+                .isEqualTo(GitRead.present("git version 2.50.1 (Apple Git-155)"));
+        assertThat(GitBackupRepository.classifyGitVersion(0, Option.some("git version 3.0.0\n"))).isEqualTo(GitRead.present("git version 3.0.0"));
+    }
+
+    @Test
+    void classifyGitVersion_readsLostOutput_aNonZeroExit_andGarbage_asUnreadable() {
+        assertThat(unreadableReason(GitBackupRepository.classifyGitVersion(0, Option.none()))).contains("output was lost");
+        assertThat(unreadableReason(GitBackupRepository.classifyGitVersion(1, Option.some("git version 2.50.0\n")))).contains("git >= 2.43");
+        assertThat(unreadableReason(GitBackupRepository.classifyGitVersion(0, Option.some("bash: git: not found")))).contains("git >= 2.43");
+    }
+
+    @Test
+    void readGitVersion_overAGitOlderThan243_isUnreadable_andNamesTheRequirement() {
+        var env = gitShim(temp.resolve("bin"), "--version", "echo 'git version 2.42.0'\n    exit 0");
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"), Option.none(), "backup", TIMEOUT, env);
+
+        assertThat(unreadableReason(repository.readGitVersion())).contains("git >= 2.43");
+    }
+
+    /// Exit 129 is git refusing `--exists`: the reason says which git it needs.
+    @Test
+    void classifyLocalBranch_onAUsageError_namesTheRequiredGit() {
+        assertThat(unreadableReason(GitBackupRepository.classifyLocalBranch(129, Option.some("error: unknown option `exists'")))).contains("git >= 2.43");
+        assertThat(unreadableReason(GitBackupRepository.classifyLocalBranch(128, Option.some("fatal: not a git repository")))).doesNotContain("2.43");
+    }
+
+    @Test
+    void readHistory_overARealRepository_listsTheCommitsNewestFirst() {
+        var repository = repository("local", Option.none());
+
+        repository.prepare()
+                  .flatMap(_ -> repository.commit("one\n", "first"))
+                  .flatMap(_ -> repository.commit("two\n", "second"))
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readHistory("refs/heads/backup")).isInstanceOfSatisfying(GitRead.Present.class,
+                                                                                         present -> assertThat((List<?>) present.value()).hasSize(2));
+    }
+
+    @Test
+    void readHistory_whenGitFails_orPrintsNothing_isUnreadable_neverAnEmptyList() {
+        assertThat(unreadableReason(GitBackupRepository.classifyHistory(128, Option.some("fatal: bad revision")))).contains("128");
+        assertThat(unreadableReason(GitBackupRepository.classifyHistory(0, Option.some("")))).contains("git exited 0");
+        assertThat(unreadableReason(GitBackupRepository.classifyHistory(0, Option.none()))).contains("output was lost");
+        assertThat(shimmedHistory(SHIM_FAILS)).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(shimmedHistory(SHIM_PRINTS_NOTHING)).isInstanceOf(GitRead.Unreadable.class);
+    }
+
+    @Test
+    void restoreRef_overAnEmptyLocalRepository_isNone_andOverACommittedOne_isTheLocalBranch() {
+        var repository = repository("local", Option.none());
+
+        repository.prepare().onFailure(cause -> Assertions.fail(cause.message()));
+        assertThat(repository.restoreRef().unwrap()).isEqualTo(Option.none());
+
+        repository.commit("one\n", "first").onFailure(cause -> Assertions.fail(cause.message()));
+        assertThat(repository.restoreRef().unwrap()).isEqualTo(Option.some("refs/heads/backup"));
+    }
+
+    @Test
+    void restoreRef_whenGitCannotSayIfTheBranchExists_isAFailure_notNone() {
+        var env = gitShim(temp.resolve("bin"), "show-ref", SHIM_FAILS);
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"), Option.none(), "backup", TIMEOUT, env);
+
+        repository.prepare().onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.restoreRef().isFailure()).isTrue();
+    }
+
+    private GitRead<List<String>> shimmedHistory(String behaviour) {
+        var env = gitShim(temp.resolve("bin"), "log", behaviour);
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"), Option.none(), "backup", TIMEOUT, env);
+
+        repository.prepare()
+                  .flatMap(_ -> repository.commit("one\n", "first"))
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        return repository.readHistory("refs/heads/backup");
+    }
+
+    private static String unreadableReason(GitRead<?> read) {
+        return read instanceof GitRead.Unreadable<?> unreadable
+               ? unreadable.reason()
+               : "not unreadable: " + read;
+    }
+
     /// What a shimmed git subcommand does: refuse as a damaged or unreachable repository would (exit 128), or exit 0 with nothing on stdout.
     static final String SHIM_FAILS = "echo 'fatal: shim' >&2\n    exit 128";
     static final String SHIM_PRINTS_NOTHING = "exit 0";
