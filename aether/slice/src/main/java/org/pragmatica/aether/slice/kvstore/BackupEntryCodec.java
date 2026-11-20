@@ -215,11 +215,9 @@ public record BackupEntryCodec(SliceCodec codec) {
                                                                                    EntityFoldCheckpointValue.class,
                                                                                    EntityCheckpointKey::entityCheckpointKey),
 
-                                                             // The PREFIXED parsers, never fromIdentity: that one is prefix-less and accepts the
-                                                             // other entity keys' full strings, so every entity key would parse as AmbiguousKey.
-                                                             KeyBinding.keyBinding(EntitySeedOfferKey.class,
-                                                                                EntitySeedOfferValue.class,
-                                                                                EntitySeedOfferKey::entitySeedOfferKey),
+    // The PREFIXED parsers, never fromIdentity: that one is prefix-less and accepts the
+    // other entity keys' full strings, so every entity key would parse as AmbiguousKey.
+    KeyBinding.keyBinding(EntitySeedOfferKey.class, EntitySeedOfferValue.class, EntitySeedOfferKey::entitySeedOfferKey),
                                                              KeyBinding.keyBinding(EntityArcWaiverKey.class,
                                                                                    EntityArcWaiverValue.class,
                                                                                    EntityArcWaiverKey::entityArcWaiverKey),
