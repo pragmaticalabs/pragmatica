@@ -13,6 +13,7 @@ import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.serialization.SystemTags;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -128,6 +129,15 @@ class SystemCodecPinningTest {
     /// in steady state, and costs one extra byte per type occurrence there (the report and its end verdict).
     private static final Set<String> D45_HELD_REPORT = Set.of("org.pragmatica.cluster.metrics.HeldReport",
                                                               "org.pragmatica.cluster.metrics.HeldEnd");
+
+    /// The transaction-refusal exemption is exactly the two types ruled cold in #3303 RA-2; a third name cannot join it
+    /// without this assertion being edited in the same diff.
+    @Test
+    void kvTransactionRefusalExemption_isExactlyRefusalAndRefusalKind() {
+        assertEquals(Set.of("org.pragmatica.cluster.state.kvstore.KVCommand.Refusal",
+                            "org.pragmatica.cluster.state.kvstore.KVCommand.RefusalKind"),
+                     KV_TRANSACTION_REFUSAL);
+    }
 
     @Test
     void hotProtocolTypes_fitInTheOneByteWindow() {
