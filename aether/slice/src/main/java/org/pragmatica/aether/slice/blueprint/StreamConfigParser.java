@@ -888,7 +888,10 @@ public interface StreamConfigParser {
 
         return firstRefusalOr(List.of(maxAge, maxBytes, maxCount, mode),
                               () -> Result.all(maxAge, maxBytes, maxCount, mode)
-                                          .map(RetentionDeclaration::retentionDeclaration)
+                                          .map((age, bytes, count, named) -> RetentionDeclaration.retentionDeclaration(age,
+                                                                                                                      bytes,
+                                                                                                                      count,
+                                                                                                                      some(named.or(DeclarationDefaults.DEFAULT_MODE))))
                                           .flatMap(declared -> boundedRetention(section.alias(), maxEventSize, declared)));
     }
 
