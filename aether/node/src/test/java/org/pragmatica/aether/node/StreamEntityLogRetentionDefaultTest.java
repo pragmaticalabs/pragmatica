@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.stream.DeclarationDefaults;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.node.StreamEntityLogSubstrate.streamEntityLogSubstrate;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 
@@ -63,6 +64,6 @@ class StreamEntityLogRetentionDefaultTest {
     private RetentionPolicy retention() {
         return manager.enforcedConfig(EntityPartitionArc.arcName(KEYSPACE))
                       .map(config -> config.retention())
-                      .or(RetentionPolicy.retentionPolicy());
+                      .or(() -> fail("the entity log is not held by the manager: no config to read"));
     }
 }
