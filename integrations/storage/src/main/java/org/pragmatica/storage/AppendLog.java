@@ -309,6 +309,11 @@ public final class AppendLog implements AutoCloseable {
     /// The file is scanned in a fixed [#INSPECT_BUFFER_BYTES] buffer, never held whole: a probe of several large logs
     /// at once must not allocate their sizes (the whole-file read was 262 MiB for a 262 MiB log). Same validity rules
     /// as recovery's scan (length frame, then CRC-32 over `offset || timestamp || payload`).
+    ///
+    /// Every offset it reports is a fact of the WAL file: `low`, `head` and `lastEpoch` are the WAL's own, not a copy's rank.
+    /// After a full seal-truncate with compaction the WAL is empty (`low` and `head` are `-1`, no `lastEpoch`) while the data
+    /// continues in the sealed tier, and `low` depends on the compaction threshold. A caller ranking copies therefore combines
+    /// this with what the sealed tier holds, and never ranks or compares on `low` alone (know 744c149fe4).
     public static Result<LogExtent> inspect(Path file) {
         return inspect(file, INSPECT_BUFFER_BYTES);
     }
@@ -1841,10 +1846,11 @@ public final class AppendLog implements AutoCloseable {
     }
 
     /// See [#inspect]. `lowOffset`/`headOffset` are `-1` when the log holds no valid record. The WAL's own extent is
-    /// `lowOffset`/`headOffset`/`validBytes`/`fileBytes`; the other three describe the owner-epoch history beside it, read
-    /// the way the provenance comparison reads a log (#1569 A4): `lastEpoch` is the key of the last entry a held record
-    /// reaches (a ghost entry starting above `headOffset` never ranks), `firstStart` the first entry's start (`-1` for no
-    /// history), and `historyDigest` the [#historyDigestOf] of EVERY entry, ghosts included.
+    /// `lowOffset`/`headOffset`/`validBytes`/`fileBytes`; these are WAL facts, not a copy's rank: after a full seal-truncate
+    /// with compaction the WAL is empty while data continues in the sealed tier. The other three describe the owner-epoch
+    /// history beside it, read the way the provenance comparison reads a log (#1569 A4): `lastEpoch` is the key of the last
+    /// entry the WAL's held records reach (a ghost entry starting above the WAL's `headOffset` never ranks), `firstStart` the
+    /// first entry's start (`-1` for no history), and `historyDigest` the [#historyDigestOf] of EVERY entry, ghosts included.
     public record LogExtent(long lowOffset,
                             long headOffset,
                             long validBytes,

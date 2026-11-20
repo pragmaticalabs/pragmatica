@@ -27,8 +27,8 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 /// #1569 A4 / T27 (stream side): the inventory a node reports from the read-only look at its log
 /// (`storage.inspectLog`) equals what the provenance comparison sees of the same log (`localProvenance`), so the
 /// inventory and the comparison can never rank one copy two ways. `low` is compared here only for an unsealed log
-/// with no eviction: the provenance `low` is the in-memory ring tail, the inventory `low` the WAL's on-disk low, and
-/// the two agree only then.
+/// with no eviction: the provenance `low` is still the in-memory ring tail (AD0a-P moves it to the WAL low), the
+/// inventory `low` the WAL's on-disk low, and the two agree only then.
 class InventoryProvenanceTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
@@ -92,7 +92,9 @@ class InventoryProvenanceTest {
         var local = manager.localProvenance(STREAM, PARTITION).unwrap().unwrap();
         var extent = AppendLog.Opener.directory(walDir).inspect(logName()).unwrap();
 
-        assertThat(local.low()).as("the ring tail moved past the three aged-out events").isEqualTo(3L);
+        // ENABLED tripwire: pins today's behaviour (provenance low = the ring tail). It goes red when AD0a-P fixes that.
+        assertThat(local.low()).as("AD0a-P: ProvenanceComparison's low must read the WAL low (know 744c149fe4); replace this tripwire with the divergent-case pins")
+                               .isEqualTo(3L);
         assertThat(extent.lowOffset()).as("the WAL still holds them").isZero();
         assertThat(extent.headOffset()).isEqualTo(local.head());
     }
