@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.cluster.state.kvstore.AssignmentGuarded;
 import org.pragmatica.cluster.state.kvstore.HolderGuarded;
+import org.pragmatica.cluster.state.kvstore.RestoreAuthorityKey;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -2668,7 +2669,7 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     /// path refuses writes to backed-up keys until it holds a terminal outcome, so no seeder can race a
     /// restore. Runtime, so never backed up: after a cold restart it is absent and the decision is taken
     /// again; within an incarnation it survives leader changes, which makes the restore exactly-once.
-    record BackupRestoreKey() implements RuntimeKey {
+    record BackupRestoreKey() implements RuntimeKey, RestoreAuthorityKey {
         private static final String KEY = "backup-restore";
 
         @SuppressWarnings("JBCT-VO-02")

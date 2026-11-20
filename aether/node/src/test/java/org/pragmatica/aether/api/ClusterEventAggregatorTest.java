@@ -558,6 +558,45 @@ class ClusterEventAggregatorTest {
         assertThat(eventsOwner.events()).singleElement().isInstanceOf(ClusterEvent.StreamConfigChangeNotApplied.class);
     }
 
+    @Test
+    void streamRetentionChanged_reachesTheEventStream_asInfo_withItsDetailsAndCommittedFactsSummary() {
+        var h = Harness.create();
+
+        h.aggregator().onStreamRetentionChanged(OperationalEvent.StreamRetentionChanged.streamRetentionChanged("orders",
+                                                                                                               "age=7d",
+                                                                                                               "age=1d",
+                                                                                                               "ret-id"));
+
+        assertThat(h.events()).singleElement().satisfies(event -> {
+            assertThat(event).isInstanceOf(ClusterEvent.StreamRetentionChanged.class);
+            assertThat(event.type()).isEqualTo("STREAM_RETENTION_CHANGED");
+            assertThat(event.severity()).isEqualTo(ClusterEvent.Severity.INFO);
+            assertThat(event.summary()).isEqualTo("Stream orders retention bounds changed: committed age=7d -> age=1d");
+            assertThat(event.details()).containsEntry("stream", "orders")
+                                       .containsEntry("oldBounds", "age=7d")
+                                       .containsEntry("newBounds", "age=1d")
+                                       .containsEntry("eventId", "ret-id");
+        });
+    }
+
+    /// STREAM_RETENTION_CHANGED is derived on every node from the committed config Put, so it is published by the
+    /// events owner only: a non-owner publishes nothing.
+    @Test
+    void streamRetentionChanged_derivedOnEveryNode_publishedOnlyByTheEventsOwner() {
+        var eventsOwner = Harness.create(Harness.defaultRetention(), OWNER);
+        var notOwner = Harness.create(Harness.defaultRetention(), NOT_OWNER);
+
+        for (var node : List.of(eventsOwner, notOwner)) {
+            node.aggregator().onStreamRetentionChanged(OperationalEvent.StreamRetentionChanged.streamRetentionChanged("orders",
+                                                                                                                      "age=7d",
+                                                                                                                      "age=1d",
+                                                                                                                      "ret-id"));
+        }
+
+        assertThat(notOwner.events()).as("not the events owner: publishes nothing").isEmpty();
+        assertThat(eventsOwner.events()).singleElement().isInstanceOf(ClusterEvent.StreamRetentionChanged.class);
+    }
+
     /// #1883 F3: during a membership change two nodes can both pass the events-owner gate and each publish the event
     /// derived from one committed Put. The event carries a deterministic `eventId` that the aggregator keeps, so the read
     /// collapses the two copies; an event with another id (another transition) stays.

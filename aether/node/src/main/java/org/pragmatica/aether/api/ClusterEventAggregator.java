@@ -5,6 +5,7 @@
 package org.pragmatica.aether.api;
 
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -33,6 +34,7 @@ import org.pragmatica.aether.api.ClusterEvent.StreamIsrBelowMinimum;
 import org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored;
 import org.pragmatica.aether.api.ClusterEvent.StreamLineageRestarted;
 import org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied;
+import org.pragmatica.aether.api.ClusterEvent.StreamRetentionChanged;
 import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentFailed;
@@ -52,6 +54,7 @@ import org.pragmatica.aether.api.ClusterEvent.Severity;
 import org.pragmatica.aether.api.ClusterEvent.SliceFailure;
 import org.pragmatica.aether.api.ClusterEvent.StreamMemoryExceeded;
 import org.pragmatica.aether.controller.ScalingEvent;
+import org.pragmatica.aether.deployment.cluster.fsm2.Warnings;
 import org.pragmatica.aether.controller.RollbackEvent;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.metrics.deployment.ReconciliationAdjustment;
@@ -59,12 +62,14 @@ import org.pragmatica.aether.slice.StreamAccess.PartitionInfo;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.aether.slice.StreamAccess.StreamMetadata;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.slice.kvstore.ObservedSliceListener;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
@@ -2025,6 +2030,29 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
                                 .forEach(this::emitCommitted);
     }
 
+    /// #3203 (CTO ruling B): a family warning of the cluster FSM is published from the committed `FsmWarningKey` put, never from the
+    /// writer's settlement. Rule E reads the committed pair (the row this put replaced at its KV index, and the put), so every node derives
+    /// the same notice at one index, and [#emitCommitted] lets one node publish it, in commit order: a deposed leader's late settlement
+    /// can no longer reopen a key its successor closed. A code that is not an `OperatorWarningCode` is not published; every family
+    /// opener and recovery code is one (`FsmWarningCatalogueTest`).
+    @Contract
+    public void onFsmWarningPut(ValuePut<FsmWarningKey, FsmWarningValue> event) {
+        Warnings.committedNotice(event.cause().key(),
+                                 event.oldValue(),
+                                 event.cause().value())
+                .flatMap(ClusterEventAggregator::catalogued)
+                .onPresent(warning -> emitCommitted(warningEvent(warning, 0)));
+    }
+
+    private static Option<OperatorWarning> catalogued(Warnings.Notice notice) {
+        return Option.from(Arrays.stream(OperatorWarningCode.values())
+                                 .filter(code -> code.code()
+                                                     .equals(notice.code()))
+                                 .findFirst()).map(code -> OperatorWarning.operatorWarning(code,
+                                                                                           notice.subject(),
+                                                                                           notice.message()));
+    }
+
     @Contract
     public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> event) {
         var key = event.cause().key();
@@ -2693,6 +2721,25 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
                                                      String.valueOf(event.effectiveConfirmationFactor()),
                                                      "reason",
                                                      event.reason())));
+    }
+
+    /// Taste: INFO. A committed retention change is routine operator action; the summary states committed facts only,
+    /// no prediction of what the stream will retain. Owner-gated `emit`: derived on every node, published once.
+    @Contract
+    public void onStreamRetentionChanged(OperationalEvent.StreamRetentionChanged event) {
+        emit(new StreamRetentionChanged(hlcClock.now(),
+                                        Severity.INFO,
+                                        "Stream " + event.stream()
+                                       + " retention bounds changed: committed " + event.oldBounds()
+                                       + " -> " + event.newBounds(),
+                                        Map.of(ClusterEventIdentity.EVENT_ID,
+                                               event.eventId(),
+                                               "stream",
+                                               event.stream(),
+                                               "oldBounds",
+                                               event.oldBounds(),
+                                               "newBounds",
+                                               event.newBounds())));
     }
 
     @Contract
