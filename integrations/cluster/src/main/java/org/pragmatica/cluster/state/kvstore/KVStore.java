@@ -15,6 +15,7 @@ import java.util.function.BiConsumer;
 import java.util.function.LongConsumer;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.StateMachine.Batch;
@@ -548,11 +549,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         var mutations = transaction.mutations();
 
         return leaderRefusal(transaction).orElse(() -> firstRefusal(KVCommand.RefusalKind.WITNESS,
-                                                                    transaction.guards()
-                                                                               .stream()
-                                                                               .filter(witness -> !matchesWitness(witness))
-                                                                               .map(KVCommand.ReadWitness::key)
-                                                                               .toList()))
+                                                                    unequalWitnessKeys(transaction.guards())))
                             .orElse(() -> firstRefusal(KVCommand.RefusalKind.EXPECTED,
                                                        keysWhere(mutations,
                                                                  mutation -> !matchesExpected(mutation))))
@@ -582,14 +579,31 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                         .toList();
     }
 
+    private List<K> unequalWitnessKeys(List<KVCommand.ReadWitness<K>> guards) {
+        return guards.stream()
+                     .filter(witness -> !matchesWitness(witness))
+                     .map(KVCommand.ReadWitness::key)
+                     .toList();
+    }
+
     /// Keys in mutation order that an earlier mutation of the same transaction already names.
     private static <K extends StructuredKey, V> List<K> repeatedKeys(List<KVCommand.Mutation<K, V>> mutations) {
-        var seen = new HashSet<K>();
-
-        return mutations.stream()
-                        .map(KVCommand.Mutation::key)
-                        .filter(key -> !seen.add(key))
+        return IntStream.range(0,
+                               mutations.size())
+                        .filter(index -> repeatsEarlierKey(mutations, index))
+                        .mapToObj(index -> mutations.get(index)
+                                                    .key())
                         .toList();
+    }
+
+    private static <K extends StructuredKey, V> boolean repeatsEarlierKey(List<KVCommand.Mutation<K, V>> mutations,
+                                                                          int index) {
+        var key = mutations.get(index).key();
+
+        return mutations.subList(0, index)
+                        .stream()
+                        .anyMatch(earlier -> earlier.key()
+                                                    .equals(key));
     }
 
     private boolean matchesWitness(KVCommand.ReadWitness<K> witness) {
