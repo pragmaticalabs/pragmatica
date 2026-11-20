@@ -18,16 +18,20 @@ package org.pragmatica.dht;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.DHTRebalancerTest.Reply;
 import org.pragmatica.dht.DHTRebalancerTest.ScriptedNetwork;
+import org.pragmatica.dht.DHTRebalancerTest.TimedSend;
 
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.dht.DHTNode.dhtNode;
 import static org.pragmatica.dht.DHTRebalancerTest.LOCAL;
 import static org.pragmatica.dht.DHTRebalancerTest.value;
+import static org.pragmatica.dht.DepartureDirectRuns.delivererOf;
 import static org.pragmatica.dht.DepartureDirectRuns.direct;
 import static org.pragmatica.dht.DepartureDirectRuns.fiveNodeRing;
 import static org.pragmatica.dht.DepartureDirectRuns.soleKey;
@@ -39,7 +43,7 @@ import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine
 class DepartureProbeLossTest {
     private static final DHTConfig RF1 = new DHTConfig(1, 1, 1, DHTConfig.DEFAULT_TIMEOUT);
 
-    /// The key is acked; the first probe is answered by a "draining" nack. One loss, the target terminal: never paged again, not owed.
+    /// The key is acked; the first probe, to the target, is answered by a "draining" nack and the target leaves the drain set. One loss, the target terminal: never paged again, not owed; the next deliverer is paged and the key is delivered.
     @Test
     @Timeout(20)
     void drainingNackToTheFirstProbe_countsOneHolderLoss() {
@@ -47,17 +51,28 @@ class DepartureProbeLossTest {
         var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
         var key = soleKey(ring, "pd");
         node.putLocal(key, value("payload")).await();
+        var target = delivererOf(ring, key, Set.of(LOCAL));
+        var next = delivererOf(ring, key, Set.of(LOCAL, target));
+        var drainSet = new AtomicReference<Set<NodeId>>(Set.of());
         var network = ScriptedNetwork.scripted((_, _) -> Reply.ACK);
-        network.probesAnswer(_ -> Reply.DRAINING_NACK);
-        var direct = direct(node, network, 1_500, 100, Set::of);
+        network.probesAnswer(sent -> drainingProbe(target, sent, drainSet));
+        var direct = direct(node, network, 1_500, 100, drainSet::get);
         var holderLosses = direct.run().holderLosses();
-        var target = network.probes().getFirst().target();
 
         assertThat(holderLosses).as("one loss for the draining probe").isEqualTo(1);
         assertThat(network.sends().stream().filter(sent -> sent.target().equals(target))).as("data sends to the draining target: no re-page")
                                                                                          .hasSize(1);
         assertThat(network.probes().stream().filter(sent -> sent.target().equals(target))).as("probes to the draining target").hasSize(1);
-        assertThat(direct.report().owed()).as("the draining target is not owed").isZero();
+        assertThat(network.sends()).as("the next deliverer is paged").anyMatch(sent -> sent.target().equals(next));
+        assertThat(direct.report().owed()).as("owed excludes the draining target, the next deliverer holds the key").isZero();
+    }
+
+    private static Reply drainingProbe(NodeId target, TimedSend sent, AtomicReference<Set<NodeId>> drainSet) {
+        if (sent.target().equals(target)) {
+            drainSet.set(Set.of(target));
+            return Reply.DRAINING_NACK;
+        }
+        return Reply.ACK;
     }
 
     /// The key is acked, the probe answered "draining", and any later data page to the same node would be answered "draining" too.
