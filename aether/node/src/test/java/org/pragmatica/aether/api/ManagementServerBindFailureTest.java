@@ -11,11 +11,11 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.Map;
-import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.mockito.stubbing.Answer;
+import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.http.TlsProbe;
@@ -160,8 +160,7 @@ class ManagementServerBindFailureTest {
                                                  Option.none(),
                                                  Option.none(),
                                                  Option.none(),
-                                                 _ -> {},
-                                                 Set::of,
+                                                 NodeLifecycleRoutes.DrainPort.none(),
                                                  org.pragmatica.aether.api.routes.NodeLifecycleRoutes.SliceFloor.sliceFloor((_, _) -> java.util.List.of(),
                                                                                                                          org.pragmatica.utility.warning.OperatorWarningSink.logOnly()));
     }

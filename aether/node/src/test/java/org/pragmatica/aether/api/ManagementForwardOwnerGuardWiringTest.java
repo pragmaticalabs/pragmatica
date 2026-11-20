@@ -12,6 +12,7 @@ import java.util.Set;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.http.AppHttpServer;
@@ -218,8 +219,7 @@ class ManagementForwardOwnerGuardWiringTest {
                                                                                                                 Map.of(),
                                                                                                                 Map.of(),
                                                                                                                 "req-owner-guard"))),
-                                        _ -> {},
-                                        Set::of,
+                                        NodeLifecycleRoutes.DrainPort.none(),
                 org.pragmatica.aether.api.routes.NodeLifecycleRoutes.SliceFloor.sliceFloor((_, _) -> java.util.List.of(),
                                                                                          org.pragmatica.utility.warning.OperatorWarningSink.logOnly()));
     }

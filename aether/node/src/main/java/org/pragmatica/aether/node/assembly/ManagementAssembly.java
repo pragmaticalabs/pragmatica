@@ -211,10 +211,10 @@ public sealed interface ManagementAssembly {
                                                                  Option.some(clusterNode.network()),
                                                                  Option.some(serializer),
                                                                  Option.some(deserializer),
-                                                                 target -> requestDrainThroughFsm(drainCommandRegistry,
-                                                                                                  membershipFsmRef,
-                                                                                                  target),
-                                                                 drainCommandRegistry::drainTargets,
+                                                                 NodeLifecycleRoutes.DrainPort.registry(target -> requestDrainThroughFsm(drainCommandRegistry,
+                                                                                                                                         membershipFsmRef,
+                                                                                                                                         target),
+                                                                                                        drainCommandRegistry::drainTargets),
 
         // #1720: operator drain and shutdown honour the slice minAvailable floor,
         // as the automatic drain does (same KV-backed guard, same counting rules).

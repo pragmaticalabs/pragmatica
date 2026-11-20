@@ -8,10 +8,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
-import java.util.Set;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.http.AppHttpServer;
@@ -138,8 +138,7 @@ class ManagementServerNodeIdRouteWiringTest {
                                         Option.none(),
                                         Option.none(),
                                         Option.none(),
-                                        _ -> {},
-                                        Set::of,
+                                        NodeLifecycleRoutes.DrainPort.none(),
                                         org.pragmatica.aether.api.routes.NodeLifecycleRoutes.SliceFloor.sliceFloor((_, _) -> java.util.List.of(),
                                                                                                                    org.pragmatica.utility.warning.OperatorWarningSink.logOnly()));
     }
