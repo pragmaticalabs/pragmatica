@@ -39,6 +39,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 
@@ -94,6 +95,38 @@ class RabiaAnnounceBeforeDrainTest {
                                                    .isLessThan(machine.order.indexOf("apply"));
     }
 
+    /// The resume from a pause after an activation ([RabiaEngine] `doResumeFromPause`) keeps the same order. The executor is
+    /// parked while the pause, a Decision one past the frontier (buffered: a gap), the frontier's Decision (applied while
+    /// paused; it queues the release of the buffered one) and the quorum return are queued, so the resume runs before that
+    /// release and finds the buffered Decision at the frontier. No API path leaves a restore unannounced in this state, so
+    /// the mark is set through the test hook; without it the order is [apply, apply].
+    @Test
+    void resumeFromPause_replaysTheRestoreBeforeApplyingBufferedDecisions() throws InterruptedException {
+        var machine = new OrderingStateMachine();
+        var engine = syncing(machine, false);
+
+        engine.processSyncResponse(cold(NODE_2));
+        assertThat(await(engine::isActive)).as("precondition: activated; order=" + machine.order).isTrue();
+        quiesce(engine);
+        machine.order.clear();
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+
+        engine.safeExecuteForTesting(() -> parked(entered, release));
+        assertThat(entered.await(5, TimeUnit.SECONDS)).as("the executor must be parked before anything is queued").isTrue();
+        engine.clusterState(ClusterStateNotification.passive());
+        engine.processDecision(decision(PEER_PHASE.successor(), "past-frontier"));
+        engine.processDecision(decision(PEER_PHASE, "at-frontier"));
+        engine.markRestoreUnannouncedForTesting();
+        engine.clusterState(ClusterStateNotification.active());
+        release.countDown();
+        quiesce(engine);
+
+        assertThat(engine.isActive()).as("resumed; order=" + machine.order).isTrue();
+        assertThat(machine.order).as("applied while paused, then world-as-of-N before the buffered N+1")
+                                 .containsExactly("apply", "replay", "apply");
+    }
+
     /// Decisions at the adopted frontier and one past it, delivered while the engine is still `Syncing`: buffered.
     private static void bufferLiveDecisions(RabiaEngine<TestCommand> engine) {
         engine.processDecision(decision(PEER_PHASE, "at-frontier"));
@@ -128,6 +161,33 @@ class RabiaAnnounceBeforeDrainTest {
 
     private static SyncResponse<TestCommand> cold(NodeId sender) {
         return new SyncResponse<>(sender, SavedState.savedState(PEER_SNAPSHOT, PEER_PHASE, List.of()), ResponderState.COLD);
+    }
+
+    private static void parked(CountDownLatch entered, CountDownLatch release) {
+        entered.countDown();
+        try {
+            release.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /// Two barriers in a row: the first runs after everything queued so far, the second after any task those queued.
+    private static void quiesce(RabiaEngine<TestCommand> engine) {
+        barrier(engine);
+        barrier(engine);
+    }
+
+    private static void barrier(RabiaEngine<TestCommand> engine) {
+        var done = new CountDownLatch(1);
+
+        engine.safeExecuteForTesting(done::countDown);
+        try {
+            assertThat(done.await(5, TimeUnit.SECONDS)).as("executor barrier").isTrue();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(e);
+        }
     }
 
     /// Records the restore's replay and every live apply, in the order the apply thread runs them.

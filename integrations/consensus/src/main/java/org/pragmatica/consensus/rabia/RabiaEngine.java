@@ -2587,6 +2587,15 @@ public class RabiaEngine<C extends Command> {
         return Unit.unit();
     }
 
+    /// Test hook: mark the installed state unannounced, as a restore does. No API path leaves the mark set in a `Paused`
+    /// engine that had activated (a restore sets it only while `Syncing`, and every entry into a serving state clears it),
+    /// so this is the only way to pin [#doResumeFromPause]'s announce-before-drain order.
+    Unit markRestoreUnannouncedForTesting() {
+        restoreAnnouncePending.set(true);
+
+        return Unit.unit();
+    }
+
     /// Diagnostic helper: backlog of the single-thread apply executor. The executor is always a
     /// `ThreadPoolExecutor` (see field construction); returns -1 if that ever changes so the probe
     /// never throws.
