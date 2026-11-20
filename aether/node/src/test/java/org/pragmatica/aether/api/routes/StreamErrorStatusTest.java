@@ -22,7 +22,7 @@ import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
-import org.pragmatica.aether.stream.SegmentError;
+import org.pragmatica.aether.stream.segment.SegmentError;
 import org.pragmatica.aether.stream.forward.ReadRefusal;
 import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.api.ManagementServerError;
