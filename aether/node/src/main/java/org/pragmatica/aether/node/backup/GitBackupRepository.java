@@ -501,7 +501,6 @@ public record GitBackupRepository(Path dir,
     private Result<GitResult> collect(Process process) {
         var output = new FutureTask<>(() -> new String(process.getInputStream().readAllBytes(),
                                                        StandardCharsets.UTF_8));
-
         var errors = new FutureTask<>(() -> new String(process.getErrorStream().readAllBytes(),
                                                        StandardCharsets.UTF_8));
 
