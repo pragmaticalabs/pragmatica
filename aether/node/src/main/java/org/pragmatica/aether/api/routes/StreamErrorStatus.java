@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.stream.StreamError;
+import org.pragmatica.aether.stream.forward.ReadRefusal;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
@@ -39,7 +40,7 @@ public final class StreamErrorStatus {
             case StreamError.SystemStreamWriteRefused _ -> HttpStatus.METHOD_NOT_ALLOWED;
             case StreamError.ReplicationRefused _, StreamError.EpochDiverged _ -> HttpStatus.CONFLICT;
             case StreamError.CursorExpired _ -> HttpStatus.GONE;
-            case StreamError.StreamConfigNotYetVisible _, StreamError.MaterializeBudgetExceeded _, StreamError.ReshufflePaced _, StreamError.PartitionHeldNotMaterialized _, StreamError.StaleEpochAppend _, StreamError.StaleEpochRead _, StreamError.NotCurrentOwner _, StreamError.ReplicaQuarantined _, StreamError.NotOwnerAppend _, StreamError.OwnerNotActivated _, StreamError.OwnerLeaseLapsed _, StreamError.OwnershipMovedBeforeAck _, StreamError.OwnerLeaseLapsedBeforeAck _, StreamError.OwnerCatchupPending _, StreamError.LinearizableRoundTimeout _, StreamError.ReplicaNotVerified _, StreamError.RepairNotAuthorized _, StreamError.RepairWitnessFailed _, StreamError.RepairPreserveFailed _, StreamError.PartitionFailStopped _ -> HttpStatus.SERVICE_UNAVAILABLE;
+            case StreamError.StreamConfigNotYetVisible _, StreamError.StreamNotMaterialized _, StreamError.MaterializeBudgetExceeded _, StreamError.ReshufflePaced _, StreamError.PartitionHeldNotMaterialized _, StreamError.StaleEpochAppend _, StreamError.StaleEpochRead _, StreamError.NotCurrentOwner _, StreamError.ReplicaQuarantined _, StreamError.NotOwnerAppend _, StreamError.OwnerNotActivated _, StreamError.OwnerLeaseLapsed _, StreamError.OwnershipMovedBeforeAck _, StreamError.OwnerLeaseLapsedBeforeAck _, StreamError.OwnerCatchupPending _, StreamError.LinearizableRoundTimeout _, StreamError.ReplicaNotVerified _, StreamError.RepairNotAuthorized _, StreamError.RepairWitnessFailed _, StreamError.RepairPreserveFailed _, StreamError.PartitionFailStopped _ -> HttpStatus.SERVICE_UNAVAILABLE;
             case StreamError.SeedRejected _, StreamError.WalReplayMismatch _, StreamError.WalHeadLost _, StreamError.RingIndexCorrupted _, StreamError.EventProcessingFailed _, StreamError.ProvenanceRegression _, StreamError.ProvenanceMismatch _, StreamError.ReplicaOffsetGap _, StreamError.ReplicaEntryConflict _, StreamError.DivergenceNotEstablished _, StreamError.TruncateBelowRetained _, StreamError.TruncateBelowVisible _ -> HttpStatus.INTERNAL_SERVER_ERROR;
         };
     }
@@ -52,6 +53,33 @@ public final class StreamErrorStatus {
             case BUFFER_CLOSED, STREAM_CLOSED, CONSUMER_RUNTIME_CLOSED, CONSUMER_STALLED, STREAM_MEMORY_EXCEEDED, SEALING_BEHIND, SEGMENT_TIER_FULL, REPLICATION_BEHIND, BUFFER_FULL, CONSENSUS_PATH_UNAVAILABLE, PARTITION_NOT_LOCAL -> HttpStatus.SERVICE_UNAVAILABLE;
             case BUFFER_EMPTY, UNREADABLE_CONSISTENCY_MODE, STREAM_CONFIG_COMMIT_FAILED, RUN_DOES_NOT_FIT -> HttpStatus.INTERNAL_SERVER_ERROR;
         };
+    }
+
+    /// The status of a row of the ONE answer switch ([ReadRefusal.Answer]): a switch EXPRESSION with no default branch, so a row
+    /// added in `aether-stream` does not compile here until it has a status. A row holds one status.
+    public static HttpStatus statusOf(ReadRefusal.Answer answer) {
+        return switch (answer) {
+            case NN_SURFACE, NN_DEGRADE, NN_RETRY -> HttpStatus.SERVICE_UNAVAILABLE;
+            case RQ_INVALID -> HttpStatus.BAD_REQUEST;
+            case RQ_NOT_FOUND -> HttpStatus.NOT_FOUND;
+            case CE_L -> HttpStatus.GONE;
+            case L_EPOCH -> HttpStatus.CONFLICT;
+            case FAULT, FAULT_DEGRADE -> HttpStatus.INTERNAL_SERVER_ERROR;
+        };
+    }
+
+    /// A failed stream READ becomes a [ManagementServerError.StreamRefused] under the status of the row
+    /// [ReadRefusal#answerOf(Cause)] gives its cause, for EVERY cause with no test of the cause's type: the node that raised a
+    /// cause and the node that received it over a forward answer the same status. The pin's [#typed(Cause)] stays for what is
+    /// not a read of records (the metadata lookups). Two things stay outside the row: `StreamApiRoutes.notMaterializedHere`
+    /// decides a status itself (a `StreamNotFound` the catalog contradicts answers 503, the same status and body this method
+    /// then keeps), and the hop to the STREAMING task group before the read route runs is not a read answer at all.
+    public static Cause typedRead(Cause cause) {
+        return new ManagementServerError.StreamRefused(statusOf(ReadRefusal.answerOf(cause)), cause);
+    }
+
+    public static <T> Promise<T> typedRead(Promise<T> promise) {
+        return promise.mapError(StreamErrorStatus::typedRead);
     }
 
     /// A [StreamError] becomes a [ManagementServerError.StreamRefused] under its class; any other cause passes through unchanged.

@@ -21,6 +21,12 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.StreamReadRouter;
+import org.pragmatica.aether.stream.SegmentError;
+import org.pragmatica.aether.stream.forward.ReadRefusal;
+import org.pragmatica.aether.stream.forward.StreamForwardError;
+import org.pragmatica.aether.api.ManagementServerError;
+import org.pragmatica.storage.StorageError;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpStatus;
@@ -28,11 +34,17 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 
 /// #1921: no [StreamError] carried an HTTP status, so every engine refusal on a stream read route answered 500, including a
@@ -60,6 +72,8 @@ class StreamErrorStatusTest {
 
         all.put(new StreamError.EventTooLarge(10, 5), HttpStatus.BAD_REQUEST);
         all.put(new StreamError.CursorExpired(1, 5), HttpStatus.GONE);
+        all.put(new StreamError.CursorExpired(1, 5, StreamError.CursorExpired.Reason.LOST), HttpStatus.GONE);
+        all.put(new StreamError.StreamNotMaterialized("s"), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.EpochDiverged(EPOCH, 3, 3), HttpStatus.CONFLICT);
         all.put(new StreamError.SeedRejected(1, 2), HttpStatus.INTERNAL_SERVER_ERROR);
         all.put(new StreamError.WalReplayMismatch("s", 0, WAL, 1, 3), HttpStatus.INTERNAL_SERVER_ERROR);
@@ -313,6 +327,136 @@ class StreamErrorStatusTest {
         }
     }
 
+    /// T-P8's status arms and T-P12(b), stream-mem M-1b: the ONE answer switch reaches the status of every failed read.
+    @Nested
+    class AnswerStatus {
+        /// Arm (1), the status half: every row has a status, counted against `values()`.
+        @Test
+        void everyRow_hasAStatus() {
+            var statuses = Arrays.stream(ReadRefusal.Answer.values()).map(StreamErrorStatus::statusOf).toList();
+
+            assertThat(statuses).hasSize(ReadRefusal.Answer.values().length).doesNotContainNull();
+        }
+
+        /// Arm (2): every kind whose cause is a `StreamError` has the pin's status; the row's status is tied to the pin's
+        /// switch, not to a literal. Plus (5b): `L_EPOCH` = `EpochDiverged`'s, the NN rows share one status, `FAULT_DEGRADE` = `FAULT`.
+        @Test
+        void everyStreamErrorKind_hasThePinsStatus_andTheRowsAreTiedToIt() {
+            var checked = 0;
+
+            for (var kind : ReadRefusal.Kind.values()) {
+                if (kind.toCause("") instanceof StreamError error) {
+                    assertThat(StreamErrorStatus.statusOf(kind.answer())).as(kind.name()).isEqualTo(StreamErrorStatus.statusOf(error));
+                    checked++;
+                }
+            }
+
+            assertThat(checked).isEqualTo(ReadRefusal.Kind.values().length - 1);
+            assertThat(StreamErrorStatus.statusOf(ReadRefusal.Answer.L_EPOCH)).isEqualTo(StreamErrorStatus.statusOf(new StreamError.EpochDiverged(EPOCH, 3, 3)));
+            assertThat(StreamErrorStatus.statusOf(ReadRefusal.Answer.NN_DEGRADE)).isEqualTo(StreamErrorStatus.statusOf(ReadRefusal.Answer.NN_SURFACE));
+            assertThat(StreamErrorStatus.statusOf(ReadRefusal.Answer.NN_RETRY)).isEqualTo(StreamErrorStatus.statusOf(ReadRefusal.Answer.NN_SURFACE));
+            assertThat(StreamErrorStatus.statusOf(ReadRefusal.Answer.FAULT_DEGRADE)).isEqualTo(StreamErrorStatus.statusOf(ReadRefusal.Answer.FAULT));
+        }
+
+        /// Arm (4): the row reaches the caller, for every sample cause, with no test of the cause's type.
+        @Test
+        void typedRead_isAStreamRefusedHoldingTheCause_underTheStatusOfItsRow() {
+            var samples = new ArrayList<Cause>();
+
+            for (var kind : ReadRefusal.Kind.values()) {
+                samples.add(kind.toCause(""));
+            }
+
+            samples.add(new StreamError.EpochDiverged(EPOCH, 3, 3));
+            samples.addAll(Arrays.asList(StreamForwardError.General.values()));
+            samples.add(new StreamForwardError.ReadForwardFailed("d"));
+            samples.add(new StreamError.WalReplayMismatch("s", 0, WAL, 1, 3));
+            samples.add(new SegmentError.WalRangeMissing("s", 0, 1L, 2L, 0));
+            samples.add(new StorageError.ReadError("disk"));
+
+            for (var cause : samples) {
+                var typed = StreamErrorStatus.typedRead(cause);
+
+                assertThat(typed).as(cause.message()).isInstanceOf(ManagementServerError.StreamRefused.class);
+
+                var refused = (ManagementServerError.StreamRefused) typed;
+
+                assertThat(refused.refusal()).isSameAs(cause);
+                assertThat(refused.status()).as(cause.message()).isEqualTo(StreamErrorStatus.statusOf(ReadRefusal.answerOf(cause)));
+            }
+        }
+
+        /// T-P12(b): route `:615` read twice with a stubbed router, failing with X (the local path) and with W (what the
+        /// forward leaves of X). Both answer the same status, which is the row's. Mutants: `typed` at `StreamApiRoutes:630`
+        /// (X1 and X2 read the funnel's status); the pin's `statusOf(StreamError)` for X3 (500 on the local path).
+        @Test
+        void aKindlessCause_answersTheSameStatusLocallyAndOnceForwarded() {
+            var kindless = List.<Cause> of(new StorageError.ReadError("disk"),
+                                           new SegmentError.WalRangeMissing("orders", 0, 1L, 2L, 0),
+                                           new StreamError.WalReplayMismatch("orders", 0, WAL, 1L, 2L));
+
+            for (var x : kindless) {
+                var forwarded = new StreamForwardError.ReadForwardFailed(x.message());
+                var local = statusOfReadFailing(x);
+
+                assertThat(statusOfReadFailing(forwarded)).as(x.message()).isEqualTo(local);
+                assertThat(local).as(x.message()).isEqualTo(StreamErrorStatus.statusOf(ReadRefusal.answerOf(x)));
+            }
+        }
+
+        /// N1 pin (green before and after M-1b): route `:716`, the catalog confirms the stream and the read refuses with
+        /// `StreamNotFound`: 503 with the pin's text, not the typed 404.
+        @Test
+        void streamsEvents_streamNotFoundFromTheRead_stays503WithThePinsText() {
+            var manager = StreamPartitionManager.streamPartitionManager();
+            var namespaces = org.pragmatica.aether.slice.stream.StreamNamespacesService.inMemory();
+            var address = ResourceAddress.resourceAddress("ns", "orders", "1.0.0").unwrap();
+
+            try {
+                namespaces.registry()
+                          .register(org.pragmatica.aether.slice.stream.StreamRegistryEntry.operator(address,
+                                                                                                   RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000),
+                                                                                                   java.time.Instant.now()))
+                          .onFailure(cause -> fail(cause.message()));
+
+                var failure = RouteProbe.failureOf(apiRoutes(manager, namespaces, routerFailingWith(new StreamError.StreamNotFound("ns/orders"))),
+                                                   ManagementRoute.STREAMS_EVENTS,
+                                                   List.of("ns", "orders", "1.0.0", "events"),
+                                                   Map.of());
+
+                assertThat(RouteProbe.problemStatus(failure)).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+                assertThat(failure.message()).contains("is registered but not materialized on this node yet");
+            } finally {
+                manager.close();
+            }
+        }
+
+        private HttpStatus statusOfReadFailing(Cause cause) {
+            var manager = StreamPartitionManager.streamPartitionManager();
+
+            try {
+                var failure = RouteProbe.failureOf(apiRoutes(manager,
+                                                             org.pragmatica.aether.slice.stream.StreamNamespacesService.inMemory(),
+                                                             routerFailingWith(cause)),
+                                                   ManagementRoute.STREAM_READ,
+                                                   List.of("ns", "orders", "1.0.0", "read", "0"),
+                                                   Map.of());
+
+                return RouteProbe.problemStatus(failure);
+            } finally {
+                manager.close();
+            }
+        }
+
+        private static StreamReadRouter routerFailingWith(Cause cause) {
+            var router = mock(StreamReadRouter.class);
+
+            when(router.read(any(), anyInt(), anyLong(), anyInt(), any())).thenAnswer(_ -> cause.promise());
+
+            return router;
+        }
+    }
+
     private static StreamPartitionManager streamWith2Partitions() {
         var manager = StreamPartitionManager.streamPartitionManager();
         var engineKey = StreamManager.engineKey(ResourceAddress.resourceAddress("ns", "orders", "1.0.0").unwrap());
@@ -329,6 +473,12 @@ class StreamErrorStatusTest {
 
     private static Stream<org.pragmatica.http.routing.Route<?>> apiRoutes(StreamPartitionManager manager,
                                                                          org.pragmatica.aether.slice.stream.StreamNamespacesService namespaces) {
+        return apiRoutes(manager, namespaces, org.pragmatica.aether.stream.StreamReadRouter.localOnly(manager));
+    }
+
+    private static Stream<org.pragmatica.http.routing.Route<?>> apiRoutes(StreamPartitionManager manager,
+                                                                         org.pragmatica.aether.slice.stream.StreamNamespacesService namespaces,
+                                                                         StreamReadRouter router) {
         var node = (ManageableNode) java.lang.reflect.Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
                                                                              new Class[]{ManageableNode.class},
                                                                              (_, method, _) -> {
@@ -337,7 +487,7 @@ class StreamErrorStatusTest {
                                                                                  }
 
                                                                                  if (method.getName().equals("streamReadRouter")) {
-                                                                                     return org.pragmatica.aether.stream.StreamReadRouter.localOnly(manager);
+                                                                                     return router;
                                                                                  }
                                                                                  throw new UnsupportedOperationException(method.getName());
                                                                              });

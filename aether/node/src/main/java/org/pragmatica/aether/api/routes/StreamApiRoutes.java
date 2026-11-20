@@ -627,7 +627,7 @@ public final class StreamApiRoutes implements RouteSource {
                                                                Fn1<Promise<List<RawEvent>>, Long> read) {
         var from = requested.or(0L);
 
-        return StreamErrorStatus.typed(read.apply(from)
+        return StreamErrorStatus.typedRead(read.apply(from)
                                            .<Window> fold(result -> result.fold(cause -> afterRefusal(requested,
                                                                                                       cause,
                                                                                                       read),
