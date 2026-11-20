@@ -4,8 +4,8 @@
 #   scripts/wire-generation-check.sh <base-ref>
 #
 # Compares the wire-assignment baseline committed at HEAD with the one at the merge base of <base-ref> and HEAD.
-# A SHAPE or ENUM line of the base that is changed or removed at HEAD is a wire break: an old peer decodes the new
-# bytes wrongly, so HEAD's GENERATION line must equal the base generation + 1 and the join guard refuses the old
+# A TAG, SHAPE or ENUM line of the base that is changed or removed at HEAD is a wire break: an old peer decodes the new
+# bytes wrongly (a renumbered TAG routes it to the wrong codec), so HEAD's GENERATION line must equal the base generation + 1 and the join guard refuses the old
 # peer. Any other change (added TAG, SHAPE or ENUM lines only, or no change) must leave GENERATION unchanged.
 # The base generation is the base baseline's GENERATION line; a base baseline without one (before the line
 # existed) counts as WIRE_GENERATION read from JoinGenerationGuard.java at the merge base.
@@ -57,19 +57,19 @@ if [[ ! "$head_generation" =~ ^[0-9]+$ ]]; then
 fi
 
 wire_lines() {
-    grep -E '^(SHAPE|ENUM) ' <<<"$1" | tr -s ' ' | sort -u || true
+    grep -E '^(TAG|SHAPE|ENUM) ' <<<"$1" | tr -s ' ' | sort -u || true
 }
 
 broken="$(comm -23 <(wire_lines "$base_file") <(wire_lines "$head_file"))"
 
 echo "wire-generation-check: merge base $merge_base, base generation $base_generation ($base_source), HEAD generation $head_generation"
 if [[ -n "$broken" ]]; then
-    echo "wire-generation-check: $(wc -l <<<"$broken" | tr -d ' ') SHAPE/ENUM line(s) of the base changed or removed at HEAD (a wire break):"
+    echo "wire-generation-check: $(wc -l <<<"$broken" | tr -d ' ') TAG/SHAPE/ENUM line(s) of the base changed or removed at HEAD (a wire break):"
     sed 's/^/  - /' <<<"$broken"
     required=$((base_generation + 1))
     reason="a wire break requires GENERATION = base + 1 = $required (bump JoinGenerationGuard.WIRE_GENERATION, then re-record the baseline)"
 else
-    echo "wire-generation-check: no SHAPE/ENUM line of the base changed or removed (added-only or no wire change)"
+    echo "wire-generation-check: no TAG/SHAPE/ENUM line of the base changed or removed (added-only or no wire change)"
     required=$base_generation
     reason="a change without a wire break requires GENERATION unchanged = $required"
 fi
