@@ -62,47 +62,114 @@ def modules_with_tests(root=ROOT):
     return sorted(m for m in reactor_modules(root) if has_tests(root / m))
 
 
+def _local(element):
+    return element.tag.rpartition("}")[2]
+
+
 def _children(element, name):
-    return [c for c in element if c.tag.rpartition("}")[2] == name]
+    return [c for c in element if _local(c) == name]
 
 
-def _binds_failsafe(project, own):
-    """True when <build><plugins> (not pluginManagement, not a profile) lists failsafe; a parent's entry counts only when inherited."""
-    build = _children(project, "build")
-    plugins = _children(build[0], "plugins") if build else []
-    for plugin in (p for ps in plugins for p in _children(ps, "plugin")):
-        names = [a.text.strip() for a in _children(plugin, "artifactId") if a.text]
-        inherited = [i.text.strip() for i in _children(plugin, "inherited") if i.text]
+# Elements that switch a failsafe run off: `skip`/`skipITs`/`skipTests` set to true (in the plugin or as a pom property), or an
+# execution moved to `<phase>none</phase>`.
+SKIPS = ("skip", "skipITs", "skipTests")
+
+
+def _text(element):
+    return (element.text or "").strip()
+
+
+def _active_by_default(profile):
+    return any(_text(d) == "true" for a in _children(profile, "activation") for d in _children(a, "activeByDefault"))
+
+
+def _build_plugins(project):
+    """The plugins of <build><plugins> (not pluginManagement) and of activeByDefault profiles' builds. An activeByDefault profile
+    stops being active when another profile of the same pom is activated; the guard cannot know which -Ps a build passes."""
+    scopes = [project] + [p for ps in _children(project, "profiles") for p in _children(ps, "profile") if _active_by_default(p)]
+    return [plugin for scope in scopes for build in _children(scope, "build") for ps in _children(build, "plugins")
+            for plugin in _children(ps, "plugin")]
+
+
+def _failsafe_binding(project, own):
+    """The first failsafe plugin entry in the project's build plugins; a parent's entry counts only when inherited."""
+    for plugin in _build_plugins(project):
+        names = [_text(a) for a in _children(plugin, "artifactId")]
+        inherited = [_text(i) for i in _children(plugin, "inherited")]
         if "maven-failsafe-plugin" in names and (own or inherited != ["false"]):
-            return True
-    return False
+            return plugin
+    return None
 
 
-def runs_failsafe(root, module):
-    """Whether the module's own <build><plugins>, or an inherited one up its <parent> chain, binds failsafe.
-    Only a binding makes failsafe run: the root pom's pluginManagement entry alone runs nothing, and its surefire config
-    excludes **/*IT.java, so a class named *IT in an unbound module runs in no build (#3506)."""
-    directory, own = root / module, True
+def _property_skips(project):
+    return any(_local(p) in SKIPS and _text(p) == "true" for ps in _children(project, "properties") for p in ps)
+
+
+def _binding_skips(plugin):
+    return any((_local(e) in SKIPS and _text(e) == "true") or (_local(e) == "phase" and _text(e) == "none") for e in plugin.iter())
+
+
+def _glob(pattern):
+    rx = re.escape(pattern).replace("\\*\\*/", "(?:.*/)?").replace("\\*\\*", ".*").replace("\\*", "[^/]*").replace("\\?", "[^/]")
+    return re.compile(rx)
+
+
+def _includes_match(plugin, classes):
+    """False when the binding lists explicit <include> patterns and none selects any of the IT classes (paths under src/test/java).
+    A %regex[...] or ${property} pattern cannot be evaluated here and counts as matching."""
+    patterns = [_text(i) for i in plugin.iter() if _local(i) == "include" and _text(i)]
+    return not patterns or any(p.startswith("%") or "${" in p or _glob(p).fullmatch(c) or _glob(p).fullmatch(c[:-len(".java")])
+                               for p in patterns for c in classes)
+
+
+def _its(root, module):
+    tests = root / module / "src/test/java"
+    return sorted(p.relative_to(tests).as_posix() for p in tests.rglob("*IT.java")) if tests.is_dir() else []
+
+
+def failsafe_defect(root, module):
+    """Why the module's *IT classes would not run, or None: ("unbound", ...) when neither the module's own <build><plugins> (or an
+    activeByDefault profile's) nor an inherited parent's entry binds failsafe, so only the root's pluginManagement entry exists and its
+    surefire config excludes **/*IT.java; ("disabled", ...) when the nearest binding or a pom property skips it or moves a phase to
+    none; ("includes", patterns) when its explicit includes select none of the module's IT classes (#3506)."""
+    directory, own, binding, skipped = root / module, True, None, False
     while (directory / "pom.xml").is_file():
         project = ET.parse(directory / "pom.xml").getroot()
-        if _binds_failsafe(project, own):
-            return True
+        skipped = skipped or _property_skips(project)
+        binding = binding if binding is not None else _failsafe_binding(project, own)
         parent = _children(project, "parent")
         if not parent:
-            return False
+            break
         relative = (_children(parent[0], "relativePath") or [None])[0]
-        directory = (directory / (relative.text.strip() if relative is not None and relative.text else "..")).resolve()
+        if relative is not None and not _text(relative):
+            break  # an empty <relativePath/> tells Maven to resolve the parent from a repository: no local pom to read
+        directory = (directory / (_text(relative) if relative is not None else "..")).resolve()
         directory = directory.parent if directory.name == "pom.xml" else directory
         own = False
-    return False
+    if binding is None:
+        return "unbound", ""
+    if skipped or _binding_skips(binding):
+        return "disabled", ""
+    its = _its(root, module)
+    if not _includes_match(binding, its):
+        return "includes", ", ".join(_text(i) for i in binding.iter() if _local(i) == "include")
+    return None
 
 
 def modules_with_unbound_its(root=ROOT):
     """Reactor modules with a src/test/java/**/*IT.java class where failsafe will not run (#3506)."""
-    return sorted(m for m in reactor_modules(root)
-                  if (root / m / "src/test/java").is_dir()
-                  and any((root / m / "src/test/java").rglob("*IT.java"))
-                  and not runs_failsafe(root, m))
+    return sorted(m for m in reactor_modules(root) if _its(root, m) and (failsafe_defect(root, m) or ("",))[0] == "unbound")
+
+
+def misnamed_its(root=ROOT):
+    """(module, path) of IT*.java and *ITCase.java classes in reactor modules: the root failsafe includes only **/*IT.java."""
+    found = []
+    for module in reactor_modules(root):
+        tests = root / module / "src/test/java"
+        if tests.is_dir():
+            found += [(module, p.relative_to(tests).as_posix()) for p in tests.rglob("*.java")
+                      if re.fullmatch(r"IT.*|.*ITCase", p.stem)]
+    return sorted(found)
 
 
 def read_groups(path=GROUPS):
@@ -133,8 +200,20 @@ def ci_jobs(ci_text):
 def check(root=ROOT, groups_file=GROUPS, ci_file=CI):
     """The problems that make the grouping unsound; empty when every module with tests has exactly one owner."""
     rows, ci_text = read_groups(groups_file), ci_file.read_text()
-    problems = [f"{module} has *IT classes and no maven-failsafe-plugin binding in its <build><plugins> or an inherited parent's: "
-                f"they run in no build (surefire excludes *IT.java)" for module in modules_with_unbound_its(root)]
+    problems = []
+    for module in reactor_modules(root):
+        defect = failsafe_defect(root, module) if _its(root, module) else None
+        if defect and defect[0] == "unbound":
+            problems.append(f"{module} has *IT classes and no maven-failsafe-plugin binding in its <build><plugins> or an inherited "
+                            f"parent's: they run in no build (surefire excludes *IT.java)")
+        elif defect and defect[0] == "disabled":
+            problems.append(f"{module} has *IT classes and its maven-failsafe-plugin binding is disabled (skip, skipITs, skipTests "
+                            f"or phase none): they run in no build")
+        elif defect:
+            problems.append(f"{module} has *IT classes and its maven-failsafe-plugin includes [{defect[1]}] select none of them: "
+                            f"they run in no build")
+    problems += [f"{module}/src/test/java/{path} is named IT*/*ITCase, which the failsafe includes (**/*IT.java) never select: "
+                 f"it runs in no build" for module, path in misnamed_its(root)]
     tested = modules_with_tests(root)
     owners = {}
     for owner, module in rows:
