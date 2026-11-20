@@ -112,8 +112,7 @@ public interface DurableTopicSubstrate {
     static StreamConfig topicStreamConfig(String topicAddress, DurableTopicSpec spec) {
         return StreamConfig.streamConfig(DurableTopicNames.topicStream(topicAddress),
                                          spec.partitions(),
-                                         topicRetention(spec.retention(),
-                                                       spec.partitions()),
+                                         topicRetention(spec.retention(), spec.partitions()),
                                          "earliest",
                                          StreamConfig.DEFAULT.maxEventSizeBytes(),
                                          StreamConfig.DEFAULT.consistencyMode(),

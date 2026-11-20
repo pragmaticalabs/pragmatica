@@ -212,11 +212,7 @@ public final class StreamApiRoutes implements RouteSource {
 
     /// Legacy body-carried `POST /streams` (#968): `name` is a catalog address `namespace:stream:version`.
     /// The declaration fields are those of [CreateRequest] (#3334).
-    public record StreamCreateRequest(String name,
-                                      Integer partitions,
-                                      String maxAge,
-                                      Long maxBytes,
-                                      Long maxCount) {
+    public record StreamCreateRequest(String name, Integer partitions, String maxAge, Long maxBytes, Long maxCount) {
         /// The pre-#3334 shape: name and partitions only.
         public StreamCreateRequest(String name, Integer partitions) {
             this(name, partitions, null, null, null);
@@ -1050,11 +1046,11 @@ public final class StreamApiRoutes implements RouteSource {
                      .flatMap(StreamApiRoutes::catalogAddressOf)
                      .flatMap(addr -> createAtAddress(addr,
                                                       new CreateRequest(request.partitions(),
-                                                                                                                                                                request.maxAge(),
-                                                                                                                                                                request.maxBytes(),
-                                                                                                                                                                request.maxCount())).map(response -> legacyResponse(request,
-                                                                                                                              addr,
-                                                                                                                              response)));
+                                                                        request.maxAge(),
+                                                                        request.maxBytes(),
+                                                                        request.maxCount())).map(response -> legacyResponse(request,
+                                                                                                                            addr,
+                                                                                                                            response)));
     }
 
     private static Result<String> requireCreatableName(String name) {
@@ -1145,8 +1141,9 @@ public final class StreamApiRoutes implements RouteSource {
     private Result<Unit> mintOperatorStream(String engineKey, CreateRequest request) {
         var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
 
-        return declaredRetention(partitions,
-                                 request).flatMap(retention -> mintWithRetention(engineKey, partitions, retention));
+        return declaredRetention(partitions, request).flatMap(retention -> mintWithRetention(engineKey,
+                                                                                             partitions,
+                                                                                             retention));
     }
 
     private Result<Unit> mintWithRetention(String engineKey, int partitions, RetentionPolicy retention) {
@@ -1173,11 +1170,12 @@ public final class StreamApiRoutes implements RouteSource {
         var count = Option.option(request.maxCount());
 
         return RetentionPolicy.retentionPolicy(count.or(sizingDefaults.maxCount()),
-                                               Option.option(request.maxBytes())
-                                                     .or(DeclarationDefaults.defaultMaxBytes(partitions)),
+                                               Option.option(request.maxBytes()).or(DeclarationDefaults.defaultMaxBytes(partitions)),
                                                ageMs,
                                                DeclarationDefaults.DEFAULT_MODE)
-                              .withDeclared(RetentionDimensions.retentionDimensions(count.isPresent(), true, true));
+                              .withDeclared(RetentionDimensions.retentionDimensions(count.isPresent(),
+                                                                                    true,
+                                                                                    true));
     }
 
     private Result<StreamRegistryEntry> registerCatalogEntry(ResourceAddress addr) {
