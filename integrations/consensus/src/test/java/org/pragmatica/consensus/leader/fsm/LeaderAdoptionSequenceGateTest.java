@@ -168,9 +168,10 @@ class LeaderAdoptionSequenceGateTest {
         var kvLeader = new AtomicReference<>(Option.some(LEADER));
         var h = harness(kvLeader);
 
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        // Topology deliberately excludes the healthy LEADER — the transport-absent FIX-1 condition.
+        // Topology deliberately excludes the healthy LEADER — the transport-absent FIX-1 condition. The view is applied
+        // BEFORE the adoption: a view applied after it would lose the absent leader (#3092 I2, ViewApplicationTableTest).
         h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF), seq()));
+        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
         h.dispatch(new ConsensusReady());
 
         assertThat(h.state())
