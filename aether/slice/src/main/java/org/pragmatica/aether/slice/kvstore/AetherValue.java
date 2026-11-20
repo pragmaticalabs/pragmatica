@@ -4430,7 +4430,11 @@ public sealed interface AetherValue {
     /// @param parentOwnerEpoch owner epoch of the parent that wrote the offer
     /// @param blockIdHex       content id of the seed block in stream storage
     /// @param entries          one entry per child the offer covers
-    record EntitySeedOfferValue(long parentLife, long L, long parentOwnerEpoch, String blockIdHex, List<OfferEntry> entries) implements AetherValue {
+    record EntitySeedOfferValue(long parentLife,
+                                long L,
+                                long parentOwnerEpoch,
+                                String blockIdHex,
+                                List<OfferEntry> entries) implements AetherValue {
         public EntitySeedOfferValue {
             entries = List.copyOf(entries);
         }
@@ -4465,7 +4469,9 @@ public sealed interface AetherValue {
             discarded = List.copyOf(discarded);
         }
 
-        public static EntityArcWaiverValue entityArcWaiverValue(long childLife, WaiverCase waiverCase, List<String> discarded) {
+        public static EntityArcWaiverValue entityArcWaiverValue(long childLife,
+                                                                WaiverCase waiverCase,
+                                                                List<String> discarded) {
             return new EntityArcWaiverValue(childLife, waiverCase, discarded);
         }
 
