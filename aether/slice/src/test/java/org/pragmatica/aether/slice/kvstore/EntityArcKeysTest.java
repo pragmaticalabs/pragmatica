@@ -122,6 +122,18 @@ class EntityArcKeysTest {
                           .onFailure(cause -> assertThat(cause.message()).contains("entity-arc-waiver/orders"));
     }
 
+    /// The numeric-parse failure carries the same full-key text as the shape failure, prefix included (vA3b survivors
+    /// s/w-err-prefix): the cause names the key class, not just the identity.
+    @Test
+    void nonNumericId_namesThePrefixedKeyInTheCause() {
+        EntitySeedOfferKey.fromIdentity("orders/x")
+                          .onSuccess(parsed -> Assertions.fail("must not parse: " + parsed))
+                          .onFailure(cause -> assertThat(cause.message()).isEqualTo("Invalid entity-seed-offer key format: entity-seed-offer/orders/x"));
+        EntityArcWaiverKey.fromIdentity("orders/x")
+                          .onSuccess(parsed -> Assertions.fail("must not parse: " + parsed))
+                          .onFailure(cause -> assertThat(cause.message()).isEqualTo("Invalid entity-arc-waiver key format: entity-arc-waiver/orders/x"));
+    }
+
     /// Both are cluster state and backed up: losing either on a cold restart would silently drop an arc decision.
     /// Typed as [AetherKey] so a key moved to the runtime class fails here by assertion, not by a missing method.
     @Test
