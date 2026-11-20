@@ -156,4 +156,26 @@ class SystemTagsLedgerTest {
         assertEquals(2986, owned.getFirst().from(), "restore-authority-3303 must start at 2986");
         assertEquals(2989, owned.getFirst().to(), "restore-authority-3303 must end at 2989");
     }
+
+    /// #3303 stream split: 3038..3069 is reserved for the stream split and merge lanes, and the reservation is exact.
+    /// The second half is a tripwire: while nothing is pinned inside the block, it fails the lane that pins the
+    /// first tag, which deletes it.
+    @Test
+    void splitSp_reserves3038to3069() throws Exception {
+        var owned = ledger().stream()
+                            .filter(reservation -> reservation.owner()
+                                                              .equals("split-sp"))
+                            .toList();
+
+        assertEquals(1, owned.size(), "split-sp must hold exactly one reservation in " + LEDGER);
+        assertEquals(3038, owned.getFirst().from(), "split-sp must start at 3038");
+        assertEquals(3069, owned.getFirst().to(), "split-sp must end at 3069");
+
+        SystemTags.TAGS.forEach(SystemTagsLedgerTest::assertNotInSplitSpRange);
+    }
+
+    private static void assertNotInSplitSpRange(String name, int tag) {
+        assertFalse(tag >= 3038 && tag <= 3069,
+                    "SP1a pinned in 3038..3069: delete this half (%s is pinned to %d)".formatted(name, tag));
+    }
 }
