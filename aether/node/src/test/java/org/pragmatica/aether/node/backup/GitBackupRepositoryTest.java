@@ -511,8 +511,8 @@ class GitBackupRepositoryTest {
         assertThat(presentValue(repository.readCommitId("v1"))).isEqualTo(commitId);
     }
 
-    /// `ls-remote` matches a pattern by suffix: a remote holding only `refs/heads/x/backup`, a tag named `backup`, or a tag named `refs/heads/backup`
-    /// (listed as `refs/tags/refs/heads/backup`, which ends in the pattern) has no `refs/heads/backup`; the answer is absent, never a listing hit.
+    /// `ls-remote` matches a pattern by suffix: a remote holding only `refs/heads/x/backup`, or only a tag named `backup`, has no `refs/heads/backup`,
+    /// and git says so with exit 2.
     @Test
     void readBranch_isAbsent_whenTheRemoteHoldsOnlyANestedBranchOrATagOfThatName() {
         var remote = bareRemote(temp.resolve("remote.git"));
@@ -522,12 +522,30 @@ class GitBackupRepositoryTest {
         writer.prepare();
         writer.commit("state-1\n", "first")
               .onFailure(cause -> Assertions.fail(cause.message()));
-        git(temp.resolve("writer"), "push", remote, "HEAD:refs/heads/x/backup", "HEAD:refs/tags/backup", "HEAD:refs/tags/refs/heads/backup");
+        git(temp.resolve("writer"), "push", remote, "HEAD:refs/heads/x/backup", "HEAD:refs/tags/backup");
         reader.prepare();
 
-        assertThat(git(Path.of(remote), "for-each-ref", "--format=%(refname)").lines().toList()).containsExactlyInAnyOrder("refs/heads/x/backup", "refs/tags/backup",
-                                                                                                                  "refs/tags/refs/heads/backup");
+        assertThat(git(Path.of(remote), "for-each-ref", "--format=%(refname)").lines().toList()).containsExactlyInAnyOrder("refs/heads/x/backup", "refs/tags/backup");
         assertThat(reader.readBranch()).isInstanceOf(GitRead.Absent.class);
+    }
+
+    /// A tag named `refs/heads/backup` is listed as `refs/tags/refs/heads/backup`, which ends in the pattern: git answers exit 0 with a line that is not
+    /// the branch. Only a line ending exactly in a tab and the full ref is the branch, so this is never present; it reads unreadable (git did answer, but
+    /// not with a definite "absent" or "present"), the safe side of a remote nobody names this way on purpose.
+    @Test
+    void readBranch_isNeverPresent_whenTheRemoteHoldsOnlyATagWhoseNameEndsInTheBranchRef() {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var writer = repository("writer", Option.some(remote));
+        var reader = repository("reader", Option.some(remote));
+
+        writer.prepare();
+        writer.commit("state-1\n", "first")
+              .onFailure(cause -> Assertions.fail(cause.message()));
+        git(temp.resolve("writer"), "push", remote, "HEAD:refs/tags/refs/heads/backup");
+        reader.prepare();
+
+        assertThat(git(Path.of(remote), "for-each-ref", "--format=%(refname)").lines().toList()).containsExactly("refs/tags/refs/heads/backup");
+        assertThat(reader.readBranch()).isInstanceOf(GitRead.Unreadable.class);
     }
 
     /// A warning git writes to stderr under exit 0 never enters a present value (the merged reads of the older commands would carry it). The control:
