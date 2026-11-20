@@ -21,11 +21,13 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ReadPreference;
+import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.stream.DeclarationDefaults;
 import org.pragmatica.aether.slice.stream.PublishOutcome;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.slice.stream.StreamRegistry;
@@ -53,6 +55,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.parse.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 
@@ -83,10 +86,6 @@ public final class StreamApiRoutes implements RouteSource {
     /// #524: pre-fix hardwired publish target, preserved as the explicit default for an omitted
     /// `partition` field so existing callers see unchanged behavior.
     private static final int DEFAULT_PUBLISH_PARTITION = 0;
-
-    private static final RetentionPolicy MANAGEMENT_API_RETENTION = RetentionPolicy.retentionPolicy(10_000,
-                                                                                                    4 * 1024 * 1024L,
-                                                                                                    60 * 60 * 1000L);
 
     private final Supplier<ManageableNode> nodeSupplier;
     private final StreamNamespacesService namespacesService;
@@ -196,10 +195,25 @@ public final class StreamApiRoutes implements RouteSource {
 
     /// #1224: `partitions` is optional (absent/`null` on the wire keeps [#DEFAULT_PARTITIONS], the
     /// same default `aether streams create`'s legacy body-carried form used).
-    public record CreateRequest(Integer partitions) {}
+    ///
+    /// #3334 (G36): the optional declaration fields `maxAge` (a time span, `"24h"`), `maxBytes` and `maxCount` bound the
+    /// stream's retention like `[retention]` does in TOML; absent keeps the declaration defaults
+    /// ([DeclarationDefaults]), and a field given is DECLARED so `RetentionEnforcer` cuts by it.
+    public record CreateRequest(Integer partitions, String maxAge, Long maxBytes, Long maxCount) {
+        /// The pre-#3334 shape: partitions only, every declaration field at its default.
+        public CreateRequest(Integer partitions) {
+            this(partitions, null, null, null);
+        }
+    }
 
     /// Legacy body-carried `POST /streams` (#968): `name` is a catalog address `namespace:stream:version`.
-    public record StreamCreateRequest(String name, Integer partitions) {}
+    /// The declaration fields are those of [CreateRequest] (#3334).
+    public record StreamCreateRequest(String name, Integer partitions, String maxAge, Long maxBytes, Long maxCount) {
+        /// The pre-#3334 shape: name and partitions only.
+        public StreamCreateRequest(String name, Integer partitions) {
+            this(name, partitions, null, null, null);
+        }
+    }
 
     public record StreamCreateResponse(String name, int partitions, String status) {}
 
@@ -980,7 +994,7 @@ public final class StreamApiRoutes implements RouteSource {
     /// #1282: the management default is never fabricated under a reserved kind prefix — a `topic`/`entity`
     /// namespace address yields a `topic:`/`entity:` engine key, which only internal provisioning may
     /// mint. A committed config for such a name is the real resource's and is still adopted.
-    private Result<Unit> ensureStreamExists(String streamName) {
+    Result<Unit> ensureStreamExists(String streamName) {
         return nodeSupplier.get()
                            .kvStore()
                            .getTyped(StreamConfigKey.streamConfigKey(streamName),
@@ -995,7 +1009,7 @@ public final class StreamApiRoutes implements RouteSource {
                                                                                                                                                    .kvStore(),
                                                                                                                                        StreamConfig.streamConfig(unreserved,
                                                                                                                                                                  DEFAULT_PARTITIONS,
-                                                                                                                                                                 MANAGEMENT_API_RETENTION,
+                                                                                                                                                                 defaultRetention(DEFAULT_PARTITIONS),
                                                                                                                                                                  "latest")));
     }
 
@@ -1027,9 +1041,12 @@ public final class StreamApiRoutes implements RouteSource {
                      .flatMap(StreamApiRoutes::requireCreatableName)
                      .flatMap(StreamApiRoutes::catalogAddressOf)
                      .flatMap(addr -> createAtAddress(addr,
-                                                      new CreateRequest(request.partitions())).map(response -> legacyResponse(request,
-                                                                                                                              addr,
-                                                                                                                              response)));
+                                                      new CreateRequest(request.partitions(),
+                                                                        request.maxAge(),
+                                                                        request.maxBytes(),
+                                                                        request.maxCount())).map(response -> legacyResponse(request,
+                                                                                                                            addr,
+                                                                                                                            response)));
     }
 
     private static Result<String> requireCreatableName(String name) {
@@ -1095,9 +1112,33 @@ public final class StreamApiRoutes implements RouteSource {
                                                           String engineKey,
                                                           CreateRequest request) {
         return namespacesService.lookup(addr)
-                                .map(_ -> Result.success(new CreateResponse(addr.asString(),
-                                                                            "exists")))
+                                .map(entry -> existsOrConflict(addr, entry, request))
                                 .or(() -> materializeAndRegister(addr, engineKey, request));
+    }
+
+    /// A repeat create answers `"exists"`, unless its body DECLARES a retention that differs from the committed one
+    /// (the registered retention is the enforced one): that is refused with 409 naming both, because an online change
+    /// goes through the declaration path (ST §2.5), never through a repeat create. A repeat with no retention field
+    /// declares nothing and so changes nothing.
+    private Result<CreateResponse> existsOrConflict(ResourceAddress addr,
+                                                    StreamRegistryEntry entry,
+                                                    CreateRequest request) {
+        return declaresRetention(request)
+               ? declaredRetention(partitionsOf(request), request).flatMap(requested -> sameRetentionOrConflict(addr,
+                                                                                                                entry.retention(),
+                                                                                                                requested))
+               : Result.success(new CreateResponse(addr.asString(), "exists"));
+    }
+
+    private static Result<CreateResponse> sameRetentionOrConflict(ResourceAddress addr,
+                                                                  RetentionPolicy committed,
+                                                                  RetentionPolicy requested) {
+        return committed.equals(requested)
+               ? Result.success(new CreateResponse(addr.asString(), "exists"))
+               : new ManagementServerError.Conflict("Stream '" + addr.asString()
+                                                   + "' exists with retention " + committed
+                                                   + "; refusing the differing retention " + requested
+                                                   + ": change retention through the stream declaration").result();
     }
 
     /// Registers a PERMANENT catalog reference ([StreamRegistryEntry.RegisteredByKind#OPERATOR]): no
@@ -1112,26 +1153,103 @@ public final class StreamApiRoutes implements RouteSource {
     private Result<CreateResponse> materializeAndRegister(ResourceAddress addr,
                                                           String engineKey,
                                                           CreateRequest request) {
-        return mintOperatorStream(engineKey, request).flatMap(_ -> registerCatalogEntry(addr))
-                                 .map(_ -> new CreateResponse(addr.asString(),
-                                                              "created"));
+        var partitions = partitionsOf(request);
+
+        return declaredRetention(partitions, request).flatMap(retention -> mintAndRegister(addr,
+                                                                                           engineKey,
+                                                                                           partitions,
+                                                                                           retention))
+                                .map(_ -> new CreateResponse(addr.asString(),
+                                                             "created"));
     }
 
-    private Result<Unit> mintOperatorStream(String engineKey, CreateRequest request) {
-        var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
-
-        return ManagementStreamReplication.withClusterDefaults(nodeSupplier.get().kvStore(),
-                                                               StreamConfig.streamConfig(engineKey,
-                                                                                         partitions,
-                                                                                         MANAGEMENT_API_RETENTION,
-                                                                                         "latest"))
-                                          .flatMap(config -> StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config)));
+    private static int partitionsOf(CreateRequest request) {
+        return Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
     }
 
-    private Result<StreamRegistryEntry> registerCatalogEntry(ResourceAddress addr) {
+    private Result<StreamRegistryEntry> mintAndRegister(ResourceAddress addr,
+                                                        String engineKey,
+                                                        int partitions,
+                                                        RetentionPolicy retention) {
+        return mintWithRetention(engineKey, partitions, retention).flatMap(_ -> registerCatalogEntry(addr,
+                                                                                                     enforcedRetention(engineKey,
+                                                                                                                       retention)));
+    }
+
+    /// What the engine enforces for the stream: the retention it holds when the stream already existed (an
+    /// earlier publish auto-created it, `tolerateAlreadyExists`), else the one just minted.
+    private RetentionPolicy enforcedRetention(String engineKey, RetentionPolicy minted) {
+        return streamManager().enforcedConfig(engineKey)
+                            .map(StreamConfig::retention)
+                            .or(minted);
+    }
+
+    private Result<Unit> mintWithRetention(String engineKey, int partitions, RetentionPolicy retention) {
+        return StreamErrorStatus.typed(ManagementStreamReplication.withClusterDefaults(nodeSupplier.get().kvStore(),
+                                                                                       StreamConfig.streamConfig(engineKey,
+                                                                                                                 partitions,
+                                                                                                                 retention,
+                                                                                                                 "latest"))
+                                                                  .flatMap(config -> StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config))));
+    }
+
+    /// The retention of an API-created stream, resolved as a TOML stream's is (#3334): a body naming no retention field
+    /// takes the declaration defaults ([#defaultRetention]); a body naming some declares ONLY those (the age, the bytes,
+    /// the count), and an omitted dimension stays at the ring's sizing default, undeclared, as an omitted `max_*` key of a
+    /// TOML `compound` section does. A malformed age, or a bound below 1 (refused by the engine at create), is the
+    /// caller's input: 400 with the error's own message.
+    private static Result<RetentionPolicy> declaredRetention(int partitions, CreateRequest request) {
+        return RequestParse.asRequest(declaresRetention(request)
+                                      ? namedRetention(request)
+                                      : Result.success(defaultRetention(partitions)));
+    }
+
+    private static boolean declaresRetention(CreateRequest request) {
+        return Option.option(request.maxAge()).isPresent() || Option.option(request.maxBytes()).isPresent() || Option.option(request.maxCount()).isPresent();
+    }
+
+    /// The declaration defaults of a stream minted without a retention declaration: `max_age` 24 h and
+    /// `max_bytes = DeclarationDefaults.defaultMaxBytes(partitions)`, both declared (ST §2.2).
+    static RetentionPolicy defaultRetention(int partitions) {
+        var sizingDefaults = RetentionPolicy.retentionPolicy();
+
+        return RetentionPolicy.retentionPolicy(sizingDefaults.maxCount(),
+                                               DeclarationDefaults.defaultMaxBytes(partitions),
+                                               DeclarationDefaults.DEFAULT_MAX_AGE_MS,
+                                               DeclarationDefaults.DEFAULT_MODE)
+                              .withDeclared(RetentionDimensions.retentionDimensions(false, true, true));
+    }
+
+    private static Result<RetentionPolicy> namedRetention(CreateRequest request) {
+        return parsedAgeMs(request).map(ageMs -> retentionOf(request, ageMs));
+    }
+
+    private static Result<Option<Long>> parsedAgeMs(CreateRequest request) {
+        return Option.option(request.maxAge())
+                     .map(age -> TimeSpan.timeSpan(age)
+                                         .map(TimeSpan::toMillis)
+                                         .map(Option::option))
+                     .or(() -> Result.success(Option.none()));
+    }
+
+    private static RetentionPolicy retentionOf(CreateRequest request, Option<Long> ageMs) {
+        var sizingDefaults = RetentionPolicy.retentionPolicy();
+        var count = Option.option(request.maxCount());
+        var bytes = Option.option(request.maxBytes());
+
+        return RetentionPolicy.retentionPolicy(count.or(sizingDefaults.maxCount()),
+                                               bytes.or(sizingDefaults.maxBytes()),
+                                               ageMs.or(sizingDefaults.maxAgeMs()),
+                                               DeclarationDefaults.DEFAULT_MODE)
+                              .withDeclared(RetentionDimensions.retentionDimensions(count.isPresent(),
+                                                                                    bytes.isPresent(),
+                                                                                    ageMs.isPresent()));
+    }
+
+    private Result<StreamRegistryEntry> registerCatalogEntry(ResourceAddress addr, RetentionPolicy retention) {
         return namespacesService.registry()
                                 .register(StreamRegistryEntry.operator(addr,
-                                                                       MANAGEMENT_API_RETENTION,
+                                                                       retention,
                                                                        Instant.now()))
                                 .mapError(cause -> mapRegistrationError(addr, cause));
     }
