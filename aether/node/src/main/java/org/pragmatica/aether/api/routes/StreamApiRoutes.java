@@ -87,10 +87,6 @@ public final class StreamApiRoutes implements RouteSource {
     /// `partition` field so existing callers see unchanged behavior.
     private static final int DEFAULT_PUBLISH_PARTITION = 0;
 
-    private static final RetentionPolicy MANAGEMENT_API_RETENTION = RetentionPolicy.retentionPolicy(10_000,
-                                                                                                    4 * 1024 * 1024L,
-                                                                                                    60 * 60 * 1000L);
-
     private final Supplier<ManageableNode> nodeSupplier;
     private final StreamNamespacesService namespacesService;
     private final ConsumerGroupCoordinator coordinator;
@@ -1013,7 +1009,7 @@ public final class StreamApiRoutes implements RouteSource {
                                                                                                                                                    .kvStore(),
                                                                                                                                        StreamConfig.streamConfig(unreserved,
                                                                                                                                                                  DEFAULT_PARTITIONS,
-                                                                                                                                                                 MANAGEMENT_API_RETENTION,
+                                                                                                                                                                 defaultRetention(DEFAULT_PARTITIONS),
                                                                                                                                                                  "latest")));
     }
 
@@ -1116,9 +1112,30 @@ public final class StreamApiRoutes implements RouteSource {
                                                           String engineKey,
                                                           CreateRequest request) {
         return namespacesService.lookup(addr)
-                                .map(_ -> Result.success(new CreateResponse(addr.asString(),
-                                                                            "exists")))
+                                .map(entry -> existsOrConflict(addr, entry, request))
                                 .or(() -> materializeAndRegister(addr, engineKey, request));
+    }
+
+    /// A repeat create answers `"exists"`, unless its body DECLARES a retention that differs from the committed one
+    /// (the registered retention is the enforced one): that is refused with 409 naming both, because an online change
+    /// goes through the declaration path (ST §2.5), never through a repeat create. A repeat with no retention field
+    /// declares nothing and so changes nothing.
+    private Result<CreateResponse> existsOrConflict(ResourceAddress addr, StreamRegistryEntry entry, CreateRequest request) {
+        return declaresRetention(request)
+               ? declaredRetention(partitionsOf(request), request).flatMap(requested -> sameRetentionOrConflict(addr,
+                                                                                                                  entry.retention(),
+                                                                                                                  requested))
+               : Result.success(new CreateResponse(addr.asString(), "exists"));
+    }
+
+    private static Result<CreateResponse> sameRetentionOrConflict(ResourceAddress addr,
+                                                                  RetentionPolicy committed,
+                                                                  RetentionPolicy requested) {
+        return committed.equals(requested)
+               ? Result.success(new CreateResponse(addr.asString(), "exists"))
+               : new ManagementServerError.Conflict("Stream '" + addr.asString() + "' exists with retention " + committed
+                                                    + "; refusing the differing retention " + requested
+                                                    + ": change retention through the stream declaration").result();
     }
 
     /// Registers a PERMANENT catalog reference ([StreamRegistryEntry.RegisteredByKind#OPERATOR]): no
@@ -1133,55 +1150,101 @@ public final class StreamApiRoutes implements RouteSource {
     private Result<CreateResponse> materializeAndRegister(ResourceAddress addr,
                                                           String engineKey,
                                                           CreateRequest request) {
-        return mintOperatorStream(engineKey, request).flatMap(_ -> registerCatalogEntry(addr))
-                                 .map(_ -> new CreateResponse(addr.asString(),
-                                                              "created"));
+        var partitions = partitionsOf(request);
+
+        return declaredRetention(partitions, request).flatMap(retention -> mintAndRegister(addr,
+                                                                                           engineKey,
+                                                                                           partitions,
+                                                                                           retention))
+                                                     .map(_ -> new CreateResponse(addr.asString(),
+                                                                                  "created"));
     }
 
-    private Result<Unit> mintOperatorStream(String engineKey, CreateRequest request) {
-        var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
+    private static int partitionsOf(CreateRequest request) {
+        return Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
+    }
 
-        return declaredRetention(partitions, request).flatMap(retention -> mintWithRetention(engineKey,
-                                                                                             partitions,
-                                                                                             retention));
+    private Result<StreamRegistryEntry> mintAndRegister(ResourceAddress addr,
+                                                        String engineKey,
+                                                        int partitions,
+                                                        RetentionPolicy retention) {
+        return mintWithRetention(engineKey, partitions, retention).flatMap(_ -> registerCatalogEntry(addr,
+                                                                                                      enforcedRetention(engineKey,
+                                                                                                                        retention)));
+    }
+
+    /// What the engine enforces for the stream: the retention it holds when the stream already existed (an
+    /// earlier publish auto-created it, `tolerateAlreadyExists`), else the one just minted.
+    private RetentionPolicy enforcedRetention(String engineKey, RetentionPolicy minted) {
+        return streamManager().enforcedConfig(engineKey)
+                              .map(StreamConfig::retention)
+                              .or(minted);
     }
 
     private Result<Unit> mintWithRetention(String engineKey, int partitions, RetentionPolicy retention) {
-        return ManagementStreamReplication.withClusterDefaults(nodeSupplier.get().kvStore(),
-                                                               StreamConfig.streamConfig(engineKey,
-                                                                                         partitions,
-                                                                                         retention,
-                                                                                         "latest"))
-                                          .flatMap(config -> StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config)));
+        return StreamErrorStatus.typed(ManagementStreamReplication.withClusterDefaults(nodeSupplier.get().kvStore(),
+                                                                                       StreamConfig.streamConfig(engineKey,
+                                                                                                                 partitions,
+                                                                                                                 retention,
+                                                                                                                 "latest"))
+                                                                  .flatMap(config -> StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config))));
     }
 
-    /// The retention of an API-created stream, resolved as a TOML stream's is (#3334): `max_age` 24 h and
-    /// `max_bytes = DeclarationDefaults.defaultMaxBytes(partitions)` unless the request declares them; the age and the
-    /// bytes are always declared, the count only when the request gives it.
+    /// The retention of an API-created stream, resolved as a TOML stream's is (#3334): a body naming no retention field
+    /// takes the declaration defaults ([#defaultRetention]); a body naming some declares ONLY those (the age, the bytes,
+    /// the count), and an omitted dimension stays at the ring's sizing default, undeclared, as an omitted `max_*` key of a
+    /// TOML `compound` section does. A malformed age, or a bound below 1 (refused by the engine at create), is the
+    /// caller's input: 400 with the error's own message.
     private static Result<RetentionPolicy> declaredRetention(int partitions, CreateRequest request) {
-        return Option.option(request.maxAge())
-                     .map(age -> TimeSpan.timeSpan(age).map(TimeSpan::toMillis))
-                     .or(() -> Result.success(DeclarationDefaults.DEFAULT_MAX_AGE_MS))
-                     .map(ageMs -> retentionOf(partitions, request, ageMs));
+        return RequestParse.asRequest(declaresRetention(request)
+                                      ? namedRetention(request)
+                                      : Result.success(defaultRetention(partitions)));
     }
 
-    private static RetentionPolicy retentionOf(int partitions, CreateRequest request, long ageMs) {
+    private static boolean declaresRetention(CreateRequest request) {
+        return Option.option(request.maxAge()).isPresent() || Option.option(request.maxBytes()).isPresent() || Option.option(request.maxCount()).isPresent();
+    }
+
+    /// The declaration defaults of a stream minted without a retention declaration: `max_age` 24 h and
+    /// `max_bytes = DeclarationDefaults.defaultMaxBytes(partitions)`, both declared (ST §2.2).
+    static RetentionPolicy defaultRetention(int partitions) {
+        var sizingDefaults = RetentionPolicy.retentionPolicy();
+
+        return RetentionPolicy.retentionPolicy(sizingDefaults.maxCount(),
+                                               DeclarationDefaults.defaultMaxBytes(partitions),
+                                               DeclarationDefaults.DEFAULT_MAX_AGE_MS,
+                                               DeclarationDefaults.DEFAULT_MODE)
+                              .withDeclared(RetentionDimensions.retentionDimensions(false, true, true));
+    }
+
+    private static Result<RetentionPolicy> namedRetention(CreateRequest request) {
+        return parsedAgeMs(request).map(ageMs -> retentionOf(request, ageMs));
+    }
+
+    private static Result<Option<Long>> parsedAgeMs(CreateRequest request) {
+        return Option.option(request.maxAge())
+                     .map(age -> TimeSpan.timeSpan(age).map(TimeSpan::toMillis).map(Option::option))
+                     .or(() -> Result.success(Option.none()));
+    }
+
+    private static RetentionPolicy retentionOf(CreateRequest request, Option<Long> ageMs) {
         var sizingDefaults = RetentionPolicy.retentionPolicy();
         var count = Option.option(request.maxCount());
+        var bytes = Option.option(request.maxBytes());
 
         return RetentionPolicy.retentionPolicy(count.or(sizingDefaults.maxCount()),
-                                               Option.option(request.maxBytes()).or(DeclarationDefaults.defaultMaxBytes(partitions)),
-                                               ageMs,
+                                               bytes.or(sizingDefaults.maxBytes()),
+                                               ageMs.or(sizingDefaults.maxAgeMs()),
                                                DeclarationDefaults.DEFAULT_MODE)
                               .withDeclared(RetentionDimensions.retentionDimensions(count.isPresent(),
-                                                                                    true,
-                                                                                    true));
+                                                                                    bytes.isPresent(),
+                                                                                    ageMs.isPresent()));
     }
 
-    private Result<StreamRegistryEntry> registerCatalogEntry(ResourceAddress addr) {
+    private Result<StreamRegistryEntry> registerCatalogEntry(ResourceAddress addr, RetentionPolicy retention) {
         return namespacesService.registry()
                                 .register(StreamRegistryEntry.operator(addr,
-                                                                       MANAGEMENT_API_RETENTION,
+                                                                       retention,
                                                                        Instant.now()))
                                 .mapError(cause -> mapRegistrationError(addr, cause));
     }

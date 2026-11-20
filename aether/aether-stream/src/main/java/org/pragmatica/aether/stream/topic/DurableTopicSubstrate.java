@@ -102,6 +102,8 @@ public interface DurableTopicSubstrate {
     }
 
     TimeSpan DLQ_RETENTION_DEFAULT = TimeSpan.timeSpan("14d").unwrap();
+    /// A dead-letter stream's byte floor: 64 MiB (ST §2.2, G26).
+    long DLQ_MIN_BYTES = 64L * 1024 * 1024;
 
     private static Result<Unit> activate(StreamPartitionManager manager, String topicAddress, DurableTopicSpec spec) {
         return StreamCreateOutcome.tolerateAlreadyExists(manager.createDeclaredStream(topicStreamConfig(topicAddress,
@@ -125,7 +127,7 @@ public interface DurableTopicSubstrate {
     static StreamConfig dlqStreamConfig(String topicAddress, DurableTopicSpec spec) {
         return StreamConfig.streamConfig(DurableTopicNames.dlqStream(topicAddress),
                                          1,
-                                         ageOnlyRetention(DLQ_RETENTION_DEFAULT),
+                                         dlqRetention(DLQ_RETENTION_DEFAULT, DeclarationDefaults.defaultMaxBytes(spec.partitions())),
                                          "earliest",
                                          StreamConfig.DEFAULT.maxEventSizeBytes(),
                                          StreamConfig.DEFAULT.consistencyMode(),
@@ -149,15 +151,22 @@ public interface DurableTopicSubstrate {
                               .withDeclared(RetentionDimensions.retentionDimensions(false, true, true));
     }
 
-    /// A dead-letter stream's retention is its age only: its byte bound is the source-derived rule of its own design
-    /// row (#3334, a later step), not the topic default, so the count and bytes stay the ring's sizing defaults.
-    private static RetentionPolicy ageOnlyRetention(TimeSpan retention) {
+    /// A dead-letter stream's retention is its age (14 d) AND a byte bound of 10 % of its source topic's byte bound, at
+    /// least 64 MiB (ST §2.2 row `topic:*.dlq`, G26, #3334): both DECLARED so `RetentionEnforcer` cuts by them, under
+    /// the default mode (ANY; the design row names no mode for a `.dlq`, a guess); the count stays the ring's sizing
+    /// default, undeclared.
+    private static RetentionPolicy dlqRetention(TimeSpan retention, long sourceMaxBytes) {
         var sizingDefaults = RetentionPolicy.retentionPolicy();
 
         return RetentionPolicy.retentionPolicy(sizingDefaults.maxCount(),
-                                               sizingDefaults.maxBytes(),
+                                               dlqMaxBytes(sourceMaxBytes),
                                                retention.toMillis(),
                                                DeclarationDefaults.DEFAULT_MODE)
-                              .withDeclared(RetentionDimensions.AGE);
+                              .withDeclared(RetentionDimensions.retentionDimensions(false, true, true));
+    }
+
+    /// The byte bound of a dead-letter stream whose source holds `sourceMaxBytes`: `max(10 % of the source, 64 MiB)`.
+    static long dlqMaxBytes(long sourceMaxBytes) {
+        return Math.max(sourceMaxBytes / 10, DLQ_MIN_BYTES);
     }
 }
