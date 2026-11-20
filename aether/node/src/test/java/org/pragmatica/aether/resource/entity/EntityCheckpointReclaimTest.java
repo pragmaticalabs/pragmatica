@@ -610,7 +610,7 @@ class EntityCheckpointReclaimTest {
         shared.hideGets = true;
         var resaved = save(substrate(checkpointReclaim(LONG_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
 
-        assertThat(storage.get(committed).await().unwrap()).as("control: the committed block reads as absent").isEmpty();
+        assertThat(storage.get(committed).await().unwrap().isEmpty()).as("control: the committed block reads as absent").isTrue();
         assertThat(durable.exists(committed).await().unwrap()).as("control: the private durable tier still says it holds it").isTrue();
         assertThat(shared.puts).as("the absent block was not taken as the same content").hasSize(putsBeforeRestart + 1);
         assertThat(resaved).isNotEqualTo(committed);
