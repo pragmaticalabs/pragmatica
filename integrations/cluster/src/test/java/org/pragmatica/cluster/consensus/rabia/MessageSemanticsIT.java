@@ -9,12 +9,15 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.net.local.LocalNetwork;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -202,10 +205,10 @@ public class MessageSemanticsIT {
     }
 
     /// Test 2.4: Stale-phase messages after a reconnect
-    /// Assertion: a message of an already-decided phase, delivered late to a reconnected node and to the rest of the
-    /// cluster, is discarded; the later value of the key is not regressed and the cluster keeps committing.
-    /// The stale messages are the proposals and votes recorded at the start (carrying the first value of the key),
-    /// replayed after the node crashed, missed phases, and reconnected.
+    /// Assertion: a ballot of an already-decided phase, delivered late, is discarded and answered by replaying that
+    /// phase's decision to its sender; the later value of the key is not regressed and the cluster keeps committing.
+    /// The stale ballots are the node's own proposal and votes of the first phase, replayed after the node crashed,
+    /// missed phases, and reconnected.
     @Test
     void staleViewNumbers() {
         log.info("Starting stale phase redelivery test");
@@ -218,11 +221,11 @@ public class MessageSemanticsIT {
         await().atMost(TIMEOUT)
                .pollInterval(100, TimeUnit.MILLISECONDS)
                .until(() -> cluster.allNodesHaveValue(hot, "first"));
+        await().atMost(TIMEOUT)
+               .until(() -> ballotsOf(laggingNode).size() == 3);
 
-        // Everything delivered so far belongs to phases that are decided from here on.
-        var stale = cluster.deliveredTo(laggingNode);
-
-        assertFalse(stale.isEmpty(), "The recording must have captured the first phase's messages");
+        // Everything recorded so far belongs to phases that are decided from here on.
+        var stale = ballotsOf(laggingNode);
 
         cluster.disconnect(laggingNode);
 
@@ -241,9 +244,20 @@ public class MessageSemanticsIT {
                .pollInterval(100, TimeUnit.MILLISECONDS)
                .until(() -> cluster.allNodesHaveValue(hot, "latest"));
 
-        // Redeliver the stale messages everywhere; the key must not go back to "first".
+        // Each stale ballot must be answered by a replay of its phase's decision to the lagging sender.
+        var healthyNode = cluster.ids().get(2);
+
+        for (var ballot : stale) {
+            var before = decisionsFrom(laggingNode, healthyNode);
+
+            cluster.deliver(healthyNode, ballot);
+            await().atMost(Duration.ofSeconds(10))
+                   .until(() -> decisionsFrom(laggingNode, healthyNode) > before);
+        }
+
+        // Redeliver the stale ballots everywhere; the key must not go back to "first".
         for (var id : cluster.ids()) {
-            stale.forEach(message -> cluster.deliver(id, message));
+            stale.forEach(ballot -> cluster.deliver(id, ballot));
         }
 
         await().during(Duration.ofSeconds(3))
@@ -255,6 +269,35 @@ public class MessageSemanticsIT {
         await().atMost(TIMEOUT)
                .pollInterval(100, TimeUnit.MILLISECONDS)
                .until(() -> cluster.allNodesHaveValue(key("after-stale"), "ok"));
+    }
+
+    /// The first proposal, first round-1 vote and first round-2 vote that `node` itself sent (a broadcast reaches its
+    /// sender too), as recorded by the delivery log.
+    private List<RabiaProtocolMessage> ballotsOf(NodeId node) {
+        var own = cluster.deliveredTo(node)
+                         .stream()
+                         .filter(message -> message.sender().equals(node))
+                         .toList();
+
+        return List.of(first(own, Synchronous.Propose.class),
+                       first(own, Synchronous.VoteRound1.class),
+                       first(own, Synchronous.VoteRound2.class))
+                   .stream()
+                   .flatMap(Optional::stream)
+                   .toList();
+    }
+
+    private static Optional<RabiaProtocolMessage> first(List<RabiaProtocolMessage> messages, Class<?> type) {
+        return messages.stream()
+                       .filter(type::isInstance)
+                       .findFirst();
+    }
+
+    private long decisionsFrom(NodeId receiver, NodeId sender) {
+        return cluster.deliveredTo(receiver)
+                      .stream()
+                      .filter(message -> message instanceof Synchronous.Decision<?> && message.sender().equals(sender))
+                      .count();
     }
 
     private List<KVCommand<StringKey>> generatePutCommands(int count, String keyPrefix) {

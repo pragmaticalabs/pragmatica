@@ -54,8 +54,8 @@ public class TestCluster {
     private final Map<NodeId, KVStore<StringKey, String>> stores = new LinkedHashMap<>();
     private final Map<NodeId, MessageRouter.MutableRouter> routers = new LinkedHashMap<>();
     private final Map<NodeId, Consumer<RabiaProtocolMessage>> handlers = new LinkedHashMap<>();
-    /// Per node, every Propose / VoteRound1 / VoteRound2 the network delivered to it, in delivery order: the raw
-    /// material of a stale-phase redelivery (see [#deliver]).
+    /// Per node, every Propose / VoteRound1 / VoteRound2 / Decision the network delivered to it, in delivery order:
+    /// the raw material of a stale-phase redelivery (see [#deliver]) and the record of repair replies.
     private final Map<NodeId, ConcurrentLinkedQueue<RabiaProtocolMessage>> delivered = new ConcurrentHashMap<>();
     /// Per node, how many times each key was PUT into its store: a non-idempotent view of apply (a batch applied
     /// twice counts a key twice, where the stored value alone cannot tell).
@@ -122,7 +122,7 @@ public class TestCluster {
         network.addNode(id, handlers.get(id));
     }
 
-    /// Everything the network delivered to `id` so far that carries a phase (proposals and both vote rounds).
+    /// Everything the network delivered to `id` so far that carries a phase (proposals, both vote rounds, decisions).
     public List<RabiaProtocolMessage> deliveredTo(NodeId id) {
         return List.copyOf(delivered.get(id));
     }
@@ -177,7 +177,7 @@ public class TestCluster {
     }
 
     private void recordAndDeliver(NodeId id, RabiaProtocolMessage message, Consumer<RabiaProtocolMessage> next) {
-        if (message instanceof Synchronous.Propose<?> || message instanceof Synchronous.VoteRound1 || message instanceof Synchronous.VoteRound2) {
+        if (message instanceof Synchronous.Propose<?> || message instanceof Synchronous.VoteRound1 || message instanceof Synchronous.VoteRound2 || message instanceof Synchronous.Decision<?>) {
             delivered.get(id).add(message);
         }
         next.accept(message);
