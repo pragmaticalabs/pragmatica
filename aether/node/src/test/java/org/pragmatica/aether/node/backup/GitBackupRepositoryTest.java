@@ -531,9 +531,10 @@ class GitBackupRepositoryTest {
 
     /// A tag named `refs/heads/backup` is listed as `refs/tags/refs/heads/backup`, which ends in the pattern: git answers exit 0 with a line that is not
     /// the branch. Only a line ending exactly in a tab and the full ref is the branch, so this is never present; it reads unreadable (git did answer, but
-    /// not with a definite "absent" or "present"), the safe side of a remote nobody names this way on purpose.
+    /// not with a definite "absent" or "present"). Rule: an ambiguous ls-remote answer fails closed and never reads as absent, which would open the
+    /// fresh-branch path.
     @Test
-    void readBranch_isNeverPresent_whenTheRemoteHoldsOnlyATagWhoseNameEndsInTheBranchRef() {
+    void readBranch_failsClosed_neverPresentNorAbsent_whenTheRemoteHoldsOnlyATagWhoseNameEndsInTheBranchRef() {
         var remote = bareRemote(temp.resolve("remote.git"));
         var writer = repository("writer", Option.some(remote));
         var reader = repository("reader", Option.some(remote));
