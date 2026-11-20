@@ -64,17 +64,21 @@ class InertKeyRulesTest {
     }
 
     /// #3495 item 1 tripwire (ENABLED, asserts CURRENT behaviour): the `[retention]` and `[hot]` declaration keys parse but
-    /// no runtime code reads them, so they are refused as inert, naming the release step that wires them.
+    /// no runtime code reads them, so they are refused as inert, in sorted key order (six keys: a lucky unsorted order is
+    /// 1 in 720), each with its value, naming the release step that wires it.
     @Test
-    void retentionAndHotDeclarationKeys_areRefusedAsInert_namingTheWiringStep() {
-        var inert = InertKeyRules.inertDeclarationKeys(section("[streams.orders.retention]\nmax_age = \"1h\"\nmax_bytes = \"2GB\"\n[streams.orders.hot]\nmax_count = 100\n"));
+    void retentionAndHotDeclarationKeys_areRefusedAsInert_inSortedOrder_namingTheWiringStep() {
+        var inert = InertKeyRules.inertDeclarationKeys(section("[streams.orders.retention]\nmax_age = \"1h\"\nmax_bytes = \"2GB\"\nmax_count = 100\nmode = \"all\"\n"
+                                                               + "[streams.orders.hot]\nmax_bytes = \"8MB\"\nmax_count = 50\n"));
 
         assertThat(inert).extracting(InertKeyRules.InertKey::key)
-                         .containsExactly("hot.max_count", "retention.max_age", "retention.max_bytes");
+                         .containsExactly("hot.max_bytes", "hot.max_count", "retention.max_age", "retention.max_bytes", "retention.max_count", "retention.mode");
+        assertThat(inert).extracting(InertKeyRules.InertKey::value)
+                         .containsExactly("8MB", "50", "1h", "2GB", "100", "all");
         assertThat(inert).allSatisfy(key -> assertThat(key.message()).startsWith(key.key() + " = '" + key.value() + "'")
                                                                       .contains("has no runtime effect yet"));
         assertThat(inert.get(0).message()).contains("S2b");
-        assertThat(inert.get(1).message()).contains("S2a3");
+        assertThat(inert.get(2).message()).contains("S2a3");
     }
 
     /// The same keys written as dotted keys (no header) are refused alike: one rule over the section's keys.

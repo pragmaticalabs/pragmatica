@@ -363,6 +363,7 @@ class StreamResourceValidatorTest {
                                    .onSuccessRun(() -> fail("Expected failure"))
                                    .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
                                                                .allSatisfy(failure -> assertThat(failure.rule()).isEqualTo(StreamResourceValidator.RULE_INERT_STREAM_CONFIG))
+                                                               .allSatisfy(failure -> assertThat(failure.field()).isEqualTo("[streams.orders]"))
                                                                .extracting(StreamValidationFailure::message)
                                                                .anySatisfy(message -> assertThat(message).contains("retention.max_bytes").contains("S2a3"))
                                                                .anySatisfy(message -> assertThat(message).contains("hot.max_count").contains("S2b")));

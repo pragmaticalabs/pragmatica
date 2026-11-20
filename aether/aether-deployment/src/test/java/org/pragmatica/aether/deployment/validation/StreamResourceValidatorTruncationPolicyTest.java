@@ -121,6 +121,16 @@ class StreamResourceValidatorTruncationPolicyTest {
         }
     }
 
+    /// #3495 item 1 on the committed-rows path ([StreamResourceValidator#partition]): an inert `[retention]` key refuses the
+    /// section there too, under the inert rule, so the alias is not accepted.
+    @Test
+    void anInertRetentionKey_isRefusedAsInert_onThePartitionPath() {
+        var toml = ORDERS + "[streams.orders.retention]\nmax_bytes = \"2GB\"\n";
+
+        assertThat(refusals(toml, committedWith(TruncationPolicy.WINDOW))).containsExactly(FIELD + "::" + StreamResourceValidator.RULE_INERT_STREAM_CONFIG);
+        assertThat(accepted(toml, committedWith(TruncationPolicy.WINDOW))).doesNotContain("orders");
+    }
+
     private static List<String> rules(String toml) {
         return StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT)
                                       .fold(cause -> ((StreamValidationFailures) cause).failures()
