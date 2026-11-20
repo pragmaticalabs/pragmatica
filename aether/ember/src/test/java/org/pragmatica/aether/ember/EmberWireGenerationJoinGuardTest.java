@@ -7,7 +7,6 @@ package org.pragmatica.aether.ember;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.pragmatica.consensus.net.JoinGenerationGuard;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -59,6 +58,6 @@ class EmberWireGenerationJoinGuardTest {
         joined.onSuccess(id -> fail("node " + id + " joined a generation-1 cluster"))
               .onFailure(cause -> assertThat(cause.message()).as("the refusal names a generation-1 member")
                                                              .matches("(?s).*Refusing to join: member " + PREFIX
-                                                                      + "-\\d+ runs wire generation 1, this node runs " + JoinGenerationGuard.WIRE_GENERATION + ".*"));
+                                                                      + "-\\d+ runs wire generation 1, this node runs 2.*"));
     }
 }
