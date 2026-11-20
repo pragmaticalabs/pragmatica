@@ -1466,7 +1466,7 @@ class BackupRestoreCoordinatorTest {
             BackupRestoreCoordinator.backupRestoreCoordinator(NodeId.nodeId("node-1").unwrap(),
                                                               runningEngine,
                                                               kvStore,
-                                                              this::gatedApply,
+                                                              BackupRestoreCoordinatorTest.this::gatedApply,
                                                               Option.some(BackupRestoreCoordinator.Source.source(shimmedService(Option.none(), environment),
                                                                                                                 RestoreMode.AUTO)),
                                                               warnings::add);
