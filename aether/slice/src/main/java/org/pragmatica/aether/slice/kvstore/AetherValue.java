@@ -2774,13 +2774,25 @@ public sealed interface AetherValue {
     /// guard on [StreamCursorCheckpointValue] writes. `epoch` is `Epoch(rabiaTerm, assignmentTerm)`, so it
     /// advances on a leader change and on every same-term reassignment; [EpochBearing] fences a deposed
     /// leader's stale write to this record. Replaces the never-used `StreamPartitionAssignmentValue`.
-    record ConsumerAssignmentValue(NodeId assignee, Epoch epoch, long assignmentTerm, HlcTimestamp assignedAt) implements AetherValue, EpochBearing<Epoch>, AssignmentTokenBearing {
+    record ConsumerAssignmentValue(NodeId assignee,
+                                   Epoch epoch,
+                                   long assignmentTerm,
+                                   HlcTimestamp assignedAt,
+                                   Option<String> member) implements AetherValue, EpochBearing<Epoch>, AssignmentTokenBearing {
         /// The token a checkpoint must carry to be admitted: this exact assignee at this exact epoch.
         /// Equality on both halves is what makes an A→B→A flap refuse A's writes from its FIRST tenure.
+        /// `member` names the consumer-group member the assignment was granted to; a token with a member equals only
+        /// a token with the same member, and a no-member token equals only a no-member token.
         @Codec
-        public record AssignmentToken(NodeId assignee, Epoch epoch) {
+        public record AssignmentToken(NodeId assignee, Epoch epoch, Option<String> member) {
+            public static AssignmentToken assignmentToken(NodeId assignee, Epoch epoch, Option<String> member) {
+                return new AssignmentToken(assignee, epoch, member);
+            }
+
+            /// Shim for callers that predate `member`: a no-member token. Removed at S1a-4d, once S1a-1b has moved
+            /// every production caller to the member-taking factory.
             public static AssignmentToken assignmentToken(NodeId assignee, Epoch epoch) {
-                return new AssignmentToken(assignee, epoch);
+                return assignmentToken(assignee, epoch, none());
             }
         }
 
@@ -2795,14 +2807,24 @@ public sealed interface AetherValue {
         }
 
         public AssignmentToken token() {
-            return AssignmentToken.assignmentToken(assignee, epoch);
+            return AssignmentToken.assignmentToken(assignee, epoch, member);
         }
 
         public static ConsumerAssignmentValue consumerAssignmentValue(NodeId assignee,
                                                                       Epoch epoch,
                                                                       long assignmentTerm,
+                                                                      HlcTimestamp assignedAt,
+                                                                      Option<String> member) {
+            return new ConsumerAssignmentValue(assignee, epoch, assignmentTerm, assignedAt, member);
+        }
+
+        /// Shim for callers that predate `member`: a no-member assignment. Removed at S1a-4d, once S1a-1b has moved
+        /// every production caller to the member-taking factory.
+        public static ConsumerAssignmentValue consumerAssignmentValue(NodeId assignee,
+                                                                      Epoch epoch,
+                                                                      long assignmentTerm,
                                                                       HlcTimestamp assignedAt) {
-            return new ConsumerAssignmentValue(assignee, epoch, assignmentTerm, assignedAt);
+            return consumerAssignmentValue(assignee, epoch, assignmentTerm, assignedAt, none());
         }
     }
 

@@ -498,12 +498,19 @@ public interface SystemTags {
         // misparsing it under a shape it does not know. First recorded renumber exception, pre-GA, no decoder kept (ST-RP-8).
         // The pin STAYS, under a name that resolves to no class, so the tag is never reused.
         pin(table, 1647, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValueRetiredRc6");
-        pin(table, 1648, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue");
+        // RETIRED 2026-11-20 (#3334 S1a-1a, flag day, know 38cad36811): `StreamCursorCheckpointValue` moved to 2930 when the
+        // `AssignmentToken` it embeds gained `member`, so a node of an older build fails the new value on an unknown tag instead of
+        // misparsing it under a shape it does not know. Pre-GA, no decoder kept (ST-RP-8). The pin STAYS, under a name that
+        // resolves to no class, so the tag is never reused.
+        pin(table, 1648, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValueRetiredRc6");
         // RETIRED 2026-09-27 (#1530): `StreamMetadataValue` was deleted — no production writer or reader. The
         // pin STAYS so the tag is never reused.
         pin(table, 1649, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamMetadataValue");
-        pin(table, 1650, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue");
-        pin(table, 1651, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentToken");
+        // RETIRED 2026-11-20 (#3334 S1a-1a, flag day, know 38cad36811): `ConsumerAssignmentValue` and its `AssignmentToken` moved
+        // to 2928 and 2929 when they gained `member`; same reason and same terms as 1648 above. The pins STAY, under names that
+        // resolve to no class, so the tags are never reused.
+        pin(table, 1650, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValueRetiredRc6");
+        pin(table, 1651, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentTokenRetiredRc6");
         pin(table, 1652, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue");
         pin(table, 1653, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue");
         pin(table, 1654, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryValue");
@@ -810,6 +817,11 @@ public interface SystemTags {
         pin(table, 2925, "org.pragmatica.aether.slice.TruncationPolicy");
         // #3334 S2a1-3: the retention-changed cluster event. Inside the S2a1-3 sub-allocation 2926..2927 (2927 unused).
         pin(table, 2926, "org.pragmatica.aether.api.ClusterEvent.StreamRetentionChanged");
+        // #3334 S1a-1a: the flag-day tags of the consumer assignment and cursor checkpoint values (old tags 1650, 1651, 1648,
+        // retired above). Inside the S1a-1a sub-allocation 2928..2930 of the rc6-streams-wire reservation in wire-tag-ranges.txt.
+        pin(table, 2928, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue");
+        pin(table, 2929, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentToken");
+        pin(table, 2930, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue");
         // #3345: the HELD report carried on the pong. Inside the dht-3345-3347 reservation 2960..2979 of wire-tag-ranges.txt.
         pin(table, 2960, "org.pragmatica.cluster.metrics.HeldReport");
         pin(table, 2961, "org.pragmatica.cluster.metrics.HeldEnd");

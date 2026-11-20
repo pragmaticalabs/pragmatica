@@ -47,7 +47,8 @@ public interface JoinGenerationGuard {
     /// 3: #3303 RA-3b (`BackupRestoreValue` changed shape).
     /// 4: #420 flag day (`ArtifactContentValue` re-tagged, artifact-content binding added).
     /// 5: #3303 RA-2 (`TransactionResult` gained its refusal).
-    int WIRE_GENERATION = 5;
+    /// 6: #3334 S1a-1a flag day (`ConsumerAssignmentValue`, `AssignmentToken` and `StreamCursorCheckpointValue` re-tagged, `member` added).
+    int WIRE_GENERATION = 6;
     /// Bound on waiting for core members to handshake [guess: taste; a constant, not configuration].
     TimeSpan JOIN_GENERATION_WAIT = TimeSpan.timeSpan(10).seconds();
     /// Handshake poll cadence while waiting.
