@@ -4,7 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
@@ -69,9 +72,32 @@ class ManagementAssemblyDrainPortSeamTest {
         var code = NodeDepartureWiringTest.assemblyCode();
 
         assertThat(code).containsOnlyOnce("DrainPort.registry(");
-        assertThat(code).containsOnlyOnce("->requestDrainThroughFsm(");
+        assertThat(drainAssemblyCode()).as("the FSM-aware sink is built once in DrainAssembly, as a lambda")
+                                       .containsOnlyOnce("->requestDrainThroughFsm(");
         assertThat(code).containsOnlyOnce("in.drainPort()");
         assertThat(code).doesNotContain("DrainPort.none(");
         assertThat(code).containsOnlyOnce("quorumLossDrain.drainPort()");
+    }
+
+    /// `DrainAssembly.java` alone, normalised as [AssemblySource#stripped()] does (line comments removed, whitespace
+    /// stripped): the topology unit builds its own sink with the same call, so this pin is scoped to the one file.
+    private static String drainAssemblyCode() {
+        var file = AssemblySource.files()
+                                 .stream()
+                                 .filter(path -> path.getFileName()
+                                                     .toString()
+                                                     .equals("DrainAssembly.java"))
+                                 .findFirst()
+                                 .orElseThrow();
+
+        try {
+            return Files.readString(file)
+                        .lines()
+                        .map(line -> line.replaceFirst("//.*$", ""))
+                        .collect(Collectors.joining())
+                        .replaceAll("\\s+", "");
+        } catch (IOException e) {
+            throw new AssertionError("Cannot read " + file, e);
+        }
     }
 }
