@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.validation;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
@@ -343,6 +344,44 @@ class StreamResourceValidatorTest {
                   .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
                                               .extracting(StreamValidationFailure::rule)
                                               .contains(StreamResourceValidator.RULE_INERT_STREAM_CONFIG));
+        }
+
+        /// #3495 item 1 tripwire (ENABLED, current behaviour): `[retention]` and `[hot]` keys parse but no runtime code reads
+        /// them, so deploy refuses them as inert, naming the step that wires them (R-12).
+        @Test
+        void retentionAndHotDeclarationKeys_areRefusedAsInert_namingTheWiringStep() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    [streams.orders.retention]
+                    max_bytes = "2GB"
+                    [streams.orders.hot]
+                    max_count = 100
+                    """;
+
+            StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT)
+                                   .onSuccessRun(() -> fail("Expected failure"))
+                                   .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
+                                                               .allSatisfy(failure -> assertThat(failure.rule()).isEqualTo(StreamResourceValidator.RULE_INERT_STREAM_CONFIG))
+                                                               .extracting(StreamValidationFailure::message)
+                                                               .anySatisfy(message -> assertThat(message).contains("retention.max_bytes").contains("S2a3"))
+                                                               .anySatisfy(message -> assertThat(message).contains("hot.max_count").contains("S2b")));
+        }
+
+        /// Item 1 design assertion, beside the tripwire: accepted once S2a3 / S2b wire the tables.
+        @Disabled("S2a3 wires [retention] and S2b wires [hot]: enable and delete the tripwire above")
+        @Test
+        void retentionAndHotDeclarationKeys_areAccepted_onceWired() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    [streams.orders.retention]
+                    max_bytes = "2GB"
+                    [streams.orders.hot]
+                    max_count = 100
+                    """;
+
+            assertThat(StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT).isSuccess()).isTrue();
         }
 
         @Test

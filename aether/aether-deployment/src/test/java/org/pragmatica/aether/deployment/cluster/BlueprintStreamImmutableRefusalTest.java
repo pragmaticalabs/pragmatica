@@ -32,6 +32,9 @@ import org.pragmatica.aether.resource.artifact.ArtifactFile;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.slice.SliceManifest;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.StreamDeclaration;
+import org.pragmatica.aether.slice.TruncationDeclaration;
+import org.pragmatica.aether.slice.TruncationPolicy;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
@@ -199,6 +202,36 @@ class BlueprintStreamImmutableRefusalTest {
             publishArtifact(stream("partitions = 4\ncompression = \"lz4\"")).onFailure(BlueprintStreamImmutableRefusalTest::failOnRefusal);
 
             assertThat(cluster.batches).isNotEmpty();
+        }
+    }
+
+    /// #3495 item 5 (T-156 through the blueprint path): `[truncation] policy` is immutable on a running stream. The row is
+    /// seeded `until_consumed` directly (no deploy can commit one while the T-146 gate refuses it), and a `window` redeploy is
+    /// refused by the immutable rule, which is a GATING rule: the publish fails, it does not drop the alias and commit.
+    @Nested
+    class TruncationPolicyChange {
+        @Test
+        void aPolicyChange_isRefusedBeforeCommit_andTheRowIsUnchanged() {
+            var row = seed(StreamConfig.DEFAULT.withName(ENGINE_KEY)
+                                              .withPartitions(4)
+                                              .withDeclaration(declaredPolicy(TruncationPolicy.UNTIL_CONSUMED)));
+
+            assertRefused(publishArtifact(stream("partitions = 4\n[streams.orders.truncation]\npolicy = \"window\"")),
+                          StreamResourceValidator.RULE_TRUNCATION_POLICY_IMMUTABLE);
+            assertThat(committedRow()).isEqualTo(row);
+            assertThat(cluster.batches).as("the refusal must come before any batch is applied").isEmpty();
+        }
+
+        @Test
+        void theImmutableRule_isGating() {
+            assertThat(StreamResourceValidator.GATING_SECTION_RULES).contains(StreamResourceValidator.RULE_TRUNCATION_POLICY_IMMUTABLE);
+        }
+
+        private static StreamDeclaration declaredPolicy(TruncationPolicy policy) {
+            return StreamDeclaration.streamDeclaration(Option.none(),
+                                                       Option.some(TruncationDeclaration.truncationDeclaration(Option.some(policy), Option.none())),
+                                                       Option.none(),
+                                                       Option.none());
         }
     }
 

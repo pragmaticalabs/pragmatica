@@ -71,10 +71,11 @@ class StreamConfigParserDeclarationTest {
         assertThat(wide.maxBytes().or(0L)).isEqualTo(8 * GIB);
     }
 
-    /// T-18: a `[retention]` block that names no bound is refused, empty or carrying only a `mode`.
+    /// T-18: a `[retention]` block carrying only a `mode` names no bound and is refused. An empty `[retention]` header
+    /// declares nothing (#3495 item 2: one keys-only rule in both section views), so it resolves the defaults.
     @Test
-    void retentionBlockWithNoBound_isRefused() {
-        assertThat(refusal("[streams.orders.retention]\n")).isEqualTo(new StreamDeclarationError.RetentionUndeclared("orders"));
+    void retentionBlockWithNoBound_isRefused_andAnEmptyHeaderDeclaresNothing() {
+        assertThat(retention("[streams.orders.retention]\n").maxBytes().or(0L)).isEqualTo(GIB);
         assertThat(refusal("[streams.orders.retention]\nmode = \"all\"\n")).isEqualTo(new StreamDeclarationError.RetentionUndeclared("orders"));
     }
 
@@ -231,13 +232,12 @@ class StreamConfigParserDeclarationTest {
     }
 
     /// T-163: a declaration sub-section beside a key of today's retention model is one refusal naming both; an empty
-    /// sub-section is named by its header. Each model alone still parses.
+    /// sub-section declares nothing, so it never conflicts (#3495 item 2). Each model alone still parses.
     @Test
     void bothDeclarationModels_areRefused_namingBothKeys() {
         assertThat(refusal("retention_value = \"5\"\n[streams.orders.retention]\nmax_bytes = \"2GB\"\n"))
                 .isEqualTo(new StreamDeclarationError.ConflictingDeclarationModels("orders", "retention.max_bytes", "retention_value"));
-        assertThat(refusal("max_age = \"1h\"\n[streams.orders.hot]\n"))
-                .isEqualTo(new StreamDeclarationError.ConflictingDeclarationModels("orders", "[hot]", "max_age"));
+        assertThat(parseResources(section("max_age = \"1h\"\n[streams.orders.hot]\n"), ReplicationFactors.BUILT_IN).isSuccess()).isTrue();
         assertThat(parseResources(section("retention_value = \"5\"\n"), ReplicationFactors.BUILT_IN).isSuccess()).isTrue();
         assertThat(parseResources(section("[streams.orders.retention]\nmax_bytes = \"2GB\"\n"), ReplicationFactors.BUILT_IN).isSuccess()).isTrue();
     }
