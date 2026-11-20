@@ -98,8 +98,8 @@ class AssignmentFlagDayWireTest {
             var checkpoint = StreamCursorCheckpointValue.streamCursorCheckpointValue(7L, token);
             var decoded = (StreamCursorCheckpointValue) CODEC.decode(CODEC.encode(checkpoint));
 
-            assertThat(CODEC.decode(CODEC.encode(token))).isEqualTo(token);
-            assertThat(CODEC.decode(CODEC.encode(assignment))).isEqualTo(assignment);
+            assertThat(CODEC.<Object>decode(CODEC.encode(token))).isEqualTo(token);
+            assertThat(CODEC.<Object>decode(CODEC.encode(assignment))).isEqualTo(assignment);
             assertThat(decoded.token().member()).isEqualTo(member);
         }
     }
