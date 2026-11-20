@@ -345,7 +345,7 @@ class StreamErrorStatusTest {
             var checked = 0;
 
             for (var kind : ReadRefusal.Kind.values()) {
-                if (kind.toCause("") instanceof StreamError error) {
+                if (causeOf(kind) instanceof StreamError error) {
                     assertThat(StreamErrorStatus.statusOf(kind.answer())).as(kind.name()).isEqualTo(StreamErrorStatus.statusOf(error));
                     checked++;
                 }
@@ -364,7 +364,7 @@ class StreamErrorStatusTest {
             var samples = new ArrayList<Cause>();
 
             for (var kind : ReadRefusal.Kind.values()) {
-                samples.add(kind.toCause(""));
+                samples.add(causeOf(kind));
             }
 
             samples.add(new StreamError.EpochDiverged(EPOCH, 3, 3));
@@ -429,6 +429,10 @@ class StreamErrorStatusTest {
             } finally {
                 manager.close();
             }
+        }
+
+        private static Cause causeOf(ReadRefusal.Kind kind) {
+            return new ReadRefusal(kind, "orders", 1, 0L, 0L, false, "", "p1", "p2", Epoch.ZERO, Epoch.ZERO).toCause("");
         }
 
         private HttpStatus statusOfReadFailing(Cause cause) {
