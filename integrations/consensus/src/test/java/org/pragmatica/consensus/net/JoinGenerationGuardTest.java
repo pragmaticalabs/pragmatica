@@ -157,6 +157,13 @@ class JoinGenerationGuardTest {
                .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.WireGenerationRefused(B, 1, 2)));
     }
 
+    /// Pin: the generation is bumped to 3 by #3458 (ReadRefusal.Kind: UNKNOWN moved 15 to 16, so an older node decodes
+    /// the new ordinal 16 as out of range and a newer node reads the older UNKNOWN (15) as STREAM_NOT_MATERIALIZED). A literal, so a revert to 2 goes red.
+    @Test
+    void thisBinarysGeneration_isThreeAfterTheReadRefusalKindRenumber() {
+        assertThat(JoinGenerationGuard.WIRE_GENERATION).isEqualTo(3);
+    }
+
     @Test
     void emptyDecisionSet_completesImmediately() {
         assertThat(JoinGenerationGuard.admit(Set.of(), this::labelsOf, LONG, 2).await(AWAIT).isSuccess()).isTrue();

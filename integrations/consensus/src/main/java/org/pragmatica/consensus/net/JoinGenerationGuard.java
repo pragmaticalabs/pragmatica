@@ -43,7 +43,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 /// procedure (`aether/upgrade.sh`).
 public interface JoinGenerationGuard {
     /// This binary's wire generation. Bump on every wire/codec change that an older node cannot decode.
-    int WIRE_GENERATION = 2;
+    int WIRE_GENERATION = 3;
     /// Bound on waiting for core members to handshake [guess: taste; a constant, not configuration].
     TimeSpan JOIN_GENERATION_WAIT = TimeSpan.timeSpan(10).seconds();
     /// Handshake poll cadence while waiting.
