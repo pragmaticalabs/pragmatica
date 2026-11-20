@@ -1824,6 +1824,7 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> JOIN_DEADLINE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid join-deadline key format: %s");
 
     Fn1<Cause, String> DRAIN_DEADLINE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid drain-deadline key format: %s");
+
     Fn1<Cause, String> DRAIN_COMMAND_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid drain-command key format: %s");
 
     Fn1<Cause, String> WORKER_DIRECTIVE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid worker-directive key format: %s");
