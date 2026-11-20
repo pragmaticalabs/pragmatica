@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.stream.Stream;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.zip.ZipInputStream;
 
@@ -45,6 +46,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsVa
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
@@ -677,7 +680,8 @@ class BlueprintServiceInstance implements BlueprintService {
                                        .flatMap(replication -> streamBindings(expanded.id(),
                                                                               resourcesConfig,
                                                                               roleHints,
-                                                                              replication))
+                                                                              replication,
+                                                                              this::committedStreamConfig))
                                        .map(bindings -> bindings.withWarnings(preflighted.replicationWarnings()))
                                        .async()
                                        .flatMap(bindings -> applyAllCommands(expanded,
@@ -945,6 +949,11 @@ class BlueprintServiceInstance implements BlueprintService {
 
     /// #1564: the committed cluster config read as replication state — the `[replication]` defaults and the
     /// desired core count — the same conversion the nodes resolve resource declarations with at activation.
+    private Option<StreamConfig> committedStreamConfig(String engineKey) {
+        return store.getTyped(AetherKey.StreamConfigKey.streamConfigKey(engineKey), StreamConfigValue.class)
+                    .map(StreamConfigValue::config);
+    }
+
     private Result<ReplicationContext> replicationContext() {
         return ClusterReplication.context(store.getTyped(AetherKey.ClusterConfigKey.CURRENT, ClusterConfigValue.class));
     }
@@ -985,14 +994,19 @@ class BlueprintServiceInstance implements BlueprintService {
     /// `UnboundStreamAlias`. It now partitions: a section failing a per-alias rule is dropped and
     /// returned in `rejected`; a rule leaving nothing to bind is the `Result` failure and refuses the
     /// publish — see [StreamResourceValidator#partition] for which rules are which.
+    ///
+    /// #3334 (section 2.5): `committedRows` is the committed `StreamConfigKey` row by engine key, so a redeploy that
+    /// changes an immutable key of a committed stream is refused here, before any command is built.
     private static Result<StreamBindings> streamBindings(BlueprintId blueprintId,
                                                          Option<String> resourcesConfig,
                                                          Map<String, String> roleHints,
-                                                         ReplicationContext replication) {
+                                                         ReplicationContext replication,
+                                                         Function<String, Option<StreamConfig>> committedRows) {
         return StreamResourceValidator.partition(resourcesConfig,
                                                  blueprintId.artifact(),
                                                  roleHints,
-                                                 replication)
+                                                 replication,
+                                                 committedRows)
                                       .map(partition -> StreamBindings.streamBindings(toNamedAddresses(blueprintId,
                                                                                                        partition.accepted()),
                                                                                       partition.rejected(),
@@ -1265,7 +1279,8 @@ class BlueprintServiceInstance implements BlueprintService {
     private Promise<StreamBindings> sliceStreamBindings(ExpandedBlueprint expanded) {
         return loadSliceDeclarations(expanded).flatMap(declarations -> replicationContext().flatMap(replication -> sliceBindings(expanded.id(),
                                                                                                                                  declarations,
-                                                                                                                                 replication))
+                                                                                                                                 replication,
+                                                                                                                                 this::committedStreamConfig))
                                                                                          .async());
     }
 
@@ -1291,10 +1306,12 @@ class BlueprintServiceInstance implements BlueprintService {
     /// same text. A gating failure in any declaration refuses the publish.
     private static Result<StreamBindings> sliceBindings(BlueprintId blueprintId,
                                                         List<Option<String>> declarations,
-                                                        ReplicationContext replication) {
+                                                        ReplicationContext replication,
+                                                        Function<String, Option<StreamConfig>> committedRows) {
         return Result.allOf(declarations.stream().map(StreamResourceValidator::ensureHonourableConsistency).toList()).flatMap(_ -> derivedSliceBindings(blueprintId,
                                                                                                                                                         declarations,
-                                                                                                                                                        replication));
+                                                                                                                                                        replication,
+                                                                                                                                                        committedRows));
     }
 
     /// A blueprint whose slices ship no `resources.toml` at all still runs the derivation once, with no
@@ -1302,15 +1319,17 @@ class BlueprintServiceInstance implements BlueprintService {
     /// silent about a reserved namespace the artifact path reports (#1336 review, NIT-5).
     private static Result<StreamBindings> derivedSliceBindings(BlueprintId blueprintId,
                                                                List<Option<String>> declarations,
-                                                               ReplicationContext replication) {
+                                                               ReplicationContext replication,
+                                                               Function<String, Option<StreamConfig>> committedRows) {
         var present = declarations.stream().flatMap(Option::stream).toList();
         var perSlice = present.isEmpty()
-                       ? List.of(streamBindings(blueprintId, Option.none(), Map.of(), replication))
+                       ? List.of(streamBindings(blueprintId, Option.none(), Map.of(), replication, committedRows))
                        : present.stream()
                                 .map(toml -> streamBindings(blueprintId,
                                                             Option.some(toml),
                                                             Map.of(),
-                                                            replication))
+                                                            replication,
+                                                            committedRows))
                                 .toList();
 
         return Result.allOf(perSlice).flatMap(BlueprintServiceInstance::unionSliceBindings);
