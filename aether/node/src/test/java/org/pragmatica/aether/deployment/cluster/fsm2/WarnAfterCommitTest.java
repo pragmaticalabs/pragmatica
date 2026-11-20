@@ -162,7 +162,7 @@ class WarnAfterCommitTest {
     void nonFamilyMutation_isNotNotified() {
         var row = otherNodesRow(Map.of(), true, "a family");
 
-        assertThat(Warnings.committedNotice(FsmWarningKey.fsmWarningKey("some-other-code", ORDERS.asString()), Option.none(), row)).isEmpty();
+        assertThat(Warnings.committedNotice(FsmWarningKey.fsmWarningKey("some-other-code", ORDERS.asString()), Option.none(), row)).isEqualTo(Option.none());
         assertThat(Warnings.committedNotice(KEY, Option.none(), row))
                   .isEqualTo(Option.some(Warnings.Notice.notice(OPENER, ORDERS.asString(), "a family")));
     }
