@@ -207,7 +207,7 @@ public class MessageSemanticsIT {
     /// Test 2.4: Stale-phase messages after a reconnect
     /// Assertion: a ballot of an already-decided phase, delivered late, is discarded and answered by replaying that
     /// phase's decision to its sender; the later value of the key is not regressed and the cluster keeps committing.
-    /// The stale ballots are the node's own proposal and votes of the first phase, replayed after the node crashed,
+    /// The stale ballots are a peer's proposal and votes of the first phase, replayed after another node crashed,
     /// missed phases, and reconnected.
     @Test
     void staleViewNumbers() {
@@ -215,21 +215,19 @@ public class MessageSemanticsIT {
 
         var clientNode = cluster.getFirst();
         var laggingNode = cluster.ids().get(1);
+        var healthyNode = cluster.ids().get(2);
+        var peer = cluster.ids().get(3);
         var hot = key("hot");
 
         cluster.submitAndWait(clientNode, new KVCommand.Put<>(hot, "first"));
         await().atMost(TIMEOUT)
                .pollInterval(100, TimeUnit.MILLISECONDS)
                .until(() -> cluster.allNodesHaveValue(hot, "first"));
-        await().atMost(Duration.ofSeconds(20))
-               .untilAsserted(() -> assertEquals(3, ballotsOf(laggingNode).size(), () -> "recorded: " + cluster.deliveredTo(laggingNode)
-                                                                                                          .stream()
-                                                                                                          .map(m -> m.getClass().getSimpleName() + "@" + m.sender())
-                                                                                                          .distinct()
-                                                                                                          .toList()));
+        await().atMost(TIMEOUT)
+               .until(() -> ballotsSentBy(peer, laggingNode).size() == 3);
 
         // Everything recorded so far belongs to phases that are decided from here on.
-        var stale = ballotsOf(laggingNode);
+        var stale = ballotsSentBy(peer, laggingNode);
 
         cluster.disconnect(laggingNode);
 
@@ -249,14 +247,12 @@ public class MessageSemanticsIT {
                .until(() -> cluster.allNodesHaveValue(hot, "latest"));
 
         // Each stale ballot must be answered by a replay of its phase's decision to the lagging sender.
-        var healthyNode = cluster.ids().get(2);
-
         for (var ballot : stale) {
-            var before = decisionsFrom(laggingNode, healthyNode);
+            var before = decisionsFrom(peer, healthyNode);
 
             cluster.deliver(healthyNode, ballot);
             await().atMost(Duration.ofSeconds(10))
-                   .until(() -> decisionsFrom(laggingNode, healthyNode) > before);
+                   .until(() -> decisionsFrom(peer, healthyNode) > before);
         }
 
         // Redeliver the stale ballots everywhere; the key must not go back to "first".
@@ -275,12 +271,12 @@ public class MessageSemanticsIT {
                .until(() -> cluster.allNodesHaveValue(key("after-stale"), "ok"));
     }
 
-    /// The first proposal, first round-1 vote and first round-2 vote that `node` itself sent (a broadcast reaches its
-    /// sender too), as recorded by the delivery log.
-    private List<RabiaProtocolMessage> ballotsOf(NodeId node) {
-        var own = cluster.deliveredTo(node)
+    /// The first proposal, first round-1 vote and first round-2 vote that `sender` sent to `receiver`, as recorded by
+    /// the delivery log (a node's own broadcasts are not delivered back to it, so the sender and receiver differ).
+    private List<RabiaProtocolMessage> ballotsSentBy(NodeId sender, NodeId receiver) {
+        var own = cluster.deliveredTo(receiver)
                          .stream()
-                         .filter(message -> message.sender().equals(node))
+                         .filter(message -> message.sender().equals(sender))
                          .toList();
 
         return List.of(first(own, Synchronous.Propose.class),
