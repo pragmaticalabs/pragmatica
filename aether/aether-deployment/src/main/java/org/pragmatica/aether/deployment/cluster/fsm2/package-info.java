@@ -47,7 +47,11 @@
 /// (* "pre2834" the code before #2834: Rebuild has no inherit, a successor's family sets start empty.                *)
 /// (* LATE (#3203): TRUE lets a writer's accepted WARNINGS settlement land after a newer commit of the same row (the   *)
 /// (* deposed leader's late settle); FALSE excludes that ordering: KvApply does not commit a W write over a key whose  *)
-/// (* earlier accepted settlement is still in transit (KvApply). The code_nolate_* rows run LATE = FALSE.            *)
+/// (* earlier accepted settlement is still in transit (KvApply). That exclusion is read only when STAMP # "off": the *)
+/// (* stamp modes extend the base spec conservatively, so at STAMP = "off" LATE is dead as it was before #3203       *)
+/// (* (LATE = TRUE and FALSE reach the base states; the code_nolate_* and LATE = FALSE mut_* rows keep their base   *)
+/// (* counts, pinned by off-mode-counts.tsv beside models.tsv). Reading it at "off" excluded the ABA traces, so   *)
+/// (* the CAS controls mut_nocas_agree and mut_norevision_agree passed (PR #3443 round g).                       *)
 /// (* STAMP (#3203, PR #3443) models the operator view `opv` (the last warning entry delivered per subject, across  *)
 /// (* nodes) and the per-node sink order `newest` (EffectTranslator.newestRevision): "off" = neither is modelled and *)
 /// (* rule E is the #3274 one (every pre-#3203 row); "old" = rule E unfiltered, every notification delivered (no     *)
@@ -397,13 +401,13 @@
 ///                   ELSE kvDesired = tx.exp
 ///          ok == fenceOk /\ casOk
 ///          okW == ok /\ tx.kind = "W"
-///          \* LATE = FALSE: no W commit over a row whose earlier accepted settlement is still in transit (no late settle, #3203)
+///          \* LATE = FALSE, STAMP # "off": no W commit over a row whose earlier accepted settlement is still in transit (#3203)
 ///          early == \E st \in settles : st.kind = "W" /\ st.out = "acc" /\ DOMAIN st.wrep \cap DOMAIN tx.wrep # {}
 ///          c == IF okW THEN ncommit + 1 ELSE 0
 ///          st == [kind |-> tx.kind, node |-> tx.node, inc |-> tx.inc, out |-> IF ok THEN "acc" ELSE "ref",
 ///                 wrep |-> tx.wrep, seen |-> [s \in DOMAIN tx.wrep |-> kv[s]], lv |-> Current,
 ///                 cov |-> IF tx.kind = "W" THEN tx.cov ELSE 0, tx |-> tx, c |-> c]
-///      IN /\ LATE \/ ~okW \/ ~early
+///      IN /\ LATE \/ STAMP = "off" \/ ~okW \/ ~early
 ///         /\ net' = net \ {tx}
 ///         /\ ncommit' = IF okW THEN c ELSE ncommit
 ///         /\ trans' = IF okW THEN trans \cup {[c |-> c, s |-> x, up |-> tx.wrep[x].open] :
