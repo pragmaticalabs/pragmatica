@@ -304,9 +304,7 @@ public sealed interface DrainAssembly {
         metricsCollector.setCorePingObserver(coreAbsenceDetector::recordCorePing);
         coreAbsenceDetector.start();
 
-        return new QuorumLossDrain(quorumLossChain,
-                                   coreAbsenceDetector,
-                                   drainPort(drainCommandRegistry, membershipFsm));
+        return new QuorumLossDrain(quorumLossChain, coreAbsenceDetector, drainPort(drainCommandRegistry, membershipFsm));
     }
 
     /// Operator/controller drain sink (M10, cluster-topology-overhaul Wave 7): every drain command
@@ -328,7 +326,8 @@ public sealed interface DrainAssembly {
     /// The leader's DRAIN channel for the management server (C6-W0, moved from the management unit): a request goes through
     /// the FSM-aware sink (`requestDrainThroughFsm`), the pending read is the registry's commanded-but-not-departed set. A
     /// seam of its own so a test can pin both halves without building the quorum-loss inputs.
-    static NodeLifecycleRoutes.DrainPort drainPort(DrainCommandRegistry drainCommandRegistry, MembershipFsm membershipFsm) {
+    static NodeLifecycleRoutes.DrainPort drainPort(DrainCommandRegistry drainCommandRegistry,
+                                                   MembershipFsm membershipFsm) {
         return NodeLifecycleRoutes.DrainPort.registry(target -> requestDrainThroughFsm(drainCommandRegistry,
                                                                                        new AtomicReference<>(membershipFsm),
                                                                                        target),
