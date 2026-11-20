@@ -670,7 +670,7 @@ public interface StreamConfigParser {
         var consistency = optionalEnum(section, "consistency", List.of("eventual", "strong"), "eventual");
         var compression = optionalEnum(section, "compression", List.of("none", "lz4", "zstd"), "none");
         var retention = parseRetention(section);
-        var declaration = Result.all(partitions, maxEventSize).flatMap((count, size) -> parseDeclaration(section, count, size));
+        var storageDeclaration = Result.all(partitions, maxEventSize).flatMap((count, size) -> parseDeclaration(section, count, size));
 
         return firstFailure(List.of(partitions,
                                     factor,
@@ -679,7 +679,7 @@ public interface StreamConfigParser {
                                     consistency,
                                     compression,
                                     retention,
-                                    declaration)).map(failure -> failure.<DeclaredStream> map(_ -> new DeclaredStream(StreamConfig.DEFAULT,
+                                    storageDeclaration)).map(failure -> failure.<DeclaredStream> map(_ -> new DeclaredStream(StreamConfig.DEFAULT,
                                                                                                                                                                                               List.of())))
                            .or(() -> Result.all(factor, confirmation)
                                            .map(ReplicationDeclaration::replicationDeclaration)
@@ -692,7 +692,7 @@ public interface StreamConfigParser {
                                                                          consistency,
                                                                          resolved.factors(),
                                                                          compression,
-                                                                         declaration).map(config -> new DeclaredStream(config,
+                                                                         storageDeclaration).map(config -> new DeclaredStream(config,
                                                                                                                        resolved.warnings()))));
     }
 
