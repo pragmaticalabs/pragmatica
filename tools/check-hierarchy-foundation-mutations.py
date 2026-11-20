@@ -55,7 +55,7 @@ mutations = [
      'KVStoreNotificationIsolationTest#reentrantNotificationSeesStoreAfterAllNestedApplies', dispatcher_file),
     ('atomic-reader', 'public synchronized Map<K, V> snapshot()', 'public Map<K, V> snapshot()',
      'KVStoreNotificationIsolationTest#snapshotCannotObserveHalfAppliedBatch'),
-    ('leader-authority', 'transaction.leader().equals(storage.get(LeaderKey.INSTANCE))', 'true',
+    ('leader-authority', 'transaction.leader()\n                          .equals(storage.get(LeaderKey.INSTANCE))', 'true',
      'KVStoreAuthorizedMutationTest'),
     ('read-set-acceptance', 'return witness.expected()\n                      .equals(Option.option(storage.get(witness.key())));',
      'return !witness.expected()\n                       .equals(Option.option(storage.get(witness.key())));',

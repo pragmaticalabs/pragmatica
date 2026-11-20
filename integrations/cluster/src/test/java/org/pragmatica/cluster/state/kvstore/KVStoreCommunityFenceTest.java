@@ -128,7 +128,7 @@ class KVStoreCommunityFenceTest {
                                                                                               Option.some(committed),
                                                                                               Option.some(new Assignment("WORKER", "c2", ""))))));
 
-        assertThat(result).isEqualTo(new KVCommand.TransactionResult("reassign", false));
+        assertThat(result).isEqualTo(new KVCommand.TransactionResult("reassign", false, Option.some(KVCommand.Refusal.refusal(KVCommand.RefusalKind.ARM, Option.some(NODE)))));
         assertThat(stored(NODE)).isEqualTo(committed);
         assertThat(store.get(OTHER).isEmpty()).as("a refused transaction applies none of its mutations").isTrue();
     }

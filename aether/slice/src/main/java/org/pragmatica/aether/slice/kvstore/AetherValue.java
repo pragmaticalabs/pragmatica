@@ -4,11 +4,14 @@
 package org.pragmatica.aether.slice.kvstore;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -58,9 +61,54 @@ import static org.pragmatica.lang.Option.some;
 @SuppressWarnings("JBCT-NAM-01")
 public sealed interface AetherValue {
     /// The digest (size, MD5, SHA-1, SHA-256) of the content bound to one file of one coordinate, keyed by `AetherKey.ArtifactContentKey`
-    /// (#1778). The applier keeps the FIRST committed value ([GrowOnlyMergeable]: a later write merges into the
-    /// committed one and yields it unchanged), so the binding is decided once, by the consensus log.
-    record ArtifactContentValue(long size, String md5, String sha1, String sha256, long deployedAt) implements AetherValue, GrowOnlyMergeable<ArtifactContentValue> {
+    /// (#1778), with the block manifest of that content (#420): `blocks` is ONE array of 32 * n bytes, the raw SHA-256
+    /// block ids concatenated in chunk order (empty for a binding that carries no manifest). The applier keeps the FIRST
+    /// committed value ([GrowOnlyMergeable]: a later write merges into the committed one and yields it unchanged), so the
+    /// binding is decided once, by the consensus log.
+    ///
+    /// **Value equality (R-2).** A record's generated `equals` compares an array component by identity, and `KVStore`'s
+    /// replay compares a stored value with the one it last delivered by `equals`, so every binding would be re-delivered
+    /// as a changed put after a state transfer. This record therefore overrides `equals`, `hashCode` and `toString` over
+    /// the array's contents, and copies the array on construction and on access.
+    record ArtifactContentValue(long size, String md5, String sha1, String sha256, long deployedAt, byte[] blocks) implements AetherValue, GrowOnlyMergeable<ArtifactContentValue> {
+        public ArtifactContentValue {
+            blocks = blocks.clone();
+        }
+
+        /// A binding without a block manifest: `blocks` is empty.
+        public ArtifactContentValue(long size, String md5, String sha1, String sha256, long deployedAt) {
+            this(size, md5, sha1, sha256, deployedAt, new byte[0]);
+        }
+
+        @Override
+        public byte[] blocks() {
+            return blocks.clone();
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof ArtifactContentValue that
+                   && sameDigest(that)
+                   && deployedAt == that.deployedAt
+                   && Arrays.equals(blocks, that.blocks);
+        }
+
+        @Override
+        public int hashCode() {
+            return 31 * Objects.hash(size, md5, sha1, sha256, deployedAt) + Arrays.hashCode(blocks);
+        }
+
+        @Override
+        public String toString() {
+            return "ArtifactContentValue[size=" + size
+                 + ", md5=" + md5
+                 + ", sha1=" + sha1
+                 + ", sha256=" + sha256
+                 + ", deployedAt=" + deployedAt
+                 + ", blocks=" + HexFormat.of().formatHex(blocks)
+                 + "]";
+        }
+
         /// Whether `other` describes the same CONTENT: size, MD5, SHA-1 and SHA-256, not the deploy time. The deploy
         /// time is the FIRST proposer's, kept with the binding so that completing an interrupted write rewrites the
         /// file's metadata with its original time instead of a new one.

@@ -58,6 +58,7 @@ import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.cluster.state.kvstore.VersionFenced;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.config.ConfigurationProvider;
@@ -779,6 +780,15 @@ class BlueprintPublishOwnershipTest {
         @Override
         public Option<AetherValue> get(AetherKey key) {
             return Option.option(storage.get(key));
+        }
+
+        /// #3334: the base class reads its own (never populated) map; the typed point read `BlueprintService` uses for the
+        /// committed stream row must see this double's storage.
+        @Override
+        public <VV> Option<VV> getTyped(StructuredKey key, Class<VV> valueClass) {
+            return Option.option(storage.get(key))
+                         .filter(valueClass::isInstance)
+                         .map(valueClass::cast);
         }
 
         @Override

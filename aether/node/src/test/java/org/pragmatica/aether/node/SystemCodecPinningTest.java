@@ -13,6 +13,7 @@ import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.serialization.SystemTags;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -73,6 +74,13 @@ class SystemCodecPinningTest {
     ///
     /// `BatchCommitted` (#2045) is exempt like the refusals: a voter sends it only when its committed-batch ledger refuses a
     /// proposal, none in steady state, and no one-byte slot is free to give it.
+    /// The transaction refusal (#3303 RA-2: `Refusal` and its `RefusalKind`) is exempt because no one-byte slot is free to give it
+    /// (every slot 0..127 is pinned, the one unpinned slot 85 sits in the worker block, and two are needed). Its cost, stated: it
+    /// rides a `TransactionResult` only when the leader REFUSED the transaction (an accepted one carries an empty Option, one byte),
+    /// never in steady state, and costs one extra byte per type occurrence there.
+    private static final Set<String> KV_TRANSACTION_REFUSAL = Set.of("org.pragmatica.cluster.state.kvstore.KVCommand.Refusal",
+                                                                     "org.pragmatica.cluster.state.kvstore.KVCommand.RefusalKind");
+
     /// The `provenance` package (#1596: `ProvenanceEntry` and its `ProvenanceEpoch` kinds) is exempt like the
     /// refusals: history entries, carried only by a replica catch-up answer (a handful per catch-up, none on any other read, and an empty list encodes no element tag),
     /// so it is not the per-message traffic the window was bought for -- and no one-byte slot is free to give it.
@@ -122,6 +130,15 @@ class SystemCodecPinningTest {
     private static final Set<String> D45_HELD_REPORT = Set.of("org.pragmatica.cluster.metrics.HeldReport",
                                                               "org.pragmatica.cluster.metrics.HeldEnd");
 
+    /// The transaction-refusal exemption is exactly the two types ruled cold in #3303 RA-2; a third name cannot join it
+    /// without this assertion being edited in the same diff.
+    @Test
+    void kvTransactionRefusalExemption_isExactlyRefusalAndRefusalKind() {
+        assertEquals(Set.of("org.pragmatica.cluster.state.kvstore.KVCommand.Refusal",
+                            "org.pragmatica.cluster.state.kvstore.KVCommand.RefusalKind"),
+                     KV_TRANSACTION_REFUSAL);
+    }
+
     @Test
     void hotProtocolTypes_fitInTheOneByteWindow() {
         var hot = SystemTags.TAGS.entrySet()
@@ -137,6 +154,7 @@ class SystemCodecPinningTest {
                                                   && !CONTROL_LOG_FORWARD.contains(entry.getKey())
                                                   && !W_OBS_REPLICA_FEED.contains(entry.getKey())
                                                   && !D45_HELD_REPORT.contains(entry.getKey())
+                                                  && !KV_TRANSACTION_REFUSAL.contains(entry.getKey())
                                                   && !entry.getKey().startsWith("org.pragmatica.aether.stream.provenance.")
                                                   && !entry.getKey().startsWith("org.pragmatica.aether.stream.forward.ReadRefusal"))
                                  .filter(entry -> !RETIRED_IN_HOT_PACKAGES.contains(entry.getKey()))

@@ -23,6 +23,7 @@ import org.pragmatica.aether.stream.segment.SealedSegment;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.aether.stream.segment.StorageSegmentSink;
+import org.pragmatica.aether.stream.segment.StreamRetentionSource;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.dht.DHTClient;
@@ -87,7 +88,7 @@ class StreamSegmentDhtReclaimTest {
         var hourly = RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, HOUR).withDeclared(RetentionDimensions.AGE);
         var enforcer = RetentionEnforcer.retentionEnforcer(storage,
                                                            index,
-                                                           _ -> Option.some(hourly),
+                                                           StreamRetentionSource.fixed(hourly),
                                                            24 * HOUR,
                                                            RetentionEnforcer.SegmentRetentionFloor.NONE,
                                                            setup.snapshotManager(),

@@ -27,6 +27,10 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 ///
 /// The rewritten file is meant to be READ in the diff before committing: each changed line is a value
 /// some other node decodes differently.
+///
+/// The first non-comment line is `GENERATION <n>`, this binary's `JoinGenerationGuard.WIRE_GENERATION` (#3303 RA-2). A
+/// changed or removed TAG/ENUM/SHAPE line needs `n` one above the base's, and an added-only change needs it unchanged;
+/// `scripts/wire-generation-check.sh` gates both in CI.
 class WireAssignmentBaselineWriter {
     private static final Path BASELINE = Path.of("src", "test", "resources", "wire-assignment-baseline.txt");
 
@@ -53,7 +57,8 @@ class WireAssignmentBaselineWriter {
         try {
             Files.createDirectories(BASELINE.getParent());
             Files.writeString(BASELINE,
-                              header + String.join("\n", WireAssignmentTripwireTest.currentAssignment()) + "\n",
+                              header + WireAssignmentTripwireTest.generationLine() + "\n"
+                              + String.join("\n", WireAssignmentTripwireTest.currentAssignment()) + "\n",
                               StandardCharsets.UTF_8);
         } catch (IOException e) {
             throw new UncheckedIOException(e);

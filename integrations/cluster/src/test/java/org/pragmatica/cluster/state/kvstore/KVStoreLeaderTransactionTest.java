@@ -50,7 +50,7 @@ class KVStoreLeaderTransactionTest {
         apply(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER));
         apply(new KVCommand.Put<>(SECOND, "occupied"));
         var result = transaction("reservation-1", List.of(insert(FIRST, "new"), insert(SECOND, "new")));
-        assertThat(result).isEqualTo(new KVCommand.TransactionResult("reservation-1", false));
+        assertThat(result).isEqualTo(new KVCommand.TransactionResult("reservation-1", false, Option.some(KVCommand.Refusal.refusal(KVCommand.RefusalKind.EXPECTED, Option.some(SECOND)))));
         assertThat(store.get(FIRST).isEmpty()).isTrue();
         assertThat(store.get(SECOND).unwrap()).isEqualTo("occupied");
     }
@@ -96,7 +96,7 @@ class KVStoreLeaderTransactionTest {
             List.of(new KVCommand.ReadWitness<StructuredKey>(firstRead, Option.some("unchanged")),
                     new KVCommand.ReadWitness<StructuredKey>(secondRead, Option.some("old"))),
             List.of(insert(FIRST, "a"), insert(SECOND, "b"))));
-        assertThat(result).isEqualTo(new KVCommand.TransactionResult("read-conflict", false));
+        assertThat(result).isEqualTo(new KVCommand.TransactionResult("read-conflict", false, Option.some(KVCommand.Refusal.refusal(KVCommand.RefusalKind.WITNESS, Option.some(secondRead)))));
         assertThat(store.get(FIRST).isEmpty()).isTrue();
         assertThat(store.get(SECOND).isEmpty()).isTrue();
         assertThat(notifications.get()).isEqualTo(3);
@@ -129,7 +129,7 @@ class KVStoreLeaderTransactionTest {
     void staleLeaderSingleMutationReportsCallerChosenCorrelation() {
         apply(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(new NodeId("successor"), 2)));
         assertThat(transaction("my-single-write", List.of(insert(FIRST, "a"))))
-            .isEqualTo(new KVCommand.TransactionResult("my-single-write", false));
+            .isEqualTo(new KVCommand.TransactionResult("my-single-write", false, Option.some(KVCommand.Refusal.refusal(KVCommand.RefusalKind.LEADER, Option.none()))));
     }
 
 }

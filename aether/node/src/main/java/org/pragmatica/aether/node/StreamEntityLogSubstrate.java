@@ -678,6 +678,12 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// the publish decides what may be deleted ([#reclaimDisplaced]). A block a pointer in this node's view names is not deleted: checked again
     /// when the delete runs ([#deleteUnlessNamed]). A crash between the put and the publish, or between the publish and a scheduled delete,
     /// leaks the blocks written since the last confirmed swap; nothing sweeps them (L-12).
+    ///
+    /// A restart re-saves only when the committed claim is below its candidate, this node holds no private durable copy of the
+    /// committed block, or the candidate's content (lineage, claim, snapshot; all but the nonce) differs from the committed block's (#3480). At an equal claim with such a copy the save writes nothing and resolves successfully: a re-save would put a
+    /// block of its own (every put carries a fresh nonce), displace the committed one at an equal claim, and park it in [#deferred], which a
+    /// further restart or a handover before the next advance loses, leaking the block. A new owner holds no such copy, so it still writes a
+    /// durable block of its own; a shared or cache copy does not count ([StorageInstance#holdsPrivateDurableCopy]).
     @Override
     public Promise<Unit> saveCheckpoint(String keyspace,
                                         int partition,
@@ -686,8 +692,54 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                         Option<byte[]> lineage) {
         var key = EntityCheckpointKey.entityCheckpointKey(keyspace, partition);
         var replaced = committedPointer(key);
+        var frame = CheckpointFrame.frame(keyspace, partition, throughOffset, snapshot, lineage);
 
-        return storage.put(CheckpointFrame.frame(keyspace, partition, throughOffset, snapshot, lineage))
+        return alreadyHeldAt(replaced, throughOffset, frame).flatMap(held -> writeUnlessHeld(held,
+                                                                                             key,
+                                                                                             replaced,
+                                                                                             frame,
+                                                                                             throughOffset));
+    }
+
+    private Promise<Boolean> alreadyHeldAt(Option<ClaimedBlock> committed, long throughOffset, byte[] frame) {
+        return committed.filter(block -> block.through() == throughOffset)
+                        .map(block -> heldOnAPrivateDurableTier(block, frame))
+                        .or(Promise.success(false));
+    }
+
+    /// FER: a check that fails answers "not held", which degrades forward to the re-save this path did before the skip existed; the
+    /// guarantee kept is that a save is never dropped on an unanswered check, at the cost of the deferral leak the skip avoids.
+    /// The pointer names only the block and its claim, so content equality (A5: lineage, claim and snapshot, all but the per-put nonce)
+    /// is read from the local copy; an unreadable or absent block, or a v1 block with no nonce, compares unequal and is re-saved.
+    private Promise<Boolean> heldOnAPrivateDurableTier(ClaimedBlock committed, byte[] frame) {
+        return storage.holdsPrivateDurableCopy(committed.block())
+                      .flatMap(held -> held
+                                       ? sameContentAsCommitted(committed, frame)
+                                       : Promise.success(false))
+                      .recover(_ -> false);
+    }
+
+    private Promise<Boolean> sameContentAsCommitted(ClaimedBlock committed, byte[] frame) {
+        return storage.get(committed.block())
+                      .map(block -> block.filter(bytes -> CheckpointFrame.sameContent(bytes, frame))
+                                         .isPresent());
+    }
+
+    private Promise<Unit> writeUnlessHeld(boolean held,
+                                          EntityCheckpointKey key,
+                                          Option<ClaimedBlock> replaced,
+                                          byte[] frame,
+                                          long throughOffset) {
+        return held
+               ? Promise.unitPromise()
+               : writeThenPublish(key, replaced, frame, throughOffset);
+    }
+
+    private Promise<Unit> writeThenPublish(EntityCheckpointKey key,
+                                           Option<ClaimedBlock> replaced,
+                                           byte[] frame,
+                                           long throughOffset) {
+        return storage.put(frame)
                       .flatMap(blockId -> publishThenReclaim(key,
                                                              replaced,
                                                              ClaimedBlock.claimedBlock(blockId, throughOffset)));

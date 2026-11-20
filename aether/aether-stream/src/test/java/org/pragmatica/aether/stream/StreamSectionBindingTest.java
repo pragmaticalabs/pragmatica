@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream;
 
 import io.netty.buffer.ByteBuf;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.resource.ResourceFactory;
@@ -132,6 +133,18 @@ class StreamSectionBindingTest {
                                                                     .withDeclared(RetentionDimensions.BYTES));
         }
 
+        /// F4 (#3491): a TOML-declared stream's ring is sized by its declared count and bytes, as before this PR (the TOML
+        /// path never took the declaration defaults for a declared key). EVERY_KEY declares count 5 000 and bytes 8 MB =
+        /// 8 388 608: floor = 64 + 24 x 5 000 + min(8 388 608, 256 KiB) = 64 + 120 000 + 262 144 = 382 208; cap =
+        /// 64 + 120 000 + 8 388 608 = 8 508 672.
+        @Test
+        void declaredToml_ringFloorAndCapEqualTheDeclaredValues() {
+            var retention = bindWith(new StreamPublisherFactory(), EVERY_KEY).retention();
+
+            assertThat(OffHeapRingBuffer.floorBytes(retention.maxCount(), retention.maxBytes())).isEqualTo(382_208L);
+            assertThat(OffHeapRingBuffer.capBytes(retention.maxCount(), retention.maxBytes())).isEqualTo(8_508_672L);
+        }
+
         private static void assertEveryKeyBound(StreamConfig config) {
             assertThat(config.name()).isEqualTo(ALIAS);
             assertThat(config.partitions()).isEqualTo(3);
@@ -168,6 +181,22 @@ class StreamSectionBindingTest {
                                     "read_preference = \"replica\"")) {
                 assertRefused("[streams.orders]\n\n[streams.orders.consumers.billing]\n" + line + "\n", line.substring(0, line.indexOf(' ')));
             }
+        }
+
+        /// #3495 item 1 tripwire (ENABLED, current behaviour): a `[retention]` / `[hot]` key reaches activation without the
+        /// validator and is refused as inert, naming the key. Design arm below.
+        @Test
+        void declarationRetentionAndHotKeys_areRefused_namingThem() {
+            assertRefused("[streams.orders]\n[streams.orders.retention]\nmax_bytes = \"2GB\"\n", "retention.max_bytes");
+            assertRefused("[streams.orders]\n[streams.orders.hot]\nmax_count = 100\n", "hot.max_count");
+        }
+
+        @Disabled("S2a3 wires [retention] and S2b wires [hot]: enable and delete the tripwire above")
+        @Test
+        void declarationRetentionAndHotKeys_bind_onceWired() {
+            var toml = "[streams.orders]\n[streams.orders.retention]\nmax_bytes = \"2GB\"\n[streams.orders.hot]\nmax_count = 100\n";
+
+            assertThat(StreamSectionBinding.bindStreamSection(providerOf(toml), SECTION, BINDING_CONTEXT).isSuccess()).isTrue();
         }
 
         /// The consumer defaults are not inert values: a section that spells them out binds.
@@ -430,14 +459,30 @@ class StreamSectionBindingTest {
             assertBothRefuseWith(toml, StreamDeclarationError.UnknownStreamKeys.class);
         }
 
+        /// `retention` is a known sub-section since #3333, so what is refused here is `retention.value`: a key that
+        /// sub-section does not read.
         @Test
-        void subTableOtherThanConsumers_isRefusedAtBoth() {
+        void unknownKeyInAKnownSubSection_isRefusedAtBoth() {
             var toml = """
                     [streams.orders]
                     version = "1.0.0"
 
                     [streams.orders.retention]
                     value = "5"
+                    """;
+
+            assertBothRefuseWith(toml, StreamDeclarationError.UnknownStreamKeys.class);
+        }
+
+        /// `storage` is no sub-section of a stream: a wholly unknown sub-table (the in-memory streams work reads it later).
+        @Test
+        void unknownSubTable_isRefusedAtBoth() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+
+                    [streams.orders.storage]
+                    kind = "memory"
                     """;
 
             assertBothRefuseWith(toml, StreamDeclarationError.UnknownStreamKeys.class);
