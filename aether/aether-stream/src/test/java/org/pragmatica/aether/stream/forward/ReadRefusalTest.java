@@ -252,6 +252,28 @@ class ReadRefusalTest {
             assertThat(kindsInThem).containsExactlyInAnyOrder(Kind.UNKNOWN, Kind.PARTITION_NOT_LOCAL);
         }
 
+        /// #3481 fix round item 4: every row's class and behaviour as literals, so a row moved to another class or behaviour
+        /// goes red (the 9 `answerClass()` survivors, and `NN_RETRY` RETRY to DEGRADE, which the count above cannot tell apart).
+        @Test
+        void everyRow_hasItsLiteralClassAndBehaviour() {
+            var expected = java.util.Map.of(Answer.NN_SURFACE, List.of(ReadRefusal.AnswerClass.NN, Behaviour.SURFACE),
+                                            Answer.NN_DEGRADE, List.of(ReadRefusal.AnswerClass.NN, Behaviour.DEGRADE),
+                                            Answer.NN_RETRY, List.of(ReadRefusal.AnswerClass.NN, Behaviour.RETRY),
+                                            Answer.RQ_INVALID, List.of(ReadRefusal.AnswerClass.RQ, Behaviour.SURFACE),
+                                            Answer.RQ_NOT_FOUND, List.of(ReadRefusal.AnswerClass.RQ, Behaviour.SURFACE),
+                                            Answer.CE_L, List.of(ReadRefusal.AnswerClass.CE_OR_L, Behaviour.SURFACE),
+                                            Answer.L_EPOCH, List.of(ReadRefusal.AnswerClass.L, Behaviour.SURFACE),
+                                            Answer.FAULT, List.of(ReadRefusal.AnswerClass.FAULT, Behaviour.SURFACE),
+                                            Answer.FAULT_DEGRADE, List.of(ReadRefusal.AnswerClass.FAULT, Behaviour.DEGRADE));
+
+            assertThat(expected).hasSize(Answer.values().length);
+
+            for (var row : Answer.values()) {
+                assertThat(row.answerClass()).as("answerClass of %s", row).isEqualTo(expected.get(row).get(0));
+                assertThat(row.behaviour()).as("behaviour of %s", row).isEqualTo(expected.get(row).get(1));
+            }
+        }
+
         @Test
         void aKindlessCause_takesUnknownsRow_onEveryFamily() {
             var kindless = List.of(StreamError.General.BUFFER_EMPTY,
