@@ -239,13 +239,13 @@ class StreamIsrAnnouncerTest {
                                       .satisfies(event -> assertThat(event.reason()).startsWith("partition count of an existing stream cannot change"));
     }
 
-    /// The false-alert controls: an adopted change (including a lowering that came with a replication-factor raise), an
+    /// The false-alert controls: an adopted change (a replication-factor raise at unchanged confirmation factor), an
     /// unchanged config, a raise, a new life and a stream not held here announce nothing.
     @Test
     void configChange_thatIsAdoptedOrUnchanged_announcesNoNotApplied() {
         var announced = new ArrayList<OperationalEvent>();
 
-        enforcing(config(3, 3), announced).onConfigPut(configPut(config(5, 1), 1L));
+        enforcing(config(3, 3), announced).onConfigPut(configPut(config(5, 3), 1L));
         enforcing(config(3, 3), announced).onConfigPut(configPut(config(3, 3), 2L));
         enforcing(config(3, 2), announced).onConfigPut(configPut(config(3, 3), 3L));
         enforcing(config(3, 3), announced).onConfigPut(configPut(config(3, 1).withIncarnation(9L), 4L));
