@@ -190,6 +190,10 @@ class EmberArtifactFlagDayRestoreTest {
 
         assertThat(logged).as(ARM2_BLOCKED + allHold(BackupRestoreOutcome.RESTORED) + "; blocked lines: " + blockedLines())
                   .isTrue();
+        // the per-node assertions below hold on a cold cluster whether or not the line exists, so the line is asserted on its own, read
+        // straight from the capture and not through the wait's predicate: a wait that returns early cannot pass this
+        assertThat(blockedLines()).as(ARM2_BLOCKED + "the decode-step line is logged before the per-node checks")
+                  .anyMatch(line -> line.contains(DECODE_STEP));
         cluster.allNodes()
                .forEach(EmberArtifactFlagDayRestoreTest::arm2NodeRefused);
     }
