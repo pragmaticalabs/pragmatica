@@ -137,6 +137,20 @@ class WarningLateSettleOrderingTest {
                                            Warnings.Notice.notice(Warnings.FAMILIES.get(OPENER), ORDERS.asString(), "closed by B"));
     }
 
+    /// The gate is strict: a row at the revision the mirror holds is not newer, so it is not taken. Two distinct committed rows of one key
+    /// cannot share a revision (`Warnings.put` writes the mirrored revision plus one with the mirrored row as the expected value, and
+    /// `KVStore.validMutation` commits a mutation only when its expected value is the stored one), so this input is not reachable in
+    /// production: the test pins the comparison itself. Red when `newer` compares with `>=` (the second row replaces the first).
+    @Test
+    void indexRow_distinctRowAtTheHeldRevision_isNotTaken() {
+        var m = new ClusterModel();
+
+        Warnings.indexRow(m, KEY, row(true, "held", 2L));
+        Warnings.indexRow(m, KEY, row(false, "another row at the held revision", 2L));
+
+        assertThat(m.warningRows.get(KEY)).isEqualTo(Option.some(row(true, "held", 2L)));
+    }
+
     private static long revisionOf(ClusterModel m) {
         return m.warningRows.get(KEY)
                             .map(FsmWarningValue::revision)
