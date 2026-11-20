@@ -499,7 +499,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private Object processCommand(KVCommand command) {
         return switch (command) {
             case Get<?> get -> handleGet((Get<K>) get);
-            case Put<?, ?> put -> put.value() instanceof LeaderAuthorized || storage.get(put.key()) instanceof LeaderAuthorized
+            case Put<?, ?> put -> put.value() instanceof LeaderAuthorized || storage.get(put.key()) instanceof LeaderAuthorized || put.key() instanceof RestoreAuthorityKey
                                   ? Option.option(storage.get(put.key()))
                                   : handlePut((Put<K, V>) put);
             case KVCommand.LeaderTransaction<?, ?> transaction -> handleLeaderTransaction((KVCommand.LeaderTransaction<K, V>) transaction);
@@ -548,9 +548,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                && mutation.expected()
                           .equals(Option.option(storage.get(mutation.key())))
                && mutation.replacement()
-                          .fold(() -> !(storage.get(mutation.key()) instanceof OwnerFenced<?, ?>) && (storage.get(mutation.key()) instanceof LeaderAuthorized || !staleRemove(new Remove<>(mutation.key(),
-                                                                                                                                                                                           mutation.expected()
-                                                                                                                                                                                                   .map(value -> (Object) value)))),
+                          .fold(() -> !(mutation.key() instanceof RestoreAuthorityKey)
+                                      && !(storage.get(mutation.key()) instanceof OwnerFenced<?, ?>)
+                                      && (storage.get(mutation.key()) instanceof LeaderAuthorized || !staleRemove(new Remove<>(mutation.key(),
+                                                                                                                               mutation.expected()
+                                                                                                                                       .map(value -> (Object) value)))),
                                 value -> !staleWrite(mutation.key(),
                                                      value));
     }
@@ -629,7 +631,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// to any [EpochBearing] value (ownership fence, and the H4 leader fence through [LeaderValue]), a non-successor write to a [VersionFenced] value (lost-update fence,
     /// RFC-0018 #570), a regressive write to a [MonotonicFenced] value (running-max fence,
     /// #700), a same-scope regressive or older-scope write to a [ScopedMonotonic] value (scoped advance-only fence, #1961), a write to an [AssignmentGuarded] key by anything but its committed assignee (#1271), or a write that would erase a committed
-    /// [LeaderAuthorized] or [OwnerFenced] marker (fence-drop arms), or a write that would change the committed non-empty community of a [CommunityFenced] value (#1840), or a write that would replace the committed life of an [IncarnationFenced] value (#1278), or a release of a [HolderFenced] hold by anyone but its committed holder, or a holder-bound write to a [HolderGuarded] key made after that holder was superseded (#1155). All arms are pure functions of the committed storage content and the
+    /// [LeaderAuthorized] or [OwnerFenced] marker (fence-drop arms), or a write that would change the committed non-empty community of a [CommunityFenced] value (#1840), or a write that would replace the committed life of an [IncarnationFenced] value (#1278), or a release of a [HolderFenced] hold by anyone but its committed holder, or a holder-bound write to a [HolderGuarded] key made after that holder was superseded (#1155), or a write to a [RestoreAuthorityKey] key that is not a [RestoreAuthority] admitting the committed value, or a `RestoreAuthority` value written anywhere else (#3303). All arms are pure functions of the committed storage content and the
     /// incoming value alone, so every replica decides identically inside the consensus applier.
     /// Snapshot restore ([#restoreSnapshot]) intentionally bypasses all fences: a restored snapshot
     /// is the authoritative committed state, not a competing write.
@@ -643,7 +645,32 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                                                                                                                                                                                                                                                                                    incoming) || reincarnates(key,
                                                                                                                                                                                                                                                                                                              incoming) || releasesUnheld(key,
                                                                                                                                                                                                                                                                                                                                          incoming) || writesUnheld(key,
-                                                                                                                                                                                                                                                                                                                                                                   incoming);
+                                                                                                                                                                                                                                                                                                                                                                   incoming) || homelessRestoreAuthority(key,
+                                                                                                                                                                                                                                                                                                                                                                                                         incoming) || unadmittedRestoreAuthority(key,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                 incoming);
+    }
+
+    /// #3303 F-HOME: a [RestoreAuthority] value written to any key but a [RestoreAuthorityKey] one; see that type.
+    private boolean homelessRestoreAuthority(K key, Object incoming) {
+        return ! (key instanceof RestoreAuthorityKey) && incoming instanceof RestoreAuthority;
+    }
+
+    /// #3303 row 12: a write to a [RestoreAuthorityKey] key of anything but a [RestoreAuthority] that admits the committed
+    /// value. The arm is keyed by the key, not by the value's marker, so the cell holds exactly one kind of value.
+    private boolean unadmittedRestoreAuthority(K key, Object incoming) {
+        return key instanceof RestoreAuthorityKey
+               && !(incoming instanceof RestoreAuthority authority && admitsCommitted(authority, storage.get(key)));
+    }
+
+    /// The committed side of row 12: an empty cell is offered as none, a committed [RestoreAuthority] as itself. A committed
+    /// value that is NOT a `RestoreAuthority` admits nothing (fail closed; CTO ruling 2026-11-20): only a snapshot install,
+    /// which bypasses the fence, can place one there, and the store cannot tell what it would mean.
+    private static boolean admitsCommitted(RestoreAuthority incoming, Object committed) {
+        return switch (committed) {
+            case null -> incoming.admitsAfter(Option.none());
+            case RestoreAuthority authority -> incoming.admitsAfter(Option.some(authority));
+            default -> false;
+        };
     }
 
     /// #1155: a release of a [HolderFenced] hold by anyone but the holder of the committed hold; see that type.
@@ -897,7 +924,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private boolean staleRemove(Remove<K> remove) {
         var key = remove.key();
 
-        if (storage.get(key) instanceof LeaderAuthorized) {
+        if (storage.get(key) instanceof LeaderAuthorized || key instanceof RestoreAuthorityKey) {
             return true;
         }
 
