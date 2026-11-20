@@ -67,7 +67,7 @@ class BlueprintStreamImmutableRefusalTest {
 
             [[slices]]
             artifact = "org.example:stream-app-publisher:1.0.0"
-            instances = 1
+            instances = 3
             """;
 
     @TempDir
