@@ -1718,7 +1718,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// byte and count bounds over the partitions. None while this node has neither, and retention
     /// then withholds the stream.
     public Option<EnforcedRetention> committedRetention(String streamName) {
-        return committedConfigOf(streamName).map(config -> EnforcedRetention.enforcedRetention(config.retention(), config.partitions()));
+        return committedConfigOf(streamName).map(config -> EnforcedRetention.enforcedRetention(config.retention(),
+                                                                                               config.partitions()));
     }
 
     /// The partition count of the committed config this node has applied for `streamName`, else of a locally committed
@@ -2323,7 +2324,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// announced about a factor change cannot differ from what [#confirmationFactorFor] then enforces.
     private static boolean adopts(StreamConfig incoming, StreamConfig existing) {
         return incoming.partitions() == existing.partitions()
-               && (strongerDurability(incoming, existing) || sameDurability(incoming, existing) && storageChanged(incoming, existing));
+               && (strongerDurability(incoming, existing) || sameDurability(incoming, existing) && storageChanged(incoming,
+                                                                                                                  existing));
     }
 
     private static boolean sameDurability(StreamConfig incoming, StreamConfig existing) {
@@ -2332,8 +2334,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private static boolean storageChanged(StreamConfig incoming, StreamConfig existing) {
-        return !incoming.retention()
-                        .equals(existing.retention()) || !hotOf(incoming).equals(hotOf(existing)) || !ingressOf(incoming).equals(ingressOf(existing));
+        return ! incoming.retention()
+                         .equals(existing.retention()) || !hotOf(incoming).equals(hotOf(existing)) || !ingressOf(incoming).equals(ingressOf(existing));
     }
 
     private static Option<HotWindowDeclaration> hotOf(StreamConfig config) {

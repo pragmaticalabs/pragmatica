@@ -568,8 +568,9 @@ public final class RetentionEnforcer implements AutoCloseable {
                      .map(retention -> retention.policy()
                                                 .declared()
                                                 .any()
-                                          ? retention
-                                          : EnforcedRetention.enforcedRetention(defaultAgePolicy(), 1));
+                                       ? retention
+                                       : EnforcedRetention.enforcedRetention(defaultAgePolicy(),
+                                                                             1));
     }
 
     private RetentionPolicy defaultAgePolicy() {

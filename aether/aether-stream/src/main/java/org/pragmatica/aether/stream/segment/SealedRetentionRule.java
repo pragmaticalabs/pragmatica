@@ -69,8 +69,8 @@ public final class SealedRetentionRule {
         var maxBytes = share(policy.maxBytes(), partitions);
 
         while (prefix < size && segments.get(prefix).endOffset() <= deletableThrough && reclaimable(policy,
-                                                                                                    newerEvents[prefix] >= maxCount,
-                                                                                                    newerBytes[prefix] >= maxBytes,
+                                                                                                    newerEvents[prefix]>= maxCount,
+                                                                                                    newerBytes[prefix]>= maxBytes,
                                                                                                     ages[prefix])) {
             prefix++;
         }
