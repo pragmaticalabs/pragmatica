@@ -94,18 +94,20 @@ class JoinGenerationGuardTest {
                            .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.WireGenerationRefused(B, 1, 3)));
     }
 
-    /// The bump's own arm: a peer one generation behind this binary is refused (#3303 RA-2 raised it to 3).
+    /// #3303 RA-3b bumped WIRE_GENERATION: a peer still at the previous generation cannot decode BackupRestoreValue's new
+    /// shape, so it is refused at this binary's own generation.
     @Test
-    void handshakenMemberOneGenerationBehindThisBinary_refused() {
-        var behind = JoinGenerationGuard.WIRE_GENERATION - 1;
-        handshaken.put(A, generation(Integer.toString(behind)));
+    void handshakenMemberAtThePreviousGeneration_isRefusedAtThisBinarysGeneration() {
+        var previous = JoinGenerationGuard.WIRE_GENERATION - 1;
+        handshaken.put(A, generation(Integer.toString(previous)));
+        handshaken.put(B, generation(Integer.toString(JoinGenerationGuard.WIRE_GENERATION)));
 
-        JoinGenerationGuard.admit(Set.of(A), this::labelsOf, LONG, JoinGenerationGuard.WIRE_GENERATION)
+        JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, JoinGenerationGuard.WIRE_GENERATION)
                            .await(AWAIT)
                            .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("must be refused"))
                            .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.WireGenerationRefused(A,
-                                                                                                                    behind,
-                                                                                                                    JoinGenerationGuard.WIRE_GENERATION)));
+                                                                                                                  previous,
+                                                                                                                  JoinGenerationGuard.WIRE_GENERATION)));
     }
 
     @Test

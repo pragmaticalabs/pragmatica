@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run every model config listed in models.tsv and compare each verdict with the expected one.
-# Usage: tools/tla/run.sh [small|full|sim] [module-regex]     (run from the repository root)
+# Usage: tools/tla/run.sh [small|full|sim] [module-regex] [variant-regex]     (run from the repository root)
+#   variant-regex selects the rows to model-check (to split one module across hosts); coverage still checks every row.
 #   small: the config's constants with the row's overrides; full: every config as written;
 #   sim:   every config as written, sampled by TLC's random simulation (-simulate) under a time budget per config.
 #          Simulation is NOT a proof: a "pass" row means no violation among the sampled traces, nothing more. It is the
@@ -15,17 +16,30 @@
 # Every row prints its wall time; a sim row also prints the trace count and mean trace length of TLC's last progress line.
 # Env: TLA_JAR, TLC_WORKERS, TLC_OPTS (passed to check.sh), TLA_OUT (default target/tla), TLC_TIMEOUT (seconds per
 # config, needs coreutils timeout), MODELS_TSV (default: models.tsv beside this script; used by runselftest.sh),
-# SIM_SECONDS (time budget per config, default 60), SIM_TRACES (trace cap, default 1000000), SIM_DEPTH (default 40; at 200 the Stalled "settled" row was not found in 60 s, at 40 it is found in seconds).
+# SIM_SECONDS (time budget per config, default 60), SIM_TRACES (trace cap, default 1000000), SIM_DEPTH (default 40; at 200 the Stalled "settled" row was not found in 60 s, at 40 it is found in seconds),
+# PINS_TSV (default: pinned-counts.tsv beside this script).
+# Pinned counts (pinned-counts.tsv: module variant profile distinct why): a listed pass row must also find exactly that
+# many distinct states at that profile, or it is RED. A spec that extends a model by a mode switch must leave the old
+# mode's state space unchanged; the pin makes an extension that leaks into the old mode go red, which a verdict alone
+# cannot see when the leak only removes states (#3443: the leak made two known-bad controls pass).
 set -uo pipefail
-profile=${1:-small}; filter=${2:-.*}
+profile=${1:-small}; filter=${2:-.*}; vfilter=${3:-.*}
 here=$(cd "$(dirname "$0")" && pwd)
 models=${MODELS_TSV:-$here/models.tsv}
+pins=${PINS_TSV:-$here/pinned-counts.tsv}
 outroot=${TLA_OUT:-target/tla}
 [[ $profile == small || $profile == full || $profile == sim ]] || { echo "run: ERROR profile must be small, full or sim, got '$profile'" >&2; exit 2; }
 rows=$(grep -vE '^[[:space:]]*(#|$)' "$models" | awk -F'\t' -v f="$filter" '$1 ~ "^(" f ")$"')
 [[ -n $rows ]] || { echo "run: ERROR no model matches '$filter'" >&2; exit 2; }
 bad=$(awk -F'\t' '($4 != "pass" && $4 != "fail") || ($4 == "fail" && ($5 == "" || $5 == "-")) { print $1 "/" $3 }' <<<"$rows")
 [[ -z $bad ]] || { echo "run: ERROR models.tsv rows need expect pass|fail and, for fail, the violated property: $bad" >&2; exit 2; }
+pinrows=$( { [[ -f $pins ]] && grep -vE '^[[:space:]]*(#|$)' "$pins"; } | awk -F'\t' -v f="$filter" '$1 ~ "^(" f ")$"')
+if [[ -n $pinrows ]]; then
+  badpin=$(awk -F'\t' 'NR == FNR { if ($4 == "pass") ok[$1 "/" $3] = 1; next }
+    !(($1 "/" $2) in ok) || ($3 != "small" && $3 != "full") || $4 !~ /^[0-9]+$/ { print $1 "/" $2 "/" $3 }' <(echo "$rows") <(echo "$pinrows"))
+  [[ -z $badpin ]] || { echo "run: ERROR $pins rows need a models.tsv pass row, profile small|full and a digit count: $badpin" >&2; exit 2; }
+fi
+awk -F'\t' -v f="$vfilter" '$3 ~ "^(" f ")$" { n++ } END { exit n == 0 }' <<<"$rows" || { echo "run: ERROR no row matches variant '$vfilter'" >&2; exit 2; }
 red=0; summary=(); runstart=$(date +%s)
 if [[ $profile == sim ]]; then
   export TLC_OPTS="${TLC_OPTS:-} -simulate num=${SIM_TRACES:-1000000} -depth ${SIM_DEPTH:-40}"
@@ -72,6 +86,12 @@ while IFS=$'\t' read -r module root variant expect property small _; do
   elif [[ $got == "$expect" ]]; then verdict=OK
   else verdict=RED; red=1; fi
   states=$(grep -oE '[0-9,]+ distinct states found' "$log" 2>/dev/null | tail -1)
+  pin=$(awk -F'\t' -v m="$module" -v v="$variant" -v p="$profile" '$1 == m && $2 == v && $3 == p { print $4; exit }' <<<"$pinrows")
+  if [[ -n $pin && $got == pass ]]; then
+    seen=$(tr -d ', ' <<<"${states%% distinct*}")
+    if [[ $seen == "$pin" ]]; then note=" pinned=$pin"
+    else note=" pinned=$pin found=${seen:-none}"; verdict=RED; red=1; fi
+  fi
   simstat=""
   if [[ $profile == sim ]]; then
     simstat=$(grep -E '^Progress:.*traces generated' "$log" 2>/dev/null | tail -1 | sed -E 's/^Progress: ([0-9]+) states checked, ([0-9]+) traces generated \(trace length: mean=([0-9]+).*/traces=\2 mean-length=\3 states=\1/')
@@ -80,7 +100,7 @@ while IFS=$'\t' read -r module root variant expect property small _; do
   line="$verdict $module/$variant expect=$expect got=$got${note} ${secs}s ${simstat:-${states:-no state count}} ${consts:+[$consts]}"
   echo "$line"; summary+=("$line")
   [[ $verdict != OK ]] && tail -20 "$outroot/$module/run_${variant}.txt" | sed 's/^/    /'
-done <<<"$rows"
+done < <(awk -F'\t' -v f="$vfilter" '$3 ~ "^(" f ")$"' <<<"$rows")
 
-echo "run: profile=$profile models=$filter configs=${#summary[@]} wall=$(( $(date +%s) - runstart ))s $([[ $red == 0 ]] && echo GREEN || echo RED)$([[ $profile == sim ]] && echo ' (simulation: sampled, not a proof)')"
+echo "run: profile=$profile models=$filter variants=$vfilter configs=${#summary[@]} wall=$(( $(date +%s) - runstart ))s $([[ $red == 0 ]] && echo GREEN || echo RED)$([[ $profile == sim ]] && echo ' (simulation: sampled, not a proof)')"
 exit $red

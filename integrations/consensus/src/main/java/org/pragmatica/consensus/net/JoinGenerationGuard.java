@@ -44,8 +44,9 @@ import org.pragmatica.lang.utils.SharedScheduler;
 public interface JoinGenerationGuard {
     /// This binary's wire generation. Bump on every wire/codec change that an older node cannot decode; the
     /// `GENERATION` line of `wire-assignment-baseline.txt` records it and `scripts/wire-generation-check.sh` gates it.
-    /// 3: #3303 RA-2 (`TransactionResult` gained its refusal).
-    int WIRE_GENERATION = 3;
+    /// 3: #3303 RA-3b (`BackupRestoreValue` changed shape).
+    /// 4: #3303 RA-2 (`TransactionResult` gained its refusal).
+    int WIRE_GENERATION = 4;
     /// Bound on waiting for core members to handshake [guess: taste; a constant, not configuration].
     TimeSpan JOIN_GENERATION_WAIT = TimeSpan.timeSpan(10).seconds();
     /// Handshake poll cadence while waiting.

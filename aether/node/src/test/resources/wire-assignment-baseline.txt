@@ -12,7 +12,7 @@
 # no skip metadata, so an old reader desynchronises rather than ignoring the change).
 # Rename only, same type and position = byte-neutral, pinned so a same-typed name swap is
 # visible in this diff. See WireAssignmentTripwireTest for the derivation from the generator.
-GENERATION 3
+GENERATION 4
 ENUM org.pragmatica.aether.api.ClusterEvent$Severity INFO=0,WARNING=1,CRITICAL=2,UNKNOWN=3
 ENUM org.pragmatica.aether.http.forward.HttpForwardMessage$NotAppliedReason ROUTE_NOT_FOUND=0,BUDGET_EXHAUSTED=1,UNDECODABLE_REQUEST=2,UNKNOWN=3
 ENUM org.pragmatica.aether.http.forward.HttpForwardMessage$Pipeline APP=0,MANAGEMENT=1,UNKNOWN=2
@@ -29,7 +29,7 @@ ENUM org.pragmatica.aether.slice.generation.ClusterMode CORE_ONLY=0,HIERARCHICAL
 ENUM org.pragmatica.aether.slice.generation.ClusterQuiescence QUIESCED=0,CONVERGING=1,DEGRADED=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.generation.CommunityQuiescence QUIESCED=0,CONVERGING=1,DEGRADED=2,DISSOLVING=3,UNKNOWN=4
 ENUM org.pragmatica.aether.slice.generation.HealthHint HEALTHY=0,SUSPECTED=1,FAULTY=2,UNKNOWN=3
-ENUM org.pragmatica.aether.slice.kvstore.AetherValue$BackupRestoreOutcome IN_PROGRESS=0,RESTORED=1,FRESH=2,SKIPPED_EXISTING_STATE=3,DISABLED=4,UNKNOWN=5
+ENUM org.pragmatica.aether.slice.kvstore.AetherValue$BackupRestoreOutcome IN_PROGRESS=0,RESTORED=1,FRESH=2,SKIPPED_EXISTING_STATE=3,DISABLED=4,ABANDONED=5,UNKNOWN=6
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$CapacityPhase DISPATCHED=0,OBSERVED=1,RELEASED=2,FREED=3,UNKNOWN=4
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationPhase DISPATCHED=0,OBSERVED=1,RELEASED=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$ClusterPhase COLD_BOOT=0,NORMAL=1,RECOVERING=2,UNKNOWN=3
@@ -124,6 +124,7 @@ SHAPE org.pragmatica.aether.api.ClusterEvent$StreamIsrRestored (at:org.pragmatic
 SHAPE org.pragmatica.aether.api.ClusterEvent$StreamLineageRestarted (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$StreamMemoryExceeded (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$StreamRegistered (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>,address:org.pragmatica.aether.slice.resource.ResourceAddress)
+SHAPE org.pragmatica.aether.api.ClusterEvent$StreamRetentionChanged (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$ThresholdBreached (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$ThresholdCleared (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$TraceInjected (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
@@ -270,7 +271,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ArtifactJudgmentValue (per
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ArtifactVersionEntry (version:java.lang.String,archived:boolean)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ArtifactVersionsValue (entries:java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue$ArtifactVersionEntry>,maxLive:int)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$AutoHealStateValue (enabled:boolean,reason:java.lang.String,updatedAt:long,disabledAtConfigVersion:long,disabledAtScaling:java.util.Map<java.lang.String, java.lang.Integer>)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$BackupRestoreValue (outcome:org.pragmatica.aether.slice.kvstore.AetherValue$BackupRestoreOutcome,lineageId:java.lang.String,incarnation:long,revision:long,commit:java.lang.String)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$BackupRestoreValue (outcome:org.pragmatica.aether.slice.kvstore.AetherValue$BackupRestoreOutcome,lineageId:java.lang.String,incarnation:long,revision:long,commit:java.lang.String,rejection:org.pragmatica.lang.Option<java.lang.String>,abandon:boolean,removedKeys:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsValue (bindings:java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsValue$NamedAddress>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsValue$NamedAddress (alias:java.lang.String,address:org.pragmatica.aether.slice.resource.ResourceAddress)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CapacityAdmissionValue (admissions:long,released:org.pragmatica.lang.Option<org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationValue>,supersededBy:org.pragmatica.lang.Option<java.lang.String>)
@@ -570,6 +571,7 @@ TAG  org.pragmatica.aether.api.ClusterEvent$StreamIsrRestored 1747
 TAG  org.pragmatica.aether.api.ClusterEvent$StreamLineageRestarted 1749
 TAG  org.pragmatica.aether.api.ClusterEvent$StreamMemoryExceeded 287
 TAG  org.pragmatica.aether.api.ClusterEvent$StreamRegistered 288
+TAG  org.pragmatica.aether.api.ClusterEvent$StreamRetentionChanged 2926
 TAG  org.pragmatica.aether.api.ClusterEvent$ThresholdBreached 290
 TAG  org.pragmatica.aether.api.ClusterEvent$ThresholdCleared 291
 TAG  org.pragmatica.aether.api.ClusterEvent$TraceInjected 289

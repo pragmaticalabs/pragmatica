@@ -15,10 +15,14 @@ import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.function.Predicate;
 
+import org.pragmatica.aether.api.ClusterEvent;
+import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.stream.FrameworkStreamPublishers;
+import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
@@ -27,6 +31,7 @@ import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -88,6 +93,14 @@ final class FsmHarness {
     boolean warningsCommit;
     ClusterState state = ClusterState.initial();
     boolean notifying = true;
+    /// #3203 (CTO ruling 2026-11-20: rule E is a live-apply rule): this node has passed its adoption point, its first `Rebuild`. The store
+    /// as seeded before it is the state the node installed or replays (KVStore.restoreSnapshot is silent, and a replayed put reaches the
+    /// aggregator while `KVStore::isReplaying` reads true), so the harness reports `!live` as the aggregator's replay bit, the one input of
+    /// the real gate it supplies.
+    boolean live;
+    /// The node's real aggregator, wired as ClusterEventsAssembly wires it: the replay bit, the committed leader read from the store, no
+    /// ownership record, and the node-local owner check true (one node; no committed record means this node publishes).
+    final ClusterEventAggregator aggregator;
 
     FsmHarness(Settings settings) {
         this.settings = settings;
@@ -103,6 +116,18 @@ final class FsmHarness {
                                        return null;
                                    }
         });
+        this.aggregator = ClusterEventAggregator.clusterEventAggregator(() -> FrameworkStreamPublishers.<ClusterEvent>testPublisher(SystemStreams.CLUSTER_EVENTS,
+                                                                                                                                   this::onPublished)
+                                                                                                         .unwrap(),
+                                                                        () -> null,
+                                                                        () -> true,
+                                                                        SELF,
+                                                                        HlcClock.hlcClock(SELF),
+                                                                        () -> 1,
+                                                                        () -> !live,
+                                                                        () -> true,
+                                                                        () -> true);
+        aggregator.bindCommittedOwnerSources(Option::none, () -> committedLeader().map(LeaderValue::leader));
         router.addRoute(KVStoreNotification.ValuePut.class, this::onPut);
         router.addRoute(KVStoreNotification.ValueRemove.class, this::onRemove);
     }
@@ -114,6 +139,7 @@ final class FsmHarness {
     // -- the applier ---------------------------------------------------------------------------------------------
     @SuppressWarnings({"unchecked", "rawtypes"})
     private void onPut(KVStoreNotification.ValuePut put) {
+        published(put);
         if (!notifying) {
             return;
         }
@@ -125,6 +151,26 @@ final class FsmHarness {
             mailbox.addLast(new ClusterInput.KvPut(aetherKey, aetherValue));
         } else if (key instanceof LeaderKey && value instanceof LeaderValue leader) {
             mailbox.addLast(new ClusterInput.LeaderObserved(leader));
+        }
+    }
+
+    /// #3203 (ruling B, refined 2026-11-20): the node publishes a family warning from the committed put through production's own path,
+    /// [ClusterEventAggregator#onFsmWarningPut] and its committed gate (emitCommitted: dropped while the store replays; with no ownership
+    /// record, the committed leader names the one publisher of an index). The harness re-implements neither: it hands the aggregator every
+    /// committed put, as AetherNode routes it, and logs each event the aggregator publishes as the `Warn` this node sends the operator, so
+    /// `warns` reads this node's published stream.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void published(KVStoreNotification.ValuePut put) {
+        aggregator.onLeaderCommitted(put);
+        if (put.cause().key() instanceof AetherKey.FsmWarningKey && put.cause().value() instanceof AetherValue.FsmWarningValue) {
+            aggregator.onFsmWarningPut(put);
+        }
+    }
+
+    /// A published operator-warning event, as the `Warn` it carries: the code and subject from its details, the message as its summary.
+    private void onPublished(ClusterEvent event) {
+        if (event instanceof ClusterEvent.OperatorWarning warning) {
+            log.add(new ClusterEffect.Warn(warning.details().get("code"), warning.details().get("subject"), warning.summary()));
         }
     }
 
@@ -245,6 +291,7 @@ final class FsmHarness {
 
     void step(ClusterInput input) {
         inputs++;
+        live = live || input instanceof ClusterInput.Rebuild;
         var result = fsm.step(state, input);
 
         state = result.state();
