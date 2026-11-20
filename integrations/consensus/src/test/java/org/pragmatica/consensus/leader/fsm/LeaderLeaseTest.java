@@ -361,12 +361,10 @@ class LeaderLeaseTest {
     void led_onCasLost_cancelsLeaseFuture() {
         Predicate<NodeId> alwaysFresh = _ -> true;
         var h = buildHarness(alwaysFresh, LONG_LEASE_INTERVAL);
-        // Reach a stable ctx via a self tenure (no timer to leak), then build a fresh follower Led.
-        driveToLed(h, new LeaderCommitted(SELF));
-        var ctx = ((LeaderElectionState.Led) h.state()).ctx();
-
-        var freshLed = LeaderElectionState.Led.fresh(ctx, PEER_A);
-        freshLed.onEntry();
+        // The FSM's own follower tenure: its entry armed the lease. (A Led built outside the FSM is not the FSM's
+        // current state, which local-mode entry reads as a tenure that left the view, #3092 I2.)
+        driveToLed(h, new LeaderCommitted(PEER_A));
+        var freshLed = (LeaderElectionState.Led) h.state();
         var leaseFuture = freshLed.leaseFuture().get();
         assertThat((Object) leaseFuture)
                 .as("fresh follower Led arms a lease future on entry")
