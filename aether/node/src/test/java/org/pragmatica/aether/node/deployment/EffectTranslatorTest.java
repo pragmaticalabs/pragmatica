@@ -289,21 +289,6 @@ class EffectTranslatorTest {
         assertThat(registry.counter("aether_deployment_fsm_warnings_unmapped_total", "code", "stray-instance").count()).isZero();
     }
 
-    /// #3203: the sink drops a family warning whose row revision is older than the newest delivered for its `(rowCode, subject)`; an equal
-    /// revision (opener and recovery of one write), another subject and an unstamped warning pass. Red when the late revision 1 is delivered.
-    @Test
-    void aFamilyWarning_olderThanTheNewestDeliveredForItsKey_isDropped() {
-        var subject = "org.example:orders:1.0.0@core-2";
-
-        cluster(new ClusterEffect.Warn("stray-instance", subject, "newest", "stray-instance", 2L));
-        cluster(new ClusterEffect.Warn("stray-instance", subject, "late", "stray-instance", 1L));
-        cluster(new ClusterEffect.Warn("stray-instance", "other-subject", "other key", "stray-instance", 1L));
-        cluster(new ClusterEffect.Warn("stray-instance", subject, "unstamped"));
-
-        await().pollDelay(Duration.ofMillis(300)).atMost(Duration.ofSeconds(5)).until(() -> warnings.size() >= 3);
-        assertThat(warnings).extracting(OperatorWarning::message).containsExactlyInAnyOrder("newest", "other key", "unstamped");
-    }
-
     /// N-5: the backlog sampler's alarm is the catalogued warning `deployment-fsm-backlog` on the subject `<node>/<fsm>`, naming the depth and the threshold.
     @Test
     void theBacklogAlarm_raised_isTheCataloguedWarning_onTheNodeAndFsmSubject() {

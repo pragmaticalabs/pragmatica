@@ -5107,6 +5107,7 @@ public interface AetherNode extends ManageableNode {
                                                          deploymentWiring.legacy("B21.events.NodeArtifactKey.put",
                                                                                  eventAggregator::onNodeArtifactPut))
                                                   .onPut(AetherKey.CommunityKey.class, eventAggregator::onCommunityPut)
+                                                  .onPut(AetherKey.FsmWarningKey.class, eventAggregator::onFsmWarningPut)
                                                   .onPut(AetherKey.GovernorAnnouncementKey.class,
                                                          eventAggregator::onGovernorAnnouncementPut)
                                                   .onRemove(AetherKey.NodeArtifactKey.class,

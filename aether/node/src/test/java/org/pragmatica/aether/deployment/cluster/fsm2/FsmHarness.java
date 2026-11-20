@@ -114,6 +114,7 @@ final class FsmHarness {
     // -- the applier ---------------------------------------------------------------------------------------------
     @SuppressWarnings({"unchecked", "rawtypes"})
     private void onPut(KVStoreNotification.ValuePut put) {
+        published(put);
         if (!notifying) {
             return;
         }
@@ -125,6 +126,16 @@ final class FsmHarness {
             mailbox.addLast(new ClusterInput.KvPut(aetherKey, aetherValue));
         } else if (key instanceof LeaderKey && value instanceof LeaderValue leader) {
             mailbox.addLast(new ClusterInput.LeaderObserved(leader));
+        }
+    }
+
+    /// #3203 (ruling B): the node publishes a family warning from the committed put (ClusterEventAggregator.onFsmWarningPut), whether or
+    /// not the FSM is notified of it. The harness logs it as the `Warn` the operator receives, so `warns` reads the published stream.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void published(KVStoreNotification.ValuePut put) {
+        if (put.cause().key() instanceof AetherKey.FsmWarningKey key && put.cause().value() instanceof AetherValue.FsmWarningValue row) {
+            Warnings.committedNotice(key, ((Option<?>) put.oldValue()).map(AetherValue.FsmWarningValue.class::cast), row)
+                    .onPresent(notice -> log.add(new ClusterEffect.Warn(notice.code(), notice.subject(), notice.message())));
         }
     }
 

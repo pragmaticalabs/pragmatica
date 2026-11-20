@@ -156,24 +156,15 @@ class WarnAfterCommitTest {
         assertThat(openedSubjects(h)).containsExactly(ORDERS.asString(), BILLING.asString());
     }
 
-    /// Rule E, the pair alone (#3274 §0): a mutation over a key with no family notifies nothing, a family key notifies its opener. Red when
-    /// a non-family row is notified, or the family row is not (positive control).
+    /// Rule E, the pair alone (#3274 §0; #3203: over the committed put): a put of a key with no family notifies nothing, a family key
+    /// notifies its opener. Red when a non-family row is notified, or the family row is not (positive control).
     @Test
     void nonFamilyMutation_isNotNotified() {
-        var m = new ClusterModel();
-        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
-        var row = Option.<AetherValue>some(otherNodesRow(Map.of(), true, "a family"));
+        var row = otherNodesRow(Map.of(), true, "a family");
 
-        Warnings.accepted(m,
-                          ctx,
-                          TxDraft.draft(WARNINGS,
-                                        KEY,
-                                        List.of(new KVCommand.Mutation<>(FsmWarningKey.fsmWarningKey("some-other-code", ORDERS.asString()),
-                                                                         Option.<AetherValue>none(),
-                                                                         row),
-                                                new KVCommand.Mutation<>(KEY, Option.<AetherValue>none(), row))));
-
-        assertThat(ctx.effects()).containsExactly(new ClusterEffect.Warn(OPENER, ORDERS.asString(), "a family", OPENER, 1L));
+        assertThat(Warnings.committedNotice(FsmWarningKey.fsmWarningKey("some-other-code", ORDERS.asString()), Option.none(), row)).isEmpty();
+        assertThat(Warnings.committedNotice(KEY, Option.none(), row))
+                  .isEqualTo(Option.some(Warnings.Notice.notice(OPENER, ORDERS.asString(), "a family")));
     }
 
     /// #3274: a raise on a key absent from the mirror drafts a write of the key over "no row" and publishes nothing at once: the opener
