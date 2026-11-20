@@ -22,7 +22,9 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 
+import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -116,6 +118,15 @@ class CtmTenureActivationTest {
 
         assertThat(ctm.drainTenure()).isPositive()
                                      .isNotEqualTo(first);
+    }
+
+    @Test
+    void drainTenure_whileAnotherThreadHoldsTheMonitor_returnsWithinDeadline() {
+        ctm.activate();
+
+        synchronized (ctm) {
+            assertThat(CompletableFuture.supplyAsync(ctm::drainTenure)).succeedsWithin(Duration.ofSeconds(5));
+        }
     }
 
     /// Never provisions or terminates: activation only lists inventory through the interface defaults.
