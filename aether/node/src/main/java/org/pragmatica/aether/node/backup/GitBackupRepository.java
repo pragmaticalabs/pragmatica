@@ -68,6 +68,8 @@ public record GitBackupRepository(Path dir,
                                                                        "-c",
                                                                        "maintenance.autoDetach=false");
 
+    /// Ends git's option parsing, so a caller-supplied ref or commit is a revision whatever it looks like (needs git 2.24, below the 2.43 floor).
+    private static final String END_OF_OPTIONS = "--end-of-options";
     private static final String REMOTE_NAME = "origin";
     private static final String REMOTE_REF = "refs/remotes/" + REMOTE_NAME + "/";
     /// `ls-remote --exit-code` and `show-ref --exists` answer "no such ref" with exit 2 and nothing else does.
@@ -118,6 +120,12 @@ public record GitBackupRepository(Path dir,
         record GitUnreadable(String reason, String message) implements BackupRepositoryError {
             static final Fn1<GitUnreadable, String> FACTORY = Causes.forOneValue("git could not be read: %s",
                                                                                  GitUnreadable::new);
+        }
+
+        /// A ref or commit beginning with `-` that was refused before git ran: git would take it for an option (`show --output=<file>` writes a file).
+        record ArgumentRefused(String argument, String message) implements BackupRepositoryError {
+            static final Fn1<ArgumentRefused, String> FACTORY = Causes.forOneValue("git argument begins with '-' and was refused: %s",
+                                                                                   ArgumentRefused::new);
         }
 
         record PushRejected(String output, String message) implements BackupRepositoryError {
@@ -190,7 +198,7 @@ public record GitBackupRepository(Path dir,
                            () -> Files.writeString(dir.resolve(file),
                                                    content,
                                                    StandardCharsets.UTF_8))
-                     .flatMap(_ -> git("add", file))
+                     .flatMap(_ -> git("add", "--", file))
                      .flatMap(_ -> git("commit", "--quiet", "-m", message))
                      .mapToUnit();
     }
@@ -205,10 +213,13 @@ public record GitBackupRepository(Path dir,
         return fileAt(REMOTE_REF + branch, file);
     }
 
+    /// `ref` is always one of this class's own refs (`HEAD`, the remote-tracking ref), never a caller's: only `--end-of-options` guards it.
     private Result<Option<String>> fileAt(String ref, String file) {
-        return exitStatus("cat-file", "-e", ref + ":" + file).flatMap(status -> status == 0
-                                                                                ? git("show", ref + ":" + file).map(Option::some)
-                                                                                : success(Option.none()));
+        return exitStatus("cat-file", "-e", END_OF_OPTIONS, ref + ":" + file).flatMap(status -> status == 0
+                                                                                                ? git("show",
+                                                                                                      END_OF_OPTIONS,
+                                                                                                      ref + ":" + file).map(Option::some)
+                                                                                                : success(Option.none()));
     }
 
     /// Push the local branch to the remote. Never forced: a remote that moved elsewhere answers
@@ -240,12 +251,13 @@ public record GitBackupRepository(Path dir,
 
     /// The commit `ref` names.
     public Result<String> commitOf(String ref) {
-        return git("rev-parse", "--verify", ref + "^{commit}").map(String::strip);
+        return plain(ref).flatMap(checked -> git("rev-parse", "--verify", END_OF_OPTIONS, checked + "^{commit}"))
+                    .map(String::strip);
     }
 
     /// The backup document as committed at `commit`.
     public Result<String> documentAt(String commit) {
-        return git("show", commit + ":" + FILE);
+        return plain(commit).flatMap(checked -> git("show", END_OF_OPTIONS, checked + ":" + FILE));
     }
 
     /// The ref a restore reads, three-valued (#3464): absent when the backup branch definitely does not exist; the freshly fetched remote branch when a
@@ -265,9 +277,10 @@ public record GitBackupRepository(Path dir,
     /// `<sha> <subject>` for every commit reachable from `ref`, newest first — the backup's own record of
     /// every `(lineage, incarnation, revision)` it has written.
     public Result<List<String>> history(String ref) {
-        return git("log", "--format=%H %s", ref).map(output -> output.lines()
-                                                                     .filter(line -> !line.isBlank())
-                                                                     .toList());
+        return plain(ref).flatMap(checked -> git("log", "--format=%H %s", END_OF_OPTIONS, checked))
+                    .map(output -> output.lines()
+                                         .filter(line -> !line.isBlank())
+                                         .toList());
     }
 
     // --- internals ---
@@ -332,29 +345,33 @@ public record GitBackupRepository(Path dir,
 
     /// The commit id `ref` names. Never [GitRead.Absent]: `rev-parse --verify` fails the same way for a missing ref and for a damaged repository.
     public GitRead<String> readCommitId(String ref) {
-        return read(List.of("rev-parse", "--verify", ref + "^{commit}"),
-                    result -> classifyCommitId(result.exitCode(), result.output()));
+        return readChecked(ref,
+                           List.of("rev-parse", "--verify", END_OF_OPTIONS, ref + "^{commit}"),
+                           result -> classifyCommitId(result.exitCode(), result.output()));
     }
 
     /// Whether `path` is listed in the tree of `commit`. [GitRead.Absent] only when git listed [#FILE] (the control entry, so the listing is known to
     /// have worked) and not `path`; for `path` equal to [#FILE] there is no control and so no [GitRead.Absent].
     public GitRead<Unit> readPath(String commit, String path) {
-        return read(List.of("ls-tree", "--name-only", commit, "--", path, FILE),
-                    result -> classifyPath(result.exitCode(), result.output(), path));
+        return readChecked(commit,
+                           List.of("ls-tree", "--name-only", END_OF_OPTIONS, commit, "--", path, FILE),
+                           result -> classifyPath(result.exitCode(), result.output(), path));
     }
 
     /// The content of `path` at `commit`. Never [GitRead.Absent]: `show` fails the same way for a missing path and for a damaged object; ask
     /// [#readPath] first to tell them apart.
     public GitRead<String> readFile(String commit, String path) {
-        return read(List.of("show", commit + ":" + path),
-                    result -> classifyFile(result.exitCode(), result.output()));
+        return readChecked(commit,
+                           List.of("show", END_OF_OPTIONS, commit + ":" + path),
+                           result -> classifyFile(result.exitCode(), result.output()));
     }
 
     /// `<sha> <subject>` for every commit reachable from `ref`, newest first. Never [GitRead.Absent]: a ref that exists reaches at least one commit,
     /// so an empty listing is lost output, and so is a non-zero exit; neither reads as an empty history (whose floor would come back low).
     public GitRead<List<String>> readHistory(String ref) {
-        return read(List.of("log", "--format=%H %s", ref),
-                    result -> classifyHistory(result.exitCode(), result.output()));
+        return readChecked(ref,
+                           List.of("log", "--format=%H %s", END_OF_OPTIONS, ref),
+                           result -> classifyHistory(result.exitCode(), result.output()));
     }
 
     /// The installed git's `--version` line, when it is at least 2.43 (the floor [#readBranch] needs); older, unparseable or lost output is
@@ -377,6 +394,20 @@ public record GitBackupRepository(Path dir,
     /// The three-valued read of a thing that must be there: anything but [GitRead.Present] is a failure.
     static <T> Result<T> required(GitRead<T> read) {
         return found(read).flatMap(value -> value.toResult(BackupRepositoryError.GitUnreadable.FACTORY.apply("git found nothing where a value was required")));
+    }
+
+    /// [#read] for a caller-supplied `ref`: one beginning with `-` is [GitRead.Unreadable] without git having run.
+    private <T> GitRead<T> readChecked(String ref, List<String> args, Fn1<GitRead<T>, GitResult> classifier) {
+        return plain(ref).fold(cause -> GitRead.unreadable(cause.message()),
+                               _ -> read(args, classifier));
+    }
+
+    /// A caller-supplied ref or commit that git cannot take for an option; the git calls also pass `--end-of-options`, so this refusal is the typed
+    /// error and that separator is the second barrier.
+    private static Result<String> plain(String argument) {
+        return argument.startsWith("-")
+               ? BackupRepositoryError.ArgumentRefused.FACTORY.apply(argument).result()
+               : success(argument);
     }
 
     private <T> GitRead<T> read(List<String> args, Fn1<GitRead<T>, GitResult> classifier) {

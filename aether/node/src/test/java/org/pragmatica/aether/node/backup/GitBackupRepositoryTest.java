@@ -14,10 +14,12 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import org.pragmatica.aether.node.backup.GitBackupRepository.BackupRepositoryError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
 import com.sun.net.httpserver.HttpServer;
@@ -433,6 +435,84 @@ class GitBackupRepositoryTest {
 
         assertThat(repository.readCommitId("refs/heads/nope")).isInstanceOf(GitRead.Unreadable.class);
         assertThat(repository.readCommitId("HEAD")).isEqualTo(GitRead.present(git(temp.resolve("local"), "rev-parse", "HEAD").strip()));
+    }
+
+    /// `git show --output=<file>` exits 0 and writes the file, so a ref that is a git option is a file write: refused before git runs, by every read.
+    @Test
+    void aRefBeginningWithADash_isRefusedBeforeGitRuns_byEveryRead_andCreatesNoFile() {
+        var repository = committedRepository("hostile");
+        var planted = temp.resolve("planted");
+        var hostile = "--output=" + planted + ":x";
+
+        assertThat(unreadableReason(repository.readCommitId(hostile))).contains("refused");
+        assertThat(unreadableReason(repository.readPath(hostile, "x"))).contains("refused");
+        assertThat(unreadableReason(repository.readFile(hostile, GitBackupRepository.FILE))).contains("refused");
+        assertThat(unreadableReason(repository.readHistory(hostile))).contains("refused");
+        assertThat(failureOf(repository.commitOf(hostile))).contains("refused");
+        assertThat(failureOf(repository.documentAt(hostile))).contains("refused");
+        assertThat(failureOf(repository.history(hostile))).contains("refused");
+        assertThat(planted).doesNotExist();
+    }
+
+    @Test
+    void aNormalRef_stillReadsThroughEveryRead() {
+        var repository = committedRepository("normal");
+        var head = git(temp.resolve("local-normal"), "rev-parse", "HEAD").strip();
+
+        assertThat(repository.readCommitId("HEAD")).isEqualTo(GitRead.present(head));
+        assertThat(repository.readPath("HEAD", GitBackupRepository.FILE)).isInstanceOf(GitRead.Present.class);
+        assertThat(repository.readFile("HEAD", GitBackupRepository.FILE)).isEqualTo(GitRead.present("one\n"));
+        assertThat(repository.readHistory("HEAD")).isInstanceOf(GitRead.Present.class);
+        assertThat(repository.commitOf("HEAD").unwrap()).isEqualTo(head);
+        assertThat(repository.documentAt("HEAD").unwrap()).isEqualTo("one\n");
+        assertThat(repository.history("HEAD").unwrap()).hasSize(1);
+    }
+
+    /// The second barrier behind the refusal: the argv git is given ends option parsing before the caller's ref (and `--` before a path).
+    @Test
+    void everyGitCallTakingACallersRef_passesEndOfOptionsBeforeIt() throws IOException {
+        assertThat(argvOf("rev-parse-id", "rev-parse", r -> r.readCommitId("HEAD"))).anyMatch(line -> line.contains("--end-of-options HEAD^{commit}"));
+        assertThat(argvOf("rev-parse-of", "rev-parse", r -> r.commitOf("HEAD"))).anyMatch(line -> line.contains("--end-of-options HEAD^{commit}"));
+        assertThat(argvOf("ls-tree", "ls-tree", r -> r.readPath("HEAD", "p"))).anyMatch(line -> line.contains("--end-of-options HEAD -- p " + GitBackupRepository.FILE));
+        assertThat(argvOf("show-file", "show", r -> r.readFile("HEAD", GitBackupRepository.FILE))).anyMatch(line -> line.contains("--end-of-options HEAD:"
+                                                                                                                              + GitBackupRepository.FILE));
+        assertThat(argvOf("show-doc", "show", r -> r.documentAt("HEAD"))).anyMatch(line -> line.contains("--end-of-options HEAD:" + GitBackupRepository.FILE));
+        assertThat(argvOf("show-local", "show", r -> r.localFile(GitBackupRepository.FILE))).anyMatch(line -> line.contains("--end-of-options HEAD:"
+                                                                                                                         + GitBackupRepository.FILE));
+        assertThat(argvOf("cat-file", "cat-file", r -> r.localFile(GitBackupRepository.FILE))).anyMatch(line -> line.contains("-e --end-of-options HEAD:"
+                                                                                                                            + GitBackupRepository.FILE));
+        assertThat(argvOf("log-read", "log", r -> r.readHistory("HEAD"))).anyMatch(line -> line.contains("--end-of-options HEAD"));
+        assertThat(argvOf("log-history", "log", r -> r.history("HEAD"))).anyMatch(line -> line.contains("--end-of-options HEAD"));
+        assertThat(argvOf("add", "add", r -> r.commitFile("f.txt", "x\n", "m"))).anyMatch(line -> line.contains("add -- f.txt"));
+    }
+
+    private GitBackupRepository committedRepository(String name) {
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local-" + name), Option.none(), "backup", TIMEOUT);
+
+        repository.prepare()
+                  .flatMap(_ -> repository.commit("one\n", "first"))
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        return repository;
+    }
+
+    /// The argument lines a shimmed git saw for `subcommand` during `call` alone (the setup's own git calls are dropped).
+    private List<String> argvOf(String name, String subcommand, Consumer<GitBackupRepository> call) throws IOException {
+        var log = temp.resolve(name + ".argv");
+        var env = gitShim(temp.resolve("bin-" + name), subcommand, "echo \"$*\" >> " + log);
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local-" + name), Option.none(), "backup", TIMEOUT, env);
+
+        repository.prepare()
+                  .flatMap(_ -> repository.commit("one\n", "first"))
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        Files.deleteIfExists(log);
+        call.accept(repository);
+        return Files.exists(log)
+               ? Files.readAllLines(log)
+               : List.of();
+    }
+
+    private static <T> String failureOf(Result<T> result) {
+        return result.fold(Cause::message, _ -> "succeeded");
     }
 
     private GitBackupRepository repository(String name, Option<String> remote) {
