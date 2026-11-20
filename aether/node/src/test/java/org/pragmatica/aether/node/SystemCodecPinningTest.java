@@ -73,6 +73,13 @@ class SystemCodecPinningTest {
     ///
     /// `BatchCommitted` (#2045) is exempt like the refusals: a voter sends it only when its committed-batch ledger refuses a
     /// proposal, none in steady state, and no one-byte slot is free to give it.
+    /// The transaction refusal (#3303 RA-2: `Refusal` and its `RefusalKind`) is exempt because no one-byte slot is free to give it
+    /// (every slot 0..127 is pinned, the one unpinned slot 85 sits in the worker block, and two are needed). Its cost, stated: it
+    /// rides a `TransactionResult` only when the leader REFUSED the transaction (an accepted one carries an empty Option, one byte),
+    /// never in steady state, and costs one extra byte per type occurrence there.
+    private static final Set<String> KV_TRANSACTION_REFUSAL = Set.of("org.pragmatica.cluster.state.kvstore.KVCommand.Refusal",
+                                                                     "org.pragmatica.cluster.state.kvstore.KVCommand.RefusalKind");
+
     /// The `provenance` package (#1596: `ProvenanceEntry` and its `ProvenanceEpoch` kinds) is exempt like the
     /// refusals: history entries, carried only by a replica catch-up answer (a handful per catch-up, none on any other read, and an empty list encodes no element tag),
     /// so it is not the per-message traffic the window was bought for -- and no one-byte slot is free to give it.
@@ -137,6 +144,7 @@ class SystemCodecPinningTest {
                                                   && !CONTROL_LOG_FORWARD.contains(entry.getKey())
                                                   && !W_OBS_REPLICA_FEED.contains(entry.getKey())
                                                   && !D45_HELD_REPORT.contains(entry.getKey())
+                                                  && !KV_TRANSACTION_REFUSAL.contains(entry.getKey())
                                                   && !entry.getKey().startsWith("org.pragmatica.aether.stream.provenance.")
                                                   && !entry.getKey().startsWith("org.pragmatica.aether.stream.forward.ReadRefusal"))
                                  .filter(entry -> !RETIRED_IN_HOT_PACKAGES.contains(entry.getKey()))
