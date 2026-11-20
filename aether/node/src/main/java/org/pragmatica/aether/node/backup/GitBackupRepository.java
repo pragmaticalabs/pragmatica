@@ -244,14 +244,24 @@ public record GitBackupRepository(Path dir,
                                                                      .toList());
     }
 
-    /// STUB (red commit).
+    /// Write `record` as [#REJECTION_FILE] and commit it on the local branch (#3303). Never pushes: the push is [#push]. Committing a record
+    /// identical to the committed one is `git`'s empty commit: exit 1, a [BackupRepositoryError.GitFailed].
     public Result<Unit> commitRejection(RejectionRecord record) {
-        return Result.unitResult();
+        return commitFile(REJECTION_FILE,
+                          record.render(),
+                          "restore rejected: " + record.lineageId()
+                         + " " + record.incarnation()
+                         + "/" + record.revision());
     }
 
-    /// STUB (red commit).
+    /// Remove [#REJECTION_FILE] and commit the removal on the local branch (#3303). Never pushes: the push is [#push]. Removing an absent
+    /// record is `git rm`'s exit 128, a [BackupRepositoryError.GitFailed], never a success.
     public Result<Unit> removeRejection() {
-        return Result.unitResult();
+        return git("rm", "--quiet", "--", REJECTION_FILE).flatMap(_ -> git("commit",
+                                                                           "--quiet",
+                                                                           "-m",
+                                                                           "restore rejection cleared"))
+                  .mapToUnit();
     }
 
     // --- internals ---
