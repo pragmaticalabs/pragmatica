@@ -84,10 +84,18 @@ list: any one of them; `-` for a `pass` row). `run.sh` is red when:
 
 An expected failure (`expect` = `fail`) must cite an open issue or be a known-bad variant of a fixed defect; when the issue is fixed, flip the row to `pass`.
 
+## Pinned state counts: `pinned-counts.tsv`
+
+One row per pinned `pass` row: module, variant, profile (`small` or `full`), the distinct-state count TLC must find,
+and why. `run.sh` at that profile is red when the row passes with any other count. Use it where a spec extends a
+model by a mode switch: the old mode must reach exactly its old states, and an edit that leaks into it can REMOVE
+states, which no verdict shows (#3443: a LATE exclusion read at STAMP = "off" removed the traces the two CAS
+controls rest on, so they passed; the pins hold the Fsm2Leader off-mode `LATE = FALSE` pass rows at their base counts).
+
 ## Running
 
 ```
-tools/tla/run.sh [small|full|sim] [module-regex]      # every config with its expected verdict
+tools/tla/run.sh [small|full|sim] [module-regex] [variant-regex]   # the configs with their expected verdicts
 tools/tla/runselftest.sh                              # run.sh's own verdict logic, on a fixture with wrong expectations
 tools/tla/check.sh <Module> <Variant> <source roots...>  # one config
 tools/tla/selftest.sh <Module> <source root>           # the extractor's own checks, on a copy of the root
@@ -121,7 +129,7 @@ It pins `tla2tools.jar` (version and sha256 in the workflow), runs `selftest.sh`
 
 Environment: `TLA_JAR` (default `~/tools/tla/tla2tools.jar`), `TLC_WORKERS`, `TLC_OPTS`, `TLA_OUT` (default
 `target/tla/<Module>` for `check.sh`, `target/tla` for `run.sh`), `TLC_CONST` (`check.sh`: space-separated
-`Name=value` overrides of the config's constants, recorded in the log), `TLC_TIMEOUT` (`run.sh`: seconds per config), `TLC_JAVA_OPTS` (`check.sh`: extra JVM options), `SIM_SECONDS`, `SIM_TRACES`, `SIM_DEPTH` (`run.sh sim`), `MODELS_TSV` (`run.sh`: a different table; the self-test uses it). The deadlock check is off: bounded models end in terminal states by design. The full TLC log
+`Name=value` overrides of the config's constants, recorded in the log), `TLC_TIMEOUT` (`run.sh`: seconds per config), `TLC_JAVA_OPTS` (`check.sh`: extra JVM options), `SIM_SECONDS`, `SIM_TRACES`, `SIM_DEPTH` (`run.sh sim`), `MODELS_TSV` (`run.sh`: a different table; the self-test uses it), `PINS_TSV` (`run.sh`: a different pinned-counts table). The deadlock check is off: bounded models end in terminal states by design. The full TLC log
 is `<out>/<Module>_<Variant>.log`; the console gets the verdict, the counterexample as actions with their Java
 positions, and the state counts.
 
