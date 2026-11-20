@@ -9,14 +9,9 @@ import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import io.netty.buffer.ByteBuf;
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,6 +38,7 @@ import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.StorageInstance;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
@@ -56,24 +52,19 @@ class StreamEntityLogSubstrateCheckpointOutcomeTest {
     private StreamPartitionManager manager;
     private StorageInstance storage;
     private KVStore<AetherKey, AetherValue> kv;
-    private WarnCapture warns;
-    private org.apache.logging.log4j.core.Logger logger;
+    private LogCapture warns;
 
     @BeforeEach
     void setUp() {
         manager = streamPartitionManager(64L * 1024 * 1024, EvictionListener.NOOP, ReplicationManager.NONE, Option.none(), (_, _) -> -1L);
         storage = StorageInstance.storageInstance("outcome", List.of(MemoryTier.memoryTier(ONE_GB)), MetadataStore.inMemoryMetadataStore("outcome"));
         kv = new KVStore<>(MessageRouter.mutable(), noopSerializer(), noopDeserializer());
-        warns = new WarnCapture();
-        warns.start();
-        logger = (org.apache.logging.log4j.core.Logger) LogManager.getLogger(StreamEntityLogSubstrate.class);
-        logger.addAppender(warns);
+        warns = LogCapture.capture(StreamEntityLogSubstrate.class, Level.WARN, true);
     }
 
     @AfterEach
     void tearDown() {
-        logger.removeAppender(warns);
-        warns.stop();
+        warns.close();
         manager.close();
         storage.shutdown();
     }
@@ -187,25 +178,6 @@ class StreamEntityLogSubstrateCheckpointOutcomeTest {
             return method.invoke(real, args);
         } catch (InvocationTargetException e) {
             throw e.getCause();
-        }
-    }
-
-    private static final class WarnCapture extends AbstractAppender {
-        private final List<String> captured = new CopyOnWriteArrayList<>();
-
-        WarnCapture() {
-            super("outcome-warns", null, null, true, Property.EMPTY_ARRAY);
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
-                captured.add(event.getMessage().getFormattedMessage());
-            }
-        }
-
-        List<String> messages() {
-            return captured;
         }
     }
 
