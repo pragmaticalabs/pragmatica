@@ -1917,7 +1917,7 @@ class MembershipFsmTest {
     }
 
     /// Drain-safety grace age source ([`MembershipFsm#memberAgeMs`], cluster-topology-overhaul
-    /// Wave 2): wall-clock age since the member's FIRST observation (tracking creation), on the
+    /// Wave 2): wall-clock age since the member's FIRST reachability evidence (0 before it), on the
     /// manager's injected clock; `none()` for an untracked id; retained across DEAD/rejoin (the
     /// descriptor is retained too, so the role-propagation race the consumer guards against does
     /// not re-open on rejoin).
@@ -1931,6 +1931,19 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             clock.set(31_000L);
             assertThat(manager.memberAgeMs(A)).isEqualTo(Option.some(30_000L));
+        }
+
+        @Test
+        void memberAgeMs_seededThenJoinedLater_countsFromFirstReachability() {
+            var clock = new AtomicLong(1_000L);
+            var manager = MembershipFsm.membershipFsm(FsmObserver.noop(), clock::get, NO_HINT_DECAY, SHORT_BACKSTOP);
+
+            manager.seed(Set.of(A));
+            clock.set(101_000L);
+            assertThat(manager.memberAgeMs(A)).as("seeded but never reached: it has not joined yet").isEqualTo(Option.some(0L));
+            manager.onSwimHealthy(A, 1L);
+            clock.set(106_000L);
+            assertThat(manager.memberAgeMs(A)).as("age runs from the first reachability evidence, not from the seed").isEqualTo(Option.some(5_000L));
         }
 
         @Test

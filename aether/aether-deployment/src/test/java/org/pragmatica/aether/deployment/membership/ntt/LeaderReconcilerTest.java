@@ -1571,6 +1571,26 @@ class LeaderReconcilerTest {
             assertThat(ctm.drainNodeCalls()).as("the paired surge node is not surplus").isEmpty();
         }
 
+        /// #1880: a CONFIGURED member is seeded at wiring (the formation bootstrap), but only JOINS —
+        /// first reachability evidence — long after. The grace measures time since it joined, never
+        /// since the FSM first tracked it: a late joiner inside the grace must not be the victim.
+        @Test
+        void surplusDrain_configuredSeedJoiningLongAfterWiring_isYoungForTheGrace_notSelected() {
+            configuredCoreCount.set(1);
+            // Wiring: the configured topology is seeded; the node has not been reached yet.
+            membershipFsm.seed(Set.of(youngSeed1));
+            // Long after wiring the node finally joins: first reachability evidence, now.
+            agePastDrainSafetyGrace();
+            seedYoungPeers(youngSeed1);
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(ctm.drainNodeCalls())
+                .as("a configured member that joined seconds ago must not be drained, however long ago it was seeded")
+                .doesNotContain(youngSeed1);
+        }
+
         @Test
         void surplusDrain_allConfiguredCandidatesYoung_defersWithFollowUp_noDrainDispatched() {
             configuredCoreCount.set(2);
