@@ -78,7 +78,7 @@ class StreamEntityLogSubstrateCheckpointOutcomeTest {
 
         var outcome = substrate(failingGets(storage)).loadCheckpointOutcome(KEYSPACE, 0).await().unwrap();
 
-        assertThat(outcome).isEqualTo(CheckpointLoad.unreadable(UnreadableCause.FETCH_FAILED, blockId.hexString()));
+        assertUnreadable(outcome, UnreadableCause.FETCH_FAILED, blockId.hexString());
         assertThat(warns.messages()).as("WARN with the block id").anyMatch(m -> m.contains(blockId.hexString()));
     }
 
@@ -91,7 +91,7 @@ class StreamEntityLogSubstrateCheckpointOutcomeTest {
 
         var outcome = substrate(storage).loadCheckpointOutcome(KEYSPACE, 0).await().unwrap();
 
-        assertThat(outcome).isEqualTo(CheckpointLoad.unreadable(UnreadableCause.BLOCK_LOST, blockId.hexString()));
+        assertUnreadable(outcome, UnreadableCause.BLOCK_LOST, blockId.hexString());
         assertThat(warns.messages()).as("WARN with the block id").anyMatch(m -> m.contains(blockId.hexString()));
     }
 
@@ -102,7 +102,7 @@ class StreamEntityLogSubstrateCheckpointOutcomeTest {
 
         var outcome = substrate(storage).loadCheckpointOutcome(KEYSPACE, 0).await().unwrap();
 
-        assertThat(outcome).isEqualTo(CheckpointLoad.unreadable(UnreadableCause.UNDECODABLE, "not-a-hex-block-id"));
+        assertUnreadable(outcome, UnreadableCause.UNDECODABLE, "not-a-hex-block-id");
         assertThat(warns.messages()).as("WARN with the block id").anyMatch(m -> m.contains("not-a-hex-block-id"));
     }
 
@@ -135,6 +135,15 @@ class StreamEntityLogSubstrateCheckpointOutcomeTest {
         point(0, blockIdOf("never stored").hexString());
 
         assertThat(substrate(storage).loadCheckpoint(KEYSPACE, 0).await().unwrap().isEmpty()).isTrue();
+    }
+
+    /// The fields are read off the actual answer: comparing against the factory's own product would let a factory defect hit both sides.
+    private static void assertUnreadable(CheckpointLoad outcome, UnreadableCause cause, String blockIdHex) {
+        assertThat(outcome).isInstanceOfSatisfying(CheckpointLoad.Unreadable.class,
+                                                   unreadable -> {
+                                                       assertThat(unreadable.cause()).isEqualTo(cause);
+                                                       assertThat(unreadable.blockIdHex()).isEqualTo(blockIdHex);
+                                                   });
     }
 
     private static BlockId blockIdOf(String content) {

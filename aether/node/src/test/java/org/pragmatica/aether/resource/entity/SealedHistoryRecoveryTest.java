@@ -136,10 +136,17 @@ class SealedHistoryRecoveryTest {
             assertThat(missingKeys(fold)).as("every key rebuilt from the log").isZero();
         }
 
-        /// Only `loadCheckpointOutcome` is answered differently; the real substrate answers everything else.
+        /// Only `loadCheckpointOutcome` and `recordsLineage` are answered differently; the real substrate answers everything else. The real
+        /// substrate records lineage and so discards any lineage-less seed: were that left on, a fold that wrongly turned the unreadable
+        /// outcome into a seed would be discarded here and the test could not tell. Answering `false` keeps such a seed, so the rebuild
+        /// from the log is the only way the fold is complete.
         private Object unreadableOutcome(EntityLogSubstrate.CheckpointLoad unreadable, Method method, Object[] args) throws Throwable {
             if (method.getName().equals("loadCheckpointOutcome")) {
                 return Promise.success(unreadable);
+            }
+
+            if (method.getName().equals("recordsLineage")) {
+                return false;
             }
 
             try {
