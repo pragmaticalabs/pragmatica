@@ -248,6 +248,22 @@ public sealed interface OperationalEvent extends Message.Local {
         }
     }
 
+    /// #3334: a committed config changed a running stream's retention bounds. The bounds are carried as rendered text
+    /// (`oldBounds`, `newBounds`) so the raiser derives them from the committed facts without this record depending on
+    /// the declaration types. A point event: no resolved pair.
+    record StreamRetentionChanged(String stream,
+                                  String oldBounds,
+                                  String newBounds,
+                                  String eventId,
+                                  long timestamp) implements OperationalEvent {
+        public static StreamRetentionChanged streamRetentionChanged(String stream,
+                                                                    String oldBounds,
+                                                                    String newBounds,
+                                                                    String eventId) {
+            return new StreamRetentionChanged(stream, oldBounds, newBounds, eventId, System.currentTimeMillis());
+        }
+    }
+
     /// #1723: a scheduled task's newest fire has an UNKNOWN outcome (no response within the invocation timeout), so it is
     /// not known whether the work ran ([ClusterEvent.ScheduledTaskOutcomeUnknown]). `task` is
     /// `section/artifact/method`, `node` the per-node row of an ALL-mode task (empty otherwise), `fireAt` when the fire

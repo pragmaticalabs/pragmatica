@@ -33,6 +33,7 @@ import org.pragmatica.aether.api.ClusterEvent.StreamIsrBelowMinimum;
 import org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored;
 import org.pragmatica.aether.api.ClusterEvent.StreamLineageRestarted;
 import org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied;
+import org.pragmatica.aether.api.ClusterEvent.StreamRetentionChanged;
 import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentFailed;
@@ -2693,6 +2694,24 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
                                                      String.valueOf(event.effectiveConfirmationFactor()),
                                                      "reason",
                                                      event.reason())));
+    }
+
+    /// Taste: INFO. A committed retention change is routine operator action; the summary states committed facts only,
+    /// no prediction of what the stream will retain. Owner-gated `emit`: derived on every node, published once.
+    @Contract
+    public void onStreamRetentionChanged(OperationalEvent.StreamRetentionChanged event) {
+        emit(new StreamRetentionChanged(hlcClock.now(),
+                                        Severity.INFO,
+                                        "Stream " + event.stream() + " retention bounds changed: committed "
+                                       + event.oldBounds() + " -> " + event.newBounds(),
+                                        Map.of(ClusterEventIdentity.EVENT_ID,
+                                               event.eventId(),
+                                               "stream",
+                                               event.stream(),
+                                               "oldBounds",
+                                               event.oldBounds(),
+                                               "newBounds",
+                                               event.newBounds())));
     }
 
     @Contract
