@@ -117,13 +117,13 @@ class DurableTopicSubstrateTest {
     }
 
     /// NT-132 (#2201 Q6 = B, review R32-04), amended by #3334: a topic's retention declares its age and the default
-    /// byte bound, never the count (its DLQ keeps the age only): declared, the count would cut a 7-day topic's sealed history at 100,000 events.
+    /// byte bound, never the count (its DLQ declares the same dimensions since #3334 G26): declared, the count would cut a 7-day topic's sealed history at 100,000 events.
     @Test
-    void topicRetention_declaresAgeAndBytesNeverCount_dlqKeepsAgeOnly() {
+    void topicRetention_declaresAgeAndBytesNeverCount_dlqDeclaresTheSame() {
         var declared = RetentionDimensions.retentionDimensions(false, true, true);
 
         assertThat(DurableTopicSubstrate.topicStreamConfig(ADDRESS, spec(4, 3, "7d")).retention().declared()).isEqualTo(declared);
-        assertThat(DurableTopicSubstrate.dlqStreamConfig(ADDRESS, spec(4, 3, "7d")).retention().declared()).isEqualTo(RetentionDimensions.AGE);
+        assertThat(DurableTopicSubstrate.dlqStreamConfig(ADDRESS, spec(4, 3, "7d")).retention().declared()).isEqualTo(declared);
     }
 
     @Test
