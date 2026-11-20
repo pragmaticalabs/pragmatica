@@ -106,7 +106,8 @@ public sealed interface SnapshotError extends Cause {
 
         @Override
         public String message() {
-            return "Snapshot was written by storage " + found + ", but this storage is " + expected
+            return "Snapshot was written by storage " + found
+                 + ", but this storage is " + expected
                  + "; refusing to start with another storage's metadata. Mount the original volume";
         }
     }

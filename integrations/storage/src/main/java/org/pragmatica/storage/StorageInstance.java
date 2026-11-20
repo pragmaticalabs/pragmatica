@@ -499,7 +499,9 @@ public interface StorageInstance {
 final class DefaultStorageInstance implements StorageInstance {
     private static final Logger log = LoggerFactory.getLogger(DefaultStorageInstance.class);
     private static final long PROMOTION_FAILURE_WARN_EVERY = 1_000;
+
     private static final String LOG_SUFFIX = ".wal";
+
     /// #2836: the names the storage keeps for its own files under the log root. A log name's FIRST `/`-segment,
     /// compared case-sensitively and whole: `aside@1/0` is a stream log and stays legal `[guess: form is not in the spec]`.
     private static final Set<String> RESERVED_LOG_SEGMENTS = Set.of("STORAGE_ID", "CLAIM", "LOCK", "aside");
@@ -1927,7 +1929,7 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     private static boolean isNotReserved(String logName) {
-        return !RESERVED_LOG_SEGMENTS.contains(firstSegment(logName));
+        return ! RESERVED_LOG_SEGMENTS.contains(firstSegment(logName));
     }
 
     private static String firstSegment(String logName) {

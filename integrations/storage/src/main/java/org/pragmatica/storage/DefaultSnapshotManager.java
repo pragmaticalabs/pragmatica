@@ -699,8 +699,7 @@ final class DefaultSnapshotManager implements SnapshotManager {
         return "format=" + FORMAT_VERSION + '\n'
              + "epoch=" + snapshot.epoch() + '\n'
              + "timestamp=" + snapshot.timestamp() + '\n'
-             + "nodeId=" + snapshot.nodeId() + '\n'
-             + storageIdLine(snapshot)
+             + "nodeId=" + snapshot.nodeId() + '\n' + storageIdLine(snapshot)
              + "contentHash=" + HEX.formatHex(snapshot.contentHash())
              + "\n\n" + body.text();
     }
