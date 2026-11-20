@@ -2927,6 +2927,7 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     record EntitySeedOfferKey(String keyspace, int parent) implements ClusterStateKey {
         private static final String PREFIX = "entity-seed-offer/";
         private static final String SEP = "/";
+
         private static final Fn1<Cause, String> ENTITY_SEED_OFFER_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid entity-seed-offer key format: %s");
 
         @Override
@@ -2976,6 +2977,7 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     record EntityArcWaiverKey(String keyspace, int child) implements ClusterStateKey {
         private static final String PREFIX = "entity-arc-waiver/";
         private static final String SEP = "/";
+
         private static final Fn1<Cause, String> ENTITY_ARC_WAIVER_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid entity-arc-waiver key format: %s");
 
         @Override
