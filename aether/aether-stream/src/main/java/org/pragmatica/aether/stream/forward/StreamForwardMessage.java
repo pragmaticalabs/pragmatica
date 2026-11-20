@@ -221,6 +221,27 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                    false,
                                    consumerEpoch);
         }
+
+        /// A LINEARIZABLE consumer read that also carries the owner epoch the consumer last read under (stream-mem M-9a0): the
+        /// serving node re-runs the owner-side serve pipeline of a `linearizable` read and answers the epoch it served under.
+        /// Same components as every other read: no wire change.
+        public static ReadForward linearizableValidatedReadForward(NodeId sender,
+                                                                   String correlationId,
+                                                                   String streamName,
+                                                                   int partition,
+                                                                   long fromOffset,
+                                                                   int maxEvents,
+                                                                   Epoch consumerEpoch) {
+            return new ReadForward(sender,
+                                   correlationId,
+                                   streamName,
+                                   partition,
+                                   fromOffset,
+                                   maxEvents,
+                                   true,
+                                   false,
+                                   consumerEpoch);
+        }
     }
 
     /// `earliestRetained` / `visibleHead` (#1333): the serving node's consumer-visible span of the partition

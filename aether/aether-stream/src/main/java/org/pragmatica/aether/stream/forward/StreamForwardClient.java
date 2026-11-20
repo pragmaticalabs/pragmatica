@@ -41,6 +41,7 @@ import static org.pragmatica.aether.stream.forward.StreamForwardError.General.FO
 import static org.pragmatica.aether.stream.forward.StreamForwardError.General.READ_FORWARD_TIMEOUT;
 import static org.pragmatica.aether.stream.forward.StreamForwardError.General.STREAM_FORWARD_UNAVAILABLE;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward.publishForward;
+import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward.linearizableValidatedReadForward;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward.readForward;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward.validatedReadForward;
 import static org.pragmatica.lang.Option.option;
@@ -92,6 +93,19 @@ public interface StreamForwardClient {
                                                            int maxEvents,
                                                            Epoch consumerEpoch) {
         return readRemote(ownerId, streamName, partition, fromOffset, maxEvents);
+    }
+
+    /// Stream-mem M-9a0: forward a LINEARIZABLE read carrying the owner epoch (`life`) the caller last read under; the answer
+    /// carries the epoch it was served under in [ReadForwardResult#ownerEpoch]. The default falls back to the plain
+    /// `LINEARIZABLE`-tagged forward and reports no epoch; only the production transport ([DefaultStreamForwardClient])
+    /// stamps the epoch into the [ReadForward].
+    default Promise<ReadForwardResult> readRemoteLinearizable(NodeId ownerId,
+                                                              String streamName,
+                                                              int partition,
+                                                              long fromOffset,
+                                                              int maxEvents,
+                                                              Epoch life) {
+        return readRemote(ownerId, streamName, partition, fromOffset, maxEvents, ReadPreference.LINEARIZABLE);
     }
 
     /// #1235: forward a REPLICATION read — a replica catching up, or a new owner pulling from a survivor —
@@ -218,6 +232,37 @@ public interface StreamForwardClient {
                                                                                                                                                        + "[" + partition
                                                                                                                                                        + "]"))
                                                                                                      .async());
+    }
+
+    /// Stream-mem M-9a0: the owner's visible bounds of a partition together with the owner epoch (the life) they were
+    /// answered under.
+    record BoundsUnderLife(VisibleBounds bounds, Epoch life) {
+        public static BoundsUnderLife boundsUnderLife(VisibleBounds bounds, Epoch life) {
+            return new BoundsUnderLife(bounds, life);
+        }
+    }
+
+    /// Stream-mem M-9a0: [#boundsRemote] that also keeps the life the bounds were answered under — the same zero-event
+    /// forward (`Long.MAX_VALUE`, `maxEvents = 0`), the same failure when the serving node holds no ring.
+    default Promise<BoundsUnderLife> boundsWithLifeRemote(NodeId ownerId, String streamName, int partition) {
+        return readRemote(ownerId, streamName, partition, Long.MAX_VALUE, 0).flatMap(result -> boundsUnderLife(result,
+                                                                                                               ownerId,
+                                                                                                               streamName,
+                                                                                                               partition));
+    }
+
+    private static Promise<BoundsUnderLife> boundsUnderLife(ReadForwardResult result,
+                                                            NodeId ownerId,
+                                                            String streamName,
+                                                            int partition) {
+        return result.bounds()
+                     .map(bounds -> BoundsUnderLife.boundsUnderLife(bounds,
+                                                                    result.ownerEpoch()))
+                     .toResult(new StreamForwardError.ReadForwardFailed("Node " + ownerId.id()
+                                                                       + " holds no ring for " + streamName
+                                                                       + "[" + partition
+                                                                       + "]"))
+                     .async();
     }
 
     /// Where a peer's RING begins, over the CATCH-UP read class (#1730 phase 2): a read from beyond any head asking for no events, so
@@ -375,6 +420,24 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
                                              maxEvents,
                                              consumerEpoch),
                         "VALIDATED");
+    }
+
+    @Override
+    public Promise<ReadForwardResult> readRemoteLinearizable(NodeId ownerId,
+                                                             String streamName,
+                                                             int partition,
+                                                             long fromOffset,
+                                                             int maxEvents,
+                                                             Epoch life) {
+        return sendRead(ownerId,
+                        linearizableValidatedReadForward(selfNodeId,
+                                                         UUID.randomUUID().toString(),
+                                                         streamName,
+                                                         partition,
+                                                         fromOffset,
+                                                         maxEvents,
+                                                         life),
+                        "LINEARIZABLE_VALIDATED");
     }
 
     @Override
