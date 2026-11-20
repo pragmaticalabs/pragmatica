@@ -84,6 +84,11 @@ public sealed interface StreamResourceValidator {
     String RULE_REPLICATION_EXCEEDS_CORE_COUNT = "replication-exceeds-core-count";
     String RULE_UNKNOWN_STREAM_KEY = "unknown-stream-key";
     String RULE_STREAM_KEY_INVALID = "stream-key-invalid";
+    /// #3333: a `[retention]` block that declares no bound, and one that declares `max_count` without `max_bytes`.
+    String RULE_RETENTION_UNDECLARED = "retention-undeclared";
+    String RULE_RETENTION_COUNT_ONLY = "retention-count-only";
+    /// #3333: a key whose release has not merged yet (T-146).
+    String RULE_NOT_YET_AVAILABLE = "not-yet-available";
     String RULE_SOURCE_ADDRESS_INVALID = "source-address-invalid";
     String RULE_NAMESPACE_INVALID = "namespace-invalid";
     String RULE_STREAM_NAME_INVALID = "stream-name-invalid";
@@ -183,7 +188,7 @@ public sealed interface StreamResourceValidator {
     ///
     /// Every other rule is per-section — the parser's, one id per cause type ([#ruleFor]):
     /// [#RULE_VERSION_AND_SOURCE_EXCLUSIVE], [#RULE_PRODUCER_VERSION_EXACT], [#RULE_PARTITIONS_OVER_CEILING],
-    /// [#RULE_REPLICATION_POLICY_INVALID], [#RULE_REPLICATION_EXCEEDS_CORE_COUNT], [#RULE_UNKNOWN_STREAM_KEY], [#RULE_STREAM_KEY_INVALID], [#RULE_SOURCE_ADDRESS_INVALID], [#RULE_NAMESPACE_INVALID],
+    /// [#RULE_REPLICATION_POLICY_INVALID], [#RULE_REPLICATION_EXCEEDS_CORE_COUNT], [#RULE_UNKNOWN_STREAM_KEY], [#RULE_STREAM_KEY_INVALID], [#RULE_RETENTION_UNDECLARED], [#RULE_RETENTION_COUNT_ONLY], [#RULE_NOT_YET_AVAILABLE], [#RULE_SOURCE_ADDRESS_INVALID], [#RULE_NAMESPACE_INVALID],
     /// [#RULE_STREAM_NAME_INVALID], [#RULE_VERSION_FORMAT_INVALID], [#RULE_STREAM_RESOURCE_INVALID] for a cause
     /// type not named here. Each names the alias it sits under, taken from the section the parser
     /// refused, never from message text. [#RULE_NAMESPACE_RESERVED] on an External source has no producer at
@@ -548,6 +553,9 @@ public sealed interface StreamResourceValidator {
             case StreamDeclarationError.MalformedValue _ -> RULE_STREAM_KEY_INVALID;
             case StreamDeclarationError.ValueOverflows _ -> RULE_STREAM_KEY_INVALID;
             case StreamDeclarationError.ValueOutOfRange _ -> RULE_STREAM_KEY_INVALID;
+            case StreamDeclarationError.RetentionUndeclared _ -> RULE_RETENTION_UNDECLARED;
+            case StreamDeclarationError.RetentionCountOnly _ -> RULE_RETENTION_COUNT_ONLY;
+            case StreamDeclarationError.NotYetAvailable _ -> RULE_NOT_YET_AVAILABLE;
             case ResourceAddressError.General address -> addressRule(address);
             case ResourceVersionError _ -> RULE_VERSION_FORMAT_INVALID;
             case StreamVersionSpecError _ -> RULE_VERSION_FORMAT_INVALID;

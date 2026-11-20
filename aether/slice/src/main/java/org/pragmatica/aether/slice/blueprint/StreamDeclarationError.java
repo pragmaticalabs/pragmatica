@@ -135,6 +135,38 @@ public sealed interface StreamDeclarationError extends Cause {
         }
     }
 
+    /// A `[retention]` block that declares no bound (#3333, S2a1 section 2.2): none of `max_age`, `max_bytes`, `max_count`.
+    /// Refused rather than defaulted, because a block that bounds nothing is a mistake, not a request for the default.
+    record RetentionUndeclared(String alias) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' declares a [retention] block with no bound: declare at least one of max_age, max_bytes, max_count,"
+                 + " or remove the block for the default";
+        }
+    }
+
+    /// A `[retention]` block that declares `max_count` without `max_bytes` (#3333, S2a1 section 2.2): a count alone has no
+    /// byte bound a user would recognise, so it is refused here instead of at plan, where the reason would be hidden.
+    record RetentionCountOnly(String alias, long maxCount, long maxEventSize) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' declares retention.max_count = " + maxCount
+                 + " without retention.max_bytes: add max_bytes; max_count alone bounds this stream only at max_count x max_event_size ("
+                 + maxEventSize + " bytes per event)";
+        }
+    }
+
+    /// A key whose release has not merged yet (#3333, T-146): refused instead of accepted and ignored, so no declaration is
+    /// stored that nothing enforces. The release that lands the behaviour removes the refusal.
+    record NotYetAvailable(String alias, String key, String release) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias + "' declares " + key + " with a value that is not available before release " + release;
+        }
+    }
+
     /// Keys of the section, or of its consumer sections, that have no runtime effect ([InertKeyRules]), refused at activation
     /// as the deploy validator refuses them (#2201 E-02): a declaration that reaches a node without passing the validator
     /// does not bind with a key that silently does nothing.

@@ -637,4 +637,33 @@ class StreamResourceValidatorTest {
                                                  .orElseGet(() -> fail("No inert refusal names '" + key + "'"));
         }
     }
+
+    /// #3333: each declaration refusal of the stream parser reports its own rule id, not the generic section rule.
+    @Nested
+    class DeclarationRuleIds {
+        @Test
+        void emptyRetentionBlock_reportsRetentionUndeclared() {
+            assertRuleFor("[streams.orders.retention]\nmode = \"any\"\n", StreamResourceValidator.RULE_RETENTION_UNDECLARED);
+        }
+
+        @Test
+        void countOnlyRetention_reportsRetentionCountOnly() {
+            assertRuleFor("[streams.orders.retention]\nmax_count = 100\n", StreamResourceValidator.RULE_RETENTION_COUNT_ONLY);
+        }
+
+        @Test
+        void untilConsumed_reportsNotYetAvailable() {
+            assertRuleFor("[streams.orders.truncation]\npolicy = \"until_consumed\"\n", StreamResourceValidator.RULE_NOT_YET_AVAILABLE);
+        }
+
+        private void assertRuleFor(String sections, String rule) {
+            var toml = "[streams.orders]\nversion = \"1.0.0\"\n\n" + sections;
+
+            StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT)
+                                   .onSuccessRun(() -> fail("Expected failure"))
+                                   .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
+                                                               .extracting(StreamValidationFailure::rule)
+                                                               .containsExactly(rule));
+        }
+    }
 }

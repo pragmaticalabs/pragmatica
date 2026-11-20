@@ -40,6 +40,12 @@ public sealed interface StreamSection {
                      .or(Result.success(Option.none()));
     }
 
+    /// Whether the section declares the sub-table `name` (`[streams.<alias>.<name>]`), empty or not. The dotted
+    /// keys carry a non-empty table; an empty one is visible only where the source records its headers.
+    default boolean hasTable(String name) {
+        return keys().stream().anyMatch(key -> key.startsWith(name + "."));
+    }
+
     /// `consumers.<group>...` belongs to the consumer parser, never to this section.
     private static boolean isConsumerTable(String relative) {
         return relative.startsWith("consumers.");
@@ -80,7 +86,21 @@ public sealed interface StreamSection {
 
         @Override
         public Option<String> string(String key) {
-            return doc.getString(section, key);
+            return doc.getString(section, key).orElse(() -> subTableValue(key));
+        }
+
+        /// `<sub>.<key>` read from the `[streams.<alias>.<sub>]` table, the form [#keys] reports it in.
+        private Option<String> subTableValue(String dotted) {
+            var split = dotted.indexOf('.');
+
+            return split < 0
+                   ? Option.none()
+                   : doc.getString(section + "." + dotted.substring(0, split), dotted.substring(split + 1));
+        }
+
+        @Override
+        public boolean hasTable(String name) {
+            return doc.sectionNames().contains(section + "." + name) || StreamSection.super.hasTable(name);
         }
     }
 

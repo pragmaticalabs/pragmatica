@@ -10,6 +10,7 @@ import java.util.Comparator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -17,16 +18,22 @@ import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.slice.ConsumerConfig.ProcessingMode;
+import org.pragmatica.aether.slice.HotWindowDeclaration;
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.ReplicationDeclaration;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.ReplicationWarning;
+import org.pragmatica.aether.slice.RetentionDeclaration;
 import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.StreamDeclaration;
+import org.pragmatica.aether.slice.TruncationDeclaration;
+import org.pragmatica.aether.slice.TruncationPolicy;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.stream.DeclarationDefaults;
 import org.pragmatica.aether.slice.stream.StreamEngineKey;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
@@ -459,7 +466,24 @@ public interface StreamConfigParser {
     static Result<DeclaredStream> parseStreamDeclaration(StreamSection section, ReplicationFactors defaults) {
         return refuseUnknownKeys(section).flatMap(valid -> parseStreamSection(valid, defaults))
                                 .flatMap(declared -> validatePartitionCeiling(section.alias(),
-                                                                              declared.config()).map(_ -> declared));
+                                                                              declared.config()).map(_ -> declared))
+                                .flatMap(declared -> refuseNotYetAvailable(section.alias(), declared));
+    }
+
+    /// The T-146 gate: `truncation.policy = "until_consumed"` is refused, not stored, until release S3 lands the behaviour
+    /// (no accept-and-ignore window). It runs after every other refusal, so a section that is malformed in any other way
+    /// reports that refusal first. S3 deletes this method and its tripwire test.
+    private static Result<DeclaredStream> refuseNotYetAvailable(String alias, DeclaredStream declared) {
+        var untilConsumed = declared.config()
+                                    .declaration()
+                                    .flatMap(StreamDeclaration::truncation)
+                                    .flatMap(TruncationDeclaration::policy)
+                                    .filter(TruncationPolicy.UNTIL_CONSUMED::equals)
+                                    .isPresent();
+
+        return untilConsumed
+               ? new StreamDeclarationError.NotYetAvailable(alias, "truncation.policy", "S3").result()
+               : success(declared);
     }
 
     /// A parsed stream declaration: the config, its factors resolved, and the warnings they raised.
@@ -522,6 +546,23 @@ public interface StreamConfigParser {
                                                "compression",
                                                "encryption_key_id");
 
+    /// Every key [#parseDeclaration] reads from the `[retention]`, `[truncation]` and `[hot]` sub-sections of a stream
+    /// (stream-storage-design 2.1), in the dotted form [StreamSection#keys] reports. `expected_ingress` is not one of
+    /// them: it stays an unknown key until its own step reads it.
+    List<String> DECLARATION_SECTION_KEYS = List.of("retention.max_age",
+                                                    "retention.max_bytes",
+                                                    "retention.max_count",
+                                                    "retention.mode",
+                                                    "truncation.policy",
+                                                    "truncation.group_idle_expiry",
+                                                    "hot.max_bytes",
+                                                    "hot.max_count");
+
+    /// Every key a stream section may carry, for the unknown-key refusal and its nearest-key suggestion.
+    List<String> KNOWN_KEYS = Stream.concat(STREAM_SECTION_KEYS.stream(),
+                                            DECLARATION_SECTION_KEYS.stream())
+                                    .toList();
+
     /// Every key read from a `[streams.<alias>.consumers.<group>]` section. Snake_case like the stream keys; the dashed
     /// spelling of one of them is refused ([#refuseDashedConsumerKeys]) rather than ignored, which would default it.
     List<String> CONSUMER_SECTION_KEYS = List.of("processing",
@@ -547,7 +588,7 @@ public interface StreamConfigParser {
                                               ReplicationDeclaration.CONFIRMATION_KEY);
 
     private static Result<StreamSection> refuseUnknownKeys(StreamSection section) {
-        var unknown = section.keys().stream().filter(key -> !STREAM_SECTION_KEYS.contains(key)).sorted().toList();
+        var unknown = section.keys().stream().filter(key -> !KNOWN_KEYS.contains(key)).sorted().toList();
 
         return unknown.isEmpty()
                ? success(section)
@@ -572,16 +613,16 @@ public interface StreamConfigParser {
 
         var snake = key.replace('-', '_');
 
-        if (STREAM_SECTION_KEYS.contains(snake)) {
+        if (KNOWN_KEYS.contains(snake)) {
             return snake;
         }
 
         var threshold = Math.max(3, key.length() / 2);
 
-        return STREAM_SECTION_KEYS.stream()
-                                  .filter(known -> editDistance(snake, known) <= threshold)
-                                  .min(Comparator.comparingInt(known -> editDistance(snake, known)))
-                                  .orElse("");
+        return KNOWN_KEYS.stream()
+                         .filter(known -> editDistance(snake, known) <= threshold)
+                         .min(Comparator.comparingInt(known -> editDistance(snake, known)))
+                         .orElse("");
     }
 
     private static int editDistance(String a, String b) {
@@ -629,8 +670,16 @@ public interface StreamConfigParser {
         var consistency = optionalEnum(section, "consistency", List.of("eventual", "strong"), "eventual");
         var compression = optionalEnum(section, "compression", List.of("none", "lz4", "zstd"), "none");
         var retention = parseRetention(section);
+        var declaration = Result.all(partitions, maxEventSize).flatMap((count, size) -> parseDeclaration(section, count, size));
 
-        return firstFailure(List.of(partitions, factor, confirmation, maxEventSize, consistency, compression, retention)).map(failure -> failure.<DeclaredStream> map(_ -> new DeclaredStream(StreamConfig.DEFAULT,
+        return firstFailure(List.of(partitions,
+                                    factor,
+                                    confirmation,
+                                    maxEventSize,
+                                    consistency,
+                                    compression,
+                                    retention,
+                                    declaration)).map(failure -> failure.<DeclaredStream> map(_ -> new DeclaredStream(StreamConfig.DEFAULT,
                                                                                                                                                                                               List.of())))
                            .or(() -> Result.all(factor, confirmation)
                                            .map(ReplicationDeclaration::replicationDeclaration)
@@ -642,7 +691,8 @@ public interface StreamConfigParser {
                                                                          maxEventSize,
                                                                          consistency,
                                                                          resolved.factors(),
-                                                                         compression).map(config -> new DeclaredStream(config,
+                                                                         compression,
+                                                                         declaration).map(config -> new DeclaredStream(config,
                                                                                                                        resolved.warnings()))));
     }
 
@@ -652,18 +702,20 @@ public interface StreamConfigParser {
                                                  Result<Long> maxEventSize,
                                                  Result<String> consistency,
                                                  ReplicationFactors factors,
-                                                 Result<String> compression) {
-        return Result.all(partitions, retention, maxEventSize, consistency, compression).map((p, r, size, mode, codec) -> StreamConfig.streamConfig(section.alias(),
-                                                                                                                                                    p,
-                                                                                                                                                    r,
-                                                                                                                                                    section.string("auto_offset_reset")
-                                                                                                                                                           .or("earliest"),
-                                                                                                                                                    size,
-                                                                                                                                                    parseConsistencyMode(mode),
-                                                                                                                                                    factors.replicationFactor(),
-                                                                                                                                                    factors.confirmationFactor(),
-                                                                                                                                                    parseCompression(codec),
-                                                                                                                                                    section.string("encryption_key_id")));
+                                                 Result<String> compression,
+                                                 Result<StreamDeclaration> declaration) {
+        return Result.all(partitions, retention, maxEventSize, consistency, compression, declaration).map((p, r, size, mode, codec, declared) -> StreamConfig.streamConfig(section.alias(),
+                                                                                                                                                                         p,
+                                                                                                                                                                         r,
+                                                                                                                                                                         section.string("auto_offset_reset")
+                                                                                                                                                                                .or("earliest"),
+                                                                                                                                                                         size,
+                                                                                                                                                                         parseConsistencyMode(mode),
+                                                                                                                                                                         factors.replicationFactor(),
+                                                                                                                                                                         factors.confirmationFactor(),
+                                                                                                                                                                         parseCompression(codec),
+                                                                                                                                                                         section.string("encryption_key_id"))
+                                                                                                                                                         .withDeclaration(declared));
     }
 
     private static Option<Result<?>> firstFailure(List<Result<?>> results) {
@@ -787,6 +839,133 @@ public interface StreamConfigParser {
                                                                                                                  bytes,
                                                                                                                  age,
                                                                                                                  mode));
+    }
+
+    /// The stream's storage declaration (`[retention]`, `[truncation]`, `[hot]`), resolved against [DeclarationDefaults] and
+    /// stored as `Some(resolved)` (#3333): the later steps read the parsed value, never the defaults again. A section that
+    /// declares no `[retention]` block takes the default bounds; a block takes exactly what it declares (a bound it does not
+    /// name stays absent) plus the default `mode`. `[hot]` resolves each key it does not name, `[truncation]` its `policy`.
+    /// The first refusal in key order is the cause, as for the rest of the section.
+    private static Result<StreamDeclaration> parseDeclaration(StreamSection section, int partitions, long maxEventSize) {
+        var retention = parseRetentionDeclaration(section, partitions, maxEventSize);
+        var truncation = parseTruncationDeclaration(section);
+        var hot = parseHotDeclaration(section, maxEventSize);
+
+        return firstRefusalOr(List.of(retention, truncation, hot),
+                              () -> Result.all(retention, truncation, hot)
+                                          .map((r, t, h) -> StreamDeclaration.streamDeclaration(some(r),
+                                                                                                some(t),
+                                                                                                some(h),
+                                                                                                none())));
+    }
+
+    /// The first refusal of `parts`, else `parsed`: the typed cause of one key, never a composite of several.
+    private static <T> Result<T> firstRefusalOr(List<Result<?>> parts, Supplier<Result<T>> parsed) {
+        return firstFailure(parts).map(failure -> failure.<T> flatMap(_ -> parsed.get()))
+                           .or(parsed);
+    }
+
+    private static Result<RetentionDeclaration> parseRetentionDeclaration(StreamSection section,
+                                                                          int partitions,
+                                                                          long maxEventSize) {
+        return section.hasTable("retention")
+               ? declaredRetention(section, maxEventSize)
+               : success(defaultRetention(partitions));
+    }
+
+    private static RetentionDeclaration defaultRetention(int partitions) {
+        return RetentionDeclaration.retentionDeclaration(some(DeclarationDefaults.DEFAULT_MAX_AGE_MS),
+                                                         some(DeclarationDefaults.defaultMaxBytes(partitions)),
+                                                         none(),
+                                                         some(DeclarationDefaults.DEFAULT_MODE));
+    }
+
+    private static Result<RetentionDeclaration> declaredRetention(StreamSection section, long maxEventSize) {
+        var maxAge = declaredValue(section, "retention.max_age", StreamValues::duration);
+        var maxBytes = declaredValue(section, "retention.max_bytes", StreamValues::size);
+        var maxCount = declaredValue(section, "retention.max_count", StreamValues::count);
+        var mode = declaredMode(section);
+
+        return firstRefusalOr(List.of(maxAge, maxBytes, maxCount, mode),
+                              () -> Result.all(maxAge, maxBytes, maxCount, mode)
+                                          .map(RetentionDeclaration::retentionDeclaration)
+                                          .flatMap(declared -> boundedRetention(section.alias(), maxEventSize, declared)));
+    }
+
+    /// A block that names no bound is refused, and so is a `max_count` with no `max_bytes` (a `max_count` beside only a
+    /// `max_age` is not enough: stream-storage-design 2.2 row "`max_count` with no `max_bytes`").
+    private static Result<RetentionDeclaration> boundedRetention(String alias, long maxEventSize, RetentionDeclaration declared) {
+        return declared.maxAgeMs().isEmpty() && declared.maxBytes().isEmpty() && declared.maxCount().isEmpty()
+               ? new StreamDeclarationError.RetentionUndeclared(alias).result()
+               : refuseCountOnly(alias, maxEventSize, declared);
+    }
+
+    private static Result<RetentionDeclaration> refuseCountOnly(String alias, long maxEventSize, RetentionDeclaration declared) {
+        return declared.maxBytes().isEmpty()
+               ? declared.maxCount()
+                         .<Result<RetentionDeclaration>> map(count -> new StreamDeclarationError.RetentionCountOnly(alias,
+                                                                                                                    count,
+                                                                                                                    maxEventSize).result())
+                         .or(success(declared))
+               : success(declared);
+    }
+
+    private static Result<TruncationDeclaration> parseTruncationDeclaration(StreamSection section) {
+        var policy = declaredPolicy(section);
+        var idleExpiry = declaredValue(section, "truncation.group_idle_expiry", StreamValues::duration);
+
+        return firstRefusalOr(List.of(policy, idleExpiry),
+                              () -> Result.all(policy, idleExpiry)
+                                          .map((declared, idle) -> TruncationDeclaration.truncationDeclaration(some(declared.or(TruncationPolicy.WINDOW)),
+                                                                                                               idle)));
+    }
+
+    private static Result<HotWindowDeclaration> parseHotDeclaration(StreamSection section, long maxEventSize) {
+        var maxBytes = declaredValue(section, "hot.max_bytes", StreamValues::size);
+        var maxCount = declaredValue(section, "hot.max_count", StreamValues::count);
+
+        return firstRefusalOr(List.of(maxBytes, maxCount),
+                              () -> Result.all(maxBytes, maxCount)
+                                          .map((bytes, count) -> HotWindowDeclaration.hotWindowDeclaration(some(bytes.or(DeclarationDefaults.defaultHotMaxBytes(maxEventSize))),
+                                                                                                           some(count.or(DeclarationDefaults.defaultHotMaxCount())))));
+    }
+
+    /// `Success(None)` when the key is absent, else the value read by `parser`, refused when malformed.
+    private static Result<Option<Long>> declaredValue(StreamSection section,
+                                                      String key,
+                                                      Functions.Fn3<Result<Long>, String, String, String> parser) {
+        return section.string(key)
+                      .map(raw -> parser.apply(section.alias(),
+                                               key,
+                                               raw).map(Option::some))
+                      .or(success(none()));
+    }
+
+    private static Result<Option<RetentionMode>> declaredMode(StreamSection section) {
+        return section.string("retention.mode")
+                      .map(raw -> StreamValues.oneOf(section.alias(),
+                                                     "retention.mode",
+                                                     raw,
+                                                     List.of("any", "all")).map(StreamConfigParser::parseRetentionMode)
+                                              .map(Option::some))
+                      .or(success(none()));
+    }
+
+    private static Result<Option<TruncationPolicy>> declaredPolicy(StreamSection section) {
+        return section.string("truncation.policy")
+                      .map(raw -> StreamValues.oneOf(section.alias(),
+                                                     "truncation.policy",
+                                                     raw,
+                                                     List.of("window", "until_consumed")).map(StreamConfigParser::parseTruncationPolicy)
+                                              .map(Option::some))
+                      .or(success(none()));
+    }
+
+    private static TruncationPolicy parseTruncationPolicy(String value) {
+        return switch (value) {
+            case "until_consumed" -> TruncationPolicy.UNTIL_CONSUMED;
+            default -> TruncationPolicy.WINDOW;
+        };
     }
 
     /// The `[streams.<name>.consumers.<group>]` table names of one stream, one segment past the prefix.

@@ -430,14 +430,30 @@ class StreamSectionBindingTest {
             assertBothRefuseWith(toml, StreamDeclarationError.UnknownStreamKeys.class);
         }
 
+        /// `retention` is a known sub-section since #3333, so what is refused here is `retention.value`: a key that
+        /// sub-section does not read.
         @Test
-        void subTableOtherThanConsumers_isRefusedAtBoth() {
+        void unknownKeyInAKnownSubSection_isRefusedAtBoth() {
             var toml = """
                     [streams.orders]
                     version = "1.0.0"
 
                     [streams.orders.retention]
                     value = "5"
+                    """;
+
+            assertBothRefuseWith(toml, StreamDeclarationError.UnknownStreamKeys.class);
+        }
+
+        /// `storage` is no sub-section of a stream: a wholly unknown sub-table (the in-memory streams work reads it later).
+        @Test
+        void unknownSubTable_isRefusedAtBoth() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+
+                    [streams.orders.storage]
+                    kind = "memory"
                     """;
 
             assertBothRefuseWith(toml, StreamDeclarationError.UnknownStreamKeys.class);
