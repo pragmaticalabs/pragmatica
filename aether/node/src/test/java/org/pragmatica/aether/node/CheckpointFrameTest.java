@@ -5,9 +5,13 @@
 package org.pragmatica.aether.node;
 
 import java.nio.ByteBuffer;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
@@ -114,6 +118,82 @@ class CheckpointFrameTest {
         assertThat(pointerOf(bytes("an rc5 fold"))).isEqualTo("none");
         assertThat(pointerOf(header(Integer.MAX_VALUE - 64))).isEqualTo("none");
         assertThat(pointerOf(header(-5))).isEqualTo("none");
+    }
+
+    /// #3303 A4a: a block opens with `CKPTID02` and a 16-byte nonce, and two frames of identical input differ within those first 24 bytes, so
+    /// re-saving identical content never yields one block id.
+    @Test
+    void twoFramesOfIdenticalInput_differInTheirFirst24Bytes_andOpenWithTheV2Marker() {
+        var first = CheckpointFrame.frame("orders", 3, 7L, bytes("the fold"), Option.none());
+        var second = CheckpointFrame.frame("orders", 3, 7L, bytes("the fold"), Option.none());
+
+        assertThat(new String(first, 0, 8, StandardCharsets.US_ASCII)).isEqualTo("CKPTID02");
+        assertThat(Arrays.copyOf(first, 24)).isNotEqualTo(Arrays.copyOf(second, 24));
+        assertThat(Arrays.copyOfRange(first, 24, first.length)).as("the rest is the same header and body").isEqualTo(Arrays.copyOfRange(second, 24, second.length));
+    }
+
+    /// A hand-built `CKPTID01` block (written before the nonce) still reads: snapshot, lineage and pointer.
+    @Test
+    void aHandBuiltV1Block_stillReads_snapshotLineageAndPointer() {
+        var snapshot = bytes("the fold");
+        var lineage = bytes("the lineage");
+        var name = bytes("orders");
+        var body = ByteBuffer.allocate(8 + Integer.BYTES + lineage.length + snapshot.length)
+                             .put("LNGCKPT1".getBytes(StandardCharsets.US_ASCII))
+                             .putInt(lineage.length)
+                             .put(lineage)
+                             .put(snapshot)
+                             .array();
+        var v1 = ByteBuffer.allocate(8 + Integer.BYTES + name.length + Integer.BYTES + Long.BYTES + body.length)
+                           .put("CKPTID01".getBytes(StandardCharsets.US_ASCII))
+                           .putInt(name.length)
+                           .put(name)
+                           .putInt(3)
+                           .putLong(7L)
+                           .put(body)
+                           .array();
+        var read = CheckpointFrame.unframe(7L, v1);
+
+        assertThat(read.snapshot()).isEqualTo(snapshot);
+        assertThat(read.lineage().map(Arrays::toString).or("none")).isEqualTo(Arrays.toString(lineage));
+        assertThat(pointerOf(v1)).isEqualTo("entity-checkpoint/orders/3");
+    }
+
+    /// A `CKPTID02` header whose keyspace length does not fit the block is not stripped, as for `CKPTID01`.
+    @Test
+    void aV2HeaderThatDoesNotParse_leavesTheBlockWhole() {
+        var block = ByteBuffer.allocate(8 + 16 + Integer.BYTES + 16)
+                              .put("CKPTID02".getBytes(StandardCharsets.US_ASCII))
+                              .put(new byte[16])
+                              .putInt(Integer.MAX_VALUE - 64)
+                              .put(new byte[16])
+                              .array();
+
+        assertThat(CheckpointFrame.unframe(7L, block).snapshot()).isEqualTo(block);
+        assertThat(pointerOf(block)).isEqualTo("none");
+    }
+
+    /// T-A36 (#3303 A4a): `CheckpointFrame.frame` draws the per-put nonce, so a caller outside the checkpoint save path would write blocks
+    /// the reclaim never accounted for. The main-source callers are exactly the listed ones; an unlisted caller fails here.
+    @Test
+    void checkpointFrameFrame_isCalledFromTheAllowedMainSourcesOnly() throws IOException {
+        try (var files = Files.walk(Path.of("src/main/java"))) {
+            var callers = files.filter(path -> path.toString().endsWith(".java"))
+                               .filter(CheckpointFrameTest::callsFrame)
+                               .map(path -> path.getFileName().toString())
+                               .sorted()
+                               .collect(Collectors.toList());
+
+            assertThat(callers).containsExactly("StreamEntityLogSubstrate.java");
+        }
+    }
+
+    private static boolean callsFrame(Path path) {
+        try {
+            return Files.readString(path).contains("CheckpointFrame.frame(");
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private static String pointerOf(byte[] block) {

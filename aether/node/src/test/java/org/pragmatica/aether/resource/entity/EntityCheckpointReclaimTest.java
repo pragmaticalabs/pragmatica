@@ -333,16 +333,38 @@ class EntityCheckpointReclaimTest {
         assertThat(readable(loserBlock)).as("the loser's displaced block leaks: the winner never saw it (L-12)").isTrue();
     }
 
-    /// Hazard: identical bytes at one claim from two writers are one block; neither deletes it.
+    /// #3303 A4a (was: identical bytes at one claim from two writers are one block): every put carries a fresh nonce, so identical bytes at one
+    /// claim from two writers are two blocks. The second swap displaces the first writer's block (the pointer it replaced names it) and the
+    /// reclaim deletes it after the grace; the block the pointer names is kept.
     @Test
-    void identicalBytesAtOneClaim_fromTwoWriters_areOneBlock_andItIsKept() {
+    void identicalBytesAtOneClaim_fromTwoWriters_areTwoBlocks_andTheDisplacedOneIsReclaimed() {
         var first = save(substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
         var second = save(substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
 
-        assertThat(second).isEqualTo(first);
+        assertThat(second).as("a fresh nonce per put: distinct block ids").isNotEqualTo(first);
+        eventually("the displaced first block is deleted", 5_000L, () -> !readable(first));
+        assertThat(readable(second)).as("the block the pointer names is kept").isTrue();
+        assertThat(shared.deletes).containsOnly(first);
+    }
+
+    /// T-A35 (#3303 A4a): the block is put, the writer crashes before the pointer Put; the one-order content is re-put; the pointer commits to
+    /// the re-put block; the sweep deletes. With a per-put nonce the re-put has a new id, so the block the pointer names is kept; with a
+    /// constant nonce the ids are equal and the delete of the orphan removes the block the pointer names (CHECKPOINT_LOST).
+    @Test
+    void aBlockPutBeforeACrash_andRePutWithTheSameContent_getsANewId_andTheCommittedBlockIsKept() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+        var crashing = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY), _ -> Promise.success(List.of()));
+
+        assertThat(crashing.saveCheckpoint(KEYSPACE, 0, 5L, snapshot("same"), Option.none()).await().isSuccess()).as("control: the pointer Put never lands").isTrue();
+        var orphan = shared.puts.getLast();
+
+        var committed = save(substrate, 0, 5L, snapshot("same"), Option.none());
+
+        assertThat(storage.delete(orphan).await().isSuccess()).as("the sweep deletes the orphan it decided on before the commit").isTrue();
+        assertThat(committed).as("the re-put gets a new id").isNotEqualTo(orphan);
         pause(PAST_SHORT_GRACE_MS);
-        assertThat(readable(first)).isTrue();
-        assertThat(shared.deletes).isEmpty();
+        assertThat(readable(pointed(0))).as("the block the committed pointer names is kept").isTrue();
+        assertThat(pointed(0)).isEqualTo(committed);
     }
 
     /// Hazard: a loader holding the replaced pointer (its KV copy lags) races the delete and loses: it gets "no usable checkpoint" (the fold
@@ -432,11 +454,11 @@ class EntityCheckpointReclaimTest {
         apply(List.of(new KVCommand.Remove<AetherKey>(EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 0))));
         assertThat(kv.getTyped(EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 0), EntityFoldCheckpointValue.class).isPresent()).as("control: the pointer is removed")
                                                                                                                          .isFalse();
-        var again = save(substrate, 0, 1L, snapshot("same"), Option.none());
-
-        assertThat(again).as("control: identical bytes at the same claim name the same block").isEqualTo(first);
+        apply(List.of(new KVCommand.Put<AetherKey, AetherValue>(EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 0),
+                                                                EntityFoldCheckpointValue.entityFoldCheckpointValue(1L, first.hexString()))));
+        assertThat(pointed(0)).as("control: the rewritten pointer names the displaced block again").isEqualTo(first);
         pause(3_000L);
-        assertThat(readable(pointed(0))).as("the block the current pointer names is readable").isTrue();
+        assertThat(readable(first)).as("the block the current pointer names is readable").isTrue();
     }
 
     /// The same hazard on a partition other than 0 (v-2516 delta): the check reads the pointer of the partition in the block's header, so
@@ -448,13 +470,13 @@ class EntityCheckpointReclaimTest {
 
         save(substrate, 3, 2L, snapshot("two"), Option.none());
         apply(List.of(new KVCommand.Remove<AetherKey>(EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 3))));
-        var again = save(substrate, 3, 1L, snapshot("same"), Option.none());
-
-        assertThat(again).as("control: identical bytes at the same claim name the same block").isEqualTo(first);
+        apply(List.of(new KVCommand.Put<AetherKey, AetherValue>(EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 3),
+                                                                EntityFoldCheckpointValue.entityFoldCheckpointValue(1L, first.hexString()))));
+        assertThat(pointed(3)).as("control: the rewritten pointer names the displaced block again").isEqualTo(first);
         assertThat(kv.getTyped(EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 0), EntityFoldCheckpointValue.class).isPresent()).as("control: no pointer of partition 0")
                                                                                                                          .isFalse();
         pause(3_000L);
-        assertThat(readable(pointed(3))).as("the block the current pointer names is readable").isTrue();
+        assertThat(readable(first)).as("the block the current pointer names is readable").isTrue();
     }
 
     /// Cost (v-2516 delta): a present block with an identity header is checked by reading its own pointer, so its delete scans nothing; a
