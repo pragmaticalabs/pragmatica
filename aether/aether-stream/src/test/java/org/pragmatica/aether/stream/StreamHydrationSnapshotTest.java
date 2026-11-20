@@ -41,7 +41,7 @@ class StreamHydrationSnapshotTest {
     private static final long HEADER = 64L;
     private static final long INDEX_ENTRY = 24L;
 
-    /// The management-API default retention (StreamRoutes.MANAGEMENT_API_RETENTION): 10_000 count,
+    /// The management-API default retention (the pre-#3334 `MANAGEMENT_API_RETENTION`, since removed): 10_000 count,
     /// 4 MiB bytes, 1h. 4 partitions per the stream default.
     private static StreamConfig mgmtDefault(String name) {
         var retention = RetentionPolicy.retentionPolicy(10_000, 4L * 1024 * 1024, 60 * 60 * 1000L);

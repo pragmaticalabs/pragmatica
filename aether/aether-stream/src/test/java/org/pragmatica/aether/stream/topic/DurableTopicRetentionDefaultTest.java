@@ -11,6 +11,7 @@ import org.pragmatica.aether.resource.DurableTopicSpec;
 import org.pragmatica.aether.slice.ReplicationDeclaration;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.RetentionDimensions;
+import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.lang.parse.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -20,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DurableTopicRetentionDefaultTest {
     private static final String ADDRESS = "com.example:orders:1.0.0";
     private static final long GIB = 1024L * 1024 * 1024;
+    private static final long MIB = 1024L * 1024;
 
     private static DurableTopicSpec spec(int partitions) {
         return DurableTopicSpec.durableTopicSpec(partitions,
@@ -43,5 +45,44 @@ class DurableTopicRetentionDefaultTest {
 
         assertThat(retention.maxBytes()).isEqualTo(8 * GIB);
         assertThat(retention.declared()).isEqualTo(RetentionDimensions.retentionDimensions(false, true, true));
+    }
+
+    /// S4 (#3491): the topic's mode is ANY, the default (ST 2.2); under ALL the age would lift the byte cap.
+    @Test
+    void topicConfig_mode_isAny() {
+        assertThat(DurableTopicSubstrate.topicStreamConfig(ADDRESS, spec(1)).retention().mode()).isEqualTo(RetentionMode.ANY);
+    }
+
+    /// S5 (#3491): the dead-letter stream's mode is ANY, so its byte bound cuts whatever the age says.
+    @Test
+    void dlqConfig_mode_isAny() {
+        assertThat(DurableTopicSubstrate.dlqStreamConfig(ADDRESS, spec(1)).retention().mode()).isEqualTo(RetentionMode.ANY);
+    }
+
+    /// F7/G26 (T-141): a `.dlq` keeps 14 d AND 10 % of the source's byte bound, both declared; the count is undeclared.
+    @Test
+    void dlqConfig_defaultSource_keepsFourteenDaysAndTenPercentOfTheSourceBytes() {
+        var retention = DurableTopicSubstrate.dlqStreamConfig(ADDRESS, spec(1)).retention();
+
+        assertThat(retention.maxAgeMs()).isEqualTo(TimeSpan.timeSpan("14d").unwrap().toMillis());
+        assertThat(retention.maxBytes()).isEqualTo(GIB / 10);
+        assertThat(retention.declared()).isEqualTo(RetentionDimensions.retentionDimensions(false, true, true));
+    }
+
+    @Test
+    void dlqConfig_largeSource_takesTenPercentOfItsBytes() {
+        assertThat(DurableTopicSubstrate.dlqStreamConfig(ADDRESS, spec(1024)).retention().maxBytes()).isEqualTo(8 * GIB / 10);
+    }
+
+    @Test
+    void dlqMaxBytes_smallSource_getsTheSixtyFourMebibyteFloor() {
+        assertThat(DurableTopicSubstrate.dlqMaxBytes(256 * MIB)).isEqualTo(64 * MIB);
+        assertThat(DurableTopicSubstrate.dlqMaxBytes(0L)).isEqualTo(64 * MIB);
+    }
+
+    @Test
+    void dlqMaxBytes_largeSource_isTenPercent() {
+        assertThat(DurableTopicSubstrate.dlqMaxBytes(GIB)).isEqualTo(GIB / 10);
+        assertThat(DurableTopicSubstrate.dlqMaxBytes(1000 * MIB)).isEqualTo(100 * MIB);
     }
 }
