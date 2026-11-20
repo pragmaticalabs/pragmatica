@@ -132,6 +132,53 @@ class CheckpointFrameTest {
         assertThat(Arrays.copyOfRange(first, 24, first.length)).as("the rest is the same header and body").isEqualTo(Arrays.copyOfRange(second, 24, second.length));
     }
 
+    /// #3303 A4a: the persisted layout is marker (8), nonce (16), keyspace length (4), keyspace, partition (4), claim (8), body; the nonce
+    /// width is part of the layout, so a frame's length pins it (a writer and reader sharing one wrong constant would still round-trip).
+    @Test
+    void aFramedBlock_hasTheLengthOfThePersistedLayout_soTheNonceWidthIsPinned() {
+        var name = bytes("orders");
+        var snapshot = bytes("the fold");
+        var block = CheckpointFrame.frame("orders", 3, 7L, snapshot, Option.none());
+
+        assertThat(block).hasSize(8 + 16 + Integer.BYTES + name.length + Integer.BYTES + Long.BYTES + snapshot.length);
+    }
+
+    /// A block without the header whose first four bytes parse as a non-negative length that fits is still a block without the header. The
+    /// smallest such real block opens with snapshot version byte 1 and is 16 MiB + 16 bytes (the first int is then 16 MiB, and 4 + 16 MiB + 12
+    /// bytes fit): it must read whole, and name no pointer, not be stripped as if it carried a header.
+    @Test
+    void aHeaderlessBlock_whoseFirstIntParsesAsAFittingLength_isReadWhole() {
+        var length = 1 << 24;
+        var block = new byte[Integer.BYTES + length + 12];
+
+        block[0] = 1;
+
+        assertThat(Arrays.equals(CheckpointFrame.unframe(7L, block).snapshot(), block)).as("read whole, not stripped").isTrue();
+        assertThat(pointerOf(block)).isEqualTo("none");
+    }
+
+    /// An empty keyspace name is legal at save (no check on the save path or in `EntityCheckpointKey.entityCheckpointKey(String, int)`;
+    /// only rebuilding a key from its string form refuses it, AetherKey `fromIdentity`): its frame carries a zero name length and reads back.
+    @Test
+    void aFrameForAnEmptyKeyspace_readsBackAndNamesItsPointer() {
+        var snapshot = bytes("the fold");
+        var block = CheckpointFrame.frame("", 3, 7L, snapshot, Option.none());
+
+        assertThat(CheckpointFrame.unframe(7L, block).snapshot()).isEqualTo(snapshot);
+        assertThat(pointerOf(block)).isEqualTo("entity-checkpoint//3");
+    }
+
+    /// A frame with an empty body (an empty snapshot, no lineage) ends exactly where its header ends: `saveCheckpoint` does not check the
+    /// snapshot's length, so the frame must still read back as an empty snapshot and name its pointer. (The rc5 fold encoding is never empty,
+    /// 5 bytes at least, so production saves do not reach it; the frame does not depend on that.)
+    @Test
+    void aFrameWithAnEmptyBody_readsBackEmpty_andNamesItsPointer() {
+        var block = CheckpointFrame.frame("orders", 3, 7L, new byte[0], Option.none());
+
+        assertThat(CheckpointFrame.unframe(7L, block).snapshot()).isEmpty();
+        assertThat(pointerOf(block)).isEqualTo("entity-checkpoint/orders/3");
+    }
+
     /// A hand-built `CKPTID01` block (written before the nonce) still reads: snapshot, lineage and pointer.
     @Test
     void aHandBuiltV1Block_stillReads_snapshotLineageAndPointer() {
