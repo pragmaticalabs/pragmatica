@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -955,6 +957,85 @@ class BackupEntryCodecTest {
                         .filter(start -> Arrays.equals(haystack, start, start + needle.length, needle, 0, needle.length))
                         .findFirst()
                         .orElse(-1);
+    }
+
+    /// The PRECONDITION of `singleCandidate`'s default arm: the codec routes a key line by the one prefix it starts with, so
+    /// no key type's prefix may be a prefix of another type's. If two overlapped, one line would have two candidates and the
+    /// arm the real bindings cannot reach would become reachable. Reads every cluster-state key type's `PREFIX` constants
+    /// (`*_PREFIX` where a type has several), so a new key type is covered without a seam in the codec.
+    @Test
+    void keyPrefixes_noPrefixIsAPrefixOfAnotherKeyTypes() {
+        var byType = prefixesByType();
+
+        assertThat(byType.keySet()
+                         .stream()
+                         .map(Class::getSimpleName)
+                         .toList()).as("every cluster-state key type declares a prefix")
+                                   .hasSameSizeAs(ClusterStateKey.class.getPermittedSubclasses());
+        assertThat(overlappingPairs(byType)).as("key-type prefix pairs where one is a prefix of the other")
+                                            .isEmpty();
+    }
+
+    /// Instrument check for the pin above: the detector does flag an overlap and ignores an unrelated pair.
+    @Test
+    void overlappingPairs_namesTheOverlappingPair_andOnlyThat() {
+        var overlapping = overlappingPairs(Map.of(SliceTargetKey.class, List.of("a/"), AppBlueprintKey.class, List.of("a/b/")));
+        var disjoint = overlappingPairs(Map.of(SliceTargetKey.class, List.of("a/"), AppBlueprintKey.class, List.of("b/")));
+
+        assertThat(overlapping).hasSize(1);
+        assertThat(overlapping.getFirst()).contains("SliceTargetKey")
+                                          .contains("AppBlueprintKey")
+                                          .contains("\"a/\"")
+                                          .contains("\"a/b/\"");
+        assertThat(disjoint).isEmpty();
+    }
+
+    private static Map<Class<?>, List<String>> prefixesByType() {
+        return Arrays.stream(ClusterStateKey.class.getPermittedSubclasses())
+                     .collect(Collectors.toMap(type -> type, BackupEntryCodecTest::prefixConstants));
+    }
+
+    private static List<String> prefixConstants(Class<?> type) {
+        var declared = Arrays.stream(type.getDeclaredFields())
+                             .filter(field -> Modifier.isStatic(field.getModifiers()) && field.getType() == String.class)
+                             .filter(field -> field.getName().endsWith("PREFIX"))
+                             .toList();
+        var plain = declared.stream()
+                            .filter(field -> field.getName().equals("PREFIX"))
+                            .toList();
+
+        return (plain.isEmpty() ? declared : plain).stream()
+                                                   .map(BackupEntryCodecTest::constantValue)
+                                                   .toList();
+    }
+
+    private static String constantValue(Field field) {
+        field.setAccessible(true);
+
+        return Result.lift(() -> (String) field.get(null))
+                     .fold(_ -> "", value -> value);
+    }
+
+    private static List<String> overlappingPairs(Map<Class<?>, List<String>> byType) {
+        return byType.entrySet()
+                     .stream()
+                     .flatMap(left -> byType.entrySet()
+                                            .stream()
+                                            .filter(right -> left.getKey() != right.getKey())
+                                            .flatMap(right -> overlapsOf(left, right)))
+                     .toList();
+    }
+
+    private static Stream<String> overlapsOf(Map.Entry<Class<?>, List<String>> left, Map.Entry<Class<?>, List<String>> right) {
+        return left.getValue()
+                   .stream()
+                   .flatMap(a -> right.getValue()
+                                      .stream()
+                                      .filter(b -> a.startsWith(b))
+                                      .map(b -> "%s \"%s\" starts with %s \"%s\"".formatted(left.getKey().getSimpleName(),
+                                                                                            a,
+                                                                                            right.getKey().getSimpleName(),
+                                                                                            b)));
     }
 
     private static List<Cause> failures(Result<?> result) {

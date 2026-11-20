@@ -37,7 +37,7 @@ ENUM org.pragmatica.aether.slice.kvstore.AetherValue$DepartureState DEPARTED=0,A
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentEngine LEGACY=0,FSM2=1,UNKNOWN=2
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentOutcomeStatus SUCCEEDED=0,FAILED=1,ROLLED_BACK=2,IN_PROGRESS=3,UNKNOWN=4
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$DhtReplicationStage APPLYING=0,WRITERS_SWITCHED=1,SETTLED=2,UNKNOWN=3
-ENUM org.pragmatica.aether.slice.kvstore.AetherValue$EntityArcWaiverValue$WaiverCase BLOCK_LOST=0,UNDECODABLE=1,SEED_CORRUPT=2,CANNOT_REPRODUCE=3,FETCH_FAILED=4,UNKNOWN=5
+ENUM org.pragmatica.aether.slice.kvstore.AetherValue$EntityArcWaiverValue$WaiverCase BLOCK_LOST=0,UNDECODABLE=1,SEED_CORRUPT=2,CANNOT_REPRODUCE=3,FETCH_FAILED=4,ARC_PARENT_RELEASED=5,ARC_BASE_WITHHELD=6,UNKNOWN=7
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$FreedCause REFUSED=0,ABSENT_CONFIRMED=1,OPERATOR_CLEAR=2,TERMINATED=3,EXTERNAL_RELEASED=4,UNKNOWN=5
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$IdentityCause OPERATOR=0,OPERATOR_FORCE=1,REPLACED=2,RETIRED=3,DRAINED=4,GONE=5,UNKNOWN=6
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$IdentityState ADMITTED=0,DEPARTED=1,TERMINATED=2,UNKNOWN=3

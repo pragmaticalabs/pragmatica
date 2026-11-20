@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue;
@@ -68,6 +69,62 @@ class EntityArcValuesTest {
     void arcWaiver_isLeaderAuthorized_andTheOfferIsNot() {
         assertThat(WAIVER).isInstanceOf(LeaderAuthorized.class);
         assertThat(OFFER).isNotInstanceOf(LeaderAuthorized.class);
+    }
+
+    @Test
+    void seedOffer_copiesTheEntries_soALaterMutationOfTheCallersListDoesNotReachTheRecord() {
+        var callers = new ArrayList<>(List.of(OfferEntry.offerEntry(6, 120L, 2L)));
+        var offer = EntitySeedOfferValue.entitySeedOfferValue(3L, 4L, 9L, "00ff10ab", callers);
+
+        callers.add(OfferEntry.offerEntry(7, 0L, 0L));
+
+        assertThat(offer.entries()).containsExactly(OfferEntry.offerEntry(6, 120L, 2L));
+    }
+
+    @Test
+    void arcWaiver_copiesTheDiscarded_soALaterMutationOfTheCallersListDoesNotReachTheRecord() {
+        var callers = new ArrayList<>(List.of("00ff10ab"));
+        var waiver = EntityArcWaiverValue.entityArcWaiverValue(4L, WaiverCase.SEED_CORRUPT, callers);
+
+        callers.add("ab10ff00");
+
+        assertThat(waiver.discarded()).containsExactly("00ff10ab");
+    }
+
+    @Test
+    void seedOffer_accessors_returnTheirOwnComponent_withDistinctValues() {
+        assertThat(OFFER.parentLife()).isEqualTo(3L);
+        assertThat(OFFER.L()).isEqualTo(4L);
+        assertThat(OFFER.parentOwnerEpoch()).isEqualTo(9L);
+        assertThat(OFFER.blockIdHex()).isEqualTo("00ff10ab");
+    }
+
+    @Test
+    void offerEntry_accessors_returnTheirOwnComponent_withDistinctValues() {
+        var entry = OfferEntry.offerEntry(6, 120L, 2L);
+
+        assertThat(entry.child()).isEqualTo(6);
+        assertThat(entry.keyCount()).isEqualTo(120L);
+        assertThat(entry.timerCount()).isEqualTo(2L);
+    }
+
+    @Test
+    void arcWaiver_recordsTheInputCase_forEveryCase() {
+        for (var waiverCase : WaiverCase.values()) {
+            var expected = new EntityArcWaiverValue(4L, waiverCase, List.of("00ff10ab"));
+            var built = EntityArcWaiverValue.entityArcWaiverValue(4L, waiverCase, List.of("00ff10ab"));
+
+            assertThat(built.waiverCase()).isEqualTo(expected.waiverCase());
+            assertThat(built.waiverCase()).isSameAs(waiverCase);
+        }
+    }
+
+    @Test
+    void waiverCase_namesTheRow3bAnd3dCauses_beforeTheSentinel() {
+        var constants = List.of(WaiverCase.values());
+
+        assertThat(constants.indexOf(WaiverCase.ARC_PARENT_RELEASED)).isLessThan(constants.indexOf(WaiverCase.UNKNOWN));
+        assertThat(constants.indexOf(WaiverCase.ARC_BASE_WITHHELD)).isLessThan(constants.indexOf(WaiverCase.UNKNOWN));
     }
 
     private static AetherValue roundTrip(AetherValue value) {

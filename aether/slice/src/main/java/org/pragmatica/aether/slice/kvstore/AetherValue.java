@@ -4420,13 +4420,13 @@ public sealed interface AetherValue {
     /// Payload of an [AetherKey.EntitySeedOfferKey] — a parent partition's offer of its state to the children of a split
     /// (#3303, design r8.2 V1).
     ///
-    /// `parentLife` and `L` are the parent's life and the life the offer seeds; `parentOwnerEpoch` fences the owner that wrote it.
-    /// `blockIdHex` names the seed block in stream storage, and each [OfferEntry] says how much of the offered state one child
-    /// takes, so a child can tell a complete adoption from a partial one. A plain Put (V1): the owner writes it, so it carries no
-    /// leader-authorization marker.
+    /// `parentLife` is the offering parent's life and `L` is the parent's cut offset (`L = lastOffset`); the read-back pointer is
+    /// `(L, blockIdHex)`. `parentOwnerEpoch` fences the owner that wrote it. `blockIdHex` names the seed block in stream storage.
+    /// Each [OfferEntry] carries the `keyCount` and `timerCount` of one child for the preview and the events only; no arm reads
+    /// them. A plain Put (V1): the owner writes it, so it carries no leader-authorization marker.
     ///
     /// @param parentLife       life of the offering parent
-    /// @param L                life the offer seeds
+    /// @param L                the parent's cut offset (`lastOffset`); with `blockIdHex` the read-back pointer
     /// @param parentOwnerEpoch owner epoch of the parent that wrote the offer
     /// @param blockIdHex       content id of the seed block in stream storage
     /// @param entries          one entry per child the offer covers
@@ -4483,6 +4483,8 @@ public sealed interface AetherValue {
             SEED_CORRUPT,
             CANNOT_REPRODUCE,
             FETCH_FAILED,
+            ARC_PARENT_RELEASED,
+            ARC_BASE_WITHHELD,
             /// Sentinel: a constant a newer node wrote that this one does not know.
             UNKNOWN
         }
