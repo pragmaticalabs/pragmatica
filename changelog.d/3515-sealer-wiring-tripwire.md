@@ -1,0 +1,2 @@
+### Added (2026-11-20 — #3515: tripwire pinning the production sealer to no codec and no encryptor)
+- **`SealerWiringTripwireTest`** reads the configuration of the sink the production factory builds and fails, naming #3515, if a compression codec or an encryptor is enabled. The four silent fallbacks in the sealed-segment path (compress, decompress, unknown codec ordinal, decrypt) stay unreachable only while that wiring holds; the fallbacks themselves are not fixed here.
