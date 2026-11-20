@@ -1,0 +1,9 @@
+# Pinned distinct-state counts (run.sh: a listed pass row must find exactly this many states at that profile).
+# Columns: module variant profile distinct why. See README.md, "Pinned state counts".
+Fsm2Leader	code_nolate_agree	full	13734978	STAMP=off LATE=FALSE: the off mode reaches the base states (TLC at ba2474d1a2, PR #3443 round g)
+Fsm2Leader	code_nolate_notify	full	13734978	STAMP=off LATE=FALSE: the off mode reaches the base states (TLC at ba2474d1a2, PR #3443 round g)
+Fsm2Leader	code_nolate_close	full	13734978	STAMP=off LATE=FALSE: the off mode reaches the base states (TLC at ba2474d1a2, PR #3443 round g)
+Fsm2Leader	code_nolate_show	full	13734978	STAMP=off LATE=FALSE: the off mode reaches the base states (TLC at ba2474d1a2, PR #3443 round g)
+Fsm2Leader	code_nolate_persist	full	13734978	STAMP=off LATE=FALSE: the off mode reaches the base states (TLC at ba2474d1a2, PR #3443 round g)
+Fsm2Leader	code_nolate_agree	small	13734978	STAMP=off LATE=FALSE, no small overrides: same as full
+Fsm2Leader	code_nolate_notify	small	13734978	STAMP=off LATE=FALSE, no small overrides: same as full

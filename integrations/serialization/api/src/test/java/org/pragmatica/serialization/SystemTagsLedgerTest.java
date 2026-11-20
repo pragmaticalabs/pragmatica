@@ -154,4 +154,24 @@ class SystemTagsLedgerTest {
         assertTrue(tag != SystemTags.NOT_PINNED, "PRECONDITION ArtifactContentValue is pinned in SystemTags.TAGS");
         assertTrue(tag >= 2990 && tag <= 2999, "ArtifactContentValue's tag must be in 2990..2999 but is " + tag);
     }
+
+    /// #3303 RA-0: 2986..2989 is reserved for restore authority (know `d021c7b150`); nothing is pinned yet.
+    /// The reservation is exact, and no system tag lies in it. The second half is a TRIPWIRE (current
+    /// behaviour): RA-2 pins its `TransactionResult` codec tag there, and this goes red then.
+    @Test
+    void restoreAuthority_reserves2986to2989() throws Exception {
+        var owned = ledger().stream()
+                            .filter(reservation -> reservation.owner()
+                                                              .equals("restore-authority-3303"))
+                            .toList();
+
+        assertEquals(1, owned.size(), "restore-authority-3303 must hold exactly one reservation in " + LEDGER);
+        assertEquals(2986, owned.getFirst().from(), "restore-authority-3303 must start at 2986");
+        assertEquals(2989, owned.getFirst().to(), "restore-authority-3303 must end at 2989");
+        SystemTags.TAGS.forEach(SystemTagsLedgerTest::assertNotInRestoreAuthorityRange);
+    }
+
+    private static void assertNotInRestoreAuthorityRange(String name, int tag) {
+        assertTrue(tag < 2986 || tag > 2989, "RA-2 pinned in 2986..2989: delete this half (%s is pinned to %d)".formatted(name, tag));
+    }
 }

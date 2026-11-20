@@ -335,12 +335,13 @@ public record GitBackupRepository(Path dir,
     }
 
     // --- three-valued reads (#3464) ---
-    /// Whether the backup branch exists: on the remote when one is configured (`ls-remote --exit-code`, exit 2 is the definite "no such ref"), else
+    /// Whether the backup branch exists: on the remote when one is configured (`ls-remote --exit-code` for the fully qualified ref, exit 2 is the
+    /// definite "no such ref"; `ls-remote` matches a pattern by suffix, so a remote holding only `refs/heads/x/<branch>` answers exit 2 too), else
     /// in the local repository (`show-ref --exists`, exit 2 likewise; needs git 2.43). Anything else — another exit status, a timeout, lost output — is
     /// [GitRead.Unreadable].
     public GitRead<Unit> readBranch() {
         return hasRemote()
-               ? read(List.of("ls-remote", "--exit-code", "--heads", REMOTE_NAME, branch),
+               ? read(List.of("ls-remote", "--exit-code", REMOTE_NAME, "refs/heads/" + branch),
                       result -> classifyRemoteBranch(result.exitCode(), result.output(), branch))
                : read(List.of("show-ref", "--exists", "refs/heads/" + branch),
                       result -> classifyLocalBranch(result.exitCode(), result.output()));
@@ -352,10 +353,12 @@ public record GitBackupRepository(Path dir,
                     result -> classifyCommitId(result.exitCode(), result.output()));
     }
 
-    /// Whether `path` is listed in the tree of `commit`. [GitRead.Absent] only when git listed [#FILE] (the control entry, so the listing is known to
-    /// have worked) and not `path`; for `path` equal to [#FILE] there is no control and so no [GitRead.Absent].
+    /// Whether `path` (a top-level entry) is listed in the tree of `commit`, read from the whole listing (`ls-tree --name-only`, no pathspec).
+    /// Invariant: every commit this repository writes holds at least one file (the genesis commit holds [#DECLARATION]), so a delivered listing is never
+    /// empty. Hence [GitRead.Present] when the listing names `path`, [GitRead.Absent] when a non-empty listing does not, and [GitRead.Unreadable] for
+    /// an empty listing (lost output) and for any exit other than 0. No control file is named, so the primitive does not depend on the file layout.
     public GitRead<Unit> readPath(String commit, String path) {
-        return read(List.of("ls-tree", "--name-only", commit, "--", path, FILE),
+        return read(List.of("ls-tree", "--name-only", commit),
                     result -> classifyPath(result.exitCode(), result.output(), path));
     }
 
@@ -366,9 +369,16 @@ public record GitBackupRepository(Path dir,
                     result -> classifyFile(result.exitCode(), result.output()));
     }
 
+    /// stdout and stderr stay apart: a warning on stderr under exit 0 never enters a [GitRead.Present] value. stderr only explains an [GitRead.Unreadable].
     private <T> GitRead<T> read(List<String> args, Fn1<GitRead<T>, GitResult> classifier) {
-        return run(args).fold(cause -> GitRead.unreadable(cause.message()),
-                              classifier::apply);
+        return runSeparate(args).fold(cause -> GitRead.unreadable(cause.message()),
+                                      result -> withDiagnostics(classifier.apply(result), result.errors()));
+    }
+
+    private static <T> GitRead<T> withDiagnostics(GitRead<T> read, String errors) {
+        return read instanceof GitRead.Unreadable<T>(var reason) && !errors.isBlank()
+               ? GitRead.unreadable(reason + "; stderr: " + errors.strip())
+               : read;
     }
 
     static GitRead<Unit> classifyRemoteBranch(int exit, Option<String> output, String branch) {
@@ -394,17 +404,19 @@ public record GitBackupRepository(Path dir,
     private static GitRead<Unit> remoteBranchOf(int exit, String text, String branch) {
         return exit == NO_SUCH_REF
                ? GitRead.absent()
-               : exit == 0 && listsBranch(text, branch)
-                 ? GitRead.present(Unit.unit())
-                 : unexpected(exit, text);
+               : presentWhen(exit == 0 && listsBranch(text, branch), exit, text);
     }
 
     private static GitRead<Unit> localBranchOf(int exit, String text) {
         return exit == NO_SUCH_REF
                ? GitRead.absent()
-               : exit == 0
-                 ? GitRead.present(Unit.unit())
-                 : unexpected(exit, text);
+               : presentWhen(exit == 0, exit, text);
+    }
+
+    private static GitRead<Unit> presentWhen(boolean found, int exit, String text) {
+        return found
+               ? GitRead.present(Unit.unit())
+               : unexpected(exit, text);
     }
 
     private static boolean listsBranch(String text, String branch) {
@@ -418,15 +430,18 @@ public record GitBackupRepository(Path dir,
                : unexpected(exit, text);
     }
 
-    /// The control entry [#FILE] is asked for beside `path`: a listing that names it proves the listing worked, so a missing `path` is then a fact.
+    /// An empty listing is lost output, never an empty tree (see [#readPath]).
     private static GitRead<Unit> pathOf(int exit, String text, String path) {
-        var names = text.lines().map(String::strip).toList();
+        return exit != 0 || text.isBlank()
+               ? unexpected(exit, text)
+               : listed(text, path);
+    }
 
-        return exit == 0 && names.contains(path)
+    private static GitRead<Unit> listed(String text, String path) {
+        return text.lines()
+                   .anyMatch(path::equals)
                ? GitRead.present(Unit.unit())
-               : exit == 0 && !path.equals(FILE) && names.contains(FILE)
-                 ? GitRead.absent()
-                 : unexpected(exit, text);
+               : GitRead.absent();
     }
 
     private static GitRead<String> fileOf(int exit, String text) {
@@ -492,8 +507,17 @@ public record GitBackupRepository(Path dir,
         return run(List.of(args)).map(GitResult::exitCode);
     }
 
+    /// stdout and stderr merged: what the commands that predate [GitRead] read.
     private Result<GitResult> run(List<String> args) {
-        return processes.start(processBuilder(args))
+        return run(processBuilder(args).redirectErrorStream(true));
+    }
+
+    private Result<GitResult> runSeparate(List<String> args) {
+        return run(processBuilder(args));
+    }
+
+    private Result<GitResult> run(ProcessBuilder builder) {
+        return processes.start(builder)
                         .flatMap(this::collect);
     }
 
@@ -505,7 +529,7 @@ public record GitBackupRepository(Path dir,
         command.add("-C");
         command.add(dir.toString());
         command.addAll(args);
-        var builder = new ProcessBuilder(command).redirectErrorStream(true);
+        var builder = new ProcessBuilder(command);
         var processEnvironment = builder.environment();
 
         processEnvironment.putAll(environment);
@@ -521,15 +545,18 @@ public record GitBackupRepository(Path dir,
     private Result<GitResult> collect(Process process) {
         var output = new FutureTask<>(() -> new String(process.getInputStream().readAllBytes(),
                                                        StandardCharsets.UTF_8));
+        var errors = new FutureTask<>(() -> new String(process.getErrorStream().readAllBytes(),
+                                                       StandardCharsets.UTF_8));
 
         Thread.ofVirtual().name("backup-git-output").start(output);
+        Thread.ofVirtual().name("backup-git-errors").start(errors);
 
         return Result.lift(GitBackupRepository::unavailable,
                            () -> process.waitFor(timeout.millis(),
                                                  TimeUnit.MILLISECONDS))
                      .onFailure(_ -> abandon(process))
                      .map(finished -> finished
-                                      ? completed(process, output)
+                                      ? completed(process, output, errors)
                                       : timedOut(process))
                      .onResultRun(() -> processes.finished(process));
     }
@@ -545,8 +572,8 @@ public record GitBackupRepository(Path dir,
         Thread.currentThread().interrupt();
     }
 
-    private GitResult completed(Process process, FutureTask<String> output) {
-        return new GitResult(process.exitValue(), outputOf(output));
+    private GitResult completed(Process process, FutureTask<String> output, FutureTask<String> errors) {
+        return new GitResult(process.exitValue(), outputOf(output), outputOf(errors).or(""));
     }
 
     /// The command outlived its bound: kill git and everything it started, before the process leaves the in-flight set. A tree that is not dead within
@@ -558,7 +585,8 @@ public record GitBackupRepository(Path dir,
         return new GitResult(-1,
                              Option.some("timed out after " + timeout + (dead
                                                                          ? ""
-                                                                         : "; its process tree was still running at the bound and is left to the stop")));
+                                                                         : "; its process tree was still running at the bound and is left to the stop")),
+                             "");
     }
 
     /// None when the output was lost (the read failed, timed out or was interrupted): a read that needs the output treats that as unreadable.
@@ -591,7 +619,8 @@ public record GitBackupRepository(Path dir,
     }
 
     /// `output` is none when it was lost; the paths that predate [GitRead] read that as the empty string through [#text].
-    private record GitResult(int exitCode, Option<String> output) {
+    /// `errors` is stderr, empty when it was merged into `output`, lost or never read (a timeout).
+    private record GitResult(int exitCode, Option<String> output, String errors) {
         String text() {
             return output.or("");
         }

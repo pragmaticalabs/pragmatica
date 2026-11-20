@@ -14,6 +14,7 @@ import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.TestInstance;
+import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
@@ -40,6 +41,8 @@ abstract class ReplicationBatchingFixture {
     private static final int PER_CALLER = 12;
     static final int SINGLE_PUBLISHES = CALLERS * PER_CALLER;
     static final int BATCH = 100;
+    private static final long DELIVERY_BOUND_MS = 30_000L;
+    private static final long DELIVERY_POLL_MS = 20L;
     private static final String STREAM = "c04";
     private static final String ENGINE_KEY = engineKey(STREAM);
 
@@ -118,7 +121,7 @@ abstract class ReplicationBatchingFixture {
 
             futures.forEach(StreamTripwireSupport::joinQuietly);
         }
-        sleepQuietly(1_000L);
+        awaitDelivered(before, count);
 
         return deltaSince(before);
     }
@@ -138,9 +141,23 @@ abstract class ReplicationBatchingFixture {
         var outcomes = router.publishBatch(ENGINE_KEY, PARTITION, payloads, System.currentTimeMillis()).await(PUBLISH_BOUND);
 
         assertThat(outcomes.isSuccess()).as("batch publish: %s", outcomes).isTrue();
-        sleepQuietly(1_000L);
+        awaitDelivered(before, count);
 
         return deltaSince(before);
+    }
+
+    /// Waits until every replica received `count` more events than at `before`, within [#DELIVERY_BOUND_MS]. A flush is
+    /// driven by the batch window (see [#batchWindow]), so the wait is on the delivery itself, not on a fixed pause.
+    private void awaitDelivered(Map<String, long[]> before, int count) {
+        var deadline = System.currentTimeMillis() + DELIVERY_BOUND_MS;
+
+        while (System.currentTimeMillis() < deadline && !delivered(before, count)) {
+            sleepQuietly(DELIVERY_POLL_MS);
+        }
+    }
+
+    private boolean delivered(Map<String, long[]> before, int count) {
+        return deltaSince(before).eventsPerReplica().stream().allMatch(events -> events >= count);
     }
 
     private Map<String, long[]> snapshot() {
@@ -156,6 +173,19 @@ abstract class ReplicationBatchingFixture {
 
         return new Traffic(replicas.stream().map(id -> replicateMessages.get(id).get() - before.get(id)[0]).toList(),
                            replicas.stream().map(id -> replicatedEvents.get(id).get() - before.get(id)[1]).toList());
+    }
+
+    /// #3477: the replication batch window of the cluster under measurement. A publish waits for its replicas' acks, so 16
+    /// callers are a closed loop: each round of 16 events is one window, 12 rounds make 192 events, and the structural
+    /// count is about 12 messages per replica. The production default (1 ms) is shorter than the skew between 16 callers on
+    /// a loaded runner, so a round split across windows and the count measured the scheduler (101 for 192 on one CI run,
+    /// bound 96). At 20 ms a round splits only when a caller lags the others by more than 20 ms, and the bound needs about
+    /// half the rounds split. Not longer, on purpose: 100 ms and 500 ms windows made 1 and 4 of 30 repeated runs stall for the
+    /// 5 s ack timeout (`PublishOutcomeUnknown`, REPLICATION_TIMEOUT) with nothing logged, a separate defect of long windows
+    /// that this test must not trip over. The batcher's own window logic is pinned with a hand-driven clock in
+    /// `ProductionReplicationBatchingTest`.
+    static StreamingConfig batchWindow() {
+        return StreamingConfig.streamingConfig().withReplicationBatch(StreamingConfig.DEFAULT_REPLICATION_BATCH_MAX_EVENTS, TimeSpan.timeSpan(20).millis());
     }
 
     /// The partition's owner, once [#boot] ran.

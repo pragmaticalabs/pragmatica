@@ -1,0 +1,4 @@
+### Changed (2026-11-20 — #3464: the KV-backup git reads tell "absent" from "git could not say")
+- **`GitBackupRepository` gains three-valued read primitives** (`readBranch`, `readCommitId`, `readPath`, `readFile`) answering `GitRead.Present` / `Absent` / `Unreadable`. A failed git, a timeout or lost output is `Unreadable`, never `Absent`; the consumers (restore blocks, write retries) land in the next lanes of the issue. [verified: `GitBackupRepositoryTest`]
+- `readPath` reads the whole tree listing, so a commit holding only the genesis declaration answers `Absent` for the backup file; an empty listing is `Unreadable`. [verified: `GitBackupRepositoryTest`]
+- The branch read asks for the fully qualified ref, so a remote holding only `refs/heads/x/<branch>` or a tag of that name reads `Absent`. [verified: `GitBackupRepositoryTest`]
