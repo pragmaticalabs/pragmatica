@@ -2702,8 +2702,9 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     public void onStreamRetentionChanged(OperationalEvent.StreamRetentionChanged event) {
         emit(new StreamRetentionChanged(hlcClock.now(),
                                         Severity.INFO,
-                                        "Stream " + event.stream() + " retention bounds changed: committed "
-                                       + event.oldBounds() + " -> " + event.newBounds(),
+                                        "Stream " + event.stream()
+                                       + " retention bounds changed: committed " + event.oldBounds()
+                                       + " -> " + event.newBounds(),
                                         Map.of(ClusterEventIdentity.EVENT_ID,
                                                event.eventId(),
                                                "stream",

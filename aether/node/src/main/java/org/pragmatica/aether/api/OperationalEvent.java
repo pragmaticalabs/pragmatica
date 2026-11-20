@@ -251,11 +251,7 @@ public sealed interface OperationalEvent extends Message.Local {
     /// #3334: a committed config changed a running stream's retention bounds. The bounds are carried as rendered text
     /// (`oldBounds`, `newBounds`) so the raiser derives them from the committed facts without this record depending on
     /// the declaration types. A point event: no resolved pair.
-    record StreamRetentionChanged(String stream,
-                                  String oldBounds,
-                                  String newBounds,
-                                  String eventId,
-                                  long timestamp) implements OperationalEvent {
+    record StreamRetentionChanged(String stream, String oldBounds, String newBounds, String eventId, long timestamp) implements OperationalEvent {
         public static StreamRetentionChanged streamRetentionChanged(String stream,
                                                                     String oldBounds,
                                                                     String newBounds,

@@ -547,10 +547,7 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
 
     /// #3334: a committed config changed a running stream's retention bounds. A point event; no resolved pair.
     /// `details`: `stream`, `oldBounds`, `newBounds`, `eventId`.
-    record StreamRetentionChanged(HlcTimestamp at,
-                                  Severity severity,
-                                  String summary,
-                                  Map<String, String> details) implements ClusterEvent {
+    record StreamRetentionChanged(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
         @Override
         public ClusterEvent withDetail(String key, String value) {
             return new StreamRetentionChanged(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
