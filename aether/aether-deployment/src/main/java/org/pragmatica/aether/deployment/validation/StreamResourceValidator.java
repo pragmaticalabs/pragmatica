@@ -209,9 +209,9 @@ public sealed interface StreamResourceValidator {
                                                        ReplicationContext replication,
                                                        Function<String, Option<StreamConfig>> committedRows) {
         BiFunction<String, StreamResource.Owned, Option<StreamConfig>> committedFor = (alias, owned) -> committedRow(blueprintArtifact,
-                                                                                                                      committedRows,
-                                                                                                                      alias,
-                                                                                                                      owned);
+                                                                                                                     committedRows,
+                                                                                                                     alias,
+                                                                                                                     owned);
         var namespaceFailures = new ArrayList<StreamValidationFailure>();
 
         guardBlueprintNamespace(blueprintArtifact, namespaceFailures);
@@ -296,7 +296,9 @@ public sealed interface StreamResourceValidator {
                                           List<StreamValidationFailure> failures) {
         if (failures.isEmpty()) {
             committedFor.apply(alias, owned)
-                        .onPresent(committed -> failures.addAll(committedRowFailures(alias, owned.config(), committed)));
+                        .onPresent(committed -> failures.addAll(committedRowFailures(alias,
+                                                                                     owned.config(),
+                                                                                     committed)));
         }
     }
 
@@ -307,12 +309,9 @@ public sealed interface StreamResourceValidator {
                                                      String alias,
                                                      StreamResource.Owned owned) {
         return switch (owned.version()) {
-            case StreamVersionSpec.Exact exact -> BlueprintNamespace.deriveNamespace(blueprintArtifact)
-                                                                    .flatMap(namespace -> ResourceAddress.resourceAddress(namespace,
-                                                                                                                          alias,
-                                                                                                                          exact.version()))
-                                                                    .option()
-                                                                    .flatMap(address -> committedRows.apply(address.asString()));
+            case StreamVersionSpec.Exact exact -> BlueprintNamespace.deriveNamespace(blueprintArtifact).flatMap(namespace -> ResourceAddress.resourceAddress(namespace,
+                                                                                                                                                             alias,
+                                                                                                                                                             exact.version())).option().flatMap(address -> committedRows.apply(address.asString()));
             case StreamVersionSpec.Latest _ -> Option.none();
         };
     }
@@ -322,7 +321,9 @@ public sealed interface StreamResourceValidator {
     /// replication and confirmation factors may only rise; `max_event_size` and `encryption_key_id` may not change.
     /// Compression is online and has no rule. Mirrors what the node enforces (`StreamPartitionManager#notAppliedReason`),
     /// which stays the backstop for a local KV that lags a commit.
-    static List<StreamValidationFailure> committedRowFailures(String alias, StreamConfig declared, StreamConfig committed) {
+    static List<StreamValidationFailure> committedRowFailures(String alias,
+                                                              StreamConfig declared,
+                                                              StreamConfig committed) {
         var field = "[streams." + alias + "]";
 
         return Stream.of(partitionCountFailure(field, declared, committed),
@@ -349,8 +350,7 @@ public sealed interface StreamResourceValidator {
     private static Option<StreamValidationFailure> durabilityFailure(String field,
                                                                      StreamConfig declared,
                                                                      StreamConfig committed) {
-        return declared.replicationFactor() >= committed.replicationFactor()
-               && declared.confirmationFactor() >= committed.confirmationFactor()
+        return declared.replicationFactor() >= committed.replicationFactor() && declared.confirmationFactor() >= committed.confirmationFactor()
                ? Option.none()
                : Option.some(StreamValidationFailure.streamValidationFailure(field,
                                                                              RULE_DURABILITY_ONLY_INCREASES,
@@ -371,14 +371,17 @@ public sealed interface StreamResourceValidator {
                ? Option.none()
                : Option.some(StreamValidationFailure.streamValidationFailure(field,
                                                                              RULE_TRUNCATION_POLICY_IMMUTABLE,
-                                                                             "truncation policy " + declaredPolicy.map(Enum::name).or("unset")
-                                                                            + " differs from the committed "
-                                                                            + committedPolicy.map(Enum::name).or("unset")
+                                                                             "truncation policy " + declaredPolicy.map(Enum::name)
+                                                                                                                  .or("unset")
+                                                                            + " differs from the committed " + committedPolicy.map(Enum::name)
+                                                                                                                              .or("unset")
                                                                             + ": the truncation policy of an existing stream cannot change"));
     }
 
     private static Option<TruncationPolicy> truncationPolicy(StreamConfig config) {
-        return config.declaration().flatMap(StreamDeclaration::truncation).flatMap(TruncationDeclaration::policy);
+        return config.declaration()
+                     .flatMap(StreamDeclaration::truncation)
+                     .flatMap(TruncationDeclaration::policy);
     }
 
     private static Option<StreamValidationFailure> maxEventSizeFailure(String field,
@@ -395,7 +398,8 @@ public sealed interface StreamResourceValidator {
     private static Option<StreamValidationFailure> encryptionKeyFailure(String field,
                                                                         StreamConfig declared,
                                                                         StreamConfig committed) {
-        return declared.encryptionKeyId().equals(committed.encryptionKeyId())
+        return declared.encryptionKeyId()
+                       .equals(committed.encryptionKeyId())
                ? Option.none()
                : Option.some(storageKeyFailure(field,
                                                "encryption_key_id",
@@ -403,10 +407,15 @@ public sealed interface StreamResourceValidator {
                                                committed.encryptionKeyId().or("unset")));
     }
 
-    private static StreamValidationFailure storageKeyFailure(String field, String key, String declared, String committed) {
+    private static StreamValidationFailure storageKeyFailure(String field,
+                                                             String key,
+                                                             String declared,
+                                                             String committed) {
         return StreamValidationFailure.streamValidationFailure(field,
                                                                RULE_STORAGE_KEY_IMMUTABLE,
-                                                               key + " '" + declared + "' differs from the committed '" + committed
+                                                               key
+                                                              + " '" + declared
+                                                              + "' differs from the committed '" + committed
                                                               + "': a storage key of an existing stream cannot change");
     }
 

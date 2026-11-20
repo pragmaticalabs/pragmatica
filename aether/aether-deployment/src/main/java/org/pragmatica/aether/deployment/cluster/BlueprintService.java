@@ -950,7 +950,8 @@ class BlueprintServiceInstance implements BlueprintService {
     /// #1564: the committed cluster config read as replication state — the `[replication]` defaults and the
     /// desired core count — the same conversion the nodes resolve resource declarations with at activation.
     private Option<StreamConfig> committedStreamConfig(String engineKey) {
-        return store.getTyped(AetherKey.StreamConfigKey.streamConfigKey(engineKey), StreamConfigValue.class)
+        return store.getTyped(AetherKey.StreamConfigKey.streamConfigKey(engineKey),
+                              StreamConfigValue.class)
                     .map(StreamConfigValue::config);
     }
 
