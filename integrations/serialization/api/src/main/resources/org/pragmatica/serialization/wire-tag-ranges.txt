@@ -62,3 +62,4 @@
 2984..2985 fix834 2026-11-19 #834 SchemaVersionValue new shape (2984) and SchemaReach (2985); RQ-TAGS-3, moved off 2980..2981 (#2625's)
 2986..2989 restore-authority-3303 2026-11-20 #3303 restore authority: refusal kinds and markers (know d021c7b150)
 3010..3017 stream-mem 2026-11-20 #3458 in-memory streams (know d0048c4f79)
+3018..3037 arc-3303 2026-11-20 #3303 entity arc keys, values and codecs: A3a pins 3018 and 3019 (know f3033886ee)
