@@ -510,7 +510,9 @@ public interface SystemTags {
         // to 2928 and 2929 when they gained `member`; same reason and same terms as 1648 above. The pins STAY, under names that
         // resolve to no class, so the tags are never reused.
         pin(table, 1650, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValueRetiredRc6");
-        pin(table, 1651, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentTokenRetiredRc6");
+        pin(table,
+            1651,
+            "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentTokenRetiredRc6");
         pin(table, 1652, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue");
         pin(table, 1653, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue");
         pin(table, 1654, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryValue");
