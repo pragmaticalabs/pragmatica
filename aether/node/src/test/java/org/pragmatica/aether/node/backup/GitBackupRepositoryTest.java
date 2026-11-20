@@ -4,12 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.backup;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
@@ -572,15 +574,24 @@ class GitBackupRepositoryTest {
     void readBranch_whenTheOutputIsLostAfterExit2_isUnreadable_throughTheRealWiring() {
         var repository = scripted(process(2, brokenPipe()));
 
-        assertThat(reasonOf(repository.readBranch())).contains("output was lost");
+        assertThat(reasonOf(repository.readBranch())).isEqualTo("git exited 2 and its output was lost");
+    }
+
+    /// stdout and stderr are read apart: the reason of an unreadable read is the stdout text, then what git said on stderr; a stderr that was lost adds
+    /// nothing.
+    @Test
+    void anUnreadableRead_namesStdout_thenStderr_andALostStderrAddsNothing() {
+        assertThat(reasonOf(scripted(process(128, text("out\n"), text("boom\n"))).readFile("HEAD", GitBackupRepository.FILE))).isEqualTo("git exited 128: out; stderr: boom");
+        assertThat(reasonOf(scripted(process(128, text("out\n"), brokenPipe())).readFile("HEAD", GitBackupRepository.FILE))).isEqualTo("git exited 128: out");
+        assertThat(reasonOf(scripted(process(128, text(""), text("  \n"))).readFile("HEAD", GitBackupRepository.FILE))).isEqualTo("git exited 128: ");
     }
 
     /// A git that outlives its bound has no output but its own words: the timeout text reaches the unreadable reason and the legacy command's failure.
     @Test
     void aTimedOutGit_saysSo_onTheReadsAndOnTheLegacyCommands() {
-        var repository = scripted(Result.<Process>success(new ScriptedGit(0, InputStream.nullInputStream(), false)));
+        var repository = scripted(Result.<Process>success(new ScriptedGit(0, InputStream.nullInputStream(), InputStream.nullInputStream(), false)));
 
-        assertThat(reasonOf(repository.readBranch())).contains("timed out after");
+        assertThat(reasonOf(repository.readBranch())).contains("timed out after").doesNotContain("stderr");
         assertThat(repository.push().fold(Cause::message, _ -> "pushed")).contains("timed out after");
     }
 
@@ -611,7 +622,15 @@ class GitBackupRepositoryTest {
     }
 
     private static Result<Process> process(int exit, InputStream stdout) {
-        return Result.<Process>success(new ScriptedGit(exit, stdout, true));
+        return process(exit, stdout, InputStream.nullInputStream());
+    }
+
+    private static Result<Process> process(int exit, InputStream stdout, InputStream stderr) {
+        return Result.<Process>success(new ScriptedGit(exit, stdout, stderr, true));
+    }
+
+    private static InputStream text(String content) {
+        return new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8));
     }
 
     private static InputStream brokenPipe() {
@@ -627,11 +646,13 @@ class GitBackupRepositoryTest {
     private static final class ScriptedGit extends Process {
         private final int exit;
         private final InputStream stdout;
+        private final InputStream stderr;
         private final boolean finishes;
 
-        ScriptedGit(int exit, InputStream stdout, boolean finishes) {
+        ScriptedGit(int exit, InputStream stdout, InputStream stderr, boolean finishes) {
             this.exit = exit;
             this.stdout = stdout;
+            this.stderr = stderr;
             this.finishes = finishes;
         }
 
@@ -647,7 +668,7 @@ class GitBackupRepositoryTest {
 
         @Override
         public InputStream getErrorStream() {
-            return InputStream.nullInputStream();
+            return stderr;
         }
 
         @Override
