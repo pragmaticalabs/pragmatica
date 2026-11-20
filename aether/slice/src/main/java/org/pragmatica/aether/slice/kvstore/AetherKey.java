@@ -85,8 +85,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
 
     /// The versions of one artifact in the built-in artifact store (#1778): a grow-only set whose entries carry
     /// the archived flag, kept in consensus so concurrent publishes are folded by the applier instead of racing
-    /// as a read-modify-write on the DHT. The artifact bytes and per-version metadata stay in the DHT. Backed up
-    /// with the rest of the cluster state, because the DHT keys it indexes survive a restart.
+    /// as a read-modify-write on the DHT. The artifact bytes and per-version metadata stay in the DHT. Not backed up
+    /// (#420): after a restart the operator re-uploads, and the listing and archived flags are gone.
     record ArtifactVersionsKey(ArtifactBase artifactBase) implements ClusterStateKey {
         private static final String PREFIX = "artifact-versions/";
 
@@ -110,6 +110,13 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
             }
 
             return ArtifactBase.artifactBase(key.substring(PREFIX.length())).map(ArtifactVersionsKey::new);
+        }
+
+        /// Not backed up (#420, RR-4): the artifact store is rebuilt by re-upload after a restart, so a backup does
+        /// not carry the binding. Moves together with [ArtifactContentKey#isBackedUp] (one commit, D-11).
+        @Override
+        public boolean isBackedUp() {
+            return false;
         }
     }
 
@@ -144,6 +151,13 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
             return parts.length != 3
                    ? ARTIFACT_CONTENT_KEY_FORMAT_ERROR.apply(key).result()
                    : ArtifactBase.artifactBase(parts[0]).map(base -> new ArtifactContentKey(base, parts[1], parts[2]));
+        }
+
+        /// Not backed up (#420, RR-4): the artifact store is rebuilt by re-upload after a restart, so a backup does
+        /// not carry the binding. Moves together with [ArtifactVersionsKey#isBackedUp] (one commit, D-11).
+        @Override
+        public boolean isBackedUp() {
+            return false;
         }
     }
 
