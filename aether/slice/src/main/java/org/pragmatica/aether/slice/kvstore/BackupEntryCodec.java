@@ -34,7 +34,9 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntityArcWaiverKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntitySeedOfferKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.LogLevelKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ObservabilityConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.PreviousVersionKey;
@@ -59,7 +61,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.LogLevelValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ObservabilityConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
@@ -210,6 +214,14 @@ public record BackupEntryCodec(SliceCodec codec) {
                                                              KeyBinding.keyBinding(EntityCheckpointKey.class,
                                                                                    EntityFoldCheckpointValue.class,
                                                                                    EntityCheckpointKey::entityCheckpointKey),
+                                                             // The PREFIXED parsers, never fromIdentity: that one is prefix-less and accepts the
+                                                             // other entity keys' full strings, so every entity key would parse as AmbiguousKey.
+                                                             KeyBinding.keyBinding(EntitySeedOfferKey.class,
+                                                                                   EntitySeedOfferValue.class,
+                                                                                   EntitySeedOfferKey::entitySeedOfferKey),
+                                                             KeyBinding.keyBinding(EntityArcWaiverKey.class,
+                                                                                   EntityArcWaiverValue.class,
+                                                                                   EntityArcWaiverKey::entityArcWaiverKey),
                                                              KeyBinding.keyBinding(ScheduledTaskPauseKey.class,
                                                                                    ScheduledTaskPauseValue.class,
                                                                                    ScheduledTaskPauseKey::scheduledTaskPauseKey),
