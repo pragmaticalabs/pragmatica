@@ -528,23 +528,68 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// Validate the complete read/write set before changing storage. Notifications run only after
     /// every change is visible, so a subscriber cannot act on a partially committed reservation.
     private KVCommand.TransactionResult handleLeaderTransaction(KVCommand.LeaderTransaction<K, V> transaction) {
-        var accepted = transaction.leader().equals(storage.get(LeaderKey.INSTANCE)) && transaction.guards()
-                                                                                                  .stream()
-                                                                                                  .allMatch(this::matchesWitness) && transaction.mutations()
-                                                                                                                                                .stream()
-                                                                                                                                                .map(KVCommand.Mutation::key)
-                                                                                                                                                .distinct()
-                                                                                                                                                .count() == transaction.mutations()
-                                                                                                                                                                       .size() && transaction.mutations()
-                                                                                                                                                                                             .stream()
-                                                                                                                                                                                             .allMatch(this::validMutation);
+        var refusal = refusalOf(transaction);
 
-        if (accepted) {
+        if (refusal.isEmpty()) {
             transaction.mutations().forEach(this::applyMutation);
             transaction.mutations().forEach(this::notifyMutation);
         }
 
-        return new KVCommand.TransactionResult(transaction.transactionId(), accepted);
+        return KVCommand.TransactionResult.transactionResult(transaction.transactionId(), refusal);
+    }
+
+    /// The first failing check of a transaction, in the applier's order (#3303): LEADER (the transaction's leader is
+    /// not the committed one), WITNESS (the first read witness unequal to its committed value), EXPECTED (the first
+    /// mutation whose expected value is not the committed one), DISTINCT (the first key a mutation repeats), ARM (the
+    /// first mutation a committed-state fence refuses, see [#armAdmits]). Empty exactly when the transaction is
+    /// accepted. EXPECTED is checked before DISTINCT, so a stale read is reported as the transient refusal it is. Reads
+    /// only committed storage and the command, so every replica classifies a transaction identically.
+    private Option<KVCommand.Refusal> refusalOf(KVCommand.LeaderTransaction<K, V> transaction) {
+        var mutations = transaction.mutations();
+
+        return leaderRefusal(transaction).orElse(() -> firstRefusal(KVCommand.RefusalKind.WITNESS,
+                                                                    transaction.guards()
+                                                                               .stream()
+                                                                               .filter(witness -> !matchesWitness(witness))
+                                                                               .map(KVCommand.ReadWitness::key)
+                                                                               .toList()))
+                            .orElse(() -> firstRefusal(KVCommand.RefusalKind.EXPECTED,
+                                                       keysWhere(mutations,
+                                                                 mutation -> !matchesExpected(mutation))))
+                            .orElse(() -> firstRefusal(KVCommand.RefusalKind.DISTINCT,
+                                                       repeatedKeys(mutations)))
+                            .orElse(() -> firstRefusal(KVCommand.RefusalKind.ARM,
+                                                       keysWhere(mutations,
+                                                                 mutation -> !armAdmits(mutation))));
+    }
+
+    private Option<KVCommand.Refusal> leaderRefusal(KVCommand.LeaderTransaction<K, V> transaction) {
+        return transaction.leader()
+                          .equals(storage.get(LeaderKey.INSTANCE))
+               ? Option.none()
+               : Option.some(KVCommand.Refusal.refusal(KVCommand.RefusalKind.LEADER, Option.none()));
+    }
+
+    private static Option<KVCommand.Refusal> firstRefusal(KVCommand.RefusalKind kind,
+                                                          List<? extends StructuredKey> keys) {
+        return Option.from(keys.stream().findFirst()).map(key -> KVCommand.Refusal.refusal(kind, Option.some(key)));
+    }
+
+    private List<K> keysWhere(List<KVCommand.Mutation<K, V>> mutations, Predicate<KVCommand.Mutation<K, V>> failing) {
+        return mutations.stream()
+                        .filter(failing)
+                        .map(KVCommand.Mutation::key)
+                        .toList();
+    }
+
+    /// Keys in mutation order that an earlier mutation of the same transaction already names.
+    private static <K extends StructuredKey, V> List<K> repeatedKeys(List<KVCommand.Mutation<K, V>> mutations) {
+        var seen = new HashSet<K>();
+
+        return mutations.stream()
+                        .map(KVCommand.Mutation::key)
+                        .filter(key -> !seen.add(key))
+                        .toList();
     }
 
     private boolean matchesWitness(KVCommand.ReadWitness<K> witness) {
@@ -552,10 +597,16 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                       .equals(Option.option(storage.get(witness.key())));
     }
 
-    private boolean validMutation(KVCommand.Mutation<K, V> mutation) {
+    private boolean matchesExpected(KVCommand.Mutation<K, V> mutation) {
+        return mutation.expected()
+                       .equals(Option.option(storage.get(mutation.key())));
+    }
+
+    /// The committed-state fences a mutation must pass once its expected value matches: no write to the [LeaderKey]; a
+    /// removal never of a [RestoreAuthorityKey] cell, an [OwnerFenced] value, or a fenced value [#staleRemove] refuses
+    /// (a [LeaderAuthorized] value excepted); a replacement never one [#staleWrite] refuses.
+    private boolean armAdmits(KVCommand.Mutation<K, V> mutation) {
         return ! (mutation.key() instanceof LeaderKey)
-               && mutation.expected()
-                          .equals(Option.option(storage.get(mutation.key())))
                && mutation.replacement()
                           .fold(() -> !(mutation.key() instanceof RestoreAuthorityKey)
                                       && !(storage.get(mutation.key()) instanceof OwnerFenced<?, ?>)
@@ -726,7 +777,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// leaves the key unprotected forever — a bare `Put` then lands ([#processCommand] only drops a
     /// `Put` while one of the two values is marked) and a witnessless `Remove` deletes it
     /// ([#staleRemove] only refuses while the COMMITTED value is marked). De-authorization is still
-    /// available, but only as a deletion: [#validMutation] admits a transaction that REMOVES a
+    /// available, but only as a deletion: [#armAdmits] admits a transaction that REMOVES a
     /// `LeaderAuthorized` value, which leaves no fenced key behind.
     private boolean dropsLeaderAuthorization(K key, Object incoming) {
         return storage.get(key) instanceof LeaderAuthorized && !(incoming instanceof LeaderAuthorized);
