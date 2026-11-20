@@ -36,7 +36,7 @@ class SealedRetentionRuleTest {
     }
 
     private static int prefix(List<SegmentIndex.SegmentRef> segments, RetentionPolicy policy) {
-        return SealedRetentionRule.reclaimablePrefix(segments, policy, UNBOUNDED, NOW, Set.of());
+        return SealedRetentionRule.reclaimablePrefix(segments, policy, UNBOUNDED, NOW, Set.of(), 1);
     }
 
     /// NT-115: count is measured in events by offset span, never in segments.
@@ -117,7 +117,7 @@ class SealedRetentionRuleTest {
     void deletableThrough_capsThePrefix() {
         var segments = List.of(fresh(0, 9), fresh(10, 19), fresh(20, 29), fresh(30, 39));
 
-        assertThat(SealedRetentionRule.reclaimablePrefix(segments, count(0), 15, NOW, Set.of())).isEqualTo(1);
+        assertThat(SealedRetentionRule.reclaimablePrefix(segments, count(0), 15, NOW, Set.of(), 1)).isEqualTo(1);
     }
 
     /// NT-105: the mode combines the DECLARED dimensions only.
@@ -184,14 +184,62 @@ class SealedRetentionRuleTest {
         void takesTheNextNewerKnownAge_andThePrefixMovesPastIt() {
             var segments = List.of(segment(0, 0, 0L, 0), segment(1, 1, NOW - 3 * HOUR, 0), segment(2, 2, NOW, 0));
 
-            assertThat(SealedRetentionRule.reclaimablePrefix(segments, ageOnly, UNBOUNDED, NOW, Set.of(0L))).isEqualTo(2);
+            assertThat(SealedRetentionRule.reclaimablePrefix(segments, ageOnly, UNBOUNDED, NOW, Set.of(0L), 1)).isEqualTo(2);
         }
 
         @Test
         void neverGoesBeforeANewerSegment() {
             var segments = List.of(segment(0, 0, 0L, 0), segment(1, 1, NOW, 0));
 
-            assertThat(SealedRetentionRule.reclaimablePrefix(segments, ageOnly, UNBOUNDED, NOW, Set.of(0L))).isZero();
+            assertThat(SealedRetentionRule.reclaimablePrefix(segments, ageOnly, UNBOUNDED, NOW, Set.of(0L), 1)).isZero();
+        }
+    }
+
+    /// T-32 (rule half): under `all` a prefix is reclaimed only once every declared bound is exceeded.
+    @Test
+    void modeAll_overBytesUnderAge_reclaimsNothing_pastBoth_reclaims() {
+        var policy = RetentionPolicy.retentionPolicy(UNBOUNDED, 250, HOUR, RetentionMode.ALL)
+                                    .withDeclared(RetentionDimensions.retentionDimensions(false, true, true));
+        var young = LongStream.range(0, 10).mapToObj(offset -> segment(offset, offset, NOW, 100)).toList();
+        var old = LongStream.range(0, 10).mapToObj(offset -> segment(offset, offset, NOW - 2 * HOUR, 100)).toList();
+
+        assertThat(prefix(young, policy)).as("over the byte bound, under the age bound").isZero();
+        assertThat(prefix(old, policy)).as("past both bounds: reclaimed to the byte bound").isEqualTo(7);
+    }
+
+    /// #3334, ST 3.1 O2 and 2.4 item 17: `max_bytes` and `max_count` are the whole stream's bounds; a partition applies
+    /// its share, `bound / partitions`.
+    @Nested
+    class PartitionShare {
+        private final List<SegmentIndex.SegmentRef> segments = LongStream.range(0, 12)
+                                                                         .mapToObj(offset -> segment(offset, offset, NOW, 100))
+                                                                         .toList();
+
+        private int prefixAt(RetentionPolicy policy, int partitions) {
+            return SealedRetentionRule.reclaimablePrefix(segments, policy, UNBOUNDED, NOW, Set.of(), partitions);
+        }
+
+        @Test
+        void bytes_applyTheShare_notTheWholeBound() {
+            var policy = RetentionPolicy.retentionPolicy(UNBOUNDED, 1_200, UNBOUNDED).withDeclared(RetentionDimensions.BYTES);
+
+            assertThat(prefixAt(policy, 1)).as("whole bound: the 12 segments hold less than it").isZero();
+            assertThat(prefixAt(policy, 4)).as("share 300: three segments stay").isEqualTo(9);
+        }
+
+        @Test
+        void count_appliesTheShare_notTheWholeBound() {
+            var policy = RetentionPolicy.retentionPolicy(12, UNBOUNDED, UNBOUNDED).withDeclared(RetentionDimensions.COUNT);
+
+            assertThat(prefixAt(policy, 1)).isZero();
+            assertThat(prefixAt(policy, 4)).as("share 3: three events stay").isEqualTo(9);
+        }
+
+        @Test
+        void aBoundBelowThePartitionCount_stillKeepsTheNewestSegment() {
+            var policy = RetentionPolicy.retentionPolicy(3, UNBOUNDED, UNBOUNDED).withDeclared(RetentionDimensions.COUNT);
+
+            assertThat(prefixAt(policy, 4)).as("share floors at 1, not 0 (0 would reclaim the newest too)").isEqualTo(11);
         }
     }
 }

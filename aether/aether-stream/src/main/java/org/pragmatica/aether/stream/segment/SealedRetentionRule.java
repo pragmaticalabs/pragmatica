@@ -20,9 +20,9 @@ import org.pragmatica.lang.Option;
 /// reclaims the oldest segments that exceed it and no others, where a per-partition total judged every segment the same
 /// and so reclaimed all of them together.
 ///   - count: the events of the newer segments, by offset span (a gap between segments counts nothing), is at least
-///     `maxCount`;
+///     this partition's share of `maxCount` (`maxCount / partitions`);
 ///   - bytes: the recorded sizes of the newer segments (an unknown size counts 0, which can only delay) is at least
-///     `maxBytes`;
+///     this partition's share of `maxBytes` (`maxBytes / partitions`, #3334);
 ///   - age: `now` minus the segment's newest event timestamp exceeds `maxAgeMs`. An unknown timestamp is never old. A
 ///     segment whose age cannot be read on any pass (`unreadable`) takes the age of the next newer segment whose age is
 ///     known, so it neither holds the prefix for ever nor goes before a newer segment does.
@@ -37,7 +37,8 @@ public final class SealedRetentionRule {
                                         RetentionPolicy policy,
                                         long deletableThrough,
                                         long now,
-                                        Set<Long> unreadable) {
+                                        Set<Long> unreadable,
+                                        int partitions) {
         if (policy.mode() == RetentionMode.UNKNOWN || !policy.declared().any()) {
             return 0;
         }
@@ -64,10 +65,12 @@ public final class SealedRetentionRule {
         }
 
         var prefix = 0;
+        var maxCount = share(policy.maxCount(), partitions);
+        var maxBytes = share(policy.maxBytes(), partitions);
 
         while (prefix < size && segments.get(prefix).endOffset() <= deletableThrough && reclaimable(policy,
-                                                                                                    newerEvents[prefix],
-                                                                                                    newerBytes[prefix],
+                                                                                                    newerEvents[prefix] >= maxCount,
+                                                                                                    newerBytes[prefix] >= maxBytes,
                                                                                                     ages[prefix])) {
             prefix++;
         }
@@ -75,10 +78,16 @@ public final class SealedRetentionRule {
         return prefix;
     }
 
-    private static boolean reclaimable(RetentionPolicy policy, long newerEvents, long newerBytes, long age) {
+    /// One partition's part of a stream-wide bound (ST 3.1 O2): `bound / partitions`, never below 1 for a positive bound,
+    /// so a bound smaller than the partition count keeps at least the newest segment instead of reclaiming it too.
+    private static long share(long bound, int partitions) {
+        return bound <= 0
+               ? bound
+               : Math.max(1, bound / partitions);
+    }
+
+    private static boolean reclaimable(RetentionPolicy policy, boolean countExceeded, boolean bytesExceeded, long age) {
         var declared = policy.declared();
-        var countExceeded = newerEvents >= policy.maxCount();
-        var bytesExceeded = newerBytes >= policy.maxBytes();
         var ageExceeded = age != Long.MIN_VALUE && age > policy.maxAgeMs();
 
         return policy.mode() == RetentionMode.ALL

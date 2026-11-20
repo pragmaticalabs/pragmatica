@@ -7,10 +7,13 @@ package org.pragmatica.aether.stream;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.slice.HotWindowDeclaration;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.StreamDeclaration;
+import org.pragmatica.aether.slice.TruncationDeclaration;
+import org.pragmatica.aether.slice.TruncationPolicy;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
@@ -156,6 +159,36 @@ class StreamLifeAuthorityTest {
                                                                                           .startsWith("partition count of an existing stream cannot change");
     }
 
+    /// T-162 (#3334, ST 2.5): a committed change of `[retention]`, `[hot]` or `expected_ingress` at equal partitions and
+    /// equal durability is ADOPTED; stronger durability is adopted too; weaker durability is not; a `[truncation]` change
+    /// alone is not. `notAppliedReason` stays silent for each storage change (nothing to refuse) and speaks for the weaker one.
+    @Test
+    void storageKeyChanges_areAdoptedAtEqualDurability_weakerIsNot_truncationAloneIsNot() {
+        var life = config().withIncarnation(COMMITTED_LIFE).withReplication(new ReplicationFactors(3, 2));
+        var biggerRetention = variant(life, RetentionPolicy.retentionPolicy(5000, 8 * 1024 * 1024, 600_000), life.declaration());
+        var hot = variant(life, life.retention(), declaration(Option.some(HotWindowDeclaration.hotWindowDeclaration(Option.some(4096L), Option.none())),
+                                                              Option.none(), Option.none()));
+        var ingress = variant(life, life.retention(), declaration(Option.none(), Option.none(), Option.some(1_000_000L)));
+        var truncation = variant(life, life.retention(), declaration(Option.none(),
+                                                                     Option.some(TruncationDeclaration.truncationDeclaration(Option.some(TruncationPolicy.UNTIL_CONSUMED),
+                                                                                                                             Option.none())),
+                                                                     Option.none()));
+        var weakerWithBiggerRetention = variant(life.withReplication(new ReplicationFactors(3, 1)), biggerRetention.retention(), life.declaration());
+        var strongerWithBiggerRetention = variant(life.withReplication(new ReplicationFactors(4, 2)), biggerRetention.retention(), life.declaration());
+
+        assertThat(enforcedAfter(life, biggerRetention).retention()).as("retention change").isEqualTo(biggerRetention.retention());
+        assertThat(enforcedAfter(life, hot).declaration()).as("hot change").isEqualTo(hot.declaration());
+        assertThat(enforcedAfter(life, ingress).declaration()).as("expected_ingress change").isEqualTo(ingress.declaration());
+        assertThat(enforcedAfter(life, strongerWithBiggerRetention)).as("stronger durability").isEqualTo(strongerWithBiggerRetention);
+        assertThat(enforcedAfter(life, weakerWithBiggerRetention)).as("weaker durability with a storage change is not adopted").isEqualTo(life);
+        assertThat(enforcedAfter(life, truncation)).as("a truncation change alone is not adopted").isEqualTo(life);
+
+        for (var changed : List.of(biggerRetention, hot, ingress, truncation, strongerWithBiggerRetention)) {
+            assertThat(StreamPartitionManager.notAppliedReason(changed, life).isEmpty()).as("nothing to refuse: %s", changed).isTrue();
+        }
+        assertThat(StreamPartitionManager.notAppliedReason(weakerWithBiggerRetention, life).or("")).startsWith("durability only increases online");
+    }
+
     /// The hazard behind adoption (#3334): adoption swaps the whole config, so a held-floor release that read
     /// `entry.config()` would return other bytes than were reserved. The ring's own control bytes are released, so a
     /// stream adopted over a larger retention still returns the budget to zero when its life ends.
@@ -174,6 +207,19 @@ class StreamLifeAuthorityTest {
         assertThat(reserved).as("the stream reserved its floor").isGreaterThan(0L);
         assertThat(node.totalAllocatedBytes()).as("released bytes equal reserved bytes").isZero();
         node.close();
+    }
+
+    private StreamConfig enforcedAfter(StreamConfig life, StreamConfig incoming) {
+        var node = manager(new RecordingClusterNode(), AppendLog.Opener.directory(walDir.resolve(Integer.toHexString(System.identityHashCode(incoming)))));
+
+        node.onStreamConfigPut(committed(life));
+        node.onStreamConfigPut(committed(incoming));
+
+        var enforced = node.enforcedConfig(STREAM).or(life);
+
+        node.close();
+
+        return enforced;
     }
 
     private static StreamConfig variant(StreamConfig base, RetentionPolicy retention, Option<StreamDeclaration> declaration) {

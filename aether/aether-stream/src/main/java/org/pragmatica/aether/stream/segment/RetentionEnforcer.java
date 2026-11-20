@@ -18,6 +18,7 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.stream.segment.StreamRetentionSource.EnforcedRetention;
 import org.pragmatica.aether.stream.SegmentTierPressure;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -471,7 +472,7 @@ public final class RetentionEnforcer implements AutoCloseable {
         var policies = policiesOf(keys);
         var plans = keys.stream()
                         .flatMap(key -> option(policies.get(key.streamName())).flatMap(policy -> policy)
-                                              .map(policy -> planReclaim(key, policy, now))
+                                              .map(retention -> planReclaim(key, retention, now))
                                               .stream())
                         .filter(plan -> !plan.expired()
                                              .isEmpty())
@@ -534,17 +535,17 @@ public final class RetentionEnforcer implements AutoCloseable {
         }
     }
 
-    private ReclaimPlan planReclaim(SegmentIndex.PartitionKey key, RetentionPolicy policy, long now) {
+    private ReclaimPlan planReclaim(SegmentIndex.PartitionKey key, EnforcedRetention retention, long now) {
         return ReclaimPlan.reclaimPlan(key.streamName(),
                                        index.incarnationOf(key.streamName()),
                                        key.partition(),
-                                       findExpiredSegments(key.streamName(), key.partition(), policy, now));
+                                       findExpiredSegments(key.streamName(), key.partition(), retention, now));
     }
 
     /// The policy that judges each stream of this pass, or none for a stream withheld this pass; the withheld transitions
     /// are reported here, once per pass (#2201 3.2 items 2 and 8).
-    private Map<String, Option<RetentionPolicy>> policiesOf(Set<SegmentIndex.PartitionKey> keys) {
-        var policies = new java.util.HashMap<String, Option<RetentionPolicy>>();
+    private Map<String, Option<EnforcedRetention>> policiesOf(Set<SegmentIndex.PartitionKey> keys) {
+        var policies = new java.util.HashMap<String, Option<EnforcedRetention>>();
 
         keys.forEach(key -> policies.computeIfAbsent(key.streamName(), this::effectivePolicy));
         reportWithheld(policies);
@@ -556,17 +557,19 @@ public final class RetentionEnforcer implements AutoCloseable {
     /// "never" and its checkpoint floor protects its segments (#2201 3.2 item 3). A stream that declares no dimension is
     /// ruled by the node default age, today's rule. A stream the source does not answer, or whose mode this node cannot
     /// read, is withheld.
-    private Option<RetentionPolicy> effectivePolicy(String streamName) {
+    private Option<EnforcedRetention> effectivePolicy(String streamName) {
         if (streamName.startsWith(ENTITY_STREAM_PREFIX)) {
-            return some(defaultAgePolicy());
+            return some(EnforcedRetention.enforcedRetention(defaultAgePolicy(), 1));
         }
 
         return source.policyOf(streamName)
-                     .filter(policy -> policy.mode() != RetentionMode.UNKNOWN)
-                     .map(policy -> policy.declared()
-                                          .any()
-                                    ? policy
-                                    : defaultAgePolicy());
+                     .filter(retention -> retention.policy()
+                                                   .mode() != RetentionMode.UNKNOWN)
+                     .map(retention -> retention.policy()
+                                                .declared()
+                                                .any()
+                                          ? retention
+                                          : EnforcedRetention.enforcedRetention(defaultAgePolicy(), 1));
     }
 
     private RetentionPolicy defaultAgePolicy() {
@@ -576,7 +579,7 @@ public final class RetentionEnforcer implements AutoCloseable {
     /// A stream withheld for [#WITHHELD_PASSES] consecutive passes is raised once; the first pass that judges it again
     /// closes it. A raised stream that is gone from this node's index is closed as well.
     @Contract
-    private void reportWithheld(Map<String, Option<RetentionPolicy>> policies) {
+    private void reportWithheld(Map<String, Option<EnforcedRetention>> policies) {
         policies.forEach((streamName, policy) -> policy.onPresent(_ -> resumeWithheld(streamName,
                                                                                       "its retention policy is readable again"))
                                                        .onEmpty(() -> countWithheld(streamName)));
@@ -909,16 +912,17 @@ public final class RetentionEnforcer implements AutoCloseable {
     /// a hole would let the floor claim the hole as sealed. A segment that straddles the bound is kept whole.
     private List<SegmentIndex.SegmentRef> findExpiredSegments(String streamName,
                                                               int partition,
-                                                              RetentionPolicy policy,
+                                                              EnforcedRetention retention,
                                                               long now) {
         var segments = index.listSegments(streamName, partition);
         var deletableThrough = Math.min(retentionFloor.deletableThroughOffset(streamName, partition),
                                         index.lastSealedOffset(streamName, partition));
         var prefix = SealedRetentionRule.reclaimablePrefix(segments,
-                                                           policy,
+                                                           retention.policy(),
                                                            deletableThrough,
                                                            now,
-                                                           unreadableStarts(streamName, partition));
+                                                           unreadableStarts(streamName, partition),
+                                                           retention.partitions());
 
         return List.copyOf(segments.subList(0, prefix));
     }
