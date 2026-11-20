@@ -36,6 +36,16 @@ def pom(*modules, profile=""):
     return f"<project><modules>{listed}<!-- <module>commented</module> --></modules>{profile}</project>"
 
 
+FAILSAFE = "<plugin><artifactId>maven-failsafe-plugin</artifactId></plugin>"
+
+
+def bound(plugin=FAILSAFE, management=False, inside="build"):
+    """A pom whose <build> lists the plugin under <plugins> (or, for the negative cases, under pluginManagement/a profile)."""
+    plugins = f"<plugins>{plugin}</plugins>"
+    build = f"<build><pluginManagement>{plugins}</pluginManagement></build>" if management else f"<build>{plugins}</build>"
+    return f"<project>{f'<profiles><profile>{build}</profile></profiles>' if inside == 'profile' else build}</project>"
+
+
 def report(root, module, kind, name, *cases, tests=None):
     body = "".join(f'<testcase classname="{c}" name="{n}">{"<skipped/>" if s else ""}</testcase>' for c, n, s in cases)
     count = len(cases) if tests is None else tests
@@ -56,7 +66,7 @@ class CiTestGroupsTest(unittest.TestCase):
         write(self.root / "agg/c/src/test/java/TestSerializers.java", "class TestSerializers {}")  # a fixture, no @Test
         # @Test methods in a class surefire's and failsafe's names never select: an abstract contract, not a test
         write(self.root / "agg/c/src/test/java/ContractSpec.java", "abstract class ContractSpec { @Test void t() {} }")
-        write(self.root / "nested-profile-free/pom.xml", pom())
+        write(self.root / "nested-profile-free/pom.xml", bound())
         write(self.root / "nested-profile-free/src/test/java/LoaderIT.java", "class LoaderIT { @Test void t() {} }")
         self.groups = self.root / "groups.txt"
         self.ci = self.root / "ci.yml"
@@ -82,6 +92,31 @@ class CiTestGroupsTest(unittest.TestCase):
         self.assertEqual(groups.reactor_modules(self.root), ["", "a", "agg", "agg/b", "agg/c", "ember", "nested-profile-free"])
         # agg/c has only a fixture; an IT-only module has tests
         self.assertEqual(groups.modules_with_tests(self.root), ["a", "agg/b", "ember", "nested-profile-free"])
+
+    def test_a_module_with_it_classes_and_no_failsafe_binding_fails(self):
+        # #3506: surefire excludes *IT.java and the root only manages failsafe, so an unbound module runs its ITs nowhere
+        owners = "g1 a\ng2 agg/b\ng2 nested-profile-free\njob:ember-shard ember\n"
+        self.assertEqual(self._check(owners), [])
+        write(self.root / "nested-profile-free/pom.xml", pom())
+        problems = self._check(owners)
+        self.assertEqual(len(problems), 1)
+        self.assertTrue(problems[0].startswith("nested-profile-free has *IT classes and no maven-failsafe-plugin binding"))
+
+    def test_only_a_build_plugins_binding_counts_not_plugin_management_or_a_profile(self):
+        for pom_text in (bound(management=True), bound(inside="profile"), bound("<plugin><artifactId>other</artifactId></plugin>")):
+            write(self.root / "nested-profile-free/pom.xml", pom_text)
+            self.assertEqual(groups.modules_with_unbound_its(self.root), ["nested-profile-free"], pom_text)
+
+    def test_a_binding_inherited_from_a_parent_counts_unless_the_parent_is_not_inherited(self):
+        write(self.root / "nested-profile-free/pom.xml", "<project><parent><artifactId>p</artifactId></parent></project>")
+        self.assertEqual(groups.modules_with_unbound_its(self.root), ["nested-profile-free"])  # ../pom.xml (the root) binds nothing
+        write(self.root / "pom.xml", pom("a", "agg", "ember", "nested-profile-free").replace(
+            "</modules>", "</modules><build><plugins>" + FAILSAFE + "</plugins></build>"))
+        self.assertEqual(groups.modules_with_unbound_its(self.root), [])
+        write(self.root / "pom.xml", pom("a", "agg", "ember", "nested-profile-free").replace(
+            "</modules>", "</modules><build><plugins><plugin><artifactId>maven-failsafe-plugin</artifactId>"
+                          "<inherited>false</inherited></plugin></plugins></build>"))
+        self.assertEqual(groups.modules_with_unbound_its(self.root), ["nested-profile-free"])
 
     def test_a_profile_ahead_of_the_default_modules_is_not_read_as_the_reactor(self):
         # the first <modules> in the text is the profile's: only stripping <profiles> leaves the default block first

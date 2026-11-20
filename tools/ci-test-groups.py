@@ -5,7 +5,7 @@ build-and-test used to run every module's tests in one reactor, where each modul
 modules' tests (node started 25 min into a 45 min reactor). The test-group-N jobs each install their modules' upstream
 with -DskipTests and test only their own modules, in parallel; the build-and-test job aggregates them.
 
-  ci-test-groups.py check                          every module with tests has exactly one owner; ci.yml agrees
+  ci-test-groups.py check                          every module with tests has exactly one owner; ci.yml agrees; every module with *IT classes binds failsafe
   ci-test-groups.py modules --group G              G's modules, comma-separated, for `mvn -pl`
   ci-test-groups.py has-examples --group G         `yes` when G runs the standalone examples build, else `no`
   ci-test-groups.py verify-reports DIR             every grouped module wrote a report under DIR (merged artifacts)
@@ -62,6 +62,49 @@ def modules_with_tests(root=ROOT):
     return sorted(m for m in reactor_modules(root) if has_tests(root / m))
 
 
+def _children(element, name):
+    return [c for c in element if c.tag.rpartition("}")[2] == name]
+
+
+def _binds_failsafe(project, own):
+    """True when <build><plugins> (not pluginManagement, not a profile) lists failsafe; a parent's entry counts only when inherited."""
+    build = _children(project, "build")
+    plugins = _children(build[0], "plugins") if build else []
+    for plugin in (p for ps in plugins for p in _children(ps, "plugin")):
+        names = [a.text.strip() for a in _children(plugin, "artifactId") if a.text]
+        inherited = [i.text.strip() for i in _children(plugin, "inherited") if i.text]
+        if "maven-failsafe-plugin" in names and (own or inherited != ["false"]):
+            return True
+    return False
+
+
+def runs_failsafe(root, module):
+    """Whether the module's own <build><plugins>, or an inherited one up its <parent> chain, binds failsafe.
+    Only a binding makes failsafe run: the root pom's pluginManagement entry alone runs nothing, and its surefire config
+    excludes **/*IT.java, so a class named *IT in an unbound module runs in no build (#3506)."""
+    directory, own = root / module, True
+    while (directory / "pom.xml").is_file():
+        project = ET.parse(directory / "pom.xml").getroot()
+        if _binds_failsafe(project, own):
+            return True
+        parent = _children(project, "parent")
+        if not parent:
+            return False
+        relative = (_children(parent[0], "relativePath") or [None])[0]
+        directory = (directory / (relative.text.strip() if relative is not None and relative.text else "..")).resolve()
+        directory = directory.parent if directory.name == "pom.xml" else directory
+        own = False
+    return False
+
+
+def modules_with_unbound_its(root=ROOT):
+    """Reactor modules with a src/test/java/**/*IT.java class where failsafe will not run (#3506)."""
+    return sorted(m for m in reactor_modules(root)
+                  if (root / m / "src/test/java").is_dir()
+                  and any((root / m / "src/test/java").rglob("*IT.java"))
+                  and not runs_failsafe(root, m))
+
+
 def read_groups(path=GROUPS):
     """[(owner, module)] in file order; a trailing `# ...` is provenance."""
     rows = []
@@ -90,7 +133,8 @@ def ci_jobs(ci_text):
 def check(root=ROOT, groups_file=GROUPS, ci_file=CI):
     """The problems that make the grouping unsound; empty when every module with tests has exactly one owner."""
     rows, ci_text = read_groups(groups_file), ci_file.read_text()
-    problems = []
+    problems = [f"{module} has *IT classes and no maven-failsafe-plugin binding in its <build><plugins> or an inherited parent's: "
+                f"they run in no build (surefire excludes *IT.java)" for module in modules_with_unbound_its(root)]
     tested = modules_with_tests(root)
     owners = {}
     for owner, module in rows:
