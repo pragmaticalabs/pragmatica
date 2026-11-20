@@ -50,7 +50,7 @@
 /// (* earlier accepted settlement is still in transit (KvApply). That exclusion is read only when STAMP # "off": the *)
 /// (* stamp modes extend the base spec conservatively, so at STAMP = "off" LATE is dead as it was before #3203       *)
 /// (* (LATE = TRUE and FALSE reach the base states; the code_nolate_* and LATE = FALSE mut_* rows keep their base   *)
-/// (* counts, pinned by off-mode-counts.tsv beside models.tsv). Reading it at "off" excluded the ABA traces, so   *)
+/// (* counts, pinned by pinned-counts.tsv beside models.tsv). Reading it at "off" excluded the ABA traces, so     *)
 /// (* the CAS controls mut_nocas_agree and mut_norevision_agree passed (PR #3443 round g).                       *)
 /// (* STAMP (#3203, PR #3443) models the operator view `opv` (the last warning entry delivered per subject, across  *)
 /// (* nodes) and the per-node sink order `newest` (EffectTranslator.newestRevision): "off" = neither is modelled and *)
