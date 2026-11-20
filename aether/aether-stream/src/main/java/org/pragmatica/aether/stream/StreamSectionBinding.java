@@ -76,23 +76,27 @@ public sealed interface StreamSectionBinding {
                                  .map(StreamConfigParser.DeclaredStream::config);
     }
 
-    /// #2201 E-02: a key the deploy validator refuses as inert ([InertKeyRules]) is refused here too, for the stream and for
-    /// each of its consumer sections, so a declaration that reaches activation without the validator cannot bind with a key
+    /// #2201 E-02: a key the deploy validator refuses as inert ([InertKeyRules]) is refused here too, for the stream, for its
+    /// inert storage-declaration sub-sections (#3334, read from the provider view) and for each of its consumer sections, so a declaration that reaches activation without the validator cannot bind with a key
     /// that silently does nothing.
     private static Result<StreamConfigParser.DeclaredStream> refuseInertKeys(ConfigurationProvider provider,
                                                                              String section,
                                                                              String alias,
                                                                              StreamConfigParser.DeclaredStream declared) {
-        return consumerSections(provider, section).map(consumers -> inertReasons(declared.config(),
+        return consumerSections(provider, section).map(consumers -> inertReasons(StreamSection.providerSection(provider,
+                                                                                                               section),
+                                                                                 declared.config(),
                                                                                  consumers))
                                .flatMap(reasons -> reasons.isEmpty()
                                                    ? Result.success(declared)
                                                    : new StreamDeclarationError.InertKeysRefused(alias, reasons).result());
     }
 
-    private static List<String> inertReasons(StreamConfig config, List<ConsumerConfig> consumers) {
-        var streamKeys = Stream.concat(InertKeyRules.inertStreamKeys(config).stream(),
-                                       InertKeyRules.unsupportedConsistency(config).stream());
+    private static List<String> inertReasons(StreamSection streamSection, StreamConfig config, List<ConsumerConfig> consumers) {
+        var streamKeys = Stream.of(InertKeyRules.inertStreamKeys(config).stream(),
+                                   InertKeyRules.inertDeclarationKeys(streamSection).stream(),
+                                   InertKeyRules.unsupportedConsistency(config).stream())
+                               .flatMap(keys -> keys);
         var consumerKeys = consumers.stream().flatMap(consumer -> InertKeyRules.inertConsumerKeys(consumer).stream());
 
         return Stream.concat(streamKeys, consumerKeys)

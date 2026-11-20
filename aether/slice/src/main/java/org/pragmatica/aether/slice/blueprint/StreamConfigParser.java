@@ -625,13 +625,10 @@ public interface StreamConfigParser {
                      .or(() -> success(section));
     }
 
-    /// The first declaration-model key of the section in sorted order, or the `[<table>]` header of a declared empty
-    /// sub-section, which carries no key to name.
+    /// The first declaration-model key of the section in sorted order. An empty sub-section declares nothing
+    /// ([StreamSection#hasTable]), so it never conflicts.
     private static Option<String> declarationModelKey(StreamSection section) {
-        return Option.from(section.keys().stream().filter(StreamConfigParser::isDeclarationKey).sorted().findFirst()).orElse(() -> Option.from(DECLARATION_TABLES.stream()
-                                                                                                                                                                 .filter(section::hasTable)
-                                                                                                                                                                 .findFirst()).map(table -> "[" + table
-                                                                                                                                                                                           + "]"));
+        return Option.from(section.keys().stream().filter(StreamConfigParser::isDeclarationKey).sorted().findFirst());
     }
 
     private static boolean isDeclarationKey(String key) {
@@ -981,7 +978,7 @@ public interface StreamConfigParser {
         var idleExpiry = declaredValue(section, "truncation.group_idle_expiry", StreamValues::duration);
 
         return firstRefusalOr(List.of(policy, idleExpiry),
-                              () -> Result.all(policy, idleExpiry).map((declared, idle) -> TruncationDeclaration.truncationDeclaration(some(declared.or(TruncationPolicy.WINDOW)),
+                              () -> Result.all(policy, idleExpiry).map((declared, idle) -> TruncationDeclaration.truncationDeclaration(some(declared.or(DeclarationDefaults.DEFAULT_POLICY)),
                                                                                                                                        idle)));
     }
 
@@ -1040,7 +1037,7 @@ public interface StreamConfigParser {
     /// gate's. Under `until_consumed` the order is the stream kind, then the byte cap, then the mode; under `window`
     /// (declared or defaulted) a `group_idle_expiry` is refused.
     private static Result<StreamDeclaration> refuseTruncationShape(String alias, StreamDeclaration declared) {
-        var policy = declared.truncation().flatMap(TruncationDeclaration::policy).or(TruncationPolicy.WINDOW);
+        var policy = declared.truncation().flatMap(TruncationDeclaration::policy).or(DeclarationDefaults.DEFAULT_POLICY);
 
         return policy == TruncationPolicy.UNTIL_CONSUMED
                ? refuseUnsupportedKind(alias, declared)

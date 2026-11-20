@@ -31,11 +31,13 @@ import org.pragmatica.aether.slice.blueprint.StreamConfigParser;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser.PartitionedStreamResources;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser.RefusedSection;
 import org.pragmatica.aether.slice.blueprint.StreamDeclarationError;
+import org.pragmatica.aether.slice.blueprint.StreamSection;
 import org.pragmatica.aether.slice.blueprint.StreamSourceError;
 import org.pragmatica.aether.slice.resource.ResourceName;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceAddress.ResourceAddressError;
 import org.pragmatica.aether.slice.resource.ResourceVersion.ResourceVersionError;
+import org.pragmatica.aether.slice.stream.DeclarationDefaults;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec.StreamVersionSpecError;
@@ -105,8 +107,11 @@ public sealed interface StreamResourceValidator {
     String RULE_VERSION_PIN_RECOMMENDED = "version-pin-recommended";
     String RULE_INERT_STREAM_CONFIG = "inert-stream-config-key";
     String RULE_INERT_CONSUMER_CONFIG = "inert-consumer-config-key";
-    /// #3334 (section 2.5): a redeploy that changes an immutable key of a stream that is already committed is refused
-    /// BEFORE the commit, by these four ids; `StreamConfigChangeNotApplied` stays the backstop for a local KV that lags.
+    /// #3334 (section 2.5): a redeploy that changes an immutable key of a stream that is already committed, by these four
+    /// ids. The guarantee is per row visibility: the change is refused at deploy validation when the committed row is
+    /// visible in the validating node's KV; otherwise (the row is not yet written, or the local KV lags its commit) it is
+    /// announced not-applied by the node backstop (`StreamConfigChangeNotApplied`). Nothing serialises validation against
+    /// the row's write.
     String RULE_PARTITION_COUNT_IMMUTABLE = "partition-count-immutable";
     String RULE_DURABILITY_ONLY_INCREASES = "durability-only-increases";
     String RULE_TRUNCATION_POLICY_IMMUTABLE = "truncation-policy-immutable";
@@ -189,9 +194,10 @@ public sealed interface StreamResourceValidator {
     ///    alias, for the same reason. A key leaves [#GATING_SECTION_RULES] when it is wired.
     ///    [#RULE_PARTITION_COUNT_IMMUTABLE], [#RULE_DURABILITY_ONLY_INCREASES], [#RULE_TRUNCATION_POLICY_IMMUTABLE] and
     ///    [#RULE_STORAGE_KEY_IMMUTABLE] (#3334, section 2.5): a redeploy that changes an immutable key of a stream whose
-    ///    config is already committed (the overload taking the committed rows) refuses the publish, so nothing applies and
-    ///    the committed row stays as it is. The inert gate wins while a key is inert (R-12): an alias already refused as
-    ///    inert is not compared.
+    ///    config is already committed (the overload taking the committed rows) refuses the publish when the committed row
+    ///    is visible in the validating node's KV, so nothing applies and the committed row stays as it is; otherwise the
+    ///    change is announced not-applied by the node backstop. The inert gate wins while a key is inert (R-12): an alias
+    ///    already refused as inert is not compared.
     ///
     /// Every other rule is per-section — the parser's, one id per cause type ([#ruleFor]):
     /// [#RULE_VERSION_AND_SOURCE_EXCLUSIVE], [#RULE_PRODUCER_VERSION_EXACT], [#RULE_PARTITIONS_OVER_CEILING],
@@ -214,7 +220,9 @@ public sealed interface StreamResourceValidator {
     /// #3334 (section 2.5): [#partition] with the committed stream rows, keyed by engine key (the address
     /// `namespace:alias:version`, which is the `StreamConfigKey` name the create path commits under). An owned alias
     /// with an exact version whose row exists is compared with it ([#committedRowFailures]); an alias with no row (a first
-    /// deploy) or a `latest` version (no concrete address at deploy time) is not.
+    /// deploy) or a `latest` version (no concrete address at deploy time) is not. So an immutable-key change is refused at
+    /// deploy validation when the committed row is visible in the validating node's KV; otherwise (no row visible yet, a
+    /// `latest` alias, or a local KV that lags) it is announced not-applied by the node backstop.
     static Result<StreamValidationPartition> partition(Option<String> resourcesConfig,
                                                        Artifact blueprintArtifact,
                                                        Map<String, String> roleHints,
@@ -289,6 +297,7 @@ public sealed interface StreamResourceValidator {
             guardOwnedName(alias, inert);
             guardCoreCount(alias, owned.config(), replication, inert);
             guardStreamConfig(alias, owned.config(), inert);
+            resourcesConfig.onPresent(toml -> guardDeclarationTables(alias, toml, inert));
             resourcesConfig.onPresent(toml -> guardConsumerConfigs(alias, toml, inert));
             guardCommittedRow(alias, owned, committedFor, inert);
         }
@@ -390,13 +399,13 @@ public sealed interface StreamResourceValidator {
                                                                             + ": the truncation policy of an existing stream cannot change"));
     }
 
-    /// A row with no stored declaration, or a declaration with no policy, is a `window` stream: `window` is the policy the
-    /// parser resolves for a section that names none, so a stream committed before the declaration existed can be redeployed.
+    /// A row with no stored declaration, or a declaration with no policy, is a [DeclarationDefaults#DEFAULT_POLICY] (`window`)
+    /// stream: the one constant the parser resolves for a section that names none, so a stream committed before the declaration existed can be redeployed.
     private static Option<TruncationPolicy> truncationPolicy(StreamConfig config) {
         return Option.some(config.declaration()
                                  .flatMap(StreamDeclaration::truncation)
                                  .flatMap(TruncationDeclaration::policy)
-                                 .or(TruncationPolicy.WINDOW));
+                                 .or(DeclarationDefaults.DEFAULT_POLICY));
     }
 
     private static Option<StreamValidationFailure> maxEventSizeFailure(String field,
@@ -675,6 +684,7 @@ public sealed interface StreamResourceValidator {
             if (resource instanceof StreamResource.Owned owned) {
                 guardOwnedName(alias, failures);
                 guardStreamConfig(alias, owned.config(), failures);
+                resourcesConfig.onPresent(toml -> guardDeclarationTables(alias, toml, failures));
                 resourcesConfig.onPresent(toml -> guardConsumerConfigs(alias, toml, failures));
             }
         });
@@ -687,6 +697,26 @@ public sealed interface StreamResourceValidator {
         InertKeyRules.inertStreamKeys(config).forEach(inert -> failures.add(StreamValidationFailure.streamValidationFailure(field,
                                                                                                                             RULE_INERT_STREAM_CONFIG,
                                                                                                                             inert.message())));
+    }
+
+    /// #3334: the keys of an inert storage-declaration sub-section ([InertKeyRules#inertDeclarationKeys]), read from the
+    /// alias's section of the TOML text the parser read, so deploy refuses what activation refuses over the provider view.
+    private static void guardDeclarationTables(String alias, String toml, List<StreamValidationFailure> failures) {
+        var field = "[streams." + alias + "]";
+
+        inertDeclarationKeys(alias, toml).forEach(inert -> failures.add(StreamValidationFailure.streamValidationFailure(field,
+                                                                                                                        RULE_INERT_STREAM_CONFIG,
+                                                                                                                        inert.message())));
+    }
+
+    /// Design-out, not a dropped failure: the alias exists only because this text parsed, so the parse cannot fail here and
+    /// the empty fallback is unreachable.
+    private static List<InertKeyRules.InertKey> inertDeclarationKeys(String alias, String toml) {
+        return TomlParser.parse(toml)
+                         .map(doc -> InertKeyRules.inertDeclarationKeys(StreamSection.tomlSection(doc,
+                                                                                                  STREAMS_SECTION_PREFIX + alias,
+                                                                                                  alias)))
+                         .or(List.of());
     }
 
     /// A consumer key the parser refuses (#1549: `checkpoint_interval` that is not a duration of at least 1 ms)
