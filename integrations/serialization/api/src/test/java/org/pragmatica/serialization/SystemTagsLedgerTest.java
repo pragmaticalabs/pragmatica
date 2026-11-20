@@ -174,4 +174,27 @@ class SystemTagsLedgerTest {
     private static void assertNotInRestoreAuthorityRange(String name, int tag) {
         assertTrue(tag < 2986 || tag > 2989, "RA-2 pinned in 2986..2989: delete this half (%s is pinned to %d)".formatted(name, tag));
     }
+
+    /// #3303 A3a: 3018..3037 belongs to the arc lanes (know `f3033886ee`); A3a pins the seed-offer and arc-waiver keys at 3018 and 3019.
+    /// The reservation is exact, and both pins lie inside it.
+    @Test
+    void arcKeys_areInsideTheArcReservation() throws Exception {
+        var owned = ledger().stream()
+                            .filter(reservation -> reservation.owner()
+                                                              .equals("arc-3303"))
+                            .toList();
+
+        assertEquals(1, owned.size(), "arc-3303 must hold exactly one reservation in " + LEDGER);
+        assertEquals(3018, owned.getFirst().from(), "arc-3303 must start at 3018");
+        assertEquals(3037, owned.getFirst().to(), "arc-3303 must end at 3037");
+        assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherKey.EntitySeedOfferKey");
+        assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherKey.EntityArcWaiverKey");
+    }
+
+    private static void assertArcPinInside(Reservation reservation, String name) {
+        var tag = SystemTags.tagFor(name);
+
+        assertTrue(tag != SystemTags.NOT_PINNED, "PRECONDITION " + name + " is pinned in SystemTags.TAGS");
+        assertTrue(reservation.contains(tag), name + " must lie in " + reservation.describe() + " but is " + tag);
+    }
 }
