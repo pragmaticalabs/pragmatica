@@ -197,6 +197,31 @@ class ConsumerBehindTheRingTest {
         assertThat(warnings.getLast().message()).contains("cancelled");
     }
 
+    /// T-34 (#3334, ST 2.5): `window` keeps today's expiry. After a retention cut the group is moved to the earliest held
+    /// offset ONCE: the read at the cut offset is made once, every later read starts at or above the earliest held offset,
+    /// and one CRITICAL is raised however many reads follow (a rule that raised on every read, or that left the cursor
+    /// where it was, would read and raise again).
+    @Test
+    void retentionCut_movesTheGroupToTheEarliestHeldOffsetOnce_oneExpiryHoweverManyReadsFollow() throws InterruptedException {
+        start((from, _) -> from < 7L
+                           ? new StreamError.CursorExpired(from, 7L).<StreamPartitionManager.EpochRead> promise()
+                           : from == 7L
+                             ? tier(events(7, 8), E1)
+                             : ring(List.of(), E1));
+
+        keepWaking(() -> delivered.size() >= 2 && readsFrom(9L) >= 3);
+        awaitWarnings(1);
+
+        assertThat(readsAt.keySet().stream().filter(offset -> offset < 7L)).as("the only read below the earliest held offset is the one that expired").containsExactly(0L);
+        assertThat(reads(0L)).isEqualTo(1);
+        assertThat(delivered).containsExactly(7L, 8L);
+        assertThat(warningsOf(STREAM_CONSUMER_CURSOR_EXPIRED)).as("exactly one expiry for this (group, partition) cut").hasSize(1);
+    }
+
+    private int readsFrom(long offset) {
+        return readsAt.entrySet().stream().filter(entry -> entry.getKey() >= offset).mapToInt(entry -> entry.getValue().get()).sum();
+    }
+
     private String subjectAt(long offset) {
         return warningsOf(STREAM_CONSUMER_CURSOR_EXPIRED).getFirst().subject().replaceAll("@\\d+$", "") + "@" + offset;
     }
