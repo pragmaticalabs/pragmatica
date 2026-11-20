@@ -58,6 +58,11 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// stream then lands it. A live put of a catalogued opener passes the gate once; the control, a put whose code is not
 /// catalogued, passes nothing, which shows nothing else raises a committed fact in the window. The same row installed by
 /// snapshot and replayed reaches the handler (its suppression is logged with the row's subject) and passes nothing.
+///
+/// #3503: this node is also the cluster FSM's leader, and its `Warnings.difference` closes a mirrored open row whose family hold test
+/// refuses the subject. The close is a live committed put whose recovery notice passes the gate, at a time the test does not control. So
+/// the rows these tests count use a family whose hold test admits every subject (`worker-absence-unjudgeable`), which the leader keeps
+/// open and never rewrites; the orphan case is pinned on its own, by waiting for the close itself.
 class FsmWarningPutRouteWiringBootTest {
     @TempDir
     Path tempDir;
@@ -66,7 +71,10 @@ class FsmWarningPutRouteWiringBootTest {
     private static final TimeSpan START_BOUND = timeSpan(30).seconds();
     private static final TimeSpan DELIVERY_BOUND = timeSpan(10).seconds();
     private static final SliceCodec CODEC = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
-    private static final String CATALOGUED_CODE = "retry-exhausted-unsettled";
+    /// A catalogued opener whose family hold test admits every subject, so the leader keeps the row open and writes nothing after it.
+    private static final String CATALOGUED_CODE = "worker-absence-unjudgeable";
+    /// A catalogued opener whose hold test refuses a subject that is not an artifact: the leader closes the row (#3503).
+    private static final String ORPHANED_CODE = "retry-exhausted-unsettled";
     private static final String UNCATALOGUED_CODE = "not-a-catalogued-code";
 
     private final String subject = "route-boot-" + UUID.randomUUID();
@@ -123,6 +131,39 @@ class FsmWarningPutRouteWiringBootTest {
         assertThat(logs.messages()).as("control: the replayed put reaches onFsmWarningPut and is suppressed as a replay")
                                    .anyMatch(line -> line.contains("replay in progress") && line.contains(subject));
         assertThat(passed()).as("a replayed put is adopted, never published").isEqualTo(before);
+    }
+
+    /// #3503: a replayed row the leader cannot hold (its hold test refuses the subject) is adopted without a publish, then closed by the
+    /// leader's own WARNINGS write. That close is a live commit, and its recovery notice is the one publish; waiting for the closed row
+    /// makes the count deterministic. Before #3503 the replay test used this row and read the counter while the close could still land.
+    @Test
+    @Timeout(value = 120, unit = SECONDS)
+    void replayedOrphanedPut_isClosedByTheLeader_andOnlyTheClosePasses() {
+        boot();
+        commitLeaderKey(node.self(), 500_000L);
+
+        var key = FsmWarningKey.fsmWarningKey(ORPHANED_CODE, subject);
+        var before = passed();
+        restoreSnapshotHoldingRow(key);
+        node.kvStore()
+            .replayNotifications();
+        awaitDelivery();
+        awaitClosed(key);
+        awaitDelivery();
+
+        assertThat(logs.messages()).as("control: the replayed put reaches onFsmWarningPut and is suppressed as a replay")
+                                   .anyMatch(line -> line.contains("replay in progress") && line.contains(subject));
+        assertThat(passed() - before).as("the replay passes nothing; the leader's close of the orphaned row passes once")
+                                     .isEqualTo(1L);
+    }
+
+    private void awaitClosed(FsmWarningKey key) {
+        await().atMost(30, SECONDS)
+               .untilAsserted(() -> assertThat(node.kvStore()
+                                                   .getTyped(key, FsmWarningValue.class)
+                                                   .map(FsmWarningValue::open)
+                                                   .or(true)).as("the leader closes the row it cannot hold")
+                                                             .isFalse());
     }
 
     private long passed() {
