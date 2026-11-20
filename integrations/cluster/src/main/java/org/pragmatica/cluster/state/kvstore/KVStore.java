@@ -45,6 +45,8 @@ import org.pragmatica.serialization.Serializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.option;
+
 
 public class KVStore<K extends StructuredKey, V> implements StateMachine<KVCommand<K>> {
     private static final Logger log = LoggerFactory.getLogger(KVStore.class);
@@ -1287,8 +1289,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         rejectDeliveryThread();
         var tracked = trackedKeys(keyClass);
 
-        return Option.option(storage.get(guardKey))
-                     .filter(guard)
+        return option(storage.get(guardKey)).filter(guard)
                      .map(_ -> entriesOf(tracked, keyClass, valueClass));
     }
 

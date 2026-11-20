@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -180,22 +181,31 @@ class KVStoreKeyClassIndexTest {
         var store = trackedStore();
         var setA = trackedImage("a", 40);
         var setB = trackedImage("b", 40);
-        var mixed = new AtomicReference<Map<Tracked, Object>>();
-        var done = new AtomicBoolean();
+        var race = new Race();
 
         install(store, setA);
 
-        var reader = Thread.ofPlatform().daemon().start(() -> readUntilDone(store, setA, setB, mixed, done));
+        var readers = List.of(startReader(store, setA, setB, race), startReader(store, setA, setB, race));
 
-        for (var i = 0; i < 400; i++) {
-            install(store, i % 2 == 0 ? setB : setA);
+        race.arrive(READERS + 1);
+
+        try {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+
+            for (var i = 0; i < MIN_INSTALLS || stillStarved(race, deadline); i++) {
+                install(store, i % 2 == 0 ? setB : setA);
+            }
+        } finally {
+            race.done.set(true);
         }
 
-        done.set(true);
-        reader.join(TimeUnit.SECONDS.toMillis(30));
+        for (var reader : readers) {
+            reader.join(TimeUnit.SECONDS.toMillis(30));
+            assertThat(reader.isAlive()).isFalse();
+        }
 
-        assertThat(reader.isAlive()).isFalse();
-        assertThat(mixed.get()).as("a reader saw a set that is neither the pre- nor the post-install one").isNull();
+        assertThat(race.failure.get()).as("a reader thread failed (exception or torn read)").isNull();
+        assertThat(race.overlapping.get()).as("reads that completed while installs were still running").isGreaterThanOrEqualTo(MIN_OVERLAP);
     }
 
     @Test
@@ -238,18 +248,59 @@ class KVStoreKeyClassIndexTest {
 
     // ---------------------------------------------------------------- helpers
 
+    private static final int READERS = 2;
+    private static final int MIN_OVERLAP = 50;
+    private static final int MIN_INSTALLS = 400;
+
+    /// Keeps the writer installing until the readers have overlapped enough reads, so a loaded host cannot make the test pass vacuously or fail on
+    /// timing; bounded by a deadline so a starved reader still ends in the explicit overlap assertion.
+    private static boolean stillStarved(Race race, long deadline) {
+        return race.overlapping.get() < MIN_OVERLAP && System.nanoTime() < deadline && race.failure.get() == null;
+    }
+
+    /// Shared state of one race: a spin barrier so every thread starts together, the first failure from any thread, and the number of reads that
+    /// finished while the writer was still installing (guards against a vacuous pass).
+    private static final class Race {
+        final AtomicBoolean done = new AtomicBoolean();
+        final AtomicInteger ready = new AtomicInteger();
+        final AtomicInteger overlapping = new AtomicInteger();
+        final AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        void arrive(int parties) {
+            ready.incrementAndGet();
+            while (ready.get() < parties) {
+                Thread.onSpinWait();
+            }
+        }
+    }
+
+    private static Thread startReader(KVStore<StructuredKey, Object> store,
+                                      Map<StructuredKey, Object> setA,
+                                      Map<StructuredKey, Object> setB,
+                                      Race race) {
+        return Thread.ofPlatform().daemon().start(() -> readUntilDone(store, setA, setB, race));
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
     private static void readUntilDone(KVStore<StructuredKey, Object> store,
                                       Map<StructuredKey, Object> setA,
                                       Map<StructuredKey, Object> setB,
-                                      AtomicReference<Map<Tracked, Object>> mixed,
-                                      AtomicBoolean done) {
-        while (!done.get()) {
-            var seen = entries(store);
+                                      Race race) {
+        race.arrive(READERS + 1);
+        try {
+            while (!race.done.get()) {
+                var seen = entries(store);
 
-            if (!isTrackedPart(setA, seen) && !isTrackedPart(setB, seen)) {
-                mixed.set(seen);
-                return;
+                if (!isTrackedPart(setA, seen) && !isTrackedPart(setB, seen)) {
+                    throw new AssertionError("a reader saw a set that is neither the pre- nor the post-install one: " + seen.size() + " entries");
+                }
+
+                if (!race.done.get()) {
+                    race.overlapping.incrementAndGet();
+                }
             }
+        } catch (Throwable e) {
+            race.failure.compareAndSet(null, e);
         }
     }
 
