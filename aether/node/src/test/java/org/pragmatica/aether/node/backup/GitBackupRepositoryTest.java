@@ -814,7 +814,10 @@ class GitBackupRepositoryTest {
         Files.writeString(blocker, "a file, not a directory\n");
         var repository = GitBackupRepository.gitBackupRepository(blocker.resolve("repo"), Option.none(), "backup", TIMEOUT);
 
-        assertThat(unreadableReason(repository.readGitVersion())).doesNotContain("2.43");
+        var read = repository.readGitVersion();
+
+        assertThat(read).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(unreadableReason(read)).doesNotContain("2.43");
     }
 
     @Test
