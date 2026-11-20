@@ -60,3 +60,4 @@
 2920..2959 rc6-streams-wire 2026-11-17 #3334 S2a1/S1a flag-day and new types: S2a1-1 2920..2925, S2a1-3 2926..2927, S1a-1a 2928..2930, S1a-2 2931..2943, rest spare 2944..2959 (know 38cad36811)
 2960..2979 dht-3345-3347 2026-11-18 #3345 #3347 (2960 HeldReport, 2961 HeldEnd; rest by step)
 2984..2985 fix834 2026-11-19 #834 SchemaVersionValue new shape (2984) and SchemaReach (2985); RQ-TAGS-3, moved off 2980..2981 (#2625's)
+3010..3017 stream-mem 2026-11-20 #3458 in-memory streams (know d0048c4f79)
