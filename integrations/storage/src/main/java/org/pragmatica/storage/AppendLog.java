@@ -12,13 +12,16 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.zip.CRC32;
 
 import org.pragmatica.lang.Cause;
@@ -179,6 +182,11 @@ import static org.pragmatica.lang.Unit.unit;
 /// last-sealed offset (W4), so no double-apply — the watermark is purely a reclamation hint.
 public final class AppendLog implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(AppendLog.class);
+    /// Design-out: every Java SE implementation must provide SHA-256 (`MessageDigest`'s contract), so the failure branch of
+    /// [#historyDigestOf] is unreachable. Were it reached, this value equals no real digest, so an inventory compared on it
+    /// reads as a different history -- closed, never open.
+    private static final String DIGEST_UNAVAILABLE = "sha-256-unavailable";
+
     /// Fixed framing header: u32 payloadLen + u64 offset + u64 timestampMillis + u32 crc32.
     private static final int HEADER_BYTES = 4 + 8 + 8 + 4;
     /// CRC pre-image header (offset + timestampMillis); payload is appended after it.
@@ -312,7 +320,14 @@ public final class AppendLog implements AutoCloseable {
                ? Result.lift(t -> new WalError.OpenFailed(file,
                                                           String.valueOf(t.getMessage())),
                              () -> scanExtent(file, bufferBytes))
+                       .flatMap(extent -> withHistory(file, extent))
                : Result.success(LogExtent.EMPTY);
+    }
+
+    /// READ-ONLY (#1569 A3): the sidecar is read, never loaded for writing; a damaged one fails the look rather than
+    /// reporting a log with no history.
+    private static Result<LogExtent> withHistory(Path file, LogExtent extent) {
+        return EpochHistory.read(file.toAbsolutePath()).map(extent::withHistory);
     }
 
     /// Up to `maxRecords` records of the log at `file` with offsets at or above `fromOffset`, in file order (which the order
@@ -792,8 +807,22 @@ public final class AppendLog implements AutoCloseable {
         return acked.restorePending();
     }
 
+    /// The digest of an owner-epoch history (#1569 A4): SHA-256, lowercase hex, over `<token> <startOffset>\n` of every
+    /// entry, oldest first. The one definition both the log's inventory and a caller holding the same history (as
+    /// provenance entries re-encoded to keys) compute, so equal histories digest equal. An empty history digests the
+    /// empty input.
     public static String historyDigestOf(List<EpochStart> history) {
-        return "placeholder";
+        return Result.lift(Causes::fromThrowable,
+                           () -> MessageDigest.getInstance("SHA-256"))
+                     .map(sha -> HexFormat.of().formatHex(sha.digest(digestInput(history))))
+                     .or(DIGEST_UNAVAILABLE);
+    }
+
+    private static byte[] digestInput(List<EpochStart> history) {
+        return history.stream()
+                      .map(entry -> entry.key().token() + " " + entry.startOffset() + "\n")
+                      .collect(Collectors.joining())
+                      .getBytes(StandardCharsets.UTF_8);
     }
 
     /// The owner epoch the history attributes `offset` to: the last entry starting at or below it, [Option#none] when none
@@ -1811,22 +1840,50 @@ public final class AppendLog implements AutoCloseable {
         boolean follows(EpochKey later, EpochKey earlier);
     }
 
-    /// See [#inspect]. `lowOffset`/`headOffset` are `-1` when the log holds no valid record.
-    public record LogExtent(long lowOffset, long headOffset, long validBytes, long fileBytes) {
-        public Option<EpochKey> lastEpoch() {
-            return Option.none();
-        }
-
-        public long firstStart() {
-            return -2L;
-        }
-
-        public String historyDigest() {
-            return "placeholder";
-        }
-
-        /// The extent of a log that does not exist: no valid record, no bytes.
+    /// See [#inspect]. `lowOffset`/`headOffset` are `-1` when the log holds no valid record. The WAL's own extent is
+    /// `lowOffset`/`headOffset`/`validBytes`/`fileBytes`; the other three describe the owner-epoch history beside it, read
+    /// the way the provenance comparison reads a log (#1569 A4): `lastEpoch` is the key of the last entry a held record
+    /// reaches (a ghost entry starting above `headOffset` never ranks), `firstStart` the first entry's start (`-1` for no
+    /// history), and `historyDigest` the [#historyDigestOf] of EVERY entry, ghosts included.
+    public record LogExtent(long lowOffset,
+                            long headOffset,
+                            long validBytes,
+                            long fileBytes,
+                            Option<EpochKey> lastEpoch,
+                            long firstStart,
+                            String historyDigest) {
+        /// The extent of a log that does not exist: no valid record, no bytes, no history.
         public static final LogExtent EMPTY = new LogExtent(-1L, -1L, 0L, 0L);
+
+        /// An extent whose log has no epoch history.
+        public LogExtent(long lowOffset, long headOffset, long validBytes, long fileBytes) {
+            this(lowOffset, headOffset, validBytes, fileBytes, Option.none(), -1L, historyDigestOf(List.of()));
+        }
+
+        /// This WAL extent combined with the epoch `history` read beside it.
+        LogExtent withHistory(List<EpochStart> history) {
+            return new LogExtent(lowOffset,
+                                 headOffset,
+                                 validBytes,
+                                 fileBytes,
+                                 lastReached(history, headOffset),
+                                 firstStartOf(history),
+                                 historyDigestOf(history));
+        }
+
+        private static Option<EpochKey> lastReached(List<EpochStart> history, long head) {
+            return Option.from(history.stream()
+                                      .filter(entry -> entry.startOffset() <= head)
+                                      .reduce((_, later) -> later))
+                         .map(EpochStart::key);
+        }
+
+        private static long firstStartOf(List<EpochStart> history) {
+            return history.stream()
+                          .findFirst()
+                          .map(EpochStart::startOffset)
+                          .orElse(-1L);
+        }
     }
 
     /// A torn tail cut by recovery: bytes `[validEnd, fileBytes)` of `file` were discarded, and
