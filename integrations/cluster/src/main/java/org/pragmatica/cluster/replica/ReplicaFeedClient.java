@@ -353,7 +353,7 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
         session = new Session(++requestCounter, source, mode, nanos.getAsLong());
         currentSource = Option.some(source);
         if (resume) {
-            carryAfterFailure();
+            carryOnResume();
             applier.beginLive();
         } else {
             readiness.sourceChanged();
@@ -366,9 +366,10 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
 
     /// The carry window (readiness) is armed only when the previous session FAILED: a deliberate move (rebalance, election hand-off) keeps the old
     /// counted heartbeats on their ordinary freshness bound, so a new source that stays silent costs no not-ready dip before the silence is detected
-    /// (#2502).
-    private void carryAfterFailure() {
-        if (previousSessionFailed) {
+    /// (#2502). Renewal is one rule: any resume while a carry is armed renews it up to the cap, a deliberate move included, so a move made while a
+    /// failure-armed carry runs does not let it lapse before that move's own silence is detected.
+    private void carryOnResume() {
+        if (previousSessionFailed || readiness.carrying()) {
             readiness.carryBeatsFor(limits.carryGraceMillis() * NANOS_PER_MILLI);
         }
     }
