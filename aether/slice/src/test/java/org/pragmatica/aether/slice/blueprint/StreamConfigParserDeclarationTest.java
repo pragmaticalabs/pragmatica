@@ -201,8 +201,8 @@ class StreamConfigParserDeclarationTest {
     void untilConsumedOnAnEntityStream_isRefusedUnsupported() {
         var entity = "[\"streams.entity:orders\"]\nversion = \"1.0.0\"\n";
 
-        assertThat(parseResources(entity + "[\"streams.entity:orders.truncation\"]\npolicy = \"until_consumed\"\n",
-                                  ReplicationFactors.BUILT_IN).fold(cause -> cause, _ -> fail("expected a refusal")))
+        assertThat(failureOf(parseResources(entity + "[\"streams.entity:orders.truncation\"]\npolicy = \"until_consumed\"\n",
+                                                 ReplicationFactors.BUILT_IN)))
                 .isEqualTo(new StreamDeclarationError.UntilConsumedUnsupported("entity:orders", "entity"));
         assertThat(parseResources(entity, ReplicationFactors.BUILT_IN).isSuccess()).isTrue();
     }
@@ -211,10 +211,10 @@ class StreamConfigParserDeclarationTest {
     /// hand it, under the alias `<stream>.dlq`; `until_consumed` is refused there, `window` is not.
     @Test
     void untilConsumedOnADlqStream_isRefusedUnsupported() {
-        assertThat(parseAs("orders.dlq", UNTIL_CONSUMED).fold(cause -> cause, _ -> fail("expected a refusal")))
+        assertThat(failureOf(parseAs("orders.dlq", UNTIL_CONSUMED)))
                 .isEqualTo(new StreamDeclarationError.UntilConsumedUnsupported("orders.dlq", "DLQ"));
         assertThat(parseAs("orders.dlq", "[streams.orders.truncation]\npolicy = \"window\"\n").isSuccess()).isTrue();
-        assertThat(parseAs("orders", UNTIL_CONSUMED).fold(cause -> cause, _ -> fail("expected a refusal")))
+        assertThat(failureOf(parseAs("orders", UNTIL_CONSUMED)))
                 .as("a user stream reaches the gate")
                 .isInstanceOf(StreamDeclarationError.NotYetAvailable.class);
     }
@@ -240,6 +240,10 @@ class StreamConfigParserDeclarationTest {
                 .isEqualTo(new StreamDeclarationError.ConflictingDeclarationModels("orders", "[hot]", "max_age"));
         assertThat(parseResources(section("retention_value = \"5\"\n"), ReplicationFactors.BUILT_IN).isSuccess()).isTrue();
         assertThat(parseResources(section("[streams.orders.retention]\nmax_bytes = \"2GB\"\n"), ReplicationFactors.BUILT_IN).isSuccess()).isTrue();
+    }
+
+    private static Cause failureOf(Result<?> result) {
+        return result.fold(cause -> cause, _ -> fail("expected a refusal"));
     }
 
     private static Result<StreamConfig> parseAs(String alias, String body) {
