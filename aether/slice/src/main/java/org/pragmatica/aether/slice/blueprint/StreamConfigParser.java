@@ -578,7 +578,6 @@ public interface StreamConfigParser {
 
     /// The engine-key prefix of an entity keyspace log, one of [StreamEngineKey#RESERVED_KIND_PREFIXES].
     String ENTITY_KIND_PREFIX = "entity:";
-
     /// The name suffix of a dead-letter stream. Mirrors `DurableTopicNames.DLQ_SUFFIX` (aether-stream), which this module
     /// cannot see, as [StreamEngineKey#RESERVED_KIND_PREFIXES] mirrors the kind prefixes.
     String DLQ_SUFFIX = ".dlq";
@@ -618,7 +617,8 @@ public interface StreamConfigParser {
     /// T-163: a section that declares the storage model and today's retention model at once is refused, naming one key of
     /// each, before either is read. It runs after the unknown-key refusal, so both keys it names are keys this parser knows.
     private static Result<StreamSection> refuseConflictingModels(StreamSection section) {
-        return Option.all(declarationModelKey(section), legacyRetentionKey(section))
+        return Option.all(declarationModelKey(section),
+                          legacyRetentionKey(section))
                      .map((newKey, oldKey) -> new StreamDeclarationError.ConflictingDeclarationModels(section.alias(),
                                                                                                       newKey,
                                                                                                       oldKey).<StreamSection> result())
@@ -628,28 +628,20 @@ public interface StreamConfigParser {
     /// The first declaration-model key of the section in sorted order, or the `[<table>]` header of a declared empty
     /// sub-section, which carries no key to name.
     private static Option<String> declarationModelKey(StreamSection section) {
-        return Option.from(section.keys()
-                                  .stream()
-                                  .filter(StreamConfigParser::isDeclarationKey)
-                                  .sorted()
-                                  .findFirst())
-                     .orElse(() -> Option.from(DECLARATION_TABLES.stream()
-                                                                 .filter(section::hasTable)
-                                                                 .findFirst())
-                                         .map(table -> "[" + table + "]"));
+        return Option.from(section.keys().stream().filter(StreamConfigParser::isDeclarationKey).sorted().findFirst()).orElse(() -> Option.from(DECLARATION_TABLES.stream()
+                                                                                                                                                                 .filter(section::hasTable)
+                                                                                                                                                                 .findFirst()).map(table -> "[" + table
+                                                                                                                                                                                           + "]"));
     }
 
     private static boolean isDeclarationKey(String key) {
-        return DECLARATION_TABLES.stream()
-                                 .anyMatch(table -> key.startsWith(table + "."));
+        return DECLARATION_TABLES.stream().anyMatch(table -> key.startsWith(table + "."));
     }
 
     private static Option<String> legacyRetentionKey(StreamSection section) {
         var keys = section.keys();
 
-        return Option.from(LEGACY_RETENTION_KEYS.stream()
-                                                .filter(keys::contains)
-                                                .findFirst());
+        return Option.from(LEGACY_RETENTION_KEYS.stream().filter(keys::contains).findFirst());
     }
 
     private static Map<String, String> nearestKeys(List<String> unknown) {
@@ -727,10 +719,10 @@ public interface StreamConfigParser {
         var consistency = optionalEnum(section, "consistency", List.of("eventual", "strong"), "eventual");
         var compression = optionalEnum(section, "compression", List.of("none", "lz4", "zstd"), "none");
         var retention = parseRetention(section);
-        var storageDeclaration = Result.all(partitions, maxEventSize).flatMap((count, size) -> parseDeclaration(section,
-                                                                                                                count,
-                                                                                                                size))
-                                       .flatMap(declared -> refuseTruncationShape(section.alias(), declared));
+        var storageDeclaration = Result.all(partitions, maxEventSize)
+                                       .flatMap((count, size) -> parseDeclaration(section, count, size))
+                                       .flatMap(declared -> refuseTruncationShape(section.alias(),
+                                                                                  declared));
 
         return firstFailure(List.of(partitions,
                                     factor,
@@ -1048,9 +1040,7 @@ public interface StreamConfigParser {
     /// gate's. Under `until_consumed` the order is the stream kind, then the byte cap, then the mode; under `window`
     /// (declared or defaulted) a `group_idle_expiry` is refused.
     private static Result<StreamDeclaration> refuseTruncationShape(String alias, StreamDeclaration declared) {
-        var policy = declared.truncation()
-                             .flatMap(TruncationDeclaration::policy)
-                             .or(TruncationPolicy.WINDOW);
+        var policy = declared.truncation().flatMap(TruncationDeclaration::policy).or(TruncationPolicy.WINDOW);
 
         return policy == TruncationPolicy.UNTIL_CONSUMED
                ? refuseUnsupportedKind(alias, declared)
@@ -1058,8 +1048,7 @@ public interface StreamConfigParser {
     }
 
     private static Result<StreamDeclaration> refuseUnsupportedKind(String alias, StreamDeclaration declared) {
-        return unsupportedKind(alias).map(kind -> new StreamDeclarationError.UntilConsumedUnsupported(alias,
-                                                                                                     kind).<StreamDeclaration> result())
+        return unsupportedKind(alias).map(kind -> new StreamDeclarationError.UntilConsumedUnsupported(alias, kind).<StreamDeclaration> result())
                               .or(() -> refuseUncapped(alias, declared));
     }
 
@@ -1070,7 +1059,7 @@ public interface StreamConfigParser {
                               .filter(ENTITY_KIND_PREFIX::equals)
                               .map(_ -> "entity")
                               .orElse(() -> some(alias).filter(name -> name.endsWith(DLQ_SUFFIX))
-                                                       .map(_ -> "DLQ"));
+                                                .map(_ -> "DLQ"));
     }
 
     /// A stream with no `[retention]` block resolves the default `max_bytes`, so only a block that omits it is refused.
