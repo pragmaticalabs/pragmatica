@@ -301,7 +301,9 @@
 ///
 /// Max(a, b) == IF a > b THEN a ELSE b
 ///
-/// \* "cand" (ruling B): the committed emitter publishes; rule E at the settle does not.
+/// \* "cand" (ruling B): the committed emitter publishes; rule E at the settle does not. Rule E is a LIVE-apply rule (CTO ruling
+/// \* 2026-11-20, refines B): a committed opening put publishes once, at KvApply, on the node applying it live, above its adoption
+/// \* point; rows a node adopts (Adopt: rebuild, snapshot install, inheritance) are installed silently and never re-raised.
 /// CommitPub == STAMP = "cand" /\ MODE = "code" /\ MUT # "noruleE"
 ///
 /// \* The operator view after delivering the committed transitions tr of replacement rows f.
@@ -417,6 +419,21 @@
 ///   /\ UNCHANGED <<newest, closedOff, term, kvLeader, elected, lkPend, target, observed, cond, shown, fsm, inc, view, warned, rows, dirty,
 ///                  flushQ, wInfl, gInfl, gIntent, fired, held, lnd, condBudget, faultBudget, redo>>
 ///
+/// \* Environment (#3203, rule E as a live-apply rule): node n ADOPTS the committed rows up to the current index without applying them
+/// \* live: a snapshot install and the notification replay after it (KVStore.restoreSnapshot / replayNotifications; the committed
+/// \* emitter drops a replayed put, ClusterEventAggregator.emitCommitted reading KVStore.isReplaying), a Rebuild's inherit, an
+/// \* inherited open. Its mirror side is Activate (inherit) and OnPut (the whole-set sync); Adopt is its publication side: under
+/// \* the code it publishes nothing (a stutter). Mutant "adoptpub" (a node publishing every committed put it takes, an
+/// \* adopted one included, as the test harness did at d008c2f393) re-publishes the newest committed transition of every open
+/// \* row. The operator view (opv) is not advanced by it: OnePubPerOpening reads the stream (notes) only.
+/// Adopt(n) ==
+///   /\ ncommit > 0
+///   /\ notes' = IF MUT = "adoptpub" THEN notes \cup {Note(notes, Last(x).c, x, TRUE) : x \in {s \in OpenOf(kv) : \E t \in trans : t.s = s}}
+///               ELSE notes
+///   /\ UNCHANGED <<ovars, trans, ncommit, pend, kvW, closedOff, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond,
+///                  shown, fsm, inc, view, warned, rows, dirty, flushQ, wInfl, gInfl, gIntent, fired, held, lnd, net, settles,
+///                  condBudget, faultBudget, redo>>
+///
 /// \* Environment: a definite failure (Settlement.Failed), nothing committed.
 /// KvFail(tx) ==
 ///   /\ tx \in net /\ faultBudget > 0
@@ -465,7 +482,7 @@
 ///
 /// ```tla Fsm2Leader:tail
 /// Next ==
-///   \/ \E n \in Nodes : Activate(n) \/ Deactivate(n) \/ Crash(n) \/ Elect(n) \/ SeeLeader(n)
+///   \/ \E n \in Nodes : Activate(n) \/ Deactivate(n) \/ Crash(n) \/ Elect(n) \/ SeeLeader(n) \/ Adopt(n)
 ///                       \/ Tick(n) \/ Flush(n) \/ Expire(n) \/ OnPut(n) \/ \E e \in EventFam : EventFire(n, e)
 ///   \/ CommitLeader
 ///   \/ \E tx \in net : KvApply(tx) \/ KvFail(tx)
@@ -569,6 +586,10 @@
 ///
 /// \* At most one notification per committed transition.
 /// NoDoubleEmit == \A x \in notes : ~x.dup
+///
+/// \* #3203 (rule E, live apply): at most one publication per opening index, across all nodes and lives: an opener committed at
+/// \* index c is published by its live apply only, never again by a node that adopts the row (Adopt; mutant "adoptpub" goes red).
+/// OnePubPerOpening == \A x \in notes : x.up => ~x.dup
 ///
 /// \* A transition whose writer handled its accepted settlement was notified (Settle, not DropSettle or LoseSettle: the node is
 /// \* Active in the settlement's incarnation and no fault was spent).
@@ -1596,6 +1617,43 @@
 /// INVARIANT NoPhantom
 /// INVARIANT NoDoubleEmit
 /// PROPERTY CompleteWhenSettled
+/// ```
+///
+/// ```tlacfg Fsm2Leader:late_cand_adopt
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "cand"
+/// CONSTANT PUTFIRST = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// INVARIANT OnePubPerOpening
+/// INVARIANT NoPhantom
+/// ```
+///
+/// ```tlacfg Fsm2Leader:late_adoptpub_adopt
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "adoptpub"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "cand"
+/// CONSTANT PUTFIRST = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// INVARIANT OnePubPerOpening
 /// ```
 ///
 /// ```tlacfg Fsm2Leader:late_cand_agree
