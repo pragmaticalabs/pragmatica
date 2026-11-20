@@ -327,6 +327,19 @@ class BackupEntryCodecTest {
                                                         .isInstanceOf(BackupError.KeyNotBackedUp.class);
         }
 
+        /// #420 T11b, versions half: the same refusal for an `ArtifactVersionsKey` line, read directly.
+        @Test
+        void T11b_decode_refusesAnArtifactVersionsLine() {
+            var versions = artifactVersionsFixture();
+            var document = sealedDocument(line(versions.value(),
+                                               versions.key()
+                                                       .asString()));
+
+            assertThat(failures(CODEC.decode(document))).as("T11b decode of a document with an artifact-versions line is refused KeyNotBackedUp")
+                                                        .singleElement()
+                                                        .isInstanceOf(BackupError.KeyNotBackedUp.class);
+        }
+
         /// A hand-edited document cannot smuggle node-scoped state into a restore.
         @Test
         void decode_refusesANodeScopedConfigEntry() {

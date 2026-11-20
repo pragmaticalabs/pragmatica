@@ -101,6 +101,14 @@ class ArtifactVersionsPutCodecTest {
         assertThat(value.blocks()).isEqualTo(manifest((byte) 7));
     }
 
+    /// #420 F2: the 5-arg constructor (what production builds today) binds an EMPTY manifest, not a one-byte or absent one.
+    @Test
+    void contentValue_withoutManifest_hasAnEmptyManifest() {
+        var value = new AetherValue.ArtifactContentValue(42L, "md5hex", "sha1hex", "sha256hex", 1_700_000_000_000L);
+
+        assertThat(value.blocks()).isEmpty();
+    }
+
     private static byte[] manifest(byte fill) {
         var ids = new byte[64];
 

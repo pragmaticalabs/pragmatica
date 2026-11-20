@@ -175,26 +175,32 @@ class EmberArtifactFlagDayRestoreTest {
     }
 
     // --- arms ---
-    /// Arm 2: the old document cannot be decoded. The restore runs asynchronously after the leader is elected, so the
-    /// check first awaits the TERMINAL decision (blocked, or restored) under a deadline: asserting "refused" while the restore is
-    /// still running would pass vacuously, and would pass at a head where the restore succeeds.
+    /// Arm 2 holds when the decode-step `backup-restore-blocked` line has been logged, and on EVERY node a cluster-state write is refused
+    /// `RestorePending`, the restore gate is still shut (no terminal decision) and no blueprint is applied. One invariant, one positive wait:
+    /// the wait is for the DECODE_STEP line itself (a block at any other step, or no line yet, never satisfies it), and everything after it is an
+    /// assertion on every node. The line is raised by the deciding leader only (`BackupRestoreCoordinator#onLeaderChange`, "only the leader
+    /// decides") and carries no node id, so the line is awaited once for the cluster; the per-node obligations are the refusal and the absences.
     ///
     /// **Blocked is read from the `backup-restore-blocked` log line, never from the cluster event log** (t420C). While the restore
     /// is undecided, `RestoreGate` refuses every backed-up write, the cluster-events `StreamConfigKey` included, so on this cold
     /// cluster the warning's `OperatorWarning` event cannot land until the gate opens ("the log line is the floor",
-    /// `OperatorWarnings`); a terminal wait on the event log never ends while blocked.
+    /// `OperatorWarnings`); a wait on the event log never ends while blocked.
     private void arm2Refused() {
-        var terminal = awaitFor(() -> blockedLineLogged(_ -> true) || allHold(BackupRestoreOutcome.RESTORED),
-                                LONG_WAIT_MS);
+        var logged = awaitFor(() -> blockedLineLogged(line -> line.contains(DECODE_STEP)), LONG_WAIT_MS);
 
-        assertThat(terminal).as("arm 2: the restore reaches a terminal state (blocked, or restored) within the deadline")
+        assertThat(logged).as(ARM2_BLOCKED + allHold(BackupRestoreOutcome.RESTORED) + "; blocked lines: " + blockedLines())
                   .isTrue();
-        assertThat(blockedLineLogged(line -> line.contains(DECODE_STEP))).as(ARM2_BLOCKED + allHold(BackupRestoreOutcome.RESTORED)
-                                                                            + "; blocked lines: " + blockedLines())
-                  .isTrue();
-        assertThat(applyProbe(cluster.allNodes().getFirst())).as("arm 2: the old document cannot be decoded, so the write is refused")
+        cluster.allNodes()
+               .forEach(EmberArtifactFlagDayRestoreTest::arm2NodeRefused);
+    }
+
+    private static void arm2NodeRefused(AetherNode node) {
+        var who = "arm 2, node " + node.self().id() + ": ";
+
+        assertThat(applyProbe(node)).as(who + "the old document cannot be decoded, so the write is refused")
                   .isInstanceOf(RestoreGate.RestorePending.class);
-        assertThat(allHold(BackupRestoreOutcome.RESTORED)).isFalse();
+        assertThat(RestoreGate.isOpen(node.kvStore())).as(who + "no terminal restore decision exists").isFalse();
+        assertThat(holdsBlueprint(node)).as(who + "no blueprint is applied").isFalse();
     }
 
     /// Arm 1 evaluates every assertion (soft), so each one is reachable and goes red on its own mutation: the decision,

@@ -44,7 +44,9 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     /// hand-maintained list that a new key could silently miss.
     sealed interface ClusterStateKey extends AetherKey {
         /// Whether this particular entry goes into a backup. True for every cluster-state key except
-        /// where the key type mixes cluster-wide and node-scoped rows (see [ConfigKey#isBackedUp]).
+        /// where the key type mixes cluster-wide and node-scoped rows (see [ConfigKey#isBackedUp]), and
+        /// except the artifact keys, which are type-wide exceptions (see [ArtifactContentKey#isBackedUp] and
+        /// [ArtifactVersionsKey#isBackedUp]).
         default boolean isBackedUp() {
             return true;
         }
