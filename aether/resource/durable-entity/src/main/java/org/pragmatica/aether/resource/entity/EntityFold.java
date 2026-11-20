@@ -827,9 +827,35 @@ final class EntityFold {
     /// to fold when the log below the head is not all readable here, so a skipped checkpoint can cost a
     /// longer replay or a refused fold — never state missing committed records.
     private Promise<Option<SeedCheckpoint>> usableCheckpoint(int partition) {
-        return substrate.loadCheckpoint(keyspace, partition)
-                        .map(checkpoint -> checkpoint.flatMap(c -> seedable(partition, c)))
+        return substrate.loadCheckpointOutcome(keyspace, partition)
+                        .map(outcome -> seedFrom(partition, outcome))
                         .recover(cause -> unreadableCheckpoint(partition, cause));
+    }
+
+    /// #3303 A0b: the typed answer of the substrate. An `Unreadable` checkpoint (a committed pointer whose block is lost, failed to fetch
+    /// or cannot be decoded) folds from the log exactly as an absent one does (forward recovery; [#replayFrom]'s gap check still
+    /// refuses a fold that would miss committed records); the difference is that it is named in the log, not silent.
+    private Option<SeedCheckpoint> seedFrom(int partition, EntityLogSubstrate.CheckpointLoad outcome) {
+        return switch (outcome) {
+            case EntityLogSubstrate.CheckpointLoad.Loaded(var checkpoint) -> seedable(partition, checkpoint);
+            case EntityLogSubstrate.CheckpointLoad.Absent() -> Option.none();
+            case EntityLogSubstrate.CheckpointLoad.Unreadable(var cause, var blockIdHex) -> unreadableBlock(partition,
+                                                                                                            cause,
+                                                                                                            blockIdHex);
+        };
+    }
+
+    private Option<SeedCheckpoint> unreadableBlock(int partition,
+                                                   EntityLogSubstrate.UnreadableCause cause,
+                                                   String blockIdHex) {
+        LOG.warn("Entity keyspace '{}' partition {}: the checkpoint block {} is unreadable ({}); ignoring the checkpoint and folding"
+                + " from the log",
+                 keyspace,
+                 partition,
+                 blockIdHex,
+                 cause);
+
+        return Option.none();
     }
 
     /// #2087 B4-cut: a checkpoint is usable only over the lineage it was taken over. It records the identity of the log records ending at its

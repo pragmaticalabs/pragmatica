@@ -945,6 +945,41 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                             pointer -> fetchCheckpointBlock(pointer));
     }
 
+    @Override
+    public Promise<CheckpointLoad> loadCheckpointOutcome(String keyspace, int partition) {
+        return kvStore.getTyped(EntityCheckpointKey.entityCheckpointKey(keyspace, partition),
+                                EntityFoldCheckpointValue.class)
+                      .fold(() -> Promise.success(CheckpointLoad.absent()),
+                            pointer -> fetchCheckpointOutcome(pointer));
+    }
+
+    private Promise<CheckpointLoad> fetchCheckpointOutcome(EntityFoldCheckpointValue pointer) {
+        return BlockId.fromHex(pointer.blockIdHex()).fold(_ -> Promise.success(unreadable(pointer,
+                                                                                          UnreadableCause.UNDECODABLE)),
+                                                          blockId -> readCheckpointBlock(pointer, blockId));
+    }
+
+    /// The failed read is TYPED, not absorbed (design-out of the silent collapse): `FETCH_FAILED` carries it to the caller, which decides.
+    private Promise<CheckpointLoad> readCheckpointBlock(EntityFoldCheckpointValue pointer, BlockId blockId) {
+        return storage.get(blockId)
+                      .map(bytes -> bytes.fold(() -> unreadable(pointer, UnreadableCause.BLOCK_LOST),
+                                               block -> loadedCheckpoint(pointer, block)))
+                      .recover(_ -> unreadable(pointer, UnreadableCause.FETCH_FAILED));
+    }
+
+    private static CheckpointLoad loadedCheckpoint(EntityFoldCheckpointValue pointer, byte[] block) {
+        return CheckpointLoad.loaded(CheckpointFrame.unframe(pointer.throughOffset(), block));
+    }
+
+    private static CheckpointLoad unreadable(EntityFoldCheckpointValue pointer, UnreadableCause cause) {
+        LOG.warn("Entity checkpoint block {} (through offset {}) is unreadable: {}",
+                 pointer.blockIdHex(),
+                 pointer.throughOffset(),
+                 cause);
+
+        return CheckpointLoad.unreadable(cause, pointer.blockIdHex());
+    }
+
     /// A pointer whose block cannot be fetched resolves to [Option#none] — "no usable checkpoint" — rather
     /// than to a failure. The caller's next step is identical either way: fold from the earliest offset it
     /// can read, and refuse if that leaves a gap. Reporting a distinct error here would add a branch that
