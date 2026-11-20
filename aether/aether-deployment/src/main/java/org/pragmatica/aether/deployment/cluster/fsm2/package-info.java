@@ -312,8 +312,9 @@
 ///                                   ELSE opv[x]]
 ///
 /// \* How a mirror takes rows f (an accepted write's replacements, a refusal's values, a put): the code overlays them
-/// \* (Warnings.landed / indexRow); "cand" takes a row only if its revision is above the one the mirror holds.
-/// Mirror(r, f) == IF STAMP = "cand" THEN [s \in Subjects |-> IF s \in DOMAIN f /\ f[s].rv > r[s].rv THEN f[s] ELSE r[s]]
+/// \* (Warnings.landed / indexRow); "cand" takes a row only if its revision is above the one the mirror holds. Mutant "nogate"
+/// \* drops that gate (Warnings.newer always true), so a late settle of an older row overlays a newer one (MirrorNoRegress).
+/// Mirror(r, f) == IF STAMP = "cand" /\ MUT # "nogate" THEN [s \in Subjects |-> IF s \in DOMAIN f /\ f[s].rv > r[s].rv THEN f[s] ELSE r[s]]
 ///                 ELSE Overlay(r, f)
 ///
 /// \* The READ (GET /api/v1/warnings, Warnings.java warningRows): what node n answers is the open rows of its mirror.
@@ -610,6 +611,10 @@
 /// \* successor's close reached the operator, then the deposed node's older opener re-opened it). An opener delivered while
 /// \* a newer close is committed but not yet delivered is in order: the close follows it and the view ends closed.
 /// NoLateReopen == [][\A x \in Subjects : (opv'[x] # opv[x] /\ opv'[x].up) => ~(opv[x].cl > opv'[x].rv)]_vars
+///
+/// \* #3203 A3: while a node stays Active, its mirror's revision of a row never decreases: a late settle, a refusal or a put
+/// \* carrying an older row is not taken (Warnings.indexRow, the `>` of Warnings.newer). Activate and Discard rebuild the mirror.
+/// MirrorNoRegress == [][\A n \in Nodes, x \in Subjects : (fsm[n] = "Active" /\ fsm'[n] = "Active") => rows'[n][x].rv >= rows[n][x].rv]_vars
 ///
 /// \* Desired/observed converge after the last leader change.
 /// Converges == <>[](kvDesired = target /\ observed = target)
@@ -1672,5 +1677,41 @@
 /// CONSTANT Subjects = {e, l}
 /// CONSTANT EventFam = {e}
 /// INVARIANT OpenSetAgreement
+/// ```
+///
+/// ```tlacfg Fsm2Leader:late_cand_mirror
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "none"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "cand"
+/// CONSTANT PUTFIRST = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY MirrorNoRegress
+/// ```
+///
+/// ```tlacfg Fsm2Leader:late_nogate_mirror
+/// CONSTANT MODE = "code"
+/// CONSTANT A2834 = FALSE
+/// CONSTANT FENCE = TRUE
+/// CONSTANT MUT = "nogate"
+/// CONSTANT RESUME = FALSE
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxCond = 3
+/// CONSTANT MaxFault = 1
+/// CONSTANT GOALS = FALSE
+/// CONSTANT LATE = TRUE
+/// CONSTANT STAMP = "cand"
+/// CONSTANT PUTFIRST = FALSE
+/// CONSTANT Subjects = {e, l}
+/// CONSTANT EventFam = {e}
+/// PROPERTY MirrorNoRegress
 /// ```
 package org.pragmatica.aether.deployment.cluster.fsm2;
