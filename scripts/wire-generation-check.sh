@@ -67,16 +67,17 @@ wire_lines() {
     grep -E '^(TAG|SHAPE|ENUM) ' <<<"$1" | tr -s ' ' | sort -u || true
 }
 
-# SEMANTIC lines are compared verbatim (an edit, even of whitespace, is an edit of history).
+# SEMANTIC declaration candidates (first token SEMANTIC in any case, optional leading whitespace), compared verbatim (an edit,
+# even of whitespace, is an edit of history). LC_ALL=C: the same bytes get the same verdict on every host, as in the Java reader.
 semantic_lines() {
-    grep -E '^SEMANTIC($|[[:space:]])' <<<"$1" | sort -u || true
+    LC_ALL=C grep -E '^[[:space:]]*[Ss][Ee][Mm][Aa][Nn][Tt][Ii][Cc]($|[[:space:]])' <<<"$1" | sort -u || true
 }
 
 broken="$(comm -23 <(wire_lines "$base_file") <(wire_lines "$head_file"))"
 base_semantic="$(semantic_lines "$base_file")"
 head_semantic="$(semantic_lines "$head_file")"
 
-malformed="$(printf '%s\n' "$head_semantic" | sed '/^$/d' | grep -Ev '^SEMANTIC [^[:space:]]+ [^[:space:]].*->.*[^[:space:]]$' || true)"
+malformed="$(printf '%s\n' "$head_semantic" | sed '/^$/d' | LC_ALL=C grep -Ev '^SEMANTIC [^[:space:]]+ [^[:space:]].*->.*[^[:space:]]$' || true)"
 if [[ -n "$malformed" ]]; then
     echo "wire-generation-check: REFUSED: malformed SEMANTIC line(s) at HEAD; the form is: SEMANTIC <value> <one-line old->new judgement>:" >&2
     sed 's/^/  - /' <<<"$malformed" >&2

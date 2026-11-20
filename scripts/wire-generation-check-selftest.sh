@@ -133,6 +133,65 @@ semantic_case "C8h existing SEMANTIC kept, second one added, generation + 1" 0 3
 semantic_case "C8i malformed SEMANTIC (no judgement), same generation" 1 3 3 "" "SEMANTIC a.A.epoch"
 semantic_case "C8j malformed SEMANTIC (no arrow), same generation" 1 3 3 "" "SEMANTIC a.A.epoch changed the rule"
 semantic_case "C8k SEMANTIC removed, generation + 1" 1 3 4 "$S1" ""
+# C8m-C8s: a malformed SEMANTIC line WITH the correct +1 bump, so only the form rule can refuse it (a refusal through the
+# generation rule would also hold with the form rule deleted). One case per loosening of the form regex.
+semantic_case "C8m malformed (no arrow), generation + 1" 1 3 4 "" "SEMANTIC a.A.epoch changed the rule"
+semantic_case "C8n malformed (value token missing), generation + 1" 1 3 4 "" "SEMANTIC a.A.epoch -> stale"
+semantic_case "C8o malformed (trailing whitespace), generation + 1" 1 3 4 "" "$S1 "
+semantic_case "C8p malformed (judgement start missing), generation + 1" 1 3 4 "" "SEMANTIC a.A.epoch  x -> y"
+semantic_case "C8q malformed (no judgement), generation + 1" 1 3 4 "" "SEMANTIC a.A.epoch"
+semantic_case "C8r malformed (bare SEMANTIC), generation + 1" 1 3 4 "" "SEMANTIC"
+semantic_case "C8s malformed (lowercase), generation + 1" 1 3 4 "" "semantic a.A.epoch x -> y"
+# C8t: a malformed line KEPT from the base is still malformed at HEAD (the form is checked on every HEAD line, not only added ones).
+semantic_case "C8t malformed SEMANTIC kept from the base, same generation" 1 3 3 "SEMANTIC a.A.epoch changed the rule" "SEMANTIC a.A.epoch changed the rule"
+
+# C9: the form rule shared with WireAssignmentTripwireTest. Each row of the case table is added to HEAD with the +1 bump and the
+# verdict is read from the script: rc 0 = valid declaration; rc 1 naming "malformed SEMANTIC" = refused; any other rc 1 = ignored
+# (not a declaration, so the bump is refused as no break). The Java test runs the same rows through its reader.
+cases_table="$repo_root/aether/node/src/test/resources/wire-semantic-line-cases.tsv"
+script_verdict() {
+    local line="$1" out rc
+    new_repo
+    write_baseline 3 "${BASE_LINES[@]}"
+    write_guard 3
+    commit_all base
+    write_baseline 4 "${BASE_LINES[@]}" "$line"
+    commit_all head
+    out="$("$check" "HEAD~1" 2>&1)"
+    rc=$?
+    case "$rc:$out" in
+        0:*) echo valid ;;
+        1:*"malformed SEMANTIC"*) echo refused ;;
+        1:*) echo ignored ;;
+        *) echo "rc$rc" ;;
+    esac
+}
+
+table_rows=0
+if [[ -f "$cases_table" ]]; then
+    while IFS=$'\t' read -r want line; do
+        [[ -z "$want" || "$want" == \#* ]] && continue
+        line="${line//\\r/$'\r'}"
+        line="${line//\\t/$'\t'}"
+        line="${line//\\s/ }"
+        table_rows=$((table_rows + 1))
+        cases=$((cases + 1))
+        got="$(script_verdict "$line")"
+        if [[ "$got" == "$want" ]]; then
+            echo "ok   C9 row $table_rows ($want) $(printf '%q' "$line")"
+        else
+            failures=$((failures + 1))
+            echo "FAIL C9 row $table_rows: wanted $want, the script said $got for $(printf '%q' "$line")"
+        fi
+    done <"$cases_table"
+fi
+cases=$((cases + 1))
+if [[ "$table_rows" -ge 30 ]]; then
+    echo "ok   C9 case table read: $table_rows rows"
+else
+    failures=$((failures + 1))
+    echo "FAIL C9 case table $cases_table gave $table_rows rows (>= 30 wanted); the shared form rule was NOT examined"
+fi
 
 # The command the workflow's merge_group step runs, with the repo's script path replaced by the real script.
 # Absent step => empty command => the queue case below finds no refusal and goes red.

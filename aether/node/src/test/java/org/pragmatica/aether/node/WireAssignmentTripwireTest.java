@@ -103,13 +103,25 @@ class WireAssignmentTripwireTest {
     /// Prefix of the baseline line recording the wire generation; `scripts/wire-generation-check.sh` reads the same line.
     private static final String GENERATION_PREFIX = "GENERATION ";
 
-    /// Prefix of a baseline line declaring a semantic wire break (#3303): a change in how replicas JUDGE an existing wire value
-    /// that moves no TAG, SHAPE or ENUM line. It is not an assignment, so [#baseline] skips it; `scripts/wire-generation-check.sh`
-    /// reads it, and [WireAssignmentBaselineWriter] carries it over a re-record.
-    static final String SEMANTIC_PREFIX = "SEMANTIC ";
+    /// A baseline line is a `SEMANTIC` declaration CANDIDATE when its first token is `SEMANTIC` in any case, with or without leading
+    /// whitespace (#3303): a semantic wire break is a change in how replicas JUDGE an existing wire value that moves no TAG, SHAPE
+    /// or ENUM line. A candidate is not an assignment, so [#baselineAssignments] skips it; `scripts/wire-generation-check.sh`
+    /// reads it, and [WireAssignmentBaselineWriter] carries it over a re-record. ASCII-only, as the script's `LC_ALL=C` grep.
+    private static final Pattern SEMANTIC_CANDIDATE =
+        Pattern.compile("[ \\t\\u000B\\f\\r]*semantic(?:[ \\t\\u000B\\f\\r]|\\z)", Pattern.CASE_INSENSITIVE);
 
-    /// The form a `SEMANTIC` line must have: `SEMANTIC <value> <one-line old->new judgement>`. The same form the script enforces.
-    static final Pattern SEMANTIC_FORM = Pattern.compile("^SEMANTIC \\S+ \\S.*->.*\\S$");
+    /// The form a candidate must have: `SEMANTIC <value> <one-line old->new judgement>`. The same form the script enforces;
+    /// `wire-semantic-line-cases.tsv` pins both readers to one verdict per line. UNIX_LINES: only `\n` ends a line, so a CR is an
+    /// ordinary character here as it is to the script.
+    static final Pattern SEMANTIC_FORM = Pattern.compile("^SEMANTIC \\S+ \\S.*->.*\\S$", Pattern.UNIX_LINES);
+
+    /// Verdicts of the one form rule, as the case table names them.
+    static final String VERDICT_IGNORED = "ignored";
+    static final String VERDICT_VALID = "valid";
+    static final String VERDICT_REFUSED = "refused";
+
+    /// The case table both readers are pinned to: one `<verdict><TAB><line>` per row, `\r`, `\t` and `\s` (space) escaped.
+    static final String SEMANTIC_CASES_RESOURCE = "/wire-semantic-line-cases.tsv";
 
     /// The types this tripwire CANNOT pin structurally, named rather than left as an unwritten
     /// limitation (#1450).
@@ -134,15 +146,28 @@ class WireAssignmentTripwireTest {
     /// Held as a resource rather than as string literals in this file so that accepting an intended
     /// change is a diff a reviewer can read line by line, which is the whole mechanism.
     private static List<String> baseline() {
-        try (var stream = WireAssignmentTripwireTest.class.getResourceAsStream(BASELINE_RESOURCE)) {
-            assertTrue(stream != null, BASELINE_RESOURCE + " is missing — the tripwire has nothing to compare against");
+        return baselineAssignments(baselineText());
+    }
 
-            return new String(stream.readAllBytes(), StandardCharsets.UTF_8).lines()
-                                                                            .filter(line -> !line.isBlank())
-                                                                            .filter(line -> !line.startsWith("#"))
-                                                                            .filter(line -> !line.startsWith(GENERATION_PREFIX))
-                                                                            .filter(line -> !line.startsWith(SEMANTIC_PREFIX))
-                                                                            .toList();
+    /// The assignment lines of a baseline text: no blank, comment, `GENERATION` or `SEMANTIC` candidate line.
+    static List<String> baselineAssignments(String text) {
+        return text.lines()
+                   .filter(line -> !line.isBlank())
+                   .filter(line -> !line.startsWith("#"))
+                   .filter(line -> !line.startsWith(GENERATION_PREFIX))
+                   .filter(line -> !isSemanticCandidate(line))
+                   .toList();
+    }
+
+    private static String baselineText() {
+        return resourceText(BASELINE_RESOURCE);
+    }
+
+    private static String resourceText(String resource) {
+        try (var stream = WireAssignmentTripwireTest.class.getResourceAsStream(resource)) {
+            assertTrue(stream != null, resource + " is missing — the tripwire has nothing to compare against");
+
+            return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -151,28 +176,30 @@ class WireAssignmentTripwireTest {
     /// The baseline's `GENERATION` lines: the wire generation it was recorded under, kept out of [#baseline] because it
     /// is not an assignment.
     private static List<String> recordedGenerationLines() {
-        try (var stream = WireAssignmentTripwireTest.class.getResourceAsStream(BASELINE_RESOURCE)) {
-            assertTrue(stream != null, BASELINE_RESOURCE + " is missing — the tripwire has nothing to compare against");
-
-            return new String(stream.readAllBytes(), StandardCharsets.UTF_8).lines()
-                                                                            .filter(line -> line.startsWith(GENERATION_PREFIX))
-                                                                            .toList();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
+        return baselineText().lines().filter(line -> line.startsWith(GENERATION_PREFIX)).toList();
     }
 
-    /// The baseline's `SEMANTIC` lines, in file order, kept out of [#baseline] because they are declarations, not assignments.
-    static List<String> recordedSemanticLines() {
-        try (var stream = WireAssignmentTripwireTest.class.getResourceAsStream(BASELINE_RESOURCE)) {
-            assertTrue(stream != null, BASELINE_RESOURCE + " is missing — the tripwire has nothing to compare against");
+    /// Whether the line's first token is `SEMANTIC` in any case, after optional leading whitespace.
+    static boolean isSemanticCandidate(String line) {
+        return SEMANTIC_CANDIDATE.matcher(line).lookingAt();
+    }
 
-            return new String(stream.readAllBytes(), StandardCharsets.UTF_8).lines()
-                                                                            .filter(line -> line.startsWith("SEMANTIC"))
-                                                                            .toList();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
+    /// The `SEMANTIC` candidate lines of a baseline text, in file order. Split on `\n` only, so a CR stays on its line and
+    /// the form refuses it, as the script does.
+    static List<String> semanticCandidates(String text) {
+        return Stream.of(text.split("\n", -1)).filter(WireAssignmentTripwireTest::isSemanticCandidate).toList();
+    }
+
+    /// The candidates of a baseline text that are not of the declared form.
+    static List<String> malformedSemanticLines(String text) {
+        return semanticCandidates(text).stream().filter(line -> !SEMANTIC_FORM.matcher(line).matches()).toList();
+    }
+
+    /// The verdict of the one form rule for a single line: not a candidate, a valid declaration, or refused as malformed.
+    static String semanticVerdict(String line) {
+        return !isSemanticCandidate(line)
+               ? VERDICT_IGNORED
+               : SEMANTIC_FORM.matcher(line).matches() ? VERDICT_VALID : VERDICT_REFUSED;
     }
 
     /// The `GENERATION` line [WireAssignmentBaselineWriter] records: this binary's [JoinGenerationGuard#WIRE_GENERATION].
@@ -317,23 +344,86 @@ class WireAssignmentTripwireTest {
                      + " re-record it with WireAssignmentBaselineWriter");
     }
 
-    /// Every `SEMANTIC` line of the baseline has the form `SEMANTIC <value> <one-line old->new judgement>`; the CI check refuses
-    /// a malformed one, and this fails it at build time with the line named.
+    /// Every `SEMANTIC` candidate line of the baseline has the form `SEMANTIC <value> <one-line old->new judgement>`; the CI
+    /// check refuses a malformed one, and this fails it at build time with the line named.
     @Test
     void baseline_semanticLinesHaveTheDeclaredForm() {
-        var malformed = recordedSemanticLines().stream().filter(line -> !SEMANTIC_FORM.matcher(line).matches()).toList();
+        var malformed = malformedSemanticLines(baselineText());
 
         assertTrue(malformed.isEmpty(),
                    "Malformed SEMANTIC line(s); the form is: SEMANTIC <value> <one-line old->new judgement>:\n" + String.join("\n", malformed));
     }
 
-    /// The form pattern itself accepts a well-formed line and rejects the shapes the script refuses.
+    /// A fixture baseline WITH `SEMANTIC` declarations: the assignment comparison must not see them (the real baseline has none
+    /// until the first semantic break, so only a fixture examines the skip). Malformed candidates are skipped here too, so the
+    /// form test names them instead of the assignment comparison failing on them.
     @Test
-    void semanticForm_acceptsOnlyValueAndOldNewJudgement() {
-        assertTrue(SEMANTIC_FORM.matcher("SEMANTIC a.A.epoch stale-if-below -> stale-if-below-or-equal").matches());
-        assertTrue(!SEMANTIC_FORM.matcher("SEMANTIC a.A.epoch").matches());
-        assertTrue(!SEMANTIC_FORM.matcher("SEMANTIC a.A.epoch changed the rule").matches());
-        assertTrue(!SEMANTIC_FORM.matcher("SEMANTIC a.A.epoch ->").matches());
+    void baselineAssignments_skipSemanticCandidatesOfAnyForm() {
+        var text = String.join("\n",
+                               "# comment",
+                               "GENERATION 4",
+                               "SEMANTIC a.A.epoch stale-if-below -> stale-if-below-or-equal",
+                               "TAG a.A 1",
+                               "semantic a.B.mode accept-if-any -> accept-if-all",
+                               "  SEMANTIC a.B.mode",
+                               "",
+                               "SHAPE a.A (x:int)",
+                               "SEMANTIC a.A.epoch changed the rule",
+                               "ENUM a.E X=0,Y=1",
+                               "SEMANTICS a.C kept as an assignment line");
+
+        assertEquals(List.of("TAG a.A 1", "SHAPE a.A (x:int)", "ENUM a.E X=0,Y=1", "SEMANTICS a.C kept as an assignment line"),
+                     baselineAssignments(text));
+    }
+
+    /// The same fixture through the form rule: candidates in file order, and exactly the malformed ones refused.
+    @Test
+    void semanticCandidates_areFoundInFileOrderAndOnlyMalformedOnesRefused() {
+        var valid = "SEMANTIC a.A.epoch stale-if-below -> stale-if-below-or-equal";
+        var text = String.join("\n",
+                               "GENERATION 4",
+                               valid,
+                               "TAG a.A 1",
+                               "semantic a.B.mode accept-if-any -> accept-if-all",
+                               "  SEMANTIC a.B.mode",
+                               "# SEMANTIC a.C ignored -> comment",
+                               "SEMANTIC a.A.epoch changed the rule",
+                               "SEMANTICS a.C not a candidate",
+                               "SEMANTIC a.D x -> y\r");
+
+        assertEquals(List.of(valid,
+                             "semantic a.B.mode accept-if-any -> accept-if-all",
+                             "  SEMANTIC a.B.mode",
+                             "SEMANTIC a.A.epoch changed the rule",
+                             "SEMANTIC a.D x -> y\r"),
+                     semanticCandidates(text));
+        assertEquals(List.of("semantic a.B.mode accept-if-any -> accept-if-all",
+                             "  SEMANTIC a.B.mode",
+                             "SEMANTIC a.A.epoch changed the rule",
+                             "SEMANTIC a.D x -> y\r"),
+                     malformedSemanticLines(text));
+        assertEquals(List.of(), malformedSemanticLines(valid + "\n"));
+    }
+
+    /// The form pin run through the shared case table: every row's verdict is what [#semanticVerdict] returns. The script's
+    /// selftest runs the SAME rows through `wire-generation-check.sh`, so the two readers accept and refuse one set.
+    @Test
+    void semanticVerdicts_matchTheSharedCaseTable() {
+        var rows = resourceText(SEMANTIC_CASES_RESOURCE).split("\n");
+        var mismatches = Stream.of(rows)
+                               .filter(row -> !row.isBlank() && !row.startsWith("#"))
+                               .filter(row -> !semanticCaseMatches(row))
+                               .toList();
+
+        assertTrue(rows.length > 30, "The case table has only " + rows.length + " rows — it cannot be pinning the form");
+        assertTrue(mismatches.isEmpty(), "Rows whose verdict differs from the Java reader:\n" + String.join("\n", mismatches));
+    }
+
+    private static boolean semanticCaseMatches(String row) {
+        var tab = row.indexOf('\t');
+        var line = row.substring(tab + 1).replace("\\r", "\r").replace("\\t", "\t").replace("\\s", " ");
+
+        return row.substring(0, tab).equals(semanticVerdict(line));
     }
 
     /// The tripwire's own instrument check. A baseline that had drifted into emptiness, or a
