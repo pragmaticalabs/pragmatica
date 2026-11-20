@@ -2,7 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-package org.pragmatica.aether.node;
+package org.pragmatica.aether.resource.entity;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
@@ -20,8 +20,7 @@ import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.resource.entity.EntityFoldSnapshot;
-import org.pragmatica.aether.resource.entity.EntityLogSubstrate;
+import org.pragmatica.aether.node.StreamEntityLogSubstrate;
 import org.pragmatica.aether.resource.entity.EntityLogSubstrate.CheckpointLoad;
 import org.pragmatica.aether.resource.entity.EntityLogSubstrate.UnreadableCause;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
