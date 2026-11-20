@@ -1037,7 +1037,9 @@ public interface StreamConfigParser {
     /// gate's. Under `until_consumed` the order is the stream kind, then the byte cap, then the mode; under `window`
     /// (declared or defaulted) a `group_idle_expiry` is refused.
     private static Result<StreamDeclaration> refuseTruncationShape(String alias, StreamDeclaration declared) {
-        var policy = declared.truncation().flatMap(TruncationDeclaration::policy).or(DeclarationDefaults.DEFAULT_POLICY);
+        var policy = declared.truncation()
+                             .flatMap(TruncationDeclaration::policy)
+                             .or(DeclarationDefaults.DEFAULT_POLICY);
 
         return policy == TruncationPolicy.UNTIL_CONSUMED
                ? refuseUnsupportedKind(alias, declared)

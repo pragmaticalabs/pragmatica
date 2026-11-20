@@ -92,7 +92,9 @@ public sealed interface StreamSectionBinding {
                                                    : new StreamDeclarationError.InertKeysRefused(alias, reasons).result());
     }
 
-    private static List<String> inertReasons(StreamSection streamSection, StreamConfig config, List<ConsumerConfig> consumers) {
+    private static List<String> inertReasons(StreamSection streamSection,
+                                             StreamConfig config,
+                                             List<ConsumerConfig> consumers) {
         var streamKeys = Stream.of(InertKeyRules.inertStreamKeys(config).stream(),
                                    InertKeyRules.inertDeclarationKeys(streamSection).stream(),
                                    InertKeyRules.unsupportedConsistency(config).stream())

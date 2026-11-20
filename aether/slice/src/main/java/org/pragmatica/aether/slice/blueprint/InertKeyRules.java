@@ -40,13 +40,13 @@ public sealed interface InertKeyRules {
     /// accepted policy, `window`, is today's behaviour and `until_consumed` is refused by its own gate (T-146).
     Map<String, String> INERT_DECLARATION_TABLES = Map.of("retention",
                                                           "the stream's retention still comes from today's keys (`retention`, "
-                                                          + "`retention_value`, `retention_mode`, `max_age`, `max_count`, `max_bytes`) "
-                                                          + "until release step S2a3 enforces the [retention] declaration (#3334). "
-                                                          + "Remove the [retention] sub-section and declare retention with today's keys "
-                                                          + "until S2a3.",
+                                                         + "`retention_value`, `retention_mode`, `max_age`, `max_count`, `max_bytes`) "
+                                                         + "until release step S2a3 enforces the [retention] declaration (#3334). "
+                                                         + "Remove the [retention] sub-section and declare retention with today's keys "
+                                                         + "until S2a3.",
                                                           "hot",
                                                           "the ring is still sized from today's retention until release step S2b sizes "
-                                                          + "it from the [hot] window (#3334). Remove the [hot] sub-section until S2b.");
+                                                         + "it from the [hot] window (#3334). Remove the [hot] sub-section until S2b.");
 
     /// The keys of `section` under an [#INERT_DECLARATION_TABLES] sub-section, in sorted order: read from the section's keys,
     /// the one [StreamSection#hasTable] rule, so the TOML view and the provider view refuse the same keys.
@@ -107,11 +107,9 @@ public sealed interface InertKeyRules {
         return Option.from(INERT_DECLARATION_TABLES.entrySet()
                                                    .stream()
                                                    .filter(table -> key.startsWith(table.getKey() + "."))
-                                                   .findFirst())
-                     .map(table -> declarationKey(key,
-                                                  section.string(key)
-                                                         .or(""),
-                                                  table.getValue()));
+                                                   .findFirst()).map(table -> declarationKey(key,
+                                                                                             section.string(key).or(""),
+                                                                                             table.getValue()));
     }
 
     private static InertKey declarationKey(String key, String value, String reason) {
