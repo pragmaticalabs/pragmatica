@@ -1,5 +1,6 @@
 package org.pragmatica.storage;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -11,11 +12,13 @@ import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -94,7 +97,7 @@ class StorageIdentityPrimitivesTest {
             managerWith(store, some(ID_U)).forceSnapshot();
 
             managerWith(store, some(ID_V)).restoreFromLatest()
-                                          .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("foreign snapshot restored"))
+                                          .onSuccess(_ -> fail("foreign snapshot restored"))
                                           .onFailure(cause -> assertMismatch(cause, ID_V, ID_U));
         }
 
@@ -218,7 +221,7 @@ class StorageIdentityPrimitivesTest {
         }
     }
 
-    private SnapshotManager managerWith(MetadataStore store, org.pragmatica.lang.Option<String> storageId) {
+    private SnapshotManager managerWith(MetadataStore store, Option<String> storageId) {
         return SnapshotManager.snapshotManager(store, snapshotConfig(dir.resolve("snap"), 100, 600_000, 5, NODE_ID).withStorageId(storageId));
     }
 
@@ -251,7 +254,7 @@ class StorageIdentityPrimitivesTest {
     private static String read(Path file) {
         try {
             return Files.readString(file);
-        } catch (java.io.IOException e) {
+        } catch (IOException e) {
             throw new AssertionError(e);
         }
     }
