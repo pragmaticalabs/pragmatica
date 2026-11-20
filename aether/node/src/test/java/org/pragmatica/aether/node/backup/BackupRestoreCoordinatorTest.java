@@ -1376,6 +1376,16 @@ class BackupRestoreCoordinatorTest {
             assertThat(submitted).as("no decision is committed over an unreadable source").isEmpty();
         }
 
+        /// L3 (#3501): an old git refuses `show-ref --exists` (exit 129); the restore blocks and its warning names the git it needs.
+        @Test
+        void anOldGitOnALocalSource_blocksAtSourceUnreachable_namingGit243() {
+            blockOverShimmed(Option.none(), "show-ref", "echo \"error: unknown option \\`exists'\" >&2\n    exit 129");
+
+            assertNamesStepAndAdvice(Step.SOURCE_UNREACHABLE, false);
+            assertThat(warnings.getFirst().detail()).contains("git >= 2.43");
+            assertThat(submitted).as("no decision is committed over an unreadable source").isEmpty();
+        }
+
         /// The control for the test above: the same local source, really empty, is a fresh cluster.
         @Test
         void aLocalRepositoryWithNoCommit_isFresh() {
@@ -1463,7 +1473,11 @@ class BackupRestoreCoordinatorTest {
 
         /// A coordinator over `remote` whose git runs `subcommand` as a failing shim, run until it has blocked and retried.
         private void blockOverShimmed(Option<String> remote, String subcommand) {
-            var env = GitBackupRepositoryTest.gitShim(temp.resolve("bin"), subcommand, GitBackupRepositoryTest.SHIM_FAILS);
+            blockOverShimmed(remote, subcommand, GitBackupRepositoryTest.SHIM_FAILS);
+        }
+
+        private void blockOverShimmed(Option<String> remote, String subcommand, String behaviour) {
+            var env = GitBackupRepositoryTest.gitShim(temp.resolve("bin"), subcommand, behaviour);
             var coordinator = coordinator(Option.some(BackupRestoreCoordinator.Source.source(shimmedService(remote, env), RestoreMode.AUTO)));
 
             coordinator.activate();

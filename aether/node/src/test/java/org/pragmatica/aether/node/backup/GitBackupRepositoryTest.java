@@ -776,6 +776,47 @@ class GitBackupRepositoryTest {
         assertThat(planted).doesNotExist();
     }
 
+    /// A single dash is an option too (`-p`, `-n`): the refusal is the first barrier, so the reason says refused, not whatever git answers.
+    @Test
+    void aRefBeginningWithASingleDash_isRefused_byEveryRead() {
+        var repository = committedRepository("single-dash");
+
+        assertThat(unreadableReason(repository.readCommitId("-x"))).contains("refused");
+        assertThat(unreadableReason(repository.readPath("-x", "p"))).contains("refused");
+        assertThat(unreadableReason(repository.readFile("-x", GitBackupRepository.FILE))).contains("refused");
+        assertThat(unreadableReason(repository.readHistory("-x"))).contains("refused");
+        assertThat(failureOf(repository.commitOf("-x"))).contains("refused");
+    }
+
+    /// A `git` on the PATH that is not executable is skipped: the next one on the PATH runs (an executable-file check, not an existence check).
+    @Test
+    void aNonExecutableGitOnThePath_isSkipped_forTheNextOne() throws IOException {
+        var bin = temp.resolve("bin-nonexec");
+
+        Files.createDirectories(bin);
+        Files.writeString(bin.resolve("git"), "#!/bin/sh\nexit 99\n");
+        Files.setPosixFilePermissions(bin.resolve("git"), PosixFilePermissions.fromString("rw-r--r--"));
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local-nonexec"),
+                                                                  Option.none(),
+                                                                  "backup",
+                                                                  TIMEOUT,
+                                                                  Map.of("PATH", bin + ":" + System.getenv("PATH")));
+
+        assertThat(repository.prepare().isSuccess()).isTrue();
+    }
+
+    /// The repository directory cannot be created (its parent is a file): nothing is known about the installed git, so the read is Unreadable with the
+    /// filesystem's reason, which does not name the git requirement.
+    @Test
+    void readGitVersion_whenTheDirectoryCannotBeCreated_isUnreadable_withoutNamingTheRequirement() throws IOException {
+        var blocker = temp.resolve("blocker");
+
+        Files.writeString(blocker, "a file, not a directory\n");
+        var repository = GitBackupRepository.gitBackupRepository(blocker.resolve("repo"), Option.none(), "backup", TIMEOUT);
+
+        assertThat(unreadableReason(repository.readGitVersion())).doesNotContain("2.43");
+    }
+
     @Test
     void aNormalRef_stillReadsThroughEveryRead() {
         var repository = committedRepository("normal");
@@ -1325,6 +1366,9 @@ class GitBackupRepositoryTest {
         assertThat(unreadableReason(GitBackupRepository.classifyGitVersion(0, Option.none()))).contains("output was lost");
         assertThat(unreadableReason(GitBackupRepository.classifyGitVersion(1, Option.some("git version 2.50.0\n")))).contains("git >= 2.43");
         assertThat(unreadableReason(GitBackupRepository.classifyGitVersion(0, Option.some("bash: git: not found")))).contains("git >= 2.43");
+        assertThat(unreadableReason(GitBackupRepository.classifyGitVersion(0, Option.some("warning: built for 2.50.0, not git"))))
+                .as("the version is read from the start of the line, not from anywhere in it")
+                .contains("git >= 2.43");
     }
 
     @Test

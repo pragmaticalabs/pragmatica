@@ -232,19 +232,6 @@ public record GitBackupRepository(Path dir,
     }
 
     // --- restore (#1533) ---
-    /// The ref a restore reads: the freshly fetched remote branch when a remote is configured, else the
-    /// local `HEAD`. Absent when there is nothing to restore (no such remote branch, or no local commit).
-    /// A failure means the remote could not be reached — never read as "absent".
-    public Result<Option<String>> fetchRestoreRef() {
-        return hasRemote()
-               ? remoteHasBranch().flatMap(present -> present
-                                                      ? fetchBranch().map(_ -> Option.some(REMOTE_REF + branch))
-                                                      : success(Option.none()))
-               : hasCommits().map(present -> present
-                                             ? Option.some("HEAD")
-                                             : Option.none());
-    }
-
     /// The commit the fetched remote head names, absent when the remote has no such branch (call [#fetchRemoteHead] first).
     public Result<Option<String>> remoteHeadCommit() {
         return exitStatus("rev-parse", "--verify", "--quiet", REMOTE_REF + branch).flatMap(status -> status == 0
@@ -265,7 +252,7 @@ public record GitBackupRepository(Path dir,
 
     /// The ref a restore reads, three-valued (#3464): absent when the backup branch definitely does not exist; the freshly fetched remote branch when a
     /// remote is configured, else the local branch. A failure means the branch could not be read or fetched — never read as "absent", so a restore
-    /// over an unreadable source blocks instead of starting fresh. Replaces [#fetchRestoreRef].
+    /// over an unreadable source blocks instead of starting fresh.
     public Result<Option<String>> restoreRef() {
         return found(readBranch()).flatMap(present -> present.fold(() -> success(Option.<String> none()),
                                                                    _ -> fetchedRestoreRef().map(Option::some)));
@@ -421,8 +408,10 @@ public record GitBackupRepository(Path dir,
                            result -> classifyHistory(result.exitCode(), result.output()));
     }
 
-    /// The installed git's `--version` line, when it is at least 2.43 (the floor [#readBranch] needs); older, unparseable or lost output is
-    /// [GitRead.Unreadable] naming that requirement. Runs in the repository directory's parent chain, so the directory is created first.
+    /// The installed git's `--version` line, when it is at least 2.43 (the floor [#readBranch] needs). Anything else is [GitRead.Unreadable]; only a
+    /// version that is older, unparseable or reported under a non-zero exit names git >= 2.43. Lost output, a git that cannot be run and a failed
+    /// directory creation do not: they say nothing about the installed version, so the reason carries the cause instead of the requirement. Runs in the
+    /// repository directory's parent chain, so the directory is created first.
     public GitRead<String> readGitVersion() {
         return createDirectory().fold(cause -> GitRead.unreadable(cause.message()),
                                       _ -> read(List.of("--version"),

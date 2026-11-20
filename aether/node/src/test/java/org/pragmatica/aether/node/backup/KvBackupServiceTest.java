@@ -864,9 +864,10 @@ class KvBackupServiceTest {
 
             seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), "kv backup damaged");
             var service = shimmedService(remote, GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "show", GitBackupRepositoryTest.SHIM_FAILS));
+            var failure = service.highestRecordedForLineage(LINEAGE, 1)
+                                 .fold(cause -> cause.message(), _ -> "succeeded");
 
-            assertThat(service.highestRecordedForLineage(LINEAGE, 1)
-                              .isFailure()).isTrue();
+            assertThat(failure).as("the cause is the unreadable read, not a decode of an empty document").contains("git could not be read");
         }
 
         /// #1625 meets #1532: the declared incarnation is a new incarnation, so it carries a fresh
