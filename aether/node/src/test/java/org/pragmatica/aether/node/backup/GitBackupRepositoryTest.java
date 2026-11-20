@@ -435,7 +435,41 @@ class GitBackupRepositoryTest {
     }
 
     private static RejectionRecord record() {
-        return RejectionRecord.rejectionRecord("lineage-a", 3L, 41L, "inc-9", "abc123");
+        return recordOf("lineage-a", 3L, 41L, "inc-9", "abc123");
+    }
+
+    private static RejectionRecord recordOf(String lineageId, long incarnation, long revision, String incarnationId, String commit) {
+        return RejectionRecord.rejectionRecord(lineageId, incarnation, revision, incarnationId, commit)
+                              .fold(cause -> Assertions.fail(cause.message()), value -> value);
+    }
+
+    private static boolean refused(String lineageId, long incarnation, long revision, String incarnationId, String commit) {
+        return RejectionRecord.rejectionRecord(lineageId, incarnation, revision, incarnationId, commit)
+                              .isFailure();
+    }
+
+    /// A pre-commit hook that refuses every commit: the induced commit failure the staged state survives (vRR1 probe 1).
+    private void refuseCommits(String name) throws IOException {
+        var hook = temp.resolve(name).resolve(".git").resolve("hooks").resolve("pre-commit");
+
+        Files.writeString(hook, "#!/bin/sh\nexit 1\n");
+        Files.setPosixFilePermissions(hook, PosixFilePermissions.fromString("rwxr-xr-x"));
+    }
+
+    private void allowCommits(String name) throws IOException {
+        Files.delete(temp.resolve(name).resolve(".git").resolve("hooks").resolve("pre-commit"));
+    }
+
+    private String committedRecord(String name) {
+        return git(temp.resolve(name), "show", "HEAD:" + GitBackupRepository.REJECTION_FILE);
+    }
+
+    private String subjectOfHead(String name) {
+        return git(temp.resolve(name), "log", "-1", "--format=%s").strip();
+    }
+
+    private String filesOfHead(String name) {
+        return git(temp.resolve(name), "show", "--name-only", "--format=", "HEAD").strip();
     }
 
     private GitBackupRepository committedRepository(String name, Option<String> remote) {
@@ -466,6 +500,57 @@ class GitBackupRepositoryTest {
     }
 
     @Test
+    void rejectionRecord_roundTrips_equalsInValues_nonAsciiAndTheExtremeNumbers() {
+        var tricky = recordOf("a=b=c", Long.MAX_VALUE, 0L, "\u0416 \u0436", "x y");
+
+        assertThat(RejectionRecord.parse(tricky.render())).isEqualTo(Option.some(tricky));
+    }
+
+    @Test
+    void render_endsInExactlyOneLineFeed() {
+        assertThat(record().render()).endsWith("\n").doesNotEndWith("\n\n");
+    }
+
+    @Test
+    void theRejectionFileName_isTheLiteralName() {
+        assertThat(GitBackupRepository.REJECTION_FILE).isEqualTo("restore-rejected.txt");
+    }
+
+    @Test
+    void rejectionRecordFactory_refusesAValueTheTextFormCannotCarry() {
+        for (var bad : List.of("", "a\rb", "a\nb", " a", "a ", "\n", "a\r")) {
+            assertThat(refused(bad, 1L, 1L, "i", "c")).as("lineageId [%s]", bad).isTrue();
+            assertThat(refused("l", 1L, 1L, bad, "c")).as("incarnationId [%s]", bad).isTrue();
+            assertThat(refused("l", 1L, 1L, "i", bad)).as("commit [%s]", bad).isTrue();
+        }
+        assertThat(refused("l", - 1L, 1L, "i", "c")).as("negative incarnation").isTrue();
+        assertThat(refused("l", 1L, - 1L, "i", "c")).as("negative revision").isTrue();
+        assertThat(refused("l", 0L, 0L, "i", "c")).as("zero is a number").isFalse();
+    }
+
+    @Test
+    void parse_refusesEveryTextRenderCannotProduce() {
+        var text = record().render();
+
+        assertThat(RejectionRecord.parse(text + "commit=other\n")).as("duplicate key").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("commit=", "commit=x\nlineageId=forged\ncommit="))).as("forged duplicate").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text + "extra=1\n")).as("unknown key").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("commit=abc123", "extra=abc123"))).as("unknown key for a missing one").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text + "garbage\n")).as("line with no '='").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text + "=x\n")).as("leading '='").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("commit=abc123", "=abc123"))).as("a key-less line in place of a field").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("\n", "\r\n"))).as("CRLF").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("abc123", "abc\r123"))).as("CR inside a value").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.substring(0, text.length() - 1))).as("no trailing LF").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text + "\n")).as("a blank trailing line").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("incarnation=3", "incarnation=+3"))).as("plus sign").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("incarnation=3", "incarnation=\u0663"))).as("Arabic-Indic digit").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("incarnation=3", "incarnation=-3"))).as("negative").isEqualTo(Option.none());
+        assertThat(RejectionRecord.parse(text.replace("incarnation=3", "incarnation=0003"))).as("leading zeros are a number").isEqualTo(Option.some(record()));
+        assertThat(RejectionRecord.parse(text.replace("commit=abc123", "commit= abc123"))).as("a value the factory refuses").isEqualTo(Option.none());
+    }
+
+    @Test
     void commitRejection_commitsTheRecordBesideFile_andLeavesTheFileBlobAlone() {
         var repository = committedRepository("local", Option.none());
         var dir = temp.resolve("local");
@@ -475,6 +560,7 @@ class GitBackupRepositoryTest {
                   .onFailure(cause -> Assertions.fail(cause.message()));
 
         assertThat(git(dir, "show", "HEAD:" + GitBackupRepository.REJECTION_FILE)).isEqualTo(record().render());
+        assertThat(subjectOfHead("local")).isEqualTo("restore rejected: lineage-a 3/41");
         assertThat(git(dir, "rev-parse", "HEAD:" + GitBackupRepository.FILE).strip()).isEqualTo(blobBefore);
         assertThat(repository.readPath("HEAD", GitBackupRepository.REJECTION_FILE)).isInstanceOf(GitRead.Present.class);
         assertThat(commitCount("local")).isEqualTo(2);
@@ -502,6 +588,7 @@ class GitBackupRepositoryTest {
 
         assertThat(repository.readPath("HEAD", GitBackupRepository.REJECTION_FILE)).isInstanceOf(GitRead.Absent.class);
         assertThat(repository.readPath("HEAD", GitBackupRepository.FILE)).isInstanceOf(GitRead.Present.class);
+        assertThat(subjectOfHead("local")).isEqualTo("restore rejection cleared");
         assertThat(commitCount("local")).isEqualTo(3);
         assertThat(repository.removeRejection()
                              .isFailure()).isTrue();
@@ -524,6 +611,111 @@ class GitBackupRepositoryTest {
         repository.removeRejection()
                   .onFailure(cause -> Assertions.fail(cause.message()));
         assertThat(git(temp.resolve("remote.git"), "rev-parse", "backup").strip()).isEqualTo(head);
+    }
+
+    /// vRR1 F1, probe 1: a failing pre-commit hook leaves the staged removal behind. (a) The retried removal clears the record.
+    @Test
+    void removeRejection_afterAFailedCommit_whenRetried_clearsTheRecord() throws IOException {
+        var repository = committedRepository("local", Option.none());
+
+        repository.commitRejection(record())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        refuseCommits("local");
+        assertThat(repository.removeRejection().isFailure()).isTrue();
+        assertThat(committedRecord("local")).as("a failed removal changes nothing committed").isEqualTo(record().render());
+        allowCommits("local");
+
+        repository.removeRejection()
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readPath("HEAD", GitBackupRepository.REJECTION_FILE)).isInstanceOf(GitRead.Absent.class);
+        assertThat(commitCount("local")).isEqualTo(3);
+    }
+
+    /// (b) A record B left staged over the committed A by a failed commit: the retried commit of B works, and so does the removal.
+    @Test
+    void commitRejection_afterAFailedCommitOfAnotherRecord_whenRetried_commitsIt() throws IOException {
+        var repository = committedRepository("local", Option.none());
+        var other = recordOf("lineage-a", 4L, 50L, "inc-10", "def456");
+
+        repository.commitRejection(record())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        refuseCommits("local");
+        assertThat(repository.commitRejection(other).isFailure()).isTrue();
+        allowCommits("local");
+
+        repository.commitRejection(other)
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(committedRecord("local")).isEqualTo(other.render());
+        assertThat(commitCount("local")).isEqualTo(3);
+    }
+
+    @Test
+    void removeRejection_afterAFailedCommitOfAnotherRecord_clearsTheCommittedOne() throws IOException {
+        var repository = committedRepository("local", Option.none());
+
+        repository.commitRejection(record())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        refuseCommits("local");
+        assertThat(repository.commitRejection(recordOf("lineage-a", 4L, 50L, "inc-10", "def456")).isFailure()).isTrue();
+        allowCommits("local");
+
+        repository.removeRejection()
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readPath("HEAD", GitBackupRepository.REJECTION_FILE)).isInstanceOf(GitRead.Absent.class);
+    }
+
+    /// (c) A rejection commit that failed leaves nothing staged: the next backup commit carries the backup file only.
+    @Test
+    void aFailedRejectionCommit_isNotSweptIntoTheNextBackupCommit() throws IOException {
+        var repository = committedRepository("local", Option.none());
+
+        refuseCommits("local");
+        assertThat(repository.commitRejection(record()).isFailure()).isTrue();
+        allowCommits("local");
+
+        repository.commit("state-2\n", "second")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(filesOfHead("local")).isEqualTo(GitBackupRepository.FILE);
+        assertThat(subjectOfHead("local")).isEqualTo("second");
+    }
+
+    @Test
+    void aFailedRemoval_isNotSweptIntoTheNextBackupCommit() throws IOException {
+        var repository = committedRepository("local", Option.none());
+
+        repository.commitRejection(record())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        refuseCommits("local");
+        assertThat(repository.removeRejection().isFailure()).isTrue();
+        allowCommits("local");
+
+        repository.commit("state-2\n", "second")
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(filesOfHead("local")).isEqualTo(GitBackupRepository.FILE);
+        assertThat(committedRecord("local")).isEqualTo(record().render());
+    }
+
+    @Test
+    void rejectionCommits_carryOnlyTheRejectionFile_whateverElseIsStaged() throws IOException {
+        var repository = committedRepository("local", Option.none());
+        var dir = temp.resolve("local");
+
+        Files.writeString(dir.resolve(GitBackupRepository.FILE), "state-staged\n");
+        git(dir, "add", GitBackupRepository.FILE);
+
+        repository.commitRejection(record())
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        assertThat(filesOfHead("local")).isEqualTo(GitBackupRepository.REJECTION_FILE);
+
+        repository.removeRejection()
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        assertThat(filesOfHead("local")).isEqualTo(GitBackupRepository.REJECTION_FILE);
+        assertThat(git(dir, "diff", "--cached", "--name-only").strip()).as("the staged backup change is left staged").isEqualTo(GitBackupRepository.FILE);
     }
 
     private GitBackupRepository repository(String name, Option<String> remote) {
