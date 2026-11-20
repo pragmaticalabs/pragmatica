@@ -214,7 +214,28 @@ final class DefaultSnapshotManager implements SnapshotManager {
 
         return latest.flatMap(this::readAndValidateSnapshot)
                      .map(snapshot -> Result.success(Option.some(snapshot)))
-                     .or(() -> restoreFromPreviousRetained(latest));
+                     .or(() -> restoreFromPreviousRetained(latest))
+                     .flatMap(this::refuseForeignStorage);
+    }
+
+    /// #2836: the snapshot CHOSEN above (the latest, or a retained fallback) must have been written by the storage
+    /// configured here. Both ids must be present to differ: a snapshot from before identities existed, or a
+    /// configuration that has no id yet, is accepted `[guess: ruled with AD1]`. No older file is tried -- they sit on
+    /// the same foreign volume -- so the refusal is a failure, never an empty restore.
+    private Result<Option<MetadataSnapshot>> refuseForeignStorage(Option<MetadataSnapshot> restored) {
+        return restored.flatMap(this::foreignStorage)
+                       .fold(() -> Result.success(restored),
+                             cause -> cause.<Option<MetadataSnapshot>> result()
+                                           .onFailure(failure -> LOG.warn("Snapshot restore refused: {}",
+                                                                          failure.message())));
+    }
+
+    private Option<SnapshotError> foreignStorage(MetadataSnapshot snapshot) {
+        return config.storageId()
+                     .flatMap(expected -> snapshot.storageId()
+                                                  .filter(found -> !found.equals(expected))
+                                                  .map(found -> SnapshotError.StorageIdMismatch.storageIdMismatch(expected,
+                                                                                                                  found)));
     }
 
     @Override
@@ -679,8 +700,16 @@ final class DefaultSnapshotManager implements SnapshotManager {
              + "epoch=" + snapshot.epoch() + '\n'
              + "timestamp=" + snapshot.timestamp() + '\n'
              + "nodeId=" + snapshot.nodeId() + '\n'
+             + storageIdLine(snapshot)
              + "contentHash=" + HEX.formatHex(snapshot.contentHash())
              + "\n\n" + body.text();
+    }
+
+    /// #2836: written only for a stamped snapshot, so an unstamped one is byte-for-byte what it was before.
+    private static String storageIdLine(MetadataSnapshot snapshot) {
+        return snapshot.storageId()
+                       .map(id -> "storageId=" + id + '\n')
+                       .or("");
     }
 
     // --- Deserialization ---
@@ -712,7 +741,8 @@ final class DefaultSnapshotManager implements SnapshotManager {
                                     headers.get("nodeId"),
                                     lifecycles,
                                     refs,
-                                    HEX.parseHex(headers.get("contentHash")));
+                                    HEX.parseHex(headers.get("contentHash")),
+                                    Option.option(headers.get("storageId")));
     }
 
     // --- Current format (format=2) ---

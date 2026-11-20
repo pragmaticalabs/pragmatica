@@ -500,6 +500,9 @@ final class DefaultStorageInstance implements StorageInstance {
     private static final Logger log = LoggerFactory.getLogger(DefaultStorageInstance.class);
     private static final long PROMOTION_FAILURE_WARN_EVERY = 1_000;
     private static final String LOG_SUFFIX = ".wal";
+    /// #2836: the names the storage keeps for its own files under the log root. A log name's FIRST `/`-segment,
+    /// compared case-sensitively and whole: `aside@1/0` is a stream log and stays legal `[guess: form is not in the spec]`.
+    private static final Set<String> RESERVED_LOG_SEGMENTS = Set.of("STORAGE_ID", "CLAIM", "LOCK", "aside");
 
     private final String name;
     private final List<StorageTier> tiers;
@@ -1131,7 +1134,7 @@ final class DefaultStorageInstance implements StorageInstance {
     @Override
     public Result<AppendLog> openLog(String logName) {
         return logRoot.toResult(StorageError.LogsUnsupported.logsUnsupported(name))
-                      .flatMap(root -> logFile(root, logName))
+                      .flatMap(root -> logFileUnlessReserved(root, logName))
                       .flatMap(file -> AppendLog.open(file, tornTailSink));
     }
 
@@ -1913,6 +1916,26 @@ final class DefaultStorageInstance implements StorageInstance {
     // --- Log / seal flow ---
     private static Result<List<String>> logNamesUnder(Path root) {
         return AppendLog.logNamesUnder(root);
+    }
+
+    /// #2836: a reserved name is refused before it is resolved, so no path is ever built for it.
+    private static Result<Path> logFileUnlessReserved(Path root, String logName) {
+        return Result.success(logName)
+                     .filter(StorageError.ReservedLogName.reservedLogName(logName),
+                             DefaultStorageInstance::isNotReserved)
+                     .flatMap(name -> logFile(root, name));
+    }
+
+    private static boolean isNotReserved(String logName) {
+        return !RESERVED_LOG_SEGMENTS.contains(firstSegment(logName));
+    }
+
+    private static String firstSegment(String logName) {
+        var slash = logName.indexOf('/');
+
+        return slash < 0
+               ? logName
+               : logName.substring(0, slash);
     }
 
     /// `name` resolves strictly under `root`: relative, and never climbing out of it with `..`.
