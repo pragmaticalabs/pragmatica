@@ -12,6 +12,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.consensus.net.JoinGenerationGuard;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -98,6 +99,9 @@ class WireAssignmentTripwireTest {
 
     private static final String BASELINE_RESOURCE = "/wire-assignment-baseline.txt";
 
+    /// Prefix of the baseline line recording the wire generation; `scripts/wire-generation-check.sh` reads the same line.
+    private static final String GENERATION_PREFIX = "GENERATION ";
+
     /// The types this tripwire CANNOT pin structurally, named rather than left as an unwritten
     /// limitation (#1450).
     ///
@@ -127,10 +131,30 @@ class WireAssignmentTripwireTest {
             return new String(stream.readAllBytes(), StandardCharsets.UTF_8).lines()
                                                                             .filter(line -> !line.isBlank())
                                                                             .filter(line -> !line.startsWith("#"))
+                                                                            .filter(line -> !line.startsWith(GENERATION_PREFIX))
                                                                             .toList();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    /// The baseline's `GENERATION` lines: the wire generation it was recorded under, kept out of [#baseline] because it
+    /// is not an assignment.
+    private static List<String> recordedGenerationLines() {
+        try (var stream = WireAssignmentTripwireTest.class.getResourceAsStream(BASELINE_RESOURCE)) {
+            assertTrue(stream != null, BASELINE_RESOURCE + " is missing — the tripwire has nothing to compare against");
+
+            return new String(stream.readAllBytes(), StandardCharsets.UTF_8).lines()
+                                                                            .filter(line -> line.startsWith(GENERATION_PREFIX))
+                                                                            .toList();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /// The `GENERATION` line [WireAssignmentBaselineWriter] records: this binary's [JoinGenerationGuard#WIRE_GENERATION].
+    static String generationLine() {
+        return GENERATION_PREFIX + JoinGenerationGuard.WIRE_GENERATION;
     }
 
     /// The current assignment, rendered in the baseline's own format.
@@ -257,6 +281,17 @@ class WireAssignmentTripwireTest {
                      "The build was red so I re-recorded the baseline" is not a reason. Naming the change \
                      that the delta belongs to is.
                      """);
+    }
+
+    /// The baseline records the generation this binary runs (#3303 RA-2): a wire change that re-records the baseline
+    /// without bumping [JoinGenerationGuard#WIRE_GENERATION] leaves this line equal to the base's, which the CI check
+    /// `scripts/wire-generation-check.sh` refuses; a bump without a re-record reddens this test.
+    @Test
+    void baseline_recordsThisBinarysWireGeneration() {
+        assertEquals(List.of(generationLine()),
+                     recordedGenerationLines(),
+                     "The baseline must carry exactly one GENERATION line equal to JoinGenerationGuard.WIRE_GENERATION;"
+                     + " re-record it with WireAssignmentBaselineWriter");
     }
 
     /// The tripwire's own instrument check. A baseline that had drifted into emptiness, or a

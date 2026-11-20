@@ -817,6 +817,10 @@ public interface SystemTags {
         // belong to #2625); the range is reserved in wire-tag-ranges.txt first.
         pin(table, 2984, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue");
         pin(table, 2985, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach");
+        // #3303 RA-2: the transaction refusal and its kind. Block 2986..2989 of wire-tag-allocations.md, reserved in
+        // wire-tag-ranges.txt as restore-authority-3303; 2988..2989 stay for RA-4a/4b.
+        pin(table, 2986, "org.pragmatica.cluster.state.kvstore.KVCommand.Refusal");
+        pin(table, 2987, "org.pragmatica.cluster.state.kvstore.KVCommand.RefusalKind");
         // #420 flag day: the artifact-content binding with its block manifest, and the flag-day tag of `ArtifactContentValue` (old tag
         // 2118, retired above). Inside the 2990..2999 reservation of wire-tag-ranges.txt (know d2ce3461aa).
         pin(table, 2990, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue");
