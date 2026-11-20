@@ -628,11 +628,11 @@ public final class StreamApiRoutes implements RouteSource {
         var from = requested.or(0L);
 
         return StreamErrorStatus.typedRead(read.apply(from)
-                                           .<Window> fold(result -> result.fold(cause -> afterRefusal(requested,
-                                                                                                      cause,
-                                                                                                      read),
-                                                                                events -> Promise.success(new Window(from,
-                                                                                                                     events)))));
+                                               .<Window> fold(result -> result.fold(cause -> afterRefusal(requested,
+                                                                                                          cause,
+                                                                                                          read),
+                                                                                    events -> Promise.success(new Window(from,
+                                                                                                                         events)))));
     }
 
     private static Promise<Window> afterRefusal(Option<Long> requested,
