@@ -1,0 +1,240 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
+package org.pragmatica.aether.resource.entity;
+
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.ReplicationFactors;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/// #3303 A4b: [EntityFold#capture] answers one capture of the final fold of a closed parent, or a typed refusal. Every refusal
+/// arm is pinned with the lineage read counted: a refusal BEFORE the copy must not have copied (`lineageReads == 0`), so a dropped
+/// before-check cannot hide behind the after-check that re-reads the same facts.
+class EntityFoldCaptureTest {
+    private static final String KEYSPACE = "orders";
+    private static final int PARTITION = 0;
+
+    private CaptureSubstrate substrate;
+    private EntityFold fold;
+
+    @BeforeEach
+    void setUp() {
+        substrate = new CaptureSubstrate();
+        fold = EntityFold.entityFold(KEYSPACE, substrate);
+    }
+
+    @Test
+    void capture_afterReadyAndCatchUp_decodesToTheFoldedStateAndTimers() {
+        substrate.log.add(EntityLogRecord.upsert("a", bytes("1")).encode());
+        substrate.log.add(EntityLogRecord.upsert("b", bytes("2")).encode());
+        substrate.log.add(EntityLogRecord.timerSchedule("a", "t1", 9_000L, bytes("cmd")).encode());
+        fold.ready(PARTITION).await();
+        fold.caughtUp(PARTITION).await();
+
+        var capture = fold.capture(PARTITION, 2L).unwrap();
+        var decoded = EntityFoldSnapshot.decode(capture.snapshot()).unwrap();
+
+        assertThat(capture.through()).isEqualTo(2L);
+        assertThat(decoded.state()).containsOnlyKeys("a", "b");
+        assertThat(decoded.state().get("a")).isEqualTo(bytes("1"));
+        assertThat(decoded.timers()).containsOnlyKeys("a");
+        assertThat(decoded.timers().get("a")).containsOnlyKeys("t1");
+        assertThat(capture.lineage().isPresent()).as("lineage read at the closed offset").isTrue();
+    }
+
+    @Test
+    void capture_ofAnEmptyClosedLog_afterReady_isAnAcceptedEmptyCapture() {
+        fold.ready(PARTITION).await();
+
+        var capture = fold.capture(PARTITION, -1L).unwrap();
+
+        assertThat(capture.through()).isEqualTo(-1L);
+        assertThat(EntityFoldSnapshot.decode(capture.snapshot()).unwrap().state()).isEmpty();
+    }
+
+    @Test
+    void arm_a_appliedBelowTheClosedOffset_isRefused_beforeAnyCopy() {
+        readyThrough(1);
+        substrate.log.add(EntityLogRecord.upsert("late", bytes("9")).encode());
+
+        assertRefusedBeforeCopy(fold.capture(PARTITION, 2L), EntityFold.CaptureRefusal.AppliedMismatch.class);
+    }
+
+    @Test
+    void arm_a_appliedAboveTheClosedOffset_isRefused_beforeAnyCopy() {
+        readyThrough(1);
+        var past = EntityLogRecord.upsert("past", bytes("9"));
+
+        substrate.log.add(past.encode());
+        fold.apply(PARTITION, 2L, past);
+        fold.apply(PARTITION, 3L, past);
+
+        assertRefusedBeforeCopy(fold.capture(PARTITION, 2L), EntityFold.CaptureRefusal.AppliedMismatch.class);
+    }
+
+    @Test
+    void arm_b_committedBelowTheClosedOffset_isRefused_beforeAnyCopy() {
+        readyThrough(2);
+        substrate.committed = 1L;
+
+        assertRefusedBeforeCopy(fold.capture(PARTITION, 2L), EntityFold.CaptureRefusal.NotCommitted.class);
+    }
+
+    @Test
+    void arm_c_aCutBeforeTheCall_oddAndEven_isRefused_beforeAnyCopy() {
+        readyThrough(2);
+        substrate.cutGeneration = 1L;
+        assertRefusedBeforeCopy(fold.capture(PARTITION, 2L), EntityFold.CaptureRefusal.Cut.class);
+
+        substrate.cutGeneration = 2L;
+        assertRefusedBeforeCopy(fold.capture(PARTITION, 2L), EntityFold.CaptureRefusal.Cut.class);
+    }
+
+    @Test
+    void arm_c_aCutInsideTheCopy_isRefused_afterTheCopy() {
+        readyThrough(2);
+        substrate.duringLineageRead = () -> substrate.cutGeneration += 2;
+
+        var result = fold.capture(PARTITION, 2L);
+
+        assertThat(refusalOf(result)).isInstanceOf(EntityFold.CaptureRefusal.Cut.class);
+        assertThat(substrate.lineageReads.get()).as("the copy ran, so the after-check is what refused").isEqualTo(1);
+    }
+
+    @Test
+    void arm_d_anEmptyNeverReadyFold_isRefusedByReadinessAlone() {
+        assertThat(substrate.headOffset(KEYSPACE, PARTITION)).as("(e) holds: head is the closed offset").isEqualTo(-1L);
+        assertThat(substrate.committedOffset(KEYSPACE, PARTITION)).as("(b) holds").isGreaterThanOrEqualTo(-1L);
+        assertThat(substrate.cutGeneration(KEYSPACE, PARTITION) & 1L).as("(c) holds: no cut in progress").isZero();
+
+        assertRefusedBeforeCopy(fold.capture(PARTITION, -1L), EntityFold.CaptureRefusal.NotReady.class);
+
+        fold.ready(PARTITION).await();
+
+        assertThat(fold.capture(PARTITION, -1L).isSuccess()).as("control: the same call after ready is accepted").isTrue();
+    }
+
+    @Test
+    void arm_e_aLogHeadAboveOrBelowTheClosedOffset_isRefused_beforeAnyCopy() {
+        readyThrough(2);
+        substrate.log.add(EntityLogRecord.upsert("late", bytes("9")).encode());
+
+        assertRefusedBeforeCopy(fold.capture(PARTITION, 2L), EntityFold.CaptureRefusal.LogEndMismatch.class);
+        assertRefusedBeforeCopy(fold.capture(PARTITION, 5L), EntityFold.CaptureRefusal.LogEndMismatch.class);
+    }
+
+    private void readyThrough(int lastOffset) {
+        for (var i = 0; i <= lastOffset; i++) {
+            substrate.log.add(EntityLogRecord.upsert("k" + i, bytes(String.valueOf(i))).encode());
+        }
+        fold.ready(PARTITION).await();
+    }
+
+    private void assertRefusedBeforeCopy(Result<EntityFold.Capture> result, Class<? extends Cause> expected) {
+        assertThat(refusalOf(result)).isInstanceOf(expected);
+        assertThat(substrate.lineageReads.get()).as("a refusal before the copy never copied").isZero();
+    }
+
+    private static Cause refusalOf(Result<EntityFold.Capture> result) {
+        var holder = new AtomicReference<Cause>();
+
+        result.onFailure(holder::set);
+
+        return holder.get();
+    }
+
+    private static byte[] bytes(String text) {
+        return text.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static final class CaptureSubstrate implements EntityLogSubstrate {
+        private final List<byte[]> log = new CopyOnWriteArrayList<>();
+        private final AtomicInteger lineageReads = new AtomicInteger();
+        private volatile long committed = Long.MAX_VALUE;
+        private volatile long cutGeneration;
+        /// Runs inside every `lineageAt`: a cut that lands while a capture is being assembled.
+        private volatile Runnable duringLineageRead = () -> {};
+
+        @Override
+        public long cutGeneration(String keyspace, int partition) {
+            return cutGeneration;
+        }
+
+        @Override
+        public long committedOffset(String keyspace, int partition) {
+            return Math.min(committed, log.size() - 1L);
+        }
+
+        @Override
+        public Option<byte[]> lineageAt(String keyspace, int partition, long offset) {
+            lineageReads.incrementAndGet();
+            duringLineageRead.run();
+
+            return offset < 0 || offset >= log.size()
+                   ? Option.none()
+                   : Option.some(bytes("lineage-" + offset));
+        }
+
+        @Override
+        public Result<Unit> ensureLog(String keyspace, int partitionCount, ReplicationFactors replication) {
+            return Result.unitResult();
+        }
+
+        @Override
+        public Promise<Long> append(String keyspace, int partition, byte[] record) {
+            log.add(record);
+
+            return Promise.success(log.size() - 1L);
+        }
+
+        @Override
+        public Promise<List<byte[]>> read(String keyspace, int partition, long fromOffset, int maxRecords) {
+            return fromOffset >= log.size()
+                   ? Promise.success(List.of())
+                   : Promise.success(List.copyOf(log.subList((int) fromOffset, (int) Math.min(log.size(), fromOffset + maxRecords))));
+        }
+
+        @Override
+        public long headOffset(String keyspace, int partition) {
+            return log.size() - 1L;
+        }
+
+        @Override
+        public long earliestRetainedOffset(String keyspace, int partition) {
+            return 0L;
+        }
+
+        @Override
+        public boolean localLogComplete(String keyspace, int partition) {
+            return true;
+        }
+
+        @Override
+        public boolean holdsPartition(String keyspace, int partition) {
+            return true;
+        }
+
+        @Override
+        public Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot) {
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public Promise<Option<EntityCheckpoint>> loadCheckpoint(String keyspace, int partition) {
+            return Promise.success(Option.none());
+        }
+    }
+}

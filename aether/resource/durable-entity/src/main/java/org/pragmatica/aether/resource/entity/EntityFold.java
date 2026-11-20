@@ -634,6 +634,71 @@ final class EntityFold {
                : Option.none();
     }
 
+    /// The final fold of a closed parent, captured from ONE published instance: the contents, the offset they are claimed through
+    /// and the lineage of the log record at that offset.
+    ///
+    /// @param through  the offset the capture claims, equal to the `lastOffset` the caller closed the parent at
+    /// @param snapshot the encoded contents, folded through exactly `through`
+    /// @param lineage  the identity of the log record at `through`, none when the substrate keeps no lineage or `through` is `-1`
+    record Capture(long through, byte[] snapshot, Option<byte[]> lineage) {}
+
+    /// Why [#capture] answered no capture. Typed so a caller can tell a fold that is not ready from one that moved.
+    sealed interface CaptureRefusal extends Cause {
+        /// This partition's rebuild has not resolved successfully, so an empty fold cannot be told from an unbuilt one.
+        record NotReady(int partition) implements CaptureRefusal {
+            @Override
+            public String message() {
+                return "Entity partition " + partition + " has no successful rebuild; its fold cannot be captured";
+            }
+        }
+
+        /// The log's head is not the closed parent's last offset: records exist above it, or the caller's offset is above the log.
+        record LogEndMismatch(int partition, long head, long lastOffset) implements CaptureRefusal {
+            @Override
+            public String message() {
+                return "Entity partition " + partition + " log head " + head + " is not the closed offset " + lastOffset;
+            }
+        }
+
+        /// The fold's applied watermark is not exactly the closed offset (below: records missing; above: records past the close).
+        record AppliedMismatch(int partition, long applied, long lastOffset) implements CaptureRefusal {
+            @Override
+            public String message() {
+                return "Entity partition " + partition + " fold applied through " + applied + " is not the closed offset " + lastOffset;
+            }
+        }
+
+        /// The log has not committed the closed offset, so a failover could still replace records the capture would claim.
+        record NotCommitted(int partition, long committed, long lastOffset) implements CaptureRefusal {
+            @Override
+            public String message() {
+                return "Entity partition " + partition + " log committed through " + committed + ", below the closed offset " + lastOffset;
+            }
+        }
+
+        /// The log was cut since the fold was built, or a cut is in progress.
+        record Cut(int partition) implements CaptureRefusal {
+            @Override
+            public String message() {
+                return "Entity partition " + partition + " log was cut since its fold was built; the fold may hold removed records";
+            }
+        }
+    }
+
+    /// One capture of the final fold of a closed parent, answering `lastOffset` as the log's end, or a typed [CaptureRefusal].
+    /// It never saves and never offers a checkpoint: the caller decides what to do with the capture.
+    ///
+    /// It does not drive [#ready] or [#caughtUp]. The partition's rebuild memo must already have resolved successfully: an unbuilt fold
+    /// with `lastOffset == -1` would otherwise read as an EMPTY capture, which is honest only after a successful rebuild.
+    ///
+    /// The published fold is taken ONCE. Before the copy it must be applied through exactly `lastOffset` (equality, never at-or-above:
+    /// a fold past the close holds records the parent never closed over), committed through `lastOffset` and current; all three are
+    /// re-read after the copy and any change refuses, so the contents and the lineage belong to one unchanged fold. It never reads the
+    /// checkpoint pointer and never goes through [#checkpointCandidate] or [#committedClaim], which answer a claim, not a capture.
+    Result<Capture> capture(int partition, long lastOffset) {
+        return success(new Capture(lastOffset, new byte[0], Option.none()));
+    }
+
     /// Apply every log record past the watermark, so the fold reflects the log's CURRENT head — records
     /// this node appended AND records replication landed behind its back (#596 review S1).
     ///
