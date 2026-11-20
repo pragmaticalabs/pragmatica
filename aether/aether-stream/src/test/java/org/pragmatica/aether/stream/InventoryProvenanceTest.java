@@ -96,7 +96,7 @@ class InventoryProvenanceTest {
     }
 
     private static StreamConfig aged() {
-        return StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, 60_000L), "latest");
+        return StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(1_000L, 64 * 1024L, 60_000L), "latest");
     }
 
     private static List<EpochStart> asLogEntries(List<ProvenanceEntry> history) {
