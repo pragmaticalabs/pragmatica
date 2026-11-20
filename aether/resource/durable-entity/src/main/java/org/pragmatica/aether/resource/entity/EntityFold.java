@@ -696,7 +696,57 @@ final class EntityFold {
     /// re-read after the copy and any change refuses, so the contents and the lineage belong to one unchanged fold. It never reads the
     /// checkpoint pointer and never goes through [#checkpointCandidate] or [#committedClaim], which answer a claim, not a capture.
     Result<Capture> capture(int partition, long lastOffset) {
-        return success(new Capture(lastOffset, new byte[0], Option.none()));
+        var fold = partitionFold(partition);
+
+        return rebuilt(partition, fold).flatMap(_ -> logEndsAt(partition, lastOffset))
+                       .flatMap(_ -> captureOf(partition, fold.published.get(), lastOffset));
+    }
+
+    private Result<Unit> rebuilt(int partition, PartitionFold fold) {
+        var memo = fold.rebuild.get();
+
+        return memo != null && memo.isResolved() && settledResult(memo).isSuccess()
+               ? success(unit())
+               : new CaptureRefusal.NotReady(partition).result();
+    }
+
+    private Result<Unit> logEndsAt(int partition, long lastOffset) {
+        var head = substrate.headOffset(keyspace, partition);
+
+        return head == lastOffset
+               ? success(unit())
+               : new CaptureRefusal.LogEndMismatch(partition, head, lastOffset).result();
+    }
+
+    private Result<Capture> captureOf(int partition, FoldedPartition data, long lastOffset) {
+        drain(data);
+
+        return stableAt(partition, data, lastOffset).flatMap(_ -> copied(partition, data, lastOffset));
+    }
+
+    private Result<Capture> copied(int partition, FoldedPartition data, long lastOffset) {
+        var snapshot = encodedFold(data);
+        var lineage = substrate.lineageAt(keyspace, partition, lastOffset);
+
+        return stableAt(partition, data, lastOffset).map(_ -> new Capture(lastOffset, snapshot, lineage));
+    }
+
+    /// Whether `data` is applied through exactly `lastOffset`, committed through it, and current. Run before and after the copy.
+    private Result<Unit> stableAt(int partition, FoldedPartition data, long lastOffset) {
+        var applied = data.appliedThrough.get();
+        var committed = substrate.committedOffset(keyspace, partition);
+
+        if (applied != lastOffset) {
+            return new CaptureRefusal.AppliedMismatch(partition, applied, lastOffset).result();
+        }
+
+        if (committed < lastOffset) {
+            return new CaptureRefusal.NotCommitted(partition, committed, lastOffset).result();
+        }
+
+        return isCurrent(partition, data)
+               ? success(unit())
+               : new CaptureRefusal.Cut(partition).result();
     }
 
     /// Apply every log record past the watermark, so the fold reflects the log's CURRENT head — records
