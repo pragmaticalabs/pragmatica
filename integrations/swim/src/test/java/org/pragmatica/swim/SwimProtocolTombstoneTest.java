@@ -154,8 +154,13 @@ class SwimProtocolTombstoneTest {
         var faultyA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
         protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
 
+        // The sweep removes the member, sets the tombstone, THEN clears the death-memory (everSeenHealthy)
+        // as separate steps on the tick thread: "tombstoned and gone" is true while the sweep is still
+        // mid-way. Settled means the death-memory is cleared too (#3498); without it, a caller asserting
+        // ever-seen-healthy right after this returns races the sweep's last step.
         await().atMost(Duration.ofSeconds(3))
-               .until(() -> protocol.tombstonedForTest(NODE_A) && !protocol.members().containsKey(NODE_A));
+               .until(() -> protocol.tombstonedForTest(NODE_A) && !protocol.members().containsKey(NODE_A)
+                            && !protocol.everSeenHealthyForTest(NODE_A));
     }
 
     @Test
