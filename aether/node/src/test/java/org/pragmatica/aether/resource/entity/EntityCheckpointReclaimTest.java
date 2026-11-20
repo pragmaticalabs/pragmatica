@@ -227,8 +227,8 @@ class EntityCheckpointReclaimTest {
         assertThat(deletesOf(first)).as("a deferred block is handed to one delete").isEqualTo(1L);
     }
 
-    /// Hazard: a late duplicate publish of an equal-claim block (an abandoned in-flight save landing after a newer swap) names it again,
-    /// so it must still be there.
+    /// Hazard: a late publish of an equal-claim block (an abandoned in-flight save landing after a newer swap) names its own block. With the
+    /// per-put nonce (#3303 A4a) that is a block of its own, not the one an earlier save of identical bytes wrote, and it must still be there.
     @Test
     void aLateDuplicatePublishAtAnEqualClaim_findsItsBlockStillThere() {
         var substrate = substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY));
@@ -249,9 +249,11 @@ class EntityCheckpointReclaimTest {
         apply(parkedCommands.get());
         parked.get().succeed(List.of());
         assertThat(lateSave.await().isSuccess()).isTrue();
-        assertThat(pointed(0)).as("control: the late publish named the equal-claim block again").isEqualTo(block);
+        var named = pointed(0);
+
+        assertThat(named).as("control: the late publish named its own block, not the earlier save's").isNotEqualTo(block);
         pause(PAST_SHORT_GRACE_MS);
-        assertThat(readable(block)).as("the block the current pointer names is readable").isTrue();
+        assertThat(readable(named)).as("the block the current pointer names is readable").isTrue();
     }
 
     /// Hazard: a re-read that lags the publish (the local KV applies the swap after the applier answered) shows a LOWER claim or none.
@@ -334,17 +336,22 @@ class EntityCheckpointReclaimTest {
     }
 
     /// #3303 A4a (was: identical bytes at one claim from two writers are one block): every put carries a fresh nonce, so identical bytes at one
-    /// claim from two writers are two blocks. The second swap displaces the first writer's block (the pointer it replaced names it) and the
-    /// reclaim deletes it after the grace; the block the pointer names is kept.
+    /// claim from two writers are two blocks. The second swap displaces the first writer's block at an EQUAL claim, which the reclaim defers
+    /// (an equal claim is accepted, so it may be named again); a higher claim then releases it. The block the pointer names is kept.
     @Test
     void identicalBytesAtOneClaim_fromTwoWriters_areTwoBlocks_andTheDisplacedOneIsReclaimed() {
         var first = save(substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
-        var second = save(substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY)), 0, 5L, snapshot("same"), Option.none());
+        var writer = substrate(checkpointReclaim(SHORT_GRACE, FAST_RETRY));
+        var second = save(writer, 0, 5L, snapshot("same"), Option.none());
 
         assertThat(second).as("a fresh nonce per put: distinct block ids").isNotEqualTo(first);
-        eventually("the displaced first block is deleted", 5_000L, () -> !readable(first));
-        assertThat(readable(second)).as("the block the pointer names is kept").isTrue();
-        assertThat(shared.deletes).containsOnly(first);
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(readable(first)).as("an equal claim defers the displaced block: nothing is deleted yet").isTrue();
+        assertThat(shared.deletes).isEmpty();
+        var third = save(writer, 0, 6L, snapshot("later"), Option.none());
+
+        eventually("a higher claim releases the deferred first block and displaces the second", 5_000L, () -> !readable(first) && !readable(second));
+        assertThat(readable(third)).as("the block the pointer names is kept").isTrue();
     }
 
     /// T-A35 (#3303 A4a): the block is put, the writer crashes before the pointer Put; the one-order content is re-put; the pointer commits to
