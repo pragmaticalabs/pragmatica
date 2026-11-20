@@ -89,6 +89,13 @@ public sealed interface StreamResourceValidator {
     String RULE_RETENTION_COUNT_ONLY = "retention-count-only";
     /// #3333: a key whose release has not merged yet (T-146).
     String RULE_NOT_YET_AVAILABLE = "not-yet-available";
+    /// #3333 (stream-storage-design 2.2, T-163): the `until_consumed` shape refusals, a `group_idle_expiry` under `window`,
+    /// and a section declaring both retention models.
+    String RULE_UNTIL_CONSUMED_UNCAPPED = "until-consumed-uncapped";
+    String RULE_UNTIL_CONSUMED_MODE_ALL = "until-consumed-mode-all";
+    String RULE_UNTIL_CONSUMED_UNSUPPORTED = "until-consumed-unsupported";
+    String RULE_GROUP_IDLE_EXPIRY_WITHOUT_UNTIL_CONSUMED = "group-idle-expiry-without-until-consumed";
+    String RULE_CONFLICTING_DECLARATION_MODELS = "conflicting-declaration-models";
     String RULE_SOURCE_ADDRESS_INVALID = "source-address-invalid";
     String RULE_NAMESPACE_INVALID = "namespace-invalid";
     String RULE_STREAM_NAME_INVALID = "stream-name-invalid";
@@ -565,6 +572,11 @@ public sealed interface StreamResourceValidator {
             case StreamDeclarationError.RetentionUndeclared _ -> RULE_RETENTION_UNDECLARED;
             case StreamDeclarationError.RetentionCountOnly _ -> RULE_RETENTION_COUNT_ONLY;
             case StreamDeclarationError.NotYetAvailable _ -> RULE_NOT_YET_AVAILABLE;
+            case StreamDeclarationError.UntilConsumedUncapped _ -> RULE_UNTIL_CONSUMED_UNCAPPED;
+            case StreamDeclarationError.UntilConsumedModeAll _ -> RULE_UNTIL_CONSUMED_MODE_ALL;
+            case StreamDeclarationError.UntilConsumedUnsupported _ -> RULE_UNTIL_CONSUMED_UNSUPPORTED;
+            case StreamDeclarationError.GroupIdleExpiryWithoutUntilConsumed _ -> RULE_GROUP_IDLE_EXPIRY_WITHOUT_UNTIL_CONSUMED;
+            case StreamDeclarationError.ConflictingDeclarationModels _ -> RULE_CONFLICTING_DECLARATION_MODELS;
             case ResourceAddressError.General address -> addressRule(address);
             case ResourceVersionError _ -> RULE_VERSION_FORMAT_INVALID;
             case StreamVersionSpecError _ -> RULE_VERSION_FORMAT_INVALID;

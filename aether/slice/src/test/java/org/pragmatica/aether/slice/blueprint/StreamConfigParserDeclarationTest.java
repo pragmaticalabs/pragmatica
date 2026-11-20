@@ -13,7 +13,9 @@ import org.pragmatica.aether.slice.TruncationDeclaration;
 import org.pragmatica.aether.slice.TruncationPolicy;
 import org.pragmatica.aether.slice.stream.DeclarationDefaults;
 import org.pragmatica.aether.slice.stream.StreamResource;
+import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
 
 import org.junit.jupiter.api.Test;
 
@@ -128,10 +130,12 @@ class StreamConfigParserDeclarationTest {
         assertThat(declared.maxBytes().or(0L)).isEqualTo(DeclarationDefaults.defaultHotMaxBytes(StreamConfig.DEFAULT.maxEventSizeBytes()));
     }
 
+    /// `group_idle_expiry` is refused under `window` (T-22) and gated under `until_consumed` (T-146), so no stored idle
+    /// expiry is observable before S3; only the policy default is.
     @Test
-    void truncation_defaultsToWindow_andStoresTheIdleExpiry() {
+    void truncation_defaultsToWindow() {
         assertThat(truncation("partitions = 4\n").policy().or(TruncationPolicy.UNKNOWN)).isEqualTo(TruncationPolicy.WINDOW);
-        assertThat(truncation("[streams.orders.truncation]\npolicy = \"window\"\ngroup_idle_expiry = \"1h\"\n").groupIdleExpiryMs().or(0L)).isEqualTo(3_600_000L);
+        assertThat(truncation("[streams.orders.truncation]\npolicy = \"window\"\n").groupIdleExpiryMs().isEmpty()).isTrue();
     }
 
     @Test
@@ -159,6 +163,89 @@ class StreamConfigParserDeclarationTest {
                 .isInstanceOf(StreamDeclarationError.MalformedValue.class);
         assertThat(refusal("partitions = 2000\n[streams.orders.truncation]\npolicy = \"until_consumed\"\n"))
                 .isInstanceOf(StreamDeclarationError.PartitionsOverCeiling.class);
+    }
+
+    private static final String UNTIL_CONSUMED = "[streams.orders.truncation]\npolicy = \"until_consumed\"\n";
+
+    /// T-19 (O1): `until_consumed` needs `max_bytes`; a block with `max_age` alone is refused.
+    @Test
+    void untilConsumedWithMaxAgeOnly_isRefusedUncapped() {
+        assertThat(refusal(UNTIL_CONSUMED + "[streams.orders.retention]\nmax_age = \"1h\"\n"))
+                .isEqualTo(new StreamDeclarationError.UntilConsumedUncapped("orders"));
+    }
+
+    /// T-20: `until_consumed` with `mode = "all"` is refused, even beside a `max_bytes`.
+    @Test
+    void untilConsumedWithModeAll_isRefused() {
+        assertThat(refusal(UNTIL_CONSUMED + "[streams.orders.retention]\nmax_bytes = \"2GB\"\nmode = \"all\"\n"))
+                .isEqualTo(new StreamDeclarationError.UntilConsumedModeAll("orders"));
+    }
+
+    /// T-146 malformed arms: a malformed `until_consumed` block reports its own refusal, not the gate's; a well-formed one
+    /// (a declared `max_bytes` under `mode = "any"`, or no `[retention]` block, which resolves the default `max_bytes`)
+    /// reaches the gate.
+    @Test
+    void malformedUntilConsumed_reportsItsOwnRefusal_beforeTheGate() {
+        assertThat(refusal(UNTIL_CONSUMED + "[streams.orders.retention]\nmax_age = \"1h\"\n"))
+                .isInstanceOf(StreamDeclarationError.UntilConsumedUncapped.class);
+        assertThat(refusal(UNTIL_CONSUMED + "[streams.orders.retention]\nmax_bytes = \"2GB\"\nmode = \"all\"\n"))
+                .isInstanceOf(StreamDeclarationError.UntilConsumedModeAll.class);
+        assertThat(refusal(UNTIL_CONSUMED + "[streams.orders.retention]\nmax_bytes = \"2GB\"\nmode = \"any\"\n"))
+                .isInstanceOf(StreamDeclarationError.NotYetAvailable.class);
+        assertThat(refusal(UNTIL_CONSUMED)).isInstanceOf(StreamDeclarationError.NotYetAvailable.class);
+    }
+
+    /// T-21, `entity:` case: a quoted `["streams.entity:<name>"]` header is the one TOML form that hands the parser an
+    /// alias with a reserved kind prefix; `until_consumed` is refused there, `window` is not.
+    @Test
+    void untilConsumedOnAnEntityStream_isRefusedUnsupported() {
+        var entity = "[\"streams.entity:orders\"]\nversion = \"1.0.0\"\n";
+
+        assertThat(parseResources(entity + "[\"streams.entity:orders.truncation\"]\npolicy = \"until_consumed\"\n",
+                                  ReplicationFactors.BUILT_IN).fold(cause -> cause, _ -> fail("expected a refusal")))
+                .isEqualTo(new StreamDeclarationError.UntilConsumedUnsupported("entity:orders", "entity"));
+        assertThat(parseResources(entity, ReplicationFactors.BUILT_IN).isSuccess()).isTrue();
+    }
+
+    /// T-21, DLQ case: no TOML header yields a dotted alias, so the section is handed to the parser as activation would
+    /// hand it, under the alias `<stream>.dlq`; `until_consumed` is refused there, `window` is not.
+    @Test
+    void untilConsumedOnADlqStream_isRefusedUnsupported() {
+        assertThat(parseAs("orders.dlq", UNTIL_CONSUMED).fold(cause -> cause, _ -> fail("expected a refusal")))
+                .isEqualTo(new StreamDeclarationError.UntilConsumedUnsupported("orders.dlq", "DLQ"));
+        assertThat(parseAs("orders.dlq", "[streams.orders.truncation]\npolicy = \"window\"\n").isSuccess()).isTrue();
+        assertThat(parseAs("orders", UNTIL_CONSUMED).fold(cause -> cause, _ -> fail("expected a refusal")))
+                .as("a user stream reaches the gate")
+                .isInstanceOf(StreamDeclarationError.NotYetAvailable.class);
+    }
+
+    /// T-22: `group_idle_expiry` under `window`, declared or defaulted, is refused; under `until_consumed` it is not.
+    @Test
+    void groupIdleExpiryUnderWindow_isRefused() {
+        assertThat(refusal("[streams.orders.truncation]\npolicy = \"window\"\ngroup_idle_expiry = \"1h\"\n"))
+                .isEqualTo(new StreamDeclarationError.GroupIdleExpiryWithoutUntilConsumed("orders"));
+        assertThat(refusal("[streams.orders.truncation]\ngroup_idle_expiry = \"1h\"\n"))
+                .isEqualTo(new StreamDeclarationError.GroupIdleExpiryWithoutUntilConsumed("orders"));
+        assertThat(refusal(UNTIL_CONSUMED + "group_idle_expiry = \"1h\"\n"))
+                .isInstanceOf(StreamDeclarationError.NotYetAvailable.class);
+    }
+
+    /// T-163: a declaration sub-section beside a key of today's retention model is one refusal naming both; an empty
+    /// sub-section is named by its header. Each model alone still parses.
+    @Test
+    void bothDeclarationModels_areRefused_namingBothKeys() {
+        assertThat(refusal("retention_value = \"5\"\n[streams.orders.retention]\nmax_bytes = \"2GB\"\n"))
+                .isEqualTo(new StreamDeclarationError.ConflictingDeclarationModels("orders", "retention.max_bytes", "retention_value"));
+        assertThat(refusal("max_age = \"1h\"\n[streams.orders.hot]\n"))
+                .isEqualTo(new StreamDeclarationError.ConflictingDeclarationModels("orders", "[hot]", "max_age"));
+        assertThat(parseResources(section("retention_value = \"5\"\n"), ReplicationFactors.BUILT_IN).isSuccess()).isTrue();
+        assertThat(parseResources(section("[streams.orders.retention]\nmax_bytes = \"2GB\"\n"), ReplicationFactors.BUILT_IN).isSuccess()).isTrue();
+    }
+
+    private static Result<StreamConfig> parseAs(String alias, String body) {
+        return TomlParser.parse(section(body))
+                         .flatMap(doc -> StreamConfigParser.parseStreamConfig(StreamSection.tomlSection(doc, "streams.orders", alias),
+                                                                              ReplicationFactors.BUILT_IN));
     }
 
     private static void assertUnknown(String body, String key, String nearest) {

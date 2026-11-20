@@ -464,7 +464,8 @@ public interface StreamConfigParser {
     /// `replication_factor`/`confirmation_factor` resolved against `defaults` through
     /// [ReplicationDeclaration#resolve], the single path from a stream declaration to its factors.
     static Result<DeclaredStream> parseStreamDeclaration(StreamSection section, ReplicationFactors defaults) {
-        return refuseUnknownKeys(section).flatMap(valid -> parseStreamSection(valid, defaults))
+        return refuseUnknownKeys(section).flatMap(StreamConfigParser::refuseConflictingModels)
+                                .flatMap(valid -> parseStreamSection(valid, defaults))
                                 .flatMap(declared -> validatePartitionCeiling(section.alias(),
                                                                               declared.config()).map(_ -> declared))
                                 .flatMap(declared -> refuseNotYetAvailable(section.alias(),
@@ -562,6 +563,26 @@ public interface StreamConfigParser {
     /// Every key a stream section may carry, for the unknown-key refusal and its nearest-key suggestion.
     List<String> KNOWN_KEYS = Stream.concat(STREAM_SECTION_KEYS.stream(), DECLARATION_SECTION_KEYS.stream()).toList();
 
+    /// The sub-sections of the storage declaration model (stream-storage-design 2.1), whose keys [#DECLARATION_SECTION_KEYS]
+    /// lists in dotted form.
+    List<String> DECLARATION_TABLES = List.of("retention", "truncation", "hot");
+
+    /// The keys of today's retention model in [#STREAM_SECTION_KEYS] (stream-storage-design 2.3). A section that carries one
+    /// of them beside a [#DECLARATION_TABLES] sub-section is refused ([StreamDeclarationError.ConflictingDeclarationModels]).
+    List<String> LEGACY_RETENTION_KEYS = List.of("retention",
+                                                 "retention_value",
+                                                 "retention_mode",
+                                                 "max_age",
+                                                 "max_count",
+                                                 "max_bytes");
+
+    /// The engine-key prefix of an entity keyspace log, one of [StreamEngineKey#RESERVED_KIND_PREFIXES].
+    String ENTITY_KIND_PREFIX = "entity:";
+
+    /// The name suffix of a dead-letter stream. Mirrors `DurableTopicNames.DLQ_SUFFIX` (aether-stream), which this module
+    /// cannot see, as [StreamEngineKey#RESERVED_KIND_PREFIXES] mirrors the kind prefixes.
+    String DLQ_SUFFIX = ".dlq";
+
     /// Every key read from a `[streams.<alias>.consumers.<group>]` section. Snake_case like the stream keys; the dashed
     /// spelling of one of them is refused ([#refuseDashedConsumerKeys]) rather than ignored, which would default it.
     List<String> CONSUMER_SECTION_KEYS = List.of("processing",
@@ -592,6 +613,43 @@ public interface StreamConfigParser {
         return unknown.isEmpty()
                ? success(section)
                : new StreamDeclarationError.UnknownStreamKeys(section.alias(), unknown, nearestKeys(unknown)).result();
+    }
+
+    /// T-163: a section that declares the storage model and today's retention model at once is refused, naming one key of
+    /// each, before either is read. It runs after the unknown-key refusal, so both keys it names are keys this parser knows.
+    private static Result<StreamSection> refuseConflictingModels(StreamSection section) {
+        return Option.all(declarationModelKey(section), legacyRetentionKey(section))
+                     .map((newKey, oldKey) -> new StreamDeclarationError.ConflictingDeclarationModels(section.alias(),
+                                                                                                      newKey,
+                                                                                                      oldKey).<StreamSection> result())
+                     .or(() -> success(section));
+    }
+
+    /// The first declaration-model key of the section in sorted order, or the `[<table>]` header of a declared empty
+    /// sub-section, which carries no key to name.
+    private static Option<String> declarationModelKey(StreamSection section) {
+        return Option.from(section.keys()
+                                  .stream()
+                                  .filter(StreamConfigParser::isDeclarationKey)
+                                  .sorted()
+                                  .findFirst())
+                     .orElse(() -> Option.from(DECLARATION_TABLES.stream()
+                                                                 .filter(section::hasTable)
+                                                                 .findFirst())
+                                         .map(table -> "[" + table + "]"));
+    }
+
+    private static boolean isDeclarationKey(String key) {
+        return DECLARATION_TABLES.stream()
+                                 .anyMatch(table -> key.startsWith(table + "."));
+    }
+
+    private static Option<String> legacyRetentionKey(StreamSection section) {
+        var keys = section.keys();
+
+        return Option.from(LEGACY_RETENTION_KEYS.stream()
+                                                .filter(keys::contains)
+                                                .findFirst());
     }
 
     private static Map<String, String> nearestKeys(List<String> unknown) {
@@ -671,7 +729,8 @@ public interface StreamConfigParser {
         var retention = parseRetention(section);
         var storageDeclaration = Result.all(partitions, maxEventSize).flatMap((count, size) -> parseDeclaration(section,
                                                                                                                 count,
-                                                                                                                size));
+                                                                                                                size))
+                                       .flatMap(declared -> refuseTruncationShape(section.alias(), declared));
 
         return firstFailure(List.of(partitions,
                                     factor,
@@ -982,6 +1041,62 @@ public interface StreamConfigParser {
             case "until_consumed" -> TruncationPolicy.UNTIL_CONSUMED;
             default -> TruncationPolicy.WINDOW;
         };
+    }
+
+    /// The stream-storage-design 2.2 refusals on the resolved truncation declaration. They run inside the parse, so before
+    /// the T-146 gate ([#refuseNotYetAvailable]): a malformed `until_consumed` block reports its own refusal, never the
+    /// gate's. Under `until_consumed` the order is the stream kind, then the byte cap, then the mode; under `window`
+    /// (declared or defaulted) a `group_idle_expiry` is refused.
+    private static Result<StreamDeclaration> refuseTruncationShape(String alias, StreamDeclaration declared) {
+        var policy = declared.truncation()
+                             .flatMap(TruncationDeclaration::policy)
+                             .or(TruncationPolicy.WINDOW);
+
+        return policy == TruncationPolicy.UNTIL_CONSUMED
+               ? refuseUnsupportedKind(alias, declared)
+               : refuseIdleExpiryUnderWindow(alias, declared);
+    }
+
+    private static Result<StreamDeclaration> refuseUnsupportedKind(String alias, StreamDeclaration declared) {
+        return unsupportedKind(alias).map(kind -> new StreamDeclarationError.UntilConsumedUnsupported(alias,
+                                                                                                     kind).<StreamDeclaration> result())
+                              .or(() -> refuseUncapped(alias, declared));
+    }
+
+    /// The kind of a stream with no committed cursor to hold its prefix for: an `entity:` keyspace log, or a DLQ
+    /// (`<stream>.dlq`). Keyed off the alias the parser is given, the only name it sees.
+    private static Option<String> unsupportedKind(String alias) {
+        return StreamEngineKey.reservedKindPrefixOf(alias)
+                              .filter(ENTITY_KIND_PREFIX::equals)
+                              .map(_ -> "entity")
+                              .orElse(() -> some(alias).filter(name -> name.endsWith(DLQ_SUFFIX))
+                                                       .map(_ -> "DLQ"));
+    }
+
+    /// A stream with no `[retention]` block resolves the default `max_bytes`, so only a block that omits it is refused.
+    private static Result<StreamDeclaration> refuseUncapped(String alias, StreamDeclaration declared) {
+        return declared.retention()
+                       .flatMap(RetentionDeclaration::maxBytes)
+                       .isEmpty()
+               ? new StreamDeclarationError.UntilConsumedUncapped(alias).result()
+               : refuseModeAll(alias, declared);
+    }
+
+    private static Result<StreamDeclaration> refuseModeAll(String alias, StreamDeclaration declared) {
+        return declared.retention()
+                       .flatMap(RetentionDeclaration::mode)
+                       .filter(RetentionMode.ALL::equals)
+                       .isPresent()
+               ? new StreamDeclarationError.UntilConsumedModeAll(alias).result()
+               : success(declared);
+    }
+
+    private static Result<StreamDeclaration> refuseIdleExpiryUnderWindow(String alias, StreamDeclaration declared) {
+        return declared.truncation()
+                       .flatMap(TruncationDeclaration::groupIdleExpiryMs)
+                       .isPresent()
+               ? new StreamDeclarationError.GroupIdleExpiryWithoutUntilConsumed(alias).result()
+               : success(declared);
     }
 
     /// The `[streams.<name>.consumers.<group>]` table names of one stream, one segment past the prefix.
