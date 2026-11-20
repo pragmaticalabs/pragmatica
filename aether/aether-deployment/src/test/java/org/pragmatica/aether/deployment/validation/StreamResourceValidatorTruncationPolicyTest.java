@@ -131,8 +131,8 @@ class StreamResourceValidatorTruncationPolicyTest {
                                                      partition -> List.copyOf(partition.accepted().keySet()));
     }
 
-    private static Result<StreamResourceValidator.PartitionedStreamResources> partitioned(String toml,
-                                                                                                             Function<String, Option<StreamConfig>> committedRows) {
+    private static Result<StreamValidationPartition> partitioned(String toml,
+                                                                 Function<String, Option<StreamConfig>> committedRows) {
         return StreamResourceValidator.partition(Option.some(toml),
                                                  APP_ARTIFACT,
                                                  Map.of(),
