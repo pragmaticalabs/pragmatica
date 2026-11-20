@@ -595,6 +595,17 @@ class ViewApplicationTableTest {
         assertThat(node.state() + " " + node.leader()).as("I2: the leader is in the view or none").isEqualTo("ReElecting -");
     }
 
+    /// A `LeaderOutOfView` is fenced by the carried leader: a stale check made for an earlier tenure (naming a leader
+    /// other than the current one) is discarded in `Led`; the state and the published leader are unchanged.
+    @Test
+    void staleLeaderOutOfView_namingAnotherLeader_isDiscardedInLed() {
+        node = Node.startedIn(StartState.LED, Mode.LOCAL);
+
+        node.harness.dispatch(new LeaderElectionEvents.LeaderOutOfView(N3));
+
+        assertThat(node.state() + " " + node.leader()).as("stale out-of-view for another leader changes nothing").isEqualTo("Led N1");
+    }
+
     /// Item 5 (v3436c's survivor): an evicted leader's stale local commit reaches `ReElecting`. The admission refuses it,
     /// so no `Led` tenure is ever entered (the post-change site alone would enter one and then drop it).
     @Test
