@@ -637,7 +637,11 @@ public interface SystemTags {
         pin(table, 2116, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactVersionEntry");
         // first-committed content digest per artifact file (#1778)
         pin(table, 2117, "org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactContentKey");
-        pin(table, 2118, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue");
+        // RETIRED 2026-11-20 (#420, flag day, know 38cad36811): `ArtifactContentValue` moved to 2990 when it gained its `blocks`
+        // manifest, so a node of an older build fails the new value on an unknown tag instead of silently dropping the tail
+        // (know d2ce3461aa: block 2990..2999). Pre-GA, no decoder kept. The pin STAYS, under a name that resolves to no class,
+        // so the tag is never reused.
+        pin(table, 2118, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValueRetiredRc6");
         // the DHT replication a worker's projection carries (#1777 track 1) — next free after 2118
         pin(table, 2119, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication");
         // #1777 R1b: the committed DHT replication change, the members' reports, and the operator events
@@ -817,6 +821,9 @@ public interface SystemTags {
         // wire-tag-ranges.txt as restore-authority-3303; 2988..2989 stay for RA-4a/4b.
         pin(table, 2986, "org.pragmatica.cluster.state.kvstore.KVCommand.Refusal");
         pin(table, 2987, "org.pragmatica.cluster.state.kvstore.KVCommand.RefusalKind");
+        // #420 flag day: the artifact-content binding with its block manifest, and the flag-day tag of `ArtifactContentValue` (old tag
+        // 2118, retired above). Inside the 2990..2999 reservation of wire-tag-ranges.txt (know d2ce3461aa).
+        pin(table, 2990, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 

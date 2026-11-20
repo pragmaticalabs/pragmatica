@@ -62,4 +62,5 @@
 2962..2979 drain-3413 2026-11-20 #3413 D1 committed drain + D2 (know d2ce3461aa, wire-tag-allocations.md)
 2984..2985 fix834 2026-11-19 #834 SchemaVersionValue new shape (2984) and SchemaReach (2985); RQ-TAGS-3, moved off 2980..2981 (#2625's)
 2986..2989 restore-authority-3303 2026-11-20 #3303 restore authority: refusal kinds and markers (know d021c7b150)
+2990..2999 flag-day-420 2026-11-20 #420 artifact churn: ArtifactContentValue with its block manifest (2990), flag-day tag (know d2ce3461aa, wire-tag-allocations.md)
 3010..3017 stream-mem 2026-11-20 #3458 in-memory streams (know d0048c4f79)
