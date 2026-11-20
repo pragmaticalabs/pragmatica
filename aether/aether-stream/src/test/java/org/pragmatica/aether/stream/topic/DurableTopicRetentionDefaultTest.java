@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.ReplicationDeclaration;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionMode;
+import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.lang.parse.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -45,6 +46,31 @@ class DurableTopicRetentionDefaultTest {
 
         assertThat(retention.maxBytes()).isEqualTo(8 * GIB);
         assertThat(retention.declared()).isEqualTo(RetentionDimensions.retentionDimensions(false, true, true));
+    }
+
+    /// F4 (#3491), ruled accepted: the topic ring is sized by the NEW retention until S2b-2a decouples ring sizing.
+    /// Floor = 64 + 24 x count + min(maxBytes, 256 KiB) (`OffHeapRingBuffer.floorBytes`, as `perPartitionFloorBytes`);
+    /// cap = 64 + 24 x count + maxBytes. Topic count = 100 000 (`RetentionPolicy` sizing default), bytes
+    /// `defaultMaxBytes(P)`: P = 4 -> 1 GiB: floor 64 + 2 400 000 + 262 144 = 2 662 208, cap 2 400 064 + 1 073 741 824 =
+    /// 1 076 141 888; P = 1024 -> 8 GiB: cap 2 400 064 + 8 589 934 592 = 8 592 334 656 (pre-PR: 256 MiB data region).
+    @Test
+    void topicConfig_ringFloorAndCapAreTheNewDefaults() {
+        var small = DurableTopicSubstrate.topicStreamConfig(ADDRESS, spec(4)).retention();
+        var large = DurableTopicSubstrate.topicStreamConfig(ADDRESS, spec(1024)).retention();
+
+        assertThat(OffHeapRingBuffer.floorBytes(small.maxCount(), small.maxBytes())).isEqualTo(2_662_208L);
+        assertThat(OffHeapRingBuffer.capBytes(small.maxCount(), small.maxBytes())).isEqualTo(1_076_141_888L);
+        assertThat(OffHeapRingBuffer.capBytes(large.maxCount(), large.maxBytes())).isEqualTo(8_592_334_656L);
+    }
+
+    /// F4 (#3491): the `.dlq` ring: count 100 000, bytes `max(10 % of 1 GiB, 64 MiB)` = 107 374 182 (P = 4): floor
+    /// 2 662 208 (the first region is 256 KiB, below the bytes), cap 2 400 064 + 107 374 182 = 109 774 246.
+    @Test
+    void dlqConfig_ringFloorAndCapAreTheNewDefaults() {
+        var retention = DurableTopicSubstrate.dlqStreamConfig(ADDRESS, spec(4)).retention();
+
+        assertThat(OffHeapRingBuffer.floorBytes(retention.maxCount(), retention.maxBytes())).isEqualTo(2_662_208L);
+        assertThat(OffHeapRingBuffer.capBytes(retention.maxCount(), retention.maxBytes())).isEqualTo(109_774_246L);
     }
 
     /// S4 (#3491): the topic's mode is ANY, the default (ST 2.2); under ALL the age would lift the byte cap.

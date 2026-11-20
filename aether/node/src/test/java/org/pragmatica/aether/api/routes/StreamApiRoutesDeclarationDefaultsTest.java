@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.blueprint.StreamConfigParser;
 import org.pragmatica.aether.slice.stream.DeclarationDefaults;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.slice.stream.StreamResource;
+import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
@@ -116,6 +117,40 @@ class StreamApiRoutesDeclarationDefaultsTest {
         } finally {
             manager.close();
         }
+    }
+
+    /// F4 (#3491), ruled accepted: the API-minted ring is sized by the NEW retention until S2b-2a decouples ring sizing.
+    /// Per-partition floor = `OffHeapRingBuffer.floorBytes(maxCount, maxBytes)` = header 64 + 24 x capacity + min(maxBytes,
+    /// max(256 KiB, 0)) (`RingGeometry`, the 2-argument form `StreamPartitionManager.perPartitionFloorBytes` calls); cap =
+    /// 64 + 24 x capacity + maxBytes. At P = 4: count 100 000 (`RetentionPolicy` sizing default), bytes 1 GiB
+    /// (`defaultMaxBytes(4)`): floor = 64 + 2 400 000 + 262 144 = 2 662 208 (pre-PR, count 10 000: 64 + 240 000 + 262 144 =
+    /// 502 208); cap = 64 + 2 400 000 + 1 073 741 824 = 1 076 141 888 (pre-PR: 4 MiB data region).
+    @Test
+    void pathCreate_default_ringFloorAndCapAreTheNewDefaults() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+        try {
+            var routes = routesFor(manager, StreamNamespacesService.inMemory());
+            routes.createStream(NAMESPACE, STREAM, VERSION, new StreamApiRoutes.CreateRequest(4))
+                  .onFailure(_ -> fail("stream create must succeed"));
+
+            var retention = retentionAfter(manager);
+
+            assertThat(retention.maxCount()).isEqualTo(100_000L);
+            assertThat(OffHeapRingBuffer.floorBytes(retention.maxCount(), retention.maxBytes())).isEqualTo(2_662_208L);
+            assertThat(OffHeapRingBuffer.capBytes(retention.maxCount(), retention.maxBytes())).isEqualTo(1_076_141_888L);
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// F4 (#3491): publish auto-create mints through the same `defaultRetention`, so its floor and cap equal the path
+    /// create's (derivation in `pathCreate_default_ringFloorAndCapAreTheNewDefaults`).
+    @Test
+    void publishAutoCreate_default_ringFloorAndCapAreTheNewDefaults() {
+        var retention = StreamApiRoutes.defaultRetention(4);
+
+        assertThat(OffHeapRingBuffer.floorBytes(retention.maxCount(), retention.maxBytes())).isEqualTo(2_662_208L);
+        assertThat(OffHeapRingBuffer.capBytes(retention.maxCount(), retention.maxBytes())).isEqualTo(1_076_141_888L);
     }
 
     @Test
