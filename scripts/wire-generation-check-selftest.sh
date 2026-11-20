@@ -104,6 +104,36 @@ two_commit_case "C4c base without GENERATION line (guard says 3), no break, gene
 two_commit_case "C6a TAG renumber, same generation" 1 3 3 "TAG a.A 7" "TAG a.B 2" "SHAPE a.A (x:int)" "ENUM a.E X=0,Y=1"
 two_commit_case "C6b TAG renumber, generation + 1" 0 3 4 "TAG a.A 7" "TAG a.B 2" "SHAPE a.A (x:int)" "ENUM a.E X=0,Y=1"
 
+# C8: a SEMANTIC line declares a semantic wire break (how replicas JUDGE an existing value); no TAG, SHAPE or ENUM line moves.
+# semantic_case <name> <rc> <base_gen> <head_gen> <base SEMANTIC lines, "|"-separated or empty> <head SEMANTIC lines, same>
+semantic_case() {
+    local name="$1" want="$2" base_gen="$3" head_gen="$4" base_sem="$5" head_sem="$6"
+    local -a base_extra=() head_extra=()
+    [[ -z "$base_sem" ]] || IFS='|' read -r -a base_extra <<<"$base_sem"
+    [[ -z "$head_sem" ]] || IFS='|' read -r -a head_extra <<<"$head_sem"
+    new_repo
+    write_baseline "$base_gen" "${BASE_LINES[@]}" ${base_extra[@]+"${base_extra[@]}"}
+    write_guard 3
+    commit_all base
+    write_baseline "$head_gen" "${BASE_LINES[@]}" ${head_extra[@]+"${head_extra[@]}"}
+    commit_all head
+    expect "$name" "$want" "$check" "HEAD~1"
+}
+
+S1="SEMANTIC a.A.epoch stale-if-below -> stale-if-below-or-equal"
+S2="SEMANTIC a.B.mode accept-if-any -> accept-if-all"
+semantic_case "C8a added SEMANTIC, generation + 1" 0 3 4 "" "$S1"
+semantic_case "C8b added SEMANTIC, same generation" 1 3 3 "" "$S1"
+semantic_case "C8c added SEMANTIC, generation + 2" 1 3 5 "" "$S1"
+semantic_case "C8d SEMANTIC removed, same generation" 1 3 3 "$S1" ""
+semantic_case "C8e SEMANTIC edited, same generation" 1 3 3 "$S1" "SEMANTIC a.A.epoch stale-if-below -> never-stale"
+semantic_case "C8f existing SEMANTIC only, generation + 1 (no re-trigger)" 1 3 4 "$S1" "$S1"
+semantic_case "C8g existing SEMANTIC only, same generation" 0 3 3 "$S1" "$S1"
+semantic_case "C8h existing SEMANTIC kept, second one added, generation + 1" 0 3 4 "$S1" "$S1|$S2"
+semantic_case "C8i malformed SEMANTIC (no judgement), same generation" 1 3 3 "" "SEMANTIC a.A.epoch"
+semantic_case "C8j malformed SEMANTIC (no arrow), same generation" 1 3 3 "" "SEMANTIC a.A.epoch changed the rule"
+semantic_case "C8k SEMANTIC removed, generation + 1" 1 3 4 "$S1" ""
+
 # The command the workflow's merge_group step runs, with the repo's script path replaced by the real script.
 # Absent step => empty command => the queue case below finds no refusal and goes red.
 merge_group_command() {

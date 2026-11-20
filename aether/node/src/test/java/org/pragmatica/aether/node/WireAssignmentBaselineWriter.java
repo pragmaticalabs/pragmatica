@@ -9,6 +9,8 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
@@ -31,6 +33,10 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 /// The first non-comment line is `GENERATION <n>`, this binary's `JoinGenerationGuard.WIRE_GENERATION` (#3303 RA-2). A
 /// changed or removed TAG/ENUM/SHAPE line needs `n` one above the base's, and an added-only change needs it unchanged;
 /// `scripts/wire-generation-check.sh` gates both in CI.
+///
+/// `SEMANTIC` lines are hand-written declarations, not derivable from the registry, so a re-record carries over every one
+/// already in the file (after the `GENERATION` line, in file order). Dropping them would be refused by the CI check as an
+/// edit of append-only history; the writer never adds one (the declaring PR does).
 class WireAssignmentBaselineWriter {
     private static final Path BASELINE = Path.of("src", "test", "resources", "wire-assignment-baseline.txt");
 
@@ -45,6 +51,12 @@ class WireAssignmentBaselineWriter {
                      # SHAPE <type> (<name>:<type>,...)   record components in DECLARATION ORDER — the body is a
                      #                                    positional concatenation, so this list IS the layout
                      #
+                     # SEMANTIC <value> <old->new>        a declared SEMANTIC wire break: replicas now JUDGE an existing wire value
+                     #                                    differently while no TAG, SHAPE or ENUM line moved. Written BY HAND, in the PR that
+                     #                                    changes the judgement, and kept by the writer on every re-record. Adding one requires
+                     #                                    GENERATION = base + 1 (scripts/wire-generation-check.sh); history is append-only, so
+                     #                                    removing or editing one is refused. Form: SEMANTIC <value> <one-line old->new judgement>
+                     #
                      # Every changed line is something a peer running the previous build decodes differently.
                      # Read the diff before committing it.
                      #
@@ -56,12 +68,23 @@ class WireAssignmentBaselineWriter {
 
         try {
             Files.createDirectories(BASELINE.getParent());
+            var semantic = existingSemanticLines().stream().map(line -> line + "\n").collect(Collectors.joining());
             Files.writeString(BASELINE,
-                              header + WireAssignmentTripwireTest.generationLine() + "\n"
+                              header + WireAssignmentTripwireTest.generationLine() + "\n" + semantic
                               + String.join("\n", WireAssignmentTripwireTest.currentAssignment()) + "\n",
                               StandardCharsets.UTF_8);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    private static List<String> existingSemanticLines() throws IOException {
+        if (!Files.exists(BASELINE)) {
+            return List.of();
+        }
+        return Files.readAllLines(BASELINE, StandardCharsets.UTF_8)
+                    .stream()
+                    .filter(line -> line.startsWith("SEMANTIC"))
+                    .toList();
     }
 }

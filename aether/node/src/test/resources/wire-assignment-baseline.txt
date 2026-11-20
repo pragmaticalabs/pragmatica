@@ -5,6 +5,12 @@
 # SHAPE <type> (<name>:<type>,...)   record components in DECLARATION ORDER — the body is a
 #                                    positional concatenation, so this list IS the layout
 #
+# SEMANTIC <value> <old->new>        a declared SEMANTIC wire break: replicas now JUDGE an existing wire value
+#                                    differently while no TAG, SHAPE or ENUM line moved. Written BY HAND, in the PR that
+#                                    changes the judgement, and kept by the writer on every re-record. Adding one requires
+#                                    GENERATION = base + 1 (scripts/wire-generation-check.sh); history is append-only, so
+#                                    removing or editing one is refused. Form: SEMANTIC <value> <one-line old->new judgement>
+#
 # Every changed line is something a peer running the previous build decodes differently.
 # Read the diff before committing it.
 #

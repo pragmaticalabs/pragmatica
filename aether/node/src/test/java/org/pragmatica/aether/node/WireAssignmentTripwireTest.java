@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -102,6 +103,14 @@ class WireAssignmentTripwireTest {
     /// Prefix of the baseline line recording the wire generation; `scripts/wire-generation-check.sh` reads the same line.
     private static final String GENERATION_PREFIX = "GENERATION ";
 
+    /// Prefix of a baseline line declaring a semantic wire break (#3303): a change in how replicas JUDGE an existing wire value
+    /// that moves no TAG, SHAPE or ENUM line. It is not an assignment, so [#baseline] skips it; `scripts/wire-generation-check.sh`
+    /// reads it, and [WireAssignmentBaselineWriter] carries it over a re-record.
+    static final String SEMANTIC_PREFIX = "SEMANTIC ";
+
+    /// The form a `SEMANTIC` line must have: `SEMANTIC <value> <one-line old->new judgement>`. The same form the script enforces.
+    static final Pattern SEMANTIC_FORM = Pattern.compile("^SEMANTIC \\S+ \\S.*->.*\\S$");
+
     /// The types this tripwire CANNOT pin structurally, named rather than left as an unwritten
     /// limitation (#1450).
     ///
@@ -132,6 +141,7 @@ class WireAssignmentTripwireTest {
                                                                             .filter(line -> !line.isBlank())
                                                                             .filter(line -> !line.startsWith("#"))
                                                                             .filter(line -> !line.startsWith(GENERATION_PREFIX))
+                                                                            .filter(line -> !line.startsWith(SEMANTIC_PREFIX))
                                                                             .toList();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
@@ -146,6 +156,19 @@ class WireAssignmentTripwireTest {
 
             return new String(stream.readAllBytes(), StandardCharsets.UTF_8).lines()
                                                                             .filter(line -> line.startsWith(GENERATION_PREFIX))
+                                                                            .toList();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /// The baseline's `SEMANTIC` lines, in file order, kept out of [#baseline] because they are declarations, not assignments.
+    static List<String> recordedSemanticLines() {
+        try (var stream = WireAssignmentTripwireTest.class.getResourceAsStream(BASELINE_RESOURCE)) {
+            assertTrue(stream != null, BASELINE_RESOURCE + " is missing — the tripwire has nothing to compare against");
+
+            return new String(stream.readAllBytes(), StandardCharsets.UTF_8).lines()
+                                                                            .filter(line -> line.startsWith("SEMANTIC"))
                                                                             .toList();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
@@ -292,6 +315,25 @@ class WireAssignmentTripwireTest {
                      recordedGenerationLines(),
                      "The baseline must carry exactly one GENERATION line equal to JoinGenerationGuard.WIRE_GENERATION;"
                      + " re-record it with WireAssignmentBaselineWriter");
+    }
+
+    /// Every `SEMANTIC` line of the baseline has the form `SEMANTIC <value> <one-line old->new judgement>`; the CI check refuses
+    /// a malformed one, and this fails it at build time with the line named.
+    @Test
+    void baseline_semanticLinesHaveTheDeclaredForm() {
+        var malformed = recordedSemanticLines().stream().filter(line -> !SEMANTIC_FORM.matcher(line).matches()).toList();
+
+        assertTrue(malformed.isEmpty(),
+                   "Malformed SEMANTIC line(s); the form is: SEMANTIC <value> <one-line old->new judgement>:\n" + String.join("\n", malformed));
+    }
+
+    /// The form pattern itself accepts a well-formed line and rejects the shapes the script refuses.
+    @Test
+    void semanticForm_acceptsOnlyValueAndOldNewJudgement() {
+        assertTrue(SEMANTIC_FORM.matcher("SEMANTIC a.A.epoch stale-if-below -> stale-if-below-or-equal").matches());
+        assertTrue(!SEMANTIC_FORM.matcher("SEMANTIC a.A.epoch").matches());
+        assertTrue(!SEMANTIC_FORM.matcher("SEMANTIC a.A.epoch changed the rule").matches());
+        assertTrue(!SEMANTIC_FORM.matcher("SEMANTIC a.A.epoch ->").matches());
     }
 
     /// The tripwire's own instrument check. A baseline that had drifted into emptiness, or a
