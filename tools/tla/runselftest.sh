@@ -50,9 +50,10 @@ fail=0
 run() { # run <name> <want-exit: 0|nonzero> <pattern or -> <profile> <tsv rows via stdin>
   local name=$1 want=$2 pattern=$3 profile=$4 out rc
   cat > "$work/models.tsv"
-  rm -f "$work/src/Broken.java"
+  rm -f "$work/src/Broken.java"; rm -rf "$work/out"   # a config extracted by an earlier case must not reach this one
   if grep -q broken "$work/models.tsv" || [[ ${KEEP_BROKEN:-} == 1 ]]; then cp "$work/Broken.java.txt" "$work/src/Broken.java"; fi
-  out=$(cd "$work" && MODELS_TSV="$work/models.tsv" TLA_OUT="$work/out" TLC_WORKERS=1 SIM_SECONDS=3 SIM_TRACES=2000 bash "$here/run.sh" "$profile" 'Fix' 2>&1); rc=$?
+  printf '%b' "${PINS:-}" > "$work/pins.tsv"
+  out=$(cd "$work" && MODELS_TSV="$work/models.tsv" PINS_TSV="$work/pins.tsv" TLA_OUT="$work/out" TLC_WORKERS=1 SIM_SECONDS=3 SIM_TRACES=2000 bash "$here/run.sh" "$profile" 'Fix' "${VARIANTS:-.*}" 2>&1); rc=$?
   if { [[ $want == 0 && $rc == 0 ]] || [[ $want == nonzero && $rc != 0 ]]; } && { [[ $pattern == - ]] || grep -qE "$pattern" <<<"$out"; }; then
     echo "PASS $name (exit $rc)"
   else echo "FAIL $name: want exit $want, got $rc, pattern '$pattern'"; sed 's/^/    /' <<<"$out" | tail -25; fail=1; fi; }
@@ -67,4 +68,13 @@ run tlc-error-never-satisfies-fail-row nonzero '^ERROR Fix/broken expect=fail go
 KEEP_BROKEN=1 run missing-row-is-red nonzero 'configs and models.tsv rows differ' small < <(rows pass - fail Small pass - | grep -v 'Fix.src.broken')
 run fail-row-without-property nonzero 'need expect pass.fail' small < <(rows pass - fail - pass - | grep -v broken)
 run sim-known-bad-must-still-fail nonzero '^RED Fix/bad expect=pass got=fail' sim < <(rows pass - pass - pass - | grep -v broken)
+# Pinned counts: Fix/ok reaches x = 0..3, four distinct states.
+PINS='Fix\tok\tsmall\t4\tx\n' run pinned-count-holds 0 '^OK Fix/ok expect=pass got=pass pinned=4 ' small < <(rows pass - fail Small pass - | grep -v broken)
+PINS='Fix\tok\tsmall\t5\tx\n' run pinned-count-differs-is-red nonzero '^RED Fix/ok expect=pass got=pass pinned=5 found=4' small < <(rows pass - fail Small pass - | grep -v broken)
+PINS='Fix\tok\tfull\t5\tx\n' run pinned-count-other-profile-not-read 0 'GREEN' small < <(rows pass - fail Small pass - | grep -v broken)
+PINS='Fix\tbad\tsmall\t4\tx\n' run pin-on-fail-row-is-error nonzero 'need a models.tsv pass row' small < <(rows pass - fail Small pass - | grep -v broken)
+# Variant filter: only the selected rows run, and coverage still reads every row.
+VARIANTS=ok run variant-filter-runs-only-the-selected 0 'configs=1 .*GREEN' small < <(rows pass - fail Small pass - | grep -v broken)
+VARIANTS=ok KEEP_BROKEN=1 run variant-filter-keeps-coverage nonzero 'configs and models.tsv rows differ' small < <(rows pass - fail Small pass - | grep -v 'Fix.src.broken')
+VARIANTS=nosuch run variant-filter-no-match-is-error nonzero 'no row matches variant' small < <(rows pass - fail Small pass - | grep -v broken)
 exit $fail

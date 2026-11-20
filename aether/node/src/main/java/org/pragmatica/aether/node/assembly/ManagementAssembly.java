@@ -211,10 +211,7 @@ public sealed interface ManagementAssembly {
                                                                  Option.some(clusterNode.network()),
                                                                  Option.some(serializer),
                                                                  Option.some(deserializer),
-                                                                 target -> requestDrainThroughFsm(drainCommandRegistry,
-                                                                                                  membershipFsmRef,
-                                                                                                  target),
-                                                                 drainCommandRegistry::drainTargets,
+                                                                 drainPort(drainCommandRegistry, membershipFsmRef),
 
         // #1720: operator drain and shutdown honour the slice minAvailable floor,
         // as the automatic drain does (same KV-backed guard, same counting rules).
@@ -234,6 +231,17 @@ public sealed interface ManagementAssembly {
                                                                      managementServer.meterRegistry()));
 
         return managementServer;
+    }
+
+    /// The leader's DRAIN channel for the management server (C6a-0): a request goes through the FSM-aware sink
+    /// (`requestDrainThroughFsm`), the pending read is the registry's commanded-but-not-departed set. A seam of its own so
+    /// a test can pin both halves without building the 25 collaborators `managementServer` reads.
+    static NodeLifecycleRoutes.DrainPort drainPort(DrainCommandRegistry drainCommandRegistry,
+                                                   AtomicReference<MembershipFsm> membershipFsmRef) {
+        return NodeLifecycleRoutes.DrainPort.registry(target -> requestDrainThroughFsm(drainCommandRegistry,
+                                                                                       membershipFsmRef,
+                                                                                       target),
+                                                      drainCommandRegistry::drainTargets);
     }
 
     @SuppressWarnings("JBCT-PAT-01")

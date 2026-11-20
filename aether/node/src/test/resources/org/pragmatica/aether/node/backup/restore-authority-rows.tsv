@@ -1,0 +1,15 @@
+#	from	to	condition	path
+1	absent	(c)	-	Put
+2	absent	FRESH	-	Put
+3	absent	SKIPPED_EXISTING_STATE	-	Put
+4	absent	DISABLED	-	Put
+5	(c)	RESTORED	header equal	Put
+6	(c)	(c,r)	header equal	Put
+7	(c)	(c,a)	header equal	Put
+8	(c,r)	RESTORED	header equal	Put
+9	(c,r)	(c,r)	header equal, k'!=k	Put
+10	(c,a)	ABANDONED	-	Put
+11	*	*	-	bare Put
+12	*	*	-	non-authority Put or mutation
+13	*	absent	-	delete arm
+14	*	absent	-	bare Remove

@@ -214,8 +214,7 @@ class ManagementForwardedSecurityContextTest {
                                         Option.some(network),
                                         Option.some(serializer),
                                         Option.some(new StubDeserializer(forwarded)),
-                                        _ -> {},
-                                        Set::of,
+                                        NodeLifecycleRoutes.DrainPort.none(),
                                         floor);
     }
 

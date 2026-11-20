@@ -20,7 +20,9 @@ import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipTransitionRecord;
+import org.pragmatica.aether.deployment.membership.ntt.DrainEpisode;
 import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
+import org.pragmatica.aether.deployment.membership.ntt.HoldAnswerSource;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossDetector;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossIntent;
@@ -187,7 +189,9 @@ public sealed interface DrainAssembly {
                                                                                  () -> stopStorageMaintenance(storageSetups),
                                                                                  clusterEventDrainEmitterRef),
                                                            departurePush,
-                                                           jvmExit);
+                                                           jvmExit,
+                                                           () -> HoldAnswerSource.notHeld().holdAnswer(DrainEpisode.drainEpisode(config.self(),
+                                                                                                                                 0)));
         var communityDrain = CommunityDrainCoordinator.communityDrainCoordinator(config.self(),
                                                                                  () -> kvStore.getTyped(LeaderKey.INSTANCE,
                                                                                                         LeaderValue.class)
