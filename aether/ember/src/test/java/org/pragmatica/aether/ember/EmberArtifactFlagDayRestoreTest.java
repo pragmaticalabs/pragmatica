@@ -238,8 +238,7 @@ class EmberArtifactFlagDayRestoreTest {
 
     private void arm3First() {
         assertThat(awaitFor(() -> leaderStatus() == KvBackupService.Status.HEAD_UNREADABLE,
-                            LONG_WAIT_MS)).as("arm 3 (first half, the old remote after arm 1's boot): backup status HEAD_UNREADABLE; found "
-                                             + leaderStatus())
+                            LONG_WAIT_MS)).as("arm 3 (first half, the old remote after arm 1's boot): backup status HEAD_UNREADABLE; found " + leaderStatus())
                   .isTrue();
         assertThat(declareGenesis()).as("arm 3: declare-genesis against the undecodable head")
                   .isInstanceOf(DeclareGenesisError.HeadUnreadable.class);

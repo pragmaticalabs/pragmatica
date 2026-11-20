@@ -69,12 +69,7 @@ public sealed interface AetherValue {
     /// replay compares a stored value with the one it last delivered by `equals`, so every binding would be re-delivered
     /// as a changed put after a state transfer. This record therefore overrides `equals`, `hashCode` and `toString` over
     /// the array's contents, and copies the array on construction and on access.
-    record ArtifactContentValue(long size,
-                                String md5,
-                                String sha1,
-                                String sha256,
-                                long deployedAt,
-                                byte[] blocks) implements AetherValue, GrowOnlyMergeable<ArtifactContentValue> {
+    record ArtifactContentValue(long size, String md5, String sha1, String sha256, long deployedAt, byte[] blocks) implements AetherValue, GrowOnlyMergeable<ArtifactContentValue> {
         public ArtifactContentValue {
             blocks = blocks.clone();
         }
@@ -91,8 +86,10 @@ public sealed interface AetherValue {
 
         @Override
         public boolean equals(Object other) {
-            return other instanceof ArtifactContentValue that && sameDigest(that) && deployedAt == that.deployedAt && Arrays.equals(blocks,
-                                                                                                                                    that.blocks);
+            return other instanceof ArtifactContentValue that
+                   && sameDigest(that)
+                   && deployedAt == that.deployedAt
+                   && Arrays.equals(blocks, that.blocks);
         }
 
         @Override
@@ -102,8 +99,13 @@ public sealed interface AetherValue {
 
         @Override
         public String toString() {
-            return "ArtifactContentValue[size=" + size + ", md5=" + md5 + ", sha1=" + sha1 + ", sha256=" + sha256 + ", deployedAt=" + deployedAt + ", blocks=" + HexFormat.of()
-                                                                                                                                                                       .formatHex(blocks) + "]";
+            return "ArtifactContentValue[size=" + size
+                 + ", md5=" + md5
+                 + ", sha1=" + sha1
+                 + ", sha256=" + sha256
+                 + ", deployedAt=" + deployedAt
+                 + ", blocks=" + HexFormat.of().formatHex(blocks)
+                 + "]";
         }
 
         /// Whether `other` describes the same CONTENT: size, MD5, SHA-1 and SHA-256, not the deploy time. The deploy
