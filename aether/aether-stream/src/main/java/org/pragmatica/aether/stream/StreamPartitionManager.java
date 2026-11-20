@@ -1713,13 +1713,21 @@ public final class StreamPartitionManager implements AutoCloseable {
         return committedConfigOf(streamName).map(StreamConfig::replication);
     }
 
-    /// The retention policy and partition count of the committed config this node has applied for `streamName`, else of a
-    /// locally committed entry (#2201 3.2 item 2, #3334): the source sealed-tier retention reads; the enforcer shares the
-    /// byte and count bounds over the partitions. None while this node has neither, and retention
-    /// then withholds the stream.
+    /// The retention policy of the committed config this node has applied for `streamName`, else of a locally committed
+    /// entry (#2201 3.2 item 2, #3334), with the partition count of the LIFE it enforces (#3490): the source sealed-tier
+    /// retention reads; the enforcer shares the byte and count bounds over the partitions the stream has, never over the
+    /// count of a committed config that was not adopted. The count of the committed config answers only while this node
+    /// holds no entry. None while this node has neither, and retention then withholds the stream.
     public Option<EnforcedRetention> committedRetention(String streamName) {
         return committedConfigOf(streamName).map(config -> EnforcedRetention.enforcedRetention(config.retention(),
-                                                                                               config.partitions()));
+                                                                                               lifePartitions(streamName,
+                                                                                                              config)));
+    }
+
+    private int lifePartitions(String streamName, StreamConfig committed) {
+        return option(streams.get(streamName)).map(entry -> entry.config()
+                                                                 .partitions())
+                     .or(committed.partitions());
     }
 
     /// The partition count of the committed config this node has applied for `streamName`, else of a locally committed
