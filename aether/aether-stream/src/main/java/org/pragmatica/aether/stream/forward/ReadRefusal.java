@@ -64,7 +64,6 @@ public record ReadRefusal(Kind kind,
         STREAM_NOT_MATERIALIZED,
         /// A code this node does not know, sent by a newer one (#964): rebuilt as the owner's text.
         UNKNOWN;
-
         /// The row this kind answers with: the ONE switch from a kind to what a node does with a failed read. A switch
         /// EXPRESSION with no default branch, so a kind added to the enum does not compile until it has a row.
         public Answer answer() {
@@ -201,9 +200,11 @@ public record ReadRefusal(Kind kind,
             case PARTITION_OUT_OF_RANGE -> new StreamError.PartitionOutOfRange(stream, partition, (int) first);
             case PARTITION_NOT_LOCAL -> StreamError.General.PARTITION_NOT_LOCAL;
             case BUFFER_CLOSED -> StreamError.General.BUFFER_CLOSED;
-            case CURSOR_EXPIRED -> new StreamError.CursorExpired(first, second, flag
-                                                                                 ? StreamError.CursorExpired.Reason.LOST
-                                                                                 : StreamError.CursorExpired.Reason.EXPIRED);
+            case CURSOR_EXPIRED -> new StreamError.CursorExpired(first,
+                                                                 second,
+                                                                 flag
+                                                                 ? StreamError.CursorExpired.Reason.LOST
+                                                                 : StreamError.CursorExpired.Reason.EXPIRED);
             case STREAM_NOT_MATERIALIZED -> new StreamError.StreamNotMaterialized(stream);
             case OWNER_NOT_ACTIVATED -> new StreamError.OwnerNotActivated(stream, partition);
             case REPLICA_NOT_VERIFIED -> new StreamError.ReplicaNotVerified(stream, partition, first);
@@ -234,10 +235,12 @@ public record ReadRefusal(Kind kind,
             case StreamError.PartitionOutOfRange(var stream, var partition, var count) -> some(readRefusal(Kind.PARTITION_OUT_OF_RANGE,
                                                                                                            stream,
                                                                                                            partition).withFirst(count));
-            case StreamError.CursorExpired(var requested, var tail, var reason) -> some(readRefusal(Kind.CURSOR_EXPIRED, "", 0).withFirst(requested)
-                                                                                                                                .withSecond(tail)
-                                                                                                                                .withFlag(reason == StreamError.CursorExpired.Reason.LOST));
-            case StreamError.StreamNotMaterialized(var stream) -> some(readRefusal(Kind.STREAM_NOT_MATERIALIZED, stream, 0));
+            case StreamError.CursorExpired(var requested, var tail, var reason) -> some(readRefusal(Kind.CURSOR_EXPIRED,
+                                                                                                    "",
+                                                                                                    0).withFirst(requested).withSecond(tail).withFlag(reason == StreamError.CursorExpired.Reason.LOST));
+            case StreamError.StreamNotMaterialized(var stream) -> some(readRefusal(Kind.STREAM_NOT_MATERIALIZED,
+                                                                                   stream,
+                                                                                   0));
             case StreamError.OwnerNotActivated(var stream, var partition) -> some(readRefusal(Kind.OWNER_NOT_ACTIVATED,
                                                                                               stream,
                                                                                               partition));
