@@ -222,9 +222,9 @@ class ReadRefusalTest {
         }
 
         @Test
-        void theNewKind_isAppendedAfterUnknown_soNoWireTagMoves() {
-            assertThat(Kind.UNKNOWN.ordinal()).isEqualTo(15);
-            assertThat(Kind.STREAM_NOT_MATERIALIZED.ordinal()).isEqualTo(16);
+        void theNewKind_isAppendedBeforeUnknown() {
+            assertThat(Kind.STREAM_NOT_MATERIALIZED.ordinal()).isEqualTo(Kind.UNKNOWN.ordinal() - 1);
+            assertThat(Kind.UNKNOWN.ordinal()).isEqualTo(16);
             assertThat(Kind.STREAM_NOT_MATERIALIZED.answer()).isEqualTo(Answer.NN_SURFACE);
             assertThat(ReadRefusal.answerOf(new StreamError.StreamNotMaterialized("orders"))).isEqualTo(Answer.NN_SURFACE);
         }
