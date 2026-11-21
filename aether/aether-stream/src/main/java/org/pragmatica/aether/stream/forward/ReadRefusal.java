@@ -273,8 +273,7 @@ public record ReadRefusal(Kind kind,
 
     /// The reason a cursor refusal carries: the cause's own when it fixes one (the cause wins over `flag`), else the flag's.
     private StreamError.CursorExpired.Reason reasonOfCursor() {
-        return StreamError.CursorExpired.reasonOf(cause)
-                          .fold(this::flagReason, reason -> reason);
+        return StreamError.CursorExpired.reasonOf(cause).fold(this::flagReason, reason -> reason);
     }
 
     private StreamError.CursorExpired.Reason flagReason() {
@@ -293,11 +292,8 @@ public record ReadRefusal(Kind kind,
                                                                                                            stream,
                                                                                                            partition).withFirst(count));
             case StreamError.CursorExpired(var requested, var tail, var reason, var cause) -> some(readRefusal(Kind.CURSOR_EXPIRED,
-                                                                                                           "",
-                                                                                                           0).withFirst(requested)
-                                                                                                             .withSecond(tail)
-                                                                                                             .withFlag(reason == StreamError.CursorExpired.Reason.LOST)
-                                                                                                             .withCause(cause));
+                                                                                                               "",
+                                                                                                               0).withFirst(requested).withSecond(tail).withFlag(reason == StreamError.CursorExpired.Reason.LOST).withCause(cause));
             case StreamError.StreamNotMaterialized(var stream) -> some(readRefusal(Kind.STREAM_NOT_MATERIALIZED,
                                                                                    stream,
                                                                                    0));
@@ -347,7 +343,18 @@ public record ReadRefusal(Kind kind,
     }
 
     private static ReadRefusal readRefusal(Kind kind, String stream, int partition) {
-        return new ReadRefusal(kind, stream, partition, 0L, 0L, false, "", "", "", Epoch.ZERO, Epoch.ZERO, RemovalCause.NOT_APPLICABLE);
+        return new ReadRefusal(kind,
+                               stream,
+                               partition,
+                               0L,
+                               0L,
+                               false,
+                               "",
+                               "",
+                               "",
+                               Epoch.ZERO,
+                               Epoch.ZERO,
+                               RemovalCause.NOT_APPLICABLE);
     }
 
     private ReadRefusal withCause(RemovalCause value) {

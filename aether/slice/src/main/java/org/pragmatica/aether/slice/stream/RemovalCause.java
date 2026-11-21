@@ -5,6 +5,7 @@ package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.serialization.Codec;
 
+
 /// Why an offset is no longer readable: the cause a refused read names, defined once. The ordinal is the wire code
 /// (append before [#UNKNOWN] and bump the wire generation, never reorder), and the codes are dense.
 ///

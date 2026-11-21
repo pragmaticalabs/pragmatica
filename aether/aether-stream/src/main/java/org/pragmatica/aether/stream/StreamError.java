@@ -14,6 +14,9 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
+
 
 public sealed interface StreamError extends Cause {
     /// `General` implements {@link ResourceCapacityExhausted} so the capacity-class constants —
@@ -125,6 +128,10 @@ public sealed interface StreamError extends Cause {
             LOST
         }
 
+        /// The refusal of a pair that cannot be a removal is a throw (a record constructor has no other channel) and guards a
+        /// programming error only: every constructor call is a constant pair or goes through `reasonOf`, and the decode
+        /// maps before it constructs, so no wire value reaches it.
+        @SuppressWarnings("JBCT-EX-01")
         public CursorExpired {
             if (disagrees(reason, cause)) {
                 throw new IllegalArgumentException("CursorExpired reason " + reason + " does not match cause " + cause);
@@ -147,9 +154,9 @@ public sealed interface StreamError extends Cause {
         /// three causes that say nothing about a removal's class fix none.
         public static Option<Reason> reasonOf(RemovalCause cause) {
             return switch (cause) {
-                case RETENTION, AGE, COUNT, BYTES -> Option.some(Reason.EXPIRED);
-                case RING_FROZEN, OVER_SHARE, DROPPED_RUN, BLOCK_PUT_FAILED, BLOCK_ABSENT, UNLISTED_TAIL, LIFE_LOST -> Option.some(Reason.LOST);
-                case UNRECORDED, NOT_APPLICABLE, UNKNOWN -> Option.none();
+                case RETENTION, AGE, COUNT, BYTES -> some(Reason.EXPIRED);
+                case RING_FROZEN, OVER_SHARE, DROPPED_RUN, BLOCK_PUT_FAILED, BLOCK_ABSENT, UNLISTED_TAIL, LIFE_LOST -> some(Reason.LOST);
+                case UNRECORDED, NOT_APPLICABLE, UNKNOWN -> none();
             };
         }
 
@@ -161,6 +168,7 @@ public sealed interface StreamError extends Cause {
             return reasonOf(cause).fold(() -> refusedNoReason(cause), fixed -> fixed);
         }
 
+        @SuppressWarnings("JBCT-EX-01")
         private static Reason refusedNoReason(RemovalCause cause) {
             throw new IllegalArgumentException("Cause " + cause + " fixes no reason: name the reason too");
         }
