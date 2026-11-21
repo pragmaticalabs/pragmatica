@@ -552,7 +552,7 @@ public final class KvBackupService {
     /// restore (#1533) and `declare-genesis` (#1532) — so neither reuses an incarnation this backup has
     /// already recorded for the lineage. Worker thread only.
     Result<Long> highestRecordedForLineage(String lineageId, long floor) {
-        return repository.fetchRestoreRef()
+        return repository.restoreRef()
                          .flatMap(ref -> ref.map(present -> highestRecorded(present, lineageId, floor))
                                             .or(() -> success(floor)));
     }
@@ -561,14 +561,14 @@ public final class KvBackupService {
     /// this service writes ([#commitMessage]); a backup commit whose subject is not in that form is decoded
     /// from its document instead, so it is never silently left out.
     Result<Long> highestRecorded(String ref, String lineageId, long floor) {
-        return repository.history(ref)
-                         .flatMap(lines -> Result.allOf(lines.stream().map(this::recordedHeader).toList()))
-                         .map(headers -> headers.stream()
-                                                .flatMap(Option::stream)
-                                                .filter(recorded -> recorded.lineageId()
-                                                                            .equals(lineageId))
-                                                .mapToLong(BackupHeader::incarnation)
-                                                .reduce(floor, Math::max));
+        return GitBackupRepository.required(repository.readHistory(ref))
+                                  .flatMap(lines -> Result.allOf(lines.stream().map(this::recordedHeader).toList()))
+                                  .map(headers -> headers.stream()
+                                                         .flatMap(Option::stream)
+                                                         .filter(recorded -> recorded.lineageId()
+                                                                                     .equals(lineageId))
+                                                         .mapToLong(BackupHeader::incarnation)
+                                                         .reduce(floor, Math::max));
     }
 
     /// `<sha> <subject>` → the header that commit recorded, absent for a commit that is not a backup.
@@ -591,9 +591,9 @@ public final class KvBackupService {
         }
 
         return subject.startsWith(SUBJECT_PREFIX)
-               ? repository.documentAt(commit)
-                           .flatMap(codec::decode)
-                           .map(document -> Option.some(document.header()))
+               ? GitBackupRepository.required(repository.readFile(commit, GitBackupRepository.FILE))
+                                    .flatMap(codec::decode)
+                                    .map(document -> Option.some(document.header()))
                : success(Option.none());
     }
 

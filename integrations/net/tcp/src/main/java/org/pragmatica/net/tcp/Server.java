@@ -15,6 +15,7 @@
  */
 package org.pragmatica.net.tcp;
 
+import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -54,6 +55,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 public interface Server {
     Logger log = LoggerFactory.getLogger(Server.class);
     String name();
+    /// The port the server is bound to: the configured one, or the one the OS assigned when the configured port is 0.
     int port();
     /// Get the boss EventLoopGroup for metrics collection.
     EventLoopGroup bossGroup();
@@ -232,14 +234,15 @@ public interface Server {
         bootstrap.bind(config.port())
                  .addListener((ChannelFutureListener) future -> {
                                   if (future.isSuccess()) {
-                                      logTcpStarted(config, sslContext);
                                       var tcpChannel = future.channel();
+                                      var boundPort = ((InetSocketAddress) tcpChannel.localAddress()).getPort();
 
+                                      logTcpStarted(config, boundPort, sslContext);
                                       bindUdpIfConfigured(config,
                                                           workerGroup,
                                                           udpHandlers,
                                                           udpChannel -> promise.succeed(new server(config.name(),
-                                                                                                   config.port(),
+                                                                                                   boundPort,
                                                                                                    bossGroup,
                                                                                                    workerGroup,
                                                                                                    tcpChannel,
@@ -291,10 +294,10 @@ public interface Server {
                : Causes.fromThrowable(done.cause()).result();
     }
 
-    private static void logTcpStarted(ServerConfig config, Option<SslContext> sslContext) {
+    private static void logTcpStarted(ServerConfig config, int boundPort, Option<SslContext> sslContext) {
         var protocol = sslContext.map(_ -> "TLS").or("TCP");
 
-        log.info("Server {} started on port {} ({})", config.name(), config.port(), protocol);
+        log.info("Server {} started on port {} ({})", config.name(), boundPort, protocol);
     }
 
     private static void bindUdpIfConfigured(ServerConfig config,

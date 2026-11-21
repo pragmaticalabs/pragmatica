@@ -156,4 +156,64 @@ class SystemTagsLedgerTest {
         assertEquals(2986, owned.getFirst().from(), "restore-authority-3303 must start at 2986");
         assertEquals(2989, owned.getFirst().to(), "restore-authority-3303 must end at 2989");
     }
+
+    /// #3303 stream split: 3038..3069 is reserved for the stream split and merge lanes, and the reservation is exact.
+    /// The second half is a tripwire: while nothing is pinned inside the block, it fails the lane that pins the
+    /// first tag, which deletes it.
+    @Test
+    void splitSp_reserves3038to3069() throws Exception {
+        var owned = ledger().stream()
+                            .filter(reservation -> reservation.owner()
+                                                              .equals("split-sp"))
+                            .toList();
+
+        assertEquals(1, owned.size(), "split-sp must hold exactly one reservation in " + LEDGER);
+        assertEquals(3038, owned.getFirst().from(), "split-sp must start at 3038");
+        assertEquals(3069, owned.getFirst().to(), "split-sp must end at 3069");
+
+        SystemTags.TAGS.forEach(SystemTagsLedgerTest::assertNotInSplitSpRange);
+    }
+
+    private static void assertNotInSplitSpRange(String name, int tag) {
+        assertFalse(tag >= 3038 && tag <= 3069,
+                    "SP1a pinned in 3038..3069: delete this half (%s is pinned to %d)".formatted(name, tag));
+    }
+
+    /// #3303 A3a: 3018..3037 belongs to the arc lanes (know `f3033886ee`); A3a pins the seed-offer and arc-waiver keys at 3018 and 3019.
+    /// The reservation is exact, and both pins lie inside it.
+    @Test
+    void arcKeys_areInsideTheArcReservation() throws Exception {
+        var owned = ledger().stream()
+                            .filter(reservation -> reservation.owner()
+                                                              .equals("arc-3303"))
+                            .toList();
+
+        assertEquals(1, owned.size(), "arc-3303 must hold exactly one reservation in " + LEDGER);
+        assertEquals(3018, owned.getFirst().from(), "arc-3303 must start at 3018");
+        assertEquals(3037, owned.getFirst().to(), "arc-3303 must end at 3037");
+        assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherKey.EntitySeedOfferKey");
+        assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherKey.EntityArcWaiverKey");
+    }
+
+    /// #3303 A3b: the arc values take the next four numbers of the same reservation, 3020..3023.
+    @Test
+    void arcValues_areInsideTheArcReservation() throws Exception {
+        var owned = ledger().stream()
+                            .filter(reservation -> reservation.owner()
+                                                              .equals("arc-3303"))
+                            .toList();
+
+        assertEquals(1, owned.size(), "arc-3303 must hold exactly one reservation in " + LEDGER);
+        assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue");
+        assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue.OfferEntry");
+        assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue");
+        assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue.WaiverCase");
+    }
+
+    private static void assertArcPinInside(Reservation reservation, String name) {
+        var tag = SystemTags.tagFor(name);
+
+        assertTrue(tag != SystemTags.NOT_PINNED, "PRECONDITION " + name + " is pinned in SystemTags.TAGS");
+        assertTrue(reservation.contains(tag), name + " must lie in " + reservation.describe() + " but is " + tag);
+    }
 }

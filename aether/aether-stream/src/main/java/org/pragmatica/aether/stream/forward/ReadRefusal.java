@@ -60,21 +60,135 @@ public record ReadRefusal(Kind kind,
         RING_INDEX_CORRUPTED,
         SEAL_IN_FLIGHT,
         SEALED_RANGE_MISSING,
+        /// The stream's existence is confirmed but this node's engine does not hold it yet (503, a repeat may succeed).
+        STREAM_NOT_MATERIALIZED,
         /// A code this node does not know, sent by a newer one (#964): rebuilt as the owner's text.
-        UNKNOWN
+        UNKNOWN;
+        /// The row this kind answers with: the ONE switch from a kind to what a node does with a failed read. A switch
+        /// EXPRESSION with no default branch, so a kind added to the enum does not compile until it has a row.
+        public Answer answer() {
+            return switch (this) {
+                case BUFFER_CLOSED, OWNER_NOT_ACTIVATED, REPLICA_NOT_VERIFIED, STALE_EPOCH_READ, NOT_CURRENT_OWNER, OWNER_CATCHUP_PENDING, LINEARIZABLE_ROUND_TIMEOUT, PARTITION_HELD_NOT_MATERIALIZED, SEAL_IN_FLIGHT, SEALED_RANGE_MISSING, STREAM_NOT_MATERIALIZED -> Answer.NN_SURFACE;
+                case UNKNOWN -> Answer.NN_DEGRADE;
+                case PARTITION_NOT_LOCAL -> Answer.NN_RETRY;
+                case PARTITION_OUT_OF_RANGE -> Answer.RQ_INVALID;
+                case STREAM_NOT_FOUND -> Answer.RQ_NOT_FOUND;
+                case CURSOR_EXPIRED -> Answer.CE_L;
+                case RING_INDEX_CORRUPTED -> Answer.FAULT;
+            };
+        }
+    }
+
+    /// What a client is told, as a class of answer: not ready (retry later or elsewhere), request wrong, cursor expired or
+    /// lost, lost life, or the engine's own fault.
+    public enum AnswerClass {
+        /// Not ready: a repeat or another copy may succeed.
+        NN,
+        /// The request itself is wrong or names nothing.
+        RQ,
+        /// The cursor expired or its data was lost; the row's reason splits the two.
+        CE_OR_L,
+        /// A lost life (the cursor belongs to a replaced lineage).
+        L,
+        /// The fault: the engine's own integrity.
+        FAULT
+    }
+
+    /// What a router does with a failed read: [#SURFACE] returns it, [#DEGRADE] asks another copy when one is left, and
+    /// [#RETRY] asks the owner once for a partition this node does not hold. Nothing reads the behaviour yet.
+    public enum Behaviour {
+        SURFACE,
+        DEGRADE,
+        RETRY
+    }
+
+    /// The rows of the ONE answer switch: a failed read's class as an answer, and the behaviour of the node that holds it. A
+    /// row holds no HTTP status, because this module has no HTTP type; the node module maps a row to its status in one
+    /// exhaustive switch, `StreamErrorStatus.statusOf(Answer)`, so a row added here does not compile there until it has one.
+    public enum Answer {
+        NN_SURFACE(AnswerClass.NN, Behaviour.SURFACE),
+        NN_DEGRADE(AnswerClass.NN, Behaviour.DEGRADE),
+        NN_RETRY(AnswerClass.NN, Behaviour.RETRY),
+        RQ_INVALID(AnswerClass.RQ, Behaviour.SURFACE),
+        RQ_NOT_FOUND(AnswerClass.RQ, Behaviour.SURFACE),
+        CE_L(AnswerClass.CE_OR_L, Behaviour.SURFACE),
+        L_EPOCH(AnswerClass.L, Behaviour.SURFACE),
+        FAULT(AnswerClass.FAULT, Behaviour.SURFACE),
+        /// The fault where this node could not ask and asking again the same way cannot succeed.
+        FAULT_DEGRADE(AnswerClass.FAULT, Behaviour.DEGRADE);
+        private final AnswerClass answerClass;
+        private final Behaviour behaviour;
+        Answer(AnswerClass answerClass, Behaviour behaviour) {
+            this.answerClass = answerClass;
+            this.behaviour = behaviour;
+        }
+        public AnswerClass answerClass() {
+            return answerClass;
+        }
+        public Behaviour behaviour() {
+            return behaviour;
+        }
+    }
+
+    /// The row for a read's cause, for EVERY cause, in four steps: an [StreamError.EpochDiverged] is `L_EPOCH`; a cause
+    /// [#readRefusal(Cause)] carries takes its kind's row; a [StreamForwardError] takes [#ofForwardError]'s; every other
+    /// cause takes `UNKNOWN`'s row, which is what the wire does with it (it leaves the serving node as text and is rebuilt
+    /// as [StreamForwardError.ReadForwardFailed]). The node that raised a cause and the node that received it over a
+    /// forward therefore read the same row.
+    public static Answer answerOf(Cause cause) {
+        return cause instanceof StreamError.EpochDiverged
+               ? Answer.L_EPOCH
+               : readRefusal(cause).fold(() -> beyondKinds(cause),
+                                         refusal -> refusal.kind()
+                                                           .answer());
+    }
+
+    private static Answer beyondKinds(Cause cause) {
+        return switch (cause) {
+            case StreamForwardError error -> ofForwardError(error);
+            default -> Kind.UNKNOWN.answer();
+        };
+    }
+
+    /// Exhaustive over the transport family and over its [StreamForwardError.General] constants, no default branch: a
+    /// transport cause added there does not compile until it is placed. `FAULT_DEGRADE` for the members the family marks as
+    /// never succeeding on a retry (`Cause.Terminal`, or a `General` constant with `isTransient()` false); `NN_DEGRADE` for
+    /// every other member.
+    private static Answer ofForwardError(StreamForwardError error) {
+        return switch (error) {
+            case StreamForwardError.General general -> ofForwardGeneral(general);
+            case StreamForwardError.ForwardNotEncoded _, StreamForwardError.PublishNotEncoded _ -> Answer.FAULT_DEGRADE;
+            case StreamForwardError.RemotePublishFailed _, StreamForwardError.RemotePublishRetryable _, StreamForwardError.ForwardNotSent _, StreamForwardError.PublishNotSent _, StreamForwardError.ReadForwardFailed _ -> Answer.NN_DEGRADE;
+        };
+    }
+
+    private static Answer ofForwardGeneral(StreamForwardError.General general) {
+        return switch (general) {
+            case READ_RESPONSE_OVERSIZED -> Answer.FAULT_DEGRADE;
+            case FORWARD_TIMEOUT, GOVERNOR_UNAVAILABLE, READ_FORWARD_TIMEOUT, STREAM_FORWARD_UNAVAILABLE -> Answer.NN_DEGRADE;
+        };
     }
 
     /// The refusal that carries `cause`, or none when `cause` is not one a read is known to raise.
     public static Option<ReadRefusal> readRefusal(Cause cause) {
         return switch (cause) {
             case StreamError error -> ofStreamError(error);
+            case SegmentError error -> ofSegmentError(error);
+            default -> none();
+        };
+    }
+
+    /// Exhaustive over [SegmentError], no default branch: a segment error added there does not compile until someone decides
+    /// whether a read can raise it. The two a read raises travel typed; the rest have no kind and travel as text.
+    private static Option<ReadRefusal> ofSegmentError(SegmentError error) {
+        return switch (error) {
             case SegmentError.SealInFlight(var stream, var partition, var from) -> some(readRefusal(Kind.SEAL_IN_FLIGHT,
                                                                                                     stream,
                                                                                                     partition).withFirst(from));
             case SegmentError.SealedRangeMissing(var stream, var partition, var from, var nextSealed) -> some(readRefusal(Kind.SEALED_RANGE_MISSING,
                                                                                                                           stream,
                                                                                                                           partition).withFirst(from).withSecond(nextSealed));
-            default -> none();
+            case SegmentError.General _, SegmentError.WalRangeMissing _, SegmentError.CorruptRecord _ -> none();
         };
     }
 
@@ -86,7 +200,12 @@ public record ReadRefusal(Kind kind,
             case PARTITION_OUT_OF_RANGE -> new StreamError.PartitionOutOfRange(stream, partition, (int) first);
             case PARTITION_NOT_LOCAL -> StreamError.General.PARTITION_NOT_LOCAL;
             case BUFFER_CLOSED -> StreamError.General.BUFFER_CLOSED;
-            case CURSOR_EXPIRED -> new StreamError.CursorExpired(first, second);
+            case CURSOR_EXPIRED -> new StreamError.CursorExpired(first,
+                                                                 second,
+                                                                 flag
+                                                                 ? StreamError.CursorExpired.Reason.LOST
+                                                                 : StreamError.CursorExpired.Reason.EXPIRED);
+            case STREAM_NOT_MATERIALIZED -> new StreamError.StreamNotMaterialized(stream);
             case OWNER_NOT_ACTIVATED -> new StreamError.OwnerNotActivated(stream, partition);
             case REPLICA_NOT_VERIFIED -> new StreamError.ReplicaNotVerified(stream, partition, first);
             case STALE_EPOCH_READ -> new StreamError.StaleEpochRead(stream, partition, epochFirst, epochSecond);
@@ -116,7 +235,12 @@ public record ReadRefusal(Kind kind,
             case StreamError.PartitionOutOfRange(var stream, var partition, var count) -> some(readRefusal(Kind.PARTITION_OUT_OF_RANGE,
                                                                                                            stream,
                                                                                                            partition).withFirst(count));
-            case StreamError.CursorExpired(var requested, var tail) -> some(readRefusal(Kind.CURSOR_EXPIRED, "", 0).withFirst(requested).withSecond(tail));
+            case StreamError.CursorExpired(var requested, var tail, var reason) -> some(readRefusal(Kind.CURSOR_EXPIRED,
+                                                                                                    "",
+                                                                                                    0).withFirst(requested).withSecond(tail).withFlag(reason == StreamError.CursorExpired.Reason.LOST));
+            case StreamError.StreamNotMaterialized(var stream) -> some(readRefusal(Kind.STREAM_NOT_MATERIALIZED,
+                                                                                   stream,
+                                                                                   0));
             case StreamError.OwnerNotActivated(var stream, var partition) -> some(readRefusal(Kind.OWNER_NOT_ACTIVATED,
                                                                                               stream,
                                                                                               partition));
@@ -155,6 +279,9 @@ public record ReadRefusal(Kind kind,
         return switch (general) {
             case PARTITION_NOT_LOCAL -> some(readRefusal(Kind.PARTITION_NOT_LOCAL, "", 0));
             case BUFFER_CLOSED -> some(readRefusal(Kind.BUFFER_CLOSED, "", 0));
+            // BUFFER_EMPTY (500 in StreamErrorStatus) is reachable only through U2, PartitionedStreamAccess.readSlice's local
+            // slice read (the ring's readSlice); a forwarded read does not raise it, so it has no kind, and answerOf gives it
+            // UNKNOWN's row (step 4).
             case BUFFER_EMPTY, STREAM_ALREADY_EXISTS, STREAM_CLOSED, CONSUMER_ALREADY_SUBSCRIBED, CONSUMER_NOT_FOUND, CONSUMER_STALLED, CONSUMER_RUNTIME_CLOSED, STREAM_MEMORY_EXCEEDED, CONSENSUS_PATH_UNAVAILABLE, UNREADABLE_CONSISTENCY_MODE, BUFFER_FULL, EVENT_DROPPED, AHSE_REQUIRED_FOR_STRONG, STREAM_CONFIG_COMMIT_FAILED, SEALING_BEHIND, RUN_DOES_NOT_FIT, SEGMENT_TIER_FULL, REPLICATION_BEHIND -> none();
         };
     }
