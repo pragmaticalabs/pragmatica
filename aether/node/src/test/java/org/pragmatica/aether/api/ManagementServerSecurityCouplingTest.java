@@ -7,9 +7,14 @@ package org.pragmatica.aether.api;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.api.routes.GrantedRouteProbe;
+import org.pragmatica.aether.api.routes.ManagementRouter;
+import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.http.AppHttpServer;
@@ -32,6 +37,8 @@ import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.aether.http.handler.security.SecurityPolicy;
+import org.pragmatica.aether.http.security.AdminGrant;
 import org.pragmatica.aether.http.security.Authenticated;
 import org.pragmatica.aether.http.security.SecurityError;
 import org.pragmatica.aether.http.security.SecurityValidator;
@@ -54,7 +61,9 @@ import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.QueryParams;
+import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -66,6 +75,7 @@ import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -91,6 +101,11 @@ class ManagementServerSecurityCouplingTest {
     private static final NodeId SENDER = NodeId.nodeId("node-sender").unwrap();
     private static final String PUSH_PATH = "/repository/org/example/art/1.0.0/art-1.0.0.jar";
     private static final long HEALTHY_BUDGET_MILLIS = 30_000;
+    private static final String ADMIN_KEY = "grant-admin-key";
+    private static final Map<String, ApiKeyEntry> ADMIN_KEYS = Map.of(ADMIN_KEY,
+                                                                      ApiKeyEntry.apiKeyEntry("grant-admin",
+                                                                                              Set.of("service"),
+                                                                                              "ADMIN"));
 
     private final RecordingClusterNetwork network = new RecordingClusterNetwork();
     private final CapturingSerializer serializer = new CapturingSerializer();
@@ -229,6 +244,173 @@ class ManagementServerSecurityCouplingTest {
         }
     }
 
+    /// The local secured path hands a granted route the very [Authenticated] the validator returned for an ADMIN key,
+    /// and its grant is live while the route runs. Red if the binding wraps dispatch only (the grant is minted outside the
+    /// scope, born dead) or if dispatch passes an ungranted `Authenticated`.
+    @Test
+    void grantedRoute_localPath_adminKey_receivesTheValidatedAuthenticatedWithALiveGrant() {
+        var validator = RecordingValidator.recording(SecurityValidator.apiKeyValidator(ADMIN_KEYS));
+        var probe = GrantedRouteProbe.answering();
+        var writer = new RecordingResponseWriter();
+
+        server(validator, true, probe).handleRequest(GrantRequest.adminGet(GrantedRouteProbe.PATH), writer);
+
+        assertThat(writer.status()).isEqualTo(200);
+        assertThat(validator.returned().flatMap(Authenticated::grant).toOptional()).as("the ADMIN key minted a grant").isPresent();
+        assertThat(probe.received().toOptional()).as("the route received the Authenticated the server validated")
+                                    .containsSame(validator.returned().unwrap());
+        assertThat(probe.liveAtCall()).as("the grant was live while the route ran").isTrue();
+        assertThat(validator.liveAtValidation()).as("the scope was open at the credential match").isTrue();
+    }
+
+    /// The forwarded secured path: the owner validates again inside the forwarded request's own scope and hands the
+    /// granted route that `Authenticated`. Red if the forwarded dispatch drops it for an ungranted one.
+    @Test
+    void grantedRoute_forwardedPath_adminKey_receivesTheValidatedAuthenticatedWithALiveGrant() {
+        var validator = RecordingValidator.recording(SecurityValidator.apiKeyValidator(ADMIN_KEYS));
+        var probe = GrantedRouteProbe.answering();
+        var forwarded = HttpRequestContext.httpRequestContext(GrantedRouteProbe.PATH,
+                                                              "GET",
+                                                              Map.of(),
+                                                              Map.of("X-API-Key", List.of(ADMIN_KEY)),
+                                                              new byte[0],
+                                                              "req-grant-forwarded");
+
+        server(validator, true, forwarded, probe::routerWith).onHttpForwardRequest(forwardRequest());
+
+        assertThat(serializer.status()).isEqualTo(200);
+        assertThat(validator.returned().flatMap(Authenticated::grant).toOptional()).as("the ADMIN key minted a grant").isPresent();
+        assertThat(probe.received().toOptional()).as("the route received the Authenticated the owner validated")
+                                    .containsSame(validator.returned().unwrap());
+        assertThat(probe.liveAtCall()).as("the grant was live while the route ran").isTrue();
+    }
+
+    /// `security_mode = "none"` validates nothing, so a granted route runs with no grant even when an ADMIN key is
+    /// configured and sent. Red if the open path validates and passes the grant it minted.
+    @Test
+    void grantedRoute_securityDisabled_adminKeySent_receivesNoGrant() {
+        var validator = RecordingValidator.recording(SecurityValidator.apiKeyValidator(ADMIN_KEYS));
+        var probe = GrantedRouteProbe.answering();
+        var writer = new RecordingResponseWriter();
+
+        server(validator, false, probe).handleRequest(GrantRequest.adminGet(GrantedRouteProbe.PATH), writer);
+
+        assertThat(writer.status()).isEqualTo(200);
+        assertThat(validator.returned().toOptional()).as("the validator was never consulted").isEmpty();
+        assertThat(probe.received().map(Authenticated::grant).toOptional()).as("the route ran, with no grant")
+                                                              .contains(Option.none());
+    }
+
+    /// The grant dies when `handleRequest` returns: it was live in the route, and is dead to anyone still holding it.
+    @Test
+    void grant_isDeadOnceHandleRequestReturns() {
+        var probe = GrantedRouteProbe.answering();
+        var writer = new RecordingResponseWriter();
+
+        server(SecurityValidator.apiKeyValidator(ADMIN_KEYS), true, probe).handleRequest(GrantRequest.adminGet(GrantedRouteProbe.PATH),
+                                                                                         writer);
+
+        assertThat(probe.liveAtCall()).as("control: live inside the route").isTrue();
+        assertThat(probe.received().flatMap(Authenticated::grant).map(AdminGrant::live).toOptional()).as("dead after the return")
+                                                                                         .contains(false);
+    }
+
+    /// The enforce-failure path: the validator mints an ADMIN grant, enforcement then refuses (the context it returns
+    /// is VIEWER, on an OPERATOR route), and the grant is dead once the refusal returns.
+    @Test
+    void grant_isDeadOnceHandleRequestReturns_afterAnEnforceFailure() {
+        var validator = RecordingValidator.downgradingToViewer(SecurityValidator.apiKeyValidator(ADMIN_KEYS));
+        var writer = new RecordingResponseWriter();
+
+        server(validator, true, GrantedRouteProbe.answering()).handleRequest(GrantRequest.admin(HttpMethod.PUT, PUSH_PATH),
+                                                                             writer);
+
+        assertThat(writer.status()).as("enforcement refused").isEqualTo(403);
+        assertThat(validator.liveAtValidation()).as("control: live at the credential match").isTrue();
+        assertThat(validator.returned().flatMap(Authenticated::grant).map(AdminGrant::live).toOptional()).as("dead after the refusal")
+                                                                                            .contains(false);
+    }
+
+    /// The throwing-handler path: the route throws out of `handleRequest`, and the grant is dead after the throw.
+    @Test
+    void grant_isDeadOnceHandleRequestThrows() {
+        var probe = GrantedRouteProbe.throwing();
+        var server = server(SecurityValidator.apiKeyValidator(ADMIN_KEYS), true, probe);
+
+        assertThatThrownBy(() -> server.handleRequest(GrantRequest.adminGet(GrantedRouteProbe.PATH),
+                                                      new RecordingResponseWriter())).isInstanceOf(IllegalStateException.class);
+
+        assertThat(probe.liveAtCall()).as("control: live inside the route").isTrue();
+        assertThat(probe.received().flatMap(Authenticated::grant).map(AdminGrant::live).toOptional()).as("dead after the throw")
+                                                                                         .contains(false);
+    }
+
+    /// A request carrying the test ADMIN key.
+    private record GrantRequest(HttpMethod method, String path) implements HttpRequest {
+        static GrantRequest adminGet(String path) {
+            return admin(HttpMethod.GET, path);
+        }
+
+        static GrantRequest admin(HttpMethod method, String path) {
+            return new GrantRequest(method, path);
+        }
+
+        @Override public String requestId() {return "req-grant-local";}
+        @Override public Headers headers() {return Headers.headers(Map.of("X-API-Key", List.of(ADMIN_KEY)));}
+        @Override public QueryParams queryParams() {return QueryParams.empty();}
+        @Override public byte[] body() {return new byte[0];}
+    }
+
+    /// Delegates to a real validator and records what it returned and whether that grant was live at the match;
+    /// the downgrading variant returns the same grant over a VIEWER context, so enforcement refuses after the mint.
+    private static final class RecordingValidator implements SecurityValidator {
+        private final SecurityValidator delegate;
+        private final boolean downgrade;
+        private final AtomicReference<Authenticated> returned = new AtomicReference<>();
+        private final AtomicBoolean liveAtValidation = new AtomicBoolean();
+
+        private RecordingValidator(SecurityValidator delegate, boolean downgrade) {
+            this.delegate = delegate;
+            this.downgrade = downgrade;
+        }
+
+        static RecordingValidator recording(SecurityValidator delegate) {
+            return new RecordingValidator(delegate, false);
+        }
+
+        static RecordingValidator downgradingToViewer(SecurityValidator delegate) {
+            return new RecordingValidator(delegate, true);
+        }
+
+        Option<Authenticated> returned() {
+            return Option.option(returned.get());
+        }
+
+        boolean liveAtValidation() {
+            return liveAtValidation.get();
+        }
+
+        @Override
+        public Result<Authenticated> validate(HttpRequestContext request, SecurityPolicy policy) {
+            return delegate.validate(request, policy).map(this::record);
+        }
+
+        private Authenticated record(Authenticated authenticated) {
+            var outcome = downgrade
+                          ? Authenticated.authenticated(viewer(), authenticated.grant())
+                          : authenticated;
+
+            liveAtValidation.set(outcome.grant().map(AdminGrant::live).or(false));
+            returned.set(outcome);
+
+            return outcome;
+        }
+
+        private static SecurityContext viewer() {
+            return SecurityContext.securityContext("grant-viewer", Set.of(), AuthorizationRole.VIEWER).unwrap();
+        }
+    }
+
     private record StubHttpRequest(String path) implements HttpRequest {
         @Override public String requestId() {return "req-962-local";}
         @Override public HttpMethod method() {return HttpMethod.GET;}
@@ -273,11 +455,26 @@ class ManagementServerSecurityCouplingTest {
     }
 
     private ManagementServerImpl server(SecurityValidator validator, boolean securityEnabled) {
+        return server(validator,
+                      securityEnabled,
+                      HttpRequestContext.httpRequestContext(PUSH_PATH, "PUT", Map.of(), Map.of(), new byte[] {1, 2, 3}, "req-962"),
+                      ManagementRouter::managementRouter);
+    }
+
+    private ManagementServerImpl server(SecurityValidator validator, boolean securityEnabled, GrantedRouteProbe probe) {
+        return server(validator,
+                      securityEnabled,
+                      HttpRequestContext.httpRequestContext(PUSH_PATH, "PUT", Map.of(), Map.of(), new byte[] {1, 2, 3}, "req-962"),
+                      probe::routerWith);
+    }
+
+    private ManagementServerImpl server(SecurityValidator validator,
+                                        boolean securityEnabled,
+                                        HttpRequestContext forwarded,
+                                        Fn1<ManagementRouter, RouteSource[]> routerAssembly) {
         var node = mock(ManageableNode.class);
         var appHttpServer = mock(AppHttpServer.class);
         var maven = mock(MavenProtocolHandler.class);
-        var forwarded = HttpRequestContext.httpRequestContext(PUSH_PATH, "PUT", Map.of(), Map.of(), new byte[] {1, 2, 3}, "req-962");
-
         when(appHttpServer.httpRoutePublisher()).thenReturn(Option.none());
         when(node.self()).thenReturn(SELF);
         when(node.appHttpServer()).thenReturn(appHttpServer);
@@ -320,7 +517,8 @@ class ManagementServerSecurityCouplingTest {
                                         Option.some(serializer),
                                         Option.some(new StubDeserializer(forwarded)),
                                         NodeLifecycleRoutes.DrainPort.none(),
-                                        NodeLifecycleRoutes.SliceFloor.sliceFloor((_, _) -> List.of(), OperatorWarningSink.logOnly()));
+                                        NodeLifecycleRoutes.SliceFloor.sliceFloor((_, _) -> List.of(), OperatorWarningSink.logOnly()),
+                                        routerAssembly);
     }
 
     private static final class RecordingClusterNetwork implements ClusterNetwork {
