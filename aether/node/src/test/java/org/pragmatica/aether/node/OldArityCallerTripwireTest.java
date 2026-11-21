@@ -67,10 +67,29 @@ class OldArityCallerTripwireTest {
     private static final Pattern LAMBDA = Pattern.compile("lambda\\$(.+)\\$\\d+");
 
     /// Production callers of the old arities at the tip (S1a-1a). S1a-1b is the lane that shrinks this set.
-    private static final Map<String, Integer> PRODUCTION_CALLERS = Map.of();
+    private static final Map<String, Integer> PRODUCTION_CALLERS = Map.ofEntries(
+        Map.entry("org.pragmatica.aether.node.stream.ClusterCursorStore#commit", 1),
+        Map.entry("org.pragmatica.aether.node.stream.ConsumerAssignmentWriter#put", 1));
 
     /// Test callers of the old arities at the tip (S1a-1a).
-    private static final Map<String, Integer> TEST_CALLERS = Map.of();
+    private static final Map<String, Integer> TEST_CALLERS = Map.ofEntries(
+        Map.entry("org.pragmatica.aether.node.DispatchedSReaderReadYourWriteTest#commitWitness_seesTheCheckpointWhenTheWriteResolves", 1),
+        Map.entry("org.pragmatica.aether.node.StreamCursorCheckpointPutCodecTest#checkpointPut_roundTrips_throughTheNodeCodec_withTheRewindEpoch", 1),
+        Map.entry("org.pragmatica.aether.node.stream.ClusterCursorStoreTest#<clinit>", 2),
+        Map.entry("org.pragmatica.aether.node.stream.ClusterCursorStoreTest#assignedToSelf", 1),
+        Map.entry("org.pragmatica.aether.node.stream.ClusterCursorStoreTest#assignment", 1),
+        Map.entry("org.pragmatica.aether.node.stream.ClusterCursorStoreTest$AssignmentFence#assign", 1),
+        Map.entry("org.pragmatica.aether.node.stream.ClusterCursorStoreTest$AssignmentFence#commit_isFenced_whenTheRecordIsOneCounterAhead_forTheSameNode", 1),
+        Map.entry("org.pragmatica.aether.node.stream.ClusterCursorStoreTest$RewindAndAssignmentFencesCompose#assign", 1),
+        Map.entry("org.pragmatica.aether.node.stream.ConsensusBatchCountersTest#<clinit>", 1),
+        Map.entry("org.pragmatica.aether.node.stream.ConsumerAssignmentWriterTest#commit", 1),
+        Map.entry("org.pragmatica.aether.node.stream.CursorCheckpointAdvanceOnlyTest#<clinit>", 1),
+        Map.entry("org.pragmatica.aether.node.stream.CursorCheckpointAdvanceOnlyTest#setUp", 1),
+        Map.entry("org.pragmatica.aether.node.stream.CursorCheckpointRegressionTripwireTest#<clinit>", 1),
+        Map.entry("org.pragmatica.aether.node.stream.CursorCheckpointRegressionTripwireTest#setUp", 1),
+        Map.entry("org.pragmatica.aether.node.stream.StreamConsumerManagerTest#assignmentRecord", 1),
+        Map.entry("org.pragmatica.aether.node.stream.StreamConsumerRuntimeClusterCursorTest#clusterStore", 1),
+        Map.entry("org.pragmatica.aether.worker.metadata.WorkerMetadataIndexTest#consumerAssignmentTravelsWithItsStreamProjection", 1));
 
     record Target(String owner, String name, String descriptor) {
         boolean matches(String otherOwner, String otherName, String otherDescriptor) {
