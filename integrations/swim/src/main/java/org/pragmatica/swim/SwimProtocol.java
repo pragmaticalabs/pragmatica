@@ -158,7 +158,18 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// network's live `connectedPeers()` view.
     private final Predicate<NodeId> transportConnected;
     private final Map<NodeId, SwimMember> members = new ConcurrentHashMap<>();
-    private final Object membershipScopeGuard = new Object();
+    /// The ONE serial executor for every mutation of member, suspicion and sibling state (#3529). The tick,
+    /// the probe-timeout callback, [#onMessage], the transport hints, seeding, scope changes, the retirement
+    /// callback, the self-quorum report and the join announce all dispatch onto it, so the read-decide-write
+    /// sequence of a transition (for example the suspect expiry: read the member, decide FAULTY, store it)
+    /// can never interleave with another mutation. This replaces the per-site guards that each covered one
+    /// window (membership-scope monitor, isolation-latch monitor, self-quorum monitor). The expiry keeps its
+    /// suspicion-identity compare of #3526: a listener re-arms inside the same task. The maps stay concurrent
+    /// only for readers outside the executor ([#members], [#currentHealth], [#healthOf] and the test probes).
+    private final SerialExecutor stateExecutor = SerialExecutor.serialExecutor();
+    /// Count of member/suspicion writes that ran off [#stateExecutor] (#3529 confinement sensor). Always 0
+    /// while every entry point dispatches; a test asserts it after exercising each entry point.
+    private final AtomicLong offExecutorMutations = new AtomicLong();
     private volatile Predicate<NodeId> membershipEligibility = _ -> true;
     /// Where operator warnings go beyond the log (#1574). It is log-only until the node assembly binds
     /// it to its own node's cluster event aggregator.
@@ -166,12 +177,27 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// Restrict retained gossip state. Scope removal is not a death verdict and emits no departure.
     public org.pragmatica.lang.Unit setMembershipEligibility(Predicate<NodeId> eligibility) {
-        synchronized (membershipScopeGuard) {
-            membershipEligibility = eligibility;
-            pruneMembershipScope();
-        }
+        stateExecutor.execute(() -> applyMembershipEligibility(eligibility));
 
         return org.pragmatica.lang.Unit.unit();
+    }
+
+    private void applyMembershipEligibility(Predicate<NodeId> eligibility) {
+        membershipEligibility = eligibility;
+        pruneMembershipScope();
+    }
+
+    /// Record a member/suspicion write that runs off [#stateExecutor]. Never throws: the sensor must not turn a
+    /// confinement slip into a production failure; it is loud in the log and counted for the test.
+    private void requireConfined(String site) {
+        if (stateExecutor.isConfined()) {
+            return;
+        }
+
+        offExecutorMutations.incrementAndGet();
+        LOG.error("SWIM state write off the serial executor (#3529) at {} on thread {}",
+                  site,
+                  Thread.currentThread().getName());
     }
 
     private boolean inMembershipScope(NodeId peer) {
@@ -179,21 +205,20 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private boolean storeScopedMember(NodeId peer, SwimMember member) {
-        synchronized (membershipScopeGuard) {
-            if (!inMembershipScope(peer)) {
-                return false;
-            }
-
-            members.put(peer, member);
-
-            return true;
+        requireConfined("storeScopedMember");
+        if (!inMembershipScope(peer)) {
+            return false;
         }
+
+        members.put(peer, member);
+
+        return true;
     }
 
     private void pruneMembershipScope() {
+        requireConfined("pruneMembershipScope");
         members.keySet().removeIf(peer -> !inMembershipScope(peer));
         everSeenHealthy.removeIf(peer -> !inMembershipScope(peer));
-        suspectTimestamps.keySet().removeIf(peer -> !inMembershipScope(peer));
         suspicions.keySet().removeIf(peer -> !inMembershipScope(peer));
         memberFirstSeenAt.keySet().removeIf(peer -> !inMembershipScope(peer));
         lastProbedAt.keySet().removeIf(peer -> !inMembershipScope(peer));
@@ -223,10 +248,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Last time an address conflict was reported, by `member@attemptedAddress`.
     private final Map<String, Long> addressConflictReportedAt = new ConcurrentHashMap<>();
     private final Map<Long, RelayInfo> pendingRelays = new ConcurrentHashMap<>();
-    private final Map<NodeId, Long> suspectTimestamps = new ConcurrentHashMap<>();
-    /// Wave-6 Lifeguard per-suspect suspicion state, created alongside the
-    /// `suspectTimestamps` start-stamp in [#beginSuspicion] and removed with it in
-    /// [#endSuspicion]. Holds the window bounds fixed at suspicion start (min = base
+    /// Wave-6 Lifeguard per-suspect suspicion state, created in [#beginSuspicion] and removed in
+    /// [#endSuspicion]. The ONLY record of an active suspicion: it carries its own start stamp, so
+    /// arming is one put and the expiry can end exactly the suspicion it expired (#3526). Holds the
+    /// window bounds fixed at suspicion start (min = base
     /// `suspectTimeout`, max = base × the local LHM multiplier at that moment), the
     /// expected-confirmer count K, and the deduped accuser set driving the dogpile
     /// logarithmic shrink ([#dogpileWindowMs]). Missing entry (defensive) falls back
@@ -250,7 +275,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// FAULTY-entry path ([#transitionToFaulty], [#notifyFaulty], [#applyNewFaultyMember]).
     /// AUTHORITATIVE residency clock for [#isFaultyAndExpired]: a FAULTY member stays
     /// resident (refutable) until `suspectTimeout × 3` has elapsed FROM THIS STAMP.
-    /// Introduced as a Wave-1 diagnostic that confirmed H8 (the `suspectTimestamps`
+    /// Introduced as a Wave-1 diagnostic that confirmed H8 (the suspect start-stamp
     /// re-stamp written by the FAULTY transition was removed same-tick by
     /// `expireSuspectIfOverdue`, so members were swept 2–4 ms after their FAULTY edge
     /// instead of the designed 30 000 ms residency); promoted to the authoritative
@@ -315,8 +340,6 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                                   NodeInfo.LABEL_ZONE,
                                                                   LABEL_QUORUM);
 
-    /// Serialises [#reportSelfQuorum]: the label swap and its incarnation bump are one step.
-    private final Object selfQuorumReportLock = new Object();
     /// Boot-token registry (owner ruling, session 28: terminal removal) — shared with the QUIC
     /// transport via [#setBootTokens] so both layers hold ONE view of which process owns a NodeId.
     /// Outlives membership residency on purpose: a partitioned-but-live process that returns with the
@@ -400,15 +423,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// is expired ([#PiggybackBuffer.expireFaultyUpdates]) so a rejoining isolated node does
     /// NOT inject stale death verdicts into the healed cluster (the S06 partition-heal
     /// collapse root). Volatile: written/read across the probe (scheduler) and message threads.
-    /// Every write goes through [#isolationLatchGuard] (#1990), so the all-FAULTY check and the
-    /// latch write cannot straddle a peer's revival.
+    /// Every write runs on [#stateExecutor] (#1990, #3529), so the all-FAULTY check and the latch write
+    /// cannot straddle a peer's revival.
     private volatile boolean selfIsolated = false;
-    /// Makes "all peers FAULTY, so latch" ([#latchSelfIsolation]) and "reconnection evidence, so
-    /// clear" ([#unlatchSelfIsolation]) mutually atomic. Leaf lock: nothing is acquired while it is
-    /// held (the check reads the lock-free `members` map; the dissemination-backlog expiry and the
-    /// logging run after release), so it joins no lock cycle with [#lifecycleLock],
-    /// [#membershipScopeGuard] or the [PiggybackBuffer] monitor.
-    private final Object isolationLatchGuard = new Object();
     /// Incarnation-aware, TTL-bounded tombstones for ids that died and got cleaned up.
     /// Refuses third-party re-introduction of a dead id (gossip dissemination + bare
     /// channel re-seed) that would otherwise re-create it as SUSPECT and restart the
@@ -529,7 +546,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// confirmation — C = `confirmers.size() - 1`, memberlist-style). `expectedConfirmers`
     /// is K, fixed at creation as `max(1, min(config.dogpileExpectedConfirmers(),
     /// trackedMembers - 1))`.
-    private record Suspicion(long minWindowMs, long maxWindowMs, int expectedConfirmers, Set<NodeId> confirmers) {}
+    private record Suspicion(long startedAtMs,
+                             long minWindowMs,
+                             long maxWindowMs,
+                             int expectedConfirmers,
+                             Set<NodeId> confirmers) {}
 
     /// Death-record for a PROVEN-HEALTHY id that died and was cleaned up. `incarnation`
     /// is the incarnation at which the id was tombstoned; a strictly-higher incoming
@@ -652,7 +673,7 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                            JitterUtil.LIGHT_MAX_FACTOR);
             var startup = TimeSpan.timeSpan(jitteredStartupMs).millis();
 
-            tickFuture.set(option(SharedScheduler.scheduleAtFixedRate(this::tick, startup, config.period())));
+            tickFuture.set(option(SharedScheduler.scheduleAtFixedRate(this::dispatchTick, startup, config.period())));
             LOG.info("SWIM protocol started for node {} (first probe in {}ms; jittered from base {}ms)",
                      selfId.id(),
                      jitteredStartupMs,
@@ -700,6 +721,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// escalation run if the seed never acks.
     @Contract
     public void addSeedMember(NodeId nodeId, InetSocketAddress address) {
+        stateExecutor.execute(() -> seedMember(nodeId, address));
+    }
+
+    private void seedMember(NodeId nodeId, InetSocketAddress address) {
+        requireConfined("seedMember");
         if (!inMembershipScope(nodeId) || selfId.equals(nodeId)) {
             return;
         }
@@ -708,7 +734,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         // Mirror the ANNOUNCE guard (`if (!members.containsKey(...))`): only introduce
         // an UNKNOWN id. A re-seed of a member already tracked (notably a SUSPECT victim
         // whose suspect-window is counting down to FAULTY) must be a no-op — otherwise
-        // each channel reconnect re-stamps `suspectTimestamps`, perpetually deferring the
+        // each channel reconnect re-stamps the suspicion start, perpetually deferring the
         // FAULTY transition so `NODE_FAILED` never fires (#231 lingering-victim).
         if (members.containsKey(nodeId)) {
             return;
@@ -779,6 +805,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// returns to ALIVE only if it refutes within the window.
     @Contract
     public void recordTransportHint(NodeId peer, TransportObservation hint) {
+        stateExecutor.execute(() -> applyTransportHint(peer, hint));
+    }
+
+    private void applyTransportHint(NodeId peer, TransportObservation hint) {
         if (!inMembershipScope(peer) || selfId.equals(peer)) {
             return;
         }
@@ -795,6 +825,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// `LINK_LOST` hint ([#retractLinkLostHint]) and any identity refutation (#1830) — the identity
     /// answered, so the refutation no longer describes it.
     private void applyReachableHint(NodeId peer) {
+        requireConfined("applyReachableHint");
         retractLinkLostHint(peer);
         refutedIdentities.remove(peer);
     }
@@ -805,6 +836,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// never-HEALTHY peer), and a FAULTY edge already suppressed is replayed now rather than at window
     /// close.
     private void applyIdentityRefutation(NodeId peer, NodeId claimant) {
+        requireConfined("applyIdentityRefutation");
         refutedIdentities.add(peer);
         LOG.warn("SWIM identity refutation (#1830): a dial to peer {} was answered by {} — a never-HEALTHY {} is no longer cold-boot suppressed",
                  peer.id(),
@@ -832,6 +864,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void clearLinkLostFlag(NodeId peer) {
+        requireConfined("clearLinkLostFlag");
         transportHints.computeIfPresent(peer, SwimProtocol::withoutLinkLost);
         LOG.info("SWIM transport hint: link to {} re-established — LINK_LOST death hint retracted "
                 + "(SWIM state unchanged); effective suspect window now {}ms",
@@ -859,6 +892,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void clearPeerUnresponsiveFlag(NodeId peer) {
+        requireConfined("clearPeerUnresponsiveFlag");
         transportHints.computeIfPresent(peer, SwimProtocol::withoutPeerUnresponsive);
         LOG.info("SWIM transport hint: pong received from {} — PEER_UNRESPONSIVE death hint retracted "
                 + "(SWIM state unchanged); effective suspect window now {}ms",
@@ -894,6 +928,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// The order matters: the bias (1) is recorded BEFORE suspicion is initiated (2) so
     /// [#beginSuspicion]'s window honors the floor from the first tick.
     private void applyUnreachableHint(NodeId peer, TransportObservation.HintOrigin origin) {
+        requireConfined("applyUnreachableHint");
         transportHints.merge(peer, TransportHintState.transportHintState(origin), TransportHintState::combine);
         LOG.debug("SWIM transport hint: peer {} reported unreachable (origin {}); suspect window biased to {}ms floor while current",
                   peer.id(),
@@ -964,9 +999,15 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     // -- SwimMessageHandler --
+    /// Dispatches onto [#stateExecutor] (#3529): handling runs serially with the tick and every other mutation.
+    /// Uncontended, it runs on the calling thread before this returns; contended, the running drainer runs it.
     @Override
     @Contract
     public void onMessage(InetSocketAddress sender, SwimMessage message) {
+        stateExecutor.execute(() -> handleMessage(sender, message));
+    }
+
+    private void handleMessage(InetSocketAddress sender, SwimMessage message) {
         LOG.trace("SWIM recv from {}: {}",
                   sender,
                   message.getClass().getSimpleName());
@@ -1002,6 +1043,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void handleAppGossip(AppGossip gossip) {
+        requireConfined("handleAppGossip");
         if (isAcceptableAppGossip(gossip)) {
             appGossipReceived.incrementAndGet();
             gossipChannels.get(gossip.channel()).incoming(gossip.from(), gossip.payload());
@@ -1020,6 +1062,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private boolean withinAppGossipRate() {
+        requireConfined("withinAppGossipRate");
         var now = System.currentTimeMillis();
         var windowStart = appGossipWindowStartMs.get();
 
@@ -1046,6 +1089,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     // -- Internal tick --
+    private void dispatchTick() {
+        stateExecutor.execute(this::tick);
+    }
+
     private void tick() {
         pruneMembershipScope();
         sweepAddressCandidates();
@@ -1128,6 +1175,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// timeout must neither raise the LHM score nor send PingReqs nor suspect the peer. Design-out: the send failure
     /// is absorbed at debug level because the next round retries another peer.
     private void sendIsolationPing(SwimMember target) {
+        requireConfined("sendIsolationPing");
         var ping = Ping.ping(selfId, sequenceCounter.incrementAndGet(), ackPiggyback());
 
         lastProbedAt.put(target.nodeId(), probeOrdinal.incrementAndGet());
@@ -1143,6 +1191,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// order, or the same pair of nodes would keep exchanging payloads.
     @Contract
     void sendAppGossip() {
+        requireConfined("sendAppGossip");
         randomAliveMember().onPresent(peer -> gossipChannels.forEach((channel, handler) -> offerAppGossip(peer,
                                                                                                           channel,
                                                                                                           handler)));
@@ -1164,6 +1213,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// may not fit: it is dropped and counted. FER: a datagram that fails to send is absorbed (logged at debug) --
     /// application gossip is best effort, and the next probe round sends a fresh payload.
     private void sendAppGossip(SwimMember peer, int channel, byte[] payload) {
+        requireConfined("sendAppGossip");
         if (payload.length > piggybackBudgetBytes) {
             appGossipDropped.incrementAndGet();
             LOG.debug("SWIM app gossip on channel {} dropped: {} bytes exceed the {} byte budget",
@@ -1221,6 +1271,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// rebroadcast at the UNCHANGED incarnation could never clear it). Otherwise it returns
     /// the unchanged incarnation (today's rebroadcast behavior).
     private long refreshedSelfIncarnation(long currentIncarnation) {
+        requireConfined("refreshedSelfIncarnation");
         var now = System.currentTimeMillis();
 
         if (!atRiskOfUnheardSuspicion(now) || !atRiskBumpDue(now)) {
@@ -1260,10 +1311,12 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Fix 1: record evidence that peers can currently reach this node (an inbound Ping or a
     /// verified Ack to a probe we sent), resetting the at-risk clock.
     private void recordInboundReachability() {
+        requireConfined("recordInboundReachability");
         lastInboundReachabilityAt.set(System.currentTimeMillis());
     }
 
     private void probeTarget(SwimMember target) {
+        requireConfined("probeTarget");
         var seq = sequenceCounter.incrementAndGet();
         var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback(), piggybackBudgetBytes);
         var ping = Ping.ping(selfId, seq, piggyback);
@@ -1282,13 +1335,13 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void expireSuspectMembers() {
-        var now = System.currentTimeMillis();
-        var baseSuspectTimeoutMillis = config.suspectTimeout().millis();
+        requireConfined("expireSuspectMembers");
+        expireSuspectMembers(System.currentTimeMillis());
+    }
 
-        suspectTimestamps.forEach((nodeId, timestamp) -> expireSuspectIfOverdue(nodeId,
-                                                                                timestamp,
-                                                                                now,
-                                                                                baseSuspectTimeoutMillis));
+    private void expireSuspectMembers(long now) {
+        requireConfined("expireSuspectMembers");
+        suspicions.forEach((nodeId, suspicion) -> expireSuspectIfOverdue(nodeId, suspicion, now));
         // Clean up stale relays by age, not by pendingProbes presence
         var relayTimeoutMillis = config.probeTimeout().millis() * 3;
 
@@ -1303,6 +1356,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// ([#emitFaultyAndDeparted]); the residency window between edge and sweep exists
     /// purely for SWIM-map refutability/tombstone correctness.
     private void cleanupFaultyMembers() {
+        requireConfined("cleanupFaultyMembers");
         var now = System.currentTimeMillis();
         var cleanupThreshold = config.suspectTimeout().millis() * 3;
         var iterator = members.entrySet().iterator();
@@ -1329,6 +1383,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// [#clearDeathMemory], which erases the live deferral and `everSeenHealthy`. A peer that proved itself HEALTHY
     /// after its edge was deferred has nothing kept, as [#replayIfStillSuppressed] has nothing replayed for it.
     private void keepDeferredDeath(NodeId peer, long incarnation) {
+        requireConfined("keepDeferredDeath");
         // The latest sweep decides: a deferral kept by an earlier sweep is stale once the peer came back (#2171 verifier).
         sweptSuppressedDeaths.remove(peer);
         option(coldBootSuppressedFaulty.get(peer)).filter(_ -> !everSeenHealthy.contains(peer))
@@ -1343,6 +1398,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// the enforced one. MUST run BEFORE [#clearDeathMemory] (which also erases the
     /// stamp); the `remove` here makes the log emission once-per-sweep.
     private void logFaultyResidency(NodeId peer, long now, long designedResidencyMs) {
+        requireConfined("logFaultyResidency");
         option(faultyStampedAtMs.remove(peer)).onPresent(stampedAt -> LOG.info("SWIM FAULTY-residency (Wave-6 H8): member {} swept {} ms after its FAULTY edge "
                                                                               + "(designed residency window {} ms)",
                                                                                peer.id(),
@@ -1366,6 +1422,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// MUST be called BEFORE `clearDeathMemory` (which erases `everSeenHealthy` and the
     /// first-sighting entry the grace check reads).
     private void tombstoneIfWasHealthy(NodeId peer, long incarnation, long now) {
+        requireConfined("tombstoneIfWasHealthy");
         if ((isBooting.getAsBoolean() || withinJoinGrace(peer)) && !everSeenHealthy.contains(peer)) {
             return;
         }
@@ -1404,6 +1461,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Incarnation/TTL semantics are unchanged; the tombstone-CLEAR paths (self-ANNOUNCE,
     /// higher-incarnation supersede) are untouched, so legitimate rejoin still works.
     private void tombstoneOnFaultyEdge(NodeId peer, long incarnation) {
+        requireConfined("tombstoneOnFaultyEdge");
         if ((isBooting.getAsBoolean() || withinJoinGrace(peer)) && !everSeenHealthy.contains(peer)) {
             return;
         }
@@ -1419,6 +1477,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// rejoin is handled by self-ANNOUNCE clear / higher-incarnation supersede, so the
     /// TTL only reclaims entries for permanently-dead ids.
     private void sweepExpiredTombstones(long now) {
+        requireConfined("sweepExpiredTombstones");
         var ttlMs = config.suspectTimeout().millis() * TOMBSTONE_TTL_MULTIPLIER;
 
         tombstones.entrySet().removeIf(entry -> now - entry.getValue()
@@ -1436,6 +1495,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private boolean supersedeOrRefuse(NodeId id, Tombstone tombstone, long incomingIncarnation) {
+        requireConfined("supersedeOrRefuse");
         if (incomingIncarnation > tombstone.incarnation()) {
             tombstones.remove(id);
 
@@ -1465,6 +1525,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private boolean refuseOrClear(NodeId id, DeathRecord record, long claimIncarnation, long claimToken) {
+        requireConfined("refuseOrClear");
         if (claimIncarnation <= record.incarnation() && record.covers(claimToken)) {
             return true;
         }
@@ -1491,6 +1552,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     @Contract
     private void putDeathRecord(NodeId peer, DeathRecord record) {
+        requireConfined("putDeathRecord");
         deathRecords.put(peer, record);
         if (deathRecords.size() > DEATH_RECORD_CAP) {
             deathRecords.entrySet()
@@ -1503,6 +1565,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     @Contract
     private void evictDeathRecord(Map.Entry<NodeId, DeathRecord> eldest) {
+        requireConfined("evictDeathRecord");
         deathRecords.remove(eldest.getKey(), eldest.getValue());
         LOG.warn("SWIM death-record cap {} reached: evicted the record of {} (incarnation {}); that id falls back to the tombstone gate",
                  DEATH_RECORD_CAP,
@@ -1512,7 +1575,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// Wave-6 H8 fix: residency is measured from the FAULTY-edge stamp
     /// ([#faultyStampedAtMs], written on every FAULTY-entry path), NOT from
-    /// `suspectTimestamps` — whose entry the suspicion-expiry tick removed in the very
+    /// the suspicion start-stamp — whose entry the suspicion-expiry tick removed in the very
     /// tick that fired the FAULTY edge, sending this method into its "no timestamp →
     /// remove" branch and sweeping the member 2–4 ms after its FAULTY edge (Wave-1
     /// confirmed) instead of honouring the designed `suspectTimeout × 3` window. A
@@ -1540,8 +1603,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// ALIVE member classify as UNKNOWN (cold-boot suppression) until it is
     /// re-proven by a real probe-ack.
     private void clearDeathMemory(NodeId peer) {
+        requireConfined("clearDeathMemory");
         everSeenHealthy.remove(peer);
-        suspectTimestamps.remove(peer);
         suspicions.remove(peer);
         memberFirstSeenAt.remove(peer);
         lastProbedAt.remove(peer);
@@ -1590,9 +1653,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// genuine-kill detection budget is unchanged. Every decision journaled (Wave-1
     /// pattern).
     private void beginSuspicion(NodeId suspect, NodeId accuser) {
-        suspectTimestamps.put(suspect, System.currentTimeMillis());
         var suspicion = newSuspicion(accuser);
 
+        requireConfined("beginSuspicion");
         suspicions.put(suspect, suspicion);
         LOG.info("SWIM suspicion start (Wave-6 Lifeguard): suspect {} accused by {}; effective window {}ms "
                 + "(dogpile {}ms, min {}ms, max {}ms, LHM score {}, multiplier x{}, K={})",
@@ -1609,9 +1672,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     /// Disarm the suspicion of `suspect` (refuted, promoted ALIVE, expired to FAULTY,
-    /// or swept): remove both the start-stamp and the dogpile state.
+    /// or swept): remove the suspicion with its start-stamp and dogpile state.
     private void endSuspicion(NodeId suspect) {
-        suspectTimestamps.remove(suspect);
+        requireConfined("endSuspicion");
         suspicions.remove(suspect);
     }
 
@@ -1623,7 +1686,11 @@ public final class SwimProtocol implements SwimMessageHandler {
 
         confirmers.add(accuser);
 
-        return new Suspicion(baseMs, baseMs * lhmMultiplier(), expectedConfirmers, confirmers);
+        return new Suspicion(System.currentTimeMillis(),
+                             baseMs,
+                             baseMs * lhmMultiplier(),
+                             expectedConfirmers,
+                             confirmers);
     }
 
     /// Record an independent dogpile confirmation of an ACTIVE suspicion of `suspect`
@@ -1655,7 +1722,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     private long suspicionWindowMs(NodeId nodeId, long baseMs) {
         var dogpileWindow = option(suspicions.get(nodeId)).map(SwimProtocol::dogpileWindowMs).or(baseMs);
 
-        return (long)(dogpileWindow * clusterSizeWindowMultiplier());
+        return scaledByClusterSize(dogpileWindow);
+    }
+
+    private long scaledByClusterSize(long dogpileWindowMs) {
+        return (long)(dogpileWindowMs * clusterSizeWindowMultiplier());
     }
 
     /// Fix 3 (#336 cluster-size suspect-window scaling): the canonical Lifeguard size term
@@ -1708,6 +1779,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void lhmIncrement(String cause) {
+        requireConfined("lhmIncrement");
         var cap = Math.max(0, config.lhmMaxScore());
         var previous = lhmScore.getAndUpdate(score -> Math.min(score + 1, cap));
 
@@ -1720,6 +1792,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void lhmDecrement(String cause) {
+        requireConfined("lhmDecrement");
         var previous = lhmScore.getAndUpdate(score -> Math.max(score - 1, 0));
 
         if (previous > 0) {
@@ -1730,10 +1803,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
     }
 
-    private void expireSuspectIfOverdue(NodeId nodeId, long timestamp, long now, long baseSuspectTimeoutMillis) {
-        var effectiveTimeoutMs = effectiveSuspicionWindowMs(nodeId, baseSuspectTimeoutMillis);
-
-        if (now - timestamp < effectiveTimeoutMs) {
+    private void expireSuspectIfOverdue(NodeId nodeId, Suspicion suspicion, long now) {
+        if (now - suspicion.startedAtMs() < expiryWindowMs(nodeId, suspicion)) {
             return;
         }
         // No join-grace DEFER here anymore (#336/#241): a freshly seeded/announced never-HEALTHY
@@ -1744,7 +1815,27 @@ public final class SwimProtocol implements SwimMessageHandler {
         // SUSPECT — all of which correctly proceed to FAULTY here.
         option(members.get(nodeId)).filter(member -> member.state() == MemberState.SUSPECT)
               .onPresent(this::transitionToFaulty);
-        endSuspicion(nodeId);
+        endExpiredSuspicion(nodeId, suspicion);
+    }
+
+    /// End `expired` only if it is still the active suspicion of `nodeId` (#3526). The FAULTY edge
+    /// fired inside [#transitionToFaulty] is delivered to observers synchronously, on this thread and inside
+    /// this task, so a listener can re-arm a NEW suspicion ([#beginSuspicion]) before this expiry returns; the
+    /// serial executor (#3529) does not order that, because it is the same task. An unconditional
+    /// [#endSuspicion] here erased that re-armed suspicion and left the member SUSPECT with no expiry, so it
+    /// never reached FAULTY. Compared by identity: two suspicions may carry equal values.
+    private void endExpiredSuspicion(NodeId nodeId, Suspicion expired) {
+        requireConfined("endExpiredSuspicion");
+        suspicions.computeIfPresent(nodeId,
+                                    (_, current) -> current == expired
+                                                    ? null
+                                                    : current);
+    }
+
+    /// The window `suspicion` expires on: [#effectiveSuspicionWindowMs] computed from the suspicion
+    /// the expiry is deciding about, not from a re-read of the map that may hold a newer one.
+    private long expiryWindowMs(NodeId nodeId, Suspicion suspicion) {
+        return effectiveSuspectTimeoutMs(nodeId, scaledByClusterSize(dogpileWindowMs(suspicion)));
     }
 
     /// The window a suspicion of `nodeId` actually expires on: the dogpile/cluster-size window
@@ -1784,7 +1875,10 @@ public final class SwimProtocol implements SwimMessageHandler {
         return state.peerUnresponsive() || (state.linkLost() && !transportConnected.test(peer));
     }
 
+    /// Runs on [#stateExecutor] (#3529): `member` is the state this transition decided on, and no other mutation
+    /// can land between that read and the FAULTY store below.
     private void transitionToFaulty(SwimMember member) {
+        requireConfined("transitionToFaulty");
         // Fix 2 (#336): this node's own suspect-window expiry is it INDEPENDENTLY concluding
         // the peer is dead — register self as an accuser so a peer suspected ONLY by this one
         // node (no co-confirming gossip) is recognised as under-confirmed by the kill-gate in
@@ -1797,7 +1891,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
         // Wave-6 H8 fix: the FAULTY residency clock is THIS stamp (authoritative, read by
-        // isFaultyAndExpired). The pre-fix `suspectTimestamps` re-stamp written here was
+        // isFaultyAndExpired). The pre-fix suspect start-stamp re-stamp written here was
         // removed by expireSuspectIfOverdue in the same tick, defeating the designed
         // suspectTimeout×3 residency (Wave-1 measured 2–4 ms) — so it is gone.
         faultyStampedAtMs.put(member.nodeId(), System.currentTimeMillis());
@@ -1824,22 +1918,21 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
     }
 
-    /// Check and latch under [#isolationLatchGuard] (#1990). A revival stores ALIVE and THEN runs
-    /// [#unlatchSelfIsolation]; if this section runs first the later unlatch clears the latch, if the
-    /// unlatch runs first this check, run later, sees the ALIVE — a stale latch (latch set while a peer is
+    /// Check and latch on [#stateExecutor] (#1990, #3529). A revival stores ALIVE and THEN runs
+    /// [#unlatchSelfIsolation], in one task; if this check runs first the later unlatch clears the latch, if the
+    /// revival runs first this check, run later, sees the ALIVE — a stale latch (latch set while a peer is
     /// ALIVE) is impossible. Each FAULTY writer stores and THEN checks, so the last writer sees every
     /// earlier store: a missed latch (all FAULTY, latch clear) is impossible too. The check is a parameter
-    /// so a test can hold the check-to-write window open.
-    boolean latchSelfIsolation(BooleanSupplier allPeersFaulty) {
-        synchronized (isolationLatchGuard) {
-            if (selfIsolated || members.isEmpty() || !allPeersFaulty.getAsBoolean()) {
-                return false;
-            }
-
-            selfIsolated = true;
-
-            return true;
+    /// so a test can hold the check-to-write window open ([#latchSelfIsolationForTest]).
+    private boolean latchSelfIsolation(BooleanSupplier allPeersFaulty) {
+        requireConfined("latchSelfIsolation");
+        if (selfIsolated || members.isEmpty() || !allPeersFaulty.getAsBoolean()) {
+            return false;
         }
+
+        selfIsolated = true;
+
+        return true;
     }
 
     private boolean allPeersFaulty() {
@@ -1877,7 +1970,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void scheduleProbeTimeout(long seq) {
-        SharedScheduler.schedule(() -> onProbeTimeout(seq), config.probeTimeout());
+        SharedScheduler.schedule(() -> dispatchProbeTimeout(seq), config.probeTimeout());
+    }
+
+    private void dispatchProbeTimeout(long seq) {
+        stateExecutor.execute(() -> onProbeTimeout(seq));
     }
 
     private void onProbeTimeout(long seq) {
@@ -1885,6 +1982,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void handleProbeTimeout(long seq, PendingProbe probe) {
+        requireConfined("handleProbeTimeout");
         if (probe.indirectSent()) {
             // Full probe cycle (direct + indirect) produced no ack: local trouble —
             // this node may itself be the degraded party (Wave-6 Lifeguard LHM).
@@ -1899,6 +1997,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void sendIndirectProbes(long seq, PendingProbe probe) {
+        requireConfined("sendIndirectProbes");
         pendingProbes.put(seq,
                           PendingProbe.pendingProbe(probe.targetId(), probe.startTime(), true));
         var others = selectRandomOtherMembers(probe.targetId(), config.indirectProbes());
@@ -1978,6 +2077,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void handleAck(InetSocketAddress sender, Ack ack) {
+        requireConfined("handleAck");
         if (ack.sequence() == SYNC_ACK_SEQUENCE) {
             joinAckReceived = true;
         }
@@ -2016,6 +2116,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// timeout path still escalates (indirect probes / SUSPECT) normally. A verified
     /// ack is a healthy local round: the Lifeguard LHM score decays.
     private void acceptProbeAckIfFromTarget(Ack ack, PendingProbe probe) {
+        requireConfined("acceptProbeAckIfFromTarget");
         if (!probe.targetId().equals(ack.from())) {
             LOG.warn("SWIM Ack.from mismatch (Wave-6): ack seq {} claims from {} but the probe targeted {} — "
                     + "ignored as alive-evidence",
@@ -2068,17 +2169,15 @@ public final class SwimProtocol implements SwimMessageHandler {
                  dropped);
     }
 
-    /// Clear the latch under [#isolationLatchGuard]; `true` when it was set. Deliberately no unlocked
-    /// `selfIsolated` fast path: a revival that read `false` and returned could slip between a detector's
-    /// all-FAULTY check and its latch write, leaving the latch set with a live peer (#1990).
+    /// Clear the latch; `true` when it was set. Runs on [#stateExecutor] (#3529), the same executor as the
+    /// detector's all-FAULTY check and latch write, so a revival cannot slip between them (#1990).
     private boolean unlatchSelfIsolation() {
-        synchronized (isolationLatchGuard) {
-            var wasIsolated = selfIsolated;
+        requireConfined("unlatchSelfIsolation");
+        var wasIsolated = selfIsolated;
 
-            selfIsolated = false;
+        selfIsolated = false;
 
-            return wasIsolated;
-        }
+        return wasIsolated;
     }
 
     private void forwardRelay(Ack ack) {
@@ -2091,6 +2190,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// the relayer itself pinged the target directly, so the ack is direct
     /// alive-evidence for the relayer too (pre-fix behavior, now verified).
     private void forwardAckIfFromTarget(Ack ack, RelayInfo relay) {
+        requireConfined("forwardAckIfFromTarget");
         if (!relay.targetId().equals(ack.from())) {
             LOG.warn("SWIM Ack.from mismatch (Wave-6, relay): ack seq {} claims from {} but the relayed probe "
                     + "targeted {} — not forwarded, ignored as alive-evidence",
@@ -2325,6 +2425,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void probeAddressCandidate(InetSocketAddress sender, Announce announce) {
+        requireConfined("probeAddressCandidate");
         var id = announce.nodeInfo().id();
         var now = System.currentTimeMillis();
         var alreadyProbed = addressCandidates.values()
@@ -2348,6 +2449,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void evictOldestCandidateIfFull() {
+        requireConfined("evictOldestCandidateIfFull");
         if (addressCandidates.size() < MAX_ADDRESS_CANDIDATES) {
             return;
         }
@@ -2365,7 +2467,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     @Contract
     void sweepAddressCandidatesForTest(long nowMs) {
-        sweepAddressCandidates(nowMs);
+        onStateExecutorForTest(() -> sweepAddressCandidates(nowMs));
     }
 
     private void sweepAddressCandidates(long now) {
@@ -2378,6 +2480,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// announced member, carries the probe's sequence and arrives from the address the probe went to. Anything
     /// else leaves the candidate in place.
     private boolean confirmAddressCandidate(InetSocketAddress sender, Ack ack) {
+        requireConfined("confirmAddressCandidate");
         var candidate = addressCandidates.get(ack.sequence());
 
         if (candidate == null || !answers(candidate, sender, ack) || !addressCandidates.remove(ack.sequence(), candidate)) {
@@ -2418,6 +2521,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private boolean dueForReport(String key) {
+        requireConfined("dueForReport");
         var now = System.currentTimeMillis();
         var last = addressConflictReportedAt.get(key);
 
@@ -2501,6 +2605,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// is the pinned address. `firstPin` is the one moment an already-resident member (gossip- or seed-introduced)
     /// takes the confirmed address.
     private void acceptAnnounce(InetSocketAddress sender, Announce announce, boolean firstPin) {
+        requireConfined("acceptAnnounce");
         tombstones.remove(announce.nodeInfo().id());
         if (!members.containsKey(announce.nodeInfo().id())) {
             // Direct liveness evidence: a self-ANNOUNCE datagram is a node speaking for ITSELF
@@ -2672,6 +2777,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// ALIVE. Like the gossip-SUSPECT-of-unknown path ([#applyNewSuspectMember]), an unconfirmed
     /// member is born OBSERVED; an unknown ALIVE/FAULTY gossip is still honoured in its gossiped state.
     private void introduceAnnouncedObserved(Announce announce, InetSocketAddress probeAddress) {
+        requireConfined("introduceAnnouncedObserved");
         if (blockedByDeathRecord(announce.nodeInfo().id(),
                                  announce.incarnation(),
                                  announce.bootToken()) || blockedByTombstone(announce.nodeInfo().id(),
@@ -2760,6 +2866,15 @@ public final class SwimProtocol implements SwimMessageHandler {
                              long incarnation,
                              long bootToken,
                              List<InetSocketAddress> seeds) {
+        stateExecutor.execute(() -> armAnnounce(self, clusterName, incarnation, bootToken, seeds));
+    }
+
+    private void armAnnounce(NodeInfo self,
+                             String clusterName,
+                             long incarnation,
+                             long bootToken,
+                             List<InetSocketAddress> seeds) {
+        requireConfined("armAnnounce");
         // #501: arming is lifecycle state, so it is serialized against start()/stop() by the same
         // lock. Without it the announce loop can be installed after a concurrent stop() has already
         // read announceFuture, leaving a live loop no stop() can reach.
@@ -2888,6 +3003,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// the conflicting token, the resident process is treated as dead — FAULTY now, unless it already
     /// is — so a same-address new process answering probes can never keep the old member alive.
     private void onRetired(NodeId peer) {
+        stateExecutor.execute(() -> applyRetirement(peer));
+    }
+
+    private void applyRetirement(NodeId peer) {
+        requireConfined("applyRetirement");
         deathRecords.remove(peer);
         option(members.get(peer)).onPresent(this::declareRetiredDead);
     }
@@ -2939,11 +3059,16 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Install the node's boot-token registry — the SAME instance the QUIC transport admits Hellos
     /// through — before any peer evidence arrives. The registry's own token is this process's.
     public Unit setBootTokens(BootTokens registry) {
+        stateExecutor.execute(() -> installBootTokens(registry));
+
+        return Unit.unit();
+    }
+
+    private void installBootTokens(BootTokens registry) {
+        requireConfined("installBootTokens");
         bootTokens = registry;
         registry.onRetired(this::onRetired);
         selfBootToken.compareAndSet(0L, registry.self());
-
-        return Unit.unit();
     }
 
     /// Whether `peer` was retired by a boot-token conflict (a different process reused its NodeId).
@@ -3012,6 +3137,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void relayPingReq(InetSocketAddress requesterAddress, PingReq pingReq, SwimMember target) {
+        requireConfined("relayPingReq");
         var relaySeq = sequenceCounter.incrementAndGet();
 
         pendingRelays.put(relaySeq,
@@ -3061,6 +3187,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void applyAliveFromAck(NodeId nodeId, SwimMember member) {
+        requireConfined("applyAliveFromAck");
         var alive = member.withState(MemberState.ALIVE);
 
         if (!storeScopedMember(nodeId, alive)) {
@@ -3150,6 +3277,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// healthy idle node's score at the cap, one increment per replayed receipt).
     /// One genuine suspicion event => exactly one refutation + one LHM increment.
     private void handleSelfUpdate(MembershipUpdate update) {
+        requireConfined("handleSelfUpdate");
         if (update.state() != MemberState.SUSPECT && update.state() != MemberState.FAULTY) {
             return;
         }
@@ -3196,6 +3324,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void applyNewMember(MembershipUpdate update) {
+        requireConfined("applyNewMember");
         // #964 S1: refuse BEFORE the put. The `case UNKNOWN` arm below runs AFTER `members.put`, so it
         // only skipped the listener notification — the member was still stored as UNKNOWN, never probed
         // (`isProbable` is an ALIVE/SUSPECT/OBSERVED allowlist) and never swept (`isFaultyAndExpired`
@@ -3286,6 +3415,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// CONTRADICTS it (S06 poison case); ABSENT/DOWN local evidence accepts the verdict (an
     /// unknown/fresh peer or a genuinely-departed victim must NOT be kept artificially counted).
     private void applyNewFaultyMember(SwimMember member) {
+        requireConfined("applyNewFaultyMember");
         if (isContradictedByLiveTransport(member.nodeId())) {
             downgradeContradictedFaulty(member);
 
@@ -3479,6 +3609,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void notifyAlive(SwimMember updated) {
+        requireConfined("notifyAlive");
         // Wave-6 hygiene: the gossip-driven ALIVE re-admit refutes any active suspicion
         // and ends any FAULTY residency — disarm both so no stale timer/stamp lingers.
         endSuspicion(updated.nodeId());
@@ -3494,6 +3625,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void notifyFaulty(SwimMember updated) {
+        requireConfined("notifyFaulty");
         // SECOND-HAND (gossip-disseminated) FAULTY edge. P1 death-path co-confirmation (refined):
         // downgrade to SUSPECT ONLY when this node's OWN live transport link to the peer
         // CONTRADICTS the verdict ("gossip says dead, my QUIC link is up" — the S06 poison case).
@@ -3644,6 +3776,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// longer isolated (a returning peer's re-announcement / probe-ack / gossip-ALIVE refutation).
     /// If self-isolation was latched, clear it and expire the isolation-era FAULTY backlog.
     private void recordHealthyAndEmit(NodeId peer, long incarnation) {
+        requireConfined("recordHealthyAndEmit");
         if (!inMembershipScope(peer)) {
             return;
         }
@@ -3698,6 +3831,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// or a current transport death hint (#1061) — so a single prober's transient SUSPECT cannot terminally
     /// depart an established peer.
     private void emitFaultyOrUnknown(NodeId peer, long incarnation, boolean firstHand) {
+        requireConfined("emitFaultyOrUnknown");
         if (isRetired(peer)) {
             coldBootSuppressedFaulty.remove(peer);
             sweptSuppressedDeaths.remove(peer);
@@ -3746,6 +3880,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// See [#retiredDeathEmitted]: whichever path reaches a retired identity first emits its death, and no path emits it twice.
     private void emitRetiredDeathOnce(NodeId peer, long incarnation) {
+        requireConfined("emitRetiredDeathOnce");
         if (!retiredDeathEmitted.add(peer)) {
             return;
         }
@@ -3818,6 +3953,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// death notice (#3028 §3.1-§3.2), is re-admitted under its own identity, and its
     /// `HealthyObserved` edge drives the restore path.
     private void emitFaultyAndDeparted(NodeId peer, long incarnation) {
+        requireConfined("emitFaultyAndDeparted");
         lastEmittedHealth.compute(peer, (_, prev) -> emitFaultyEdgePair(peer, prev, incarnation));
     }
 
@@ -3861,6 +3997,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// One-shot, like [#reevaluateSuppressedFaulty], for a deferral whose member was swept. A peer that is a member again
     /// (it came back) is judged anew by the normal edges and has nothing to replay.
     private void replaySweptDeath(NodeId peer) {
+        requireConfined("replaySweptDeath");
         option(sweptSuppressedDeaths.remove(peer)).filter(_ -> !members.containsKey(peer))
               .onPresent(incarnation -> replaySweptEdge(peer, incarnation));
     }
@@ -3878,6 +4015,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// outcome. A peer no longer FAULTY (refuted back to ALIVE, or swept) or since observed HEALTHY has
     /// nothing to replay.
     private void reevaluateSuppressedFaulty(NodeId peer) {
+        requireConfined("reevaluateSuppressedFaulty");
         option(coldBootSuppressedFaulty.remove(peer)).onPresent(firstHand -> replayIfStillSuppressed(peer, firstHand));
     }
 
@@ -3893,6 +4031,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// The deferred edge, taken now: residency restarts at the edge whose broadcast actually fires
     /// (H8), and the FAULTY-edge tombstone the suppression skipped is set.
     private void replayFaultyEdge(SwimMember member, boolean firstHand) {
+        requireConfined("replayFaultyEdge");
         LOG.info("SWIM cold-boot suppression lifted (#1830): replaying the deferred FAULTY edge for never-HEALTHY peer {}",
                  member.nodeId().id());
         faultyStampedAtMs.put(member.nodeId(), System.currentTimeMillis());
@@ -3913,6 +4052,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void reevaluateVetoedFaulty(NodeId peer) {
+        requireConfined("reevaluateVetoedFaulty");
         if (transportConnected.test(peer)) {
             return;
         }
@@ -3978,6 +4118,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// as part of the FAULTY-edge pair in [#emitFaultyAndDeparted], not through this
     /// method — the former sweep-time terminal emission is gone.)
     private void emitObservationOnEdge(NodeId peer, SwimHealth target, Supplier<SwimObservation> factory) {
+        requireConfined("emitObservationOnEdge");
         if (!inMembershipScope(peer)) {
             return;
         }
@@ -4033,7 +4174,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Test-only: whether the self-isolation latch (P2) is currently set.
     @Contract
     void joinAcknowledgedForTest() {
-        joinAckReceived = true;
+        onStateExecutorForTest(() -> joinAckReceived = true);
     }
 
     boolean selfIsolatedForTest() {
@@ -4043,7 +4184,48 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Test-only accessor for the per-peer suspect-timestamp map. Used by
     /// transport-hint tests to validate the timer-bias mechanism deterministically.
     Option<Long> suspectTimestampForTest(NodeId peer) {
-        return option(suspectTimestamps.get(peer));
+        return option(suspicions.get(peer)).map(Suspicion::startedAtMs);
+    }
+
+    /// Test-only: one suspicion-expiry pass ([#expireSuspectMembers]) evaluated at `nowMs`, so a
+    /// test can expire a suspicion without waiting for its window on the scheduler (#3526).
+    @Contract
+    void expireSuspectMembersForTest(long nowMs) {
+        onStateExecutorForTest(() -> expireSuspectMembers(nowMs));
+    }
+
+    /// Test-only: one [#latchSelfIsolation] with `allPeersFaulty` as the check, run on [#stateExecutor] and
+    /// waited for, so a test can hold the check-to-write window open (#1990) and read the outcome.
+    boolean latchSelfIsolationForTest(BooleanSupplier allPeersFaulty) {
+        return stateExecutor.call(() -> latchSelfIsolation(allPeersFaulty))
+                            .unwrap();
+    }
+
+    /// Test-only (#3529 confinement sensor): member/suspicion writes that ran off [#stateExecutor] so far.
+    long offExecutorMutationsForTest() {
+        return offExecutorMutations.get();
+    }
+
+    /// Test-only (#3529 sensor liveness): hand `message` straight to its handler OFF [#stateExecutor], so a test can
+    /// prove the confinement sensor counts a write reached on that path. Never used to apply state in a test.
+    @Contract
+    void handleMessageOffExecutorForTest(InetSocketAddress sender, SwimMessage message) {
+        handleMessage(sender, message);
+    }
+
+    /// Test-only (#3529): run `action` on [#stateExecutor], serially with the tick and every message, and wait
+    /// for it ([SerialExecutor#call], the strict test-only wait). Every state-writing test seam goes through it, so
+    /// a test reads its own seam write on return even while the tick drains; a test also uses it to hold the
+    /// executor (and so every mutation) at a chosen point. Never call it from inside a task (a listener callback).
+    @Contract
+    void onStateExecutorForTest(Runnable action) {
+        stateExecutor.call(() -> runForTest(action)).unwrap();
+    }
+
+    private static Unit runForTest(Runnable action) {
+        action.run();
+
+        return Unit.unit();
     }
 
     /// Test-only accessor for the per-peer tombstone state. Used by the
@@ -4060,7 +4242,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Test-only: write a death record through the capped write path, with an explicit creation time.
     @Contract
     void putDeathRecordForTest(NodeId peer, long incarnation, long bootToken, long createdAtMs) {
-        putDeathRecord(peer, new DeathRecord(incarnation, bootToken, createdAtMs));
+        onStateExecutorForTest(() -> putDeathRecord(peer, new DeathRecord(incarnation, bootToken, createdAtMs)));
     }
 
     /// Test-only: the number of death records held.
@@ -4079,8 +4261,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// `SwimAnnounceSourcePinTest`, which never takes this shortcut.
     @Contract
     void announceFromPinnedSourceForTest(InetSocketAddress sender, Announce announce) {
-        addressPins.put(announce.nodeInfo().id(),
-                        sender.getAddress());
+        onStateExecutorForTest(() -> addressPins.put(announce.nodeInfo().id(),
+                                                     sender.getAddress()));
         onMessage(sender, announce);
     }
 
@@ -4124,23 +4306,28 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// from a strictly newer incarnation). An unchanged report is a no-op: no bump, no gossip. Before `announceJoin`
     /// seeds the incarnation the label is only stored, and the first self-ALIVE carries it.
     public Unit reportSelfQuorum(QuorumReport report) {
-        synchronized (selfQuorumReportLock) {
-            var next = withQuorumReport(selfLabels,
-                                        report.wireValue().map(value -> Map.of(LABEL_QUORUM, value)).or(Map.of()));
-
-            if (next.equals(selfLabels)) {
-                return Unit.unit();
-            }
-
-            selfLabels = next;
-            advertiseQuorumReport(report);
-        }
+        stateExecutor.execute(() -> applySelfQuorumReport(report));
 
         return Unit.unit();
     }
 
+    /// Runs on [#stateExecutor] (#3529), which makes the label swap and its incarnation bump one step.
+    private void applySelfQuorumReport(QuorumReport report) {
+        requireConfined("applySelfQuorumReport");
+        var next = withQuorumReport(selfLabels,
+                                    report.wireValue().map(value -> Map.of(LABEL_QUORUM, value)).or(Map.of()));
+
+        if (next.equals(selfLabels)) {
+            return;
+        }
+
+        selfLabels = next;
+        advertiseQuorumReport(report);
+    }
+
     @Contract
     private void advertiseQuorumReport(QuorumReport report) {
+        requireConfined("advertiseQuorumReport");
         if (selfIncarnation.get() == 0) {
             return;
         }
@@ -4176,7 +4363,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Test-only: one [#probeRound], including the isolation ping (#3028 §3.4).
     @Contract
     void probeRoundForTest() {
-        probeRound();
+        onStateExecutorForTest(this::probeRound);
     }
 
     /// Test-only: run one least-recently-probed selection-and-probe cycle (the
@@ -4185,6 +4372,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// to drive selection deterministically without scheduler timing. Returns the selected
     /// target (if any) so a test can assert which member was chosen.
     Option<SwimMember> probeOnceForTest() {
+        return stateExecutor.call(this::probeOnce)
+                            .unwrap();
+    }
+
+    private Option<SwimMember> probeOnce() {
         var selected = selectNextProbeTarget();
 
         selected.onPresent(this::probeTarget);
@@ -4197,9 +4389,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// regression tests to set up and churn a controlled membership set.
     @Contract
     void putMemberForTest(NodeId nodeId, InetSocketAddress address, MemberState state) {
-        if (!storeScopedMember(nodeId, SwimMember.swimMember(nodeId, state, 0, address))) {
-            return;
-        }
+        onStateExecutorForTest(() -> storeScopedMember(nodeId, SwimMember.swimMember(nodeId, state, 0, address)));
     }
 
     /// Test-only: remove a member directly from the membership map (and its probe
@@ -4207,6 +4397,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// regression tests to churn a flapping member between selections.
     @Contract
     void removeMemberForTest(NodeId nodeId) {
+        onStateExecutorForTest(() -> removeMember(nodeId));
+    }
+
+    private void removeMember(NodeId nodeId) {
+        requireConfined("removeMember");
         members.remove(nodeId);
         lastProbedAt.remove(nodeId);
     }

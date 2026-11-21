@@ -1145,8 +1145,9 @@ public class AlertManager {
     /// unmarked departure always alerts, so a missed or dropped mark costs a spurious CRITICAL, never a
     /// silent one. Suppressing a real failure would re-create the defect this ticket exists to remove.
     ///
-    /// Cleared by [`#clearNodeHealthAlert`] when the node rejoins. Raising without clearing would leave
-    /// a permanently red signal, which trains an operator to ignore the surface.
+    /// Cleared by [`#clearNodeHealthAlert`] when the node rejoins, i.e. when the membership FSM that raised
+    /// this alert re-admits it. Raising without clearing would leave a permanently red signal, which trains an
+    /// operator to ignore the surface.
     @Contract
     public void onNodeFailed(NodeId failed, NodeId observedBy) {
         if (announcedDeparture.remove(failed.id()) != null) {
@@ -1185,21 +1186,37 @@ public class AlertManager {
         }
     }
 
-    /// Resolve the node-health alert for `rejoined` (#926). Wired to the transport `PeerJoined`
-    /// handshake — the same ungated surface that sources NODE_JOINED — so recovery is exactly as
-    /// reachable as the failure it clears. A no-op when no alert is active for that node.
+    /// Resolve the node-health alert for `rejoined` (#926). Wired to the membership FSM's edge INTO `Member`
+    /// (`MembershipAssembly`), the same ungated per-node FSM whose DEAD edge raised it, so recovery is exactly as
+    /// reachable as the failure it clears and reverses the same verdict. A no-op when no alert is active for that
+    /// node.
+    ///
+    /// #2061: it was wired to the transport `PeerJoined` handshake, and a handshake is not a rejoin. A node whose
+    /// SWIM traffic is lost but whose QUIC Hello still passes re-dials the observer that just dropped its link, the
+    /// transport re-admits it (configured core), and the alert was resolved 130 ms after it was raised, while the
+    /// observer's FSM still held the node DEAD and its replacement was being provisioned. The DEAD edge fires once,
+    /// so nothing re-raised it: an unplanned death with no operator alert. The drain marks still end on the
+    /// handshake ([`#forgetDepartureMarks`]); losing one early costs a spurious CRITICAL, never a silent one.
     ///
     /// This clear is id-exact and therefore CANNOT resolve a CTM-replaced node, whose replacement boots
     /// under a freshly minted random id. That case is handled by the bound above, not here; the honest
     /// statement is that a replaced node's alert ages out under churn rather than being resolved.
     @Contract
     public void clearNodeHealthAlert(NodeId rejoined) {
-        announcedDeparture.remove(rejoined.id());
-        broadcastDrainSeen.remove(rejoined.id());
         nodeHealthAlertOrder.remove(AlertEvent.NodeHealthAlert.alertId(rejoined));
         Option.option(activeNodeHealthAlerts.remove(AlertEvent.NodeHealthAlert.alertId(rejoined))).onPresent(cleared -> log.info("Node-health alert resolved for {} — node rejoined (was: {})",
                                                                                                                                  rejoined.id(),
                                                                                                                                  cleared.reason()));
+    }
+
+    /// Drop the announced-departure marks for `reconnected` (#926), wired to the transport `PeerJoined` handshake
+    /// that used to clear them together with the alert. Kept on the handshake: a mark that ends early costs a
+    /// spurious CRITICAL on a later departure, the deliberate direction of the bias above. The alert itself is
+    /// NOT resolved here (#2061, see [`#clearNodeHealthAlert`]).
+    @Contract
+    public void forgetDepartureMarks(NodeId reconnected) {
+        announcedDeparture.remove(reconnected.id());
+        broadcastDrainSeen.remove(reconnected.id());
     }
 
     /// #1564: resolve every injected alert named `name`. For a node-raised alert whose condition has cleared (the

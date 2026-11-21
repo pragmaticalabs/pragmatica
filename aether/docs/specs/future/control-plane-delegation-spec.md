@@ -444,7 +444,7 @@ All four follow identical patterns:
 |--------|---------|----------------|
 | Activation | `onLeaderChange` --- creates `Active` state record with full state reconstruction | `DelegatedComponent.activate()` |
 | State | Blueprint map, slice states, allocation index, draining nodes, in-flight blueprints, retry counters, transitional timestamps, community governors. All in `Active` record. | Same reconstruction from KV-Store. The `Active` record constructor already handles this. |
-| KV Writes | SliceNodeKey, ActivationDirectiveKey, WorkerSliceDirectiveKey, etc. | Same |
+| KV Writes | SliceNodeKey, ActivationDirectiveKey, etc. | Same |
 | Deactivation | Switch to `Dormant` record | Same --- `Dormant` record's default methods are all no-ops |
 
 **CDM already implements the Dormant/Active pattern.** Changes:

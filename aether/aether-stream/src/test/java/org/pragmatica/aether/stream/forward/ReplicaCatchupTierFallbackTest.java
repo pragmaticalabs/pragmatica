@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.OwnerActivation;
@@ -314,7 +315,7 @@ class ReplicaCatchupTierFallbackTest {
         var refused = client.readRemoteCatchup(OWNER, STREAM, PARTITION, 0, 10).await();
 
         assertThat(failureMessage(refused)).contains("Cursor at offset 0 has expired, oldest available is 1");
-        assertThat(failureCause(refused)).as("the typed refusal crosses the wire (#1967)").isEqualTo(new StreamError.CursorExpired(0L, 1L));
+        assertThat(failureCause(refused)).as("the typed refusal crosses the wire (#1967)").isEqualTo(new StreamError.CursorExpired(0L, 1L, RemovalCause.RETENTION));
     }
 
     /// #1555 (v1555 R3): the owner promotion gate reads the CANDIDATE'S own window exactly as a peer's catch-up
@@ -450,7 +451,7 @@ class ReplicaCatchupTierFallbackTest {
         var refused = client.readRemoteCatchup(OWNER, STREAM, PARTITION, 0, 10).await();
 
         assertThat(failureMessage(refused)).contains("Cursor at offset 0 has expired, oldest available is 1");
-        assertThat(failureCause(refused)).as("the typed refusal crosses the wire (#1967)").isEqualTo(new StreamError.CursorExpired(0L, 1L));
+        assertThat(failureCause(refused)).as("the typed refusal crosses the wire (#1967)").isEqualTo(new StreamError.CursorExpired(0L, 1L, RemovalCause.RETENTION));
     }
 
     /// Production shape (`AetherNode.assembleNode`): the HRW owner is known (members = `[OWNER]`), the probe answers

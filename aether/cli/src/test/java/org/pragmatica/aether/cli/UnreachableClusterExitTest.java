@@ -18,7 +18,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.pragmatica.testlogging.UnreachablePort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -33,8 +32,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// [AetherCliEndpointPrecedenceTest] does) because the exit code is what the operator's script
 /// sees, and `main` reaches it through `System.exit`. stdout and stderr are captured separately:
 /// the claim is "the cause is on stderr and the table is NOT on stdout", which a merged stream
-/// cannot distinguish. The endpoint is a loopback port the test holds (UnreachablePort, #3321), so the
-/// connection is refused at once rather than timing out, and no other process can take the port before the child connects.
+/// cannot distinguish. The endpoint is a DeadEndpoint (#3558): it accepts and closes every connection unanswered, so the
+/// transport failure is by construction, at once, and does not rest on what the kernel does with a closed port under load.
 ///
 /// The sibling list commands share the one producer (`fetch`) and the one consumer
 /// (`printQuery`), so they are pinned here too: one shape, one fix.
@@ -55,23 +54,23 @@ class UnreachableClusterExitTest {
     Path home;
 
     private String unreachable;
-    private UnreachablePort heldPort;
+    private DeadEndpoint deadEndpoint;
     private HttpServer scripted;
 
     @BeforeEach
-    void heldLoopbackPort() throws IOException {
-        heldPort = UnreachablePort.hold();
-        unreachable = "127.0.0.1:" + heldPort.port();
+    void deadEndpoint() throws IOException {
+        deadEndpoint = DeadEndpoint.start();
+        unreachable = "127.0.0.1:" + deadEndpoint.port();
     }
 
     @AfterEach
     void stopScripted() throws IOException {
         try {
-            if (heldPort != null) {
-                heldPort.close();
+            if (deadEndpoint != null) {
+                deadEndpoint.close();
             }
         } finally {
-            // a failing close must not leave the scripted server running; a null heldPort means setup failed
+            // a failing close must not leave the scripted server running; a null deadEndpoint means setup failed
             if (scripted != null) {
                 scripted.stop(0);
             }

@@ -73,6 +73,8 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.aether.api.ApiCodecsNode.CODECS);
         all.addAll(org.pragmatica.aether.slice.generation.GenerationCodecsSlice.CODECS);
         all.addAll(org.pragmatica.aether.slice.blueprint.BlueprintCodecsSlice.CODECS);
+        // #3458 M-1b: the removal cause enum `ReadRefusal` carries. Aggregation is manual, so it is inert until this line exists.
+        all.addAll(org.pragmatica.aether.slice.stream.StreamCodecsSlice.CODECS);
         all.addAll(org.pragmatica.aether.invoke.InvokeCodecsInvoke.CODECS);
         // #2157: tag 642 keeps decoding the shape InvokeRequest had before `caller`; the current shape is 644.
         all.add(org.pragmatica.aether.invoke.LegacyInvokeRequest.CODEC);

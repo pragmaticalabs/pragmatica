@@ -941,18 +941,14 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
-    /// Phase 1 step J — observability atom mirroring the in-process `JOIN_DEADLINE`
-    /// scheduler entry the leader's `MembershipFsm` arms when a peer enters JOINING.
-    /// Replicated via Rabia so a new leader on takeover can reconstruct the deadline from
-    /// KV state instead of relying on the prior leader's in-memory scheduler. The atom is
-    /// pure observability — the scheduler is still the trigger; the KV `Remove` on
-    /// JOINING-exit is what stops the new leader from re-arming a stale timer.
-    record JoinDeadlineKey(NodeId nodeId) implements RuntimeKey {
-        private static final String PREFIX = "join-deadline/";
+    /// #3413: the committed drain row's key, one per target node. Runtime state: a drain command names a node of the running cluster,
+    /// so it is neither backed up nor replicated to workers.
+    record DrainCommandKey(NodeId target) implements RuntimeKey {
+        private static final String PREFIX = "drain-command/";
 
         @Override
         public String asString() {
-            return PREFIX + nodeId.id();
+            return PREFIX + target.id();
         }
 
         @Override
@@ -960,59 +956,22 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
             return asString();
         }
 
-        public static JoinDeadlineKey joinDeadlineKey(NodeId nodeId) {
-            return new JoinDeadlineKey(nodeId);
+        public static DrainCommandKey drainCommandKey(NodeId target) {
+            return new DrainCommandKey(target);
         }
 
-        public static Result<JoinDeadlineKey> joinDeadlineKey(String key) {
+        public static Result<DrainCommandKey> drainCommandKey(String key) {
             if (!key.startsWith(PREFIX)) {
-                return JOIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();
+                return DRAIN_COMMAND_KEY_FORMAT_ERROR.apply(key).result();
             }
 
-            var nodeIdPart = key.substring(PREFIX.length());
+            var targetPart = key.substring(PREFIX.length());
 
-            if (nodeIdPart.isEmpty()) {
-                return JOIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();
+            if (targetPart.isEmpty()) {
+                return DRAIN_COMMAND_KEY_FORMAT_ERROR.apply(key).result();
             }
 
-            return NodeId.nodeId(nodeIdPart).map(JoinDeadlineKey::new);
-        }
-    }
-
-    /// Phase 1 step J — observability atom mirroring the in-process `DRAIN_DEADLINE`
-    /// scheduler entry. Written on DRAINING entry, removed on any DRAINING-exit
-    /// (DECOMMISSIONED, FAILED_DRAIN). The new leader inspects this atom on takeover to
-    /// resume the drain hard-deadline countdown against wall-clock instead of the prior
-    /// leader's elapsed timer.
-    record DrainDeadlineKey(NodeId nodeId) implements RuntimeKey {
-        private static final String PREFIX = "drain-deadline/";
-
-        @Override
-        public String asString() {
-            return PREFIX + nodeId.id();
-        }
-
-        @Override
-        public String toString() {
-            return asString();
-        }
-
-        public static DrainDeadlineKey drainDeadlineKey(NodeId nodeId) {
-            return new DrainDeadlineKey(nodeId);
-        }
-
-        public static Result<DrainDeadlineKey> drainDeadlineKey(String key) {
-            if (!key.startsWith(PREFIX)) {
-                return DRAIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();
-            }
-
-            var nodeIdPart = key.substring(PREFIX.length());
-
-            if (nodeIdPart.isEmpty()) {
-                return DRAIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();
-            }
-
-            return NodeId.nodeId(nodeIdPart).map(DrainDeadlineKey::new);
+            return NodeId.nodeId(targetPart).map(DrainCommandKey::new);
         }
     }
 
@@ -1079,53 +1038,6 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
             }
 
             return CONFIG_KEY_FORMAT_ERROR.apply(raw).result();
-        }
-    }
-
-    /// Runtime: derived by the allocation engine from [SliceTargetKey], which is what gets backed up.
-    record WorkerSliceDirectiveKey(Artifact artifact, Option<String> communityId) implements RuntimeKey {
-        private static final String PREFIX = "worker-directive/";
-
-        @Override
-        public String asString() {
-            return communityId.map(c -> PREFIX + c + "/" + artifact.asString())
-                              .or(PREFIX + artifact.asString());
-        }
-
-        @Override
-        public String toString() {
-            return asString();
-        }
-
-        public static WorkerSliceDirectiveKey workerSliceDirectiveKey(Artifact artifact) {
-            return new WorkerSliceDirectiveKey(artifact, Option.none());
-        }
-
-        public static WorkerSliceDirectiveKey workerSliceDirectiveKey(Artifact artifact, String communityId) {
-            return new WorkerSliceDirectiveKey(artifact, Option.option(communityId));
-        }
-
-        public static Result<WorkerSliceDirectiveKey> workerSliceDirectiveKey(String key) {
-            if (!key.startsWith(PREFIX)) {
-                return WORKER_DIRECTIVE_KEY_FORMAT_ERROR.apply(key).result();
-            }
-
-            var rest = key.substring(PREFIX.length());
-            var slashIndex = rest.indexOf('/');
-
-            if (slashIndex >= 0) {
-                return parseCommunityKey(rest, slashIndex);
-            }
-
-            return Artifact.artifact(rest).map(art -> new WorkerSliceDirectiveKey(art, Option.none()));
-        }
-
-        private static Result<WorkerSliceDirectiveKey> parseCommunityKey(String rest, int slashIndex) {
-            var communityPart = rest.substring(0, slashIndex);
-            var artifactPart = rest.substring(slashIndex + 1);
-
-            return Artifact.artifact(artifactPart).map(art -> new WorkerSliceDirectiveKey(art,
-                                                                                          Option.some(communityPart)));
         }
     }
 
@@ -1787,11 +1699,7 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
 
     Fn1<Cause, String> CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid config key format: %s");
 
-    Fn1<Cause, String> JOIN_DEADLINE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid join-deadline key format: %s");
-
-    Fn1<Cause, String> DRAIN_DEADLINE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid drain-deadline key format: %s");
-
-    Fn1<Cause, String> WORKER_DIRECTIVE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid worker-directive key format: %s");
+    Fn1<Cause, String> DRAIN_COMMAND_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid drain-command key format: %s");
 
     Fn1<Cause, String> ACTIVATION_DIRECTIVE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid activation key format: %s");
 
@@ -2419,38 +2327,6 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
-    record ClusterPhaseKey() implements RuntimeKey {
-        private static final String KEY = "cluster-phase";
-
-        @SuppressWarnings("JBCT-VO-02")
-        public static final ClusterPhaseKey SINGLETON = new ClusterPhaseKey();
-
-        @Override
-        public String asString() {
-            return KEY;
-        }
-
-        @Override
-        public String toString() {
-            return asString();
-        }
-
-        @SuppressWarnings("JBCT-VO-02")
-        public static ClusterPhaseKey clusterPhaseKey() {
-            return SINGLETON;
-        }
-
-        public static Result<ClusterPhaseKey> clusterPhaseKey(String key) {
-            if (!KEY.equals(key)) {
-                return CLUSTER_PHASE_KEY_FORMAT_ERROR.apply(key).result();
-            }
-
-            return success(SINGLETON);
-        }
-    }
-
-    Fn1<Cause, String> CLUSTER_PHASE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-phase key format: %s");
-
     /// Durable singleton key for the operator's cluster-wide auto-heal enable/disable flag (#685).
     /// The disable is a cluster fact stored in consensus KV, not a leader's in-memory state: a read
     /// reflects the log applied LOCALLY, so the flag becomes visible on a node when that node applies
@@ -2934,6 +2810,106 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
             return Number.parseInt(identity.substring(lastSep + 1))
                          .mapError(_ -> ENTITY_CHECKPOINT_KEY_FORMAT_ERROR.apply(PREFIX + identity))
                          .map(partition -> new EntityCheckpointKey(keyspace, partition));
+        }
+    }
+
+    /// The offer of a parent arc's seed to a child arc of one entity keyspace `(keyspace, parent)` (#3303 A3a).
+    ///
+    /// `keyspace` is the RAW name from `resources.toml`, as in [EntityCheckpointKey]. Cluster state, backed up (design r8.2 l.476).
+    /// Wire-tagged in A3a; the value is A3b's.
+    record EntitySeedOfferKey(String keyspace, int parent) implements ClusterStateKey {
+        private static final String PREFIX = "entity-seed-offer/";
+        private static final String SEP = "/";
+
+        private static final Fn1<Cause, String> ENTITY_SEED_OFFER_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid entity-seed-offer key format: %s");
+
+        @Override
+        public String asString() {
+            return PREFIX + keyspace + SEP + parent;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static EntitySeedOfferKey entitySeedOfferKey(String keyspace, int parent) {
+            return new EntitySeedOfferKey(keyspace, parent);
+        }
+
+        /// Rebuild from the full [#asString] form, the inverse a backup needs.
+        public static Result<EntitySeedOfferKey> entitySeedOfferKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return ENTITY_SEED_OFFER_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return fromIdentity(key.substring(PREFIX.length()));
+        }
+
+        /// Rebuild from the snapshot IDENTITY `<keyspace>/<parent>`, splitting on the LAST separator: the keyspace is
+        /// author-supplied and stored raw, so the id is always the final component.
+        public static Result<EntitySeedOfferKey> fromIdentity(String identity) {
+            var lastSep = identity.lastIndexOf(SEP);
+
+            if (lastSep <= 0 || lastSep == identity.length() - 1) {
+                return ENTITY_SEED_OFFER_KEY_FORMAT_ERROR.apply(PREFIX + identity).result();
+            }
+
+            var keyspace = identity.substring(0, lastSep);
+
+            return Number.parseInt(identity.substring(lastSep + 1))
+                         .mapError(_ -> ENTITY_SEED_OFFER_KEY_FORMAT_ERROR.apply(PREFIX + identity))
+                         .map(parent -> new EntitySeedOfferKey(keyspace, parent));
+        }
+    }
+
+    /// The operator waiver of the loss of one child arc of an entity keyspace `(keyspace, child)` (#3303 A3a).
+    ///
+    /// `keyspace` is the RAW name from `resources.toml`, as in [EntityCheckpointKey]. Cluster state, backed up (design r8.2 l.476).
+    /// Wire-tagged in A3a; the value is A3b's.
+    record EntityArcWaiverKey(String keyspace, int child) implements ClusterStateKey {
+        private static final String PREFIX = "entity-arc-waiver/";
+        private static final String SEP = "/";
+
+        private static final Fn1<Cause, String> ENTITY_ARC_WAIVER_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid entity-arc-waiver key format: %s");
+
+        @Override
+        public String asString() {
+            return PREFIX + keyspace + SEP + child;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static EntityArcWaiverKey entityArcWaiverKey(String keyspace, int child) {
+            return new EntityArcWaiverKey(keyspace, child);
+        }
+
+        /// Rebuild from the full [#asString] form, the inverse a backup needs.
+        public static Result<EntityArcWaiverKey> entityArcWaiverKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return ENTITY_ARC_WAIVER_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return fromIdentity(key.substring(PREFIX.length()));
+        }
+
+        /// Rebuild from the snapshot IDENTITY `<keyspace>/<child>`, splitting on the LAST separator: the keyspace is
+        /// author-supplied and stored raw, so the id is always the final component.
+        public static Result<EntityArcWaiverKey> fromIdentity(String identity) {
+            var lastSep = identity.lastIndexOf(SEP);
+
+            if (lastSep <= 0 || lastSep == identity.length() - 1) {
+                return ENTITY_ARC_WAIVER_KEY_FORMAT_ERROR.apply(PREFIX + identity).result();
+            }
+
+            var keyspace = identity.substring(0, lastSep);
+
+            return Number.parseInt(identity.substring(lastSep + 1))
+                         .mapError(_ -> ENTITY_ARC_WAIVER_KEY_FORMAT_ERROR.apply(PREFIX + identity))
+                         .map(child -> new EntityArcWaiverKey(keyspace, child));
         }
     }
 }

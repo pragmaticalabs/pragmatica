@@ -53,9 +53,8 @@ class SegmentFallbackTest {
     /// Small ring buffer capacity to force eviction quickly.
     private static final int RING_CAPACITY = 5;
     private static final int RING_DATA_BYTES = 1024;
-    /// Ring control layout (header then 24-byte index entries); mirrors `OffHeapRingBuffer`'s private constants.
-    private static final long HEADER_CAPACITY = 40;
-    private static final long INDEX_START = 64;
+    /// Ring index layout (24-byte entries, slot `i` at `i * INDEX_ENTRY_SIZE` of the index slice); mirrors
+    /// `OffHeapRingBuffer`'s private constants.
     private static final long INDEX_ENTRY_SIZE = 24;
 
     private StorageInstance storage;
@@ -245,25 +244,33 @@ class SegmentFallbackTest {
         }
 
         private static void corruptEveryIndexSlot(OffHeapRingBuffer ring) {
-            var control = controlSegment(ring);
-            var capacity = control.get(ValueLayout.JAVA_LONG, HEADER_CAPACITY);
+            var indexSlice = ringIndex(ring);
+            var capacity = ringHeader(ring).capacity();
 
             assertThat(capacity).as("PRECONDITION: ring capacity read from the header").isPositive();
 
             for (long slot = 0; slot < capacity; slot++) {
-                control.set(ValueLayout.JAVA_LONG, INDEX_START + slot * INDEX_ENTRY_SIZE, -1_000L);
+                indexSlice.set(ValueLayout.JAVA_LONG, slot * INDEX_ENTRY_SIZE, -1_000L);
             }
         }
 
-        private static MemorySegment controlSegment(OffHeapRingBuffer ring) {
+        private static RingHeader ringHeader(OffHeapRingBuffer ring) {
+            return (RingHeader) ringField(ring, "header");
+        }
+
+        private static MemorySegment ringIndex(OffHeapRingBuffer ring) {
+            return (MemorySegment) ringField(ring, "index");
+        }
+
+        private static Object ringField(OffHeapRingBuffer ring, String name) {
             try {
-                var field = OffHeapRingBuffer.class.getDeclaredField("controlSegment");
+                var field = OffHeapRingBuffer.class.getDeclaredField(name);
 
                 field.setAccessible(true);
 
-                return (MemorySegment) field.get(ring);
+                return field.get(ring);
             } catch (ReflectiveOperationException e) {
-                throw new AssertionError("controlSegment field not reachable", e);
+                throw new AssertionError(name + " field not reachable", e);
             }
         }
     }

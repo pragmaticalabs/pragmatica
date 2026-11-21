@@ -24,6 +24,7 @@ import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.TierAwareRetention;
 import org.pragmatica.aether.slice.stream.RingGeometry;
+import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.storage.AppendLog;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -59,17 +60,6 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// existing caller treat a released ring as the absent partition it has become.
     private static final long NO_OFFSET = -1L;
     private static final long NO_EVENTS = 0L;
-    private static final long HEADER_HEAD_OFFSET = 0;
-    private static final long HEADER_TAIL_OFFSET = 8;
-    private static final long HEADER_EVENT_COUNT = 16;
-    private static final long HEADER_DATA_WRITE_POS = 24;
-    private static final long HEADER_DATA_SIZE = 32;
-    private static final long HEADER_CAPACITY = 40;
-    /// Absolute (never wrapped) data position of the tail record's first byte; advances by the evicted
-    /// record's length in [#evictOldest]. `dataWritePos() - dataTailPos()` is the exact live byte count
-    /// (#1340 review M-1: reconstructing it from two ring-relative positions reads an EXACTLY full ring,
-    /// `headEnd == tailDataPos`, as empty).
-    private static final long HEADER_DATA_TAIL_POS = 48;
     private static final long HEADER_SIZE = RingGeometry.HEADER_SIZE;
     private static final long INDEX_ENTRY_SIZE = RingGeometry.INDEX_ENTRY_SIZE;
     private static final long INDEX_DATA_OFFSET = 0;
@@ -121,11 +111,14 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     private final long incarnation = INCARNATIONS.incrementAndGet();
     private final Arena arena;
-    private final MemorySegment controlSegment;
+    /// The control segment's header words; the only route to them (see [RingHeader]).
+    private final RingHeader header;
+    /// The control segment past the header: `capacity` index entries of `INDEX_ENTRY_SIZE` bytes, slot `i` at
+    /// `i * INDEX_ENTRY_SIZE`. It never covers the header.
+    private final MemorySegment index;
     private final List<MemorySegment> dataSegments;
     private final long capacity;
     private final long dataRegionSize;
-    private final long indexStart;
     private final String streamName;
     private final int partition;
     private final EvictionListener listener;
@@ -211,7 +204,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private final AtomicLong visibleOffset = new AtomicLong(NO_OFFSET);
 
     private OffHeapRingBuffer(Arena arena,
-                              MemorySegment controlSegment,
+                              RingHeader header,
+                              MemorySegment index,
                               List<MemorySegment> firstDataSegments,
                               long firstDataSegmentBytes,
                               long capacity,
@@ -225,13 +219,13 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                               LongSupplier budgetFreed,
                               long accountedBytes) {
         this.arena = arena;
-        this.controlSegment = controlSegment;
+        this.header = header;
+        this.index = index;
         this.dataSegments = new ArrayList<>();
         this.dataSegments.addAll(firstDataSegments);
         this.allocatedDataBytes = firstDataSegmentBytes;
         this.capacity = capacity;
         this.dataRegionSize = dataRegionSize;
-        this.indexStart = HEADER_SIZE;
         this.streamName = streamName;
         this.partition = partition;
         this.listener = listener;
@@ -450,17 +444,13 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var firstSegmentBytes = RingGeometry.firstSegmentBytes(dataRegionSize, maxEventSize);
         var controlSegment = arena.allocate(controlSize, 64);
         var firstDataSegments = allocateFirstRegion(arena, firstSegmentBytes);
+        var header = RingHeader.ringHeader(controlSegment);
 
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, -1L);
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, 0L);
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, 0L);
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS, 0L);
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_DATA_TAIL_POS, 0L);
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_DATA_SIZE, dataRegionSize);
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_CAPACITY, capacity);
+        header.initialize(dataRegionSize, capacity);
 
         return new OffHeapRingBuffer(arena,
-                                     controlSegment,
+                                     header,
+                                     controlSegment.asSlice(HEADER_SIZE),
                                      firstDataSegments,
                                      firstSegmentBytes,
                                      capacity,
@@ -1020,9 +1010,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var removed = head - keepThrough;
         var removedBytes = bytesOf(keepThrough + 1, head);
 
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, keepThrough);
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, rawEventCount() - removed);
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS, dataWritePos() - removedBytes);
+        header.setHead(keepThrough);
+        header.setEventCount(rawEventCount() - removed);
+        header.setDataWritePos(dataWritePos() - removedBytes);
         durableOffset.updateAndGet(value -> Math.min(value, keepThrough));
         visibleOffset.updateAndGet(value -> Math.min(value, keepThrough));
 
@@ -1095,9 +1085,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         // Tail first, then fence, then head — as evictOldest orders it: a reader that saw head = base
         // before tail = base + 1 would pass both range checks for an offset in [0, base] and copy an
         // unwritten slot (#1340 review N-4).
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, base + 1);
+        header.setTail(base + 1);
         VarHandle.storeStoreFence();
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, base);
+        header.setHead(base);
         lastSealedOffset = base;
         durableOffset.set(base);
         visibleOffset.set(visibleSeed);
@@ -1299,7 +1289,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
 
         if (offset < tail) {
-            return new StreamError.CursorExpired(offset, tail).result();
+            return new StreamError.CursorExpired(offset, tail, RemovalCause.RETENTION).result();
         }
 
         if (offset > Math.min(head, visibleOffset.get())) {
@@ -1396,7 +1386,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
 
         if (fromOffset < tail) {
-            return new StreamError.CursorExpired(fromOffset, tail).result();
+            return new StreamError.CursorExpired(fromOffset, tail, RemovalCause.RETENTION).result();
         }
 
         if (fromOffset > head) {
@@ -1441,7 +1431,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var tailAfterCopy = rawTailOffset();
 
         if (tailAfterCopy > fromOffset) {
-            return new StreamError.CursorExpired(fromOffset, tailAfterCopy).result();
+            return new StreamError.CursorExpired(fromOffset, tailAfterCopy, RemovalCause.RETENTION).result();
         }
 
         return success(copy);
@@ -1468,15 +1458,15 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// write a NEGATIVE event count into the header. Letting the native exception propagate to the
     /// enclosing [#guardedAccess] is what makes those paths fail closed as `BUFFER_CLOSED`.
     private long rawHeadOffset() {
-        return controlSegment.get(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET);
+        return header.head();
     }
 
     private long rawTailOffset() {
-        return controlSegment.get(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET);
+        return header.tail();
     }
 
     private long rawEventCount() {
-        return controlSegment.get(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT);
+        return header.eventCount();
     }
 
     /// Native-access boundary for the primitive header accessors (#999) — the `long`-returning sibling of
@@ -1599,14 +1589,14 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     public long allocatedBytes() {
-        return controlSegment.byteSize() + allocatedDataBytes;
+        return controlBytes() + allocatedDataBytes;
     }
 
     /// Control-region bytes (header + index). This portion of the floor is NOT accounted against the
     /// seam (the seam tracks only data segments), so the manager releases it separately on destroy to
     /// avoid double-release. See spec §4.3.
     public long controlBytes() {
-        return controlSegment.byteSize();
+        return HEADER_SIZE + index.byteSize();
     }
 
     /// Retention is a READ-MODIFY-WRITE over the control region, so it needs the same native-access
@@ -1866,19 +1856,19 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     private Result<MemorySegment> readSliceAtOffset(long offset) {
         var slotIndex = Math.floorMod(offset, capacity);
-        var indexPos = indexStart + slotIndex * INDEX_ENTRY_SIZE;
-        var dataPos = controlSegment.get(ValueLayout.JAVA_LONG, indexPos + INDEX_DATA_OFFSET);
-        var dataLen = controlSegment.get(ValueLayout.JAVA_INT, indexPos + INDEX_DATA_LENGTH);
+        var indexPos = slotIndex * INDEX_ENTRY_SIZE;
+        var dataPos = index.get(ValueLayout.JAVA_LONG, indexPos + INDEX_DATA_OFFSET);
+        var dataLen = index.get(ValueLayout.JAVA_INT, indexPos + INDEX_DATA_LENGTH);
 
         return success(MemorySegment.ofArray(readDataBytes(dataPos, dataLen)));
     }
 
     private long dataWritePos() {
-        return controlSegment.get(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS);
+        return header.dataWritePos();
     }
 
     private long dataTailPos() {
-        return controlSegment.get(ValueLayout.JAVA_LONG, HEADER_DATA_TAIL_POS);
+        return header.dataTailPos();
     }
 
     /// Bytes of the data region held by live records — exact, whatever the ring's wrap state.
@@ -1968,11 +1958,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     private void writeIndexEntry(long slotIndex, long dataPos, int dataLength, long timestamp) {
-        var indexPos = indexStart + slotIndex * INDEX_ENTRY_SIZE;
+        var indexPos = slotIndex * INDEX_ENTRY_SIZE;
 
-        controlSegment.set(ValueLayout.JAVA_LONG, indexPos + INDEX_DATA_OFFSET, dataPos);
-        controlSegment.set(ValueLayout.JAVA_INT, indexPos + INDEX_DATA_LENGTH, dataLength);
-        controlSegment.set(ValueLayout.JAVA_LONG, indexPos + INDEX_TIMESTAMP, timestamp);
+        index.set(ValueLayout.JAVA_LONG, indexPos + INDEX_DATA_OFFSET, dataPos);
+        index.set(ValueLayout.JAVA_INT, indexPos + INDEX_DATA_LENGTH, dataLength);
+        index.set(ValueLayout.JAVA_LONG, indexPos + INDEX_TIMESTAMP, timestamp);
     }
 
     /// The slot's data and index stores must be visible before the head that publishes it (#1340): a
@@ -1980,32 +1970,32 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// read the index entry the slot held `capacity` offsets ago — the head-side twin of the tail race.
     private void updateHeaderAfterAppend(long newHeadOffset, int payloadLength) {
         VarHandle.releaseFence();
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, newHeadOffset);
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS, dataWritePos() + payloadLength);
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, rawEventCount() + 1);
+        header.setHead(newHeadOffset);
+        header.setDataWritePos(dataWritePos() + payloadLength);
+        header.setEventCount(rawEventCount() + 1);
     }
 
     private RawEvent readSingleEvent(long offset) {
         var slotIndex = Math.floorMod(offset, capacity);
-        var indexPos = indexStart + slotIndex * INDEX_ENTRY_SIZE;
-        var dataPos = controlSegment.get(ValueLayout.JAVA_LONG, indexPos + INDEX_DATA_OFFSET);
-        var dataLen = controlSegment.get(ValueLayout.JAVA_INT, indexPos + INDEX_DATA_LENGTH);
-        var timestamp = controlSegment.get(ValueLayout.JAVA_LONG, indexPos + INDEX_TIMESTAMP);
+        var indexPos = slotIndex * INDEX_ENTRY_SIZE;
+        var dataPos = index.get(ValueLayout.JAVA_LONG, indexPos + INDEX_DATA_OFFSET);
+        var dataLen = index.get(ValueLayout.JAVA_INT, indexPos + INDEX_DATA_LENGTH);
+        var timestamp = index.get(ValueLayout.JAVA_LONG, indexPos + INDEX_TIMESTAMP);
         var eventBytes = readDataBytes(dataPos, dataLen);
 
         return RawEvent.rawEvent(offset, eventBytes, timestamp);
     }
 
     private long dataLengthAt(long slotIndex) {
-        var indexPos = indexStart + slotIndex * INDEX_ENTRY_SIZE;
+        var indexPos = slotIndex * INDEX_ENTRY_SIZE;
 
-        return controlSegment.get(ValueLayout.JAVA_INT, indexPos + INDEX_DATA_LENGTH);
+        return index.get(ValueLayout.JAVA_INT, indexPos + INDEX_DATA_LENGTH);
     }
 
     private long readTimestamp(long slotIndex) {
-        var indexPos = indexStart + slotIndex * INDEX_ENTRY_SIZE;
+        var indexPos = slotIndex * INDEX_ENTRY_SIZE;
 
-        return controlSegment.get(ValueLayout.JAVA_LONG, indexPos + INDEX_TIMESTAMP);
+        return index.get(ValueLayout.JAVA_LONG, indexPos + INDEX_TIMESTAMP);
     }
 
     /// Make room for an append. A refusal by the eviction listener (#1234) leaves every event in place and is
@@ -2048,11 +2038,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return;
         }
 
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, tail + 1);
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, rawEventCount() - 1);
-        controlSegment.set(ValueLayout.JAVA_LONG,
-                           HEADER_DATA_TAIL_POS,
-                           dataTailPos() + dataLengthAt(Math.floorMod(tail, capacity)));
+        header.setTail(tail + 1);
+        header.setEventCount(rawEventCount() - 1);
+        header.setDataTailPos(dataTailPos() + dataLengthAt(Math.floorMod(tail, capacity)));
         // The new tail must be visible before the slot it frees is overwritten — the writer half of
         // the reader's post-copy check in retainedAfterCopy (#1340).
         VarHandle.storeStoreFence();

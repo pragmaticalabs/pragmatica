@@ -5,10 +5,12 @@
 
 package org.pragmatica.aether.stream;
 
+import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.segment.SealedSegment;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
@@ -343,10 +345,14 @@ class StreamPartitionManagerRecoveryTest {
         return manager.readLocal(STREAM, PARTITION, fromOffset, 100).onFailure(cause -> fail(cause.message())).unwrap();
     }
 
+    /// stream-mem M-1b-delta: a reclaimed offset is refused naming `RETENTION`, hence `EXPIRED`, never by type alone. Mutant: the
+    /// raise site naming another cause -> RED.
     private static void assertCursorExpired(StreamPartitionManager manager, long fromOffset) {
         manager.readLocal(STREAM, PARTITION, fromOffset, 100)
                .onSuccess(events -> fail("expected CursorExpired at " + fromOffset + " but read " + events.size() + " events"))
-               .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.CursorExpired.class));
+               .onFailure(cause -> assertThat(cause).asInstanceOf(InstanceOfAssertFactories.type(StreamError.CursorExpired.class))
+                                                    .extracting(StreamError.CursorExpired::reason, StreamError.CursorExpired::cause)
+                                                    .containsExactly(StreamError.CursorExpired.Reason.EXPIRED, RemovalCause.RETENTION));
     }
 
     private static LastSealedOffsetSource sealedUpTo(long bound) {

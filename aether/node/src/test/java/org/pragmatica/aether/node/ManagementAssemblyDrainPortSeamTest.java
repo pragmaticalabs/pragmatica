@@ -5,12 +5,11 @@
 package org.pragmatica.aether.node;
 
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.metrics.DrainCommandRegistry;
-import org.pragmatica.aether.node.assembly.ManagementAssembly;
+import org.pragmatica.aether.node.assembly.DrainAssembly;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.io.TimeSpan;
@@ -19,28 +18,33 @@ import org.pragmatica.statemachine.FsmObserver;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// C6a-0 assembly pin (#3467, A1 and A2): the DRAIN channel `ManagementAssembly.managementServer` hands the management
-/// server. `managementServer` reads 25 collaborators, so no test builds it; the channel is a seam of its own
-/// (`ManagementAssembly.drainPort`), pinned here on both halves, and `managementServer` is pinned to call the seam.
+/// C6a-0 assembly pin (#3467, A1 and A2; C6-W0 #3413): the DRAIN channel the management server takes from the quorum-loss unit.
+/// The channel is a seam of its own (`DrainAssembly.drainPort`), pinned here on both halves. That the management server
+/// holds this very port is pinned at runtime by [NodeDrainPortIdentityBootTest], which replaced the drain assembly-text pins. The one assembly-text pin that
+/// remains (#3303, A3c) is on the management validator and flag in `ManagementAssembly`.
 class ManagementAssemblyDrainPortSeamTest {
     private static final NodeId TARGET = NodeId.nodeId("node-target").unwrap();
 
     private final DrainCommandRegistry registry = DrainCommandRegistry.drainCommandRegistry();
 
+    private static MembershipFsm fsm() {
+        return MembershipFsm.membershipFsm(FsmObserver.noop(),
+                                           System::currentTimeMillis,
+                                           Long.MAX_VALUE,
+                                           TimeSpan.timeSpan(40).millis(),
+                                           TimeSpan.timeSpan(30).seconds(),
+                                           TimeSpan.timeSpan(30).seconds());
+    }
+
     /// A1: a request goes through the FSM-aware sink, so the registry AND the FSM both see it; a sink that only
     /// enqueued, or dropped the request, leaves the FSM member un-DEPARTING or the registry empty.
     @Test
     void request_goesThroughTheFsmAwareSink_registryAndFsmBothSeeIt() {
-        var fsm = MembershipFsm.membershipFsm(FsmObserver.noop(),
-                                              System::currentTimeMillis,
-                                              Long.MAX_VALUE,
-                                              TimeSpan.timeSpan(40).millis(),
-                                              TimeSpan.timeSpan(30).seconds(),
-                                              TimeSpan.timeSpan(30).seconds());
+        var fsm = fsm();
 
         fsm.onMemberDescriptor(NodeInfo.nodeInfo(TARGET, new NodeAddress(TARGET.id(), 6000), Map.of(NodeInfo.LABEL_ROLE, "core")));
         fsm.onSwimHealthy(TARGET, 1L);
-        ManagementAssembly.drainPort(registry, new AtomicReference<>(fsm)).request(TARGET);
+        DrainAssembly.drainPort(registry, fsm).request(TARGET);
 
         assertThat(registry.isDrainRequested(TARGET)).as("the registry holds the command").isTrue();
         assertThat(fsm.memberStates()).as("the FSM saw DrainRequested").containsEntry(TARGET, "Departing");
@@ -49,7 +53,7 @@ class ManagementAssemblyDrainPortSeamTest {
     /// A2: the pending read is the registry's commanded set, read live (a request made after the port was built shows).
     @Test
     void pending_isTheRegistrysDrainTargets_readLive() {
-        var port = ManagementAssembly.drainPort(registry, new AtomicReference<>());
+        var port = DrainAssembly.drainPort(registry, fsm());
 
         assertThat(port.pending()).isEmpty();
 
@@ -57,18 +61,6 @@ class ManagementAssemblyDrainPortSeamTest {
 
         assertThat(port.pending()).containsExactly(TARGET);
     }
-
-    /// The seam is only worth pinning if `managementServer` goes through it: inlining another port there (none(), an
-    /// inline registry) removes this call and the pin goes red.
-    @Test
-    void managementServer_usesTheSeam_noOtherPortIsBuiltInTheAssembly() {
-        var code = NodeDepartureWiringTest.assemblyCode();
-
-        assertThat(code).containsOnlyOnce("drainPort(drainCommandRegistry,membershipFsmRef),");
-        assertThat(code).containsOnlyOnce("DrainPort.registry(");
-        assertThat(code).doesNotContain("DrainPort.none(");
-    }
-
     /// #3303 (A3c): the assembly builds the management validator and the enabled flag from ONE call, so one read of the
     /// configured mode feeds both. A second mode read (a `managementSecurityEnabled()` call, or the mode itself) can
     /// disagree with the validator; deriving the flag from the app plane (`securityEnabled()`, `securityMode()`) breaks

@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -31,12 +33,20 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntityArcWaiverKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntitySeedOfferKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GossipKeyRotationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.PreviousVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue.WaiverCase;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue.OfferEntry;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GossipKeyRotationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.LogLevelValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
@@ -415,6 +425,65 @@ class BackupEntryCodecTest {
 
             assertThat(CODEC.encode(REVISION, Map.of(key, value))
                             .isSuccess()).isTrue();
+        }
+    }
+
+    /// #3303 A3b: the seed-offer and arc-waiver keys are bound by their PREFIXED parsers. A binding to `fromIdentity` would accept
+    /// every entity key's full string (`orders/7` parses as an identity of all four), and every backup would be refused AmbiguousKey.
+    @Nested
+    class ArcBindings {
+        private final EntitySeedOfferKey offerKey = EntitySeedOfferKey.entitySeedOfferKey("orders/by-customer", 5);
+        private final EntityArcWaiverKey waiverKey = EntityArcWaiverKey.entityArcWaiverKey("orders/by-customer", 6);
+        private final EntitySeedOfferValue offerValue = EntitySeedOfferValue.entitySeedOfferValue(3L,
+                                                                                                  4L,
+                                                                                                  9L,
+                                                                                                  "00ff10ab",
+                                                                                                  List.of(OfferEntry.offerEntry(6, 120L, 2L)));
+        private final EntityArcWaiverValue waiverValue = EntityArcWaiverValue.entityArcWaiverValue(4L,
+                                                                                                   WaiverCase.CANNOT_REPRODUCE,
+                                                                                                   List.of("00ff10ab"));
+
+        @Test
+        void encode_thenDecode_roundTripsACheckpointAndBothArcKeysTogether() {
+            var checkpointKey = EntityCheckpointKey.entityCheckpointKey("orders/by-customer", 5);
+            var entries = Map.<AetherKey, AetherValue> of(checkpointKey,
+                                                          EntityFoldCheckpointValue.entityFoldCheckpointValue(4_242L, "00ff10ab"),
+                                                          offerKey,
+                                                          offerValue,
+                                                          waiverKey,
+                                                          waiverValue);
+
+            CODEC.encode(REVISION, entries)
+                 .flatMap(CODEC::decode)
+                 .onFailure(cause -> Assertions.fail(cause.message()))
+                 .onSuccess(document -> assertThat(document.entries()).containsExactlyInAnyOrderEntriesOf(entries));
+        }
+
+        @Test
+        void parseCandidates_ofEachArcKey_isExactlyOne() {
+            assertThat(BackupEntryCodec.parseCandidates(offerKey.asString())).containsExactly(offerKey);
+            assertThat(BackupEntryCodec.parseCandidates(waiverKey.asString())).containsExactly(waiverKey);
+        }
+
+        @Test
+        void parseCandidates_ofACheckpointKey_isNotClaimedByTheArcKeys() {
+            var checkpointKey = EntityCheckpointKey.entityCheckpointKey("orders/by-customer", 5);
+
+            assertThat(BackupEntryCodec.parseCandidates(checkpointKey.asString())).containsExactly(checkpointKey);
+        }
+
+        @Test
+        void decode_refusesAnOfferKeyCarryingAWaiverValue() {
+            var document = sealedDocument(line(waiverValue, offerKey.asString()));
+
+            assertThat(failures(CODEC.decode(document))).singleElement()
+                                                        .isInstanceOf(BackupError.ValueTypeMismatch.class);
+        }
+
+        @Test
+        void encode_refusesAWaiverKeyCarryingAnOfferValue() {
+            assertThat(failures(CODEC.encode(REVISION, Map.<AetherKey, AetherValue> of(waiverKey, offerValue)))).singleElement()
+                                                                                                                 .isInstanceOf(BackupError.ValueTypeRefused.class);
         }
     }
 
@@ -899,6 +968,85 @@ class BackupEntryCodecTest {
                         .filter(start -> Arrays.equals(haystack, start, start + needle.length, needle, 0, needle.length))
                         .findFirst()
                         .orElse(-1);
+    }
+
+    /// The PRECONDITION of `singleCandidate`'s default arm: the codec routes a key line by the one prefix it starts with, so
+    /// no key type's prefix may be a prefix of another type's. If two overlapped, one line would have two candidates and the
+    /// arm the real bindings cannot reach would become reachable. Reads every cluster-state key type's `PREFIX` constants
+    /// (`*_PREFIX` where a type has several), so a new key type is covered without a seam in the codec.
+    @Test
+    void keyPrefixes_noPrefixIsAPrefixOfAnotherKeyTypes() {
+        var byType = prefixesByType();
+
+        assertThat(byType.keySet()
+                         .stream()
+                         .map(Class::getSimpleName)
+                         .toList()).as("every cluster-state key type declares a prefix")
+                                   .hasSameSizeAs(ClusterStateKey.class.getPermittedSubclasses());
+        assertThat(overlappingPairs(byType)).as("key-type prefix pairs where one is a prefix of the other")
+                                            .isEmpty();
+    }
+
+    /// Instrument check for the pin above: the detector does flag an overlap and ignores an unrelated pair.
+    @Test
+    void overlappingPairs_namesTheOverlappingPair_andOnlyThat() {
+        var overlapping = overlappingPairs(Map.of(SliceTargetKey.class, List.of("a/"), AppBlueprintKey.class, List.of("a/b/")));
+        var disjoint = overlappingPairs(Map.of(SliceTargetKey.class, List.of("a/"), AppBlueprintKey.class, List.of("b/")));
+
+        assertThat(overlapping).hasSize(1);
+        assertThat(overlapping.getFirst()).contains("SliceTargetKey")
+                                          .contains("AppBlueprintKey")
+                                          .contains("\"a/\"")
+                                          .contains("\"a/b/\"");
+        assertThat(disjoint).isEmpty();
+    }
+
+    private static Map<Class<?>, List<String>> prefixesByType() {
+        return Arrays.stream(ClusterStateKey.class.getPermittedSubclasses())
+                     .collect(Collectors.toMap(type -> type, BackupEntryCodecTest::prefixConstants));
+    }
+
+    private static List<String> prefixConstants(Class<?> type) {
+        var declared = Arrays.stream(type.getDeclaredFields())
+                             .filter(field -> Modifier.isStatic(field.getModifiers()) && field.getType() == String.class)
+                             .filter(field -> field.getName().endsWith("PREFIX"))
+                             .toList();
+        var plain = declared.stream()
+                            .filter(field -> field.getName().equals("PREFIX"))
+                            .toList();
+
+        return (plain.isEmpty() ? declared : plain).stream()
+                                                   .map(BackupEntryCodecTest::constantValue)
+                                                   .toList();
+    }
+
+    private static String constantValue(Field field) {
+        field.setAccessible(true);
+
+        return Result.lift(() -> (String) field.get(null))
+                     .fold(_ -> "", value -> value);
+    }
+
+    private static List<String> overlappingPairs(Map<Class<?>, List<String>> byType) {
+        return byType.entrySet()
+                     .stream()
+                     .flatMap(left -> byType.entrySet()
+                                            .stream()
+                                            .filter(right -> left.getKey() != right.getKey())
+                                            .flatMap(right -> overlapsOf(left, right)))
+                     .toList();
+    }
+
+    private static Stream<String> overlapsOf(Map.Entry<Class<?>, List<String>> left, Map.Entry<Class<?>, List<String>> right) {
+        return left.getValue()
+                   .stream()
+                   .flatMap(a -> right.getValue()
+                                      .stream()
+                                      .filter(b -> a.startsWith(b))
+                                      .map(b -> "%s \"%s\" starts with %s \"%s\"".formatted(left.getKey().getSimpleName(),
+                                                                                            a,
+                                                                                            right.getKey().getSimpleName(),
+                                                                                            b)));
     }
 
     private static List<Cause> failures(Result<?> result) {

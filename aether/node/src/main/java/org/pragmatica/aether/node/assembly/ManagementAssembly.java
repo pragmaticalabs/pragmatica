@@ -14,7 +14,6 @@ import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.ObservabilityConfigRegistry;
 import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.TlsRotation;
 import org.pragmatica.aether.http.security.SecurityValidator;
@@ -23,7 +22,6 @@ import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
 import org.pragmatica.aether.invoke.SliceInvoker;
-import org.pragmatica.aether.metrics.DrainCommandRegistry;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNode.ResourceProviderSetup;
 import org.pragmatica.aether.node.AetherNodeConfig;
@@ -56,7 +54,6 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.aether.node.AetherNode.LOG;
 import static org.pragmatica.aether.node.AetherNode.findSelfAddress;
-import static org.pragmatica.aether.node.assembly.DrainAssembly.requestDrainThroughFsm;
 
 
 /// The management unit of the node assembly: the certificate renewal scheduler with the rotation of the QUIC, management
@@ -93,14 +90,13 @@ public sealed interface ManagementAssembly {
                                   RabiaNode<KVCommand<AetherKey>> clusterNode,
                                   Serializer serializer,
                                   Deserializer deserializer,
-                                  AtomicReference<MembershipFsm> membershipFsmRef,
                                   AetherNode.ResourceProviderSetup resourceProviderSetup,
                                   LogLevelRegistry logLevelRegistry,
                                   InvocationTraceStore traceStore,
                                   ObservabilityConfigRegistry configRegistry,
                                   ScheduledTaskRegistry scheduledTaskRegistry,
                                   ScheduledTaskStateRegistry scheduledTaskStateRegistry,
-                                  DrainCommandRegistry drainCommandRegistry,
+                                  NodeLifecycleRoutes.DrainPort drainPort,
                                   AlertManager alertManager,
                                   Option<DynamicConfigManager> dynamicConfigManager,
                                   OperatorWarningSink operatorWarningSink,
@@ -120,14 +116,12 @@ public sealed interface ManagementAssembly {
         var clusterNode = in.clusterNode();
         var serializer = in.serializer();
         var deserializer = in.deserializer();
-        var membershipFsmRef = in.membershipFsmRef();
         var resourceProviderSetup = in.resourceProviderSetup();
         var logLevelRegistry = in.logLevelRegistry();
         var traceStore = in.traceStore();
         var configRegistry = in.configRegistry();
         var scheduledTaskRegistry = in.scheduledTaskRegistry();
         var scheduledTaskStateRegistry = in.scheduledTaskStateRegistry();
-        var drainCommandRegistry = in.drainCommandRegistry();
         var alertManager = in.alertManager();
         var dynamicConfigManager = in.dynamicConfigManager();
         var operatorWarningSink = in.operatorWarningSink();
@@ -209,7 +203,7 @@ public sealed interface ManagementAssembly {
                                                                  Option.some(clusterNode.network()),
                                                                  Option.some(serializer),
                                                                  Option.some(deserializer),
-                                                                 drainPort(drainCommandRegistry, membershipFsmRef),
+                                                                 in.drainPort(),
 
         // #1720: operator drain and shutdown honour the slice minAvailable floor,
         // as the automatic drain does (same KV-backed guard, same counting rules).
@@ -229,17 +223,6 @@ public sealed interface ManagementAssembly {
                                                                      managementServer.meterRegistry()));
 
         return managementServer;
-    }
-
-    /// The leader's DRAIN channel for the management server (C6a-0): a request goes through the FSM-aware sink
-    /// (`requestDrainThroughFsm`), the pending read is the registry's commanded-but-not-departed set. A seam of its own so
-    /// a test can pin both halves without building the 25 collaborators `managementServer` reads.
-    static NodeLifecycleRoutes.DrainPort drainPort(DrainCommandRegistry drainCommandRegistry,
-                                                   AtomicReference<MembershipFsm> membershipFsmRef) {
-        return NodeLifecycleRoutes.DrainPort.registry(target -> requestDrainThroughFsm(drainCommandRegistry,
-                                                                                       membershipFsmRef,
-                                                                                       target),
-                                                      drainCommandRegistry::drainTargets);
     }
 
     @SuppressWarnings("JBCT-PAT-01")

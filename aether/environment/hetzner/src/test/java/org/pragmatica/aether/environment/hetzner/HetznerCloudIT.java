@@ -34,8 +34,8 @@ import static org.pragmatica.cloud.hetzner.HetznerConfig.hetznerConfig;
 /// someone adds the secret for an unrelated job — provisions paid infrastructure from an
 /// ordinary build. The flag makes running it a decision instead of an accident.
 ///
-/// Mirrors `ServerIT` (`TCP_INTEGRATION_TESTS`) and `DomainNameResolverIT`
-/// (`DNS_INTEGRATION_TESTS`). Run with `HETZNER_CLOUD_TESTS=true` AND `HCLOUD_TOKEN` set.
+/// Mirrors `DomainNameResolverIT` (`DNS_INTEGRATION_TESTS`). Run with `HETZNER_CLOUD_TESTS=true` AND `HCLOUD_TOKEN`
+/// set.
 @EnabledIfEnvironmentVariable(named = "HETZNER_CLOUD_TESTS", matches = "true")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class HetznerCloudIT {

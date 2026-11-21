@@ -3351,21 +3351,26 @@ public interface AetherNode extends ManageableNode {
                                                                                           presenceSampler,
                                                                                           membershipFsm,
                                                                                           leaderReconciler));
-        var quorumLossDrain = DrainAssembly.quorumLossDrain(new DrainAssembly.QuorumLossInputs(config,
-                                                                                               clusterNode,
-                                                                                               leaderReconciler,
-                                                                                               quorumLossDetector,
-                                                                                               membershipFsm,
-                                                                                               swimHealthDetector,
-                                                                                               swimIsBootingSupplier,
-                                                                                               metricsCollector,
-                                                                                               nodeReportedStateHolder,
-                                                                                               drainProcedure,
-                                                                                               alertManager,
-                                                                                               isLeaderSupplier,
-                                                                                               drainCommandRegistry,
-                                                                                               operatorWarningSink,
-                                                                                               periodicTasks::defer));
+        var quorumLossInputs = new DrainAssembly.QuorumLossInputs(config,
+                                                                  clusterNode,
+                                                                  leaderReconciler,
+                                                                  quorumLossDetector,
+                                                                  membershipFsm,
+                                                                  swimHealthDetector,
+                                                                  swimIsBootingSupplier,
+                                                                  metricsCollector,
+                                                                  nodeReportedStateHolder,
+                                                                  drainProcedure,
+                                                                  alertManager,
+                                                                  isLeaderSupplier,
+                                                                  drainCommandRegistry,
+                                                                  operatorWarningSink,
+                                                                  periodicTasks::defer,
+                                                                  kvStore,
+                                                                  pongSignalFan);
+        var quorumLossDrain = DrainAssembly.quorumLossDrain(quorumLossInputs);
+
+        AssemblyObserver.quorumLoss(quorumLossInputs, quorumLossDrain, kvStore, pongSignalFan);
         var quorumLossChain = quorumLossDrain.quorumLossChain();
         var coreAbsenceDetector = quorumLossDrain.coreAbsenceDetector();
         var communityLiveness = WorkerHierarchyAssembly.communityReachability(new WorkerHierarchyAssembly.CommunityReachabilityInputs(config,
@@ -3864,14 +3869,13 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                clusterNode,
                                                                                                                                                                serializer,
                                                                                                                                                                deserializer,
-                                                                                                                                                               membershipFsmRef,
                                                                                                                                                                resourceProviderSetup,
                                                                                                                                                                logLevelRegistry,
                                                                                                                                                                traceStore,
                                                                                                                                                                configRegistry,
                                                                                                                                                                scheduledTaskRegistry,
                                                                                                                                                                scheduledTaskStateRegistry,
-                                                                                                                                                               drainCommandRegistry,
+                                                                                                                                                               quorumLossDrain.drainPort(),
                                                                                                                                                                alertManager,
                                                                                                                                                                dynamicConfigManager,
                                                                                                                                                                operatorWarningSink,
@@ -3883,6 +3887,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                entityCheckpointDriver,
                                                                                                                                                                node,
                                                                                                                                                                deploymentMeters));
+
+                                                      AssemblyObserver.management(managementServer);
 
                                                       return new aetherNode(workerMetadataChannel,
                                                                             replicaClient,
@@ -5373,12 +5379,12 @@ public interface AetherNode extends ManageableNode {
         // fires for those, but the fresh QUIC handshake produces a TransportObservation.
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
                                               eventAggregator::onPeerJoined));
-        // #926: resolve the node-health alert raised on the DEAD edge when the node comes back. Bound
-        // to the SAME ungated handshake that sources NODE_JOINED, so recovery is exactly as reachable
-        // as the failure it clears — a failure signal whose matching recovery signal is less reachable
-        // leaves a permanently red surface, which trains an operator to ignore it.
+        // #926: the handshake ends the announced-departure marks. It no longer resolves the node-health
+        // alert (#2061): a handshake from a node the FSM still holds DEAD resolved it with nothing to
+        // re-raise it. The alert is resolved on the FSM's edge into Member (MembershipAssembly), the
+        // same FSM whose DEAD edge raised it.
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
-                                              msg -> alertManager.clearNodeHealthAlert(msg.nodeId())));
+                                              msg -> alertManager.forgetDepartureMarks(msg.nodeId())));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
         // NODE_LEFT (graceful departures) is sourced from MembershipDecision. NODE_FAILED is NO LONGER
         // sourced here (#210) — it now rides the ungated FSM DEAD edge (membershipFsm.onConfirmedDeparture
