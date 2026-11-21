@@ -795,7 +795,8 @@ class SwimProtocolPhaseAwareSuppressionTest {
 
         @Override public void onMemberFaulty(SwimMember member, boolean firstHand) {
             if (NODE_A.equals(member.nodeId()) && reArmed.compareAndSet(false, true)) {
-                protocol.get().deliverForTest(ADDR_B, suspectPing(2L, 1));
+                // ASYNC-DELIVERY: re-entrant delivery from a listener callback inside a task; it must queue behind the current task, not wait (deliverForTest would fail from inside a task)
+                protocol.get().onMessage(ADDR_B, suspectPing(2L, 1));
             }
         }
     }

@@ -147,6 +147,7 @@ class SwimStateConfinementTest {
 
         holder.start();
         assertThat(held.await(WAIT_MS, TimeUnit.MILLISECONDS)).as("control: the holder owns the executor").isTrue();
+        // ASYNC-DELIVERY: pins the production contract, a bare onMessage on a held executor returns before the message is applied
         protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(alive(NODE_A, 0))));
         assertThat(protocol.members().containsKey(NODE_A)).as("returned while queued behind the holder, not applied yet")
                                                           .isFalse();
