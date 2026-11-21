@@ -27,6 +27,7 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
+import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import org.pragmatica.aether.stream.forward.RawEventDto;
 import org.pragmatica.aether.stream.forward.StreamForwardError;
@@ -400,7 +401,7 @@ class ReplicaWalCatchupTest {
         void readHeldDurable_anEmptyWalReadAtTheSealedFloor_isCursorExpiredPastTheFloor() {
             sealedFloor = 4L;
 
-            assertThat(failure(read2("fresh", 4, PAGE))).isEqualTo(new StreamError.CursorExpired(4, 5));
+            assertThat(failure(read2("fresh", 4, PAGE))).isEqualTo(new StreamError.CursorExpired(4, 5, RemovalCause.RETENTION));
             assertThat(read("fresh", 5, PAGE)).isEmpty();
         }
 
@@ -426,14 +427,14 @@ class ReplicaWalCatchupTest {
         void readHeldDurable_belowTheWalsLowestRecord_isCursorExpiredAtThatRecord() throws Exception {
             rewriteWal(3, 4);
 
-            assertThat(failure(read2("held", 0, PAGE))).isEqualTo(new StreamError.CursorExpired(0, 3));
+            assertThat(failure(read2("held", 0, PAGE))).isEqualTo(new StreamError.CursorExpired(0, 3, RemovalCause.RETENTION));
         }
 
         @Test
         void readHeldDurable_anEmptyWalBelowTheSealedFloor_isCursorExpiredPastTheFloor() {
             sealedFloor = 4L;
 
-            assertThat(failure(read2("fresh", 0, PAGE))).isEqualTo(new StreamError.CursorExpired(0, 5));
+            assertThat(failure(read2("fresh", 0, PAGE))).isEqualTo(new StreamError.CursorExpired(0, 5, RemovalCause.RETENTION));
         }
 
         @Test
