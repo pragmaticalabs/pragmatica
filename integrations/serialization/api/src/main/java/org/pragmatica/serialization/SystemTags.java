@@ -827,6 +827,14 @@ public interface SystemTags {
         // #3458 M-1b: the named removal cause a refused read carries. Inside the 3010..3017 reservation of wire-tag-ranges.txt (stream-mem);
         // 3017 is its last free tag, so the next stream-mem wire addition reserves a block first.
         pin(table, 3017, "org.pragmatica.aether.slice.stream.RemovalCause");
+        // #3303 A3a: the entity seed-offer and arc-waiver keys. Inside the arc-3303 reservation 3018..3037 of wire-tag-ranges.txt (know f3033886ee).
+        pin(table, 3018, "org.pragmatica.aether.slice.kvstore.AetherKey.EntitySeedOfferKey");
+        pin(table, 3019, "org.pragmatica.aether.slice.kvstore.AetherKey.EntityArcWaiverKey");
+        // #3303 A3b: the seed-offer and arc-waiver values, with the offer's nested entry and the waiver's cause enum. Same reservation.
+        pin(table, 3020, "org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue");
+        pin(table, 3021, "org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue.OfferEntry");
+        pin(table, 3022, "org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue");
+        pin(table, 3023, "org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue.WaiverCase");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 

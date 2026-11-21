@@ -1,0 +1,40 @@
+# One verdict per line for the SEMANTIC form rule, read by BOTH readers: WireAssignmentTripwireTest (Java) and
+# scripts/wire-generation-check-selftest.sh (runs each line through wire-generation-check.sh). Row: <verdict><TAB><line>.
+# Escapes in <line>: \r = CR, \t = TAB, \s = space (used wherever a space is leading, trailing or doubled, so editors cannot eat it).
+#   valid    a declaration: the script accepts it with GENERATION = base + 1
+#   refused  its first token is SEMANTIC in any case but it is not of the exact form: malformed, the script exits 1 even with the bump
+#   ignored  not a candidate: the script sees no declaration (a bump with it is refused as no break)
+valid	SEMANTIC a.A.epoch stale-if-below -> stale-if-below-or-equal
+valid	SEMANTIC a.B.mode accept-if-any -> accept-if-all
+valid	SEMANTIC a b->c
+valid	SEMANTIC a b -> c -> d
+valid	SEMANTIC naïve.ü é -> ü
+refused	SEMANTIC
+refused	SEMANTIC\s
+refused	SEMANTIC a.A.epoch
+refused	SEMANTIC a.A.epoch\s
+refused	SEMANTIC a.A.epoch changed the rule
+refused	SEMANTIC a.A.epoch ->
+refused	SEMANTIC a.A.epoch -> y
+refused	SEMANTIC -> y
+refused	SEMANTIC a ->\s
+refused	SEMANTIC a b -> c\s
+refused	SEMANTIC a b -> c\t
+refused	SEMANTIC a b -> c\r
+refused	SEMANTIC\ta b -> c
+refused	SEMANTIC\s\sa b -> c
+refused	SEMANTIC a\s\sb -> c
+refused	SEMANTIC a\tb -> c
+refused	semantic a b -> c
+refused	Semantic a b -> c
+refused	SEMANTIc a b -> c
+refused	semantic
+refused	\sSEMANTIC a b -> c
+refused	\tSEMANTIC a b -> c
+refused	\s\ssemantic a b -> c
+ignored	SEMANTICS a b -> c
+ignored	SEMANTICx a b -> c
+ignored	XSEMANTIC a b -> c
+ignored	SEM a b -> c
+ignored	# SEMANTIC a b -> c
+ignored	TAG a.A 1

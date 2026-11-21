@@ -240,6 +240,7 @@ public final class BackupRestoreCoordinator {
                                          .repository()
                                          .hasRemote())
               .onPresent(_ -> coordinator.warnLocalSource());
+        source.onPresent(present -> coordinator.probeGit(present.service()));
 
         return coordinator;
     }
@@ -253,6 +254,15 @@ public final class BackupRestoreCoordinator {
                                                              BackupWarning.Sink warnings,
                                                              RetryScheduler scheduler) {
         return new BackupRestoreCoordinator(self, runningEngine, kvStore, applier, source, warnings, scheduler);
+    }
+
+    /// The three-valued reads need git 2.43. Probed once, on the worker, when the coordinator is built; a git that is too old, or cannot be asked,
+    /// is warned about here, in the log, rather than discovered as a blocked restore. [guess: log WARN; no new Code, BW/OWC are RA-5a's]
+    @Contract
+    private void probeGit(KvBackupService service) {
+        service.onWorker(() -> GitBackupRepository.required(service.repository().readGitVersion()))
+               .withFailure(cause -> LOG.warn("[backup] {}",
+                                              cause.message()));
     }
 
     @Contract
@@ -455,17 +465,16 @@ public final class BackupRestoreCoordinator {
         var repository = service.repository();
 
         return repository.prepare()
-                         .flatMap(_ -> repository.fetchRestoreRef())
+                         .flatMap(_ -> repository.restoreRef())
                          .mapError(RestoreError.Blocked.at(Step.SOURCE_UNREACHABLE))
                          .flatMap(ref -> ref.map(present -> loadRef(service, present).map(Option::some))
                                             .or(() -> success(Option.none())));
     }
 
     private Result<Loaded> loadRef(KvBackupService service, String ref) {
-        return service.repository()
-                      .commitOf(ref)
-                      .mapError(RestoreError.Blocked.at(Step.REF_UNRESOLVED))
-                      .flatMap(commit -> load(service, commit, ref));
+        return GitBackupRepository.required(service.repository().readCommitId(ref))
+                                  .mapError(RestoreError.Blocked.at(Step.REF_UNRESOLVED))
+                                  .flatMap(commit -> load(service, commit, ref));
     }
 
     /// An interrupted restore's own commit, re-fetched so a new leader holds it too.
@@ -473,7 +482,7 @@ public final class BackupRestoreCoordinator {
         var repository = service.repository();
 
         return repository.prepare()
-                         .flatMap(_ -> repository.fetchRestoreRef())
+                         .flatMap(_ -> repository.restoreRef())
                          .mapError(RestoreError.Blocked.at(Step.SOURCE_UNREACHABLE))
                          .flatMap(ref -> ref.toResult(RestoreError.Blocked.blocked(Step.BACKUP_VANISHED,
                                                                                    RestoreError.General.BACKUP_VANISHED)))
@@ -482,11 +491,10 @@ public final class BackupRestoreCoordinator {
 
     /// Each step maps its own failure, so the [RestoreError.Blocked] names the step that failed, whichever method ran it.
     private Result<Loaded> load(KvBackupService service, String commit, String ref) {
-        return service.repository()
-                      .documentAt(commit)
-                      .mapError(RestoreError.Blocked.at(Step.COMMIT_UNREADABLE))
-                      .flatMap(text -> decoded(service, text))
-                      .flatMap(document -> loaded(service, commit, ref, document));
+        return GitBackupRepository.required(service.repository().readFile(commit, GitBackupRepository.FILE))
+                                  .mapError(RestoreError.Blocked.at(Step.COMMIT_UNREADABLE))
+                                  .flatMap(text -> decoded(service, text))
+                                  .flatMap(document -> loaded(service, commit, ref, document));
     }
 
     private static Result<BackupDocument> decoded(KvBackupService service, String text) {

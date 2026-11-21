@@ -2210,6 +2210,11 @@ public class RabiaEngine<C extends Command> {
         return currentPhase.get();
     }
 
+    /// Package-private test hook: this replica's data for `phase`, absent when it never held the slot or has cleaned it.
+    Option<PhaseData<C>> phaseDataForTesting(Phase phase) {
+        return Option.option(phases.get(phase));
+    }
+
     /// Package-private test hook: number of pending batches awaiting consensus.
     /// Used by R1 unit tests to verify state retention across pause/resume.
     int pendingBatchCountForTesting() {

@@ -11,3 +11,6 @@
   components, so `WIRE_GENERATION` is bumped by one; a node at the previous generation is refused at join
   `[verified: integrations/consensus/src/test/java/org/pragmatica/consensus/net/JoinGenerationGuardTest.java]`. Upgrade with
   the stop-the-world procedure.
+
+### Changed (2026-11-20 — #3303 A3b: wire generation bump)
+- `JoinGenerationGuard.WIRE_GENERATION` is bumped from 3 to 4: `EntityArcWaiverValue.WaiverCase` gains two constants before `UNKNOWN`, which moves `UNKNOWN`'s ordinal. A node at an older generation is refused at join; upgrade with the stop-the-world procedure.

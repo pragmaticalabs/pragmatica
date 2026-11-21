@@ -18,6 +18,7 @@ import java.util.concurrent.Delayed;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.logging.log4j.Level;
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.node.ClusterIncarnation;
 import org.pragmatica.aether.node.ClusterIncarnationRegistrar;
@@ -66,6 +67,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
@@ -1360,6 +1362,137 @@ class BackupRestoreCoordinatorTest {
             blockOver(remote, Option.none());
 
             assertNamesStepAndAdvice(Step.REF_UNRESOLVED, false);
+        }
+
+        // --- #3464: a git read that cannot answer blocks the restore; it is never a fresh cluster ---
+
+        /// The local source answers `show-ref --exists` with a failure (a damaged repository): the old read of `HEAD` mapped every non-zero exit to
+        /// "no commit" and started FRESH.
+        @Test
+        void anUnreadableLocalBranch_blocksAtSourceUnreachable_andCommitsNoDecision() {
+            blockOverShimmed(Option.none(), "show-ref");
+
+            assertNamesStepAndAdvice(Step.SOURCE_UNREACHABLE, false);
+            assertThat(submitted).as("no decision is committed over an unreadable source").isEmpty();
+        }
+
+        /// L3 (#3501): an old git refuses `show-ref --exists` (exit 129); the restore blocks and its warning names the git it needs.
+        @Test
+        void anOldGitOnALocalSource_blocksAtSourceUnreachable_namingGit243() {
+            blockOverShimmed(Option.none(), "show-ref", "echo \"error: unknown option \\`exists'\" >&2\n    exit 129");
+
+            assertNamesStepAndAdvice(Step.SOURCE_UNREACHABLE, false);
+            assertThat(warnings.getFirst().detail()).contains("git >= 2.43");
+            assertThat(submitted).as("no decision is committed over an unreadable source").isEmpty();
+        }
+
+        /// The control for the test above: the same local source, really empty, is a fresh cluster.
+        @Test
+        void aLocalRepositoryWithNoCommit_isFresh() {
+            var coordinator = coordinator(Option.some(source(Option.none(), RestoreMode.AUTO)));
+
+            runToCompletion(coordinator);
+
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.FRESH);
+        }
+
+        @Test
+        void anUnreadableRemoteBranch_blocksAtSourceUnreachable() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            blockOverShimmed(Option.some(remote), "ls-remote");
+
+            assertNamesStepAndAdvice(Step.SOURCE_UNREACHABLE, false);
+        }
+
+        @Test
+        void aRefGitCannotResolve_blocksAtRefUnresolved() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            blockOverShimmed(Option.some(remote), "rev-parse");
+
+            assertNamesStepAndAdvice(Step.REF_UNRESOLVED, false);
+        }
+
+        /// `git show` failing on a commit that exists: the document read is unreadable, and must not decode as an empty document.
+        @Test
+        void aDocumentGitCannotShow_blocksAtCommitUnreadable() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            blockOverShimmed(Option.some(remote), "show");
+
+            assertNamesStepAndAdvice(Step.COMMIT_UNREADABLE, false);
+        }
+
+        /// The production factory asks the installed git for its version on the worker: older than 2.43 is a WARN naming the requirement.
+        @Test
+        void aGitOlderThan243_isWarnedAbout_whenTheProductionCoordinatorIsBuilt() {
+            var env = GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "--version", "echo 'git version 2.42.0'\n    exit 0");
+
+            try (var capture = LogCapture.capture(BackupRestoreCoordinator.class, Level.WARN, true)) {
+                productionCoordinator(env);
+                worker.advance(0);
+                for (int i = 0; i < 100 && capture.entries().isEmpty(); i++) {
+                    pause();
+                }
+
+                assertThat(capture.entries()).filteredOn(entry -> entry.level() == Level.WARN)
+                                             .singleElement()
+                                             .satisfies(entry -> assertThat(entry.message()).contains("git >= 2.43"));
+            }
+        }
+
+        /// The control: 2.43.0 is the floor itself, and is not warned about.
+        @Test
+        void aGit243_isNotWarnedAbout() {
+            var env = GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "--version", "echo 'git version 2.43.0'\n    exit 0");
+
+            try (var capture = LogCapture.capture(BackupRestoreCoordinator.class, Level.WARN, true)) {
+                productionCoordinator(env);
+                worker.advance(0);
+                for (int i = 0; i < 20; i++) {
+                    pause();
+                }
+
+                assertThat(capture.entries()).isEmpty();
+            }
+        }
+
+        private void productionCoordinator(Map<String, String> environment) {
+            BackupRestoreCoordinator.backupRestoreCoordinator(NodeId.nodeId("node-1").unwrap(),
+                                                              runningEngine,
+                                                              kvStore,
+                                                              BackupRestoreCoordinatorTest.this::gatedApply,
+                                                              Option.some(BackupRestoreCoordinator.Source.source(shimmedService(Option.none(), environment),
+                                                                                                                RestoreMode.AUTO)),
+                                                              warnings::add);
+        }
+
+        /// A coordinator over `remote` whose git runs `subcommand` as a failing shim, run until it has blocked and retried.
+        private void blockOverShimmed(Option<String> remote, String subcommand) {
+            blockOverShimmed(remote, subcommand, GitBackupRepositoryTest.SHIM_FAILS);
+        }
+
+        private void blockOverShimmed(Option<String> remote, String subcommand, String behaviour) {
+            var env = GitBackupRepositoryTest.gitShim(temp.resolve("bin"), subcommand, behaviour);
+            var coordinator = coordinator(Option.some(BackupRestoreCoordinator.Source.source(shimmedService(remote, env), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            worker.advance(0);
+            fireRetries(3);
+        }
+
+        private KvBackupService shimmedService(Option<String> remote, Map<String, String> environment) {
+            var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"),
+                                                                     remote,
+                                                                     "backup",
+                                                                     TimeSpan.timeSpan(30).seconds(),
+                                                                     environment);
+
+            return KvBackupService.kvBackupService(kvStore, CODEC, repository, worker, worker::now, warnings::add, TIMING);
         }
 
         /// One warning, naming `step`, with the advice chosen by marker presence alone, and no sentence predicting the outcome.
