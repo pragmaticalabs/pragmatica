@@ -17,6 +17,7 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
+
 /// A JDK [HttpClient] whose every send fails as a refused connection does: an already failed future carrying a
 /// [ConnectException] with no message, exactly what the JDK client reports for an RST (#3558). For tests of how a
 /// refusal is TYPED, which must not depend on what the kernel does with a loopback port under load (#3319, #3321).
