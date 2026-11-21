@@ -5,6 +5,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -14,6 +15,7 @@ import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.function.Predicate;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -270,7 +272,9 @@ public interface StorageInstance {
 
     /// Open-or-create the append log `name` under [#logRoot], as `<logRoot>/<name>.wal` -- a stream
     /// names its partition logs `<stream>/<partition>`. Fails with [StorageError.InvalidLogName] for a
-    /// name that is blank or resolves outside the root, and with [StorageError.LogsUnsupported] on an
+    /// name outside the log-name grammar (segments of letters, digits, `_`, `-`, and `.`, `@`, `:` after the first
+    /// character, joined by single `/`), with [StorageError.ReservedLogName] for a name whose first segment is one
+    /// the storage keeps for its own files (compared case-insensitively), and with [StorageError.LogsUnsupported] on an
     /// instance without a log root. See [AppendLog] for what a log is, and what it is never used for.
     default Result<AppendLog> openLog(String name) {
         return StorageError.LogsUnsupported.logsUnsupported(name()).result();
@@ -502,9 +506,18 @@ final class DefaultStorageInstance implements StorageInstance {
 
     private static final String LOG_SUFFIX = ".wal";
 
-    /// #2836: the names the storage keeps for its own files under the log root. A log name's FIRST `/`-segment,
-    /// compared case-sensitively and whole: `aside@1/0` is a stream log and stays legal `[guess: form is not in the spec]`.
-    private static final Set<String> RESERVED_LOG_SEGMENTS = Set.of("STORAGE_ID", "CLAIM", "LOCK", "aside");
+    /// #2836: the names the storage keeps for its own files, lower-case: a log name's FIRST segment is compared to
+    /// them CASE-INSENSITIVELY, because a case-insensitive filesystem would put `ASIDE` in `aside`. Only a name that
+    /// first matched [#LOG_NAME] is compared, so the first segment is a plain path segment (`aside@1/0` is a stream
+    /// log and stays legal: its first segment is `aside@1`).
+    private static final Set<String> RESERVED_LOG_SEGMENTS = Set.of("storage_id", "claim", "lock", "aside");
+
+    /// #2836: the ONE grammar of a log name: segments joined by single `/`; each segment starts with a letter, digit,
+    /// `_` or `-` (so no `.` or `..` segment) and continues with those, `.`, `@` or `:` (a stream log is
+    /// `<stream>@<incarnation>/<partition>` and a topic stream is named `topic:<address>`). ASCII only: no
+    /// backslash, whitespace, leading, trailing or doubled `/`. `[guess: @ and : are admitted beyond the minimal
+    /// set because production stream and topic log names carry them]`
+    private static final Pattern LOG_NAME = Pattern.compile("[A-Za-z0-9_-][A-Za-z0-9._@:-]*(/[A-Za-z0-9_-][A-Za-z0-9._@:-]*)*");
 
     private final String name;
     private final List<StorageTier> tiers;
@@ -1920,16 +1933,19 @@ final class DefaultStorageInstance implements StorageInstance {
         return AppendLog.logNamesUnder(root);
     }
 
-    /// #2836: a reserved name is refused before it is resolved, so no path is ever built for it.
+    /// #2836: a name is accepted only if it matches the [#LOG_NAME] grammar, and only then is its first segment
+    /// checked against the reserved set; nothing is resolved for a refused name, so no path is built for it.
     private static Result<Path> logFileUnlessReserved(Path root, String logName) {
         return Result.success(logName)
+                     .filter(StorageError.InvalidLogName.invalidLogName(logName),
+                             name -> LOG_NAME.matcher(name).matches())
                      .filter(StorageError.ReservedLogName.reservedLogName(logName),
                              DefaultStorageInstance::isNotReserved)
                      .flatMap(name -> logFile(root, name));
     }
 
-    private static boolean isNotReserved(String logName) {
-        return ! RESERVED_LOG_SEGMENTS.contains(firstSegment(logName));
+    private static boolean isNotReserved(String validLogName) {
+        return ! RESERVED_LOG_SEGMENTS.contains(firstSegment(validLogName).toLowerCase(Locale.ROOT));
     }
 
     private static String firstSegment(String logName) {

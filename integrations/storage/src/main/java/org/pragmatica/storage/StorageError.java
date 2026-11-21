@@ -133,8 +133,8 @@ public sealed interface StorageError extends Cause {
         }
     }
 
-    /// A log name that is blank or does not resolve to a file strictly under the instance's log root
-    /// (absolute, or climbing out with `..`).
+    /// A log name outside the log-name grammar (see [StorageInstance#openLog]): blank, absolute, climbing with `.` or
+    /// `..`, holding a backslash, whitespace, a non-ASCII character or an empty segment.
     record InvalidLogName(String name) implements StorageError {
         static InvalidLogName invalidLogName(String name) {
             return new InvalidLogName(name);
@@ -147,7 +147,7 @@ public sealed interface StorageError extends Cause {
     }
 
     /// #2836: a log name whose first `/`-segment is one of the names the storage keeps for its own files
-    /// (`STORAGE_ID`, `CLAIM`, `LOCK`, `aside`). A stream log is `<stream>@<incarnation>/<partition>`, so
+    /// (`STORAGE_ID`, `CLAIM`, `LOCK`, `aside`), compared case-insensitively. A stream log is `<stream>@<incarnation>/<partition>`, so
     /// `aside@1/0` is an ordinary log name; only the bare segment is reserved.
     record ReservedLogName(String name) implements StorageError {
         static ReservedLogName reservedLogName(String name) {
