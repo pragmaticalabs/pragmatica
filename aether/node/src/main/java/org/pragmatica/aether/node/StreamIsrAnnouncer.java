@@ -144,11 +144,14 @@ public interface StreamIsrAnnouncer {
 
         return enforced.filter(current -> current.incarnation() == config.incarnation())
                        .filter(current -> !retentionOf(current).equals(retentionOf(config)))
-                       .map(current -> retentionChanged(value, String.valueOf(retentionOf(current)), String.valueOf(retentionOf(config))));
+                       .map(current -> retentionChanged(value,
+                                                        String.valueOf(retentionOf(current)),
+                                                        String.valueOf(retentionOf(config))));
     }
 
     private static Option<RetentionDeclaration> retentionOf(StreamConfig config) {
-        return config.declaration().flatMap(StreamDeclaration::retention);
+        return config.declaration()
+                     .flatMap(StreamDeclaration::retention);
     }
 
     private static OperationalEvent retentionChanged(StreamConfigValue value, String oldBounds, String newBounds) {
@@ -158,10 +161,10 @@ public interface StreamIsrAnnouncer {
                                                                               oldBounds,
                                                                               newBounds,
                                                                               "stream-retention-changed:" + config.name()
-                                                                              + ":" + config.incarnation()
-                                                                              + ":" + value.createdAt()
-                                                                              + ":" + oldBounds
-                                                                              + ":" + newBounds);
+                                                                             + ":" + config.incarnation()
+                                                                             + ":" + value.createdAt()
+                                                                             + ":" + oldBounds
+                                                                             + ":" + newBounds);
     }
 
     private static Option<OperationalEvent> configTransition(StreamConfigValue value,
