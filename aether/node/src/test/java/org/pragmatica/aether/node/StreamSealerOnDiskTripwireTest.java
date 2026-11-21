@@ -13,10 +13,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-import org.mockito.Mockito;
-import org.mockito.stubbing.Answer;
 import org.pragmatica.aether.node.assembly.StreamAssembly;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamPartitionManager;
@@ -27,8 +23,14 @@ import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Option;
 import org.pragmatica.storage.BlockId;
 
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
+import org.mockito.stubbing.Answer;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+
 
 /// Tripwire for #3515, stated from one invariant: a sealed segment that production writes at this release is
 /// uncompressed and unencrypted ON DISK. The sealed-segment path has four silent fallbacks (compress, decompress, unknown
@@ -42,10 +44,11 @@ class StreamSealerOnDiskTripwireTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
     private static final long FIRST_OFFSET = 10L;
+
     private static final String MESSAGE = "#3515: the sealed segment on disk is not plain -- a compression codec or an encryptor "
-                                          + "is wired into the production sealer. Wire the fallbacks first: make compress, decompress, "
-                                          + "unknown codec ordinal and decrypt return typed errors instead of wrong bytes; only then "
-                                          + "change this test";
+                                        + "is wired into the production sealer. Wire the fallbacks first: make compress, decompress, "
+                                        + "unknown codec ordinal and decrypt return typed errors instead of wrong bytes; only then "
+                                        + "change this test";
 
     @TempDir
     Path dir;
@@ -58,8 +61,9 @@ class StreamSealerOnDiskTripwireTest {
 
         sealer.onEviction(STREAM, PARTITION, events);
         sealer.flushAll().await().unwrap();
-
-        var id = setup.instance().resolveRef("streams/" + STREAM + "/" + PARTITION + "/" + FIRST_OFFSET + "-" + (FIRST_OFFSET + 2)).unwrap();
+        var id = setup.instance()
+                      .resolveRef("streams/" + STREAM + "/" + PARTITION + "/" + FIRST_OFFSET + "-" + (FIRST_OFFSET + 2))
+                      .unwrap();
         var raw = Files.readAllBytes(blockFile(id));
         var plain = plainEvents(events);
 
@@ -73,27 +77,34 @@ class StreamSealerOnDiskTripwireTest {
     @SuppressWarnings("unchecked")
     private SegmentSealer productionSealer(StorageFactory.StorageSetup setup) {
         var captured = new AtomicReference<SegmentSealer>();
-        var config = AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(), Option.none(), ConfigurationProvider.builder().build(), dir);
+        var config = AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(),
+                                                                        Option.none(),
+                                                                        ConfigurationProvider.builder().build(),
+                                                                        dir);
 
         try (var _ = Mockito.mockStatic(StreamPartitionManager.class, capturingTheSealer(captured))) {
             StreamAssembly.streamReplication(new StreamAssembly.StreamReplicationInputs(config,
-                                                                                         null,
-                                                                                         null,
-                                                                                         mock(RabiaNode.class),
-                                                                                         null,
-                                                                                         null,
-                                                                                         null,
-                                                                                         new StreamMemoryBudget(128L << 20, 128L << 20),
-                                                                                         setup,
-                                                                                         null,
-                                                                                         null,
-                                                                                         null,
-                                                                                         null,
-                                                                                         null));
+                                                                                        null,
+                                                                                        null,
+                                                                                        mock(RabiaNode.class),
+                                                                                        null,
+                                                                                        null,
+                                                                                        null,
+                                                                                        new StreamMemoryBudget(128L << 20,
+                                                                                                               128L << 20),
+                                                                                        setup,
+                                                                                        null,
+                                                                                        null,
+                                                                                        null,
+                                                                                        null,
+                                                                                        null));
         } catch (SealerCaptured expected) {
-            // the assembly reached the partition manager with its sealer; nothing after that call is needed
+        // the assembly reached the partition manager with its sealer; nothing after that call is needed
         }
-        assertThat(captured.get()).as("control: the assembly must hand its sealer to the partition manager, or this test proves nothing").isNotNull();
+
+        assertThat(captured.get()).as("control: the assembly must hand its sealer to the partition manager, or this test proves nothing")
+                  .isNotNull();
+
         return captured.get();
     }
 
@@ -106,6 +117,7 @@ class StreamSealerOnDiskTripwireTest {
               .filter(SegmentSealer.class::isInstance)
               .findFirst()
               .ifPresent(sealer -> captured.set((SegmentSealer) sealer));
+
         throw new SealerCaptured();
     }
 
@@ -119,14 +131,20 @@ class StreamSealerOnDiskTripwireTest {
     private static byte[] plainEvents(List<RawEvent> events) {
         var buffer = ByteBuffer.allocate(events.stream().mapToInt(e -> 20 + e.data().length).sum()).order(ByteOrder.BIG_ENDIAN);
 
-        events.forEach(e -> buffer.putLong(e.offset()).putLong(e.timestamp()).putInt(e.data().length).put(e.data()));
+        events.forEach(e -> buffer.putLong(e.offset())
+                                  .putLong(e.timestamp())
+                                  .putInt(e.data().length)
+                                  .put(e.data()));
+
         return buffer.array();
     }
 
     private Path blockFile(BlockId id) throws IOException {
         try (var files = Files.walk(dir)) {
             return files.filter(Files::isRegularFile)
-                        .filter(file -> file.getFileName().toString().equals(id.hexString()))
+                        .filter(file -> file.getFileName()
+                                            .toString()
+                                            .equals(id.hexString()))
                         .findFirst()
                         .orElseThrow(() -> new AssertionError("the disk tier holds no block file for the sealed segment: " + id.hexString()));
         }
