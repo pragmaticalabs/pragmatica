@@ -2724,22 +2724,23 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     }
 
     /// Taste: INFO. A committed retention change is routine operator action; the summary states committed facts only,
-    /// no prediction of what the stream will retain. Owner-gated `emit`: derived on every node, published once.
+    /// no prediction of what the stream will retain. Derived on every node from the committed config Put, so it takes the
+    /// committed gate ([#emitCommitted], #1671 I-35): one node per KV index publishes it, with the raiser's eventId unchanged.
     @Contract
     public void onStreamRetentionChanged(OperationalEvent.StreamRetentionChanged event) {
-        emit(new StreamRetentionChanged(hlcClock.now(),
-                                        Severity.INFO,
-                                        "Stream " + event.stream()
-                                       + " retention bounds changed: committed " + event.oldBounds()
-                                       + " -> " + event.newBounds(),
-                                        Map.of(ClusterEventIdentity.EVENT_ID,
-                                               event.eventId(),
-                                               "stream",
-                                               event.stream(),
-                                               "oldBounds",
-                                               event.oldBounds(),
-                                               "newBounds",
-                                               event.newBounds())));
+        emitCommitted(new StreamRetentionChanged(hlcClock.now(),
+                                                 Severity.INFO,
+                                                 "Stream " + event.stream()
+                                                + " retention bounds changed: committed " + event.oldBounds()
+                                                + " -> " + event.newBounds(),
+                                                 Map.of(ClusterEventIdentity.EVENT_ID,
+                                                        event.eventId(),
+                                                        "stream",
+                                                        event.stream(),
+                                                        "oldBounds",
+                                                        event.oldBounds(),
+                                                        "newBounds",
+                                                        event.newBounds())));
     }
 
     @Contract
