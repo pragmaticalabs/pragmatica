@@ -12,6 +12,8 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.aether.slice.stream.RemovalCause;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Functions.Fn1;
 
@@ -47,8 +49,10 @@ class OffHeapRingBufferReadEvictionRaceTest {
     /// One reader's tally. `torn`: a returned event whose payload belongs to another offset. `expired`:
     /// reads refused `CursorExpired` — the typed outcome of losing the race, asserted > 0 so a green run
     /// proves the race was entered rather than absent. `aligned`: reads that returned the requested
-    /// record, asserted > 0 so a re-check that refuses everything cannot pass either.
-    private record Tally(long reads, long torn, long expired, long aligned, String firstTorn) {}
+    /// record, asserted > 0 so a re-check that refuses everything cannot pass either. `misnamed`: refusals that are
+    /// `CursorExpired` but do not name (`EXPIRED`, `RETENTION`), asserted zero (stream-mem M-1b-delta: the ring cannot tell which
+    /// bound evicted the slot, so every one of its refusals, the post-copy re-check included, names `RETENTION`).
+    private record Tally(long reads, long torn, long expired, long aligned, long misnamed, String firstTorn) {}
 
     @Test
     void read_neverReturnsAnotherOffsetsRecord_whileAppendsEvictTheTail() throws InterruptedException {
@@ -62,6 +66,8 @@ class OffHeapRingBufferReadEvictionRaceTest {
             assertThat(tally.aligned()).as("reads that returned the requested offset's record (a re-check that refuses everything must not pass)")
                       .isGreaterThan(0);
             assertThat(tally.torn()).as("reads whose payload belongs to another offset; first: " + tally.firstTorn())
+                      .isZero();
+            assertThat(tally.misnamed()).as("CursorExpired refusals that do not name (EXPIRED, RETENTION)")
                       .isZero();
         }
     }
@@ -79,6 +85,8 @@ class OffHeapRingBufferReadEvictionRaceTest {
                       .isGreaterThan(0);
             assertThat(tally.torn()).as("slices whose payload belongs to another offset; first: " + tally.firstTorn())
                       .isZero();
+            assertThat(tally.misnamed()).as("CursorExpired refusals that do not name (EXPIRED, RETENTION)")
+                      .isZero();
         }
     }
 
@@ -93,6 +101,7 @@ class OffHeapRingBufferReadEvictionRaceTest {
         var torn = 0L;
         var expired = 0L;
         var aligned = 0L;
+        var misnamed = 0L;
         var firstTorn = "";
 
         while (!done.get()) {
@@ -114,13 +123,15 @@ class OffHeapRingBufferReadEvictionRaceTest {
                 expired++;
             } else if (outcome == Outcome.ALIGNED) {
                 aligned++;
+            } else if (outcome == Outcome.MISNAMED) {
+                misnamed++;
             }
         }
 
         writer.join();
         assertThat(writerFailure.get()).as("the writer must have appended every offset it stamped").isNull();
 
-        return new Tally(reads, torn, expired, aligned, firstTorn);
+        return new Tally(reads, torn, expired, aligned, misnamed, firstTorn);
     }
 
     private static void appendStamped(OffHeapRingBuffer buffer, AtomicBoolean done, AtomicReference<String> failure) {
@@ -191,16 +202,28 @@ class OffHeapRingBufferReadEvictionRaceTest {
     }
 
     private static <T> Outcome classify(Result<T> result, Fn1<Outcome, T> check) {
-        return result.fold(cause -> cause instanceof StreamError.CursorExpired
-                                    ? Outcome.EXPIRED
-                                    : Outcome.OTHER,
-                           check);
+        return result.fold(OffHeapRingBufferReadEvictionRaceTest::refused, check);
+    }
+
+    /// A `CursorExpired` is the race's typed outcome only when it names (`EXPIRED`, `RETENTION`); naming anything else is
+    /// MISNAMED, which the tests assert never happens.
+    private static Outcome refused(Cause cause) {
+        return cause instanceof StreamError.CursorExpired expired
+               ? namedOutcome(expired)
+               : Outcome.OTHER;
+    }
+
+    private static Outcome namedOutcome(StreamError.CursorExpired expired) {
+        return expired.reason() == StreamError.CursorExpired.Reason.EXPIRED && expired.cause() == RemovalCause.RETENTION
+               ? Outcome.EXPIRED
+               : Outcome.MISNAMED;
     }
 
     private record Outcome(boolean torn, boolean expired, String detail) {
         static final Outcome ALIGNED = new Outcome(false, false, "");
         static final Outcome EXPIRED = new Outcome(false, true, "");
         static final Outcome OTHER = new Outcome(false, false, "");
+        static final Outcome MISNAMED = new Outcome(false, false, "misnamed");
 
         static Outcome torn(String detail) {
             return new Outcome(true, false, detail);

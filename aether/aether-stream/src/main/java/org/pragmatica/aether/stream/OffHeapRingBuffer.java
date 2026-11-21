@@ -24,6 +24,7 @@ import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.TierAwareRetention;
 import org.pragmatica.aether.slice.stream.RingGeometry;
+import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.storage.AppendLog;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -1299,7 +1300,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
 
         if (offset < tail) {
-            return new StreamError.CursorExpired(offset, tail).result();
+            return new StreamError.CursorExpired(offset, tail, RemovalCause.RETENTION).result();
         }
 
         if (offset > Math.min(head, visibleOffset.get())) {
@@ -1396,7 +1397,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
 
         if (fromOffset < tail) {
-            return new StreamError.CursorExpired(fromOffset, tail).result();
+            return new StreamError.CursorExpired(fromOffset, tail, RemovalCause.RETENTION).result();
         }
 
         if (fromOffset > head) {
@@ -1441,7 +1442,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var tailAfterCopy = rawTailOffset();
 
         if (tailAfterCopy > fromOffset) {
-            return new StreamError.CursorExpired(fromOffset, tailAfterCopy).result();
+            return new StreamError.CursorExpired(fromOffset, tailAfterCopy, RemovalCause.RETENTION).result();
         }
 
         return success(copy);

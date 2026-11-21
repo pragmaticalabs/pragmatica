@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream;
 import java.util.List;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.segment.SegmentError;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
@@ -71,7 +72,8 @@ final class TierFallback implements SealedTierFallback {
         return new StreamError.CursorExpired(fromOffset,
                                              partitionManager.partitionBuffer(streamName, partition)
                                                              .map(OffHeapRingBuffer::tailOffset)
-                                                             .or(0L)).promise();
+                                                             .or(0L),
+                                             RemovalCause.RETENTION).promise();
     }
 
     /// The cold read is bounded by the partition's VISIBLE position exactly as the ring read is (#1352):

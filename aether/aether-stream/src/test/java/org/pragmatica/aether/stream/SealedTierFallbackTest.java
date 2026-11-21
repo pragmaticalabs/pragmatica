@@ -10,6 +10,7 @@ import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.segment.SegmentError;
@@ -116,7 +117,7 @@ class SealedTierFallbackTest {
         tier.seal(STREAM, PARTITION, 10, 19);
         tier.reclaim(STREAM, PARTITION, 0);
 
-        assertThat(failureOf(fallback().read(STREAM, PARTITION, 3, 10))).isEqualTo(new StreamError.CursorExpired(3, 10));
+        assertThat(failureOf(fallback().read(STREAM, PARTITION, 3, 10))).isEqualTo(new StreamError.CursorExpired(3, 10, RemovalCause.RETENTION));
     }
 
     /// A hole above the watermark (5..9 never sealed) passes through as the tier answers it.
@@ -138,7 +139,8 @@ class SealedTierFallbackTest {
         ringOf30WithTail20();
 
         assertThat(failureOf(sealedTierFallback(manager, Option.none()).read(STREAM, PARTITION, 3, 10))).isEqualTo(new StreamError.CursorExpired(3,
-                                                                                                                                                20));
+                                                                                                                                                20,
+                                                                                                                                                RemovalCause.RETENTION));
     }
 
     private SealedTierFallback fallback() {

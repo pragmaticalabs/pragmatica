@@ -21,7 +21,7 @@
 # no skip metadata, so an old reader desynchronises rather than ignoring the change).
 # Rename only, same type and position = byte-neutral, pinned so a same-typed name swap is
 # visible in this diff. See WireAssignmentTripwireTest for the derivation from the generator.
-GENERATION 8
+GENERATION 9
 ENUM org.pragmatica.aether.api.ClusterEvent$Severity INFO=0,WARNING=1,CRITICAL=2,UNKNOWN=3
 ENUM org.pragmatica.aether.http.forward.HttpForwardMessage$NotAppliedReason ROUTE_NOT_FOUND=0,BUDGET_EXHAUSTED=1,UNDECODABLE_REQUEST=2,UNKNOWN=3
 ENUM org.pragmatica.aether.http.forward.HttpForwardMessage$Pipeline APP=0,MANAGEMENT=1,UNKNOWN=2
@@ -67,6 +67,7 @@ ENUM org.pragmatica.aether.slice.kvstore.AetherValue$UpgradeRunState RUNNING=0,P
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$UpgradeStop NONE=0,PAUSE=1,ABORT=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$WorkflowState RUNNING=0,WAITING=1,PAUSED=2,DONE=3,FAILED=4,ESCALATED=5,UNKNOWN=6
 ENUM org.pragmatica.aether.slice.kvstore.CommunityState FORMING=0,ACTIVE=1,DEGRADED=2,DISSOLVING=3,DISSOLVED=4,UNKNOWN=5
+ENUM org.pragmatica.aether.slice.stream.RemovalCause RETENTION=0,AGE=1,COUNT=2,BYTES=3,RING_FROZEN=4,OVER_SHARE=5,DROPPED_RUN=6,BLOCK_PUT_FAILED=7,BLOCK_ABSENT=8,UNLISTED_TAIL=9,LIFE_LOST=10,UNRECORDED=11,NOT_APPLICABLE=12,UNKNOWN=13
 ENUM org.pragmatica.aether.slice.stream.StreamRegistryEntry$RegisteredByKind FRAMEWORK=0,BLUEPRINT=1,OPERATOR=2,UNKNOWN=3
 ENUM org.pragmatica.aether.stream.forward.ControlOutcomeDto$Kind ADMITTED=0,REFUSED=1,OUTCOME_UNKNOWN=2,INDEX_UNAVAILABLE=3,UNKNOWN=4
 ENUM org.pragmatica.aether.stream.forward.ReadRefusal$Kind STREAM_NOT_FOUND=0,PARTITION_OUT_OF_RANGE=1,PARTITION_NOT_LOCAL=2,BUFFER_CLOSED=3,CURSOR_EXPIRED=4,OWNER_NOT_ACTIVATED=5,REPLICA_NOT_VERIFIED=6,STALE_EPOCH_READ=7,NOT_CURRENT_OWNER=8,OWNER_CATCHUP_PENDING=9,LINEARIZABLE_ROUND_TIMEOUT=10,PARTITION_HELD_NOT_MATERIALIZED=11,RING_INDEX_CORRUPTED=12,SEAL_IN_FLIGHT=13,SEALED_RANGE_MISSING=14,STREAM_NOT_MATERIALIZED=15,UNKNOWN=16
@@ -372,7 +373,7 @@ SHAPE org.pragmatica.aether.stream.consensus.StreamConsensusCommand (streamName:
 SHAPE org.pragmatica.aether.stream.forward.ControlOutcomeDto (kind:org.pragmatica.aether.stream.forward.ControlOutcomeDto$Kind,offset:long,message:java.lang.String,retryable:boolean)
 SHAPE org.pragmatica.aether.stream.forward.ControlRecordDto (kind:java.lang.String,key:java.lang.String,payload:byte[],hlc:long)
 SHAPE org.pragmatica.aether.stream.forward.RawEventDto (offset:long,timestamp:long,data:byte[])
-SHAPE org.pragmatica.aether.stream.forward.ReadRefusal (kind:org.pragmatica.aether.stream.forward.ReadRefusal$Kind,stream:java.lang.String,partition:int,first:long,second:long,flag:boolean,detail:java.lang.String,peerFirst:java.lang.String,peerSecond:java.lang.String,epochFirst:org.pragmatica.aether.slice.generation.Epoch,epochSecond:org.pragmatica.aether.slice.generation.Epoch)
+SHAPE org.pragmatica.aether.stream.forward.ReadRefusal (kind:org.pragmatica.aether.stream.forward.ReadRefusal$Kind,stream:java.lang.String,partition:int,first:long,second:long,flag:boolean,detail:java.lang.String,peerFirst:java.lang.String,peerSecond:java.lang.String,epochFirst:org.pragmatica.aether.slice.generation.Epoch,epochSecond:org.pragmatica.aether.slice.generation.Epoch,cause:org.pragmatica.aether.slice.stream.RemovalCause)
 SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$ControlAppendForward (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,streamName:java.lang.String,partition:int,records:java.util.List<org.pragmatica.aether.stream.forward.ControlRecordDto>)
 SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$ControlAppendForwardResponse (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,outcomes:java.util.List<org.pragmatica.aether.stream.forward.ControlOutcomeDto>)
 SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$PublishForward (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,streamName:java.lang.String,partition:int,payload:byte[],timestamp:long,systemWriter:boolean)
@@ -858,6 +859,7 @@ TAG  org.pragmatica.aether.slice.kvstore.CommunityState 1659
 TAG  org.pragmatica.aether.slice.kvstore.LegacyScheduledTaskStateValue 1634
 TAG  org.pragmatica.aether.slice.kvstore.LegacySchemaVersionValue 1638
 TAG  org.pragmatica.aether.slice.kvstore.LegacyTopicSubscriptionValue 1655
+TAG  org.pragmatica.aether.slice.stream.RemovalCause 3017
 TAG  org.pragmatica.aether.slice.stream.StreamRegistryEntry 1071062
 TAG  org.pragmatica.aether.slice.stream.StreamRegistryEntry$RegisteredByKind 1762131
 TAG  org.pragmatica.aether.stream.consensus.StreamConsensusCommand 91

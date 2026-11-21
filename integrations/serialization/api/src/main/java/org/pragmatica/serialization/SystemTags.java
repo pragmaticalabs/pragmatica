@@ -857,6 +857,9 @@ public interface SystemTags {
         // #420 flag day: the artifact-content binding with its block manifest, and the flag-day tag of `ArtifactContentValue` (old tag
         // 2118, retired above). Inside the 2990..2999 reservation of wire-tag-ranges.txt (know d2ce3461aa).
         pin(table, 2990, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue");
+        // #3458 M-1b: the named removal cause a refused read carries. Inside the 3010..3017 reservation of wire-tag-ranges.txt (stream-mem);
+        // 3017 is its last free tag, so the next stream-mem wire addition reserves a block first.
+        pin(table, 3017, "org.pragmatica.aether.slice.stream.RemovalCause");
         // #3303 A3a: the entity seed-offer and arc-waiver keys. Inside the arc-3303 reservation 3018..3037 of wire-tag-ranges.txt (know f3033886ee).
         pin(table, 3018, "org.pragmatica.aether.slice.kvstore.AetherKey.EntitySeedOfferKey");
         pin(table, 3019, "org.pragmatica.aether.slice.kvstore.AetherKey.EntityArcWaiverKey");
