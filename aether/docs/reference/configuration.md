@@ -87,7 +87,7 @@ incompatible with real operator certificates. See
 |-----|------|---------|-------------|
 | `management` | int | `PortsConfig.DEFAULT_MANAGEMENT_PORT` | Management API port |
 | `cluster` | int | `PortsConfig.DEFAULT_CLUSTER_PORT` | Cluster (node-to-node) port |
-| `management_protocol` | string | `"h1"` | HTTP protocol the management API serves: `h1`, `h3` or `both` (aliases `http1`, `http/1.1`, `http3`, `http/3`, `dual`; case-insensitive). `h3` and `both` require TLS. Any other value is refused at load |
+| `management_protocol` | string | `"h1"` | HTTP protocol the management API serves: `h1`, `h3` or `both` (aliases `http1`, `http/1.1`, `http3`, `http/3`, `dual`; case-insensitive). `h3` and `both` serve over QUIC, which is always TLS. Without `[cluster] tls` configured, the HTTP/3 listener runs on an ephemeral self-signed certificate, so a client must either skip certificate verification or be configured to trust that certificate (it changes on every start). Any other value is refused at load |
 
 ## Slice Configuration
 
@@ -775,7 +775,7 @@ When the `[alerts.webhook]` section is absent, webhook delivery is off. A presen
 |-----|------|---------|-------------|
 | `enabled` | boolean | `false` | Turns delivery on. Requires at least one URL: `enabled = true` with an empty `urls` is refused at boot |
 | `urls` | string list | `[]` | Endpoints that receive each forwarded alert as an HTTP `POST` with a JSON body. A node sends to every URL in the list |
-| `retry_count` | int | `3` | Retries after a failed attempt (a non-2xx response or a transport error), with jittered backoff. `0` means one attempt. After the last retry the failure is logged at ERROR and the alert is not re-sent |
+| `retry_count` | int | `3` | Retries, with jittered backoff, after a non-2xx HTTP response. A transport error (connection refused, timeout) is not retried: that delivery fails at once. `0` means one attempt. After the last retry the failure is logged at ERROR and the alert is not re-sent |
 | `timeout` | duration | `5s` | Per-request timeout |
 
 ## Backup Configuration
@@ -1037,6 +1037,15 @@ The deployment policy table in the blueprint itself (not `resources.toml`). It e
 | `max_latency_ms` | long | `500` | Latency ceiling (ms). Parsed and stored on `DeploymentConfig`; of this table the node reads only `schema_required` |
 | `drain_timeout_ms` | long | `300000` | Drain timeout (ms). Parsed and stored on `DeploymentConfig`; **read by no production code** today. The drain timeout in effect comes from `aether deploy` (`blueGreen.drainTimeoutMs`) |
 | `schema_required` | boolean | `true` | Whether the deployment requires its schema migrations |
+
+Canary stages are an array of tables, `[[deployment.canary.stages]]`, used with `strategy = "canary"`. When the array is absent the defaults are `(traffic_percent, observation_minutes)` = (1,5), (5,5), (25,10), (50,10), (100,0).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `traffic_percent` | integer | `5` | Share of traffic routed to the new version in this stage. Any number is accepted and truncated to an integer; no range is checked |
+| `observation_minutes` | integer | `5` | Minutes to observe the stage. Any number is accepted and truncated to an integer; no range is checked |
+
+A non-numeric value falls back to the default `5`. The stages are parsed and stored on `DeploymentConfig`; no production code reads them today.
 
 ## Infrastructure Endpoints (`[endpoints.*]`)
 
