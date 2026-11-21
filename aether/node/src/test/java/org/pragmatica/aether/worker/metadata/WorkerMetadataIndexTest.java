@@ -154,4 +154,41 @@ class WorkerMetadataIndexTest {
         index.put(foreignAssignment, AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.DEACTIVATING));
         assertThat(index.endpointPeersForWorker(WORKER)).containsExactly(WORKER);
     }
+
+    /// #3533 F2 (survivors of the NodePlacementKey, SpokesmanKey and BackupRestoreKey arms): a node placement row belongs to exactly its
+    /// node's scope (not to the global scope, not to the empty scope set); a spokesman row and the restore-authority row belong to the
+    /// global scope (not to the empty scope set, where the row would never reach a worker).
+    @Test
+    void nodePlacementKey_isInExactlyItsNodeScope() {
+        var index = WorkerMetadataIndex.workerMetadataIndex();
+        var key = AetherKey.NodePlacementKey.nodePlacementKey(CORE);
+
+        index.put(key, "placement-value");
+
+        assertThat(index.snapshot("node:core")).containsEntry(key, "placement-value");
+        assertThat(index.snapshot("node:worker")).doesNotContainKey(key);
+        assertThat(index.snapshot(WorkerMetadataIndex.GLOBAL)).doesNotContainKey(key);
+    }
+
+    @Test
+    void spokesmanKey_isInTheGlobalScope() {
+        var index = WorkerMetadataIndex.workerMetadataIndex();
+        var key = AetherKey.SpokesmanKey.spokesmanKey(CORE);
+
+        index.put(key, "spokesman-value");
+
+        assertThat(index.snapshot(WorkerMetadataIndex.GLOBAL)).containsEntry(key, "spokesman-value");
+        assertThat(index.snapshot("node:core")).doesNotContainKey(key);
+    }
+
+    @Test
+    void backupRestoreKey_isInTheGlobalScope() {
+        var index = WorkerMetadataIndex.workerMetadataIndex();
+        var key = AetherKey.BackupRestoreKey.SINGLETON;
+
+        index.put(key, "restore-value");
+
+        assertThat(index.snapshot(WorkerMetadataIndex.GLOBAL)).containsEntry(key, "restore-value");
+        assertThat(index.snapshot("node:core")).doesNotContainKey(key);
+    }
 }

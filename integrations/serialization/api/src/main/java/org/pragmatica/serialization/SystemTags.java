@@ -438,7 +438,7 @@ public interface SystemTags {
         pin(table, 1134, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryKey");
         pin(table, 1135, "org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey");
         pin(table, 1136, "org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey");
-        // RETIRED 2026-11-21 (#3530): `WorkerSliceDirectiveKey` was deleted — no production writer or reader. The
+        // RETIRED 2026-11-21 (#3530): `WorkerSliceDirectiveKey` was deleted — no writer since #1535, no reader. The
         // pin STAYS so the tag is never reused.
         pin(table, 1137, "org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey");
         // AetherValue  [base 1600]
@@ -536,7 +536,7 @@ public interface SystemTags {
         pin(table, 1655, "org.pragmatica.aether.slice.kvstore.LegacyTopicSubscriptionValue");
         pin(table, 1656, "org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry");
         pin(table, 1657, "org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue");
-        // RETIRED 2026-11-21 (#3530): `WorkerSliceDirectiveValue` was deleted — no production writer or reader. The
+        // RETIRED 2026-11-21 (#3530): `WorkerSliceDirectiveValue` was deleted — no writer since #1535, no reader. The
         // pin STAYS so the tag is never reused.
         pin(table, 1658, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue");
         pin(table, 1659, "org.pragmatica.aether.slice.kvstore.CommunityState");
