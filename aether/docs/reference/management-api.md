@@ -6198,7 +6198,7 @@ registration has been removed; nothing serves that path any more.
 ### Read Events
 
 ```
-GET /api/v1/streams/read/{name}/{partition}?from={offset}&max={count}
+GET /api/v1/streams/{namespace}/{stream}/{version}/read/{partition}?from={offset}&max={count}
 ```
 
 **Auth:** ALL_AUTHENTICATED
