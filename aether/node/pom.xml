@@ -344,6 +344,12 @@
             <artifactId>test-logging</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- PollUntil: the shared bounded wait for tests (FlakeScanTest) -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>testing</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.mockito</groupId>
             <artifactId>mockito-core</artifactId>
