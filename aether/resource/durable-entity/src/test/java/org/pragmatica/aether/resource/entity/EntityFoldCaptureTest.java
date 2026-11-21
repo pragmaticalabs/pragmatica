@@ -4,7 +4,9 @@
 package org.pragmatica.aether.resource.entity;
 
 import java.nio.charset.StandardCharsets;
+import java.lang.reflect.Field;
 import java.util.List;
+import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -17,6 +19,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -26,6 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class EntityFoldCaptureTest {
     private static final String KEYSPACE = "orders";
     private static final int PARTITION = 0;
+    private static final int OTHER_PARTITION = 3;
 
     private CaptureSubstrate substrate;
     private EntityFold fold;
@@ -53,6 +57,8 @@ class EntityFoldCaptureTest {
         assertThat(decoded.timers()).containsOnlyKeys("a");
         assertThat(decoded.timers().get("a")).containsOnlyKeys("t1");
         assertThat(capture.lineage().isPresent()).as("lineage read at the closed offset").isTrue();
+        assertThat(capture.lineage().or(new byte[0])).as("lineage of the record AT the closed offset, not beside it")
+                                                      .isEqualTo(bytes("lineage-2"));
     }
 
     @Test
@@ -136,11 +142,160 @@ class EntityFoldCaptureTest {
         assertRefusedBeforeCopy(fold.capture(PARTITION, 5L), EntityFold.CaptureRefusal.LogEndMismatch.class);
     }
 
+    @Test
+    void arm_a_anOffsetParkedAboveTheClosedOffset_isRefused_beforeAnyCopy() {
+        readyThrough(2);
+        fold.apply(PARTITION, 4L, EntityLogRecord.upsert("past", bytes("9")));
+
+        assertThat(refusalOf(fold.capture(PARTITION, 2L))).isEqualTo(new EntityFold.CaptureRefusal.AppliedMismatch(PARTITION, 4L, 2L));
+        assertThat(substrate.lineageReads.get()).as("refused before the copy").isZero();
+    }
+
+    @Test
+    void arm_a_anOffsetParkedAboveTheClosedOffset_duringTheCopy_isRefused_afterTheCopy() {
+        readyThrough(2);
+        substrate.duringLineageRead = () -> appendAndApply(4L);
+
+        var result = fold.capture(PARTITION, 2L);
+
+        assertThat(refusalOf(result)).isEqualTo(new EntityFold.CaptureRefusal.AppliedMismatch(PARTITION, 4L, 2L));
+        assertThat(substrate.lineageReads.get()).as("the copy ran, so the after-check is what refused").isEqualTo(1);
+    }
+
+    @Test
+    void arm_a_theWatermarkAdvancingDuringTheCopy_isRefused_afterTheCopy() {
+        readyThrough(2);
+        substrate.duringLineageRead = () -> appendAndApply(3L);
+
+        var result = fold.capture(PARTITION, 2L);
+
+        assertThat(refusalOf(result)).isEqualTo(new EntityFold.CaptureRefusal.AppliedMismatch(PARTITION, 3L, 2L));
+        assertThat(substrate.lineageReads.get()).as("the copy ran, so the after-check is what refused").isEqualTo(1);
+    }
+
+    @Test
+    void arm_b_theCommitPointFallingDuringTheCopy_isRefused_afterTheCopy() {
+        readyThrough(2);
+        substrate.duringLineageRead = () -> substrate.committed = 1L;
+
+        var result = fold.capture(PARTITION, 2L);
+
+        assertThat(refusalOf(result)).isEqualTo(new EntityFold.CaptureRefusal.NotCommitted(PARTITION, 1L, 2L));
+        assertThat(substrate.lineageReads.get()).as("the copy ran, so the after-check is what refused").isEqualTo(1);
+    }
+
+    @Test
+    void arm_d_aMemoStillPending_isNotReady_neverCaptured() {
+        readyThrough(2);
+        var gate = Promise.<List<byte[]>> promise();
+        substrate.readGate = gate;
+        var rebuilding = EntityFold.entityFold(KEYSPACE, substrate);
+
+        rebuilding.ready(PARTITION);
+
+        assertThat(refusalOf(rebuilding.capture(PARTITION, 2L))).isEqualTo(new EntityFold.CaptureRefusal.NotReady(PARTITION));
+        assertThat(substrate.lineageReads.get()).as("a refusal before the copy never copied").isZero();
+    }
+
+    @Test
+    void arm_d_aMemoResolvedAsFailure_isNotReady_neverCaptured() throws Exception {
+        readyThrough(2);
+        rebuildSlot().set(Causes.cause("rebuild failed").<Unit> promise());
+
+        assertThat(refusalOf(fold.capture(PARTITION, 2L))).isEqualTo(new EntityFold.CaptureRefusal.NotReady(PARTITION));
+        assertThat(substrate.lineageReads.get()).as("a refusal before the copy never copied").isZero();
+    }
+
+    @Test
+    void capture_drainsAnOffsetLeftParkedByRacingDrains_beforeTheCheck() throws Exception {
+        readyThrough(1);
+        substrate.log.add(EntityLogRecord.upsert("k2", bytes("2")).encode());
+        parkedAhead().add(2L);
+
+        var capture = fold.capture(PARTITION, 2L).unwrap();
+
+        assertThat(capture.through()).isEqualTo(2L);
+        assertThat(parkedAhead()).as("the drain consumed the parked offset").isEmpty();
+        assertThat(EntityFoldSnapshot.decode(capture.snapshot()).unwrap().state()).containsOnlyKeys("k0", "k1");
+    }
+
+    @Test
+    void refusals_carryEveryField_onANonZeroPartition() {
+        var other = EntityFold.entityFold(KEYSPACE, substrate);
+
+        assertThat(refusalOf(other.capture(OTHER_PARTITION, -1L))).isEqualTo(new EntityFold.CaptureRefusal.NotReady(OTHER_PARTITION));
+
+        readyThrough(other, 1);
+        substrate.log.add(EntityLogRecord.upsert("late", bytes("9")).encode());
+        assertThat(refusalOf(other.capture(OTHER_PARTITION, 2L)))
+            .isEqualTo(new EntityFold.CaptureRefusal.AppliedMismatch(OTHER_PARTITION, 1L, 2L));
+        assertThat(refusalOf(other.capture(OTHER_PARTITION, 5L)))
+            .isEqualTo(new EntityFold.CaptureRefusal.LogEndMismatch(OTHER_PARTITION, 2L, 5L));
+
+        other.caughtUp(OTHER_PARTITION).await();
+        substrate.committed = 1L;
+        assertThat(refusalOf(other.capture(OTHER_PARTITION, 2L)))
+            .isEqualTo(new EntityFold.CaptureRefusal.NotCommitted(OTHER_PARTITION, 1L, 2L));
+
+        substrate.committed = Long.MAX_VALUE;
+        substrate.cutGeneration = 1L;
+        assertThat(refusalOf(other.capture(OTHER_PARTITION, 2L))).isEqualTo(new EntityFold.CaptureRefusal.Cut(OTHER_PARTITION));
+    }
+
+    /// Appends to the log until `offset` is its head, then applies ONLY that last record: an offset above the watermark
+    /// parks when the offsets between are never applied.
+    private void appendAndApply(long offset) {
+        var record = EntityLogRecord.upsert("above" + offset, bytes("9"));
+
+        while (substrate.log.size() <= offset) {
+            substrate.log.add(record.encode());
+        }
+
+        fold.apply(PARTITION, offset, record);
+    }
+
+    /// The partition's published fold, reached by reflection: its parked-offset set cannot be filled deterministically through `apply`
+    /// (it drains itself), and its rebuild slot never holds a failed memo through `ready` ([EntityFold#ready] clears the slot BEFORE it
+    /// resolves a failed rebuild), so both states are placed directly to pin what [EntityFold#capture] does when it meets them.
+    private ConcurrentSkipListSet<Long> parkedAhead() throws Exception {
+        var published = ((AtomicReference<?>) field(partitionFold(), "published").get(partitionFold())).get();
+
+        @SuppressWarnings("unchecked")
+        var parked = (ConcurrentSkipListSet<Long>) field(published, "appliedAhead").get(published);
+
+        return parked;
+    }
+
+    @SuppressWarnings("unchecked")
+    private AtomicReference<Promise<Unit>> rebuildSlot() throws Exception {
+        return (AtomicReference<Promise<Unit>>) field(partitionFold(), "rebuild").get(partitionFold());
+    }
+
+    private Object partitionFold() throws Exception {
+        var method = EntityFold.class.getDeclaredMethod("partitionFold", int.class);
+
+        method.setAccessible(true);
+
+        return method.invoke(fold, PARTITION);
+    }
+
+    private static Field field(Object target, String name) throws Exception {
+        var field = target.getClass().getDeclaredField(name);
+
+        field.setAccessible(true);
+
+        return field;
+    }
+
     private void readyThrough(int lastOffset) {
+        readyThrough(fold, lastOffset);
+    }
+
+    private void readyThrough(EntityFold target, int lastOffset) {
         for (var i = 0; i <= lastOffset; i++) {
             substrate.log.add(EntityLogRecord.upsert("k" + i, bytes(String.valueOf(i))).encode());
         }
-        fold.ready(PARTITION).await();
+        target.ready(target == fold ? PARTITION : OTHER_PARTITION).await();
     }
 
     private void assertRefusedBeforeCopy(Result<EntityFold.Capture> result, Class<? extends Cause> expected) {
@@ -165,6 +320,8 @@ class EntityFoldCaptureTest {
         private final AtomicInteger lineageReads = new AtomicInteger();
         private volatile long committed = Long.MAX_VALUE;
         private volatile long cutGeneration;
+        /// When set, every `read` answers this promise: a rebuild held in flight.
+        private volatile Promise<List<byte[]>> readGate;
         /// Runs inside every `lineageAt`: a cut that lands while a capture is being assembled.
         private volatile Runnable duringLineageRead = () -> {};
 
@@ -202,6 +359,10 @@ class EntityFoldCaptureTest {
 
         @Override
         public Promise<List<byte[]>> read(String keyspace, int partition, long fromOffset, int maxRecords) {
+            if (readGate != null) {
+                return readGate;
+            }
+
             return fromOffset >= log.size()
                    ? Promise.success(List.of())
                    : Promise.success(List.copyOf(log.subList((int) fromOffset, (int) Math.min(log.size(), fromOffset + maxRecords))));

@@ -639,7 +639,7 @@ final class EntityFold {
     ///
     /// @param through  the offset the capture claims, equal to the `lastOffset` the caller closed the parent at
     /// @param snapshot the encoded contents, folded through exactly `through`
-    /// @param lineage  the identity of the log record at `through`, none when the substrate keeps no lineage or `through` is `-1`
+    /// @param lineage  the identity of the log record at `through` as the substrate answers it, none when the substrate keeps no lineage or cannot read the record (`through` of `-1` included only for a substrate that answers none there; the production substrate answers some)
     record Capture(long through, byte[] snapshot, Option<byte[]> lineage) {}
 
     /// Why [#capture] answered no capture. Typed so a caller can tell a fold that is not ready from one that moved.
@@ -660,7 +660,8 @@ final class EntityFold {
             }
         }
 
-        /// The fold's applied watermark is not exactly the closed offset (below: records missing; above: records past the close).
+        /// The fold's applied watermark is not exactly the closed offset (below: records missing; above: records past the close), or an offset
+        /// above it is parked out of order (`applied` then names the highest parked offset): the contents may hold records past the close.
         record AppliedMismatch(int partition, long applied, long lastOffset) implements CaptureRefusal {
             @Override
             public String message() {
@@ -700,6 +701,9 @@ final class EntityFold {
     /// a fold past the close holds records the parent never closed over), committed through `lastOffset` and current; all three are
     /// re-read after the copy and any change refuses, so the contents and the lineage belong to one unchanged fold. It never reads the
     /// checkpoint pointer and never goes through [#checkpointCandidate] or [#committedClaim], which answer a claim, not a capture.
+    ///
+    /// Defence in depth: an offset parked above the watermark (applied out of order, its contents already in the state) also refuses, before
+    /// and after the copy, so a record appended above `lastOffset` while the copy runs cannot slip into the snapshot behind an unmoved watermark.
     Result<Capture> capture(int partition, long lastOffset) {
         var fold = partitionFold(partition);
 
@@ -738,13 +742,18 @@ final class EntityFold {
         return stableAt(partition, data, lastOffset).map(_ -> new Capture(lastOffset, snapshot, lineage));
     }
 
-    /// Whether `data` is applied through exactly `lastOffset`, committed through it, and current. Run before and after the copy.
+    /// Whether `data` is applied through exactly `lastOffset` with nothing parked above it, committed through it, and current. Run before and after the copy.
     private Result<Unit> stableAt(int partition, FoldedPartition data, long lastOffset) {
         var applied = data.appliedThrough.get();
         var committed = substrate.committedOffset(keyspace, partition);
+        var parked = parkedAhead(data);
 
         if (applied != lastOffset) {
             return new CaptureRefusal.AppliedMismatch(partition, applied, lastOffset).result();
+        }
+
+        if (parked.isPresent()) {
+            return new CaptureRefusal.AppliedMismatch(partition, parked.or(applied), lastOffset).result();
         }
 
         if (committed < lastOffset) {
@@ -890,6 +899,11 @@ final class EntityFold {
         data.appliedThrough.accumulateAndGet(offset, Math::max);
 
         return unit();
+    }
+
+    /// The highest offset parked above the watermark, none when nothing is parked.
+    private static Option<Long> parkedAhead(FoldedPartition data) {
+        return Option.from(data.appliedAhead.descendingSet().stream().findFirst());
     }
 
     /// The encoded fold of `partition`, for a checkpoint at [#checkpointableThrough]. A caller writing a
