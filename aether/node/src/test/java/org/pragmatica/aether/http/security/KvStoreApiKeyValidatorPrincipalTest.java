@@ -58,7 +58,7 @@ class KvStoreApiKeyValidatorPrincipalTest {
         void validate_principalCarriesTheApiKeyPrefixExactlyOnce() {
             registerKey(AuthorizationRole.ADMIN);
 
-            validator().validate(request(PLAINTEXT), new SecurityPolicy.RoleRequired(Role.ADMIN.value()))
+            validator().context(request(PLAINTEXT), new SecurityPolicy.RoleRequired(Role.ADMIN.value()))
                        .onFailure(cause -> Assertions.fail("the registered key must authenticate: " + cause.message()))
                        .onSuccess(context -> assertThat(context.principal().value())
                                        .as("the principal an operator reads back from /whoami and an audit trail keys on")
@@ -72,7 +72,7 @@ class KvStoreApiKeyValidatorPrincipalTest {
         void validate_principalIsNotDoublePrefixed() {
             registerKey(AuthorizationRole.ADMIN);
 
-            validator().validate(request(PLAINTEXT), new SecurityPolicy.RoleRequired(Role.ADMIN.value()))
+            validator().context(request(PLAINTEXT), new SecurityPolicy.RoleRequired(Role.ADMIN.value()))
                        .onFailure(cause -> Assertions.fail("the registered key must authenticate: " + cause.message()))
                        .onSuccess(context -> assertThat(context.principal().value())
                                        .as("buildContext must not re-apply the prefix the factory already applies")
@@ -85,7 +85,7 @@ class KvStoreApiKeyValidatorPrincipalTest {
         void validate_viewerRoleKey_rendersTheSamePrincipalShape() {
             registerKey(AuthorizationRole.VIEWER);
 
-            validator().validate(request(PLAINTEXT), SecurityPolicy.apiKeyRequired())
+            validator().context(request(PLAINTEXT), SecurityPolicy.apiKeyRequired())
                        .onFailure(cause -> Assertions.fail("the registered key must authenticate: " + cause.message()))
                        .onSuccess(context -> assertThat(context.principal().value()).isEqualTo("api-key:" + KEY_ID));
         }
@@ -128,7 +128,7 @@ class KvStoreApiKeyValidatorPrincipalTest {
 
             var holder = new boolean[1];
 
-            validator().validate(HttpRequestContext.httpRequestContext("/api/v1/whoami", "GET", Map.<String, List<String>> of(), headers, "req-2293"),
+            validator().context(HttpRequestContext.httpRequestContext("/api/v1/whoami", "GET", Map.<String, List<String>> of(), headers, "req-2293"),
                                  SecurityPolicy.apiKeyRequired())
                        .onSuccess(context -> holder[0] = true);
             return holder[0];
@@ -143,7 +143,7 @@ class KvStoreApiKeyValidatorPrincipalTest {
         void validate_optional_noKey_servedAnonymously() {
             registerKey(AuthorizationRole.ADMIN);
 
-            var outcome = validator().validate(HttpRequestContext.httpRequestContext("/api/v1/feed", "GET", Map.<String, List<String>> of(), Map.of(), "req-2946"),
+            var outcome = validator().context(HttpRequestContext.httpRequestContext("/api/v1/feed", "GET", Map.<String, List<String>> of(), Map.of(), "req-2946"),
                                                SecurityPolicy.optional());
 
             assertThat(outcome.isSuccess()).isTrue();
@@ -154,14 +154,14 @@ class KvStoreApiKeyValidatorPrincipalTest {
         void validate_optional_wrongKey_refused() {
             registerKey(AuthorizationRole.ADMIN);
 
-            assertThat(validator().validate(request("not-the-key"), SecurityPolicy.optional()).isFailure()).isTrue();
+            assertThat(validator().context(request("not-the-key"), SecurityPolicy.optional()).isFailure()).isTrue();
         }
 
         @Test
         void validate_optional_registeredKey_authenticates() {
             registerKey(AuthorizationRole.ADMIN);
 
-            validator().validate(request(PLAINTEXT), SecurityPolicy.optional())
+            validator().context(request(PLAINTEXT), SecurityPolicy.optional())
                        .onFailure(cause -> Assertions.fail("the registered key must authenticate: " + cause.message()))
                        .onSuccess(context -> assertThat(context.principal().value()).isEqualTo("api-key:" + KEY_ID));
         }

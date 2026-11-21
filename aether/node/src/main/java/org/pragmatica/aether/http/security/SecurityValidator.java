@@ -24,6 +24,11 @@ import org.pragmatica.lang.Result;
 public interface SecurityValidator {
     Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy);
 
+    /// The validated context alone, for callers that never act on an ADMIN grant (the app-HTTP plane).
+    default Result<SecurityContext> context(HttpRequestContext request, SecurityPolicy policy) {
+        return validate(request, policy);
+    }
+
     static SecurityValidator apiKeyValidator(Set<String> validKeys) {
         return HttpAuthenticator.apiKeyValidator(validKeys)::validate;
     }
