@@ -389,12 +389,16 @@ public interface SystemTags {
         // or reader. The pin STAYS so the tag is never reused.
         pin(table, 1096, "org.pragmatica.aether.slice.kvstore.AetherKey.CloudCredentialsKey");
         pin(table, 1097, "org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey");
+        // RETIRED 2026-11-21 (#3530): `ClusterPhaseKey` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1098, "org.pragmatica.aether.slice.kvstore.AetherKey.ClusterPhaseKey");
         pin(table, 1099, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey");
         pin(table, 1100, "org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey");
         pin(table, 1101, "org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerGroupKey");
         pin(table, 1102, "org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentKey");
         pin(table, 1103, "org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey");
+        // RETIRED 2026-11-21 (#3530): `DrainDeadlineKey` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1104, "org.pragmatica.aether.slice.kvstore.AetherKey.DrainDeadlineKey");
         pin(table, 1105, "org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey");
         pin(table, 1106, "org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey");
@@ -402,6 +406,8 @@ public interface SystemTags {
         pin(table, 1108, "org.pragmatica.aether.slice.kvstore.AetherKey.GossipKeyRotationKey");
         pin(table, 1109, "org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey");
         pin(table, 1110, "org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey");
+        // RETIRED 2026-11-21 (#3530): `JoinDeadlineKey` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1111, "org.pragmatica.aether.slice.kvstore.AetherKey.JoinDeadlineKey");
         pin(table, 1112, "org.pragmatica.aether.slice.kvstore.AetherKey.LogLevelKey");
         pin(table, 1113, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey");
@@ -432,6 +438,8 @@ public interface SystemTags {
         pin(table, 1134, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryKey");
         pin(table, 1135, "org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey");
         pin(table, 1136, "org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey");
+        // RETIRED 2026-11-21 (#3530): `WorkerSliceDirectiveKey` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1137, "org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey");
         // AetherValue  [base 1600]
         // RETIRED 2026-09-27 (#1530): `AbTestRoutingValue` was deleted — no production writer or reader. The
@@ -450,12 +458,16 @@ public interface SystemTags {
         pin(table, 1609, "org.pragmatica.aether.slice.kvstore.AetherValue.CloudCredentialsValue");
         pin(table, 1610, "org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue");
         pin(table, 1611, "org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase");
+        // RETIRED 2026-11-21 (#3530): `ClusterPhaseValue` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1612, "org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhaseValue");
         pin(table, 1613, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue");
         pin(table, 1614, "org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue");
         pin(table, 1615, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupValue");
         pin(table, 1616, "org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentValue");
         pin(table, 1617, "org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue");
+        // RETIRED 2026-11-21 (#3530): `DrainDeadlineValue` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1618, "org.pragmatica.aether.slice.kvstore.AetherValue.DrainDeadlineValue");
         pin(table, 1619, "org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue");
         pin(table, 1620, "org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue");
@@ -463,6 +475,8 @@ public interface SystemTags {
         pin(table, 1622, "org.pragmatica.aether.slice.kvstore.AetherValue.GossipKeyRotationValue");
         pin(table, 1623, "org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue");
         pin(table, 1624, "org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue");
+        // RETIRED 2026-11-21 (#3530): `JoinDeadlineValue` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1625, "org.pragmatica.aether.slice.kvstore.AetherValue.JoinDeadlineValue");
         pin(table, 1626, "org.pragmatica.aether.slice.kvstore.AetherValue.LogLevelValue");
         pin(table, 1627, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue");
@@ -513,6 +527,8 @@ public interface SystemTags {
         pin(table, 1655, "org.pragmatica.aether.slice.kvstore.LegacyTopicSubscriptionValue");
         pin(table, 1656, "org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry");
         pin(table, 1657, "org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue");
+        // RETIRED 2026-11-21 (#3530): `WorkerSliceDirectiveValue` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1658, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue");
         pin(table, 1659, "org.pragmatica.aether.slice.kvstore.CommunityState");
         // entity owner-forwarding (#596)  [base 1660]

@@ -274,10 +274,8 @@ public final class StatusRoutes implements RouteSource {
                                                                        .name()));
     }
 
-    /// E.6 (spec §7.2): route through `ManageableNode.clusterPhaseSupplier()` so the
-    /// status consumers observe the derived `ClusterPhaseView` value (post-E.8: always derived)
-    /// is on, and the legacy `ClusterPhaseKey` cache when it's off — a single migration
-    /// switch covers all consumers.
+    /// Routes through `ManageableNode.clusterPhaseSupplier()`, so status consumers observe the value derived by
+    /// `ClusterPhaseView`.
     private static String readClusterPhase(ManageableNode node) {
         return node.clusterPhaseSupplier()
                    .get()

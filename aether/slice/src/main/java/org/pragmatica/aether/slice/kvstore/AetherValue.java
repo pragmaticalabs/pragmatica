@@ -1441,41 +1441,6 @@ public sealed interface AetherValue {
         }
     }
 
-    record WorkerSliceDirectiveValue(Artifact artifact,
-                                     int targetInstances,
-                                     String placement,
-                                     Option<String> targetCommunity,
-                                     long updatedAt) implements AetherValue {
-        public static WorkerSliceDirectiveValue workerSliceDirectiveValue(Artifact artifact,
-                                                                          int targetInstances,
-                                                                          String placement) {
-            return new WorkerSliceDirectiveValue(artifact,
-                                                 targetInstances,
-                                                 placement,
-                                                 none(),
-                                                 System.currentTimeMillis());
-        }
-
-        public static WorkerSliceDirectiveValue workerSliceDirectiveValue(Artifact artifact,
-                                                                          int targetInstances,
-                                                                          String placement,
-                                                                          String targetCommunity) {
-            return new WorkerSliceDirectiveValue(artifact,
-                                                 targetInstances,
-                                                 placement,
-                                                 Option.option(targetCommunity),
-                                                 System.currentTimeMillis());
-        }
-
-        public WorkerSliceDirectiveValue withInstances(int newCount) {
-            return new WorkerSliceDirectiveValue(artifact,
-                                                 newCount,
-                                                 placement,
-                                                 targetCommunity,
-                                                 System.currentTimeMillis());
-        }
-    }
-
     /// Worker/core activation directive (worker-membership-spec §4 line 79): the leader-authored,
     /// node-keyed role assignment. Extended additively with `communityId` + `governorHint` so a
     /// WORKER directive carries its community assignment and a governor address hint through the
@@ -1792,22 +1757,6 @@ public sealed interface AetherValue {
         /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as
         /// UNKNOWN by an older node either way.
         UNKNOWN
-    }
-
-    record ClusterPhaseValue(ClusterPhase phase, long updatedAt) implements AetherValue {
-        public ClusterPhaseValue {
-            if (phase == null) {
-                phase = ClusterPhase.COLD_BOOT;
-            }
-        }
-
-        public static ClusterPhaseValue clusterPhaseValue(ClusterPhase phase) {
-            return new ClusterPhaseValue(phase, System.currentTimeMillis());
-        }
-
-        public static ClusterPhaseValue clusterPhaseValue(ClusterPhase phase, long updatedAt) {
-            return new ClusterPhaseValue(phase, updatedAt);
-        }
     }
 
     /// The deployment engine a cluster runs (phase-3 design 8.2). `FSM2` is the default of every node; `LEGACY` is the engine it replaces (removed in F7).
@@ -2180,39 +2129,6 @@ public sealed interface AetherValue {
         UNRECOGNISED,
         /// Wire sentinel (#964) — see the type docstring. Must stay LAST.
         UNKNOWN
-    }
-
-    /// Phase 1 step J — replicated mirror of the in-process `JOIN_DEADLINE` scheduler
-    /// entry. `deadlineMs` is wall-clock millis (epoch) when the join deadline fires;
-    /// `setAt` is the HLC stamp of the originating JOINING-entry transition (provides
-    /// causal ordering across leader takeover for observers reconstructing the deadline).
-    /// Pure observability atom — see [AetherKey.JoinDeadlineKey] for trigger semantics.
-    record JoinDeadlineValue(long deadlineMs, HlcTimestamp setAt) implements AetherValue {
-        public JoinDeadlineValue {
-            if (setAt == null) {
-                setAt = HlcTimestamp.ZERO;
-            }
-        }
-
-        public static JoinDeadlineValue joinDeadlineValue(long deadlineMs, HlcTimestamp setAt) {
-            return new JoinDeadlineValue(deadlineMs, setAt);
-        }
-    }
-
-    /// Phase 1 step J — replicated mirror of the in-process `DRAIN_DEADLINE` scheduler
-    /// entry. `deadlineMs` is wall-clock millis (epoch) when the drain hard-deadline
-    /// fires; `setAt` is the HLC stamp of the DRAINING-entry transition. Pure
-    /// observability atom — see [AetherKey.DrainDeadlineKey] for trigger semantics.
-    record DrainDeadlineValue(long deadlineMs, HlcTimestamp setAt) implements AetherValue {
-        public DrainDeadlineValue {
-            if (setAt == null) {
-                setAt = HlcTimestamp.ZERO;
-            }
-        }
-
-        public static DrainDeadlineValue drainDeadlineValue(long deadlineMs, HlcTimestamp setAt) {
-            return new DrainDeadlineValue(deadlineMs, setAt);
-        }
     }
 
     record NodeArtifactValue(SliceState state,
