@@ -4,10 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.io.IOException;
-import java.nio.file.Files;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
@@ -22,8 +19,8 @@ import org.pragmatica.statemachine.FsmObserver;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// C6a-0 assembly pin (#3467, A1 and A2; C6-W0 #3413): the DRAIN channel the management server takes from the quorum-loss unit.
-/// The channel is a seam of its own (`DrainAssembly.drainPort`), pinned here on both halves, and the assembly text is
-/// pinned so the management unit takes the port and builds none.
+/// The channel is a seam of its own (`DrainAssembly.drainPort`), pinned here on both halves. That the management server
+/// holds this very port is pinned at runtime by [NodeDrainPortIdentityBootTest], which replaced the assembly-text pins.
 class ManagementAssemblyDrainPortSeamTest {
     private static final NodeId TARGET = NodeId.nodeId("node-target").unwrap();
 
@@ -62,44 +59,5 @@ class ManagementAssemblyDrainPortSeamTest {
         registry.requestDrain(TARGET);
 
         assertThat(port.pending()).containsExactly(TARGET);
-    }
-
-    /// The port is built in the quorum-loss unit (`DrainAssembly`) and the management server takes it from there; the
-    /// pins read the assembly text: one registry port, one FSM-aware sink (a method reference or a block body is a
-    /// defect), the management unit builds no port of its own, and the node hands it the quorum-loss unit's port.
-    @Test
-    void managementServer_takesThePortFromTheQuorumLossUnit_noOtherPortIsBuiltInTheAssembly() {
-        var code = NodeDepartureWiringTest.assemblyCode();
-
-        assertThat(code).containsOnlyOnce("DrainPort.registry(");
-        assertThat(assemblyFileCode("DrainAssembly.java")).as("the FSM-aware sink is built once in DrainAssembly, as a lambda")
-                                       .containsOnlyOnce("->requestDrainThroughFsm(");
-        assertThat(assemblyFileCode("ManagementAssembly.java")).as("the management unit takes the port from its inputs")
-                                                               .containsOnlyOnce("in.drainPort()");
-        assertThat(code).doesNotContain("DrainPort.none(");
-        assertThat(code).containsOnlyOnce("quorumLossDrain.drainPort()");
-    }
-
-    /// One assembly file alone, normalised as [AssemblySource#stripped()] does (line comments removed, whitespace
-    /// stripped). The topology unit builds its own sink with the same call, and `quorumLossDrain.drainPort()` contains
-    /// `in.drainPort()`, so these two pins are scoped to the one file.
-    private static String assemblyFileCode(String fileName) {
-        var file = AssemblySource.files()
-                                 .stream()
-                                 .filter(path -> path.getFileName()
-                                                     .toString()
-                                                     .equals(fileName))
-                                 .findFirst()
-                                 .orElseThrow();
-
-        try {
-            return Files.readString(file)
-                        .lines()
-                        .map(line -> line.replaceFirst("//.*$", ""))
-                        .collect(Collectors.joining())
-                        .replaceAll("\\s+", "");
-        } catch (IOException e) {
-            throw new AssertionError("Cannot read " + file, e);
-        }
     }
 }
