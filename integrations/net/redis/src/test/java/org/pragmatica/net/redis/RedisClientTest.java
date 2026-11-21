@@ -5,10 +5,13 @@ import java.util.ArrayList;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.testlogging.UnreachablePort;
+
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -120,13 +123,17 @@ class RedisClientTest {
         assertThat(server.received()).hasSize(1);
     }
 
+    /// Claim: client creation over a refused connect fails typed ConnectionFailed. The refusal is scripted (#3558).
     @Test
-    void unreachableServerFailsClientCreation() throws IOException {
-        try (var unreachable = UnreachablePort.hold()) {
-            var cfg = RedisConfig.redisConfig("127.0.0.1", unreachable.port()).unwrap();
+    void refusedConnectFailsClientCreation() {
+        var cfg = RedisConfig.redisConfig("127.0.0.1", 1).unwrap();
+        var result = RedisClient.start(cfg,
+                                       Option.none(),
+                                       () -> new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory()),
+                                       ScriptedConnect.refused())
+                                .await(WAIT);
 
-            assertThat(kind(RedisClient.redisClient(cfg).await(WAIT))).isEqualTo("ConnectionFailed");
-        }
+        assertThat(kind(result)).isEqualTo("ConnectionFailed");
     }
 
     @Test

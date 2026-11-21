@@ -13,9 +13,12 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelFactory;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
+import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 
@@ -49,6 +52,7 @@ public final class RedisClient implements RedisCommands {
     private final RedisConfig config;
     private final Option<SslContext> tls;
     private final EventLoopGroup group;
+    private final ChannelFactory<? extends Channel> channels;
     private final Object lock = new Object();
     private final List<RedisConnection> ready = new ArrayList<>();
     private final AtomicBoolean closing = new AtomicBoolean();
@@ -60,9 +64,15 @@ public final class RedisClient implements RedisCommands {
 
     /// The client owns `group` and shuts it down on close.
     RedisClient(RedisConfig config, Option<SslContext> tls, EventLoopGroup group) {
+        this(config, tls, group, NioSocketChannel::new);
+    }
+
+    /// As above with the client channel factory supplied, see [RedisConnection] (#3558).
+    RedisClient(RedisConfig config, Option<SslContext> tls, EventLoopGroup group, ChannelFactory<? extends Channel> channels) {
         this.config = config;
         this.tls = tls;
         this.group = group;
+        this.channels = channels;
     }
 
     /// Create a client and prove it can reach the server by opening its first connection. TLS, when
@@ -86,10 +96,18 @@ public final class RedisClient implements RedisCommands {
 
     /// As above with the event loop group construction supplied, so a construction failure can be forced.
     static Promise<RedisClient> start(RedisConfig config, Option<SslContext> tls, ThrowingFn0<EventLoopGroup> groups) {
+        return start(config, tls, groups, NioSocketChannel::new);
+    }
+
+    /// As above with the client channel factory supplied, see [RedisConnection] (#3558).
+    static Promise<RedisClient> start(RedisConfig config,
+                                      Option<SslContext> tls,
+                                      ThrowingFn0<EventLoopGroup> groups,
+                                      ChannelFactory<? extends Channel> channels) {
         return Result.lift(thrown -> connectionFailed(Causes.fromThrowable(thrown)),
                            groups)
                      .async()
-                     .flatMap(group -> new RedisClient(config, tls, group).open());
+                     .flatMap(group -> new RedisClient(config, tls, group, channels).open());
     }
 
     /// Prove the server is reachable by opening the first connection; on failure the client is closed.
@@ -159,7 +177,7 @@ public final class RedisClient implements RedisCommands {
         }
 
         opening++;
-        lastOpening = RedisConnection.connect(config, group, tls, none()).fold(this::opened);
+        lastOpening = RedisConnection.connect(config, group, tls, none(), RespCodec.MAX_COMMAND, channels).fold(this::opened);
         openings.add(lastOpening);
         lastOpening.onResultRun(this::forgetSettledOpenings);
 

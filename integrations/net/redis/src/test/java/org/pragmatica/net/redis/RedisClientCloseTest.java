@@ -11,7 +11,6 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.testlogging.UnreachablePort;
 
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
@@ -71,14 +70,14 @@ class RedisClientCloseTest {
         assertThat(group.isTerminated()).isTrue();
     }
 
+    /// Claim: a failed start shuts the event loop group down. The refused connect is scripted (#3558).
     @Test
-    void failedStartShutsDownTheEventLoopGroup() throws IOException {
-        try (var unreachable = UnreachablePort.hold()) {
-            newClient(config(1, unreachable.port()));
+    void failedStartShutsDownTheEventLoopGroup() {
+        group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+        client = new RedisClient(config(1, 1), Option.none(), group, ScriptedConnect.refused());
 
-            assertThat(TestKinds.kind(client.open().await(WAIT))).isEqualTo("ConnectionFailed");
-            assertThat(group.terminationFuture().awaitUninterruptibly(5, TimeUnit.SECONDS)).isTrue();
-        }
+        assertThat(TestKinds.kind(client.open().await(WAIT))).isEqualTo("ConnectionFailed");
+        assertThat(group.terminationFuture().awaitUninterruptibly(5, TimeUnit.SECONDS)).isTrue();
     }
 
     @Test

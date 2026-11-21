@@ -35,6 +35,7 @@ import org.pragmatica.lang.utils.Causes;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFactory;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
@@ -149,17 +150,28 @@ public final class RedisConnection implements RedisCommands {
                                             Option<SslContext> tls,
                                             Option<EventLoopGroup> ownedGroup,
                                             long frameLimit) {
+        return connect(config, group, tls, ownedGroup, frameLimit, NioSocketChannel::new);
+    }
+
+    /// As above with the client channel factory supplied, so a connect that is refused, or never completes,
+    /// can be forced without depending on what the kernel does with a port (#3558).
+    static Promise<RedisConnection> connect(RedisConfig config,
+                                            EventLoopGroup group,
+                                            Option<SslContext> tls,
+                                            Option<EventLoopGroup> ownedGroup,
+                                            long frameLimit,
+                                            ChannelFactory<? extends Channel> channels) {
         var connection = new RedisConnection(config, ownedGroup, frameLimit);
 
-        return connection.open(group, tls)
+        return connection.open(group, tls, channels)
                          .flatMap(_ -> connection.handshake()
                                                  .mapError(RedisConnection::asConnectFailure))
                          .onFailure(_ -> connection.close());
     }
 
-    private Promise<Channel> open(EventLoopGroup group, Option<SslContext> tls) {
+    private Promise<Channel> open(EventLoopGroup group, Option<SslContext> tls, ChannelFactory<? extends Channel> channels) {
         var bootstrap = new Bootstrap().group(group)
-                                       .channel(NioSocketChannel.class)
+                                       .channelFactory(channels)
                                        .option(ChannelOption.TCP_NODELAY, true)
                                        .option(ChannelOption.CONNECT_TIMEOUT_MILLIS,
                                                (int) config.connectTimeout().millis())

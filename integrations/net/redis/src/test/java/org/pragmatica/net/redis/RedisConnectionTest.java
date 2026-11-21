@@ -9,7 +9,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.testlogging.UnreachablePort;
 
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
@@ -234,11 +233,28 @@ class RedisConnectionTest {
         assertThat(kind(RedisConnection.redisConnection(cfg).await(WAIT))).isEqualTo("AuthFailed");
     }
 
+    /// Claim: a refused connect is typed ConnectionFailed. The refusal is scripted (#3558), not left to the kernel.
     @Test
-    void unreachableServerIsConnectionFailed() throws IOException {
-        try (var unreachable = UnreachablePort.hold()) {
-            assertThat(kind(RedisConnection.redisConnection(config(unreachable.port())).await(WAIT))).isEqualTo("ConnectionFailed");
-        }
+    void refusedConnectIsConnectionFailed() {
+        var group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+        var result = RedisConnection.connect(config(1), group, Option.none(), Option.some(group), RespCodec.MAX_COMMAND, ScriptedConnect.refused())
+                                    .await(WAIT);
+
+        assertThat(kind(result)).isEqualTo("ConnectionFailed");
+        assertThat(TestKinds.message(result)).containsIgnoringCase("refused");
+    }
+
+    /// Claim: a connect that never completes ends at the connect timeout, typed ConnectionFailed (not the
+    /// command Timeout, and not a hang). The silence is scripted (#3558), not left to the kernel.
+    @Test
+    void connectThatNeverCompletesIsConnectionFailedAtTheConnectTimeout() {
+        var group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+        var cfg = config(1).withTimeouts(timeSpan(100).millis(), timeSpan(10).seconds()).unwrap();
+        var result = RedisConnection.connect(cfg, group, Option.none(), Option.some(group), RespCodec.MAX_COMMAND, ScriptedConnect.neverCompletes())
+                                    .await(WAIT);
+
+        assertThat(kind(result)).isEqualTo("ConnectionFailed");
+        assertThat(TestKinds.message(result)).containsIgnoringCase("timed out");
     }
 
     @Test
