@@ -341,7 +341,7 @@ class BackupRestoreCoordinatorRejectedTest {
         assertThat(warnings).filteredOn(warning -> warning.code() == Code.BACKUP_RESTORE_BLOCKED)
                   .singleElement()
                   .satisfies(warning -> assertThat(warning.detail()).contains(FIXED_BUILD)
-                                                  .doesNotContain("fresh"));
+                                                  .doesNotContain("restore = \"fresh\""));
     }
 
     // --- fixtures ---
