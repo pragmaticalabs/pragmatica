@@ -712,7 +712,8 @@ final class DefaultSnapshotManager implements SnapshotManager {
 
     /// #2836: a stamped snapshot is written as [#STAMPED_FORMAT_VERSION], an unstamped one as [#FORMAT_VERSION].
     static String formatOf(MetadataSnapshot snapshot) {
-        return snapshot.storageId().isPresent()
+        return snapshot.storageId()
+                       .isPresent()
                ? STAMPED_FORMAT_VERSION
                : FORMAT_VERSION;
     }
@@ -752,9 +753,8 @@ final class DefaultSnapshotManager implements SnapshotManager {
     /// #2836: the `storageId` header, checked before anything is built from it: well formed when present
     /// ([SnapshotConfig#checkedStorageId], the rule the mint applies), and present whenever the format requires it.
     private static Result<Option<String>> storageIdHeader(String version, Map<String, String> headers) {
-        return Option.option(headers.get("storageId"))
-                     .fold(() -> storageIdAbsent(version),
-                           id -> SnapshotConfig.checkedStorageId(Option.some(id)));
+        return Option.option(headers.get("storageId")).fold(() -> storageIdAbsent(version),
+                                                            id -> SnapshotConfig.checkedStorageId(Option.some(id)));
     }
 
     private static Result<Option<String>> storageIdAbsent(String version) {

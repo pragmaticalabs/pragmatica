@@ -75,16 +75,18 @@ public record SnapshotConfig(Path snapshotPath,
     /// `id` itself when absent or well formed; the one rule shared by the mint ([#withStorageId]) and the parse.
     static Result<Option<String>> checkedStorageId(Option<String> id) {
         return id.fold(() -> Result.success(id),
-                       text -> Result.success(id)
-                                     .filter(SnapshotError.InvalidStorageId.invalidStorageId(text),
-                                             _ -> isWellFormedStorageId(text)));
+                       text -> Result.success(id).filter(SnapshotError.InvalidStorageId.invalidStorageId(text),
+                                                         _ -> isWellFormedStorageId(text)));
     }
 
     /// A storage id the header line carries and reads back unchanged: non-empty (an empty value means "none"), no
     /// control character (`\n` would inject a header line, `\r` would be read back), and valid UTF-8 (a lone
     /// surrogate is written as `?`).
     static boolean isWellFormedStorageId(String text) {
-        return !text.isEmpty() && text.chars().noneMatch(Character::isISOControl) && roundTripsAsUtf8(text);
+        return ! text.isEmpty()
+               && text.chars()
+                      .noneMatch(Character::isISOControl)
+               && roundTripsAsUtf8(text);
     }
 
     private static boolean roundTripsAsUtf8(String text) {
@@ -95,8 +97,12 @@ public record SnapshotConfig(Path snapshotPath,
     static String printable(String text) {
         var sb = new StringBuilder("'");
 
-        text.chars().forEach(c -> sb.append(Character.isISOControl(c) ? String.format("\\u%04x", c) : String.valueOf((char) c)));
+        text.chars()
+            .forEach(c -> sb.append(Character.isISOControl(c)
+                                    ? String.format("\\u%04x", c)
+                                    : String.valueOf((char) c)));
 
-        return sb.append('\'').toString();
+        return sb.append('\'')
+                 .toString();
     }
 }
