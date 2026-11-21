@@ -157,27 +157,24 @@ public record GitBackupRepository(Path dir,
                               .flatMap(_ -> configureRemote());
     }
 
-    /// The document committed at the local `HEAD`, when there is one.
-    public Result<Option<String>> localHead() {
-        return hasCommits().flatMap(present -> present
-                                               ? git("show", "HEAD:" + FILE).map(Option::some)
-                                               : success(Option.none()));
-    }
-
-    /// Fetch the backup branch and return the document at its head — absent when the remote has no such
-    /// branch yet (a brand-new remote). A failure means the remote could not be reached.
-    public Result<Option<String>> fetchRemoteHead() {
-        return remoteHasBranch().flatMap(present -> present
-                                                    ? fetchAndShow().map(Option::some)
-                                                    : success(Option.none()));
-    }
-
-    /// Whether the fetched remote head is already contained in local `HEAD` — then pushing is a
-    /// fast-forward. A local repository with no commits contains nothing.
+    /// Whether the fetched remote head is already contained in local `HEAD` — then pushing is a fast-forward. A local branch that does not exist
+    /// contains nothing. `merge-base --is-ancestor` answers exit 0 (contained) or 1 (not contained); anything else (a damaged repository, a missing
+    /// ref) is [BackupRepositoryError.GitUnreadable], never "not contained": the caller resets local commits away on "not contained" (#3464).
     public Result<Boolean> localContainsRemoteHead() {
-        return hasCommits().flatMap(present -> present
-                                               ? exitStatus("merge-base", "--is-ancestor", REMOTE_REF + branch, "HEAD").map(status -> status == 0)
-                                               : success(false));
+        return found(readLocalBranch()).flatMap(present -> present.fold(() -> success(false),
+                                                                        _ -> remoteHeadIsAncestor()));
+    }
+
+    private Result<Boolean> remoteHeadIsAncestor() {
+        return run(List.of("merge-base", "--is-ancestor", REMOTE_REF + branch, "HEAD")).flatMap(GitBackupRepository::ancestry);
+    }
+
+    private static Result<Boolean> ancestry(GitResult result) {
+        return switch (result.exitCode()) {
+            case 0 -> success(true);
+            case 1 -> success(false);
+            default -> BackupRepositoryError.GitUnreadable.FACTORY.apply("merge-base --is-ancestor exited " + result.exitCode() + ": " + result.text().strip()).result();
+        };
     }
 
     /// Move the local branch to the fetched remote head, dropping local commits the remote superseded
@@ -206,25 +203,6 @@ public record GitBackupRepository(Path dir,
                      .mapToUnit();
     }
 
-    /// `file` as committed at the local `HEAD`, absent when there is no commit or no such file.
-    public Result<Option<String>> localFile(String file) {
-        return fileAt("HEAD", file);
-    }
-
-    /// `file` at the fetched remote head (call [#fetchRemoteHead] first), absent when it has none.
-    public Result<Option<String>> remoteFile(String file) {
-        return fileAt(REMOTE_REF + branch, file);
-    }
-
-    /// `ref` is always one of this class's own refs (`HEAD`, the remote-tracking ref), never a caller's: only `--end-of-options` guards it.
-    private Result<Option<String>> fileAt(String ref, String file) {
-        return exitStatus("cat-file", "-e", END_OF_OPTIONS, ref + ":" + file).flatMap(status -> status == 0
-                                                                                                ? git("show",
-                                                                                                      END_OF_OPTIONS,
-                                                                                                      ref + ":" + file).map(Option::some)
-                                                                                                : success(Option.none()));
-    }
-
     /// Push the local branch to the remote. Never forced: a remote that moved elsewhere answers
     /// [BackupRepositoryError.PushRejected].
     public Result<Unit> push() {
@@ -232,24 +210,6 @@ public record GitBackupRepository(Path dir,
     }
 
     // --- restore (#1533) ---
-    /// The commit the fetched remote head names, absent when the remote has no such branch (call [#fetchRemoteHead] first).
-    public Result<Option<String>> remoteHeadCommit() {
-        return exitStatus("rev-parse", "--verify", "--quiet", REMOTE_REF + branch).flatMap(status -> status == 0
-                                                                                                     ? commitOf(REMOTE_REF + branch).map(Option::some)
-                                                                                                     : success(Option.none()));
-    }
-
-    /// The commit `ref` names.
-    public Result<String> commitOf(String ref) {
-        return plain(ref).flatMap(checked -> git("rev-parse", "--verify", END_OF_OPTIONS, checked + "^{commit}"))
-                    .map(String::strip);
-    }
-
-    /// The backup document as committed at `commit`.
-    public Result<String> documentAt(String commit) {
-        return plain(commit).flatMap(checked -> git("show", END_OF_OPTIONS, checked + ":" + FILE));
-    }
-
     /// The ref a restore reads, three-valued (#3464): absent when the backup branch definitely does not exist; the freshly fetched remote branch when a
     /// remote is configured, else the local branch. A failure means the branch could not be read or fetched — never read as "absent", so a restore
     /// over an unreadable source blocks instead of starting fresh.
@@ -262,15 +222,6 @@ public record GitBackupRepository(Path dir,
         return hasRemote()
                ? fetchBranch().map(_ -> REMOTE_REF + branch)
                : success("refs/heads/" + branch);
-    }
-
-    /// `<sha> <subject>` for every commit reachable from `ref`, newest first — the backup's own record of
-    /// every `(lineage, incarnation, revision)` it has written.
-    public Result<List<String>> history(String ref) {
-        return plain(ref).flatMap(checked -> git("log", "--format=%H %s", END_OF_OPTIONS, checked))
-                    .map(output -> output.lines()
-                                         .filter(line -> !line.isBlank())
-                                         .toList());
     }
 
     /// Write `record` as [#REJECTION_FILE] and commit it on the local branch (#3303). Never pushes: the push is [#push]. Committing a record
@@ -346,18 +297,6 @@ public record GitBackupRepository(Path dir,
                          .mapToUnit();
     }
 
-    private Result<Boolean> hasCommits() {
-        return exitStatus("rev-parse", "--verify", "--quiet", "HEAD").map(status -> status == 0);
-    }
-
-    private Result<Boolean> remoteHasBranch() {
-        return git("ls-remote", "--heads", REMOTE_NAME, branch).map(output -> !output.isBlank());
-    }
-
-    private Result<String> fetchAndShow() {
-        return fetchBranch().flatMap(_ -> git("show", REMOTE_REF + branch + ":" + FILE));
-    }
-
     private Result<String> fetchBranch() {
         return git("fetch", "--quiet", REMOTE_NAME, "+refs/heads/" + branch + ":" + REMOTE_REF + branch);
     }
@@ -371,8 +310,29 @@ public record GitBackupRepository(Path dir,
         return hasRemote()
                ? read(List.of("ls-remote", "--exit-code", REMOTE_NAME, "refs/heads/" + branch),
                       result -> classifyRemoteBranch(result.exitCode(), result.output(), branch))
-               : read(List.of("show-ref", "--exists", "refs/heads/" + branch),
-                      result -> classifyLocalBranch(result.exitCode(), result.output()));
+               : readLocalBranch();
+    }
+
+    /// Whether the local backup branch exists, whatever the remote: [#readBranch]'s local arm (`show-ref --exists`, exit 2 is the definite "no such
+    /// ref"; needs git 2.43), for the write path, which commits on the local branch beside a remote (#3464). Anything else is [GitRead.Unreadable].
+    public GitRead<Unit> readLocalBranch() {
+        return readRefExists("refs/heads/" + branch);
+    }
+
+    /// Whether the remote-tracking ref [#restoreRef] fetches the backup branch into exists, read without fetching again (#3464): absent when no
+    /// fetch has created it (the remote had no backup branch when it was read). Classified as [#readLocalBranch].
+    GitRead<Unit> readTrackingBranch() {
+        return readRefExists(remoteTrackingRef());
+    }
+
+    /// The remote-tracking ref [#restoreRef] fetches the backup branch into.
+    String remoteTrackingRef() {
+        return REMOTE_REF + branch;
+    }
+
+    private GitRead<Unit> readRefExists(String ref) {
+        return read(List.of("show-ref", "--exists", ref),
+                    result -> classifyLocalBranch(result.exitCode(), result.output()));
     }
 
     /// The commit id `ref` names. Never [GitRead.Absent]: `rev-parse --verify` fails the same way for a missing ref and for a damaged repository.
