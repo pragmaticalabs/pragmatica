@@ -23,6 +23,7 @@ import java.util.stream.Stream;
 
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.api.ClusterEventAggregator;
+import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.api.routes.RetentionRoutes;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.ReadLinearizationMode;
@@ -434,6 +435,9 @@ public sealed interface StreamAssembly {
         var clusterEventsStreamName = in.clusterEventsStreamName();
         var eventAggregator = in.eventAggregator();
         var operatorWarningSink = in.operatorWarningSink();
+        // #3334: the committed retention change the announcer raises is published by the aggregator.
+        allEntries.add(MessageRouter.Entry.route(OperationalEvent.StreamRetentionChanged.class,
+                                                 eventAggregator::onStreamRetentionChanged));
         var allEntries = in.allEntries();
         var streamMaxMemoryBytes = in.streamMemoryBudget().maxMemoryBytes();
         // A6: activate replication. The replica registry (populated by the A2 ReplicaSetController from

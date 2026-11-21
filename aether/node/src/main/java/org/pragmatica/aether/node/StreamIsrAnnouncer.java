@@ -82,8 +82,10 @@ public interface StreamIsrAnnouncer {
                 var after = confirmationFactorAfter.applyAsInt(config);
 
                 configTransitions(value, before, after, committedRecord).forEach(sink);
-                notApplied(value,
-                           enforcedConfig.apply(config.name())).onPresent(sink);
+                var enforced = enforcedConfig.apply(config.name());
+
+                notApplied(value, enforced).onPresent(sink);
+                retentionChanged(value, enforced).onPresent(sink);
             }
         };
     }
@@ -126,6 +128,33 @@ public interface StreamIsrAnnouncer {
                                                                                                                                                                                             + ":" + config.partitions()
                                                                                                                                                                                             + ":" + config.replicationFactor()
                                                                                                                                                                                             + ":" + config.confirmationFactor())));
+    }
+
+    /// #3334: a committed config whose storage declaration differs from the one this node ENFORCES changed the stream's
+    /// retention bounds: an operator-facing change, announced once per committed Put. Compared with what is enforced
+    /// (never with the Put's `oldValue`), so a node that already enforces the declaration (a rejoin replaying the Put)
+    /// announces nothing. Silent for an unchanged declaration, a stream not held here and a new life (a recreate is not a
+    /// retention change). The bounds are the declarations rendered as text; the `eventId` is a pure function of the
+    /// committed Put and the two bounds, so two nodes deriving it from one Put agree.
+    static Option<OperationalEvent> retentionChanged(StreamConfigValue value, Option<StreamConfig> enforced) {
+        var config = value.config();
+
+        return enforced.filter(current -> current.incarnation() == config.incarnation())
+                       .filter(current -> !current.declaration().equals(config.declaration()))
+                       .map(current -> retentionChanged(value, String.valueOf(current.declaration()), String.valueOf(config.declaration())));
+    }
+
+    private static OperationalEvent retentionChanged(StreamConfigValue value, String oldBounds, String newBounds) {
+        var config = value.config();
+
+        return OperationalEvent.StreamRetentionChanged.streamRetentionChanged(config.name(),
+                                                                              oldBounds,
+                                                                              newBounds,
+                                                                              "stream-retention-changed:" + config.name()
+                                                                              + ":" + config.incarnation()
+                                                                              + ":" + value.createdAt()
+                                                                              + ":" + oldBounds
+                                                                              + ":" + newBounds);
     }
 
     private static Option<OperationalEvent> configTransition(StreamConfigValue value,
