@@ -270,6 +270,62 @@ class ClusterEventAggregatorCommittedGateTest {
                        .containsExactly("node-b");
     }
 
+    /// #3334: STREAM_RETENTION_CHANGED is derived from a committed config Put, so it takes the committed gate. Neither local view
+    /// claims the partition: the committed owner still raises it (the node-local gate dropped it on both).
+    @Test
+    void ClusterEvents_streamRetentionChanged_straddle_neverZero() {
+        bothNodes(() -> false, () -> false);
+
+        both(ownershipPut(NODE_B));
+        nodeA.onStreamRetentionChanged(retentionChanged());
+        nodeB.onStreamRetentionChanged(retentionChanged());
+
+        assertThat(raisedBy(nodeA, ClusterEvent.StreamRetentionChanged.class)).as("one copy, raised by the committed owner")
+                                                                             .containsExactly("node-b");
+    }
+
+    /// Both local views claim the partition: exactly one node passes the gate. Counted at the gate, so the read's eventId
+    /// de-duplication cannot hide a second copy.
+    @Test
+    void ClusterEvents_streamRetentionChanged_straddle_exactlyOneAtTheGate() {
+        bothNodes(() -> true, () -> true);
+
+        both(ownershipPut(NODE_B));
+        nodeA.onStreamRetentionChanged(retentionChanged());
+        nodeB.onStreamRetentionChanged(retentionChanged());
+
+        assertThat(nodeA.committedEmitsPassed() + nodeB.committedEmitsPassed()).as("passed the committed gate, both nodes")
+                                                                              .isEqualTo(1);
+        assertThat(nodeB.committedEmitsPassed()).as("the node the record names").isEqualTo(1);
+    }
+
+    /// A node the committed record does not name raises none, although its local view claims the partition.
+    @Test
+    void ClusterEvents_streamRetentionChanged_nodeNotNamedByTheRecord_emitsNone() {
+        bothNodes(() -> true, () -> true);
+
+        both(ownershipPut(NODE_B));
+        nodeA.onStreamRetentionChanged(retentionChanged());
+
+        assertThat(raisedBy(nodeA, ClusterEvent.StreamRetentionChanged.class)).isEmpty();
+    }
+
+    /// Two raisers of one committed Put (nothing committed, so both local views pass) publish two copies carrying the raiser's
+    /// eventId unchanged; the read de-duplicates them to one.
+    @Test
+    void ClusterEvents_streamRetentionChanged_twoRaisersOfOnePut_oneId() {
+        bothNodes(() -> true, () -> true);
+
+        nodeA.onStreamRetentionChanged(retentionChanged());
+        nodeB.onStreamRetentionChanged(retentionChanged());
+
+        var events = nodeA.events().await().unwrap();
+
+        assertThat(nodeA.lastReadDuplicates()).as("control: both copies are in the raw stream").isEqualTo(1);
+        assertThat(events).singleElement()
+                          .satisfies(event -> assertThat(event.details()).containsEntry("eventId", "retention-id"));
+    }
+
     private void bothNodes(BooleanSupplier localViewA, BooleanSupplier localViewB) {
         var config = StreamConfig.streamConfig(STREAM,
                                                1,
@@ -398,5 +454,9 @@ class ClusterEventAggregatorCommittedGateTest {
 
     private static OperationalEvent.StreamIsrBelowMinimum isrBelowMinimum() {
         return OperationalEvent.StreamIsrBelowMinimum.streamIsrBelowMinimum("orders", 2, "node-a", List.of("node-a"), List.of("node-b"), 2, "below-id");
+    }
+
+    private static OperationalEvent.StreamRetentionChanged retentionChanged() {
+        return OperationalEvent.StreamRetentionChanged.streamRetentionChanged("orders", "age=7d", "age=1d", "retention-id");
     }
 }
