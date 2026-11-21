@@ -422,7 +422,7 @@ class BackupRestoreCoordinatorRejectedTest {
     /// A refusal with no key over a marker that already records one must not clear it.
     @Test
     void submitRejected_refusalWithoutKey_overARefusedMarker_writesNothing() {
-        var coordinator = coordinatorOver(withRejection(plainMarker(), ALPHA_KEY.asString()));
+        var coordinator = coordinatorOver(plainMarker(), withRejection(plainMarker(), ALPHA_KEY.asString()));
 
         coordinator.submitRejected(Refusal.refusal(RefusalKind.ARM, Option.none())).await();
         assertThat(rejectionWrites()).isEmpty();
@@ -432,7 +432,7 @@ class BackupRestoreCoordinatorRejectedTest {
     /// A marker being abandoned is not refused again.
     @Test
     void submitRejected_markerBeingAbandoned_writesNothing() {
-        var coordinator = coordinatorOver(abandoning(plainMarker()));
+        var coordinator = coordinatorOver(plainMarker(), abandoning(plainMarker()));
 
         coordinator.submitRejected(refusal(RefusalKind.ARM, ALPHA_KEY)).await();
         assertThat(rejectionWrites()).isEmpty();
@@ -442,7 +442,7 @@ class BackupRestoreCoordinatorRejectedTest {
     @Test
     void submitRejected_settledDecision_writesNothing() {
         var restored = BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.RESTORED, LINEAGE, 3, 40, "c0ffee");
-        var coordinator = coordinatorOver(restored);
+        var coordinator = coordinatorOver(plainMarker(), restored);
 
         coordinator.submitRejected(refusal(RefusalKind.ARM, ALPHA_KEY)).await();
         assertThat(rejectionWrites()).isEmpty();
@@ -500,7 +500,8 @@ class BackupRestoreCoordinatorRejectedTest {
     /// L3: a refusal that lands after a committed decision (a second pass was in flight) is stale: no warning, no write, no retry.
     @Test
     void staleRefusalAfterASettledDecision_warnsNothing_recordsNothing_schedulesNothing() {
-        var coordinator = coordinatorOver(BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.RESTORED, LINEAGE, 3, 40, "c0ffee"));
+        var coordinator = coordinatorOver(plainMarker(),
+                                        BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.RESTORED, LINEAGE, 3, 40, "c0ffee"));
 
         retries.clear();
         warnings.clear();
@@ -585,10 +586,10 @@ class BackupRestoreCoordinatorRejectedTest {
         return BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS, LINEAGE, 3, 40, "c0ffee");
     }
 
-    /// A leading coordinator over the committed `marker`, with no source: an `IN_PROGRESS` marker leaves it waiting for a retry that
-    /// never fires, a settled one completes it at once.
-    private BackupRestoreCoordinator coordinatorOver(BackupRestoreValue marker) {
-        leaderWrites(marker);
+    /// A leading coordinator over the committed `steps` (in order, as the fence admits only transitions), with no source: an
+    /// `IN_PROGRESS` marker leaves it waiting for a retry that never fires, a settled one completes it at once.
+    private BackupRestoreCoordinator coordinatorOver(BackupRestoreValue... steps) {
+        leaderWrites(steps);
         var coordinator = coordinator(NODE_1, Option.none(), BackupRestoreCoordinator::restorePreCheck);
 
         coordinator.activate();
