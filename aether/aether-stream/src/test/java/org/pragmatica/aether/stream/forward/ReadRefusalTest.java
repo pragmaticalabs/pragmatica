@@ -462,26 +462,6 @@ class ReadRefusalTest {
                    : code;
         }
 
-        /// The sample's bytes with the trailing cause code replaced by `code`: `cause` is the record's last component, so its
-        /// ordinal is the encoding's last byte (asserted, so a codec that moves it fails here rather than patching another slot).
-        private static ReadRefusal decoded(Kind kind, boolean flag, int code) {
-            var written = sample(kind, flag, RemovalCause.NOT_APPLICABLE);
-            var buffer = Unpooled.buffer();
-
-            CODEC.write(buffer, written);
-            assertThat(buffer.getByte(buffer.writerIndex() - 1)).as("the cause code is the last byte")
-                                                                .isEqualTo((byte) written.cause().ordinal());
-            buffer.writerIndex(buffer.writerIndex() - 1);
-            SliceCodec.writeCompact(buffer, code);
-
-            return CODEC.read(buffer);
-        }
-
-        /// Every slot distinct from its neighbours, so a decode that crosses two of them fails by value.
-        private static ReadRefusal sample(Kind kind, boolean flag, RemovalCause cause) {
-            return new ReadRefusal(kind, "s", 5, 101L, 202L, flag, "d", "p1", "p2", PRESENTED, CURRENT, cause);
-        }
-
         private static ReadRefusal elevenArgument(Kind kind) {
             return new ReadRefusal(kind, "s", 5, 101L, 202L, false, "d", "p1", "p2", PRESENTED, CURRENT);
         }
@@ -497,6 +477,140 @@ class ReadRefusalTest {
         /// The reasons a cause goes with: the one it fixes, or both when it fixes none.
         private static List<Reason> reasonsOf(RemovalCause cause) {
             return StreamError.CursorExpired.reasonOf(cause).map(reason -> List.of(reason)).or(() -> List.of(Reason.values()));
+        }
+    }
+
+    /// T-C5 (stream-mem M-1c): a refused cursor carries the SET of removal causes behind the range, on the type
+    /// (`CursorExpired.causes`) and on the wire (`ReadRefusal.causes`, the bit `1 << ordinal` per cause).
+    @Nested
+    class TheCauseSet {
+        private static final Set<RemovalCause> FULL_REMOVAL_SET = EnumSet.range(RemovalCause.RETENTION, RemovalCause.LIFE_LOST);
+        private static final int UNKNOWN_BIT = 1 << RemovalCause.UNKNOWN.ordinal();
+        private static final int NOT_APPLICABLE_BIT = 1 << RemovalCause.NOT_APPLICABLE.ordinal();
+
+        /// A local refusal and its forwarded copy agree on (reason, cause, causes): each single cause, a two-cause set and the
+        /// full 11-cause removal set go through `readRefusal`, the codec and `toCause` and come back EQUAL. Mutant: drop
+        /// `causes` from the encode in `ofStreamError` -> RED.
+        @Test
+        void aCursorExpired_roundTripsItsCauseSet_asItself() {
+            for (var expired : cursorsWithSets()) {
+                var sent = ReadRefusal.readRefusal(expired).unwrap();
+                var received = roundTrip(ReadForwardResponse.refusalResponse(SENDER, "corr", sent, expired.message()));
+                var first = received.refusal().unwrap();
+
+                assertThat(sent.toCause(expired.message())).as("locally rebuilt %s", expired).isEqualTo(expired);
+                assertThat(first).as("%s", expired).isEqualTo(sent);
+                assertThat(first.causes()).as("the mask of %s", expired).isEqualTo(StreamError.CursorExpired.maskOf(expired.causes()));
+                assertThat(first.toCause(received.errorMessage())).as("forwarded %s", expired).isEqualTo(expired);
+            }
+        }
+
+        /// The shim default: a form naming a cause gives `{cause}`, `UNRECORDED` gives the empty set, on the type and on the
+        /// pre-`causes` `ReadRefusal` forms. Mutant: the empty set for every shim form -> RED.
+        @Test
+        void theShimForms_deriveTheSetFromTheCauseTheyName() {
+            assertThat(new StreamError.CursorExpired(1L, 2L, Reason.EXPIRED, RemovalCause.AGE).causes()).containsExactly(RemovalCause.AGE);
+            assertThat(new StreamError.CursorExpired(1L, 2L, RemovalCause.LIFE_LOST).causes()).containsExactly(RemovalCause.LIFE_LOST);
+            assertThat(new StreamError.CursorExpired(1L, 2L, Reason.LOST, RemovalCause.UNRECORDED).causes()).isEmpty();
+            assertThat(new StreamError.CursorExpired(1L, 2L, Reason.LOST).causes()).isEmpty();
+            assertThat(new StreamError.CursorExpired(1L, 2L).causes()).isEmpty();
+            assertThat(withTwelveArguments(Kind.CURSOR_EXPIRED, RemovalCause.AGE).causes()).isEqualTo(1 << RemovalCause.AGE.ordinal());
+            assertThat(withTwelveArguments(Kind.CURSOR_EXPIRED, RemovalCause.UNRECORDED).causes()).isZero();
+            assertThat(withTwelveArguments(Kind.CURSOR_EXPIRED, RemovalCause.NOT_APPLICABLE).causes()).isZero();
+            assertThat(new ReadRefusal(Kind.CURSOR_EXPIRED, "s", 5, 101L, 202L, false, "d", "p1", "p2", PRESENTED, CURRENT).causes()).isZero();
+        }
+
+        /// A `CursorExpired` refuses `NOT_APPLICABLE` in its set (as it refuses it as the cause), and its set is immutable.
+        /// Mutant: the compact constructor drops the refusal or stores the caller's set -> RED.
+        @Test
+        void theSet_refusesNotApplicable_andIsImmutable() {
+            var mutable = EnumSet.of(RemovalCause.AGE);
+            var expired = new StreamError.CursorExpired(1L, 2L, Reason.EXPIRED, RemovalCause.AGE, mutable);
+
+            mutable.add(RemovalCause.COUNT);
+            assertThat(expired.causes()).containsExactly(RemovalCause.AGE);
+            assertThatThrownBy(() -> expired.causes().add(RemovalCause.COUNT)).isInstanceOf(UnsupportedOperationException.class);
+            assertThatThrownBy(() -> new StreamError.CursorExpired(1L, 2L, Reason.EXPIRED, RemovalCause.AGE, Set.of(RemovalCause.NOT_APPLICABLE)))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        /// The mask pair: one bit per ordinal. Mutant: a bit position off by one, or `maskOf` not the inverse -> RED.
+        @Test
+        void theMaskPair_isOneBitPerOrdinal_andInverseOnEveryConstructibleSet() {
+            for (var cause : RemovalCause.values()) {
+                assertThat(StreamError.CursorExpired.maskOf(Set.of(cause))).as("%s", cause).isEqualTo(1 << cause.ordinal());
+            }
+            assertThat(StreamError.CursorExpired.maskOf(Set.of())).isZero();
+            for (var set : List.of(Set.<RemovalCause>of(), FULL_REMOVAL_SET, EnumSet.of(RemovalCause.RETENTION, RemovalCause.UNKNOWN))) {
+                assertThat(StreamError.CursorExpired.causesOf(StreamError.CursorExpired.maskOf(set))).as("%s", set).isEqualTo(set);
+            }
+        }
+
+        /// Every kind but `CURSOR_EXPIRED` carries `causes = 0`, whatever was written. Mutant: drop the kind test in the compact
+        /// constructor -> RED.
+        @Test
+        void everyOtherKind_carriesNoCauses() {
+            for (var kind : Kind.values()) {
+                if (kind != Kind.CURSOR_EXPIRED) {
+                    assertThat(thirteenArguments(kind, RemovalCause.NOT_APPLICABLE, -1).causes()).as("%s", kind).isZero();
+                    assertThat(thirteenArguments(kind, RemovalCause.NOT_APPLICABLE, 1).causes()).as("%s", kind).isZero();
+                }
+            }
+        }
+
+        /// A bit at or above `UNKNOWN`'s ordinal is a newer node's code and reads back as the `UNKNOWN` bit; the
+        /// `NOT_APPLICABLE` bit is dropped. Mutant: keep the raw mask -> RED.
+        @Test
+        void aCursorMask_foldsHighBitsToUnknown_andDropsNotApplicable() {
+            var bit14 = 1 << 14;
+            var age = 1 << RemovalCause.AGE.ordinal();
+
+            assertThat(thirteenArguments(Kind.CURSOR_EXPIRED, RemovalCause.AGE, age | bit14).causes()).isEqualTo(age | UNKNOWN_BIT);
+            assertThat(thirteenArguments(Kind.CURSOR_EXPIRED, RemovalCause.AGE, bit14).causes()).isEqualTo(UNKNOWN_BIT);
+            assertThat(thirteenArguments(Kind.CURSOR_EXPIRED, RemovalCause.AGE, Integer.MIN_VALUE).causes()).isEqualTo(UNKNOWN_BIT);
+            assertThat(thirteenArguments(Kind.CURSOR_EXPIRED, RemovalCause.AGE, UNKNOWN_BIT).causes()).isEqualTo(UNKNOWN_BIT);
+            assertThat(thirteenArguments(Kind.CURSOR_EXPIRED, RemovalCause.AGE, age | NOT_APPLICABLE_BIT).causes()).isEqualTo(age);
+            assertThat(thirteenArguments(Kind.CURSOR_EXPIRED, RemovalCause.AGE, NOT_APPLICABLE_BIT).causes()).isZero();
+        }
+
+        /// The same table on a DECODED value: the bytes carry the mask, the compact constructor decides, and the rebuilt
+        /// `CursorExpired` names the folded set. Mutant: the decode keeps the raw mask or `toCause` rebuilds from the
+        /// shim default -> RED.
+        @Test
+        void aDecodedMask_isNormalised_andRebuildsAsTheSet() {
+            var decoded = decoded(Kind.CURSOR_EXPIRED, false, RemovalCause.AGE.ordinal(), (1 << RemovalCause.AGE.ordinal()) | (1 << 14) | NOT_APPLICABLE_BIT);
+
+            assertThat(decoded.causes()).isEqualTo((1 << RemovalCause.AGE.ordinal()) | UNKNOWN_BIT);
+            assertThat(decoded.toCause("text")).isEqualTo(new StreamError.CursorExpired(101L,
+                                                                                         202L,
+                                                                                         Reason.EXPIRED,
+                                                                                         RemovalCause.AGE,
+                                                                                         EnumSet.of(RemovalCause.AGE, RemovalCause.UNKNOWN)));
+            assertThat(decoded(Kind.STREAM_NOT_FOUND, false, RemovalCause.AGE.ordinal(), -1).causes()).isZero();
+        }
+
+        private static List<StreamError.CursorExpired> cursorsWithSets() {
+            var singles = Arrays.stream(RemovalCause.values())
+                                .filter(cause -> cause != RemovalCause.NOT_APPLICABLE)
+                                .map(cause -> new StreamError.CursorExpired(11L, 29L, reasonOf(cause), cause, Set.of(cause)));
+            var others = Stream.of(new StreamError.CursorExpired(11L, 29L, Reason.EXPIRED, RemovalCause.RETENTION, EnumSet.of(RemovalCause.AGE, RemovalCause.COUNT)),
+                                   new StreamError.CursorExpired(11L, 29L, Reason.LOST, RemovalCause.LIFE_LOST, FULL_REMOVAL_SET),
+                                   new StreamError.CursorExpired(11L, 29L, Reason.LOST, RemovalCause.UNRECORDED, FULL_REMOVAL_SET),
+                                   new StreamError.CursorExpired(11L, 29L, Reason.LOST, RemovalCause.UNRECORDED, Set.of()));
+
+            return Stream.concat(singles, others).toList();
+        }
+
+        private static Reason reasonOf(RemovalCause cause) {
+            return StreamError.CursorExpired.reasonOf(cause).fold(() -> Reason.EXPIRED, reason -> reason);
+        }
+
+        private static ReadRefusal withTwelveArguments(Kind kind, RemovalCause cause) {
+            return new ReadRefusal(kind, "s", 5, 101L, 202L, false, "d", "p1", "p2", PRESENTED, CURRENT, cause);
+        }
+
+        private static ReadRefusal thirteenArguments(Kind kind, RemovalCause cause, int causes) {
+            return new ReadRefusal(kind, "s", 5, 101L, 202L, false, "d", "p1", "p2", PRESENTED, CURRENT, cause, causes);
         }
     }
 
@@ -699,6 +813,47 @@ class ReadRefusalTest {
         private static ReadForwardResponse failureOverTheWire(String correlationId, Cause raised) {
             return roundTrip(ReadForwardResponse.failureResponse(SENDER, correlationId, raised.message()));
         }
+    }
+
+    /// The sample's bytes with the trailing cause code replaced by `code`, and the `causes` mask after it by what a sender
+    /// of the shim forms writes for that code (`{cause}`, none for `UNRECORDED` and `NOT_APPLICABLE`): `causes` is the
+    /// record's last component (an `int`: its tag byte and four bytes) and `cause` the one before it, so the tail is asserted
+    /// (a codec that moves either fails here rather than patching another slot).
+    private static ReadRefusal decoded(Kind kind, boolean flag, int code) {
+        return decoded(kind, flag, code, shimMask(code));
+    }
+
+    private static ReadRefusal decoded(Kind kind, boolean flag, int code, int mask) {
+        var written = sample(kind, flag, RemovalCause.NOT_APPLICABLE);
+        var buffer = Unpooled.buffer();
+
+        CODEC.write(buffer, written);
+        assertThat(buffer.getInt(buffer.writerIndex() - 4)).as("the causes mask is the last four bytes")
+                                                           .isEqualTo(written.causes());
+        assertThat(buffer.getByte(buffer.writerIndex() - 5)).as("the mask carries the int tag")
+                                                            .isEqualTo((byte) SliceCodec.TAG_INT);
+        assertThat(buffer.getByte(buffer.writerIndex() - 6)).as("the cause code is the byte before the mask")
+                                                            .isEqualTo((byte) written.cause().ordinal());
+        buffer.writerIndex(buffer.writerIndex() - 6);
+        SliceCodec.writeCompact(buffer, code);
+        buffer.writeByte(SliceCodec.TAG_INT);
+        buffer.writeInt(mask);
+
+        return CODEC.read(buffer);
+    }
+
+    /// The mask the shim forms derive for a cause code; a code no node of this generation knows names `UNKNOWN`.
+    private static int shimMask(int code) {
+        var cause = code >= 0 && code < RemovalCause.values().length
+                    ? RemovalCause.values()[code]
+                    : RemovalCause.UNKNOWN;
+
+        return StreamError.CursorExpired.maskOf(StreamError.CursorExpired.causesNamedBy(cause));
+    }
+
+    /// Every slot distinct from its neighbours, so a decode that crosses two of them fails by value.
+    private static ReadRefusal sample(Kind kind, boolean flag, RemovalCause cause) {
+        return new ReadRefusal(kind, "s", 5, 101L, 202L, flag, "d", "p1", "p2", PRESENTED, CURRENT, cause);
     }
 
     private static ReadForwardResponse roundTrip(ReadForwardResponse original) {

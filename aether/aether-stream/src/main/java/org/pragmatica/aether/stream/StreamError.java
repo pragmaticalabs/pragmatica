@@ -5,7 +5,11 @@
 package org.pragmatica.aether.stream;
 
 import java.nio.file.Path;
+import java.util.EnumSet;
+import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -119,10 +123,16 @@ public sealed interface StreamError extends Cause {
     /// `CursorExpired`). [RemovalCause#UNRECORDED] and [RemovalCause#UNKNOWN] fix no reason and go with either; no
     /// constructor here writes `UNKNOWN`, it is reserved for decoding. The refusal guards a programming error only.
     ///
+    /// `causes` is the SET of removal causes behind the refused range, as well as the one `cause` it names: the compact
+    /// constructor stores an immutable copy and refuses [RemovalCause#NOT_APPLICABLE] in it, as it does for `cause`.
+    /// [#maskOf] and [#causesOf] are the wire pair: one bit per [RemovalCause] ordinal, and a bit at or above
+    /// [RemovalCause#UNKNOWN]'s ordinal is a newer node's code and reads back as `UNKNOWN`. Every constructor that predates
+    /// `causes` derives it: a form that names a cause gives `{cause}`, and [RemovalCause#UNRECORDED] gives the empty set.
+    ///
     /// The shim forms name no cause and pass [RemovalCause#UNRECORDED]: `(requested, tail, reason)` and `(requested,
-    /// tail)` = ([Reason#EXPIRED], `UNRECORDED`). On the forward the reason rides `ReadRefusal`'s `flag` slot (`false` =
-    /// [Reason#EXPIRED]) and the cause its own `cause` slot.
-    record CursorExpired(long requestedOffset, long tailOffset, Reason reason, RemovalCause cause) implements StreamError {
+    /// tail)` = ([Reason#EXPIRED], `UNRECORDED`), with the empty set. On the forward the reason rides `ReadRefusal`'s `flag`
+    /// slot (`false` = [Reason#EXPIRED]), the cause its own `cause` slot and the set its `causes` mask.
+    record CursorExpired(long requestedOffset, long tailOffset, Reason reason, RemovalCause cause, Set<RemovalCause> causes) implements StreamError {
         public enum Reason {
             EXPIRED,
             LOST
@@ -135,6 +145,14 @@ public sealed interface StreamError extends Cause {
             if (disagrees(reason, cause)) {
                 throw new IllegalArgumentException("CursorExpired reason " + reason + " does not match cause " + cause);
             }
+            if (causes.contains(RemovalCause.NOT_APPLICABLE)) {
+                throw new IllegalArgumentException("CursorExpired causes " + causes + " name a refusal that is not a removal");
+            }
+            causes = Set.copyOf(causes);
+        }
+
+        public CursorExpired(long requestedOffset, long tailOffset, Reason reason, RemovalCause cause) {
+            this(requestedOffset, tailOffset, reason, cause, causesNamedBy(cause));
         }
 
         public CursorExpired(long requestedOffset, long tailOffset, RemovalCause cause) {
@@ -147,6 +165,42 @@ public sealed interface StreamError extends Cause {
 
         public CursorExpired(long requestedOffset, long tailOffset) {
             this(requestedOffset, tailOffset, Reason.EXPIRED, RemovalCause.UNRECORDED);
+        }
+
+        /// The set a shim form derives from the one cause it names: `{cause}`, and the empty set for
+        /// [RemovalCause#UNRECORDED], which names no removal cause.
+        public static Set<RemovalCause> causesNamedBy(RemovalCause cause) {
+            return cause == RemovalCause.UNRECORDED
+                   ? Set.of()
+                   : Set.of(cause);
+        }
+
+        /// The wire mask of a set: the bit `1 << ordinal` for each cause.
+        public static int maskOf(Set<RemovalCause> causes) {
+            return causes.stream()
+                         .mapToInt(CursorExpired::bitOf)
+                         .reduce(0, (left, right) -> left | right);
+        }
+
+        /// The set a wire mask names, never throwing so a decoded value always builds: a bit at or above
+        /// [RemovalCause#UNKNOWN]'s ordinal is a newer node's code and becomes `UNKNOWN`, and the
+        /// [RemovalCause#NOT_APPLICABLE] bit is dropped (a set never carries it).
+        public static Set<RemovalCause> causesOf(int mask) {
+            return Stream.of(RemovalCause.values())
+                         .filter(cause -> carries(mask, cause))
+                         .collect(Collectors.toCollection(() -> EnumSet.noneOf(RemovalCause.class)));
+        }
+
+        private static int bitOf(RemovalCause cause) {
+            return 1 << cause.ordinal();
+        }
+
+        private static boolean carries(int mask, RemovalCause cause) {
+            return cause == RemovalCause.NOT_APPLICABLE
+                   ? false
+                   : cause == RemovalCause.UNKNOWN
+                     ? mask >>> cause.ordinal() != 0
+                     : (mask & bitOf(cause)) != 0;
         }
 
         /// The reason a cause fixes: the ONE switch from a cause to its class, exhaustive with no default branch. The

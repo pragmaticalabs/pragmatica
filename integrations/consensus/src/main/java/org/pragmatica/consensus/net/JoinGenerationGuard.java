@@ -51,7 +51,8 @@ public interface JoinGenerationGuard {
     /// 7: #3334 S1a-1a flag day (`ConsumerAssignmentValue`, `AssignmentToken` and `StreamCursorCheckpointValue` re-tagged, `member` added).
     /// 8: #3530 (four dead key types and their values left the wire baseline: their TAG and SHAPE lines are gone).
     /// 9: #3458 M-1b (`ReadRefusal` gained its removal cause).
-    int WIRE_GENERATION = 9;
+    /// 10: #3458 M-1c (`ReadRefusal` gained its removal-cause set, `causes`).
+    int WIRE_GENERATION = 10;
     /// Bound on waiting for core members to handshake [guess: taste; a constant, not configuration].
     TimeSpan JOIN_GENERATION_WAIT = TimeSpan.timeSpan(10).seconds();
     /// Handshake poll cadence while waiting.
