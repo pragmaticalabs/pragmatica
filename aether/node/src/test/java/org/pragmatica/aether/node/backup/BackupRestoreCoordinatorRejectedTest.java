@@ -282,6 +282,8 @@ class BackupRestoreCoordinatorRejectedTest {
 
         coordinator.submitRejected(refusal(RefusalKind.ARM, ALPHA_KEY)).await();
         coordinator.submitRejected(refusal(RefusalKind.ARM, ALPHA_KEY)).await();
+        // a different key in the same tenure: only the latch, not the same-key filter, keeps the second write out
+        coordinator.submitRejected(refusal(RefusalKind.UNIT, BETA_KEY)).await();
         assertThat(rejectionWrites()).hasSize(1);
         assertThat(marker().rejection()).isEqualTo(Option.some(ALPHA_KEY.asString()));
     }
