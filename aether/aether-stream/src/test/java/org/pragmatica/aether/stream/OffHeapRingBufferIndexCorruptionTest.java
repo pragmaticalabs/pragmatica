@@ -31,7 +31,6 @@ import static org.pragmatica.aether.stream.OffHeapRingBuffer.offHeapRingBuffer;
 class OffHeapRingBufferIndexCorruptionTest {
     private static final long CAPACITY = 64;
     private static final long DATA_REGION = 4096;
-    private static final long HEADER_SIZE = 64;
     private static final long CORRUPT_DATA_POS = -1_000L;
 
     @Test
@@ -130,20 +129,20 @@ class OffHeapRingBufferIndexCorruptionTest {
         var buffer = offHeapRingBuffer("corrupt", 3, CAPACITY, DATA_REGION, listener);
 
         buffer.append("payload".getBytes(), 1L);
-        controlSegment(buffer).set(ValueLayout.JAVA_LONG, HEADER_SIZE, CORRUPT_DATA_POS);
+        index(buffer).set(ValueLayout.JAVA_LONG, 0, CORRUPT_DATA_POS);
 
         return buffer;
     }
 
-    private static MemorySegment controlSegment(OffHeapRingBuffer buffer) {
+    private static MemorySegment index(OffHeapRingBuffer buffer) {
         try {
-            var field = OffHeapRingBuffer.class.getDeclaredField("controlSegment");
+            var field = OffHeapRingBuffer.class.getDeclaredField("index");
 
             field.setAccessible(true);
 
             return (MemorySegment) field.get(buffer);
         } catch (ReflectiveOperationException e) {
-            throw new AssertionError("controlSegment field not reachable", e);
+            throw new AssertionError("index field not reachable", e);
         }
     }
 }
