@@ -173,9 +173,7 @@ public record GitBackupRepository(Path dir,
         return switch (result.exitCode()) {
             case 0 -> success(true);
             case 1 -> success(false);
-            default -> BackupRepositoryError.GitUnreadable.FACTORY.apply("merge-base --is-ancestor exited " + result.exitCode() + ": "
-                                                                         + result.text().strip())
-                                                                  .result();
+            default -> BackupRepositoryError.GitUnreadable.FACTORY.apply("merge-base --is-ancestor exited " + result.exitCode() + ": " + result.text().strip()).result();
         };
     }
 

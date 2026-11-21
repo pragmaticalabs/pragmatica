@@ -495,10 +495,11 @@ public final class KvBackupService {
     /// (git refuses an empty commit) and let the push carry the earlier one.
     private Result<Unit> commitDeclarationUnlessPresent(BackupDecision.Declaration declaration) {
         return localText(GitBackupRepository.DECLARATION).flatMap(present -> present.equals(Option.some(declaration.render()))
-                                             ? Result.unitResult()
-                                             : repository.commitFile(GitBackupRepository.DECLARATION,
-                                                                     declaration.render(),
-                                                                     "declare genesis " + declaration.render().strip()));
+                                                                             ? Result.unitResult()
+                                                                             : repository.commitFile(GitBackupRepository.DECLARATION,
+                                                                                                     declaration.render(),
+                                                                                                     "declare genesis " + declaration.render()
+                                                                                                                                     .strip()));
     }
 
     /// The declaration committed in the local repository, if any. Worker thread only.
@@ -511,18 +512,17 @@ public final class KvBackupService {
     /// `path` as committed at the local branch's head, three-valued (#3464): absent when the local branch does not exist yet or its head holds no
     /// such file; a failure when git could not say (the flush then retries, changing nothing). Never "absent" for a read git did not answer.
     private Result<Option<String>> localText(String path) {
-        return GitBackupRepository.found(repository.readLocalBranch())
-                                  .flatMap(branch -> branch.fold(() -> success(Option.<String> none()),
-                                                                 _ -> remoteText("HEAD", path)));
+        return GitBackupRepository.found(repository.readLocalBranch()).flatMap(branch -> branch.fold(() -> success(Option.<String> none()),
+                                                                                                     _ -> remoteText("HEAD",
+                                                                                                                     path)));
     }
 
     /// `path` as committed at `ref`, a ref known to exist (the fetched remote head, or `HEAD` once [#localText] found the local branch): absent
     /// when that commit's tree does not list it, a failure when git could not say or could not show it (#3464).
     private Result<Option<String>> remoteText(String ref, String path) {
-        return GitBackupRepository.found(repository.readPath(ref, path))
-                                  .flatMap(listed -> listed.fold(() -> success(Option.<String> none()),
-                                                                 _ -> GitBackupRepository.required(repository.readFile(ref, path))
-                                                                                         .map(Option::some)));
+        return GitBackupRepository.found(repository.readPath(ref, path)).flatMap(listed -> listed.fold(() -> success(Option.<String> none()),
+                                                                                                       _ -> GitBackupRepository.required(repository.readFile(ref,
+                                                                                                                                                             path)).map(Option::some)));
     }
 
     private Result<Unit> pushDeclaration() {
@@ -777,19 +777,15 @@ public final class KvBackupService {
     }
 
     private Result<Head> remoteHeadAt(String ref) {
-        return Result.all(remoteText(ref, GitBackupRepository.FILE),
-                          remoteText(ref, GitBackupRepository.DECLARATION))
-                     .map((document, declaration) -> Head.head(HeadKind.REMOTE,
-                                                               document,
-                                                               parseDeclaration(declaration)));
+        return Result.all(remoteText(ref, GitBackupRepository.FILE), remoteText(ref, GitBackupRepository.DECLARATION)).map((document, declaration) -> Head.head(HeadKind.REMOTE,
+                                                                                                                                                                document,
+                                                                                                                                                                parseDeclaration(declaration)));
     }
 
     private Result<Head> readLocalHead(HeadKind kind) {
-        return Result.all(localText(GitBackupRepository.FILE),
-                          localText(GitBackupRepository.DECLARATION))
-                     .map((document, declaration) -> Head.head(kind,
-                                                               document,
-                                                               parseDeclaration(declaration)));
+        return Result.all(localText(GitBackupRepository.FILE), localText(GitBackupRepository.DECLARATION)).map((document, declaration) -> Head.head(kind,
+                                                                                                                                                    document,
+                                                                                                                                                    parseDeclaration(declaration)));
     }
 
     private static Option<BackupDecision.Declaration> parseDeclaration(Option<String> text) {
@@ -929,9 +925,8 @@ public final class KvBackupService {
     /// when it was read has no tracking ref: its identity is [#NO_REMOTE_HEAD]. A tracking ref git cannot read fails the flush (#3464); it never
     /// becomes that stand-in, which a second unreadable read would match and so take for a repeated refusal.
     private Result<String> rejectedHeadId() {
-        return GitBackupRepository.found(repository.readTrackingBranch())
-                                  .flatMap(tracked -> tracked.fold(() -> success(NO_REMOTE_HEAD),
-                                                                   _ -> trackedHeadId()));
+        return GitBackupRepository.found(repository.readTrackingBranch()).flatMap(tracked -> tracked.fold(() -> success(NO_REMOTE_HEAD),
+                                                                                                          _ -> trackedHeadId()));
     }
 
     private Result<String> trackedHeadId() {
