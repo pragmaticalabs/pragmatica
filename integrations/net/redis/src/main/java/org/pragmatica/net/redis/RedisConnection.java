@@ -169,7 +169,9 @@ public final class RedisConnection implements RedisCommands {
                          .onFailure(_ -> connection.close());
     }
 
-    private Promise<Channel> open(EventLoopGroup group, Option<SslContext> tls, ChannelFactory<? extends Channel> channels) {
+    private Promise<Channel> open(EventLoopGroup group,
+                                  Option<SslContext> tls,
+                                  ChannelFactory<? extends Channel> channels) {
         var bootstrap = new Bootstrap().group(group)
                                        .channelFactory(channels)
                                        .option(ChannelOption.TCP_NODELAY, true)

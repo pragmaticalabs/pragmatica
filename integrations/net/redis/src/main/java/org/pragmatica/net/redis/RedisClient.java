@@ -68,7 +68,10 @@ public final class RedisClient implements RedisCommands {
     }
 
     /// As above with the client channel factory supplied, see [RedisConnection] (#3558).
-    RedisClient(RedisConfig config, Option<SslContext> tls, EventLoopGroup group, ChannelFactory<? extends Channel> channels) {
+    RedisClient(RedisConfig config,
+                Option<SslContext> tls,
+                EventLoopGroup group,
+                ChannelFactory<? extends Channel> channels) {
         this.config = config;
         this.tls = tls;
         this.group = group;
