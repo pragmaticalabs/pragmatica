@@ -10,7 +10,10 @@ import java.util.List;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.HotWindowDeclaration;
+import org.pragmatica.aether.slice.RetentionDeclaration;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.StreamDeclaration;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
@@ -254,6 +257,111 @@ class StreamIsrAnnouncerTest {
         assertThat(notApplied(announced)).as("adopted with an RF raise; unchanged; a raise; another life; not held").isEmpty();
     }
 
+    private static final long GIB = 1024L * 1024L * 1024L;
+
+    /// #3334, #3554: an adoption of another declared retention is announced ONCE per stream, not once per partition, with
+    /// the bounds enforced before and after the adoption as text. Its id is a function of the adoption: the same adoption
+    /// derives the same id on any announcer, another Put (createdAt) or another enforced old bound differs.
+    @Test
+    void adoptionOfOtherBounds_isAnnouncedOnce_withTheEnforcedBounds_andADeterministicId() {
+        var announced = new ArrayList<OperationalEvent>();
+        var adopted = StreamConfigValue.streamConfigValue(declaring(GIB), 400L);
+
+        configAnnouncer(0, 0, announced).onConfigAdopted(declaring(2 * GIB), adopted);
+
+        assertThat(retentionChanges(announced)).as("one event for a stream of 4 partitions").singleElement().satisfies(event -> {
+            assertThat(event.stream()).isEqualTo("orders");
+            assertThat(event.oldBounds()).isEqualTo(boundsOf(2 * GIB));
+            assertThat(event.newBounds()).isEqualTo(boundsOf(GIB));
+        });
+        var sameAdoption = new ArrayList<OperationalEvent>();
+        var laterPut = new ArrayList<OperationalEvent>();
+        var otherEnforced = new ArrayList<OperationalEvent>();
+
+        configAnnouncer(0, 0, sameAdoption).onConfigAdopted(declaring(2 * GIB), adopted);
+        configAnnouncer(0, 0, laterPut).onConfigAdopted(declaring(2 * GIB), StreamConfigValue.streamConfigValue(declaring(GIB), 401L));
+        configAnnouncer(0, 0, otherEnforced).onConfigAdopted(declaring(3 * GIB), adopted);
+
+        assertThat(idOf(sameAdoption.getFirst())).as("the same adoption on another node").isEqualTo(idOf(announced.getFirst()));
+        assertThat(idOf(laterPut.getFirst())).as("another Put (createdAt)").isNotEqualTo(idOf(announced.getFirst()));
+        assertThat(idOf(otherEnforced.getFirst())).as("another enforced old bound").isNotEqualTo(idOf(announced.getFirst()));
+    }
+
+    /// #3554 (c): the id is exactly prefix:name:incarnation:createdAt:oldBounds:newBounds. Each part is asserted, so
+    /// dropping or changing any one of them goes red here.
+    @Test
+    void retentionChangeId_isComposedOfEveryPart_inOrder() {
+        var announced = new ArrayList<OperationalEvent>();
+
+        configAnnouncer(0, 0, announced).onConfigAdopted(declaring(2 * GIB).withIncarnation(7L),
+                                                         StreamConfigValue.streamConfigValue(declaring(GIB).withIncarnation(7L), 4242L));
+
+        assertThat(retentionChanges(announced)).singleElement()
+                                               .satisfies(event -> assertThat(event.eventId()).isEqualTo("stream-retention-changed:orders:7:4242:"
+                                                                                                         + boundsOf(2 * GIB)
+                                                                                                         + ":"
+                                                                                                         + boundsOf(GIB)));
+    }
+
+    /// The false-alert controls: an adoption that keeps the retention section (a raised factor, a hot-window change) is not
+    /// a retention change and announces nothing.
+    @Test
+    void adoptionThatKeepsTheRetentionSection_announcesNothing() {
+        var announced = new ArrayList<OperationalEvent>();
+        var hotChanged = declaring(GIB).withDeclaration(StreamDeclaration.streamDeclaration(retentionSection(GIB),
+                                                                                            Option.none(),
+                                                                                            Option.some(HotWindowDeclaration.hotWindowDeclaration(Option.some(1L),
+                                                                                                                                                  Option.none())),
+                                                                                            Option.none()));
+        var factorRaised = declaring(GIB).withReplication(new ReplicationFactors(5, 4));
+
+        configAnnouncer(0, 0, announced).onConfigAdopted(declaring(GIB), StreamConfigValue.streamConfigValue(hotChanged, 1L));
+        configAnnouncer(0, 0, announced).onConfigAdopted(declaring(GIB), StreamConfigValue.streamConfigValue(factorRaised, 2L));
+
+        assertThat(retentionChanges(announced)).as("hot window only; factor only").isEmpty();
+    }
+
+    /// #3554: the announcer takes no adoption decision of its own. A committed Put whose retention section differs from both
+    /// the previously committed and the enforced one raises no retention event from the Put handler: only the manager's adopt
+    /// site tells one ([StreamIsrAnnouncer#onConfigAdopted]). Mutant: raise from the Put handler again.
+    @Test
+    void configPut_raisesNoRetentionEvent_whateverItsBounds() {
+        var announced = new ArrayList<OperationalEvent>();
+        var put = new ValuePut<>(new KVCommand.Put<>(StreamConfigKey.streamConfigKey("orders"),
+                                                     StreamConfigValue.streamConfigValue(declaring(GIB), 500L)),
+                                 Option.some(StreamConfigValue.streamConfigValue(declaring(2 * GIB), 499L)));
+
+        enforcing(declaring(2 * GIB), announced).onConfigPut(put);
+
+        assertThat(retentionChanges(announced)).isEmpty();
+    }
+
+    /// The bounds text is exactly the rendered retention section of the declaration, nothing of the rest.
+    private static String boundsOf(long maxBytes) {
+        return String.valueOf(retentionSection(maxBytes));
+    }
+
+    private static Option<RetentionDeclaration> retentionSection(long maxBytes) {
+        return Option.some(RetentionDeclaration.retentionDeclaration(Option.none(), Option.some(maxBytes), Option.none(), Option.none()));
+    }
+
+    private static List<OperationalEvent.StreamRetentionChanged> retentionChanges(List<OperationalEvent> events) {
+        return events.stream()
+                     .filter(OperationalEvent.StreamRetentionChanged.class::isInstance)
+                     .map(OperationalEvent.StreamRetentionChanged.class::cast)
+                     .toList();
+    }
+
+    /// The policy carries the declared `max_bytes` as the deploy path does.
+    private static StreamConfig declaring(long maxBytes) {
+        return StreamConfig.streamConfig("orders", 4, RetentionPolicy.retentionPolicy(1000, maxBytes, 600_000), "earliest")
+                           .withReplication(new ReplicationFactors(3, 3))
+                           .withDeclaration(StreamDeclaration.streamDeclaration(retentionSection(maxBytes),
+                                                                                Option.none(),
+                                                                                Option.none(),
+                                                                                Option.none()));
+    }
+
     private static List<OperationalEvent.StreamConfigChangeNotApplied> notApplied(List<OperationalEvent> events) {
         return events.stream()
                      .filter(OperationalEvent.StreamConfigChangeNotApplied.class::isInstance)
@@ -275,6 +383,7 @@ class StreamIsrAnnouncerTest {
             case OperationalEvent.StreamIsrBelowMinimum below -> below.eventId();
             case OperationalEvent.StreamIsrRestored restored -> restored.eventId();
             case OperationalEvent.StreamConfigChangeNotApplied notApplied -> notApplied.eventId();
+            case OperationalEvent.StreamRetentionChanged retention -> retention.eventId();
             default -> throw new AssertionError("unexpected " + event);
         };
     }
