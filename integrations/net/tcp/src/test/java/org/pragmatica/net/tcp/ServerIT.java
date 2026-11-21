@@ -23,9 +23,8 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 
-import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -34,21 +33,23 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 import static org.pragmatica.net.tcp.ServerConfig.serverConfig;
 
-/// Every test binds an ephemeral port (asked of the OS, never a fixed number), so the class is safe under the
-/// module-parallel `-T 1C` build and needs no environment gate.
+/// Every test binds port 0 and reads the port the OS assigned back from [Server#port], so no number is chosen before
+/// the bind: the class is safe under the module-parallel `-T 1C` build and needs no environment gate. Every wait is
+/// bounded by [#TIMEOUT].
 class ServerIT {
+    private static final TimeSpan TIMEOUT = timeSpan(10).seconds();
 
     @Test
     void server_starts_and_accepts_connections() throws InterruptedException {
         var receivedMessage = new AtomicReference<String>();
         var messageLatch = new CountDownLatch(1);
-        var port = freeTcpPort();
 
         // Create server with simple handler
-        Server.server("test-server", port, () -> List.of(
+        Server.server("test-server", 0, () -> List.of(
             new ChannelInboundHandlerAdapter() {
                 @Override
                 public void channelRead(ChannelHandlerContext ctx, Object msg) {
@@ -60,13 +61,13 @@ class ServerIT {
                     }
                 }
             }
-        )).await()
+        )).await(TIMEOUT)
             .onFailure(cause -> fail(cause.message()))
             .onSuccess(server -> {
                 try {
-                    // Connect and send message
-                    server.connectTo(nodeAddress("localhost", port).unwrap())
-                        .await()
+                    // Connect to the port the server reports and send a message
+                    server.connectTo(nodeAddress("localhost", server.port()).unwrap())
+                        .await(TIMEOUT)
                         .onFailure(cause -> fail(cause.message()))
                         .onSuccess(channel -> {
                             channel.writeAndFlush(Unpooled.copiedBuffer("Hello", StandardCharsets.UTF_8));
@@ -81,54 +82,52 @@ class ServerIT {
                     }
                     assertThat(receivedMessage.get()).isEqualTo("Hello");
                 } finally {
-                    server.stop(() -> Promise.success(Unit.unit())).await();
+                    server.stop(() -> Promise.success(Unit.unit())).await(TIMEOUT);
                 }
             });
     }
 
     @Test
     void server_with_tls_starts_successfully() {
-        var port = freeTcpPort();
-        var config = serverConfig("tls-server", port)
+        var config = serverConfig("tls-server", 0)
             .withTls(TlsConfig.selfSigned());
 
         Server.server(config, () -> List.of(
             new ChannelInboundHandlerAdapter()
-        )).await()
+        )).await(TIMEOUT)
             .onFailure(cause -> fail(cause.message()))
             .onSuccess(server -> {
-                assertThat(server.name()).isEqualTo("tls-server");
-                assertThat(server.port()).isEqualTo(port);
-                server.stop(() -> Promise.success(Unit.unit())).await();
+                try {
+                    assertThat(server.name()).isEqualTo("tls-server");
+                    // Port 0 was asked for: the server must report the port it is actually bound to.
+                    assertThat(server.port()).isPositive();
+                    server.connectTo(nodeAddress("localhost", server.port()).unwrap())
+                        .await(TIMEOUT)
+                        .onFailure(cause -> fail("No connection to the reported port " + server.port() + ": " + cause.message()))
+                        .onSuccess(channel -> channel.close().syncUninterruptibly());
+                } finally {
+                    server.stop(() -> Promise.success(Unit.unit())).await(TIMEOUT);
+                }
             });
     }
 
     @Test
     void server_stop_executes_intermediate_operation() {
         var intermediateExecuted = new AtomicReference<>(false);
-        var port = freeTcpPort();
 
-        Server.server("stop-test", port, () -> List.of(
+        Server.server("stop-test", 0, () -> List.of(
             new ChannelInboundHandlerAdapter()
-        )).await()
+        )).await(TIMEOUT)
             .onFailure(cause -> fail(cause.message()))
             .onSuccess(server -> {
                 server.stop(() -> {
                     intermediateExecuted.set(true);
                     return Promise.success(Unit.unit());
-                }).await()
+                }).await(TIMEOUT)
                     .onFailure(cause -> fail(cause.message()))
                     .onSuccessRun(() -> {
                         assertThat(intermediateExecuted.get()).isTrue();
                     });
             });
-    }
-
-    private static int freeTcpPort() {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new AssertionError(e);
-        }
     }
 }
