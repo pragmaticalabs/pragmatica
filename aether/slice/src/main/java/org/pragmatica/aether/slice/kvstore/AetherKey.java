@@ -1016,6 +1016,40 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// #3413: the committed drain row's key, one per target node. Runtime state: a drain command names a node of the running cluster,
+    /// so it is neither backed up nor replicated to workers.
+    record DrainCommandKey(NodeId target) implements RuntimeKey {
+        private static final String PREFIX = "drain-command/";
+
+        @Override
+        public String asString() {
+            return PREFIX + target.id();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static DrainCommandKey drainCommandKey(NodeId target) {
+            return new DrainCommandKey(target);
+        }
+
+        public static Result<DrainCommandKey> drainCommandKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return DRAIN_COMMAND_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var targetPart = key.substring(PREFIX.length());
+
+            if (targetPart.isEmpty()) {
+                return DRAIN_COMMAND_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return NodeId.nodeId(targetPart).map(DrainCommandKey::new);
+        }
+    }
+
     record ConfigKey(String key, Option<NodeId> nodeScope) implements ClusterStateKey {
         private static final String CLUSTER_PREFIX = "config/";
         /// A node-scoped override lives under its own top-level prefix, never under [#CLUSTER_PREFIX]:
@@ -1790,6 +1824,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> JOIN_DEADLINE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid join-deadline key format: %s");
 
     Fn1<Cause, String> DRAIN_DEADLINE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid drain-deadline key format: %s");
+
+    Fn1<Cause, String> DRAIN_COMMAND_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid drain-command key format: %s");
 
     Fn1<Cause, String> WORKER_DIRECTIVE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid worker-directive key format: %s");
 
