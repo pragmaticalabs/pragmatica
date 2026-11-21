@@ -10,6 +10,7 @@ import java.util.Objects;
 import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -20,6 +21,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -273,6 +275,35 @@ class StorageIdentityPrimitivesTest {
             }
         }
 
+        /// The `Snapshot restore failed` WARN is the only place the cause of a refused stamped file reaches an operator:
+        /// the restore itself returns `NothingRestorable`, which does not name it. The WARN carries the missing-line
+        /// text and the unusable-id text.
+        @Test
+        void theCauseOfARefusedStampedFile_reachesTheOperatorLog() {
+            var expectedTexts = Map.of("removed", "requires a storageId header line", "empty", "is not usable");
+
+            for (var damage : List.of("removed", "empty")) {
+                var store = inMemoryMetadataStore("t28a7-log-" + damage);
+
+                mutate(store, "one");
+                managerWith(store, some(ID_U)).forceSnapshot();
+                rewriteLatest(line -> line.equals("storageId=" + ID_U) ? damagedForLog(damage) : line);
+
+                try (var capture = LogCapture.capture(DefaultSnapshotManager.class, Level.ALL, true)) {
+                    var restored = managerWith(store, some(ID_U)).restoreFromLatest();
+
+                    assertThat(restored.isFailure()).as(damage).isTrue();
+                    assertThat(capture.messages(Level.WARN)).as(damage)
+                                                            .anySatisfy(message -> assertThat(message).contains("Snapshot restore failed")
+                                                                                                      .contains(expectedTexts.get(damage)));
+                }
+            }
+        }
+
+        private static String damagedForLog(String damage) {
+            return damage.equals("removed") ? null : "storageId=";
+        }
+
         private void rewriteLatest(UnaryOperator<String> editLine) {
             var file = latestFile();
             var edited = read(file).lines().map(editLine).filter(Objects::nonNull).collect(Collectors.joining("\n", "", "\n"));
@@ -383,7 +414,8 @@ class StorageIdentityPrimitivesTest {
         /// T28c / A8: ONE rule. A name is accepted only if it matches the grammar (segments of letters, digits, `_`,
         /// `-` and, after the first character, `.`, `@`, `:`; single `/` between them; ASCII only; no `.` or `..`
         /// segment), and only then is its first segment compared, case-insensitively, to the reserved names. Every
-        /// form below is refused with a typed error, and none of them creates a file.
+        /// form below is refused with a typed error, and none of them creates a file. Grammar comes first: a reserved
+        /// first segment followed by a malformed rest (`LOCK/..`) is a grammar failure, not a reserved-name one.
         @Test
         void everyFormOfAReservedOrMalformedName_isRefused_withATypedError() {
             var storage = instanceWithLogs();
@@ -400,6 +432,11 @@ class StorageIdentityPrimitivesTest {
                                                                Map.entry("lock/0", reserved),
                                                                Map.entry("claim", reserved),
                                                                Map.entry("LOCK/x/y", reserved),
+                                                               Map.entry("LOCK/..", invalid),
+                                                               Map.entry("aside/a b", invalid),
+                                                               Map.entry("Claim/x\\y", invalid),
+                                                               Map.entry("STORAGE_ID//x", invalid),
+                                                               Map.entry("lock/./x", invalid),
                                                                Map.entry("./STORAGE_ID", invalid),
                                                                Map.entry("./aside/y", invalid),
                                                                Map.entry("x/../CLAIM", invalid),
