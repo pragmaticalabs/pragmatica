@@ -32,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// [AetherCliEndpointPrecedenceTest] does) because the exit code is what the operator's script
 /// sees, and `main` reaches it through `System.exit`. stdout and stderr are captured separately:
 /// the claim is "the cause is on stderr and the table is NOT on stdout", which a merged stream
-/// cannot distinguish. The endpoint is a DeadEndpoint (#3558): it accepts and resets every connection, so the
+/// cannot distinguish. The endpoint is a DeadEndpoint (#3558): it accepts and closes every connection unanswered, so the
 /// transport failure is by construction, at once, and does not rest on what the kernel does with a closed port under load.
 ///
 /// The sibling list commands share the one producer (`fetch`) and the one consumer
