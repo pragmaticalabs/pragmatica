@@ -211,7 +211,7 @@ class BackupRestoreCoordinatorRejectedTest {
 
         coordinator.activate();
         for (int i = 0; i < 50 && !coordinator.isComplete(); i++) {
-            fireRetries();
+            fireRetries(coordinator);
         }
 
         assertThat(coordinator.isComplete()).isTrue();
@@ -230,7 +230,7 @@ class BackupRestoreCoordinatorRejectedTest {
 
         coordinator.activate();
         for (int i = 0; i < 50 && !coordinator.isComplete(); i++) {
-            fireRetries();
+            fireRetries(coordinator);
         }
 
         assertThat(coordinator.isComplete()).isTrue();
@@ -507,7 +507,7 @@ class BackupRestoreCoordinatorRejectedTest {
 
         coordinator.activate();
         for (int i = 0; i < 50 && !coordinator.isComplete(); i++) {
-            fireRetries();
+            fireRetries(coordinator);
         }
 
         assertThat(coordinator.isComplete()).isTrue();
@@ -612,7 +612,7 @@ class BackupRestoreCoordinatorRejectedTest {
         var coordinator = coordinator(NODE_1, Option.none(), BackupRestoreCoordinator::restorePreCheck);
 
         coordinator.activate();
-        settleUntil("a scheduled retry or the completion", () -> !retries.isEmpty() || coordinator.isComplete());
+        settleUntil("a scheduled retry or the completion", () -> retryDueOrComplete(coordinator));
 
         return coordinator;
     }
@@ -777,13 +777,18 @@ class BackupRestoreCoordinatorRejectedTest {
                        .orElseThrow();
     }
 
-    private void fireRetries() {
-        settleUntil("a scheduled retry", () -> !retries.isEmpty());
+    /// Fires the retries due, then waits for the next one, or for the completion: a restore that finishes on the fired retry schedules none.
+    private void fireRetries(BackupRestoreCoordinator coordinator) {
+        settleUntil("a scheduled retry or the completion", () -> retryDueOrComplete(coordinator));
         var due = List.copyOf(retries);
 
         retries.clear();
         due.forEach(Runnable::run);
-        settleUntil("a scheduled retry", () -> !retries.isEmpty());
+        settleUntil("a scheduled retry or the completion", () -> retryDueOrComplete(coordinator));
+    }
+
+    private boolean retryDueOrComplete(BackupRestoreCoordinator coordinator) {
+        return !retries.isEmpty() || coordinator.isComplete();
     }
 
     /// Drives the worker until `condition` holds, bounded by [#SETTLE_DEADLINE]; a miss fails with the poll report naming `what`.
