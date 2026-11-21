@@ -25,6 +25,7 @@ import java.util.function.Supplier;
 
 import org.pragmatica.lang.Contract;
 
+
 /// The shared bounded wait for tests: poll a supplier until a predicate holds or a deadline passes.
 ///
 /// Every outcome, met or missed, carries what a flake triage needs: the first-poll value, the final value, the poll count,
@@ -42,14 +43,26 @@ public final class PollUntil {
     /// What one wait observed. `margin` is the deadline minus `elapsed`: how close a pass came, or by how much a miss overran.
     public record Report<T>(boolean met, T firstValue, T finalValue, int polls, Duration elapsed, Duration margin) {
         /// Factory: derives the margin from the deadline so no caller computes it differently.
-        public static <T> Report<T> report(boolean met, T firstValue, T finalValue, int polls, Duration elapsed, Duration deadline) {
+        public static <T> Report<T> report(boolean met,
+                                           T firstValue,
+                                           T finalValue,
+                                           int polls,
+                                           Duration elapsed,
+                                           Duration deadline) {
             return new Report<>(met, firstValue, finalValue, polls, elapsed, deadline.minus(elapsed));
         }
 
         /// One line naming `what` was awaited and everything the wait observed, for assertion messages and logs.
         public String describe(String what) {
-            return (met ? "met: " : "MISSED: ") + what + " (first=" + firstValue + ", final=" + finalValue + ", polls=" + polls
-                   + ", elapsed=" + elapsed.toMillis() + " ms, margin=" + margin.toMillis() + " ms)";
+            return (met
+                    ? "met: "
+                    : "MISSED: ") + what
+                 + " (first=" + firstValue
+                 + ", final=" + finalValue
+                 + ", polls=" + polls
+                 + ", elapsed=" + elapsed.toMillis()
+                 + " ms, margin=" + margin.toMillis()
+                 + " ms)";
         }
 
         /// Returns this report when the predicate held; otherwise fails with [#describe]. The throw is the signature
@@ -59,6 +72,7 @@ public final class PollUntil {
             if (!met) {
                 throw new AssertionError(describe(what));
             }
+
             return this;
         }
     }
@@ -69,7 +83,10 @@ public final class PollUntil {
     }
 
     /// Polls every `interval` until `predicate` holds for the supplied value or `deadline` passes.
-    public static <T> Report<T> pollUntil(Supplier<T> supplier, Predicate<T> predicate, Duration deadline, Duration interval) {
+    public static <T> Report<T> pollUntil(Supplier<T> supplier,
+                                          Predicate<T> predicate,
+                                          Duration deadline,
+                                          Duration interval) {
         return pollUntil(supplier, predicate, deadline, interval, System::nanoTime, LockSupport::parkNanos);
     }
 
@@ -93,6 +110,12 @@ public final class PollUntil {
             polls++;
             met = predicate.test(current);
         }
-        return Report.report(met, first, current, polls, Duration.ofNanos(clock.getAsLong() - start), deadline);
+
+        return Report.report(met,
+                             first,
+                             current,
+                             polls,
+                             Duration.ofNanos(clock.getAsLong() - start),
+                             deadline);
     }
 }
