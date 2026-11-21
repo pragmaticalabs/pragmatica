@@ -6,6 +6,7 @@ package org.pragmatica.aether.resource.entity;
 import java.nio.charset.StandardCharsets;
 import java.lang.reflect.Field;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -143,22 +144,64 @@ class EntityFoldCaptureTest {
     }
 
     @Test
-    void arm_a_anOffsetParkedAboveTheClosedOffset_isRefused_beforeAnyCopy() {
+    void arm_a_anOffsetParkedAboveTheClosedOffset_isRefused_beforeAnyCopy() throws Exception {
         readyThrough(2);
-        fold.apply(PARTITION, 4L, EntityLogRecord.upsert("past", bytes("9")));
+        appendAndApply(4L);
 
-        assertThat(refusalOf(fold.capture(PARTITION, 2L))).isEqualTo(new EntityFold.CaptureRefusal.AppliedMismatch(PARTITION, 4L, 2L));
+        assertThat(parkedAhead()).as("control: offset 4 is parked above the watermark").containsExactly(4L);
+        assertThat(refusalOf(fold.capture(PARTITION, 2L))).isEqualTo(new EntityFold.CaptureRefusal.LogEndMismatch(PARTITION, 4L, 2L));
         assertThat(substrate.lineageReads.get()).as("refused before the copy").isZero();
     }
 
     @Test
-    void arm_a_anOffsetParkedAboveTheClosedOffset_duringTheCopy_isRefused_afterTheCopy() {
+    void arm_a_anOffsetParkedAboveTheClosedOffset_duringTheCopy_isRefused_afterTheCopy() throws Exception {
         readyThrough(2);
         substrate.duringLineageRead = () -> appendAndApply(4L);
 
         var result = fold.capture(PARTITION, 2L);
 
-        assertThat(refusalOf(result)).isEqualTo(new EntityFold.CaptureRefusal.AppliedMismatch(PARTITION, 4L, 2L));
+        assertThat(parkedAhead()).as("control: offset 4 parked during the copy, the watermark unmoved").containsExactly(4L);
+        assertThat(refusalOf(result)).isEqualTo(new EntityFold.CaptureRefusal.LogEndMismatch(PARTITION, 4L, 2L));
+        assertThat(substrate.lineageReads.get()).as("the copy ran, so the after-check is what refused").isEqualTo(1);
+    }
+
+    @Test
+    void arm_e_anApplyInFlightDuringTheCopy_isRefused_afterTheCopy() throws Exception {
+        readyThrough(2);
+        var state = publishedState();
+        substrate.duringLineageRead = () -> applyInFlight(state, 3L);
+
+        var result = fold.capture(PARTITION, 2L);
+
+        assertThat(state).as("control: the in-flight apply wrote its state").containsKey("above3");
+        assertThat(parkedAhead()).as("control: its watermark step never ran").isEmpty();
+        assertThat(refusalOf(result)).isEqualTo(new EntityFold.CaptureRefusal.LogEndMismatch(PARTITION, 3L, 2L));
+        assertThat(substrate.lineageReads.get()).as("the copy ran, so the after-check is what refused").isEqualTo(1);
+    }
+
+    @Test
+    void arm_e_anApplyInFlightBeforeTheCopy_isRefused_beforeAnyCopy() throws Exception {
+        readyThrough(2);
+        var state = publishedState();
+        var fired = new AtomicInteger();
+        substrate.afterHeadRead = () -> applyInFlightOnce(fired, state, 3L);
+
+        var result = fold.capture(PARTITION, 2L);
+
+        assertThat(fired.get()).as("control: the apply landed right after the first head read").isPositive();
+        assertThat(state).as("control: the in-flight apply wrote its state").containsKey("above3");
+        assertThat(refusalOf(result)).isEqualTo(new EntityFold.CaptureRefusal.LogEndMismatch(PARTITION, 3L, 2L));
+        assertThat(substrate.lineageReads.get()).as("the head re-read before the copy refused, so nothing was copied").isZero();
+    }
+
+    @Test
+    void arm_e_aLogHeadFallingDuringTheCopy_isRefused_afterTheCopy() {
+        readyThrough(2);
+        substrate.duringLineageRead = () -> substrate.log.removeLast();
+
+        var result = fold.capture(PARTITION, 2L);
+
+        assertThat(refusalOf(result)).isEqualTo(new EntityFold.CaptureRefusal.LogEndMismatch(PARTITION, 1L, 2L));
         assertThat(substrate.lineageReads.get()).as("the copy ran, so the after-check is what refused").isEqualTo(1);
     }
 
@@ -210,13 +253,14 @@ class EntityFoldCaptureTest {
     void capture_drainsAnOffsetLeftParkedByRacingDrains_beforeTheCheck() throws Exception {
         readyThrough(1);
         substrate.log.add(EntityLogRecord.upsert("k2", bytes("2")).encode());
+        publishedState().put("k2", bytes("2"));
         parkedAhead().add(2L);
 
         var capture = fold.capture(PARTITION, 2L).unwrap();
 
         assertThat(capture.through()).isEqualTo(2L);
         assertThat(parkedAhead()).as("the drain consumed the parked offset").isEmpty();
-        assertThat(EntityFoldSnapshot.decode(capture.snapshot()).unwrap().state()).containsOnlyKeys("k0", "k1");
+        assertThat(EntityFoldSnapshot.decode(capture.snapshot()).unwrap().state()).containsOnlyKeys("k0", "k1", "k2");
     }
 
     @Test
@@ -254,16 +298,42 @@ class EntityFoldCaptureTest {
         fold.apply(PARTITION, offset, record);
     }
 
-    /// The partition's published fold, reached by reflection: its parked-offset set cannot be filled deterministically through `apply`
-    /// (it drains itself), and its rebuild slot never holds a failed memo through `ready` ([EntityFold#ready] clears the slot BEFORE it
-    /// resolves a failed rebuild), so both states are placed directly to pin what [EntityFold#capture] does when it meets them.
+    /// An append that landed in the log at `offset` and whose apply wrote the state but has not yet stepped the watermark, as
+    /// [EntityFold#apply] does between its state write and its watermark step.
+    private void applyInFlight(Map<String, byte[]> state, long offset) {
+        substrate.log.add(EntityLogRecord.upsert("above" + offset, bytes("9")).encode());
+        state.put("above" + offset, bytes("9"));
+    }
+
+    private void applyInFlightOnce(AtomicInteger fired, Map<String, byte[]> state, long offset) {
+        if (fired.getAndIncrement() == 0) {
+            applyInFlight(state, offset);
+        }
+    }
+
+    /// The partition's published fold, reached by reflection. Its parked-offset set cannot be filled deterministically through `apply`
+    /// (it drains itself), so a park left by racing drains is placed directly, with its state written first as production does. Its rebuild
+    /// slot never holds a failed memo when read ([EntityFold#ready] clears the slot BEFORE it resolves a failed rebuild), but a capture that
+    /// reads a PENDING memo and then loses the race to a failing rebuild holds a failed memo in its local; placing the failed memo in the
+    /// slot models that read-then-fail window deterministically, so the success check in [EntityFold#capture] is live, not dead code.
     private ConcurrentSkipListSet<Long> parkedAhead() throws Exception {
-        var published = ((AtomicReference<?>) field(partitionFold(), "published").get(partitionFold())).get();
+        var published = publishedFold();
 
         @SuppressWarnings("unchecked")
         var parked = (ConcurrentSkipListSet<Long>) field(published, "appliedAhead").get(published);
 
         return parked;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, byte[]> publishedState() throws Exception {
+        var published = publishedFold();
+
+        return (Map<String, byte[]>) field(published, "state").get(published);
+    }
+
+    private Object publishedFold() throws Exception {
+        return ((AtomicReference<?>) field(partitionFold(), "published").get(partitionFold())).get();
     }
 
     @SuppressWarnings("unchecked")
@@ -324,6 +394,8 @@ class EntityFoldCaptureTest {
         private volatile Promise<List<byte[]>> readGate;
         /// Runs inside every `lineageAt`: a cut that lands while a capture is being assembled.
         private volatile Runnable duringLineageRead = () -> {};
+        /// Runs after every `headOffset` read, before it answers: an append landing right behind a head read.
+        private volatile Runnable afterHeadRead = () -> {};
 
         @Override
         public long cutGeneration(String keyspace, int partition) {
@@ -370,7 +442,11 @@ class EntityFoldCaptureTest {
 
         @Override
         public long headOffset(String keyspace, int partition) {
-            return log.size() - 1L;
+            var head = log.size() - 1L;
+
+            afterHeadRead.run();
+
+            return head;
         }
 
         @Override
