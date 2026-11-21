@@ -421,6 +421,9 @@ class OperatorWarningCodeTest {
         // #3193, added on purpose: a live worker whose own directive was retired halts (EXIT_DRAINED); the halt ends the process, so nothing
         // is left to publish a recovery, and the only end is a fresh WorkerJoin, which is a new admission.
         OperatorWarningCode.OWN_DIRECTIVE_RETIRED,
+        // #3303 RA-5a, added on purpose: a restore stopped by a deterministic refusal ends only when the cluster runs a build that fixes
+        // the refusal (a restart, so a new event log slice); the stopped restore has no runtime step that could publish a recovery.
+        OperatorWarningCode.BACKUP_RESTORE_REJECTED,
         OperatorWarningCode.STORAGE_VOLUME_GUARD_INACTIVE,
         OperatorWarningCode.STORAGE_STREAM_DISK_CAP_OVER_SPACE,
         OperatorWarningCode.STORAGE_STREAM_DISK_SPACE_UNREADABLE,
