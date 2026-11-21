@@ -1,0 +1,2 @@
+### Changed (2026-11-20 - #3413: the drain port is built in the quorum-loss unit)
+- **The management server takes its `DrainPort` from `DrainAssembly.quorumLossDrain`** (#3413). The quorum-loss unit now builds the port and also reads the node's `kvStore` and `pongSignalFan` (no reader yet); `ManagementServerInputs` carries the port instead of the FSM holder and the drain registry. Internal wiring, no behaviour change, no wire change.

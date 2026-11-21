@@ -138,6 +138,14 @@ A management request may land on any core node, but where it is ultimately serve
 - **Per-node diagnostic routes are served node-locally** (metrics, traces, alerts, logs, storage, DHT replication map, certificates). These report the receiving node's own view and are not forwarded.
 - **Per-node addressed routes** (those with an `{id}` node parameter) are forwarded to the named node.
 
+The per-node addressed forms of the status, slice and in-flight reads are:
+
+| Request | Same answer as | Role |
+|---------|----------------|------|
+| `GET /api/v1/nodes/status/{id}` | [`GET /api/v1/nodes/status`](#get-apiv1nodesstatus), from node `{id}` | VIEWER |
+| `GET /api/v1/nodes/slices/{id}` | [`GET /api/v1/nodes/slices`](#get-apiv1nodesslices), from node `{id}` | VIEWER |
+| `GET /api/v1/nodes/inflight/{id}` | [`GET /api/v1/nodes/inflight`](#get-apiv1nodesinflight), from node `{id}` | VIEWER |
+
 ---
 
 ## Cluster Status
@@ -520,7 +528,7 @@ event per advance would be a 1 Hz stream with no information beyond "the leader 
 changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on demand from
 `GET /api/v1/cluster/generation`.
 
-**Delivery when a publish fails (#1640).** A node whose event publish does not land keeps the event and re-sends it. The common case is a forward to a cluster-events owner that has just died, which reports "Publish outcome unknown". The node re-sends once a second with backoff up to 8 s, and immediately when the partition gets a new owner, for up to 5 minutes. It holds at most 1,024 such events and drops the oldest beyond that. Every dropped event is counted, and one WARN line names the dropped event types on the next publish that lands (during a long outage, the counters are the only live signal); the first expiry is also logged once at ERROR. Each event carries `details.eventId` (`<node-process incarnation>:<sequence>`), and a re-sent event keeps it, so an event that did land before its outcome was known is not listed twice: `GET /api/v1/events` de-duplicates every read by `eventId` (events without one by `at`) and lists events in `at` order. The live feed follows an offset cursor and sends events in the order they land, so a late event is still sent, possibly after events with a later `at`. It sends each event once for as long as its first copy is retained: it remembers every `eventId` it sent until retention trims that event, so a re-sent copy is not sent again, and a copy landing after its first copy was trimmed is sent a second time. After an owner failover, the new owner can reuse offsets the feed already read; the feed then re-reads the log from its oldest retained offset (on the node applying the ownership change, or when the log moves back below its cursor) and sends only what it has not sent. A worker learns of the ownership change from its metadata projection (polled once a second), so on a worker these events can arrive a little later, but they are not lost while retained. `eventId` collapses the copies of ONE raise: an owner-gated fact raised on both sides of a cluster-events ownership handover appears twice, with distinct `eventId`s (at-least-once across a handover; see guarantees.md row 14b). **The raw stream read (`GET /api/v1/streams/system/cluster-events/1.0.0/read`) does not de-duplicate or sort:** it returns the log as stored, so it can show a re-sent event twice and out of `at` order; de-duplicate by `details.eventId`. The limit: redelivery needs a writable owner. On a cluster where the dead owner is not re-placed, or a partition flagged for an operator, the held events expire after 5 minutes, counted, and the logs are the only record.
+**Delivery when a publish fails (#1640).** A node whose event publish does not land keeps the event and re-sends it. The common case is a forward to a cluster-events owner that has just died, which reports "Publish outcome unknown". The node re-sends once a second with backoff up to 8 s, and immediately when the partition gets a new owner, for up to 5 minutes. It holds at most 1,024 such events and drops the oldest beyond that. Every dropped event is counted, and one WARN line names the dropped event types on the next publish that lands (during a long outage, the counters are the only live signal); the first expiry is also logged once at ERROR. Each event carries `details.eventId` (`<node-process incarnation>:<sequence>`), and a re-sent event keeps it, so an event that did land before its outcome was known is not listed twice: `GET /api/v1/events` de-duplicates every read by `eventId` (events without one by `at`) and lists events in `at` order. The live feed follows an offset cursor and sends events in the order they land, so a late event is still sent, possibly after events with a later `at`. It sends each event once for as long as its first copy is retained: it remembers every `eventId` it sent until retention trims that event, so a re-sent copy is not sent again, and a copy landing after its first copy was trimmed is sent a second time. After an owner failover, the new owner can reuse offsets the feed already read; the feed then re-reads the log from its oldest retained offset (on the node applying the ownership change, or when the log moves back below its cursor) and sends only what it has not sent. A worker learns of the ownership change from its metadata projection (polled once a second), so on a worker these events can arrive a little later, but they are not lost while retained. `eventId` collapses the copies of ONE raise: an owner-gated fact raised on both sides of a cluster-events ownership handover appears twice, with distinct `eventId`s (at-least-once across a handover; see guarantees.md row 14b). **The raw stream read (`GET /api/v1/streams/system/cluster-events/1.0.0/read/{partition}`) does not de-duplicate or sort:** it returns the log as stored, so it can show a re-sent event twice and out of `at` order; de-duplicate by `details.eventId`. The limit: redelivery needs a writable owner. On a cluster where the dead owner is not re-placed, or a partition flagged for an operator, the held events expire after 5 minutes, counted, and the logs are the only record.
 
 `SELF_DRAIN_INITIATED` (severity `WARNING`) is emitted by the draining node itself when its `SelfDrainCoordinator` flips from `ACTIVE` to `DRAINING` (see `aether/docs/specs/membership-architecture-v2-spec.md`). Unlike most other events, this one is NOT leader-gated — a partition victim is the only authoritative source for "I'm self-draining" and may not be able to reach the leader at all. `details` carries `nodeId` (the draining node), `reason` (one of `sustained-below-quorum`, `quorum-disappeared`, `rabia-paused`), and `graceMs` (the configured in-flight grace before forced halt). Best-effort: if the publish does not reach a quorum before `Runtime.halt(2)` lands, the event is lost.
 
@@ -4233,6 +4241,15 @@ curl http://localhost:8080/repository/info/org/example/my-slice/1.0.0
 }
 ```
 
+### GET /repository/artifacts
+
+**Not implemented — returns HTTP 501.** The route is registered, but artifacts are content-addressed in the DHT, which
+exposes no scan primitive, so a repository-wide listing needs an index that does not exist yet (tracked by #527).
+Use `GET /repository/{groupPath}/{artifactId}/maven-metadata.xml` (`aether artifacts versions <group:artifact>`) to list
+the versions of a known artifact, `GET /repository/info/{groupPath}/{artifactId}/{version}` for one artifact, and
+`GET /api/v1/artifacts/metrics` for repository totals. A group id that begins with `artifacts.` is unaffected: only the
+exact path `/repository/artifacts` is refused.
+
 ### GET /repository/{groupPath}/{artifactId}/{version}/{filename}
 
 Download an artifact file from the repository.
@@ -4719,6 +4736,17 @@ Observe node membership/readiness and drive graceful operations (drain, shutdown
 Node membership is presence-derived (SWIM/QUIC via NTT); node readiness/drain is heartbeat-reported and leader-cached. This state is **never** stored in or committed to the KV-Store. See `aether/docs/specs/membership-architecture-v2-spec.md`.
 
 **Readiness values (heartbeat-reported):** `SYNCING`, `READY`, `DRAINING`. A node that is no longer present (SWIM/QUIC) simply disappears from the membership view — there is no terminal KV state.
+
+### GET /api/v1/nodes/inflight
+
+Number of requests this node's in-flight tracker is currently counting (the tracker the drain gate closes and
+waits on). **Routing:** LOCAL on the bare form; `GET /api/v1/nodes/inflight/{id}` is forwarded to node `{id}`.
+**Auth:** VIEWER.
+
+**Response:**
+```json
+{"count": 3}
+```
 
 ### GET /api/v1/nodes/lifecycle
 
@@ -6170,7 +6198,7 @@ registration has been removed; nothing serves that path any more.
 ### Read Events
 
 ```
-GET /api/v1/streams/read/{name}/{partition}?from={offset}&max={count}
+GET /api/v1/streams/{namespace}/{stream}/{version}/read/{partition}?from={offset}&max={count}
 ```
 
 **Auth:** ALL_AUTHENTICATED
@@ -6307,6 +6335,17 @@ aether streams consumer-group status <group> [<stream>]
 }
 ```
 
+### Stream Consumers
+
+```
+GET /api/v1/streams/{namespace}/{stream}/{version}/consumers
+```
+
+**Auth:** VIEWER. Per-partition offsets of one stream version, as the receiving stream node holds them. The address is
+validated first (a malformed address is `400`); an unknown stream is refused with the stream-manager's typed status.
+
+**Response:** `{"name": "<namespace:stream:version>", "partitions": [{"partition": 0, "headOffset": 0, "tailOffset": 41, "eventCount": 42}]}`
+
 ---
 
 ## Stream Namespaces
@@ -6323,32 +6362,37 @@ Path parameters appear in route order as `{namespace}/{stream}/{version}` (versi
 ### List Registered Streams (namespaced)
 
 ```
-GET /api/v1/streams/list[?namespace={ns}]
+GET /api/v1/streams[?namespace={ns}&limit={n}&cursor={c}]
 ```
 
-Snapshot of all registered stream versions across the namespace registry. The optional
-`namespace` query parameter filters to a single namespace.
+Snapshot of all registered stream versions across the namespace registry
+(`{"streams": [{namespace, stream, version, refCount, registeredAtEpochMs}]}`). The optional
+`namespace` query parameter filters to a single namespace and `limit` caps the number of entries
+returned. `cursor` is accepted but not applied: the route returns the (capped) snapshot, not pages.
 
 ### List Versions
 
 ```
-GET /api/v1/streams/versions/{namespace}/{stream}
+GET /api/v1/streams/{namespace}/{stream}
 ```
 
-Lists all registered versions of a given `(namespace, stream)`.
+Lists all registered versions of a given `(namespace, stream)`
+(`{"namespace", "stream", "versions": [{namespace, stream, version, refCount, registeredAtEpochMs}]}`).
+An unregistered `(namespace, stream)` answers `404`.
 
 ### Latest Version
 
 ```
-GET /api/v1/streams/latest/{namespace}/{stream}
+GET /api/v1/streams/{namespace}/{stream}/latest
 ```
 
-Resolves the highest registered version for a `(namespace, stream)`.
+Resolves the highest registered version for a `(namespace, stream)`; the response has the shape of
+[Stream Metadata](#stream-metadata).
 
 ### Stream Metadata
 
 ```
-GET /api/v1/streams/metadata/{namespace}/{stream}/{version}
+GET /api/v1/streams/{namespace}/{stream}/{version}
 ```
 
 Returns the registry entry for an exact stream version (config, partitions, retention, reference
@@ -6357,22 +6401,23 @@ count, `registeredBy`, `registeredAtEpochMs`).
 ### Read Events (tail polling)
 
 ```
-GET /api/v1/streams/events/{namespace}/{stream}/{version}?fromOffset={n}&maxEvents={k}
+GET /api/v1/streams/{namespace}/{stream}/{version}/events?fromOffset={n}&maxEvents={k}
 ```
 
 Paginated event read used by `aether stream tail`. Returns a page of events plus `nextOffset`
 and `hasMore`. `maxEvents` is server-capped (1000). A streaming `tail` subscription
-(SSE/WebSocket) over `/api/v1/streams/tail/...` is **deferred to issue #212**; polling `/events` is
+(SSE/WebSocket) over `/api/v1/streams/{namespace}/{stream}/{version}/tail` is **deferred to issue #212**; polling `/events` is
 the supported tail mechanism today.
 
 ### Tail (reserved)
 
 ```
-GET /api/v1/streams/tail/{namespace}/{stream}/{version}
+GET /api/v1/streams/{namespace}/{stream}/{version}/tail
 ```
 
-Reserved for the deferred SSE/WebSocket subscription (#212). Operators tail via polling
-`/api/v1/streams/events/...` in the interim.
+Reserved for the deferred SSE/WebSocket subscription (#212); the route is registered and answers
+`501 Not Implemented`, with a message that names the polling `/events` form. Operators tail via polling
+`/api/v1/streams/{namespace}/{stream}/{version}/events` in the interim.
 
 ### Create Stream Version
 
@@ -6488,24 +6533,31 @@ segment disambiguates them.
 ### Consumer Groups (namespaced)
 
 ```
-GET    /api/v1/streams/groups/{namespace}/{stream}/{version}            # list groups
-POST   /api/v1/streams/groups/create/{namespace}/{stream}/{version}     # create a durable group
-DELETE /api/v1/streams/groups/delete/{namespace}/{stream}/{version}/{group}   # delete a group
+GET    /api/v1/streams/{namespace}/{stream}/{version}/groups            # list groups
+POST   /api/v1/streams/{namespace}/{stream}/{version}/groups            # create a durable group
+DELETE /api/v1/streams/{namespace}/{stream}/{version}/groups/{group}    # delete a group
 ```
 
-`create` and `delete` are **OPERATOR_AND_ABOVE** and are subject to the `system:*` write gate.
-Deleting a group releases its reference on the stream version.
+Create and delete are **OPERATOR_AND_ABOVE** and are subject to the `system:*` write gate.
+Create takes the body `{"groupId": "<id>", "initialPosition": "<position>"}` and answers
+`{"address", "groupId", "status": "created"}`; only `groupId` is read, `initialPosition` is accepted
+and not applied. Delete answers `{"address", "groupId", "status": "deleted"}` after removing the
+group's consumers on that stream version, or `404` for an unknown group. Deleting a group releases
+its reference on the stream version. The list route answers `{"address", "groups": []}` for a valid address: it
+does not enumerate groups today (use [Consumer Group Status](#consumer-group-status) or
+`GET /api/v1/streams/{namespace}/{stream}/{version}/consumers`).
 
 ### Namespace Registry Lookup
 
 ```
-GET /api/v1/stream-namespaces/list
-GET /api/v1/stream-namespaces/get/{namespace}/{stream}/{version}
+GET /api/v1/streams/namespaces
+GET /api/v1/streams/namespaces/{address}
 ```
 
 Read-only views served **locally on every node** (target `LOCAL`) — non-governor nodes answer
 these from replicated registry state (see [Stream metadata registries](#stream-metadata-registries)).
-`list` returns all registry entries; `get` is an exact lookup returning `404` when the address is
+The first returns all registry entries (`{"entries": [...]}`); the second is an exact lookup by the
+full `namespace:stream:version` address as ONE path segment (`{"entry": {...}}`), returning `404` when the address is
 not registered. Each entry carries `namespace`, `stream`, `version`, `registeredBy`,
 `registeredAtEpochMs`, and `refCount`.
 
@@ -6613,7 +6665,7 @@ Stream metadata is held in **two complementary, consensus-replicated registries*
   directly from the replicated KV store.
 
 Because both registries are replicated through consensus, **non-governor nodes serve stream
-metadata (and the `/api/v1/stream-namespaces/*` views) from local replicated state** rather than
+metadata (and the `/api/v1/streams/namespaces` views) from local replicated state** rather than
 forwarding to the governor — the #215 fix that gave every node a durable, consistent view of the
 stream registry.
 

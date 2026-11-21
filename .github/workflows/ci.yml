@@ -172,6 +172,11 @@ jobs:
           python3 tools/check-publish-closure.py
           python3 tools/check-publish-closure.py --check-table docs/release/maven-central-publish-set.md
 
+      # #3532: the management route reference page is generated from ManagementRoute; a route added or moved without
+      # regenerating it fails here.
+      - name: Management route reference drift
+        run: python3 tools/gen-management-routes.py --check
+
       - name: Licence closure
         run: |
           python3 -B -m unittest discover -s tools -p test_licence_closure.py
