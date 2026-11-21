@@ -40,7 +40,8 @@ sealed interface NodeStopSequence {
 
         /// A step that cannot fail (the FSM2 close, the storage drain), as an action of the list.
         static Step completing(String name, Supplier<Unit> action) {
-            return step(name, () -> Promise.success(action.get()));
+            return step(name,
+                        () -> Promise.success(action.get()));
         }
     }
 
@@ -107,11 +108,17 @@ sealed interface NodeStopSequence {
     private static Promise<Option<Cause>> runFrom(List<Step> remaining, Option<Cause> firstFailure) {
         return remaining.isEmpty()
                ? Promise.success(firstFailure)
-               : remaining.getFirst()
-                          .action()
-                          .get()
-                          .fold(result -> runFrom(remaining.subList(1, remaining.size()),
-                                                  firstFailure.orElse(failureOf(remaining.getFirst().name(), result))));
+               : settle(remaining.getFirst(),
+                        remaining.subList(1, remaining.size()),
+                        firstFailure);
+    }
+
+    private static Promise<Option<Cause>> settle(Step step, List<Step> rest, Option<Cause> firstFailure) {
+        return step.action()
+                   .get()
+                   .fold(result -> runFrom(rest,
+                                           firstFailure.orElse(failureOf(step.name(),
+                                                                         result))));
     }
 
     /// The failure of a settled step, logged; empty when it succeeded.

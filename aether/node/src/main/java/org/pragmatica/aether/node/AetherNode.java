@@ -2012,9 +2012,9 @@ public interface AetherNode extends ManageableNode {
                                                                          this::closeSharedResources,
                                                                          this::shutdownStorage,
                                                                          clusterNode::stop))
-                                 .withResult(_ -> closeKvStore())
-                                 .onSuccess(_ -> log.info("Aether node {} stopped",
-                                                          self()));
+                                       .withResult(_ -> closeKvStore())
+                                       .onSuccess(_ -> log.info("Aether node {} stopped",
+                                                                self()));
             }
 
             /// B13: the FSM2 interpreters close, after the quiesce that follows the delivery of the passive notification's `LeaderChange` reaction (#2688).
