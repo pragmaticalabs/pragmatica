@@ -1995,34 +1995,33 @@ public interface AetherNode extends ManageableNode {
                 // Active.onExit, which nothing reached at shutdown — a stopped node kept running full
                 // deployment reconciles. deactivate() is the same designed path a leader loss takes.
                 //
-                // It heads the chain, so the rest of the shutdown DEPENDS on it staying infallible: it
-                // currently dispatches an FSM event and returns unitPromise(), never a failure. Should
-                // it ever gain a failure path, every stop below — management server, app HTTP, slice
-                // invoker, cluster node — would be skipped by flatMap short-circuit. Recover here at
-                // that point rather than leaving the node half-stopped.
+                // #3565: one invariant, kept by NodeStopSequence — once the stop begins, every step below runs exactly once,
+                // whatever any earlier step returned (a failed leaveQuorum no longer skips the FSM2 close, the components' stops,
+                // the listeners and the cluster node, which a flatMap chain did). The promise stop() returns carries the FIRST
+                // failure; the later ones are logged there.
                 //
-                // #1612: the chain lives in NodeStopSequence, where a failed HTTP listener stop is logged and
-                // skipped past rather than ending the shutdown.
-                return quorumLeft.map(this::stopDeploymentWiring)
-                                 .flatMap(() -> stopNodeComponents(backupFlushed))
-                                 .flatMap(() -> NodeStopSequence.run(NodeStopSequence.Steps.steps(this::releaseWatchesThenDeactivate,
-                                                                                                  () -> managementServer.map(ManagementServer::stop)
-                                                                                                                        .or(Promise.unitPromise()),
-                                                                                                  appHttpServer::stop,
-                                                                                                  sliceInvoker::stop,
-                                                                                                  this::closeSharedResources,
-                                                                                                  this::shutdownStorage,
-                                                                                                  clusterNode::stop)))
+                // #1612: that includes a failed HTTP listener stop (a timed-out close or termination).
+                return NodeStopSequence.run(NodeStopSequence.Steps.steps(() -> quorumLeft,
+                                                                         this::stopDeploymentWiring,
+                                                                         () -> stopNodeComponents(backupFlushed),
+                                                                         this::releaseWatchesThenDeactivate,
+                                                                         () -> managementServer.map(ManagementServer::stop)
+                                                                                               .or(Promise.unitPromise()),
+                                                                         appHttpServer::stop,
+                                                                         sliceInvoker::stop,
+                                                                         this::closeSharedResources,
+                                                                         this::shutdownStorage,
+                                                                         clusterNode::stop))
                                  .withResult(_ -> closeKvStore())
                                  .onSuccess(_ -> log.info("Aether node {} stopped",
                                                           self()));
             }
 
             /// B13: the FSM2 interpreters close, after the quiesce that follows the delivery of the passive notification's `LeaderChange` reaction (#2688).
-            private Unit stopDeploymentWiring(Unit unit) {
+            private Unit stopDeploymentWiring() {
                 deploymentWiring.stop();
 
-                return unit;
+                return Unit.unit();
             }
 
             /// The components' stops, after the quiesce and the FSM2 close (rc5's order, restored by #2688). Returns the backup's

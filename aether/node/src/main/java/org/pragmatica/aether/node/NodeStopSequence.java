@@ -4,41 +4,76 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.util.List;
 import java.util.function.Supplier;
 
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.lang.Unit.unit;
 
-
-/// The ordered, promise-chained tail of `AetherNode.stop()`, extracted so the ordering and failure handling
-/// can be tested without assembling a node (#1612).
+/// The whole of `AetherNode.stop()` after its synchronous prologue, as one ordered list of steps (#1612, #3565).
 ///
-/// Each step is a `Supplier`, so no step starts before the previous one has settled.
+/// One invariant: once the stop begins, every step runs exactly once, in order, whatever any earlier step returned.
+/// A failure never skips a later step; it is logged where it happens and the stop's own result is the FIRST failure
+/// (the caller learns the stop did not complete cleanly, and the later failures are in the log). So a failed leave of
+/// the quorum, a failed HTTP listener stop and a failed shared-resource close are one case, not three.
+///
+/// Each step is a `Supplier`, so no step starts before the previous one has settled. The sequence can be tested
+/// without assembling a node.
+///
+/// Not covered: a step that THROWS (a synchronous step is total by contract; an exception is not a returned
+/// failure and ends the run at that step).
 sealed interface NodeStopSequence {
     Logger LOG = LoggerFactory.getLogger(NodeStopSequence.class);
 
-    /// The steps, in order. `sharedResources` (#903) closes the shared resource scope once the slice invoker has
-    /// stopped; a failure is logged and skipped past, like the HTTP listeners. `storage` is infallible by design (see `AetherNode.shutdownStorage`).
-    record Steps(Supplier<Promise<Unit>> deactivateDeployment,
+    /// One step of the stop: the label its failure is logged under, and the action.
+    record Step(String name, Supplier<Promise<Unit>> action) {
+        static Step step(String name, Supplier<Promise<Unit>> action) {
+            return new Step(name, action);
+        }
+
+        /// A step that cannot fail (the FSM2 close, the storage drain), as an action of the list.
+        static Step completing(String name, Supplier<Unit> action) {
+            return step(name, () -> Promise.success(action.get()));
+        }
+    }
+
+    /// The steps, in order. `leaveQuorum` is the node leaving the quorum (PASSIVE, the leader-deactivation wait, the
+    /// router's quiesce); `deploymentWiring` the FSM2 close after it; `nodeComponents` the components' stops and the
+    /// backup and sealer flushes (rc5's order, #2688); then the deployment deactivation, the listeners, the slice
+    /// invoker, `sharedResources` (#903, closed once the slice invoker has stopped), `storage` and the cluster node.
+    /// `deploymentWiring` and `storage` are infallible by design (see `AetherNode.stopDeploymentWiring`,
+    /// `AetherNode.shutdownStorage`).
+    record Steps(Supplier<Promise<Unit>> leaveQuorum,
+                 Supplier<Unit> deploymentWiring,
+                 Supplier<Promise<Unit>> nodeComponents,
+                 Supplier<Promise<Unit>> deactivateDeployment,
                  Supplier<Promise<Unit>> managementServer,
                  Supplier<Promise<Unit>> appHttpServer,
                  Supplier<Promise<Unit>> sliceInvoker,
                  Supplier<Promise<Unit>> sharedResources,
                  Supplier<Unit> storage,
                  Supplier<Promise<Unit>> clusterNode) {
-        static Steps steps(Supplier<Promise<Unit>> deactivateDeployment,
+        static Steps steps(Supplier<Promise<Unit>> leaveQuorum,
+                           Supplier<Unit> deploymentWiring,
+                           Supplier<Promise<Unit>> nodeComponents,
+                           Supplier<Promise<Unit>> deactivateDeployment,
                            Supplier<Promise<Unit>> managementServer,
                            Supplier<Promise<Unit>> appHttpServer,
                            Supplier<Promise<Unit>> sliceInvoker,
                            Supplier<Promise<Unit>> sharedResources,
                            Supplier<Unit> storage,
                            Supplier<Promise<Unit>> clusterNode) {
-            return new Steps(deactivateDeployment,
+            return new Steps(leaveQuorum,
+                             deploymentWiring,
+                             nodeComponents,
+                             deactivateDeployment,
                              managementServer,
                              appHttpServer,
                              sliceInvoker,
@@ -46,38 +81,52 @@ sealed interface NodeStopSequence {
                              storage,
                              clusterNode);
         }
+
+        /// The one ordering of the stop.
+        List<Step> ordered() {
+            return List.of(Step.step("Leave quorum", leaveQuorum),
+                           Step.completing("Deployment wiring", deploymentWiring),
+                           Step.step("Node components", nodeComponents),
+                           Step.step("Deployment deactivation", deactivateDeployment),
+                           Step.step("Management server", managementServer),
+                           Step.step("App HTTP server", appHttpServer),
+                           Step.step("Slice invoker", sliceInvoker),
+                           Step.step("Shared resource scope", sharedResources),
+                           Step.completing("Storage", storage),
+                           Step.step("Cluster node", clusterNode));
+        }
     }
 
-    /// Runs the steps in order. An HTTP listener that fails to stop does not end the sequence: see
-    /// [#continuingPast].
+    /// Runs every step in order and resolves with the first failure, or with success when none failed.
     static Promise<Unit> run(Steps steps) {
-        return steps.deactivateDeployment()
-                    .get()
-                    .flatMap(_ -> continuingPast("Management server",
-                                                 steps.managementServer().get()))
-                    .flatMap(_ -> continuingPast("App HTTP server",
-                                                 steps.appHttpServer().get()))
-                    .flatMap(_ -> steps.sliceInvoker()
-                                       .get())
-                    .flatMap(_ -> continuingPast("Shared resource scope",
-                                                 steps.sharedResources().get()))
-                    .map(_ -> steps.storage()
-                                   .get())
-                    .flatMap(_ -> steps.clusterNode()
-                                       .get());
+        return runFrom(steps.ordered(), Option.empty()).flatMap(NodeStopSequence::outcome);
     }
 
-    /// #1612: an HTTP listener's `stop()` reports a timed-out channel close or event-loop termination as a
-    /// FAILURE. Before #1612 it never failed; a wedged loop hung it instead. In this chain a failure would skip
-    /// every later step through the `flatMap` short-circuit, so storage would not drain and the cluster node
-    /// would keep running. So the failure is logged and shutdown continues. This is forward recovery (FER): the
-    /// listener was asked to stop either way, and what is lost is only the confirmation that its loops
-    /// terminated.
-    static Promise<Unit> continuingPast(String listener, Promise<Unit> stop) {
-        return stop.onFailure(cause -> LOG.warn("{} did not stop cleanly; continuing node shutdown: {}",
-                                                listener,
-                                                cause.message()))
-                   .recover(_ -> unit());
+    /// Runs `remaining` in order, carrying the first failure so far. The next step starts when this one has settled,
+    /// whether it succeeded or failed: this is where a failure stops being able to skip anything.
+    private static Promise<Option<Cause>> runFrom(List<Step> remaining, Option<Cause> firstFailure) {
+        return remaining.isEmpty()
+               ? Promise.success(firstFailure)
+               : remaining.getFirst()
+                          .action()
+                          .get()
+                          .fold(result -> runFrom(remaining.subList(1, remaining.size()),
+                                                  firstFailure.orElse(failureOf(remaining.getFirst().name(), result))));
+    }
+
+    /// The failure of a settled step, logged; empty when it succeeded.
+    private static Option<Cause> failureOf(String name, Result<Unit> result) {
+        return result.fold(cause -> logged(name, cause), _ -> Option.empty());
+    }
+
+    private static Option<Cause> logged(String name, Cause cause) {
+        LOG.warn("{} did not stop cleanly; continuing node shutdown: {}", name, cause.message());
+
+        return Option.present(cause);
+    }
+
+    private static Promise<Unit> outcome(Option<Cause> firstFailure) {
+        return firstFailure.fold(Promise::unitPromise, Cause::promise);
     }
 
     record unused() implements NodeStopSequence {}
