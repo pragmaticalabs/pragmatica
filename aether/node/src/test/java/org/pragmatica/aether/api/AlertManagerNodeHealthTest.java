@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import java.util.stream.IntStream;
+
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipTransitionRecord;
@@ -117,6 +119,50 @@ class AlertManagerNodeHealthTest {
 
         MembershipAssembly.resolveNodeHealthAlertOnRejoin(manager, transition("Observed", "Member"));
         assertThat(manager.getActiveNodeHealthAlerts()).as("the FSM re-admitted the node").isEmpty();
+    }
+
+    /// #2061: `forgetDepartureMarks` ends the broadcast-drain bookkeeping together with the mark. A stale
+    /// `broadcastDrainSeen` entry would let the omission ageing expire a LATER local-FSM mark for the same node, which
+    /// the drain record never created: a mid-drain mark would vanish and the drainee's planned departure would alert.
+    @Test
+    void forgetDepartureMarks_endsTheBroadcastDrainBookkeeping_soALaterLocalMarkIsNeverAgedOut() {
+        var manager = newManager();
+        var drainee = new NodeId("drainee");
+        var seenAt = 1_000L;
+
+        manager.observeDrainSet(java.util.Set.of(drainee), OBSERVER, seenAt, _ -> true);
+        assertThat(manager.hasAnnouncedDeparture(drainee)).as("control: the drain record created the mark").isTrue();
+
+        manager.forgetDepartureMarks(drainee);
+        assertThat(manager.hasAnnouncedDeparture(drainee)).as("the handshake ended the mark").isFalse();
+
+        manager.noteMembershipTransition(drainee, "DrainRequested");
+        manager.observeDrainSet(java.util.Set.of(), OBSERVER, seenAt + AlertManager.DRAIN_OMISSION_GRACE_MS, _ -> true);
+
+        assertThat(manager.hasAnnouncedDeparture(drainee)).as("a local-FSM mark is never expired by absence").isTrue();
+    }
+
+    /// #2061: `clearNodeHealthAlert` removes the alert's slot in the eviction queue. A stale slot would sit ahead of the
+    /// re-raised alert and, at the cap, evict that LIVE alert instead of the oldest one.
+    @Test
+    void clearedThenReraisedAlert_isNotEvictedBeforeTheOldest_atTheCap() {
+        var manager = newManager();
+        var rejoiner = new NodeId("rejoiner");
+        var oldest = new NodeId("oldest-0");
+
+        manager.onNodeFailed(rejoiner, OBSERVER);
+        manager.clearNodeHealthAlert(rejoiner);
+        manager.onNodeFailed(oldest, OBSERVER);
+        IntStream.range(1, 63).forEach(i -> manager.onNodeFailed(new NodeId("oldest-" + i), OBSERVER));
+        manager.onNodeFailed(rejoiner, OBSERVER);
+        assertThat(manager.getActiveNodeHealthAlerts()).as("control: exactly at the cap, nothing evicted yet").hasSize(64);
+
+        manager.onNodeFailed(new NodeId("overflow"), OBSERVER);
+
+        var survivors = manager.getActiveNodeHealthAlerts().stream().map(AlertEvent.NodeHealthAlert::nodeId).toList();
+
+        assertThat(survivors).as("the oldest-inserted alert went").doesNotContain(oldest);
+        assertThat(survivors).as("the re-raised alert is the youngest but one and stays").contains(rejoiner);
     }
 
     private static MembershipTransitionRecord transition(String from, String to) {
