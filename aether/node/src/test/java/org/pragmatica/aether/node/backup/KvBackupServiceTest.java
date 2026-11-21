@@ -1486,6 +1486,54 @@ class KvBackupServiceTest {
         }
     }
 
+    /// #3464: the write paths read git through the three-valued reads. A read git cannot answer fails the flush, which retries; it never reads as
+    /// "absent", so nothing is committed, reset or reported over a state that could not be read. Each test arms its shim only after a control phase.
+    @Nested
+    class WriteReads {
+        /// A queued local commit, then `show-ref` fails: the flush commits nothing and the head stays the queued commit. The old read never ran
+        /// `show-ref` (it took `rev-parse HEAD`) and committed.
+        @Test
+        void aFlushOverAnUnreadableLocalBranch_commitsNothing_andFails() {
+            var armed = temp.resolve("armed");
+            var service = shimmedLeaderService(Option.some(temp.resolve("late.git").toString()),
+                                               GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "show-ref", failsWhileArmed(armed, "*")));
+
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.runUntilIdle(10);
+
+            assertThat(localCommitCount()).as("control: the leadership flush and the change, both queued").isEqualTo(2);
+            var queued = localHeadId();
+
+            writeFile(armed, "");
+            put(service, ConfigKey.forKey("b"), ConfigValue.configValue("b", "2"));
+            scheduler.runUntilIdle(10);
+
+            assertThat(localHeadId()).as("nothing committed over an unreadable local branch").isEqualTo(queued);
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.COMMIT_FAILED);
+        }
+    }
+
+    /// A shim behaviour that fails as git does (`fatal: shim` on stderr, exit 128) while `armed` exists and the arguments match the shell `pattern`,
+    /// so one service runs real git until the test arms it.
+    private static String failsWhileArmed(Path armed, String pattern) {
+        return "if [ -e '" + armed + "' ]; then case \"$*\" in " + pattern + ") echo 'fatal: shim' >&2; exit 128;; esac; fi";
+    }
+
+    /// [#leaderService] over a shimmed git (see [#shimmedService]).
+    private KvBackupService shimmedLeaderService(Option<String> remote, Map<String, String> environment) {
+        var service = shimmedService(remote, environment);
+
+        incarnation(1);
+        service.onLeaderChange(leaderChange(true));
+        scheduler.advance(TIMING.quietMillis());
+
+        return service;
+    }
+
+    private String localHeadId() {
+        return git(temp.resolve("local"), "rev-parse", "HEAD").strip();
+    }
+
     // --- helpers ---
 
     private KvBackupService leaderService(Option<String> remote) {
@@ -1638,8 +1686,12 @@ class KvBackupServiceTest {
 
     /// A service whose git runs with `environment` (a shimmed `git` on the PATH).
     private KvBackupService shimmedService(String remote, Map<String, String> environment) {
+        return shimmedService(Option.some(remote), environment);
+    }
+
+    private KvBackupService shimmedService(Option<String> remote, Map<String, String> environment) {
         var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"),
-                                                                 Option.some(remote),
+                                                                 remote,
                                                                  "backup",
                                                                  TimeSpan.timeSpan(30).seconds(),
                                                                  environment);
