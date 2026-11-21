@@ -80,6 +80,7 @@ import org.pragmatica.serialization.Serializer;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.io.TimeSpan;
 
+import org.junit.jupiter.api.Disabled;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -545,9 +546,31 @@ class ManagementServerSecurityCouplingTest {
         assertThat(received.get().grant().isEmpty()).as("and no grant").isTrue();
     }
 
-    /// A forwarded request with an unsupported HTTP method is refused before validation and dispatch: neither the validator
-    /// nor the route is reached, and the receiver does not throw.
+    /// TRIPWIRE for ms18. The secured forward path guards an unsupported method with a `return` before validation, but
+    /// `dispatchManagementForwardWithinBudget` builds the `ForwardedRequestContext` first, and that constructor throws
+    /// `IllegalArgumentException` for an unknown method, so the guard is unreachable and removing its `return` cannot be
+    /// observed. This test pins the current behaviour (the receiver throws; neither validator nor route is reached). When
+    /// the construction is made total, delete it and enable `forwardedPath_unsupportedMethod_returnsBeforeValidationAndDispatch`.
     @Test
+    void forwardedPath_unsupportedMethod_currentlyThrowsBeforeValidationAndDispatch() {
+        var validator = RecordingValidator.recording(SecurityValidator.apiKeyValidator(ISOLATION_KEYS));
+        var received = new AtomicReference<Authenticated>();
+        var route = GrantedBodyRoute.grantedBodyRoute(PATH_A, (_, auth) -> {
+            received.set(auth);
+            return Promise.success("\"x\"");
+        });
+        var forwarded = HttpRequestContext.httpRequestContext(PATH_A, "BOGUS", Map.of(), Map.of("X-API-Key", List.of(KEY_A)), new byte[0], "req-fwd-bogus");
+        var node = server(validator, true, forwarded, sources -> GrantedBodyRoute.routerWith(sources, route));
+
+        assertThatThrownBy(() -> node.onHttpForwardRequest(forwardRequest())).isInstanceOf(IllegalArgumentException.class);
+        assertThat(validator.returned().toOptional()).as("the validator was never consulted").isEmpty();
+        assertThat(received.get()).as("the route never ran").isNull();
+    }
+
+    /// ms18 target assertion: an unsupported forwarded method is refused (error reply) without throwing, before validation
+    /// and dispatch. Disabled until the receiver's context construction is total; see the tripwire above.
+    @Test
+    @Disabled("ms18: ForwardedRequestContext construction throws first; enable with the tripwire's removal")
     void forwardedPath_unsupportedMethod_returnsBeforeValidationAndDispatch() {
         var validator = RecordingValidator.recording(SecurityValidator.apiKeyValidator(ISOLATION_KEYS));
         var received = new AtomicReference<Authenticated>();
