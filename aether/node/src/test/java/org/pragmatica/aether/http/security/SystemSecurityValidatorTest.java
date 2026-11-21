@@ -22,10 +22,11 @@ class SystemSecurityValidatorTest {
     @Test
     void validate_returnsSystemContext_forNoOpValidator() {
         var validator = SecurityValidator.permitAllValidator();
-        var request = org.pragmatica.aether.http.handler.HttpRequestContext.httpRequestContext("/", "GET", Map.of(), Map.of(), "test");
+        var request = HttpRequestContext.httpRequestContext("/", "GET", Map.of(), Map.of(), "test");
 
         validator.validate(request, SecurityPolicy.apiKeyRequired())
                  .onFailureRun(() -> fail("Expected success"))
+                 .map(Authenticated::context)
                  .onSuccess(context -> {
                      assertThat(context.isAuthenticated()).isTrue();
                      assertThat(context.principal().isService()).isTrue();
@@ -35,4 +36,26 @@ class SystemSecurityValidatorTest {
                  });
     }
 
+    /// The ADMIN role permitAll hands out matched no credential, so it mints no grant. Mutation: minting from the
+    /// system context turns this red. The control beside it shows a real ADMIN credential does mint on this classpath,
+    /// so "none" here is the validator's answer and not a mint that cannot happen.
+    @Test
+    void permitAll_mintsNoGrant_althoughItHandsOutAdmin() {
+        var request = HttpRequestContext.httpRequestContext("/", "GET", Map.of(), Map.of(), "test-3303");
+
+        SecurityValidator.permitAllValidator()
+                         .validate(request, SecurityPolicy.apiKeyRequired())
+                         .onFailureRun(() -> fail("Expected success"))
+                         .onSuccess(authenticated -> assertThat(authenticated.grant().isEmpty()).as("permitAll minted a grant")
+                                                                                                 .isTrue());
+    }
+
+    @Test
+    void control_aRealAdminCredentialMintsALiveGrant() {
+        var minted = new boolean[1];
+
+        TestAdminGrants.withAdminGrant(grant -> minted[0] = grant.live());
+
+        assertThat(minted[0]).as("the ADMIN test credential minted a live grant").isTrue();
+    }
 }
