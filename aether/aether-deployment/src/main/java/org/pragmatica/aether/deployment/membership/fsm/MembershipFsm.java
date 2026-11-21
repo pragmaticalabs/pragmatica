@@ -21,6 +21,7 @@ import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DownHysteresisMet;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DrainRequested;
@@ -1304,9 +1305,7 @@ public final class MembershipFsm {
     /// further notice arrives) and the report's clearing carries a further bump only when the member's incarnation moves.
     @Contract
     private void reofferIfRefusedForQuorumLoss(MemberTracking tracking, long incarnation) {
-        if (tracking.armRejoinReoffer(incarnation)) {
-            tracking.scheduleRejoinReoffer(() -> reofferRefusedRejoin(tracking), REJOIN_REOFFER);
-        }
+        tracking.armRejoinReoffer(incarnation, () -> reofferRefusedRejoin(tracking));
     }
 
     @Contract
@@ -1604,6 +1603,18 @@ public final class MembershipFsm {
                       .stream()
                       .mapToInt(MemberTracking::pendingTimers)
                       .sum();
+    }
+
+    /// Futures of the timers currently held across all tracked members (#3557 test seam, package-private). A test
+    /// captures them before [`#close`] and reads `isCancelled()` after it: close clears the handles that
+    /// [`#pendingTimerCount`] reads, so the count alone cannot tell a cancelled future from one whose handle was only
+    /// dropped. Read-only snapshot, no hot-path cost.
+    List<ScheduledFuture<?>> heldTimerFutures() {
+        return members.values()
+                      .stream()
+                      .flatMap(tracking -> tracking.heldTimerFutures()
+                                                   .stream())
+                      .toList();
     }
 
     /// Runs, now, what an already-dequeued timer task would run (#3557 test seam, package-private): `cancel(false)` cannot stop
@@ -2153,19 +2164,24 @@ public final class MembershipFsm {
 
         /// #3028 S3: records `incarnation` as a rejoin refused for quorum loss when this member is DEAD, `incarnation`
         /// exceeds the incarnation it died at. The report is not re-read here: the DEAD refusal of a newer incarnation is for quorum loss
-        /// alone, and a second read could see the report cleared and leave the refusal permanent (v3107a F1). True when the caller must schedule the
-        /// re-offer (none is pending yet), so at most one re-offer timer exists per member.
-        synchronized boolean armRejoinReoffer(long incarnation) {
+        /// alone, and a second read could see the report cleared and leave the refusal permanent (v3107a F1). Schedules
+        /// `reoffer` after [`MembershipFsm#REJOIN_REOFFER`] when none is pending yet, so at most one re-offer timer exists
+        /// per member, and retains its handle so [`#retire`] can cancel it.
+        ///
+        /// #3557: the retired check and the handle store are one monitor section. [`#retire`] raises the flag before its
+        /// cancel takes this monitor, so a re-offer is either refused here or stored before that cancel runs; no
+        /// interleaving leaves a re-offer scheduled on a retired tracking.
+        @Contract
+        synchronized void armRejoinReoffer(long incarnation, Runnable reoffer) {
             if (retired || !(fsm.current() instanceof MembershipState.Dead dead) || incarnation <= dead.terminalIncarnation()) {
-                return false;
+                return;
             }
 
             refusedRejoin = Math.max(refusedRejoin, incarnation);
-            var schedule = !rejoinReofferPending;
-
-            rejoinReofferPending = true;
-
-            return schedule;
+            if (!rejoinReofferPending) {
+                rejoinReofferPending = true;
+                rejoinReofferHandle = Option.some(SharedScheduler.schedule(reoffer, REJOIN_REOFFER));
+            }
         }
 
         /// #3028 S3: the pending re-offer fires. Returns the refused incarnation to re-feed, or empty when the member
@@ -2179,25 +2195,20 @@ public final class MembershipFsm {
                    : Option.none();
         }
 
-        /// #3557: schedule the pending rejoin re-offer and retain its handle so [`#retire`] can cancel it. A retired
-        /// tracking schedules nothing.
-        @Contract
-        synchronized void scheduleRejoinReoffer(Runnable reoffer, TimeSpan delay) {
-            if (!retired) {
-                rejoinReofferHandle = Option.some(SharedScheduler.schedule(reoffer, delay));
-            }
-        }
-
-        /// Armed timers of this member (#3557): the handles whose future has neither fired nor been cancelled.
+        /// Armed timers of this member (#3557): the held handles whose future has neither fired nor been cancelled.
         synchronized int pendingTimers() {
-            return armed(evictionBackstopHandle) + armed(departureTimeoutHandle) + armed(joinGraceHandle) + armed(rejoinReofferHandle);
+            return (int) heldTimerFutures().stream()
+                                         .filter(future -> !future.isDone())
+                                         .count();
         }
 
-        private static int armed(Option<ScheduledFuture<?>> handle) {
-            return handle.filter(future -> !future.isDone())
-                         .isPresent()
-                   ? 1
-                   : 0;
+        /// Futures of this member's held timer handles (#3557): the eviction backstop, the DEPARTING timeout, the join
+        /// grace and the rejoin re-offer, whichever is held. The one enumeration of the handles, so [`#pendingTimers`]
+        /// and [`MembershipFsm#heldTimerFutures`] cannot disagree about which timers exist.
+        synchronized List<ScheduledFuture<?>> heldTimerFutures() {
+            return Stream.of(evictionBackstopHandle, departureTimeoutHandle, joinGraceHandle, rejoinReofferHandle)
+                         .flatMap(Option::stream)
+                         .toList();
         }
 
         /// What the three handle-held timer tasks run when they fire (#3557 test seam, see [`MembershipFsm#runDequeuedTimerTasks`]).

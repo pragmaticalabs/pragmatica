@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.membership.fsm;
 import java.time.Duration;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -16,16 +17,24 @@ import org.pragmatica.statemachine.FsmObserver;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.pragmatica.testing.PollUntil.pollUntil;
 
 /// #3557 — [`MembershipFsm#close`] cancels every per-member timer (the join grace, the eviction backstop, the DEPARTING
 /// timeout and the rejoin re-offer) and turns a task the scheduler already handed to a thread into a no-op.
 ///
 /// Two defences, each pinned by its own group of tests, so that dropping either goes red in its own group:
-/// - the cancel: `*_cancelsThe*` read [`MembershipFsm#pendingTimerCount`] before and after the close; dropping the
-///   cancels in `MemberTracking#retire` leaves the count above zero;
+/// - the cancel: `*_cancelsThe*` capture the held future ([`MembershipFsm#heldTimerFutures`]) before the close and
+///   assert it `isCancelled()` after it; dropping a cancel call in `MemberTracking#retire`, or only the
+///   `future.cancel(false)` inside it while the handle is still cleared, leaves that future uncancelled. The count
+///   ([`MembershipFsm#pendingTimerCount`]) alone cannot see the second: it reads the handle, which the cancel clears;
 /// - the closed flag each task reads first: `*_dequeuedTaskIsANoOp` close, then run the tasks the way a thread that
 ///   had already dequeued them would ([`MembershipFsm#runDequeuedTimerTasks`]), because `cancel(false)` cannot stop
 ///   such a task; dropping the flag lets the task act on the closed FSM.
+///
+/// The arm-time `retired` checks are a second line behind the guard of the route that reaches each arm: the dispatch
+/// guard for the DEPARTING timeout, the transition guard for the eviction backstop, the reaper's own flag for the
+/// join-grace re-arm. `*AfterClose_arms*` drive each route after the close and read the count, so dropping a route guard
+/// together with its arm-time check goes red there.
 ///
 /// `joinGraceDeferralLoop_stopsAtClose` replays the leak itself: a member that is OBSERVED with a live transport link is
 /// deferred and re-armed every window. The reaper's eligibility predicate is the first thing every firing reads, one
@@ -37,6 +46,7 @@ class MembershipFsmCloseTest {
     private static final TimeSpan LONG_WINDOW = TimeSpan.timeSpan(30).seconds();
     private static final long NO_HINT_DECAY = Long.MAX_VALUE;
     private static final Duration TWO_WINDOWS_AND_MORE = Duration.ofMillis(300);
+    private static final Duration DEAD_DEADLINE = Duration.ofSeconds(10);
 
     private final Set<NodeId> reporting = ConcurrentHashMap.newKeySet();
 
@@ -71,9 +81,7 @@ class MembershipFsmCloseTest {
 
         assertThat(fsm.pendingTimerCount()).as("the join grace is armed on first observation").isEqualTo(1);
 
-        fsm.close();
-
-        assertThat(fsm.pendingTimerCount()).isZero();
+        closeCancelsTheOneHeldTimer(fsm);
     }
 
     @Test
@@ -98,9 +106,7 @@ class MembershipFsmCloseTest {
 
         assertThat(fsm.pendingTimerCount()).as("the backstop is armed").isEqualTo(1);
 
-        fsm.close();
-
-        assertThat(fsm.pendingTimerCount()).isZero();
+        closeCancelsTheOneHeldTimer(fsm);
     }
 
     @Test
@@ -122,9 +128,7 @@ class MembershipFsmCloseTest {
 
         assertThat(fsm.pendingTimerCount()).as("the DEPARTING timeout is armed").isEqualTo(1);
 
-        fsm.close();
-
-        assertThat(fsm.pendingTimerCount()).isZero();
+        closeCancelsTheOneHeldTimer(fsm);
     }
 
     @Test
@@ -146,9 +150,7 @@ class MembershipFsmCloseTest {
 
         assertThat(fsm.pendingTimerCount()).as("the re-offer is scheduled").isEqualTo(1);
 
-        fsm.close();
-
-        assertThat(fsm.pendingTimerCount()).isZero();
+        closeCancelsTheOneHeldTimer(fsm);
     }
 
     @Test
@@ -177,6 +179,46 @@ class MembershipFsmCloseTest {
     }
 
     @Test
+    void departureAfterClose_armsNoDepartureTimeout() {
+        var fsm = fsm(LONG_WINDOW, LONG_WINDOW, LONG_WINDOW);
+
+        fsm.onSwimHealthy(MEMBER, 1L);
+        fsm.onSwimSuspect(MEMBER, 1L);
+        assertThat(fsm.memberStates()).containsEntry(MEMBER, "Suspect");
+        fsm.close();
+        fsm.onDownHysteresisMet(MEMBER);
+
+        assertThat(fsm.pendingTimerCount()).as("the dispatch guard, then the arm-time check, keep the timeout unarmed")
+                                           .isZero();
+    }
+
+    @Test
+    void livenessGoneAfterClose_armsNoEvictionBackstop() {
+        var fsm = fsm(LONG_WINDOW, LONG_WINDOW, LONG_WINDOW);
+
+        fsm.onSwimHealthy(MEMBER, 1L);
+        fsm.onSwimFaulty(MEMBER, 1L);
+        assertThat(fsm.pendingTimerCount()).as("SWIM-FAULTY alone is not co-confirmation").isZero();
+        fsm.close();
+        fsm.onLivenessGone(MEMBER);
+
+        assertThat(fsm.pendingTimerCount()).as("the transition guard, then the arm-time check, keep the backstop unarmed")
+                                           .isZero();
+    }
+
+    @Test
+    void deferredJoinGraceAfterClose_armsNoReaper() {
+        var fsm = fsm(LONG_WINDOW, LONG_WINDOW, LONG_WINDOW);
+
+        fsm.onPeerConnected(MEMBER);
+        fsm.close();
+        fsm.runDequeuedTimerTasks();
+
+        assertThat(fsm.pendingTimerCount()).as("a reaper deferred on a live link re-arms; the flag, then the arm-time check, stop it")
+                                           .isZero();
+    }
+
+    @Test
     void close_isIdempotent() {
         var fsm = fsm(LONG_WINDOW, LONG_WINDOW, LONG_WINDOW);
 
@@ -188,6 +230,20 @@ class MembershipFsmCloseTest {
     }
 
     // --- arrangements ---
+
+    /// Captures the one held timer future, closes, and asserts the future itself is cancelled (not only its handle
+    /// cleared) and that nothing is counted as armed afterwards.
+    private static void closeCancelsTheOneHeldTimer(MembershipFsm fsm) {
+        var held = fsm.heldTimerFutures();
+
+        assertThat(held).as("exactly one timer future is held").hasSize(1);
+
+        fsm.close();
+
+        assertThat(held).as("close cancels the future, not only the handle that holds it")
+                        .allMatch(Future::isCancelled);
+        assertThat(fsm.pendingTimerCount()).isZero();
+    }
 
     private MembershipFsm coConfirmedDeadSuspect() {
         var fsm = fsm(LONG_WINDOW, LONG_WINDOW, LONG_WINDOW);
@@ -218,8 +274,10 @@ class MembershipFsmCloseTest {
 
         reporting.add(MEMBER);
         fsm.onSwimHealthy(MEMBER, 2L);
-        await().atMost(2, TimeUnit.SECONDS)
-               .untilAsserted(() -> assertThat(fsm.memberStates()).containsEntry(MEMBER, "Dead"));
+        pollUntil(() -> fsm.memberStates()
+                           .get(MEMBER),
+                  "Dead"::equals,
+                  DEAD_DEADLINE).assertMet("the DEPARTING timeout terminalizes the refusing member to Dead");
         fsm.onSwimHealthy(MEMBER, 3L);
 
         return fsm;
