@@ -522,7 +522,6 @@ On activation failure, cleanup reverses all registrations and publications, then
 | `ScheduledTaskKey` | NDM | Published scheduled tasks |
 | `NodeRoutesKey` | NDM | Published HTTP routes per node |
 | `ActivationDirectiveKey` | CDM | Node role assignment (core/worker) |
-| `WorkerSliceDirectiveKey` | CDM | Worker placement directives |
 | `VersionRoutingKey` | Rolling update manager | Active rolling update marker |
 | `GovernorAnnouncementKey` | Community governors | Community membership announcements |
 
