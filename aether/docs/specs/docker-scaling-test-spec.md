@@ -16,7 +16,7 @@ This specification defines an end-to-end integration test that validates Aether'
 |----|------|--------------------|
 | G-1 | Automatic role assignment | Nodes beyond `coreMax=5` receive `ActivationDirectiveValue("WORKER")` |
 | G-2 | Worker community formation | Workers join SWIM community, governor elected (lowest alive NodeId) |
-| G-3 | Slice deployment to workers | `WorkerSliceDirectiveValue` entries appear; workers reach ACTIVE state |
+| G-3 | Slice deployment to workers | `ActivationDirectiveValue` entries appear; workers reach ACTIVE state |
 | G-4 | Load served by both tiers | k6 confirms responses from both core and worker node IPs |
 | G-5 | Consensus isolation | Rabia quorum stays at 5; consensus latency flat as workers are added |
 | G-6 | Community splitting | At `maxGroupSize` threshold, community splits into subgroups |
@@ -40,7 +40,7 @@ This specification defines an end-to-end integration test that validates Aether'
                      +------------------+-----------------------+
                                         |
                          Decision stream | ActivationDirective
-                         (WorkerMetadata*)  | WorkerSliceDirective
+                         (WorkerMetadata*)  | ActivationDirective
                                         |
                      +------------------v-----------------------+
                      |      Worker Layer (SWIM Gossip)           |
@@ -125,7 +125,7 @@ core_max = 5
 
 #### P-3: Worker Node Serving Application HTTP Traffic [INVESTIGATE]
 
-**Current state:** Workers receive slice deployments via `WorkerSliceDirectiveValue`. Workers run slices and register `NodeArtifactValue` and `NodeRoutesValue` entries in KV-Store.
+**Current state:** Workers receive slice deployments via `ActivationDirectiveValue`. Workers run slices and register `NodeArtifactValue` and `NodeRoutesValue` entries in KV-Store.
 
 **[TBD]:** How does HTTP traffic reach workers? Options:
 1. Workers run their own HTTP server on `appHttp` port and register in the load balancer
@@ -1016,7 +1016,7 @@ echo "Results: ${PASS} passed, ${FAIL} failed"
 ### Source Code
 - `integrations/consensus/src/main/java/org/pragmatica/consensus/topology/TopologyConfig.java` -- `coreMax`, `coreMin` fields
 - `aether/aether-deployment/src/main/java/.../ClusterDeploymentManager.java` -- Role assignment logic (lines 592-608)
-- `aether/slice/src/main/java/.../AetherValue.java` -- `ActivationDirectiveValue`, `GovernorAnnouncementValue`, `WorkerSliceDirectiveValue`
+- `aether/slice/src/main/java/.../AetherValue.java` -- `ActivationDirectiveValue`, `GovernorAnnouncementValue`
 - `aether/slice/src/main/java/.../AetherKey.java` -- `ActivationDirectiveKey`, `GovernorAnnouncementKey`
 - `aether/worker/src/main/java/.../group/GroupAssignment.java` -- Deterministic group computation with splitting
 - `aether/worker/src/main/java/.../WorkerNode.java` -- Worker lifecycle, SWIM integration

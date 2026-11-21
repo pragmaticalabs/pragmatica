@@ -22,7 +22,7 @@ import org.pragmatica.lang.Option;
 
 /// Community placement-query seam extracted (move-only) from {@link Active}. Owns the
 /// community-governor KV queries ({@code activeCommunityIds}/{@code communityGovernor}/
-/// {@code buildCommunityWorkerMap}). The worker-slice-directive distribution that used to live here
+/// {@code buildCommunityWorkerMap}). The per-community slice-directive distribution that used to live here
 /// lost its only caller in #1390 and was deleted (#1535).
 record CommunityPlacementPlanner(Active active) {
     /// The authoritative DESIRED community set (worker-membership-spec D1 / §3.3): the committed,

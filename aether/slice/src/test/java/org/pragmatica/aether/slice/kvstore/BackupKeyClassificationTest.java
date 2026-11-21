@@ -31,7 +31,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.BackupFixtures.Fixture;
 import org.pragmatica.consensus.NodeId;
 
@@ -118,7 +117,6 @@ class BackupKeyClassificationTest {
                            ScheduledTaskStateKey.class,
                            StreamRegistryKey.class,
                            ScheduledTaskKey.class,
-                           WorkerSliceDirectiveKey.class,
                            GossipKeyRotationKey.class)).allMatch(RuntimeKey.class::isAssignableFrom);
         assertThat(List.of(DeploymentKey.class, ScheduledTaskPauseKey.class, EntityCheckpointKey.class)).allMatch(ClusterStateKey.class::isAssignableFrom);
     }
