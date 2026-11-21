@@ -121,57 +121,65 @@ public final class PollUntil {
                                    Duration interval,
                                    LongSupplier clock,
                                    LongConsumer pause) {
-        if (interval.isZero() || interval.isNegative()) {
-            throw new IllegalArgumentException("poll interval must be positive, was " + interval);
-        }
+        requirePositive(interval);
 
         var start = clock.getAsLong();
         var limit = deadline.toNanos();
-        var progress = new Progress<T>();
+        var progress = Progress.<T>start();
+        var remaining = limit;
 
-        try {
-            var remaining = limit;
+        while (true) {
+            var polled = poll(supplier, Math.max(remaining, POLL_GRACE.toNanos()));
 
-            while (true) {
-                progress.record(poll(supplier, Math.max(remaining, POLL_GRACE.toNanos())));
-                if (predicate.test(progress.current)) {
-                    progress.met = true;
-                    break;
-                }
-                remaining = limit - (clock.getAsLong() - start);
-                if (remaining <= 0) {
-                    break;
-                }
-                pause.accept(Math.min(interval.toNanos(), remaining));
-                remaining = limit - (clock.getAsLong() - start);
+            if (polled.failure() != null) {
+                return fail(progress.report(elapsed(clock, start), deadline), polled.failure());
             }
-        } catch (Abort abort) {
-            throw new AssertionError(progress.report(Duration.ofNanos(clock.getAsLong() - start), deadline)
-                                             .describe(abort.getMessage()));
+            progress = progress.observed(polled.value(), predicate);
+            remaining = limit - (clock.getAsLong() - start);
+            if (progress.met() || remaining <= 0) {
+                return progress.report(elapsed(clock, start), deadline);
+            }
+            pause.accept(Math.min(interval.toNanos(), remaining));
+            remaining = limit - (clock.getAsLong() - start);
         }
-
-        return progress.report(Duration.ofNanos(clock.getAsLong() - start), deadline);
     }
 
-    private static <T> T poll(Supplier<T> supplier, long budgetNanos) {
+    private static Duration elapsed(LongSupplier clock, long start) {
+        return Duration.ofNanos(clock.getAsLong() - start);
+    }
+
+    /// One supplier call: its value, or the reason the wait cannot go on.
+    private record Polled<T>(T value, String failure) {
+        static <T> Polled<T> value(T value) {
+            return new Polled<>(value, null);
+        }
+
+        static <T> Polled<T> failed(String why) {
+            return new Polled<>(null, why);
+        }
+    }
+
+    private static <T> Polled<T> poll(Supplier<T> supplier, long budgetNanos) {
         var task = new FutureTask<>(supplier::get);
 
         Thread.ofVirtual().start(task);
         try {
-            return task.get(budgetNanos, TimeUnit.NANOSECONDS);
+            return Polled.value(task.get(budgetNanos, TimeUnit.NANOSECONDS));
         } catch (TimeoutException e) {
             task.cancel(true);
-            throw new Abort("supplier blocked past the deadline");
+            return Polled.failed("supplier blocked past the deadline");
         } catch (InterruptedException e) {
             task.cancel(true);
             Thread.currentThread().interrupt();
-            throw new Abort("interrupted while waiting");
+            return Polled.failed("interrupted while waiting");
         } catch (ExecutionException e) {
-            throw rethrow(e.getCause());
+            return propagate(e.getCause());
         }
     }
 
-    private static RuntimeException rethrow(Throwable cause) {
+    /// The supplier's own exception, rethrown as it was thrown (a checked one wrapped): see the contract on the injectable overload.
+    @Contract
+    private static <T> Polled<T> propagate(Throwable cause) {
         if (cause instanceof RuntimeException runtime) {
             throw runtime;
         }
@@ -181,26 +189,27 @@ public final class PollUntil {
         throw new IllegalStateException(cause);
     }
 
-    /// Internal signal that the wait cannot go on; turned into the failing report at the one place that knows the state.
-    private static final class Abort extends RuntimeException {
-        Abort(String why) {
-            super(why, null, false, false);
+    @Contract
+    private static void requirePositive(Duration interval) {
+        if (interval.isZero() || interval.isNegative()) {
+            throw new IllegalArgumentException("poll interval must be positive, was " + interval);
         }
     }
 
-    /// What the loop has seen so far.
-    private static final class Progress<T> {
-        private T first;
-        private T current;
-        private int polls;
-        private boolean met;
+    /// A failed wait is an assertion failure carrying the report, like [Report#assertMet].
+    @Contract
+    private static <T> Report<T> fail(Report<T> report, String why) {
+        throw new AssertionError(report.describe(why));
+    }
 
-        void record(T value) {
-            if (polls == 0) {
-                first = value;
-            }
-            current = value;
-            polls++;
+    /// What the loop has seen so far; each observation yields a new value.
+    private record Progress<T>(T first, T current, int polls, boolean met) {
+        static <T> Progress<T> start() {
+            return new Progress<>(null, null, 0, false);
+        }
+
+        Progress<T> observed(T value, Predicate<T> predicate) {
+            return new Progress<>(polls == 0 ? value : first, value, polls + 1, predicate.test(value));
         }
 
         Report<T> report(Duration elapsed, Duration deadline) {
