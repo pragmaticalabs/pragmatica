@@ -1760,6 +1760,19 @@ class KvBackupServiceTest {
                                .rejectedAt()).isEqualTo(Option.some(tracked));
         }
 
+        /// A remote that had no backup branch when it was read leaves no tracking ref; a rejection against it is recorded at the stand-in identity
+        /// `no remote head`, which is a value of its own (neither blank nor a commit id), so that two such rejections compare equal.
+        @Test
+        void aRejectedPush_toARemoteWithNoTrackingRef_isRecordedAtTheNoRemoteHeadStandIn() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            writeFile(Path.of(remote).resolve("refs/heads/backup.lock"), "");
+            var service = leaderService(Option.some(remote));
+
+            assertThat(pushNotLanded(service, GitBackupRepository.BackupRepositoryError.PushRejected.FACTORY.apply("not a fast-forward"))
+                               .rejectedAt()).isEqualTo(Option.some("no remote head"));
+        }
+
         /// A plain push failure (the remote is down, a hook refuses) is not a rejection: no remote head is named, so the stop path does not read
         /// it as a lost race and does not decide again.
         @Test
