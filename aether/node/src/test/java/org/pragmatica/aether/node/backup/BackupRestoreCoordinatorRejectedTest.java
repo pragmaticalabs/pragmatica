@@ -23,7 +23,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 
-import org.apache.logging.log4j.Level;
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.node.backup.BackupRestoreCoordinator.FailureAction;
@@ -59,15 +58,17 @@ import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.testlogging.LogCapture;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.node.backup.GitFixtures.bareRemote;
 import static org.pragmatica.aether.node.backup.GitFixtures.git;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #3303 RA-5a: the `onFailure()` table, the refusal kind a rejected restore transaction keeps, the WARN_STOP arm (pre-check
 /// re-run, then row 6 / row 9 through [BackupRestoreCoordinator#submitRejected]) and its once-per-tenure latch. The applier is
@@ -78,7 +79,9 @@ class BackupRestoreCoordinatorRejectedTest {
     private static final String ABSENT_COMMIT = "1111111111111111111111111111111111111111";
     private static final SliceCodec NODE_CODEC = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
     private static final BackupEntryCodec CODEC = BackupEntryCodec.backupEntryCodec(NODE_CODEC);
+
     private static final KvBackupService.Timing TIMING = KvBackupService.Timing.timing(500, 5_000, 1_000, 8_000, 3_000);
+
     private static final ConfigKey ALPHA_KEY = ConfigKey.forKey("alpha");
     private static final ConfigKey BETA_KEY = ConfigKey.forKey("beta");
     private static final ConfigValue ALPHA = ConfigValue.configValue("alpha", "1");
@@ -101,8 +104,10 @@ class BackupRestoreCoordinatorRejectedTest {
     /// The refusal a chunk transaction meets (once, or every time); none: chunks apply.
     private Option<Refusal> chunkRefusal = Option.none();
     private boolean refuseChunkOnce;
+
     /// Runs when a chunk is refused, before the refusal is returned (a cross-key arm moving).
     private Runnable onChunkRefused = () -> {};
+
     /// Refuses the next rejection write with a LEADER refusal (the leader is lost before it lands).
     private boolean refuseNextRejection;
     /// Keys the test pre-check withholds (the applied state's arms, as the pre-check reads them).
@@ -120,17 +125,16 @@ class BackupRestoreCoordinatorRejectedTest {
     @Test
     void onFailure_everyBlockedStep_isRetried() {
         for (var step : Step.values()) {
-            assertThat(RestoreError.Blocked.blocked(step, Causes.cause("x"))
-                                           .onFailure()).as("%s", step)
-                                                        .isEqualTo(FailureAction.RETRY);
+            assertThat(RestoreError.Blocked.blocked(step,
+                                                    Causes.cause("x")).onFailure()).as("%s", step)
+                      .isEqualTo(FailureAction.RETRY);
         }
     }
 
     @Test
     void onFailure_everyGeneral_isRetried() {
         for (var general : RestoreError.General.values()) {
-            assertThat(general.onFailure()).as("%s", general)
-                                           .isEqualTo(FailureAction.RETRY);
+            assertThat(general.onFailure()).as("%s", general).isEqualTo(FailureAction.RETRY);
         }
     }
 
@@ -147,8 +151,7 @@ class BackupRestoreCoordinatorRejectedTest {
 
     @Test
     void onFailure_refusedWithoutKind_isRetried() {
-        assertThat(RestoreError.Refused.refused("t", Option.none(), Option.none())
-                                       .onFailure()).isEqualTo(FailureAction.RETRY);
+        assertThat(RestoreError.Refused.refused("t", Option.none(), Option.none()).onFailure()).isEqualTo(FailureAction.RETRY);
     }
 
     // --- FIRST RED TEST ---
@@ -162,14 +165,14 @@ class BackupRestoreCoordinatorRejectedTest {
             coordinator.activate();
             settleUntil(() -> codes().contains(Code.BACKUP_RESTORE_REJECTED));
             settleBriefly();
-
             assertThat(retries).as("no retry scheduled").isEmpty();
             assertThat(coordinator.isComplete()).isFalse();
-            assertThat(capture.messages(Level.DEBUG)).as("DEBUG nothing").noneMatch(message -> message.contains("transient failure"));
+            assertThat(capture.messages(Level.DEBUG)).as("DEBUG nothing")
+                      .noneMatch(message -> message.contains("transient failure"));
             assertThat(rejectedWarning().detail()).contains(FIXED_BUILD)
-                                                  .contains("ARM")
-                                                  .contains(ALPHA_KEY.asString())
-                                                  .doesNotContain("fresh");
+                      .contains("ARM")
+                      .contains(ALPHA_KEY.asString())
+                      .doesNotContain("fresh");
             assertThat(marker().rejection()).as("row 6: (c) -> (c,k)").isEqualTo(Option.some(ALPHA_KEY.asString()));
             assertThat(marker().outcome()).isEqualTo(BackupRestoreOutcome.IN_PROGRESS);
         }
@@ -183,7 +186,6 @@ class BackupRestoreCoordinatorRejectedTest {
 
         coordinator.activate();
         settleUntil(() -> !retries.isEmpty());
-
         assertThat(retries).hasSize(1);
         assertThat(codes()).doesNotContain(Code.BACKUP_RESTORE_REJECTED);
         assertThat(rejectionWrites()).isEmpty();
@@ -248,9 +250,7 @@ class BackupRestoreCoordinatorRejectedTest {
         second.activate();
         settleUntil(() -> codes().contains(Code.BACKUP_RESTORE_REJECTED));
         settleBriefly();
-
-        assertThat(codes()).contains(Code.BACKUP_RESTORE_REJECTED)
-                           .doesNotContain(Code.BACKUP_RESTORE_UNBLOCKED);
+        assertThat(codes()).contains(Code.BACKUP_RESTORE_REJECTED).doesNotContain(Code.BACKUP_RESTORE_UNBLOCKED);
         assertThat(rejectionWrites()).as("k == k writes nothing").hasSize(writesBefore);
         assertThat(second.isComplete()).isFalse();
         assertThat(retries).isEmpty();
@@ -266,13 +266,12 @@ class BackupRestoreCoordinatorRejectedTest {
         retries.clear();
         warnings.clear();
         coordinator.onFailure(new RecordedForTest(), FailureAction.WARN_RETRY);
-
         assertThat(retries).hasSize(1);
         assertThat(warnings).singleElement()
-                            .satisfies(warning -> {
-                                assertThat(warning.code()).isEqualTo(Code.BACKUP_RESTORE_REJECTED);
-                                assertThat(warning.detail()).isEqualTo(new RecordedForTest().message());
-                            });
+                  .satisfies(warning -> {
+                                 assertThat(warning.code()).isEqualTo(Code.BACKUP_RESTORE_REJECTED);
+                                 assertThat(warning.detail()).isEqualTo(new RecordedForTest().message());
+                             });
     }
 
     // --- submitRejected: once per tenure, rows 6 and 9 ---
@@ -283,7 +282,6 @@ class BackupRestoreCoordinatorRejectedTest {
 
         coordinator.submitRejected(refusal(RefusalKind.ARM, ALPHA_KEY)).await();
         coordinator.submitRejected(refusal(RefusalKind.ARM, ALPHA_KEY)).await();
-
         assertThat(rejectionWrites()).hasSize(1);
         assertThat(marker().rejection()).isEqualTo(Option.some(ALPHA_KEY.asString()));
     }
@@ -294,12 +292,10 @@ class BackupRestoreCoordinatorRejectedTest {
         var coordinator = markedCoordinator();
 
         refuseNextRejection = true;
-        assertThat(coordinator.submitRejected(refusal(RefusalKind.ARM, ALPHA_KEY)).await()
-                              .isFailure()).isTrue();
+        assertThat(coordinator.submitRejected(refusal(RefusalKind.ARM, ALPHA_KEY)).await().isFailure()).isTrue();
         assertThat(marker().rejection()).isEqualTo(Option.none());
         lead(NODE_1);
         coordinator.submitRejected(refusal(RefusalKind.ARM, ALPHA_KEY)).await();
-
         assertThat(rejectionWrites()).hasSize(2);
         assertThat(marker().rejection()).isEqualTo(Option.some(ALPHA_KEY.asString()));
     }
@@ -315,7 +311,6 @@ class BackupRestoreCoordinatorRejectedTest {
         assertThat(rejectionWrites()).as("k == k").hasSize(1);
         lead(NODE_1);
         coordinator.submitRejected(refusal(RefusalKind.UNIT, BETA_KEY)).await();
-
         assertThat(rejectionWrites()).as("k' once").hasSize(2);
         assertThat(marker().rejection()).isEqualTo(Option.some(BETA_KEY.asString()));
     }
@@ -337,16 +332,16 @@ class BackupRestoreCoordinatorRejectedTest {
 
         leaderWrites(rejected, withRejection(rejected, ALPHA_KEY.asString()));
         var coordinator = coordinator(NODE_1,
-                                      Option.some(BackupRestoreCoordinator.Source.source(service(Option.some(remote)), RestoreMode.AUTO)),
+                                      Option.some(BackupRestoreCoordinator.Source.source(service(Option.some(remote)),
+                                                                                         RestoreMode.AUTO)),
                                       BackupRestoreCoordinator::restorePreCheck);
 
         coordinator.activate();
         settleUntil(() -> codes().contains(Code.BACKUP_RESTORE_BLOCKED));
-
         assertThat(warnings).filteredOn(warning -> warning.code() == Code.BACKUP_RESTORE_BLOCKED)
-                            .singleElement()
-                            .satisfies(warning -> assertThat(warning.detail()).contains(FIXED_BUILD)
-                                                                              .doesNotContain("fresh"));
+                  .singleElement()
+                  .satisfies(warning -> assertThat(warning.detail()).contains(FIXED_BUILD)
+                                                  .doesNotContain("fresh"));
     }
 
     // --- fixtures ---
@@ -372,7 +367,9 @@ class BackupRestoreCoordinatorRejectedTest {
 
     /// A coordinator restoring a backup of alpha and beta, judged by the test pre-check (withholds `armed` keys).
     private BackupRestoreCoordinator restoringCoordinator(NodeId self) {
-        return coordinator(self, Option.some(source()), entry -> !armed.contains(entry.getKey()));
+        return coordinator(self,
+                           Option.some(source()),
+                           entry -> !armed.contains(entry.getKey()));
     }
 
     private BackupRestoreCoordinator.Source source() {
@@ -381,7 +378,9 @@ class BackupRestoreCoordinatorRejectedTest {
         if (!Files.exists(remote)) {
             seedRemote(bareRemote(remote), Map.of(ALPHA_KEY, ALPHA, BETA_KEY, BETA));
         }
-        return BackupRestoreCoordinator.Source.source(service(Option.some(remote.toString())), RestoreMode.AUTO);
+
+        return BackupRestoreCoordinator.Source.source(service(Option.some(remote.toString())),
+                                                      RestoreMode.AUTO);
     }
 
     /// A leading coordinator over a committed (c) marker, with no source (its passes fail NOTHING_TO_RESUME and wait for a retry
@@ -429,15 +428,20 @@ class BackupRestoreCoordinatorRejectedTest {
             if (refuseChunkOnce) {
                 chunkRefusal = Option.none();
             }
+
             onChunkRefused.run();
+
             return Promise.success(List.of(KVCommand.TransactionResult.transactionResult(id, Option.some(refusal))));
         }
+
         if (id.startsWith(REJECTED_PREFIX) && refuseNextRejection) {
             refuseNextRejection = false;
+
             return Promise.success(List.of(KVCommand.TransactionResult.transactionResult(id,
                                                                                          Option.some(Refusal.refusal(RefusalKind.LEADER,
                                                                                                                      Option.none())))));
         }
+
         return RestoreGate.admit(kvStore, commands)
                           .async()
                           .map(_ -> applyDirect(commands));
@@ -451,7 +455,8 @@ class BackupRestoreCoordinatorRejectedTest {
     @SuppressWarnings({"unchecked", "rawtypes"})
     private void lead(NodeId self) {
         kvStore.processCommitted(kvStore.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE,
-                                                                                       LeaderValue.leaderValue(self, view++)))),
+                                                                                        LeaderValue.leaderValue(self,
+                                                                                                                view++)))),
                                  ++slot);
     }
 
@@ -461,9 +466,13 @@ class BackupRestoreCoordinatorRejectedTest {
         for (var step : steps) {
             applyDirect(List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
                                                                                         "test-authority:" + slot,
-                                                                                        kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap(),
+                                                                                        kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                                         LeaderValue.class)
+                                                                                               .unwrap(),
                                                                                         List.of(),
-                                                                                        List.of(new KVCommand.Mutation<>(key, kvStore.get(key), Option.some(step))))));
+                                                                                        List.of(new KVCommand.Mutation<>(key,
+                                                                                                                         kvStore.get(key),
+                                                                                                                         Option.some(step))))));
             assertThat(kvStore.get(key)).as("fixture: the fence admits %s", step).isEqualTo(Option.some(step));
         }
     }
@@ -486,12 +495,14 @@ class BackupRestoreCoordinatorRejectedTest {
     private List<KVCommand<AetherKey>> rejectionWrites() {
         return submitted.stream()
                         .filter(command -> ((KVCommand.LeaderTransaction<?, ?>) command).transactionId()
-                                                                                     .startsWith(REJECTED_PREFIX))
+                                                                                        .startsWith(REJECTED_PREFIX))
                         .toList();
     }
 
     private List<Code> codes() {
-        return warnings.stream().map(BackupWarning::code).toList();
+        return warnings.stream()
+                       .map(BackupWarning::code)
+                       .toList();
     }
 
     private BackupWarning rejectedWarning() {
@@ -528,8 +539,7 @@ class BackupRestoreCoordinatorRejectedTest {
         try {
             Thread.sleep(10);
         } catch (InterruptedException e) {
-            Thread.currentThread()
-                  .interrupt();
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -544,16 +554,20 @@ class BackupRestoreCoordinatorRejectedTest {
         var all = new HashMap<>(entries);
 
         all.put(ClusterIncarnationKey.clusterIncarnationKey(),
-                ClusterIncarnationValue.clusterIncarnationValue(header.lineageId(), header.incarnation(), header.incarnationId()));
+                ClusterIncarnationValue.clusterIncarnationValue(header.lineageId(),
+                                                                header.incarnation(),
+                                                                header.incarnationId()));
         var seeder = temp.resolve("seeder-" + System.nanoTime());
 
         git(temp, "clone", "--quiet", remote, seeder.toString());
         git(seeder, "checkout", "--quiet", "-B", "backup");
         try {
-            Files.writeString(seeder.resolve(GitBackupRepository.FILE), CODEC.encode(header.revision(), all).unwrap());
+            Files.writeString(seeder.resolve(GitBackupRepository.FILE),
+                              CODEC.encode(header.revision(), all).unwrap());
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+
         git(seeder, "add", GitBackupRepository.FILE);
         git(seeder,
             "-c",

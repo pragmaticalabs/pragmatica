@@ -117,8 +117,10 @@ public final class BackupRestoreCoordinator {
     /// The restore pre-check seam: judges each normalised backed-up entry before the chunks are split, and is re-run over a refused
     /// key's entry before a deterministic refusal is recorded. Production: [#restorePreCheck].
     private final Predicate<Map.Entry<AetherKey, AetherValue>> preCheck;
+
     /// The leader tenure the row-6/row-9 rejection write was made under ([#submitRejected]); none until the first.
     private final AtomicReference<Option<LeaderValue>> rejectedTenure = new AtomicReference<>(Option.none());
+
     private final AtomicBoolean leader = new AtomicBoolean(false);
     private final AtomicBoolean done = new AtomicBoolean(false);
     /// What the last announced `backup-restore-blocked` warning said, as the pair its text is a function of; none when not blocked.
@@ -216,17 +218,17 @@ public final class BackupRestoreCoordinator {
                 return new Refused(transactionId,
                                    refusal,
                                    entry,
-                                   "restore transaction " + transactionId + " was not accepted"
-                                  + refusal.map(Refused::describe)
-                                           .or(""));
+                                   "restore transaction " + transactionId
+                                  + " was not accepted" + refusal.map(Refused::describe)
+                                                                 .or(""));
             }
 
             private static String describe(KVCommand.Refusal refusal) {
-                return " (refused by the " + refusal.kind() + " check"
-                       + refusal.key()
-                                .map(key -> " at key " + keyName(key))
-                                .or("")
-                       + ")";
+                return " (refused by the " + refusal.kind()
+                     + " check" + refusal.key()
+                                         .map(key -> " at key " + keyName(key))
+                                         .or("")
+                     + ")";
             }
 
             /// DISTINCT, ARM and UNIT refuse the same mutations on every attempt: warn and stop. LEADER, WITNESS and EXPECTED may
@@ -248,9 +250,12 @@ public final class BackupRestoreCoordinator {
 
         enum General implements RestoreError {
             NO_COMMITTED_LEADER("no committed leader to authorize the restore transaction yet", FailureAction.RETRY),
-            NOT_THE_COMMITTED_LEADER("the committed leader record names another node, or this node no longer leads", FailureAction.RETRY),
-            NOTHING_TO_RESUME("an interrupted restore is recorded, but this leader has no [backup] to resume it from", FailureAction.RETRY),
-            BACKUP_VANISHED("an interrupted restore is recorded, but the backup it was reading is gone", FailureAction.RETRY);
+            NOT_THE_COMMITTED_LEADER("the committed leader record names another node, or this node no longer leads",
+                                     FailureAction.RETRY),
+            NOTHING_TO_RESUME("an interrupted restore is recorded, but this leader has no [backup] to resume it from",
+                              FailureAction.RETRY),
+            BACKUP_VANISHED("an interrupted restore is recorded, but the backup it was reading is gone",
+                            FailureAction.RETRY);
             private final String message;
             private final FailureAction action;
             General(String message, FailureAction action) {
@@ -861,7 +866,8 @@ public final class BackupRestoreCoordinator {
         var transaction = (KVCommand.LeaderTransaction<?, ?>) command;
 
         return applier.apply(List.of(command))
-                      .flatMap(results -> accepted(results, transaction.transactionId())
+                      .flatMap(results -> accepted(results,
+                                                   transaction.transactionId())
                                           ? Promise.unitPromise()
                                           : refused(transaction, results).promise());
     }
@@ -880,26 +886,25 @@ public final class BackupRestoreCoordinator {
                                   .map(KVCommand.TransactionResult.class::cast)
                                   .filter(result -> result.transactionId()
                                                           .equals(transactionId))
-                                  .findFirst())
-                     .flatMap(KVCommand.TransactionResult::refusal);
+                                  .findFirst()).flatMap(KVCommand.TransactionResult::refusal);
     }
 
     /// The backed-up entry the refused transaction wrote at the refusal's key; none for a key it did not write.
     private static Option<Map.Entry<AetherKey, AetherValue>> refusedEntry(KVCommand.LeaderTransaction<?, ?> transaction,
-                                                                         KVCommand.Refusal refusal) {
+                                                                          KVCommand.Refusal refusal) {
         return Option.from(transaction.mutations()
                                       .stream()
                                       .filter(mutation -> refusal.key()
                                                                  .equals(Option.some(mutation.key())))
-                                      .findFirst())
-                     .flatMap(BackupRestoreCoordinator::entryOf);
+                                      .findFirst()).flatMap(BackupRestoreCoordinator::entryOf);
     }
 
     private static Option<Map.Entry<AetherKey, AetherValue>> entryOf(KVCommand.Mutation<?, ?> mutation) {
         return mutation.key() instanceof AetherKey key
                ? mutation.replacement()
                          .filter(AetherValue.class::isInstance)
-                         .map(value -> Map.entry(key, (AetherValue) value))
+                         .map(value -> Map.entry(key,
+                                                 (AetherValue) value))
                : Option.none();
     }
 
@@ -1044,16 +1049,15 @@ public final class BackupRestoreCoordinator {
 
     @Contract
     private void continueWithout(RestoreError.Refused refused) {
-        LOG.debug("Backup restore: {}; the pre-check now withholds that entry, so the restore continues without it", refused.message());
+        LOG.debug("Backup restore: {}; the pre-check now withholds that entry, so the restore continues without it",
+                  refused.message());
         scheduleRetry();
     }
 
     /// The warning follows the write whatever its result: a failed record leaves the restore stopped all the same (once per tenure).
     @Contract
     private void recordAndStop(RestoreError.Refused refused) {
-        refused.refusal()
-               .fold(Promise::unitPromise, this::submitRejected)
-               .onResultRun(() -> warnRejected(refused));
+        refused.refusal().fold(Promise::unitPromise, this::submitRejected).onResultRun(() -> warnRejected(refused));
     }
 
     private boolean withheldNow(RestoreError.Refused refused) {
@@ -1076,7 +1080,7 @@ public final class BackupRestoreCoordinator {
     /// marker already refused at the same key, a marker being abandoned, a settled decision or a refusal with no key write nothing.
     Promise<Unit> submitRejected(KVCommand.Refusal refusal) {
         return leaderValue().async()
-                            .flatMap(leaderValue -> rejectOnce(leaderValue, refusal));
+                          .flatMap(leaderValue -> rejectOnce(leaderValue, refusal));
     }
 
     private Promise<Unit> rejectOnce(LeaderValue leaderValue, KVCommand.Refusal refusal) {
@@ -1087,8 +1091,7 @@ public final class BackupRestoreCoordinator {
     }
 
     private Option<KVCommand<AetherKey>> rejectionWrite(LeaderValue leaderValue, KVCommand.Refusal refusal) {
-        var key = refusal.key()
-                         .map(BackupRestoreCoordinator::keyName);
+        var key = refusal.key().map(BackupRestoreCoordinator::keyName);
 
         return RestoreGate.decision(kvStore)
                           .filter(marker -> inProgress(marker) && !marker.abandon())
@@ -1157,7 +1160,8 @@ public final class BackupRestoreCoordinator {
     /// (#3303 rows 6, 9) has no `fresh` exit at all: it resumes only on a build that fixes the refusal.
     private String markedAdvice(BackupRestoreValue marker) {
         return marker.rejection()
-                     .fold(() -> pinnedAdvice(marker), key -> rejectedAdvice(marker, key));
+                     .fold(() -> pinnedAdvice(marker),
+                           key -> rejectedAdvice(marker, key));
     }
 
     private String pinnedAdvice(BackupRestoreValue marker) {
@@ -1171,8 +1175,8 @@ public final class BackupRestoreCoordinator {
     private String rejectedAdvice(BackupRestoreValue marker, String key) {
         return "A restore of commit " + marker.commit()
              + " is in progress, pinned, and was refused at key " + key
-             + "; it resumes on a build that fixes the refusal, once what the failed step names is readable again at the backup source ("
-             + sourceDescription() + ")";
+             + "; it resumes on a build that fixes the refusal, once what the failed step names is readable again at the backup source (" + sourceDescription()
+             + ")";
     }
 
     private String sourceDescription() {
