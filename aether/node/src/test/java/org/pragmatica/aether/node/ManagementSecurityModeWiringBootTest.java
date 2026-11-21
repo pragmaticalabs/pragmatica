@@ -50,6 +50,7 @@ class ManagementSecurityModeWiringBootTest {
     private static final TimeSpan START_BOUND = timeSpan(30).seconds();
     private static final String PROBE_PATH = "/api/v1/no-such-route";
     private static final String ADMIN_ROUTE = "/api/v1/logging/levels/t3545g.probe";
+    private static final String ADMIN_KEY = "k-3545g-admin-key";
     private static final String CONFIGURED_KEY = "k-962-configured-key";
 
     private AetherNode node;
@@ -133,12 +134,15 @@ class ManagementSecurityModeWiringBootTest {
     @Timeout(value = 120, unit = SECONDS)
     void managementApiKey_enforcesTheRoleGate_onAnAdminRoute() throws Exception {
         var port = boot(appHttp(SecurityMode.API_KEY,
-                                Map.of(CONFIGURED_KEY, ApiKeyEntry.apiKeyEntry("viewer", Set.of(), "VIEWER"))));
+                                Map.of(CONFIGURED_KEY, ApiKeyEntry.apiKeyEntry("viewer", Set.of(), "VIEWER"),
+                                       ADMIN_KEY, ApiKeyEntry.apiKeyEntry("admin", Set.of(), "ADMIN"))));
 
         assertThat(probe(port, "GET", PROBE_PATH, Option.some(CONFIGURED_KEY))).as("control: the VIEWER key authenticates")
                                                                                .isNotIn(401, 403);
         assertThat(probe(port, "DELETE", ADMIN_ROUTE, Option.some(CONFIGURED_KEY))).as("armed plane: an authenticated VIEWER is refused on an ADMIN route")
                                                                                    .isEqualTo(403);
+        assertThat(probe(port, "DELETE", ADMIN_ROUTE, Option.some(ADMIN_KEY))).as("armed plane: an ADMIN key is allowed on the ADMIN route")
+                                                                              .isNotIn(401, 403);
     }
 
     private static AppHttpConfig appHttp(SecurityMode mode) {
