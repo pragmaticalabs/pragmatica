@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.JwtConfig;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.AuthorizationRole;
+import org.pragmatica.aether.http.handler.security.Principal;
 import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.http.HttpStatus;
@@ -342,6 +343,43 @@ class JwtSecurityValidatorTest {
             validator.validate(requestWithToken(token), SecurityPolicy.bearerTokenRequired())
                      .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(ctx -> assertThat(ctx.hasRole(Role.ADMIN)).isTrue());
+        }
+    }
+
+    @Nested
+    class GrantMintingTests {
+        @Test
+        void authenticate_mintsGrant_forAdminToken() {
+            assertThat(grantForRole(Option.some("ADMIN")).isPresent()).as("an ADMIN token mints").isTrue();
+        }
+
+        @Test
+        void authenticate_mintsNone_forOperatorToken() {
+            assertThat(grantForRole(Option.some("OPERATOR")).isPresent())
+                .as("an OPERATOR token mints no grant: the mint reads the token's role, not the inner default")
+                .isFalse();
+        }
+
+        @Test
+        void authenticate_mintsNone_forTokenWithoutRoleClaim() {
+            assertThat(grantForRole(Option.none()).isPresent()).as("a token defaulting to VIEWER mints no grant").isFalse();
+        }
+
+        @Test
+        void authenticate_grantedBy_isTheTokenSubject() {
+            assertThat(grantForRole(Option.some("ADMIN")).map(AdminGrant::grantedBy).map(Principal::value).or(""))
+                .isEqualTo("user:" + TEST_SUBJECT);
+        }
+
+        private Option<AdminGrant> grantForRole(Option<String> role) {
+            var claims = new LinkedHashMap<String, Object>(Map.of("sub", TEST_SUBJECT, "exp", futureExp()));
+
+            role.onPresent(value -> claims.put("role", value));
+
+            return validator.authenticate(requestWithToken(buildToken(claims)), SecurityPolicy.bearerTokenRequired())
+                            .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                            .map(Authenticated::grant)
+                            .or(Option.none());
         }
     }
 
