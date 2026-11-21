@@ -341,10 +341,10 @@ public record ReadRefusal(Kind kind,
                                                                                                            stream,
                                                                                                            partition).withFirst(count));
             case StreamError.CursorExpired(var requested, var tail, var reason, var cause, var causes) -> some(cursorRefusal(requested,
-                                                                                                                              tail,
-                                                                                                                              reason == StreamError.CursorExpired.Reason.LOST,
-                                                                                                                              cause,
-                                                                                                                              StreamError.CursorExpired.maskOf(causes)));
+                                                                                                                             tail,
+                                                                                                                             reason == StreamError.CursorExpired.Reason.LOST,
+                                                                                                                             cause,
+                                                                                                                             StreamError.CursorExpired.maskOf(causes)));
             case StreamError.StreamNotMaterialized(var stream) -> some(readRefusal(Kind.STREAM_NOT_MATERIALIZED,
                                                                                    stream,
                                                                                    0));
@@ -443,19 +443,59 @@ public record ReadRefusal(Kind kind,
     }
 
     private ReadRefusal withFirst(long value) {
-        return refusal(kind, stream, partition, value, second, flag, detail, peerFirst, peerSecond, epochFirst, epochSecond);
+        return refusal(kind,
+                       stream,
+                       partition,
+                       value,
+                       second,
+                       flag,
+                       detail,
+                       peerFirst,
+                       peerSecond,
+                       epochFirst,
+                       epochSecond);
     }
 
     private ReadRefusal withSecond(long value) {
-        return refusal(kind, stream, partition, first, value, flag, detail, peerFirst, peerSecond, epochFirst, epochSecond);
+        return refusal(kind,
+                       stream,
+                       partition,
+                       first,
+                       value,
+                       flag,
+                       detail,
+                       peerFirst,
+                       peerSecond,
+                       epochFirst,
+                       epochSecond);
     }
 
     private ReadRefusal withFlag(boolean value) {
-        return refusal(kind, stream, partition, first, second, value, detail, peerFirst, peerSecond, epochFirst, epochSecond);
+        return refusal(kind,
+                       stream,
+                       partition,
+                       first,
+                       second,
+                       value,
+                       detail,
+                       peerFirst,
+                       peerSecond,
+                       epochFirst,
+                       epochSecond);
     }
 
     private ReadRefusal withDetail(String value) {
-        return refusal(kind, stream, partition, first, second, flag, value, peerFirst, peerSecond, epochFirst, epochSecond);
+        return refusal(kind,
+                       stream,
+                       partition,
+                       first,
+                       second,
+                       flag,
+                       value,
+                       peerFirst,
+                       peerSecond,
+                       epochFirst,
+                       epochSecond);
     }
 
     private ReadRefusal withPeers(String peer1, String peer2) {

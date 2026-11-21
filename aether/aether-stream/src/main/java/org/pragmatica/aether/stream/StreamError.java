@@ -132,7 +132,11 @@ public sealed interface StreamError extends Cause {
     /// The shim forms name no cause and pass [RemovalCause#UNRECORDED]: `(requested, tail, reason)` and `(requested,
     /// tail)` = ([Reason#EXPIRED], `UNRECORDED`), with the empty set. On the forward the reason rides `ReadRefusal`'s `flag`
     /// slot (`false` = [Reason#EXPIRED]), the cause its own `cause` slot and the set its `causes` mask.
-    record CursorExpired(long requestedOffset, long tailOffset, Reason reason, RemovalCause cause, Set<RemovalCause> causes) implements StreamError {
+    record CursorExpired(long requestedOffset,
+                         long tailOffset,
+                         Reason reason,
+                         RemovalCause cause,
+                         Set<RemovalCause> causes) implements StreamError {
         public enum Reason {
             EXPIRED,
             LOST
@@ -145,9 +149,12 @@ public sealed interface StreamError extends Cause {
             if (disagrees(reason, cause)) {
                 throw new IllegalArgumentException("CursorExpired reason " + reason + " does not match cause " + cause);
             }
+
             if (causes.contains(RemovalCause.NOT_APPLICABLE)) {
-                throw new IllegalArgumentException("CursorExpired causes " + causes + " name a refusal that is not a removal");
+                throw new IllegalArgumentException("CursorExpired causes " + causes
+                                                  + " name a refusal that is not a removal");
             }
+
             causes = Set.copyOf(causes);
         }
 
@@ -179,7 +186,8 @@ public sealed interface StreamError extends Cause {
         public static int maskOf(Set<RemovalCause> causes) {
             return causes.stream()
                          .mapToInt(CursorExpired::bitOf)
-                         .reduce(0, (left, right) -> left | right);
+                         .reduce(0,
+                                 (left, right) -> left | right);
         }
 
         /// The set a wire mask names, never throwing so a decoded value always builds: a bit at or above
