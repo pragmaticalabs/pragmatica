@@ -83,6 +83,10 @@ public enum OperatorWarningCode {
     /// leading or is stopping, so its blocked restore no longer holds the cluster. INFO, paired with the warning: the event layer
     /// publishes it only after that warning for the same subject. A leader that still cannot read the backup raises the warning again.
     BACKUP_RESTORE_UNBLOCKED("backup-restore-unblocked", "kv-backup", WarningLevel.INFO, BACKUP_RESTORE_BLOCKED),
+    /// A whole-cluster restore was refused deterministically: the applier refuses one backed-up entry the same way on every attempt
+    /// (#3303). The restore stops, unretried, and the restore marker records the refused key; cluster-state writes stay refused until
+    /// the cluster runs a build that fixes the refusal, on which the restore resumes from that marker.
+    BACKUP_RESTORE_REJECTED("backup-restore-rejected", "kv-backup", WarningLevel.WARNING),
     /// Another cluster holds the backup head at this cluster's own lineage and incarnation (a different
     /// incarnation id); this cluster backs up nothing until an operator resolves the fork (#1533).
     BACKUP_FORKED("backup-forked", "kv-backup", WarningLevel.CRITICAL),
