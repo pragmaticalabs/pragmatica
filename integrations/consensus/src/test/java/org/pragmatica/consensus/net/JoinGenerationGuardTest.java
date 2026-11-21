@@ -173,11 +173,11 @@ class JoinGenerationGuardTest {
                .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.WireGenerationRefused(B, 1, 2)));
     }
 
-    /// Pin: the generation is bumped to 6 by #3458/#3481 M1b (ReadRefusal.Kind: UNKNOWN moved 15 to 16, so an older node decodes
-    /// the new ordinal 16 as out of range and reads a newer node's STREAM_NOT_MATERIALIZED (15) as its own UNKNOWN, i.e. as text). A literal, so a revert to 5 goes red.
+    /// Pin: the generation is bumped to 7 by #3530 (four dead key types and their values left the wire baseline: their TAG and SHAPE
+    /// lines are gone, so an older node that still decodes those tags is refused at the join). A literal, so a revert to 6 goes red.
     @Test
-    void thisBinarysGeneration_isSixAfterTheReadRefusalKindRenumber() {
-        assertThat(JoinGenerationGuard.WIRE_GENERATION).isEqualTo(6);
+    void thisBinarysGeneration_isSevenAfterTheDeadKeyTypesLeave() {
+        assertThat(JoinGenerationGuard.WIRE_GENERATION).isEqualTo(7);
     }
 
     @Test
