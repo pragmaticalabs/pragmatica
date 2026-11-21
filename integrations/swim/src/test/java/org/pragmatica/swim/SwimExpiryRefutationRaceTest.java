@@ -16,6 +16,7 @@
 package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -34,6 +35,7 @@ import org.pragmatica.swim.SwimSelfIsolationLatchAtomicityTest.SilentTransport;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.swim.SwimConfig.swimConfig;
+import static org.pragmatica.testing.PollUntil.pollUntil;
 
 /// #3529: the suspicion expiry reads the member, decides FAULTY and stores it; an ALIVE refutation at a higher
 /// incarnation delivered by [SwimProtocol#onMessage] on another thread must never be overwritten by that store.
@@ -197,22 +199,19 @@ class SwimExpiryRefutationRaceTest {
         action.run();
     }
 
-    private static void awaitCount(AtomicInteger counter, int expected) throws InterruptedException {
-        var deadline = System.currentTimeMillis() + WAIT_MS;
-
-        while (counter.get() < expected && System.currentTimeMillis() < deadline) {
-            Thread.sleep(0, 100_000);
-        }
+    /// Returns when `expected` threads have checked in or the deadline passes; a miss is silent here, the caller's
+    /// own assertion decides (the spinning threads proceed after their own deadline).
+    private static void awaitCount(AtomicInteger counter, int expected) {
+        pollUntil(counter::get, count -> count >= expected, Duration.ofMillis(WAIT_MS));
     }
 
     /// The refuter either finishes (nothing serialises it with the held expiry) or parks waiting for its turn;
-    /// both mean it has done everything it can do while the expiry is held inside its store.
-    private static void awaitParkedOrDone(Thread thread) throws InterruptedException {
-        var deadline = System.currentTimeMillis() + WAIT_MS;
-
-        while (thread.isAlive() && thread.getState() == Thread.State.RUNNABLE && System.currentTimeMillis() < deadline) {
-            Thread.sleep(1);
-        }
+    /// both mean it has done everything it can do while the expiry is held inside its store. A miss is silent here,
+    /// the caller's own assertion decides.
+    private static void awaitParkedOrDone(Thread thread) {
+        pollUntil(() -> thread.isAlive() && thread.getState() == Thread.State.RUNNABLE,
+                  busy -> !busy,
+                  Duration.ofMillis(WAIT_MS));
     }
 
     /// Membership eligibility that admits everyone and, once armed, parks the expiry thread the first time it is
