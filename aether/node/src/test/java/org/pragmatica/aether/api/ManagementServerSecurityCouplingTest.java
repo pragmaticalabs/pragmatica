@@ -32,6 +32,7 @@ import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.aether.http.security.Authenticated;
 import org.pragmatica.aether.http.security.SecurityError;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.http.handler.HttpResponseData;
@@ -261,7 +262,8 @@ class ManagementServerSecurityCouplingTest {
     private static SecurityValidator validatorReturning(Result<SecurityContext> outcome) {
         var validator = mock(SecurityValidator.class);
 
-        when(validator.validate(any(), any())).thenReturn(outcome);
+        when(validator.validate(any(), any())).thenReturn(outcome.map(Authenticated::authenticated));
+        when(validator.context(any(), any())).thenCallRealMethod();
 
         return validator;
     }

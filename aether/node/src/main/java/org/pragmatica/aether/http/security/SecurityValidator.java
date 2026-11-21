@@ -22,19 +22,22 @@ import org.pragmatica.lang.Result;
 
 
 public interface SecurityValidator {
-    Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy);
+    /// The validated context with the ADMIN grant minted at the credential match, none otherwise. The grant is an
+    /// argument from here on: the management plane passes it to the route that acts on it, and it is never stored.
+    Result<Authenticated> validate(HttpRequestContext request, SecurityPolicy policy);
 
-    /// The validated context alone, for callers that never act on an ADMIN grant (the app-HTTP plane).
+    /// The validated context alone, for callers that never act on an ADMIN grant (the app-HTTP and WebSocket planes).
+    /// The grant is dropped here, so those planes cannot pass one on.
     default Result<SecurityContext> context(HttpRequestContext request, SecurityPolicy policy) {
-        return validate(request, policy);
+        return validate(request, policy).map(Authenticated::context);
     }
 
     static SecurityValidator apiKeyValidator(Set<String> validKeys) {
-        return HttpAuthenticator.apiKeyValidator(validKeys)::validate;
+        return HttpAuthenticator.apiKeyValidator(validKeys)::authenticate;
     }
 
     static SecurityValidator apiKeyValidator(Map<String, ApiKeyEntry> keyEntries) {
-        return HttpAuthenticator.apiKeyValidator(keyEntries)::validate;
+        return HttpAuthenticator.apiKeyValidator(keyEntries)::authenticate;
     }
 
     static SecurityValidator kvStoreAwareValidator(SecurityValidator configValidator,
@@ -43,7 +46,7 @@ public interface SecurityValidator {
     }
 
     static SecurityValidator jwtValidator(JwtConfig jwtConfig) {
-        return HttpAuthenticator.jwtValidator(jwtConfig)::validate;
+        return HttpAuthenticator.jwtValidator(jwtConfig)::authenticate;
     }
 
     /// GRANTS ADMIN + SERVICE TO EVERY CALLER. Named `permitAll` rather than `noOp` because "no-op"
@@ -55,6 +58,8 @@ public interface SecurityValidator {
     /// `AppHttpServer`'s `SecurityMode.NONE` arm, which refuses auth-requiring routes at
     /// [AppHttpServer] before the validator is ever consulted.
     ///
+    /// It mints NO [AdminGrant]: the ADMIN role it hands out matched no credential, and a grant is proof that one did.
+    ///
     /// Do NOT use this where a route's own policy is the only gate — see
     /// [#denyUnlessPublicValidator] for that case. The management plane used this and consequently
     /// granted ADMIN to every caller whenever `[app-http] enabled` was false (the default).
@@ -64,7 +69,7 @@ public interface SecurityValidator {
                                                             Set.of(Role.ADMIN, Role.SERVICE),
                                                             Map.of());
 
-        return (_, policy) -> Result.success(permitAllContext(policy, systemContext));
+        return (_, policy) -> Result.success(Authenticated.authenticated(permitAllContext(policy, systemContext)));
     }
 
     /// #2946: an optional-authentication route is served an EMPTY context under `security_mode = "none"` -- the slice
@@ -92,7 +97,7 @@ public interface SecurityValidator {
     /// them.
     static SecurityValidator denyUnlessPublicValidator() {
         return (_, policy) -> switch (policy) {
-            case SecurityPolicy.Public(), SecurityPolicy.OptionalAuth() -> Result.success(SecurityContext.securityContext());
+            case SecurityPolicy.Public(), SecurityPolicy.OptionalAuth() -> Result.success(Authenticated.authenticated(SecurityContext.securityContext()));
             default -> SecurityError.NO_VALIDATOR_CONFIGURED.result();
         };
     }

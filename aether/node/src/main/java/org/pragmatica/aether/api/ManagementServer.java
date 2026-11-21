@@ -2233,7 +2233,7 @@ class ManagementServerImpl implements ManagementServer {
         var methodName = method.name();
         var permission = resolvePermission(methodName, path);
 
-        return securityValidator.validate(httpContext, policy)
+        return securityValidator.context(httpContext, policy)
                                 .flatMap(sc -> enforceAndAuditDenial(sc, permission, methodName, path))
                                 .onFailure(cause -> handleManagementSecurityFailure(response,
                                                                                     cause,
