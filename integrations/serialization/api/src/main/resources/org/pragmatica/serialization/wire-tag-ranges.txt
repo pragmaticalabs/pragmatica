@@ -64,4 +64,6 @@
 2986..2989 restore-authority-3303 2026-11-20 #3303 restore authority: refusal kinds and markers (know d021c7b150)
 2990..2999 flag-day-420 2026-11-20 #420 artifact churn: ArtifactContentValue with its block manifest (2990), flag-day tag (know d2ce3461aa, wire-tag-allocations.md)
 3010..3017 stream-mem 2026-11-20 #3458 in-memory streams (know d0048c4f79)
+3018..3037 arc-3303 2026-11-20 #3303 entity arc keys, values and codecs: A3a pins 3018 and 3019 (know f3033886ee)
 3038..3069 split-sp 2026-11-20 #3303 stream split and merge (SP lanes): SP1a 3038, SP1b 3039..3042, 3043..3045 held for lastAbort, SP7 3046..3047, SP3d events 3048..3063, spare 3064..3069
+3070..3109 s4b 2026-11-21 #3303 stream split row step: partition state, epoch floor, life outcome (S4b lanes)

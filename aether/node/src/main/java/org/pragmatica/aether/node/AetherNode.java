@@ -3351,21 +3351,26 @@ public interface AetherNode extends ManageableNode {
                                                                                           presenceSampler,
                                                                                           membershipFsm,
                                                                                           leaderReconciler));
-        var quorumLossDrain = DrainAssembly.quorumLossDrain(new DrainAssembly.QuorumLossInputs(config,
-                                                                                               clusterNode,
-                                                                                               leaderReconciler,
-                                                                                               quorumLossDetector,
-                                                                                               membershipFsm,
-                                                                                               swimHealthDetector,
-                                                                                               swimIsBootingSupplier,
-                                                                                               metricsCollector,
-                                                                                               nodeReportedStateHolder,
-                                                                                               drainProcedure,
-                                                                                               alertManager,
-                                                                                               isLeaderSupplier,
-                                                                                               drainCommandRegistry,
-                                                                                               operatorWarningSink,
-                                                                                               periodicTasks::defer));
+        var quorumLossInputs = new DrainAssembly.QuorumLossInputs(config,
+                                                                  clusterNode,
+                                                                  leaderReconciler,
+                                                                  quorumLossDetector,
+                                                                  membershipFsm,
+                                                                  swimHealthDetector,
+                                                                  swimIsBootingSupplier,
+                                                                  metricsCollector,
+                                                                  nodeReportedStateHolder,
+                                                                  drainProcedure,
+                                                                  alertManager,
+                                                                  isLeaderSupplier,
+                                                                  drainCommandRegistry,
+                                                                  operatorWarningSink,
+                                                                  periodicTasks::defer,
+                                                                  kvStore,
+                                                                  pongSignalFan);
+        var quorumLossDrain = DrainAssembly.quorumLossDrain(quorumLossInputs);
+
+        AssemblyObserver.quorumLoss(quorumLossInputs, quorumLossDrain, kvStore, pongSignalFan);
         var quorumLossChain = quorumLossDrain.quorumLossChain();
         var coreAbsenceDetector = quorumLossDrain.coreAbsenceDetector();
         var communityLiveness = WorkerHierarchyAssembly.communityReachability(new WorkerHierarchyAssembly.CommunityReachabilityInputs(config,
@@ -3864,14 +3869,13 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                clusterNode,
                                                                                                                                                                serializer,
                                                                                                                                                                deserializer,
-                                                                                                                                                               membershipFsmRef,
                                                                                                                                                                resourceProviderSetup,
                                                                                                                                                                logLevelRegistry,
                                                                                                                                                                traceStore,
                                                                                                                                                                configRegistry,
                                                                                                                                                                scheduledTaskRegistry,
                                                                                                                                                                scheduledTaskStateRegistry,
-                                                                                                                                                               drainCommandRegistry,
+                                                                                                                                                               quorumLossDrain.drainPort(),
                                                                                                                                                                alertManager,
                                                                                                                                                                dynamicConfigManager,
                                                                                                                                                                operatorWarningSink,
@@ -3883,6 +3887,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                entityCheckpointDriver,
                                                                                                                                                                node,
                                                                                                                                                                deploymentMeters));
+
+                                                      AssemblyObserver.management(managementServer);
 
                                                       return new aetherNode(workerMetadataChannel,
                                                                             replicaClient,

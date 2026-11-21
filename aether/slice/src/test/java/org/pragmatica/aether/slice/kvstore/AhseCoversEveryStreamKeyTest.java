@@ -23,10 +23,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// name a stream-side artifact, by either of two readings of "names": the record's simple name matches the design's own search
 /// space (§5, closing paragraph), or one of its components is named for a stream, topic, keyspace, group or storage instance.
 /// Each selected record must be a key row of [#KEY_ROWS], the test's copy of the §5 list. A key-adding PR therefore has to add
-/// its row to the design and to this copy in the same change (S3, S4a and S4b add theirs; the list ends at 39 rows in the design).
+/// its row to the design and to this copy in the same change (S3, S4a and S4b add theirs; the list ends at 43 rows in the design; rows 42-43 added by #3303 A3a).
 class AhseCoversEveryStreamKeyTest {
-    /// The §5 rows at S0: rows 1-27 (today's artifacts) and 32-39 (found by enumerating `AetherKey`), 35 rows. Rows 28-31 and
-    /// 40-41 are new artifacts of later PRs and are not copied until the PR that creates them.
+    /// The §5 rows at S0: rows 1-27 (today's artifacts), 32-39 (found by enumerating `AetherKey`) and 42-43 (the #3303 arc keys,
+    /// added by A3a), 37 rows. Rows 28-31 and 40-41 are new artifacts of later PRs and are not copied until the PR that creates them.
     private static final List<String> ROWS = List.of("1 Ring (OffHeapRingBuffer)",
                                                      "2 WAL <stream>/<part>.wal",
                                                      "3 <log>.epochs",
@@ -61,13 +61,16 @@ class AhseCoversEveryStreamKeyTest {
                                                      "36 StreamRegistryKey",
                                                      "37 StreamRegistryHolderKey",
                                                      "38 BlueprintStreamBindingsKey",
-                                                     "39 StorageStatusKey");
+                                                     "39 StorageStatusKey",
+                                                     "42 EntitySeedOfferKey",
+                                                     "43 EntityArcWaiverKey");
 
-    private static final List<Integer> S0_ROW_NUMBERS = IntStream.concat(IntStream.rangeClosed(1, 27),
-                                                                                           IntStream.rangeClosed(32, 39))
+    private static final List<Integer> S0_ROW_NUMBERS = IntStream.concat(IntStream.concat(IntStream.rangeClosed(1, 27),
+                                                                                                             IntStream.rangeClosed(32, 39)),
+                                                                                  IntStream.rangeClosed(42, 43))
                                                                                   .boxed()
                                                                                   .toList();
-    private static final int ROWS_FINGERPRINT = -2097458471;
+    private static final int ROWS_FINGERPRINT = 1528506635;
 
     /// The `AetherKey` record behind each key row, with its §5 row number.
     private static final Map<String, Integer> KEY_ROWS = Map.ofEntries(Map.entry("StreamCursorCheckpointKey", 13),
@@ -85,7 +88,9 @@ class AhseCoversEveryStreamKeyTest {
                                                                        Map.entry("StreamRegistryKey", 36),
                                                                        Map.entry("StreamRegistryHolderKey", 37),
                                                                        Map.entry("BlueprintStreamBindingsKey", 38),
-                                                                       Map.entry("StorageStatusKey", 39));
+                                                                       Map.entry("StorageStatusKey", 39),
+                                                                       Map.entry("EntitySeedOfferKey", 42),
+                                                                       Map.entry("EntityArcWaiverKey", 43));
 
     /// Matches the §5 search space by name but is not a stream artifact: the DHT's own partition ownership (design §5, closing paragraph).
     private static final Set<String> NOT_STREAM_SIDE = Set.of("DhtPartitionOwnershipKey");
@@ -100,8 +105,8 @@ class AhseCoversEveryStreamKeyTest {
                                  + "of the AHSE map (stream storage design §5). Add the row to the design's §5 and to KEY_ROWS/ROWS here, "
                                  + "in the same PR that adds the key.")
                              .isEmpty();
-        assertThat(ROWS).as("§5 rows copied at S0 (S3, S4a and S4b each add theirs)")
-                        .hasSize(35);
+        assertThat(ROWS).as("§5 rows copied at S0 (S3, S4a and S4b each add theirs) plus rows 42-43 (#3303 A3a)")
+                        .hasSize(37);
     }
 
     /// ROWS is the copy of the §5 list, so its text is pinned three ways: the row numbers are the S0 sequence, each key row's
@@ -113,7 +118,7 @@ class AhseCoversEveryStreamKeyTest {
                           .map(row -> Integer.valueOf(row.substring(0, row.indexOf(' '))))
                           .toList();
 
-        assertThat(numbers).as("§5 row numbers at S0: 1-27 and 32-39")
+        assertThat(numbers).as("§5 row numbers at S0: 1-27, 32-39 and 42-43 (#3303 A3a)")
                            .containsExactlyElementsOf(S0_ROW_NUMBERS);
         KEY_ROWS.forEach(AhseCoversEveryStreamKeyTest::assertKeyRowText);
         assertThat(String.join("\n", ROWS)
@@ -148,7 +153,7 @@ class AhseCoversEveryStreamKeyTest {
         assertThat(leaves).containsAll(KEY_ROWS.keySet());
         assertThat(streamSide(leafRecords(AetherKey.class))).as("stream-side records found by the census")
                                                              .contains("StreamConfigKey", "ConsumerAssignmentKey", "StorageStatusKey", "TopicPublisherKey");
-        assertThat(KEY_ROWS.values()).allMatch(row -> row >= 1 && row <= 39);
+        assertThat(KEY_ROWS.values()).allMatch(row -> row >= 1 && row <= 43);
     }
 
     private static Set<String> uncoveredBy(List<Class<?>> candidates) {

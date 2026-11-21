@@ -72,6 +72,12 @@ final class DefaultSnapshotManager implements SnapshotManager {
     /// #2257: version of the snapshot text layout this class WRITES. 1 is the unversioned layout
     /// (no `format` header, raw ref names) that is still READ; see [#parseSnapshotContent].
     static final String FORMAT_VERSION = "2";
+    /// #2836: the layout of a STAMPED snapshot: format 2 plus a `storageId` header line that is REQUIRED, so a file
+    /// whose line was removed or whose key was corrupted is refused instead of read as unstamped. An unstamped
+    /// snapshot stays `format=2` byte for byte. Boundary: `format=3` carries an id, `format=2` and the unversioned
+    /// layout never required one and still restore as unstamped. A build without #2836 refuses `format=3`
+    /// ([SnapshotError.UnsupportedFormat]) and falls back to an older file.
+    static final String STAMPED_FORMAT_VERSION = "3";
     private static final String LEGACY_FORMAT_VERSION = "1";
     private static final Cause MALFORMED_REF_LINE = Causes.cause("Malformed ref line in snapshot");
     private static final Cause DUPLICATE_REF_NAME = Causes.cause("Duplicate ref name in snapshot");
@@ -214,7 +220,28 @@ final class DefaultSnapshotManager implements SnapshotManager {
 
         return latest.flatMap(this::readAndValidateSnapshot)
                      .map(snapshot -> Result.success(Option.some(snapshot)))
-                     .or(() -> restoreFromPreviousRetained(latest));
+                     .or(() -> restoreFromPreviousRetained(latest))
+                     .flatMap(this::refuseForeignStorage);
+    }
+
+    /// #2836: the snapshot CHOSEN above (the latest, or a retained fallback) must have been written by the storage
+    /// configured here. Both ids must be present to differ: a snapshot from before identities existed, or a
+    /// configuration that has no id yet, is accepted `[guess: ruled with AD1]`. No older file is tried -- they sit on
+    /// the same foreign volume -- so the refusal is a failure, never an empty restore.
+    private Result<Option<MetadataSnapshot>> refuseForeignStorage(Option<MetadataSnapshot> restored) {
+        return restored.flatMap(this::foreignStorage)
+                       .fold(() -> Result.success(restored),
+                             cause -> cause.<Option<MetadataSnapshot>> result()
+                                           .onFailure(failure -> LOG.warn("Snapshot restore refused: {}",
+                                                                          failure.message())));
+    }
+
+    private Option<SnapshotError> foreignStorage(MetadataSnapshot snapshot) {
+        return config.storageId()
+                     .flatMap(expected -> snapshot.storageId()
+                                                  .filter(found -> !found.equals(expected))
+                                                  .map(found -> SnapshotError.StorageIdMismatch.storageIdMismatch(expected,
+                                                                                                                  found)));
     }
 
     @Override
@@ -252,7 +279,8 @@ final class DefaultSnapshotManager implements SnapshotManager {
                                                 config.nodeId(),
                                                 lifecycles,
                                                 refs,
-                                                body.hash()),
+                                                body.hash(),
+                                                config.storageId()),
                            body);
     }
 
@@ -674,12 +702,27 @@ final class DefaultSnapshotManager implements SnapshotManager {
 
     /// Header, a blank line, then the body exactly as it was hashed.
     static String serializeBody(MetadataSnapshot snapshot, MetadataSnapshot.Body body) {
-        return "format=" + FORMAT_VERSION + '\n'
+        return "format=" + formatOf(snapshot) + '\n'
              + "epoch=" + snapshot.epoch() + '\n'
              + "timestamp=" + snapshot.timestamp() + '\n'
-             + "nodeId=" + snapshot.nodeId() + '\n'
+             + "nodeId=" + snapshot.nodeId() + '\n' + storageIdLine(snapshot)
              + "contentHash=" + HEX.formatHex(snapshot.contentHash())
              + "\n\n" + body.text();
+    }
+
+    /// #2836: a stamped snapshot is written as [#STAMPED_FORMAT_VERSION], an unstamped one as [#FORMAT_VERSION].
+    static String formatOf(MetadataSnapshot snapshot) {
+        return snapshot.storageId()
+                       .isPresent()
+               ? STAMPED_FORMAT_VERSION
+               : FORMAT_VERSION;
+    }
+
+    /// #2836: written only for a stamped snapshot, so an unstamped one is byte-for-byte what it was before.
+    private static String storageIdLine(MetadataSnapshot snapshot) {
+        return snapshot.storageId()
+                       .map(id -> "storageId=" + id + '\n')
+                       .or("");
     }
 
     // --- Deserialization ---
@@ -696,11 +739,28 @@ final class DefaultSnapshotManager implements SnapshotManager {
         var headers = parseHeaders(lines);
         var version = headers.getOrDefault("format", LEGACY_FORMAT_VERSION);
 
+        return storageIdHeader(version, headers).flatMap(_ -> parseByFormat(version, lines, headers));
+    }
+
+    private static Result<MetadataSnapshot> parseByFormat(String version, String[] lines, Map<String, String> headers) {
         return switch (version) {
-            case FORMAT_VERSION -> parseCurrentContent(lines, headers);
+            case FORMAT_VERSION, STAMPED_FORMAT_VERSION -> parseCurrentContent(lines, headers);
             case LEGACY_FORMAT_VERSION -> parseLegacyContent(lines, headers);
             default -> new SnapshotError.UnsupportedFormat(version).result();
         };
+    }
+
+    /// #2836: the `storageId` header, checked before anything is built from it: well formed when present
+    /// ([SnapshotConfig#checkedStorageId], the rule the mint applies), and present whenever the format requires it.
+    private static Result<Option<String>> storageIdHeader(String version, Map<String, String> headers) {
+        return Option.option(headers.get("storageId")).fold(() -> storageIdAbsent(version),
+                                                            id -> SnapshotConfig.checkedStorageId(Option.some(id)));
+    }
+
+    private static Result<Option<String>> storageIdAbsent(String version) {
+        return STAMPED_FORMAT_VERSION.equals(version)
+               ? SnapshotError.StorageIdMissing.storageIdMissing(version).result()
+               : Result.success(none());
     }
 
     private static MetadataSnapshot snapshotOf(Map<String, String> headers,
@@ -711,7 +771,8 @@ final class DefaultSnapshotManager implements SnapshotManager {
                                     headers.get("nodeId"),
                                     lifecycles,
                                     refs,
-                                    HEX.parseHex(headers.get("contentHash")));
+                                    HEX.parseHex(headers.get("contentHash")),
+                                    Option.option(headers.get("storageId")));
     }
 
     // --- Current format (format=2) ---

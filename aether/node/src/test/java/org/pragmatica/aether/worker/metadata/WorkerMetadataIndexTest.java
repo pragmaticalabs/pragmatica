@@ -36,6 +36,25 @@ class WorkerMetadataIndexTest {
         assertThat(index.snapshot(WorkerMetadataIndex.GLOBAL)).doesNotContainKey(key);
     }
 
+    /// #3303 A3a (vA3b survivors wmi-seed/waiver-empty and wmi-seed/waiver-global): the seed offer and the arc waiver of an entity
+    /// keyspace belong to exactly that keyspace's `entity:` scope, like [AetherKey.EntityCheckpointKey]: not to the empty scope set
+    /// (the row would never reach a worker) and not to the global scope (it would reach every worker).
+    @Test
+    void entityArcKeys_areInExactlyTheirKeyspaceScope() {
+        var index = WorkerMetadataIndex.workerMetadataIndex();
+        var offer = AetherKey.EntitySeedOfferKey.entitySeedOfferKey("orders", 3);
+        var waiver = AetherKey.EntityArcWaiverKey.entityArcWaiverKey("orders", 5);
+
+        index.put(offer, "offer-value");
+        index.put(waiver, "waiver-value");
+
+        assertThat(index.snapshot("entity:orders")).containsEntry(offer, "offer-value")
+                                                    .containsEntry(waiver, "waiver-value");
+        assertThat(index.snapshot("entity:other")).isEmpty();
+        assertThat(index.snapshot(WorkerMetadataIndex.GLOBAL)).doesNotContainKeys(offer, waiver);
+        assertThat(index.hasScope(WorkerMetadataIndex.GLOBAL)).isFalse();
+    }
+
     /// v-2339 F4 (#1337): a worker receives both topic row kinds: in the global scope and in its artifact's scope. A worker that
     /// hosts a publisher or a subscriber has to see the other side's rows for the activation check, and the delivery path reads them.
     @Test

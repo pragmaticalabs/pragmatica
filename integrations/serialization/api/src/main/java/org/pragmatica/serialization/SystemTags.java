@@ -824,9 +824,12 @@ public interface SystemTags {
         pin(table, 2928, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue");
         pin(table, 2929, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentToken");
         pin(table, 2930, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue");
-        // #3345: the HELD report carried on the pong. Inside the dht-3345-3347 reservation 2960..2979 of wire-tag-ranges.txt.
+        // #3345: the HELD report carried on the pong. Inside the dht-3345-3347 reservation 2960..2961 of wire-tag-ranges.txt.
         pin(table, 2960, "org.pragmatica.cluster.metrics.HeldReport");
         pin(table, 2961, "org.pragmatica.cluster.metrics.HeldEnd");
+        // #3413: the drain row's key. Inside the drain-3413 reservation 2962..2979 of wire-tag-ranges.txt (know d2ce3461aa);
+        // 2963..2979 stay for the rest of the drain row.
+        pin(table, 2962, "org.pragmatica.aether.slice.kvstore.AetherKey.DrainCommandKey");
         // #834: SchemaVersionValue with `reachedBy`, and the reach enum: block 2984..2985 of wire-tag-allocations.md (RQ-TAGS-3; 2980..2983
         // belong to #2625); the range is reserved in wire-tag-ranges.txt first.
         pin(table, 2984, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue");
@@ -838,6 +841,14 @@ public interface SystemTags {
         // #420 flag day: the artifact-content binding with its block manifest, and the flag-day tag of `ArtifactContentValue` (old tag
         // 2118, retired above). Inside the 2990..2999 reservation of wire-tag-ranges.txt (know d2ce3461aa).
         pin(table, 2990, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue");
+        // #3303 A3a: the entity seed-offer and arc-waiver keys. Inside the arc-3303 reservation 3018..3037 of wire-tag-ranges.txt (know f3033886ee).
+        pin(table, 3018, "org.pragmatica.aether.slice.kvstore.AetherKey.EntitySeedOfferKey");
+        pin(table, 3019, "org.pragmatica.aether.slice.kvstore.AetherKey.EntityArcWaiverKey");
+        // #3303 A3b: the seed-offer and arc-waiver values, with the offer's nested entry and the waiver's cause enum. Same reservation.
+        pin(table, 3020, "org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue");
+        pin(table, 3021, "org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue.OfferEntry");
+        pin(table, 3022, "org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue");
+        pin(table, 3023, "org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue.WaiverCase");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 
