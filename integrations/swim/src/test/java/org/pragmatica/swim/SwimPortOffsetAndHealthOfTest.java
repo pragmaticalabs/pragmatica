@@ -144,7 +144,7 @@ class SwimPortOffsetAndHealthOfTest {
             // to the gossiped hostname; the transport always delivers a resolved address, so only a
             // hand-built sender reaches this.)
             var unresolved = InetSocketAddress.createUnresolved("ignored-host", QUIC_PORT + SWIM_OFFSET);
-            protocol.onMessage(unresolved, Announce.announce(NODE_B_INFO, "", 1L));
+            protocol.deliverForTest(unresolved, Announce.announce(NODE_B_INFO, "", 1L));
 
             assertThat(protocol.members()).as("an unpinnable ANNOUNCE registers nothing").doesNotContainKey(NODE_B);
         }

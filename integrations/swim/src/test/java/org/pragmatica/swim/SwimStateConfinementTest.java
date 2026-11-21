@@ -135,6 +135,56 @@ class SwimStateConfinementTest {
         assertThat(protocol.offExecutorMutationsForTest()).isZero();
     }
 
+    /// #3560, the window: a bare `onMessage` while another thread holds the executor (the probe tick draining, here
+    /// held on purpose) returns with the message still queued. This is the production contract, and exactly what a
+    /// test must not assert across: the guard (`SwimDeliveryGuardTest`) refuses a bare `onMessage` in a test.
+    @Test
+    void bareOnMessage_whileTheExecutorIsHeld_returnsBeforeTheMessageIsApplied() throws InterruptedException {
+        var protocol = protocol(new SilentListener());
+        var held = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var holder = new Thread(() -> protocol.onStateExecutorForTest(() -> hold(held, release)), "delivery-holder");
+
+        holder.start();
+        assertThat(held.await(WAIT_MS, TimeUnit.MILLISECONDS)).as("control: the holder owns the executor").isTrue();
+        protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(alive(NODE_A, 0))));
+        assertThat(protocol.members().containsKey(NODE_A)).as("returned while queued behind the holder, not applied yet")
+                                                          .isFalse();
+        release.countDown();
+        holder.join(WAIT_MS);
+
+        assertThat(protocol.members().containsKey(NODE_A)).as("applied by the holder's drain after it released").isTrue();
+    }
+
+    /// #3560, the seam: the same scenario through `deliverForTest` does not return until the message is applied,
+    /// so an assertion on the next line is safe. The delivering thread is seen waiting on the held executor (a
+    /// seam that only enqueued would let it finish at once), and after it returns the message's effect is visible.
+    @Test
+    void deliverForTest_whileTheExecutorIsHeld_waitsAndReturnsOnlyOnceTheMessageIsApplied() throws InterruptedException {
+        var protocol = protocol(new SilentListener());
+        var held = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var holder = new Thread(() -> protocol.onStateExecutorForTest(() -> hold(held, release)), "delivery-holder");
+        var deliverer = new Thread(() -> protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(alive(NODE_A, 0)))),
+                                   "delivery-deliverer");
+
+        holder.start();
+        assertThat(held.await(WAIT_MS, TimeUnit.MILLISECONDS)).as("control: the holder owns the executor").isTrue();
+        deliverer.start();
+        await().atMost(Duration.ofSeconds(10))
+               .until(() -> deliverer.getState() == Thread.State.TIMED_WAITING || !deliverer.isAlive());
+
+        assertThat(deliverer.isAlive()).as("the seam waits for the held executor instead of returning").isTrue();
+        assertThat(protocol.members().containsKey(NODE_A)).as("not applied while the holder runs").isFalse();
+        release.countDown();
+        holder.join(WAIT_MS);
+        deliverer.join(WAIT_MS);
+
+        assertThat(deliverer.isAlive()).as("the seam returned after the holder released").isFalse();
+        assertThat(protocol.members().containsKey(NODE_A)).as("applied by the time the seam returned").isTrue();
+        assertThat(protocol.offExecutorMutationsForTest()).isZero();
+    }
+
     /// The sensor is live: a write reached off the executor is counted. Drives the gossip chain handleMessage ->
     /// handlePing -> processPiggyback -> applyUpdate -> applyExistingMember -> adoptGossipedLabels off the executor;
     /// the label adoption's member write (storeScopedMember) is the only write the labelled ping adds over the
@@ -204,15 +254,15 @@ class SwimStateConfinementTest {
             var seq = 1_000L * index + round;
             var evenRound = round % 2 == 0;
 
-            protocol.onMessage(ADDR_A, new Ping(NODE_A, seq, List.of(alive(NODE_A, round))));
-            protocol.onMessage(ADDR_C, new Ping(NODE_C, seq, List.of(update(NODE_B, MemberState.SUSPECT, round))));
-            protocol.onMessage(ADDR_A, new Ack(NODE_A, seq, List.of(alive(NODE_C, round))));
-            protocol.onMessage(ADDR_A, new PingReq(NODE_A, NODE_C, seq));
-            protocol.onMessage(ADDR_C, Announce.announce(INFO_C, "cluster", round, TOKEN));
-            protocol.onMessage(ADDR_A, new WhoAmI(NODE_A));
-            protocol.onMessage(ADDR_A, new WhoAmIReply(SELF_ADDR));
-            protocol.onMessage(ADDR_C, new IdentityRefused(NODE_C, SELF_ID, "test"));
-            protocol.onMessage(ADDR_A, AppGossip.appGossip(NODE_A, 7, new byte[]{1}));
+            protocol.deliverForTest(ADDR_A, new Ping(NODE_A, seq, List.of(alive(NODE_A, round))));
+            protocol.deliverForTest(ADDR_C, new Ping(NODE_C, seq, List.of(update(NODE_B, MemberState.SUSPECT, round))));
+            protocol.deliverForTest(ADDR_A, new Ack(NODE_A, seq, List.of(alive(NODE_C, round))));
+            protocol.deliverForTest(ADDR_A, new PingReq(NODE_A, NODE_C, seq));
+            protocol.deliverForTest(ADDR_C, Announce.announce(INFO_C, "cluster", round, TOKEN));
+            protocol.deliverForTest(ADDR_A, new WhoAmI(NODE_A));
+            protocol.deliverForTest(ADDR_A, new WhoAmIReply(SELF_ADDR));
+            protocol.deliverForTest(ADDR_C, new IdentityRefused(NODE_C, SELF_ID, "test"));
+            protocol.deliverForTest(ADDR_A, AppGossip.appGossip(NODE_A, 7, new byte[]{1}));
             protocol.recordTransportHint(NODE_A, new PeerReachable(NODE_A));
             protocol.recordTransportHint(NODE_A, new PeerResponsive(NODE_A));
             protocol.recordTransportHint(NODE_C,

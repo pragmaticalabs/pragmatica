@@ -253,7 +253,7 @@ class SwimAppGossipTest {
     @Nested
     class Receiving {
         private void arrives(NodeId from, int channel, byte[] payload) {
-            protocol.onMessage(addressOf(0), AppGossip.appGossip(from, channel, payload));
+            protocol.deliverForTest(addressOf(0), AppGossip.appGossip(from, channel, payload));
         }
 
         @BeforeEach

@@ -190,6 +190,7 @@ class SelfAddressResolverTest {
         public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
             lastTarget.set(target);
             Option.option(handler.get())
+                  // ASYNC-DELIVERY: simulated network hop, called from a transport send inside a task; it must not wait (deliverForTest would fail from inside a task, and a real transport never waits)
                   .onPresent(h -> h.onMessage(target, SwimMessage.WhoAmIReply.whoAmIReply(observed)));
             return Promise.unitPromise();
         }

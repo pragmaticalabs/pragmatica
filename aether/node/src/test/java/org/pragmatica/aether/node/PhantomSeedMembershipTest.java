@@ -129,7 +129,7 @@ class PhantomSeedMembershipTest {
 
         // The genuine seed comes up inside the window: it answers probes and gossips its own Alive.
         genuineUp.set(true);
-        swim.onMessage(GENUINE_ADDR,
+        swim.deliverForTest(GENUINE_ADDR,
                        new Ping(GENUINE, 1L, List.of(MembershipUpdate.membershipUpdate(GENUINE, MemberState.ALIVE, 5, GENUINE_ADDR))));
 
         booting.set(false);
@@ -183,6 +183,7 @@ class PhantomSeedMembershipTest {
         @Override
         public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
             if (genuineUp.get() && target.equals(GENUINE_ADDR) && message instanceof Ping ping) {
+                // ASYNC-DELIVERY: simulated network hop, called from a transport send inside a task; it must not wait (deliverForTest would fail from inside a task, and a real transport never waits)
                 handler.get().onMessage(GENUINE_ADDR, Ack.ack(GENUINE, ping.sequence(), List.of()));
             }
 

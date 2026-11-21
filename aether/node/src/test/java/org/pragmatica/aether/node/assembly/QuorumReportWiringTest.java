@@ -208,7 +208,7 @@ class QuorumReportWiringTest {
     private void peerGossips(long incarnation, Map<String, String> labels) {
         var update = SwimMessage.MembershipUpdate.membershipUpdate(PEER, MemberState.ALIVE, incarnation, PEER_SWIM, 0L, labels);
 
-        swim.onMessage(PEER_SWIM, SwimMessage.Ack.ack(PEER, 1L, List.of(update)));
+        swim.deliverForTest(PEER_SWIM, SwimMessage.Ack.ack(PEER, 1L, List.of(update)));
     }
 
     /// Arm the detector at full membership, then report the consensus presence lost.

@@ -131,7 +131,7 @@ class CoreSwimHealthDetectorAssignedAnnounceTest {
         detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED), NEVER_OVERDUE);
         detector.markAssigned();
         await().atMost(5, TimeUnit.SECONDS).until(() -> !announcesToSeed().isEmpty());
-        swim.onMessage(SEED, Ack.ack(SEED_ID, 0L, List.of()));
+        swim.deliverForTest(SEED, Ack.ack(SEED_ID, 0L, List.of()));
         Thread.sleep(200);
 
         var afterJoinAck = announcesToSeed().size();

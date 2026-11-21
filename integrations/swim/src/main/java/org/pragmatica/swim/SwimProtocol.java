@@ -4222,6 +4222,16 @@ public final class SwimProtocol implements SwimMessageHandler {
         stateExecutor.call(() -> runForTest(action)).unwrap();
     }
 
+    /// Test-only (#3560): deliver `message` from `sender` and wait until it has been applied, so a test may assert
+    /// on the next line. Production [#onMessage] only enqueues when another thread is draining (the probe tick), so
+    /// a bare `onMessage` followed by an assertion reads the state before the message ran. Public only because tests
+    /// of other modules drive a started protocol; never use it from inside a task (a listener or transport callback):
+    /// it waits ([SerialExecutor#call]) and would fail there.
+    @Contract
+    public void deliverForTest(InetSocketAddress sender, SwimMessage message) {
+        onStateExecutorForTest(() -> handleMessage(sender, message));
+    }
+
     private static Unit runForTest(Runnable action) {
         action.run();
 
@@ -4263,7 +4273,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     void announceFromPinnedSourceForTest(InetSocketAddress sender, Announce announce) {
         onStateExecutorForTest(() -> addressPins.put(announce.nodeInfo().id(),
                                                      sender.getAddress()));
-        onMessage(sender, announce);
+        deliverForTest(sender, announce);
     }
 
     private static long unpredictableSequenceStart() {

@@ -96,7 +96,7 @@ class CoreSwimHealthDetectorGossipChannelTest {
     }
 
     private void peerSays(byte value) {
-        swim.onMessage(PEER_ADDRESS, AppGossip.appGossip(PEER, CHANNEL, new byte[]{value}));
+        swim.deliverForTest(PEER_ADDRESS, AppGossip.appGossip(PEER, CHANNEL, new byte[]{value}));
     }
 
     @Test
