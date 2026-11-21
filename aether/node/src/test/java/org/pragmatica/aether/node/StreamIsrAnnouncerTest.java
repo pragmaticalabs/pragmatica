@@ -10,7 +10,9 @@ import java.util.List;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.HotWindowDeclaration;
 import org.pragmatica.aether.slice.RetentionDeclaration;
+import org.pragmatica.aether.slice.TruncationDeclaration;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.StreamDeclaration;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -310,6 +312,21 @@ class StreamIsrAnnouncerTest {
         enforcing(declaring(GIB), announced).onConfigPut(replay);
 
         assertThat(retentionChanges(announced)).isEmpty();
+    }
+
+    /// Test 8: a truncation-only change is not a retention change. Mutant: compare the whole declaration.
+    @Test
+    void truncationOnlyChange_announcesNoRetentionChange() {
+        var announced = new ArrayList<OperationalEvent>();
+        var retention = declaring(GIB).declaration().flatMap(StreamDeclaration::retention);
+        var truncated = config(3, 3).withDeclaration(StreamDeclaration.streamDeclaration(retention,
+                                                                                         Option.some(TruncationDeclaration.truncationDeclaration(Option.none(), Option.some(60_000L))),
+                                                                                         Option.some(HotWindowDeclaration.hotWindowDeclaration(Option.some(1L), Option.none())),
+                                                                                         Option.some(5L)));
+
+        enforcing(declaring(GIB), announced).onConfigPut(configPut(truncated, 600L));
+
+        assertThat(retentionChanges(announced)).as("same retention, other sections changed").isEmpty();
     }
 
     private static List<OperationalEvent.StreamRetentionChanged> retentionChanges(List<OperationalEvent> events) {

@@ -12,7 +12,9 @@ import java.util.function.ToIntFunction;
 import java.util.stream.IntStream;
 
 import org.pragmatica.aether.api.OperationalEvent;
+import org.pragmatica.aether.slice.RetentionDeclaration;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.StreamDeclaration;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
@@ -130,18 +132,23 @@ public interface StreamIsrAnnouncer {
                                                                                                                                                                                             + ":" + config.confirmationFactor())));
     }
 
-    /// #3334: a committed config whose storage declaration differs from the one this node ENFORCES changed the stream's
-    /// retention bounds: an operator-facing change, announced once per committed Put. Compared with what is enforced
+    /// #3334: a committed config whose RETENTION declaration differs from the one this node ENFORCES changed the stream's
+    /// retention bounds: an operator-facing change, announced once per committed Put. Only the retention section is
+    /// compared: a truncation, hot-window or ingress change is not a retention change and announces nothing. Compared with what is enforced
     /// (never with the Put's `oldValue`), so a node that already enforces the declaration (a rejoin replaying the Put)
     /// announces nothing. Silent for an unchanged declaration, a stream not held here and a new life (a recreate is not a
-    /// retention change). The bounds are the declarations rendered as text; the `eventId` is a pure function of the
+    /// retention change). The bounds are the retention declarations rendered as text; the `eventId` is a pure function of the
     /// committed Put and the two bounds, so two nodes deriving it from one Put agree.
     static Option<OperationalEvent> retentionChanged(StreamConfigValue value, Option<StreamConfig> enforced) {
         var config = value.config();
 
         return enforced.filter(current -> current.incarnation() == config.incarnation())
-                       .filter(current -> !current.declaration().equals(config.declaration()))
-                       .map(current -> retentionChanged(value, String.valueOf(current.declaration()), String.valueOf(config.declaration())));
+                       .filter(current -> !retentionOf(current).equals(retentionOf(config)))
+                       .map(current -> retentionChanged(value, String.valueOf(retentionOf(current)), String.valueOf(retentionOf(config))));
+    }
+
+    private static Option<RetentionDeclaration> retentionOf(StreamConfig config) {
+        return config.declaration().flatMap(StreamDeclaration::retention);
     }
 
     private static OperationalEvent retentionChanged(StreamConfigValue value, String oldBounds, String newBounds) {

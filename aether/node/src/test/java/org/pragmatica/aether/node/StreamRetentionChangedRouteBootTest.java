@@ -42,7 +42,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
-/// #3334: a committed stream-config Put whose declaration differs from the one the node enforces raises ONE
+/// #3334: a committed stream-config Put whose retention declaration differs from the one the node enforces raises ONE
 /// `stream-retention-changed`, which the node's own router carries to the aggregator, whose committed gate lets it
 /// through once. The announcer's derivation is pinned by `StreamIsrAnnouncerTest` and the route text by
 /// `StreamFailoverAnnouncerWiringTest`; this boots a node so the Put reaches the announcer through the real KV router, in
