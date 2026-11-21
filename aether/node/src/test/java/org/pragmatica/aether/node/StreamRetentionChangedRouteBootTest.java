@@ -131,9 +131,9 @@ class StreamRetentionChangedRouteBootTest {
                                                                  .singleElement()
                                                                  .satisfies(event -> {
                                                                      assertThat(event.details()
-                                                                                     .get("oldBounds")).contains(Long.toString(oldMaxBytes));
+                                                                                     .get("oldBounds")).isEqualTo(boundsOf(oldMaxBytes));
                                                                      assertThat(event.details()
-                                                                                     .get("newBounds")).contains(Long.toString(newMaxBytes));
+                                                                                     .get("newBounds")).isEqualTo(boundsOf(newMaxBytes));
                                                                  }));
     }
 
@@ -159,8 +159,17 @@ class StreamRetentionChangedRouteBootTest {
         return StreamConfigValue.streamConfigValue(config, clock++);
     }
 
+    /// The bounds text is exactly the rendered retention section of the declaration: the section alone, nothing of the rest.
+    private static String boundsOf(long maxBytes) {
+        return String.valueOf(Option.some(retention(maxBytes)));
+    }
+
+    private static RetentionDeclaration retention(long maxBytes) {
+        return RetentionDeclaration.retentionDeclaration(Option.none(), Option.some(maxBytes), Option.none(), Option.none());
+    }
+
     private StreamConfig declaring(long maxBytes) {
-        var retention = RetentionDeclaration.retentionDeclaration(Option.none(), Option.some(maxBytes), Option.none(), Option.none());
+        var retention = retention(maxBytes);
 
         return StreamConfig.streamConfig(stream, 1, RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 600_000), "earliest")
                            .withReplication(new ReplicationFactors(1, 1))

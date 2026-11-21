@@ -272,8 +272,8 @@ class StreamIsrAnnouncerTest {
 
         assertThat(retentionChanges(announced)).as("one event for a stream of 4 partitions").singleElement().satisfies(event -> {
             assertThat(event.stream()).isEqualTo("orders");
-            assertThat(event.oldBounds()).contains(Long.toString(2 * GIB));
-            assertThat(event.newBounds()).contains(Long.toString(GIB));
+            assertThat(event.oldBounds()).isEqualTo(boundsOf(2 * GIB));
+            assertThat(event.newBounds()).isEqualTo(boundsOf(GIB));
         });
         var again = new ArrayList<OperationalEvent>();
         var laterPut = new ArrayList<OperationalEvent>();
@@ -327,6 +327,11 @@ class StreamIsrAnnouncerTest {
         enforcing(declaring(GIB), announced).onConfigPut(configPut(truncated, 600L));
 
         assertThat(retentionChanges(announced)).as("same retention, other sections changed").isEmpty();
+    }
+
+    /// The bounds text is exactly the rendered retention section of the declaration, nothing of the rest.
+    private static String boundsOf(long maxBytes) {
+        return String.valueOf(Option.some(RetentionDeclaration.retentionDeclaration(Option.none(), Option.some(maxBytes), Option.none(), Option.none())));
     }
 
     private static List<OperationalEvent.StreamRetentionChanged> retentionChanges(List<OperationalEvent> events) {
