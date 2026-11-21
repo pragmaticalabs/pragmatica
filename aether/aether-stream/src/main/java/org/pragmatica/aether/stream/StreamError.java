@@ -131,8 +131,7 @@ public sealed interface StreamError extends Cause {
         /// The refusal of a pair that cannot be a removal is a throw (a record constructor has no other channel) and guards a
         /// programming error only: every constructor call is a constant pair or goes through `reasonOf`, and the decode
         /// maps before it constructs, so no wire value reaches it.
-        @SuppressWarnings("JBCT-EX-01")
-        public CursorExpired {
+        @SuppressWarnings("JBCT-EX-01") public CursorExpired {
             if (disagrees(reason, cause)) {
                 throw new IllegalArgumentException("CursorExpired reason " + reason + " does not match cause " + cause);
             }
