@@ -101,7 +101,7 @@ class FlakeScanTest {
     void problems_twoIdenticalLinesInOneFile_needTwoEntries() throws IOException {
         var hits = FlakeScan.scan(plant("A.java", sleepLine() + "\n" + sleepLine())).hits();
 
-        assertThat(FlakeScan.problems(hits, List.of(hits.getFirst().key()), 1)).hasSize(2);
+        assertThat(FlakeScan.problems(hits, List.of(hits.getFirst().key()), 1)).hasSize(1);
         assertThat(FlakeScan.problems(hits, List.of(hits.getFirst().key(), hits.getLast().key()), 2)).isEmpty();
     }
 
