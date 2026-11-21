@@ -91,7 +91,7 @@ class MembershipAssemblyAlertWiringTest {
         when(clusterNode.network()).thenReturn(Mockito.mock(ClusterNetwork.class));
         when(topologyObserver.inQuorum()).thenReturn(() -> true);
         return new MembershipAssembly.MembershipJournalInputs(config,
-                                                              Mockito.mock(MessageRouter.DelegateRouter.class),
+                                                              MessageRouter.DelegateRouter.delegate(),
                                                               (RabiaNode<KVCommand<AetherKey>>) clusterNode,
                                                               Mockito.mock(HlcClock.class),
                                                               Mockito.mock(GenerationSnapshotSource.class),
