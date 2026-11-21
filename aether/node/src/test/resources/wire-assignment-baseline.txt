@@ -21,7 +21,7 @@
 # no skip metadata, so an old reader desynchronises rather than ignoring the change).
 # Rename only, same type and position = byte-neutral, pinned so a same-typed name swap is
 # visible in this diff. See WireAssignmentTripwireTest for the derivation from the generator.
-GENERATION 6
+GENERATION 7
 ENUM org.pragmatica.aether.api.ClusterEvent$Severity INFO=0,WARNING=1,CRITICAL=2,UNKNOWN=3
 ENUM org.pragmatica.aether.http.forward.HttpForwardMessage$NotAppliedReason ROUTE_NOT_FOUND=0,BUDGET_EXHAUSTED=1,UNDECODABLE_REQUEST=2,UNKNOWN=3
 ENUM org.pragmatica.aether.http.forward.HttpForwardMessage$Pipeline APP=0,MANAGEMENT=1,UNKNOWN=2
@@ -222,6 +222,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DeploymentOutcomeKey (bluepr
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DhtPartitionOwnershipKey (partitionId:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DhtReplicationChangeKey ()
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DhtReplicationReportKey (nodeId:org.pragmatica.consensus.NodeId)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DrainCommandKey (target:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DrainDeadlineKey (nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$EndpointKey (artifact:org.pragmatica.aether.artifact.Artifact,methodName:org.pragmatica.aether.slice.MethodName,instanceNumber:int)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$EntityArcWaiverKey (keyspace:java.lang.String,child:int)
@@ -297,8 +298,8 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CommunityPlacementAvailabi
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CommunityPlacementOperationValue (operationId:java.lang.String,communityId:java.lang.String,targetNode:org.pragmatica.consensus.NodeId,targetSource:java.lang.String,targetZone:org.pragmatica.lang.Option<java.lang.String>,sourceBinding:java.lang.String,previousNode:org.pragmatica.lang.Option<org.pragmatica.consensus.NodeId>,previousSource:java.lang.String,phase:org.pragmatica.aether.slice.kvstore.AetherValue$PlacementOperationPhase,issuer:org.pragmatica.cluster.state.kvstore.LeaderValue,startedAt:long,phaseChangedAt:long,detail:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CommunityValue (sourceName:java.lang.String,role:java.lang.String,targetSize:int,state:org.pragmatica.aether.slice.kvstore.CommunityState,createdAt:long,dissolvedAt:org.pragmatica.lang.Option<java.lang.Long>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConfigValue (key:java.lang.String,value:java.lang.String,updatedAt:long)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue (assignee:org.pragmatica.consensus.NodeId,epoch:org.pragmatica.aether.slice.generation.Epoch,assignmentTerm:long,assignedAt:org.pragmatica.hlc.HlcTimestamp)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue$AssignmentToken (assignee:org.pragmatica.consensus.NodeId,epoch:org.pragmatica.aether.slice.generation.Epoch)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue (assignee:org.pragmatica.consensus.NodeId,epoch:org.pragmatica.aether.slice.generation.Epoch,assignmentTerm:long,assignedAt:org.pragmatica.hlc.HlcTimestamp,member:org.pragmatica.lang.Option<java.lang.String>)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue$AssignmentToken (assignee:org.pragmatica.consensus.NodeId,epoch:org.pragmatica.aether.slice.generation.Epoch,member:org.pragmatica.lang.Option<java.lang.String>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerGroupTombstone (epoch:org.pragmatica.aether.slice.generation.Epoch)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerGroupValue (assignedTo:org.pragmatica.consensus.NodeId,consumerId:java.lang.String,assignedAt:long,epoch:org.pragmatica.aether.slice.generation.Epoch)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentApplyValue (attemptId:java.lang.String,previous:org.pragmatica.lang.Option<org.pragmatica.aether.slice.kvstore.AetherValue$AppBlueprintValue>,openedAt:long)
@@ -689,6 +690,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DeploymentOutcomeKey 1671
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DhtPartitionOwnershipKey 1103
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DhtReplicationChangeKey 2120
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DhtReplicationReportKey 2122
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DrainCommandKey 2962
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DrainDeadlineKey 1104
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$EndpointKey 1105
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$EntityArcWaiverKey 3019
@@ -768,8 +770,8 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CommunityPlacementAvailabil
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CommunityPlacementOperationValue 1683
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CommunityValue 1613
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ConfigValue 1614
-TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue 1650
-TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue$AssignmentToken 1651
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue 2928
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue$AssignmentToken 2929
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerGroupTombstone 2900
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerGroupValue 1615
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$DepartureCause 2158
@@ -842,7 +844,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SpokesmanValue 1642
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StorageStatusValue 1645
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StorageStatusValue$TierStatus 1646
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamConfigValue 2920
-TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamCursorCheckpointValue 1648
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamCursorCheckpointValue 2930
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionOwnershipValue 1652
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionRecoveryValue 1714
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamRegistrationValue 1653

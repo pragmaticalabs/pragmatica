@@ -173,11 +173,12 @@ class JoinGenerationGuardTest {
                .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.WireGenerationRefused(B, 1, 2)));
     }
 
-    /// Pin: the generation is bumped to 6 by #3458/#3481 M1b (ReadRefusal.Kind: UNKNOWN moved 15 to 16, so an older node decodes
-    /// the new ordinal 16 as out of range and reads a newer node's STREAM_NOT_MATERIALIZED (15) as its own UNKNOWN, i.e. as text). A literal, so a revert to 5 goes red.
+    /// Pin: the generation is bumped to 7 by #3334 S1a-1a (`ConsumerAssignmentValue`, `AssignmentToken` and `StreamCursorCheckpointValue`
+    /// re-tagged and `member` added, so an older node refuses the new frames on an unknown tag); 6 was #3458/#3481 M1b (ReadRefusal.Kind
+    /// renumber). A literal, so a revert to 6 goes red.
     @Test
-    void thisBinarysGeneration_isSixAfterTheReadRefusalKindRenumber() {
-        assertThat(JoinGenerationGuard.WIRE_GENERATION).isEqualTo(6);
+    void thisBinarysGeneration_isSevenAfterTheAssignmentMemberFlagDay() {
+        assertThat(JoinGenerationGuard.WIRE_GENERATION).isEqualTo(7);
     }
 
     @Test

@@ -731,6 +731,73 @@ class SwimProtocolPhaseAwareSuppressionTest {
                 protocol.stop();
             }
         }
+
+        /// #3526: the suspicion expiry fires the FAULTY edge (listener, then the vetoed UNKNOWN)
+        /// before it ends its suspicion. A higher-incarnation SUSPECT arriving in that gap re-arms a
+        /// NEW suspicion; the expiry must end only the suspicion it expired, so the re-armed one still
+        /// ripens to FAULTY. Driven synchronously, with no scheduler running: the membership listener
+        /// re-delivers SUSPECT incarnation 1 from inside the first FAULTY transition. Red when the
+        /// expiry ends the suspicion of the peer unconditionally.
+        @Test
+        void suspectReArmedInsideExpiry_survivesTheExpiry_andRipensToFaulty() {
+            var connected = new AtomicBoolean(true);
+            var observations = new RecordingObservationSink();
+            var reArming = new ReArmingListener();
+            var protocol = SwimProtocol.swimProtocol(tightConfig(),
+                                                     new RecordingTransport(),
+                                                     reArming,
+                                                     SELF_ID,
+                                                     SELF_ADDR,
+                                                     () -> false, // NORMAL
+                                                     peer -> connected.get())
+                                       .unwrap();
+            reArming.protocol.set(protocol);
+            protocol.addObservationListener(observations);
+            protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE); // never HEALTHY: the veto applies
+            protocol.onMessage(ADDR_B, suspectPing(1L, 0));
+
+            assertThat(protocol.suspectTimestampForTest(NODE_A).isPresent())
+                .as("SUSPECT at incarnation 0 arms the first suspicion")
+                .isTrue();
+
+            var farFuture = System.currentTimeMillis() + Duration.ofMinutes(10).toMillis();
+
+            protocol.expireSuspectMembersForTest(farFuture);
+
+            assertThat(reArming.reArmed.get())
+                .as("SUSPECT at incarnation 1 was delivered inside the first FAULTY transition")
+                .isTrue();
+            assertThat(observations.byType(SwimObservation.UnknownObserved.class))
+                .as("edge 1 is vetoed while connected")
+                .hasSize(1);
+            assertThat(protocol.suspectTimestampForTest(NODE_A).isPresent())
+                .as("the suspicion re-armed inside the expiry must survive it")
+                .isTrue();
+
+            connected.set(false);
+            protocol.expireSuspectMembersForTest(farFuture);
+
+            assertThat(observations.byType(SwimObservation.FaultyObserved.class))
+                .as("the re-armed suspicion ripens to FAULTY once the transport is down")
+                .hasSize(1);
+        }
+    }
+
+    private static Ping suspectPing(long sequence, long incarnation) {
+        return new Ping(NODE_B, sequence, List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, incarnation, ADDR_A)));
+    }
+
+    /// Simulates inbound gossip landing between the FAULTY transition and the end of its expiry: on
+    /// the first FAULTY of node A, delivers SUSPECT at incarnation 1 on the expiring thread.
+    static class ReArmingListener extends RecordingListener {
+        final AtomicReference<SwimProtocol> protocol = new AtomicReference<>();
+        final AtomicBoolean reArmed = new AtomicBoolean(false);
+
+        @Override public void onMemberFaulty(SwimMember member, boolean firstHand) {
+            if (NODE_A.equals(member.nodeId()) && reArmed.compareAndSet(false, true)) {
+                protocol.get().onMessage(ADDR_B, suspectPing(2L, 1));
+            }
+        }
     }
 
     private static List<NodeId> faultyPeers(RecordingObservationSink observations) {
