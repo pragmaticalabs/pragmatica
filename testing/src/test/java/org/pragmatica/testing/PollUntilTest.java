@@ -24,12 +24,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 /// Pins the wait helper's reporting on both outcomes, with the clock and the pause injected so no assertion depends on real time.
+/// The class timeout turns a regressed deadline comparison (an injected clock that never passes the deadline) into a red test, not a hang.
+@Timeout(20)
 class PollUntilTest {
     private static final Duration DEADLINE = Duration.ofMillis(50);
     private static final Duration INTERVAL = Duration.ofMillis(20);
