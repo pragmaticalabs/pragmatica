@@ -528,7 +528,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// confirmation — C = `confirmers.size() - 1`, memberlist-style). `expectedConfirmers`
     /// is K, fixed at creation as `max(1, min(config.dogpileExpectedConfirmers(),
     /// trackedMembers - 1))`.
-    private record Suspicion(long startedAtMs, long minWindowMs, long maxWindowMs, int expectedConfirmers, Set<NodeId> confirmers) {}
+    private record Suspicion(long startedAtMs,
+                             long minWindowMs,
+                             long maxWindowMs,
+                             int expectedConfirmers,
+                             Set<NodeId> confirmers) {}
 
     /// Death-record for a PROVEN-HEALTHY id that died and was cleaned up. `incarnation`
     /// is the incarnation at which the id was tombstoned; a strictly-higher incoming
@@ -1617,7 +1621,11 @@ public final class SwimProtocol implements SwimMessageHandler {
 
         confirmers.add(accuser);
 
-        return new Suspicion(System.currentTimeMillis(), baseMs, baseMs * lhmMultiplier(), expectedConfirmers, confirmers);
+        return new Suspicion(System.currentTimeMillis(),
+                             baseMs,
+                             baseMs * lhmMultiplier(),
+                             expectedConfirmers,
+                             confirmers);
     }
 
     /// Record an independent dogpile confirmation of an ACTIVE suspicion of `suspect`
@@ -1750,9 +1758,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// that re-armed suspicion and left the member SUSPECT with no expiry, so it never reached FAULTY.
     /// Compared by identity: two suspicions may carry equal values.
     private void endExpiredSuspicion(NodeId nodeId, Suspicion expired) {
-        suspicions.computeIfPresent(nodeId, (_, current) -> current == expired
-                                                            ? null
-                                                            : current);
+        suspicions.computeIfPresent(nodeId,
+                                    (_, current) -> current == expired
+                                                    ? null
+                                                    : current);
     }
 
     /// The window `suspicion` expires on: [#effectiveSuspicionWindowMs] computed from the suspicion
