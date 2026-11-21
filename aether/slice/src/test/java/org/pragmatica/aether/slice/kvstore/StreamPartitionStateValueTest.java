@@ -36,6 +36,10 @@ import static org.pragmatica.lang.Option.some;
 /// derived from the committed row cannot drop it), no factory or constructor overload defaults it, and no main source writes a
 /// non-zero value yet.
 ///
+/// The tripwire scans AetherValue.java too, minus the row's factory and four copy methods (skipped by name; their bodies are
+/// covered by the carry arms, so a literal injected inside one of them is NOT seen by the scan). It does not see method references
+/// or reflection. A read of `activationGeneration()` counts as a carry only when unqualified or on `this`.
+///
 /// The carry arms run on a row whose component is 7, built here: a carry test on 0 cannot tell a carry from a default.
 class StreamPartitionStateValueTest {
     private static final long CARRIED = 7L;
