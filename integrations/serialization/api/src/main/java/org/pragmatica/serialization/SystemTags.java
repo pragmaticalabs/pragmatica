@@ -810,9 +810,12 @@ public interface SystemTags {
         pin(table, 2925, "org.pragmatica.aether.slice.TruncationPolicy");
         // #3334 S2a1-3: the retention-changed cluster event. Inside the S2a1-3 sub-allocation 2926..2927 (2927 unused).
         pin(table, 2926, "org.pragmatica.aether.api.ClusterEvent.StreamRetentionChanged");
-        // #3345: the HELD report carried on the pong. Inside the dht-3345-3347 reservation 2960..2979 of wire-tag-ranges.txt.
+        // #3345: the HELD report carried on the pong. Inside the dht-3345-3347 reservation 2960..2961 of wire-tag-ranges.txt.
         pin(table, 2960, "org.pragmatica.cluster.metrics.HeldReport");
         pin(table, 2961, "org.pragmatica.cluster.metrics.HeldEnd");
+        // #3413: the drain row's key. Inside the drain-3413 reservation 2962..2979 of wire-tag-ranges.txt (know d2ce3461aa);
+        // 2963..2979 stay for the rest of the drain row.
+        pin(table, 2962, "org.pragmatica.aether.slice.kvstore.AetherKey.DrainCommandKey");
         // #834: SchemaVersionValue with `reachedBy`, and the reach enum: block 2984..2985 of wire-tag-allocations.md (RQ-TAGS-3; 2980..2983
         // belong to #2625); the range is reserved in wire-tag-ranges.txt first.
         pin(table, 2984, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue");
