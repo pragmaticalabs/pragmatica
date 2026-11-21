@@ -395,6 +395,22 @@ class BackupRestoreCoordinatorRejectedTest {
                                               .doesNotContain("marker records the refused key");
     }
 
+    /// A refusal that names no key writes nothing over an unrefused marker, so the text says the marker does not record a key (L2: an
+    /// unrefused marker and a keyless refusal must not read as "the same key is recorded").
+    @Test
+    void keylessRefusal_overAnUnrefusedMarker_stopsWarned_andSaysTheMarkerDoesNotRecordTheKey() {
+        var coordinator = markedCoordinator();
+
+        retries.clear();
+        warnings.clear();
+        coordinator.onFailure(RestoreError.Refused.refused("t", Option.some(Refusal.refusal(RefusalKind.ARM, Option.none())), Option.none()),
+                              FailureAction.WARN_STOP);
+        assertThat(retries).isEmpty();
+        assertThat(rejectionWrites()).isEmpty();
+        assertThat(rejectedWarning().detail()).contains("does not record the refused key")
+                                              .doesNotContain("marker records the refused key");
+    }
+
     /// L1: a rejection write that was refused gives the tenure back, so a later call in the SAME tenure writes again.
     @Test
     void submitRejected_refusedWrite_givesTheTenureBack_aLaterCallInTheSameTenureWrites() {
