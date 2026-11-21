@@ -1593,8 +1593,7 @@ public final class MembershipFsm {
     @Contract
     public void close() {
         closed = true;
-        members.values()
-               .forEach(MemberTracking::retire);
+        members.values().forEach(MemberTracking::retire);
     }
 
     /// Timers currently armed across all tracked members (#3557 observability seam, package-private): the join grace, the
@@ -1612,8 +1611,7 @@ public final class MembershipFsm {
     /// from acting after [`#close`]. Lets a test exercise that flag without racing the scheduler.
     @Contract
     void runDequeuedTimerTasks() {
-        members.values()
-               .forEach(this::runDequeuedTimerTasks);
+        members.values().forEach(this::runDequeuedTimerTasks);
     }
 
     private void runDequeuedTimerTasks(MemberTracking tracking) {
@@ -2158,7 +2156,7 @@ public final class MembershipFsm {
         /// alone, and a second read could see the report cleared and leave the refusal permanent (v3107a F1). True when the caller must schedule the
         /// re-offer (none is pending yet), so at most one re-offer timer exists per member.
         synchronized boolean armRejoinReoffer(long incarnation) {
-            if (retired || ! (fsm.current() instanceof MembershipState.Dead dead) || incarnation <= dead.terminalIncarnation()) {
+            if (retired || !(fsm.current() instanceof MembershipState.Dead dead) || incarnation <= dead.terminalIncarnation()) {
                 return false;
             }
 
@@ -2375,7 +2373,6 @@ public final class MembershipFsm {
         /// [`#dispatch`], so no double-arm occurs in practice.
         private synchronized void armDepartureTimeout() {
             cancelDepartureTimeout();
-
             if (!retired) {
                 departureTimeoutHandle = Option.some(SharedScheduler.schedule(this::terminalizeIfStillDeparting,
                                                                               departureTimeout));
@@ -2456,7 +2453,6 @@ public final class MembershipFsm {
         @Contract
         synchronized void armJoinGrace() {
             cancelJoinGrace();
-
             if (!retired) {
                 joinGraceHandle = Option.some(SharedScheduler.schedule(this::expireJoinGrace, joinGrace));
             }
