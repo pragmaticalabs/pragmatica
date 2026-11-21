@@ -193,7 +193,6 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void pruneMembershipScope() {
         members.keySet().removeIf(peer -> !inMembershipScope(peer));
         everSeenHealthy.removeIf(peer -> !inMembershipScope(peer));
-        suspectTimestamps.keySet().removeIf(peer -> !inMembershipScope(peer));
         suspicions.keySet().removeIf(peer -> !inMembershipScope(peer));
         memberFirstSeenAt.keySet().removeIf(peer -> !inMembershipScope(peer));
         lastProbedAt.keySet().removeIf(peer -> !inMembershipScope(peer));
@@ -223,10 +222,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Last time an address conflict was reported, by `member@attemptedAddress`.
     private final Map<String, Long> addressConflictReportedAt = new ConcurrentHashMap<>();
     private final Map<Long, RelayInfo> pendingRelays = new ConcurrentHashMap<>();
-    private final Map<NodeId, Long> suspectTimestamps = new ConcurrentHashMap<>();
-    /// Wave-6 Lifeguard per-suspect suspicion state, created alongside the
-    /// `suspectTimestamps` start-stamp in [#beginSuspicion] and removed with it in
-    /// [#endSuspicion]. Holds the window bounds fixed at suspicion start (min = base
+    /// Wave-6 Lifeguard per-suspect suspicion state, created in [#beginSuspicion] and removed in
+    /// [#endSuspicion]. The ONLY record of an active suspicion: it carries its own start stamp, so
+    /// arming is one put and the expiry can end exactly the suspicion it expired (#3526). Holds the
+    /// window bounds fixed at suspicion start (min = base
     /// `suspectTimeout`, max = base × the local LHM multiplier at that moment), the
     /// expected-confirmer count K, and the deduped accuser set driving the dogpile
     /// logarithmic shrink ([#dogpileWindowMs]). Missing entry (defensive) falls back
@@ -250,7 +249,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// FAULTY-entry path ([#transitionToFaulty], [#notifyFaulty], [#applyNewFaultyMember]).
     /// AUTHORITATIVE residency clock for [#isFaultyAndExpired]: a FAULTY member stays
     /// resident (refutable) until `suspectTimeout × 3` has elapsed FROM THIS STAMP.
-    /// Introduced as a Wave-1 diagnostic that confirmed H8 (the `suspectTimestamps`
+    /// Introduced as a Wave-1 diagnostic that confirmed H8 (the suspect start-stamp
     /// re-stamp written by the FAULTY transition was removed same-tick by
     /// `expireSuspectIfOverdue`, so members were swept 2–4 ms after their FAULTY edge
     /// instead of the designed 30 000 ms residency); promoted to the authoritative
@@ -529,7 +528,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// confirmation — C = `confirmers.size() - 1`, memberlist-style). `expectedConfirmers`
     /// is K, fixed at creation as `max(1, min(config.dogpileExpectedConfirmers(),
     /// trackedMembers - 1))`.
-    private record Suspicion(long minWindowMs, long maxWindowMs, int expectedConfirmers, Set<NodeId> confirmers) {}
+    private record Suspicion(long startedAtMs, long minWindowMs, long maxWindowMs, int expectedConfirmers, Set<NodeId> confirmers) {}
 
     /// Death-record for a PROVEN-HEALTHY id that died and was cleaned up. `incarnation`
     /// is the incarnation at which the id was tombstoned; a strictly-higher incoming
@@ -708,7 +707,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         // Mirror the ANNOUNCE guard (`if (!members.containsKey(...))`): only introduce
         // an UNKNOWN id. A re-seed of a member already tracked (notably a SUSPECT victim
         // whose suspect-window is counting down to FAULTY) must be a no-op — otherwise
-        // each channel reconnect re-stamps `suspectTimestamps`, perpetually deferring the
+        // each channel reconnect re-stamps the suspicion start, perpetually deferring the
         // FAULTY transition so `NODE_FAILED` never fires (#231 lingering-victim).
         if (members.containsKey(nodeId)) {
             return;
@@ -1282,13 +1281,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void expireSuspectMembers() {
-        var now = System.currentTimeMillis();
-        var baseSuspectTimeoutMillis = config.suspectTimeout().millis();
+        expireSuspectMembers(System.currentTimeMillis());
+    }
 
-        suspectTimestamps.forEach((nodeId, timestamp) -> expireSuspectIfOverdue(nodeId,
-                                                                                timestamp,
-                                                                                now,
-                                                                                baseSuspectTimeoutMillis));
+    private void expireSuspectMembers(long now) {
+        suspicions.forEach((nodeId, suspicion) -> expireSuspectIfOverdue(nodeId, suspicion, now));
         // Clean up stale relays by age, not by pendingProbes presence
         var relayTimeoutMillis = config.probeTimeout().millis() * 3;
 
@@ -1512,7 +1509,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// Wave-6 H8 fix: residency is measured from the FAULTY-edge stamp
     /// ([#faultyStampedAtMs], written on every FAULTY-entry path), NOT from
-    /// `suspectTimestamps` — whose entry the suspicion-expiry tick removed in the very
+    /// the suspicion start-stamp — whose entry the suspicion-expiry tick removed in the very
     /// tick that fired the FAULTY edge, sending this method into its "no timestamp →
     /// remove" branch and sweeping the member 2–4 ms after its FAULTY edge (Wave-1
     /// confirmed) instead of honouring the designed `suspectTimeout × 3` window. A
@@ -1541,7 +1538,6 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// re-proven by a real probe-ack.
     private void clearDeathMemory(NodeId peer) {
         everSeenHealthy.remove(peer);
-        suspectTimestamps.remove(peer);
         suspicions.remove(peer);
         memberFirstSeenAt.remove(peer);
         lastProbedAt.remove(peer);
@@ -1590,7 +1586,6 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// genuine-kill detection budget is unchanged. Every decision journaled (Wave-1
     /// pattern).
     private void beginSuspicion(NodeId suspect, NodeId accuser) {
-        suspectTimestamps.put(suspect, System.currentTimeMillis());
         var suspicion = newSuspicion(accuser);
 
         suspicions.put(suspect, suspicion);
@@ -1609,9 +1604,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     /// Disarm the suspicion of `suspect` (refuted, promoted ALIVE, expired to FAULTY,
-    /// or swept): remove both the start-stamp and the dogpile state.
+    /// or swept): remove the suspicion with its start-stamp and dogpile state.
     private void endSuspicion(NodeId suspect) {
-        suspectTimestamps.remove(suspect);
         suspicions.remove(suspect);
     }
 
@@ -1623,7 +1617,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
         confirmers.add(accuser);
 
-        return new Suspicion(baseMs, baseMs * lhmMultiplier(), expectedConfirmers, confirmers);
+        return new Suspicion(System.currentTimeMillis(), baseMs, baseMs * lhmMultiplier(), expectedConfirmers, confirmers);
     }
 
     /// Record an independent dogpile confirmation of an ACTIVE suspicion of `suspect`
@@ -1655,7 +1649,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     private long suspicionWindowMs(NodeId nodeId, long baseMs) {
         var dogpileWindow = option(suspicions.get(nodeId)).map(SwimProtocol::dogpileWindowMs).or(baseMs);
 
-        return (long)(dogpileWindow * clusterSizeWindowMultiplier());
+        return scaledByClusterSize(dogpileWindow);
+    }
+
+    private long scaledByClusterSize(long dogpileWindowMs) {
+        return (long)(dogpileWindowMs * clusterSizeWindowMultiplier());
     }
 
     /// Fix 3 (#336 cluster-size suspect-window scaling): the canonical Lifeguard size term
@@ -1730,10 +1728,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
     }
 
-    private void expireSuspectIfOverdue(NodeId nodeId, long timestamp, long now, long baseSuspectTimeoutMillis) {
-        var effectiveTimeoutMs = effectiveSuspicionWindowMs(nodeId, baseSuspectTimeoutMillis);
-
-        if (now - timestamp < effectiveTimeoutMs) {
+    private void expireSuspectIfOverdue(NodeId nodeId, Suspicion suspicion, long now) {
+        if (now - suspicion.startedAtMs() < expiryWindowMs(nodeId, suspicion)) {
             return;
         }
         // No join-grace DEFER here anymore (#336/#241): a freshly seeded/announced never-HEALTHY
@@ -1744,7 +1740,25 @@ public final class SwimProtocol implements SwimMessageHandler {
         // SUSPECT — all of which correctly proceed to FAULTY here.
         option(members.get(nodeId)).filter(member -> member.state() == MemberState.SUSPECT)
               .onPresent(this::transitionToFaulty);
-        endSuspicion(nodeId);
+        endExpiredSuspicion(nodeId, suspicion);
+    }
+
+    /// End `expired` only if it is still the active suspicion of `nodeId` (#3526). The FAULTY edge
+    /// fired inside [#transitionToFaulty] is delivered to observers synchronously, and inbound
+    /// gossip runs on another thread, so a higher-incarnation SUSPECT can re-arm a NEW suspicion
+    /// ([#beginSuspicion]) before this expiry returns. An unconditional [#endSuspicion] here erased
+    /// that re-armed suspicion and left the member SUSPECT with no expiry, so it never reached FAULTY.
+    /// Compared by identity: two suspicions may carry equal values.
+    private void endExpiredSuspicion(NodeId nodeId, Suspicion expired) {
+        suspicions.computeIfPresent(nodeId, (_, current) -> current == expired
+                                                            ? null
+                                                            : current);
+    }
+
+    /// The window `suspicion` expires on: [#effectiveSuspicionWindowMs] computed from the suspicion
+    /// the expiry is deciding about, not from a re-read of the map that may hold a newer one.
+    private long expiryWindowMs(NodeId nodeId, Suspicion suspicion) {
+        return effectiveSuspectTimeoutMs(nodeId, scaledByClusterSize(dogpileWindowMs(suspicion)));
     }
 
     /// The window a suspicion of `nodeId` actually expires on: the dogpile/cluster-size window
@@ -1797,7 +1811,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
         // Wave-6 H8 fix: the FAULTY residency clock is THIS stamp (authoritative, read by
-        // isFaultyAndExpired). The pre-fix `suspectTimestamps` re-stamp written here was
+        // isFaultyAndExpired). The pre-fix suspect start-stamp re-stamp written here was
         // removed by expireSuspectIfOverdue in the same tick, defeating the designed
         // suspectTimeout×3 residency (Wave-1 measured 2–4 ms) — so it is gone.
         faultyStampedAtMs.put(member.nodeId(), System.currentTimeMillis());
@@ -4043,7 +4057,14 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Test-only accessor for the per-peer suspect-timestamp map. Used by
     /// transport-hint tests to validate the timer-bias mechanism deterministically.
     Option<Long> suspectTimestampForTest(NodeId peer) {
-        return option(suspectTimestamps.get(peer));
+        return option(suspicions.get(peer)).map(Suspicion::startedAtMs);
+    }
+
+    /// Test-only: one suspicion-expiry pass ([#expireSuspectMembers]) evaluated at `nowMs`, so a
+    /// test can expire a suspicion without waiting for its window on the scheduler (#3526).
+    @Contract
+    void expireSuspectMembersForTest(long nowMs) {
+        expireSuspectMembers(nowMs);
     }
 
     /// Test-only accessor for the per-peer tombstone state. Used by the
