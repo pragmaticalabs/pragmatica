@@ -42,11 +42,12 @@ import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
-/// #3334: a committed stream-config Put whose retention declaration differs from the one the node enforces raises ONE
-/// `stream-retention-changed`, which the node's own router carries to the aggregator, whose committed gate lets it
-/// through once. The announcer's derivation is pinned by `StreamIsrAnnouncerTest` and the route text by
-/// `StreamFailoverAnnouncerWiringTest`; this boots a node so the Put reaches the announcer through the real KV router, in
-/// production handler order, and the event through the real message router: neither unit test can reach either.
+/// #3334, #3554: a committed stream-config Put that the stream manager adopts over a different enforced retention
+/// declaration raises ONE `stream-retention-changed` from the manager's adopt site, which the node's own router carries to
+/// the aggregator, whose committed gate lets it through once. The adopt-site decision is pinned by
+/// `RetentionChangedAtAdoptSiteTest`, the event by `StreamIsrAnnouncerTest` and the wiring text by
+/// `StreamFailoverAnnouncerWiringTest`; this boots a node so the Put reaches the manager through the real KV router, in
+/// production handler order, and the event through the real message router: none of those tests can reach either.
 ///
 /// The count is the aggregator's `committedEmitsPassed`, counted at the gate, so it does not depend on the stream landing
 /// the event; the event's own bounds are read from the cluster-events stream.
@@ -115,6 +116,28 @@ class StreamRetentionChangedRouteBootTest {
         commit(put(declaring(2 * GIB)), new KVCommand.Remove<>(StreamConfigKey.streamConfigKey(stream)));
 
         assertThat(passed() - before).as("the Put's change is derived before the Remove handler drops the stream").isEqualTo(1L);
+    }
+
+    /// Two adopted Puts in one batch raise two events, in commit order, each naming the bounds enforced before it: the
+    /// second one's old bounds are the first one's new bounds.
+    @Test
+    @Timeout(value = 120, unit = SECONDS)
+    void twoPutsInOneBatch_raiseTwoEvents_inCommitOrder() {
+        boot();
+        commit(put(declaring(GIB)));
+
+        var before = passed();
+
+        commit(put(declaring(2 * GIB)), new KVCommand.Put<>(StreamConfigKey.streamConfigKey(stream), put(declaring(3 * GIB))));
+
+        assertThat(passed() - before).as("two adopted Puts: two events pass the gate").isEqualTo(2L);
+        await().atMost(30, SECONDS)
+               .untilAsserted(() -> assertThat(retentionEvents()).as("in commit order, each with the bounds enforced before it")
+                                                                 .extracting(event -> event.details()
+                                                                                           .get("oldBounds") + ">" + event.details()
+                                                                                                                         .get("newBounds"))
+                                                                 .containsExactly(boundsOf(GIB) + ">" + boundsOf(2 * GIB),
+                                                                                  boundsOf(2 * GIB) + ">" + boundsOf(3 * GIB)));
     }
 
     private void assertOneEventFor(long oldMaxBytes, long newMaxBytes) {
