@@ -15,6 +15,7 @@ import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
+
 /// Re-records the baseline that [WireAssignmentTripwireTest] compares against (#964).
 ///
 /// Run it deliberately, never as part of a normal build:
@@ -72,7 +73,9 @@ class WireAssignmentBaselineWriter {
         try {
             Files.createDirectories(BASELINE.getParent());
             Files.writeString(BASELINE,
-                              render(BASELINE, WireAssignmentTripwireTest.generationLine(), WireAssignmentTripwireTest.currentAssignment()),
+                              render(BASELINE,
+                                     WireAssignmentTripwireTest.generationLine(),
+                                     WireAssignmentTripwireTest.currentAssignment()),
                               StandardCharsets.UTF_8);
         } catch (IOException e) {
             throw new UncheckedIOException(e);

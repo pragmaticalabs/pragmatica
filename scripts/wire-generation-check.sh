@@ -14,6 +14,9 @@
 # base + 1. SEMANTIC lines already at the merge base are history and never re-trigger. History is append-only: a base
 # SEMANTIC line that is removed or edited at HEAD is refused (exit 1, naming the line), and so is any SEMANTIC line that is
 # not of the form  SEMANTIC <value> <text containing "->">.
+# A candidate is a line whose first token is SEMANTIC in any case (leading whitespace allowed); a candidate not of that exact
+# form is refused as malformed, and one textually identical to a line already at the merge base is a no-op: it declares
+# nothing, so vary the text of a new break.
 # The base generation is the base baseline's GENERATION line; a base baseline without one (before the line
 # existed) counts as WIRE_GENERATION read from JoinGenerationGuard.java at the merge base.
 # A runtime test cannot do this: it never sees the base commit's constant, and a relative assertion stays green

@@ -186,11 +186,14 @@ if [[ -f "$cases_table" ]]; then
     done <"$cases_table"
 fi
 cases=$((cases + 1))
-if [[ "$table_rows" -ge 30 ]]; then
+# The row count is pinned EXACTLY (data rows only, comments and blanks excluded), so deleting a row goes red; adding a row
+# means raising this number here and in WireAssignmentTripwireTest.SEMANTIC_CASE_ROWS.
+expected_table_rows=34
+if [[ "$table_rows" -eq "$expected_table_rows" ]]; then
     echo "ok   C9 case table read: $table_rows rows"
 else
     failures=$((failures + 1))
-    echo "FAIL C9 case table $cases_table gave $table_rows rows (>= 30 wanted); the shared form rule was NOT examined"
+    echo "FAIL C9 case table $cases_table gave $table_rows rows ($expected_table_rows wanted); the shared form rule was NOT fully examined"
 fi
 
 # The command the workflow's merge_group step runs, with the repo's script path replaced by the real script.
