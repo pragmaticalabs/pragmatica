@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -20,6 +21,7 @@ import org.pragmatica.aether.api.routes.GrantedBodyRoute;
 import org.pragmatica.aether.api.routes.GrantedRouteProbe;
 import org.pragmatica.aether.api.routes.ManagementRouter;
 import org.pragmatica.aether.config.ApiKeyEntry;
+import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.http.AppHttpServer;
@@ -74,6 +76,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.net.tcp.Server;
 import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.serialization.Deserializer;
@@ -87,7 +90,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.pragmatica.lang.Unit.unit;
@@ -100,10 +102,11 @@ import static org.pragmatica.lang.Unit.unit;
 /// "Access denied: role VIEWER cannot access OPERATOR endpoint" and name neither the plane nor the axis, so an operator
 /// who had just enabled app-HTTP api-key mode diagnosed the wrong component. The refusal text must name both.
 ///
-/// #1121: `security_mode = "none"` is FULLY OPEN on the management plane. `securityEnabled=false` never consults the
-/// validator, so nothing refuses a non-public route; the earlier comment and changelog claim of a refusal was false.
-/// The last test pins the documented behaviour, so a future change to it is a decision and not an accident. It is green
-/// on today's code by design: it is a pin, not a reproduction.
+/// #1121: `security_mode = "none"` is FULLY OPEN on the management plane, and every grant a route receives still comes
+/// from `validate`. With security off the server calls the OFF validator ([SecurityValidator#managementValidator]) inside
+/// the request's scope, as it does with security on: the route gets a live grant for the `security-off` principal, the
+/// context stays empty, nothing is enforced and nothing is bound to the holder. A refusal from that validator fails
+/// closed, locally and forwarded. The OFF arms below pin it; the ON arms beside them are the controls.
 class ManagementServerSecurityCouplingTest {
     private static final NodeId SELF = NodeId.nodeId("node-self").unwrap();
     private static final NodeId SENDER = NodeId.nodeId("node-sender").unwrap();
@@ -189,15 +192,14 @@ class ManagementServerSecurityCouplingTest {
                                          .contains("OPERATOR");
     }
 
+    /// OFF, forwarded: a route above VIEWER (the push is OPERATOR) is served to a caller with no credential. Red if the
+    /// enforcement runs when security is off (the OFF caller's context is empty, and an empty context holds no role).
     @Test
-    void securityDisabled_anonymousPush_isServedWithoutConsultingTheValidator() {
-        var validator = validatorReturning(SecurityError.NO_VALIDATOR_CONFIGURED.result());
-
-        server(validator, false).onHttpForwardRequest(forwardRequest());
+    void securityDisabled_forwardedPush_isServedAboveViewerByTheOffValidator() {
+        server(offValidator(), false).onHttpForwardRequest(forwardRequest());
 
         assertThat(serializer.status()).as("security_mode = none serves a non-public route to an anonymous caller")
                                        .isEqualTo(201);
-        verify(validator, never()).validate(any(), any());
     }
 
     @Test
@@ -210,19 +212,43 @@ class ManagementServerSecurityCouplingTest {
         assertThat(serializer.bodyText()).contains("Management API").contains("authorization_role").contains("key may not use this plane");
     }
 
+    /// OFF, local, a validator that refuses: the request fails closed through the one refusal path and the route never
+    /// runs. Red if the failure still dispatches.
     @Test
-    void securityDisabled_localPath_servesAnonymousRequestWithoutConsultingTheValidator() {
-        var validator = validatorReturning(SecurityError.NO_VALIDATOR_CONFIGURED.result());
+    void securityDisabled_localPath_aRefusingValidator_failsClosedAndTheRouteNeverRuns() {
+        var validator = validatorReturning(SecurityError.MISSING_API_KEY.result());
+        var probe = GrantedRouteProbe.answering();
         var writer = new RecordingResponseWriter();
 
-        server(validator, false).handleRequest(new StubHttpRequest("/api/v1/no-such-route"), writer);
+        server(validator, false, probe).handleRequest(GrantRequest.adminGet(GrantedRouteProbe.PATH), writer);
 
-        verify(validator, never()).validate(any(), any());
-        assertThat(writer.status()).as("dispatch was reached, not refused").isNotIn(401, 403);
+        verify(validator).validate(any(), any());
+        assertThat(writer.status()).as("the sender gets the refusal").isEqualTo(401);
+        assertThat(probe.received().toOptional()).as("the route never ran").isEmpty();
     }
 
-    /// Control for the pin above: the same local request with security ENABLED does consult the validator and is
-    /// refused, so the disabled case passing is the gate and not a request that can never be refused.
+    /// OFF, forwarded, a validator that refuses: the receiving node's refusal is relayed to the forwarding node as the
+    /// forward's response. Red if the failure dispatches, or if the capture the refusal was written to is not relayed.
+    @Test
+    void securityDisabled_forwardedPath_aRefusingValidator_failsClosedAndIsRelayed() {
+        var validator = validatorReturning(SecurityError.MISSING_API_KEY.result());
+        var probe = GrantedRouteProbe.answering();
+        var forwarded = HttpRequestContext.httpRequestContext(GrantedRouteProbe.PATH,
+                                                              "GET",
+                                                              Map.of(),
+                                                              Map.of(),
+                                                              new byte[0],
+                                                              "req-off-refused");
+
+        server(validator, false, forwarded, probe::routerWith).onHttpForwardRequest(forwardRequest());
+
+        verify(validator).validate(any(), any());
+        assertThat(serializer.status()).as("the forwarding node receives the refusal").isEqualTo(401);
+        assertThat(probe.received().toOptional()).as("the route never ran").isEmpty();
+    }
+
+    /// Control for the OFF refusals above: the same local request with security ENABLED consults the validator and is
+    /// refused, so the OFF cases are the gate and not a request that can never be refused.
     @Test
     void securityEnabled_localPath_consultsTheValidatorAndRefuses() {
         var validator = validatorReturning(SecurityError.MISSING_API_KEY.result());
@@ -240,7 +266,7 @@ class ManagementServerSecurityCouplingTest {
     /// every iteration red.
     @Test
     void unmatchedPath_isAnswered404FileNotFound_andFormerDashboardPathsServeNoAsset() {
-        var server = server(validatorReturning(SecurityError.NO_VALIDATOR_CONFIGURED.result()), false);
+        var server = server(offValidator(), false);
 
         for (var path : List.of("/api/v1/no-such-route", "/", "/index.html", "/js/app.js", "/css/tokens.css", "/dashboard")) {
             var writer = new RecordingResponseWriter();
@@ -293,20 +319,85 @@ class ManagementServerSecurityCouplingTest {
         assertThat(probe.liveAtCall()).as("the grant was live while the route ran").isTrue();
     }
 
-    /// `security_mode = "none"` validates nothing, so a granted route runs with no grant even when an ADMIN key is
-    /// configured and sent. Red if the open path validates and passes the grant it minted.
+    /// OFF, local: the granted route receives the very [Authenticated] the OFF validator returned, with a live grant for the
+    /// `security-off` principal, even though an ADMIN key is sent (no credential is matched). Red if the validation runs
+    /// outside the request's scope (the grant is born dead) or if dispatch passes an ungranted [Authenticated].
     @Test
-    void grantedRoute_securityDisabled_adminKeySent_receivesNoGrant() {
-        var validator = RecordingValidator.recording(SecurityValidator.apiKeyValidator(ADMIN_KEYS));
+    void grantedRoute_securityDisabled_localPath_receivesALiveGrantFromTheOffValidator() {
+        var validator = RecordingValidator.recording(offValidator());
         var probe = GrantedRouteProbe.answering();
         var writer = new RecordingResponseWriter();
 
         server(validator, false, probe).handleRequest(GrantRequest.adminGet(GrantedRouteProbe.PATH), writer);
 
         assertThat(writer.status()).isEqualTo(200);
-        assertThat(validator.returned().toOptional()).as("the validator was never consulted").isEmpty();
-        assertThat(probe.received().map(Authenticated::grant).toOptional()).as("the route ran, with no grant")
-                                                              .contains(Option.none());
+        assertThat(probe.received().toOptional()).as("the route received the Authenticated the server validated")
+                                                 .containsSame(validator.returned().unwrap());
+        assertThat(probe.liveAtCall()).as("the grant was live while the route ran").isTrue();
+        assertThat(validator.liveAtValidation()).as("the scope was open at the validation").isTrue();
+        assertThat(grantedBy(probe.received().unwrap())).isEqualTo("service:security-off");
+    }
+
+    /// OFF, forwarded: the same, on the receiving node's own scope.
+    @Test
+    void grantedRoute_securityDisabled_forwardedPath_receivesALiveGrantFromTheOffValidator() {
+        var validator = RecordingValidator.recording(offValidator());
+        var probe = GrantedRouteProbe.answering();
+        var forwarded = HttpRequestContext.httpRequestContext(GrantedRouteProbe.PATH,
+                                                              "GET",
+                                                              Map.of(),
+                                                              Map.of(),
+                                                              new byte[0],
+                                                              "req-off-forwarded");
+
+        server(validator, false, forwarded, probe::routerWith).onHttpForwardRequest(forwardRequest());
+
+        assertThat(serializer.status()).isEqualTo(200);
+        assertThat(probe.received().toOptional()).as("the route received the Authenticated the owner validated")
+                                                 .containsSame(validator.returned().unwrap());
+        assertThat(probe.liveAtCall()).as("the grant was live while the route ran").isTrue();
+        assertThat(grantedBy(probe.received().unwrap())).isEqualTo("service:security-off");
+    }
+
+    /// OFF, two sequential requests: each route runs under its own grant. The second grant is live in its route and is not
+    /// the first, which is dead by then. Red if the grant is memoised across requests.
+    @Test
+    void securityDisabled_sequentialRequests_eachRouteHoldsItsOwnLiveGrant() {
+        var grants = new ArrayList<AdminGrant>();
+        var liveInRoute = new ArrayList<Boolean>();
+        var route = GrantedBodyRoute.grantedBodyRoute(PATH_A, (_, auth) -> {
+            grants.add(auth.grant().unwrap());
+            liveInRoute.add(liveGrant(auth));
+            return Promise.success("\"x\"");
+        });
+        var server = offServer(route);
+
+        server.handleRequest(new KeyedRequest(PATH_A, Option.none()), new RecordingResponseWriter());
+        server.handleRequest(new KeyedRequest(PATH_A, Option.none()), new RecordingResponseWriter());
+
+        assertThat(liveInRoute).as("each grant was live in its own route").containsExactly(true, true);
+        assertThat(grants.get(1)).as("the second grant is not the first").isNotSameAs(grants.get(0));
+        assertThat(grants.get(0).live()).as("the first is dead once its request returned").isFalse();
+        assertThat(grants.get(1).live()).as("and so is the second").isFalse();
+    }
+
+    /// OFF: the route reads an EMPTY context, and nothing is bound to the holder. Red if the OFF context (the ADMIN
+    /// service principal) is handed to the route as the caller, or if the holder is bound as with security on.
+    @Test
+    void securityDisabled_routeSeesAnEmptyContext_andNothingIsBoundToTheHolder() {
+        var context = new AtomicReference<SecurityContext>();
+        var held = new AtomicReference<Option<SecurityContext>>();
+        var route = GrantedBodyRoute.grantedBodyRoute(PATH_A, (_, auth) -> {
+            context.set(auth.context());
+            held.set(SecurityContextHolder.currentContext());
+            return Promise.success("\"x\"");
+        });
+
+        offServer(route).handleRequest(new KeyedRequest(PATH_A, Option.none()), new RecordingResponseWriter());
+
+        assertThat(context.get()).as("the Authenticated's context is the empty one").isEqualTo(SecurityContext.securityContext());
+        assertThat(context.get().isAuthenticated()).isFalse();
+        assertThat(held.get().isEmpty()).as("no context is bound to the holder").isTrue();
     }
 
     /// The grant dies when `handleRequest` returns: it was live in the route, and is dead to anyone still holding it.
@@ -528,23 +619,30 @@ class ManagementServerSecurityCouplingTest {
         assertThat(inRoute.get().principal()).isEqualTo(received.get().context().principal());
     }
 
-    /// `security_mode = "none"` on the forwarded path still hands a granted route a non-null, ungranted [Authenticated].
+    /// OFF on the forwarded path: a granted route gets a live grant, the empty context, and no holder binding, as locally.
     @Test
-    void forwardedPath_securityDisabled_routeReceivesANonNullUngrantedAuthenticated() {
+    void forwardedPath_securityDisabled_routeReceivesALiveGrantAndAnEmptyContext() {
         var received = new AtomicReference<Authenticated>();
+        var live = new AtomicBoolean();
+        var held = new AtomicReference<Option<SecurityContext>>();
         var route = GrantedBodyRoute.grantedBodyRoute(PATH_A, (_, auth) -> {
             received.set(auth);
+            live.set(liveGrant(auth));
+            held.set(SecurityContextHolder.currentContext());
             return Promise.success("\"x\"");
         });
         var forwarded = HttpRequestContext.httpRequestContext(PATH_A, "GET", Map.of(), Map.of(), new byte[0], "req-fwd-open");
 
-        server(SecurityValidator.apiKeyValidator(ISOLATION_KEYS), false, forwarded, sources -> GrantedBodyRoute.routerWith(sources, route))
+        server(offValidator(), false, forwarded, sources -> GrantedBodyRoute.routerWith(sources, route))
                 .onHttpForwardRequest(forwardRequest());
 
         assertThat(serializer.status()).isEqualTo(200);
         assertThat(received.get()).as("the route ran with an Authenticated").isNotNull();
-        assertThat(received.get().grant().isEmpty()).as("and no grant").isTrue();
+        assertThat(live.get()).as("its grant was live in the route").isTrue();
+        assertThat(received.get().context()).as("the context is empty").isEqualTo(SecurityContext.securityContext());
+        assertThat(held.get().isEmpty()).as("no context is bound to the holder").isTrue();
     }
+
 
     /// TRIPWIRE for ms18 (Refs #3550). The secured forward path guards an unsupported method with a `return` before validation, but
     /// `dispatchManagementForwardWithinBudget` builds the `ForwardedRequestContext` first, and that constructor throws
@@ -731,6 +829,24 @@ class ManagementServerSecurityCouplingTest {
         }
 
         @Override public ResponseWriter header(String name, String value) {return this;}
+    }
+
+    /// The validator the assembly builds for a `security_mode = "none"` management plane.
+    private static SecurityValidator offValidator() {
+        return SecurityValidator.managementValidator(AppHttpConfig.insecureAppHttpConfig(0),
+                                                     () -> mock(KVStore.class))
+                                .validator();
+    }
+
+    private ManagementServerImpl offServer(RouteSource... extra) {
+        return server(offValidator(),
+                      false,
+                      HttpRequestContext.httpRequestContext(PUSH_PATH, "PUT", Map.of(), Map.of(), new byte[] {1, 2, 3}, "req-962"),
+                      sources -> GrantedBodyRoute.routerWith(sources, extra));
+    }
+
+    private static String grantedBy(Authenticated authenticated) {
+        return authenticated.grant().unwrap().grantedBy().value();
     }
 
     private static SecurityValidator validatorReturning(Result<SecurityContext> outcome) {

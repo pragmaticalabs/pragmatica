@@ -9,9 +9,11 @@ import java.util.Set;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.config.ApiKeyEntry;
+import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.JwtConfig;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.Principal;
+import org.pragmatica.aether.http.handler.security.Principal.PrincipalType;
 import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
@@ -47,6 +49,43 @@ public interface SecurityValidator {
 
     static SecurityValidator jwtValidator(JwtConfig jwtConfig) {
         return HttpAuthenticator.jwtValidator(jwtConfig)::authenticate;
+    }
+
+    /// The Management API's validator and whether its security is enabled, both read from the configured mode ONCE
+    /// (#962: `[management] security_mode`, inheriting `[app-http] security_mode` when absent).
+    ///
+    /// Every [AdminGrant] a management route receives comes from `validate` on the validator returned here, in every
+    /// mode. Enabled, it is the credential-matching validator (config keys, then the KV-held keys). Not enabled, it is
+    /// the OFF validator: it matches no credential, serves every caller, and mints a grant for the fixed `security-off`
+    /// principal, live only inside the request scope the management server opens around the call.
+    ///
+    /// Main code that calls this over an insecure config inside a request scope holds a live grant on any node; in-process
+    /// code is trusted (the accepted residual of the grant design).
+    static ManagementSecurity managementValidator(AppHttpConfig config,
+                                                  Supplier<KVStore<AetherKey, AetherValue>> kvStoreSupplier) {
+        return config.managementSecurityEnabled()
+               ? ManagementSecurity.managementSecurity(true,
+                                                       kvStoreAwareValidator(apiKeyValidator(config.apiKeys()),
+                                                                             kvStoreSupplier))
+               : ManagementSecurity.managementSecurity(false, SecurityValidator::offAuthenticated);
+    }
+
+    /// The Management API's validator with the flag the server gates on, built together from one mode read.
+    record ManagementSecurity(boolean enabled, SecurityValidator validator) {
+        public static ManagementSecurity managementSecurity(boolean enabled, SecurityValidator validator) {
+            return new ManagementSecurity(enabled, validator);
+        }
+    }
+
+    /// The OFF validator's answer: the EMPTY context (an anonymous caller, nothing for a route to personalise to) and a
+    /// grant minted for the `security-off` principal. `mint` captures the scope bound on this thread per call, so no
+    /// grant outlives its request and none is shared between requests.
+    private static Result<Authenticated> offAuthenticated(HttpRequestContext request, SecurityPolicy policy) {
+        var off = SecurityContext.securityContext(Principal.principal("security-off", PrincipalType.SERVICE).unwrap(),
+                                                  Set.of(Role.ADMIN),
+                                                  Map.of());
+
+        return Result.success(Authenticated.authenticated(SecurityContext.securityContext(), AdminGrant.mint(off)));
     }
 
     /// GRANTS ADMIN + SERVICE TO EVERY CALLER. Named `permitAll` rather than `noOp` because "no-op"
@@ -86,7 +125,7 @@ public interface SecurityValidator {
     /// the anonymous context grants nothing), everything else is refused with [SecurityError#NO_VALIDATOR_CONFIGURED] (#573).
     ///
     /// Installed by the app-HTTP plane's `SecurityMode.NONE` arm. The management plane does NOT use it: under
-    /// `security_mode = "none"` that plane never consults a validator and is fully open (#1121).
+    /// `security_mode = "none"` that plane uses the OFF validator of [#managementValidator] and is fully open (#1121).
     ///
     /// "No validator configured" must mean NO AUTHORITY, never ALL AUTHORITY. Returning a failure
     /// rather than an empty success is deliberate: [KvStoreApiKeyValidator] consults its delegate

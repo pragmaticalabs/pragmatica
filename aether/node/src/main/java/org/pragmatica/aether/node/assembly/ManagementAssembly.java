@@ -139,7 +139,6 @@ public sealed interface ManagementAssembly {
         var entityCheckpointDriver = in.entityCheckpointDriver();
         var node = in.node();
         var deploymentMeters = in.deploymentMeters();
-        var mgmtSecurityEnabled = config.appHttp().managementSecurityEnabled();
         // #962: `[management] security_mode` decides whether the Management API authenticates and,
         // when absent, INHERITS `[app-http] security_mode`. Both planes check the same
         // `api-keys` and the same cluster bootstrap admin key. They authorize on
@@ -148,14 +147,14 @@ public sealed interface ManagementAssembly {
         // plane and the axis (ManagementServerImpl#denialDetail); the operator documentation
         // states the coupling where api-key mode is configured.
         //
-        // #1121: `security_mode = "none"` leaves this plane FULLY OPEN. `ManagementServerImpl`
-        // gates on `mgmtSecurityEnabled` and, when false, dispatches without consulting any
-        // validator -- on the local path, the forwarded path, the websocket feeds and the Maven
-        // push admission alike. An earlier version of this block installed
-        // `denyUnlessPublicValidator` here and claimed non-public routes were refused unless a
-        // bootstrap key was present; that validator was never consulted, so the claim was false
-        // and the validator is gone. The validator below is built for the enabled case only.
-        var configValidator = SecurityValidator.apiKeyValidator(config.appHttp().apiKeys());
+        // #1121: `security_mode = "none"` leaves this plane FULLY OPEN, but not unvalidated: ONE call builds the
+        // flag and the validator from a single read of the configured mode, and the server calls that validator
+        // inside every request's scope in every mode. With the mode off it is the OFF validator: it serves every
+        // caller, enforces nothing and mints the grant for the `security-off` principal, so every AdminGrant a
+        // management route receives comes from `validate`. The websocket feeds and the Maven push admission read the
+        // same flag.
+        var mgmtSecurity = SecurityValidator.managementValidator(config.appHttp(), () -> node.kvStore());
+        var mgmtSecurityEnabled = mgmtSecurity.enabled();
 
         if (!mgmtSecurityEnabled) {
             LOG.warn("Management API on port {} is FULLY OPEN: its security mode is \"none\" ([management] security_mode, or inherited from"
@@ -186,7 +185,6 @@ public sealed interface ManagementAssembly {
                      config.managementPort());
         }
 
-        var mgmtSecurityValidator = SecurityValidator.kvStoreAwareValidator(configValidator, () -> node.kvStore());
         var managementServer = ManagementServer.managementServer(config.managementPort(),
                                                                  () -> node,
                                                                  entityCheckpointDriver,
@@ -200,7 +198,7 @@ public sealed interface ManagementAssembly {
                                                                  sliceInvoker,
                                                                  scheduledTaskStateRegistry,
                                                                  config.tls(),
-                                                                 mgmtSecurityValidator,
+                                                                 mgmtSecurity.validator(),
                                                                  mgmtSecurityEnabled,
                                                                  () -> config.appHttp()
                                                                              .apiKeys(),

@@ -68,4 +68,20 @@ class ManagementAssemblyDrainPortSeamTest {
         assertThat(code).containsOnlyOnce("DrainPort.registry(");
         assertThat(code).doesNotContain("DrainPort.none(");
     }
+
+    /// #3303 (A3c): the assembly builds the management validator and the enabled flag from ONE call, so one read of the
+    /// configured mode feeds both. A second mode read (a `managementSecurityEnabled()` call, or the mode itself) can
+    /// disagree with the validator; deriving the flag from the app plane (`securityEnabled()`, `securityMode()`) breaks
+    /// the #962 inheritance rule. Mutants: a second read of the mode turns the `doesNotContain` red; a second call, or
+    /// none, turns `containsOnlyOnce` red.
+    @Test
+    void managementServer_buildsTheValidatorAndTheFlagFromOneModeRead() {
+        var code = NodeDepartureWiringTest.assemblyCode();
+
+        assertThat(code).containsOnlyOnce("SecurityValidator.managementValidator(");
+        assertThat(code).doesNotContain("managementSecurityEnabled");
+        assertThat(code).doesNotContain("managementSecurityMode");
+        assertThat(code).doesNotContain(".securityEnabled()");
+        assertThat(code).doesNotContain(".securityMode()");
+    }
 }
