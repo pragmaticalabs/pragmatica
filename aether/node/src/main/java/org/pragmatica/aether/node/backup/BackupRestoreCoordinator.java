@@ -1048,6 +1048,7 @@ public final class BackupRestoreCoordinator {
     private void stopOn(Cause cause) {
         if (settled(RestoreGate.decision(kvStore))) {
             LOG.debug("Backup restore: stale refusal after a committed decision ignored: {}", cause.message());
+
             return;
         }
 
@@ -1071,12 +1072,12 @@ public final class BackupRestoreCoordinator {
     private void recordAndStop(RestoreError.Refused refused) {
         refused.refusal()
                .fold(Promise::unitPromise, this::submitRejected)
-               .onResultRun(() -> warnRejected(refused, recordsRefusedKey(refused)));
+               .onResultRun(() -> warnRejected(refused,
+                                               recordsRefusedKey(refused)));
     }
 
     private boolean recordsRefusedKey(RestoreError.Refused refused) {
-        var key = refused.refusal()
-                         .flatMap(BackupRestoreCoordinator::refusedKey);
+        var key = refused.refusal().flatMap(BackupRestoreCoordinator::refusedKey);
 
         return key.isPresent() && RestoreGate.decision(kvStore)
                                              .filter(marker -> marker.rejection()
@@ -1123,7 +1124,8 @@ public final class BackupRestoreCoordinator {
     }
 
     private Promise<Unit> rejectOnce(LeaderValue leaderValue, KVCommand.Refusal refusal) {
-        return rejectionWrite(leaderValue, refusal).fold(Promise::unitPromise, write -> claimAndSubmit(leaderValue, write));
+        return rejectionWrite(leaderValue, refusal).fold(Promise::unitPromise,
+                                                         write -> claimAndSubmit(leaderValue, write));
     }
 
     /// The claim is taken before the write goes out (a second caller in flight writes nothing) and handed back when the write is not
