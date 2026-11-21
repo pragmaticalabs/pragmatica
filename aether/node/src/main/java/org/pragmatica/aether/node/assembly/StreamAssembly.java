@@ -436,9 +436,6 @@ public sealed interface StreamAssembly {
         var eventAggregator = in.eventAggregator();
         var operatorWarningSink = in.operatorWarningSink();
         var allEntries = in.allEntries();
-        // #3334: the committed retention change the announcer raises is published by the aggregator.
-        allEntries.add(MessageRouter.Entry.route(OperationalEvent.StreamRetentionChanged.class,
-                                                 event -> eventAggregator.onStreamRetentionChanged(event)));
         var streamMaxMemoryBytes = in.streamMemoryBudget().maxMemoryBytes();
         // A6: activate replication. The replica registry (populated by the A2 ReplicaSetController from
         // HRW placement) and a network-backed ReplicationTransport are constructed here — ahead of the
@@ -574,6 +571,9 @@ public sealed interface StreamAssembly {
                                                        .build();
 
         allEntries.addAll(streamConfigKvRouter.asRouteEntries());
+        // #3334: the committed retention change the announcer raises is published by the aggregator.
+        allEntries.add(MessageRouter.Entry.route(OperationalEvent.StreamRetentionChanged.class,
+                                                 eventAggregator::onStreamRetentionChanged));
         // B5b — provision system:cluster-events:1.0.0 as a REAL partition-managed stream.
         //
         // The events stream is now created in the StreamPartitionManager (single partition) via

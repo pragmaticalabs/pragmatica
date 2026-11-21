@@ -39,7 +39,7 @@ class StreamFailoverAnnouncerWiringTest {
         assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.StreamLineageRestarted.class,eventAggregator::onStreamLineageRestarted)");
         assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.StreamConfigChangeNotApplied.class,eventAggregator::onStreamConfigChangeNotApplied)");
         // #3334: a committed retention change raised by the announcer reaches the aggregator, which publishes it committed.
-        assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.StreamRetentionChanged.class,event->eventAggregator.onStreamRetentionChanged(event))");
+        assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.StreamRetentionChanged.class,eventAggregator::onStreamRetentionChanged)");
         // #1723: a scheduled task's unknown fire outcome and its late resolution are derived from the committed task state
         // on every node and reach the aggregator.
         assertThat(code).containsOnlyOnce("ScheduledTaskOutcomeAnnouncer.scheduledTaskOutcomeAnnouncer(delegateRouter::route);");
