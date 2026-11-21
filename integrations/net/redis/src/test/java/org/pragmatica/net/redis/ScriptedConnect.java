@@ -2,6 +2,7 @@ package org.pragmatica.net.redis;
 
 import java.net.ConnectException;
 import java.net.SocketAddress;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFactory;
@@ -21,6 +22,16 @@ final class ScriptedConnect {
     /// A connect that never completes: only the configured connect timeout can end it.
     static ChannelFactory<Channel> neverCompletes() {
         return PendingChannel::new;
+    }
+
+    /// The same channels, counted as they are made, so a test can pin that a caller passes its factory through.
+    static ChannelFactory<Channel> counted(ChannelFactory<Channel> channels, AtomicInteger made) {
+        return () -> countedChannel(channels, made);
+    }
+
+    private static Channel countedChannel(ChannelFactory<Channel> channels, AtomicInteger made) {
+        made.incrementAndGet();
+        return channels.newChannel();
     }
 
     private static final class RefusedChannel extends NioSocketChannel {

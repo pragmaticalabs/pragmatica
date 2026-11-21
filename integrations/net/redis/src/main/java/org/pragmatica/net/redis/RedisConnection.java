@@ -88,6 +88,11 @@ import static org.pragmatica.net.redis.RedisError.Timeout.timeout;
 ///    that owns its event loop, that loop terminated.
 ///  - At most `maxInFlight` commands are unresolved at once; the next one fails with
 ///    [RedisError.PoolSaturated] without being sent. Earned by an atomic counter taken before the write.
+///  - A connect that owns its event loop resolves: refused, timed out by `connectTimeout`, or connected.
+///    Earned by one order: the owned loop is shut down only after the connect outcome is recorded (#3558).
+///    The outcome is recorded by the connect and handshake listeners, which netty notifies on the channel's
+///    loop, so a loop stopped by the close path before a listener was added would drop it, and the connect
+///    would never resolve. Netty's connect timer runs on that same live loop.
 public final class RedisConnection implements RedisCommands {
     private final RedisConfig config;
     private final Option<EventLoopGroup> ownedGroup;
@@ -97,6 +102,9 @@ public final class RedisConnection implements RedisCommands {
     private final AtomicInteger inFlight = new AtomicInteger();
     private final AtomicReference<Cause> terminal = new AtomicReference<>();
     private final Promise<Unit> closed = Promise.promise();
+    /// Resolved once the connect outcome is recorded, or by [#close] of a connection that never got a channel;
+    /// the owned event loop is shut down only after it.
+    private final Promise<Unit> settled = Promise.promise();
     /// Assigned by the channel initializer, which runs on the event loop before the first read.
     private volatile Channel channel;
 
@@ -164,6 +172,7 @@ public final class RedisConnection implements RedisCommands {
         var connection = new RedisConnection(config, ownedGroup, frameLimit);
 
         return connection.open(group, tls, channels)
+                         .onResultRun(connection::settle)
                          .flatMap(_ -> connection.handshake()
                                                  .mapError(RedisConnection::asConnectFailure))
                          .onFailure(_ -> connection.close());
@@ -208,6 +217,12 @@ public final class RedisConnection implements RedisCommands {
         promise.resolve(future.isSuccess()
                         ? success(future.channel())
                         : connectionFailed(Causes.fromThrowable(future.cause())).result());
+    }
+
+    /// The connect outcome is recorded: the owned event loop, if any, may now be shut down.
+    @Contract
+    private void settle() {
+        settled.succeed(unit());
     }
 
     /// AUTH then SELECT, each only when configured. They are ordinary commands, so a failure of either
@@ -391,17 +406,36 @@ public final class RedisConnection implements RedisCommands {
     public Promise<Unit> close() {
         terminal.compareAndSet(null, RedisError.General.CLOSED);
         option(channel).onPresent(Channel::close);
-        option(channel).onEmpty(this::release);
+        option(channel).onEmpty(this::releaseUnopened);
 
         return closed;
     }
 
-    /// The connection is over: stop the private event loop, if any, and resolve [#close]'s promise.
+    /// No channel was ever assigned, so no connect listener is pending on the loop: the outcome is recorded here.
+    @Contract
+    private void releaseUnopened() {
+        settle();
+        release();
+    }
+
+    /// The connection is over: once the connect outcome is recorded, stop the private event loop, if any, and
+    /// resolve [#close]'s promise.
     @Contract
     private void release() {
         ownedGroup.onEmpty(() -> closed.succeed(unit()));
-        ownedGroup.onPresent(group -> group.shutdownGracefully(0, 2, TimeUnit.SECONDS)
-                                           .addListener(_ -> closed.succeed(unit())));
+        ownedGroup.onPresent(this::shutdownOnceSettled);
+    }
+
+    /// Runs the shutdown after the connect outcome, never before it: a refused connect closes the channel on the
+    /// loop, and so reaches here, before the caller's thread may have added its connect listener (#3558).
+    @Contract
+    private void shutdownOnceSettled(EventLoopGroup group) {
+        settled.onResultRun(() -> shutdown(group));
+    }
+
+    @Contract
+    private void shutdown(EventLoopGroup group) {
+        group.shutdownGracefully(0, 2, TimeUnit.SECONDS).addListener(_ -> closed.succeed(unit()));
     }
 
     /// Runs on the event loop once the channel is closed, whether or not it ever became active: every

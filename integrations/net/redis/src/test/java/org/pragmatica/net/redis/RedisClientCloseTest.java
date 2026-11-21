@@ -74,9 +74,11 @@ class RedisClientCloseTest {
     @Test
     void failedStartShutsDownTheEventLoopGroup() {
         group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
-        client = new RedisClient(config(1, 1), Option.none(), group, ScriptedConnect.refused());
+        var made = new AtomicInteger();
+        client = new RedisClient(config(1, 1), Option.none(), group, ScriptedConnect.counted(ScriptedConnect.refused(), made));
 
         assertThat(TestKinds.kind(client.open().await(WAIT))).isEqualTo("ConnectionFailed");
+        assertThat(made.get()).as("channels made by the injected factory").isPositive();
         assertThat(group.terminationFuture().awaitUninterruptibly(5, TimeUnit.SECONDS)).isTrue();
     }
 
