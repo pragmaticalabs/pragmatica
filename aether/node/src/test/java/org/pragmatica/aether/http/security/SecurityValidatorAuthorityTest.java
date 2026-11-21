@@ -21,6 +21,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ApiKeyValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.NullReturn;
+import org.pragmatica.lang.Result;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -110,16 +111,40 @@ class SecurityValidatorAuthorityTest {
     }
 
     private static boolean kvGrantFor(AuthorizationRole authorizationRole) {
-        var kvStore = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
         var keyValue = ApiKeyValue.apiKeyValue(KV_KEY_ID, KvStoreApiKeyValidator.hashKey(KV_PLAINTEXT), 0L, authorizationRole.name());
+
+        return kvValidate(keyValue).onFailure(cause -> Assertions.fail("the stored key must authenticate: " + cause.message()))
+                                   .map(authenticated -> authenticated.grant().isPresent())
+                                   .or(false);
+    }
+
+    /// An EXPIRED ADMIN key is not valid for auth, so the KV match never happens and no grant is minted. Mutation: dropping
+    /// the `isValidForAuth` filter in the KV validator turns this red.
+    @Test
+    void kvStoredKey_expiredAdminKey_mintsNoGrant() {
+        var expired = ApiKeyValue.apiKeyValue(KV_KEY_ID, KvStoreApiKeyValidator.hashKey(KV_PLAINTEXT), 1L, 2L, "EXPIRED", -1L, 0L, AuthorizationRole.ADMIN.name());
+
+        assertThat(kvValidate(expired).isFailure()).as("an EXPIRED ADMIN key authenticates nothing, so it mints no grant")
+                                                   .isTrue();
+    }
+
+    /// A REVOKED ADMIN key past its grace period is not valid for auth, so no grant is minted. Mutation: dropping the
+    /// `isValidForAuth` filter in the KV validator turns this red.
+    @Test
+    void kvStoredKey_revokedAdminKey_mintsNoGrant() {
+        var revoked = ApiKeyValue.apiKeyValue(KV_KEY_ID, KvStoreApiKeyValidator.hashKey(KV_PLAINTEXT), 1L, -1L, "REVOKED", 2L, 0L, AuthorizationRole.ADMIN.name());
+
+        assertThat(kvValidate(revoked).isFailure()).as("a REVOKED ADMIN key past its grace period authenticates nothing, so it mints no grant")
+                                                   .isTrue();
+    }
+
+    private static Result<Authenticated> kvValidate(ApiKeyValue keyValue) {
+        var kvStore = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
 
         kvStore.process(kvStore.createBatch(List.of(putKey(keyValue))));
 
         return new KvStoreApiKeyValidator(SecurityValidator.denyUnlessPublicValidator(), () -> kvStore)
-            .validate(KV_REQUEST, SecurityPolicy.apiKeyRequired())
-            .onFailure(cause -> Assertions.fail("the stored key must authenticate: " + cause.message()))
-            .map(authenticated -> authenticated.grant().isPresent())
-            .or(false);
+            .validate(KV_REQUEST, SecurityPolicy.apiKeyRequired());
     }
 
     @SuppressWarnings("unchecked")
