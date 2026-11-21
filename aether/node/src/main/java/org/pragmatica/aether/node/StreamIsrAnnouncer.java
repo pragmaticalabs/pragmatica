@@ -12,7 +12,9 @@ import java.util.function.ToIntFunction;
 import java.util.stream.IntStream;
 
 import org.pragmatica.aether.api.OperationalEvent;
+import org.pragmatica.aether.slice.RetentionDeclaration;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.StreamDeclaration;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
@@ -46,14 +48,24 @@ import org.pragmatica.lang.Option;
 /// Every event carries a deterministic `eventId` ([StreamEventIds]; the config path keys on the config's `createdAt`
 /// and the factor pair as well), so two nodes that both pass the events-owner gate during a membership change publish
 /// ONE event as far as every reader that de-duplicates by `eventId` is concerned.
+///
+/// "Retention bounds changed" (#3334, #3554) is not derived here from the Put: the stream manager tells
+/// [#onConfigAdopted] from its adopt site, so the event is exactly a change in what this node enforces.
 public interface StreamIsrAnnouncer {
     @Contract
     void onOwnershipPut(ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put);
 
     /// Derive and route the events, if any, of one committed stream config Put. Must run BEFORE the stream manager
-    /// applies the same Put: the factor it enforces BEFORE the Put is the baseline.
+    /// applies the same Put: the factor it enforces BEFORE the Put is the baseline. It raises no retention-changed
+    /// event: that is [#onConfigAdopted]'s, told by the manager.
     @Contract
     void onConfigPut(ValuePut<StreamConfigKey, StreamConfigValue> put);
+
+    /// Route the retention-changed event, if any, of one adoption: the stream manager tells this from its adopt site
+    /// (`StreamPartitionManager.ConfigAdoptedListener`), with `replaced` the config this node enforced before and
+    /// `adopted` the committed value it enforces from now on.
+    @Contract
+    void onConfigAdopted(StreamConfig replaced, StreamConfigValue adopted);
 
     /// `confirmationFactor` is the factor this node enforces for a stream now; `confirmationFactorAfter` the one it will
     /// enforce once a committed config has been applied; `committedRecord` the committed ownership record of a partition.
@@ -82,8 +94,15 @@ public interface StreamIsrAnnouncer {
                 var after = confirmationFactorAfter.applyAsInt(config);
 
                 configTransitions(value, before, after, committedRecord).forEach(sink);
-                notApplied(value,
-                           enforcedConfig.apply(config.name())).onPresent(sink);
+                var enforced = enforcedConfig.apply(config.name());
+
+                notApplied(value, enforced).onPresent(sink);
+            }
+
+            @Override
+            @Contract
+            public void onConfigAdopted(StreamConfig replaced, StreamConfigValue adopted) {
+                retentionChanged(replaced, adopted).onPresent(sink);
             }
         };
     }
@@ -126,6 +145,42 @@ public interface StreamIsrAnnouncer {
                                                                                                                                                                                             + ":" + config.partitions()
                                                                                                                                                                                             + ":" + config.replicationFactor()
                                                                                                                                                                                             + ":" + config.confirmationFactor())));
+    }
+
+    /// #3334, #3554: "retention bounds changed" is exactly a change in the bounds this node ENFORCES. The stream manager
+    /// tells every adoption from its adopt site and nothing else, so there is no event without an adoption and no adoption
+    /// of new bounds without an event (one residual, the stale re-adoption described at the manager's `noAdoptionHere`,
+    /// is untold); this node takes no adoption decision of its own. `oldBounds` are the retention
+    /// section of `replaced`, the config enforced before the adoption, and `newBounds` that of the adopted one: the
+    /// declarations rendered as text. Only the retention section is compared: an adopted factor, hot-window or ingress
+    /// change is not a retention change. The `eventId` is a function of the name, the incarnation, the Put's `createdAt`
+    /// and both bounds, so nodes whose enforced configs agree raise the same id, and a reader that de-duplicates by
+    /// `eventId` sees one event; nodes whose enforced configs diverged name different old bounds and raise different ids.
+    static Option<OperationalEvent> retentionChanged(StreamConfig replaced, StreamConfigValue adopted) {
+        var oldBounds = retentionOf(replaced);
+        var newBounds = retentionOf(adopted.config());
+
+        return oldBounds.equals(newBounds)
+               ? Option.none()
+               : Option.some(retentionChanged(adopted, String.valueOf(oldBounds), String.valueOf(newBounds)));
+    }
+
+    private static Option<RetentionDeclaration> retentionOf(StreamConfig config) {
+        return config.declaration()
+                     .flatMap(StreamDeclaration::retention);
+    }
+
+    private static OperationalEvent retentionChanged(StreamConfigValue value, String oldBounds, String newBounds) {
+        var config = value.config();
+
+        return OperationalEvent.StreamRetentionChanged.streamRetentionChanged(config.name(),
+                                                                              oldBounds,
+                                                                              newBounds,
+                                                                              "stream-retention-changed:" + config.name()
+                                                                             + ":" + config.incarnation()
+                                                                             + ":" + value.createdAt()
+                                                                             + ":" + oldBounds
+                                                                             + ":" + newBounds);
     }
 
     private static Option<OperationalEvent> configTransition(StreamConfigValue value,
