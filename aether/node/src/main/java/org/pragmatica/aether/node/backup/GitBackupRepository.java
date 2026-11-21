@@ -321,7 +321,7 @@ public record GitBackupRepository(Path dir,
 
     /// Whether the remote-tracking ref [#restoreRef] fetches the backup branch into exists, read without fetching again (#3464): absent when no
     /// fetch has created it (the remote had no backup branch when it was read). Classified as [#readLocalBranch].
-    public GitRead<Unit> readTrackingBranch() {
+    GitRead<Unit> readTrackingBranch() {
         return readRefExists(remoteTrackingRef());
     }
 

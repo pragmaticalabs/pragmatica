@@ -1658,6 +1658,141 @@ class KvBackupServiceTest {
             assertThat(warnings).extracting(BackupWarning::code)
                                 .doesNotContain(Code.BACKUP_COMMIT_FAILED);
         }
+
+        /// A local commit the remote does not have, on top of the remote head (local STRICTLY ahead, ancestry readable: `merge-base` exits 0): the
+        /// flush must not reset it away. Pins the contained arm of the ancestry read; the commit's own subject tells it from a recommitted one.
+        @Test
+        void aLocalCommitAheadOfTheRemote_survivesTheFlush_andIsPushed() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+
+            assertThat(commitCount(remote)).as("control: the leadership flush landed").isEqualTo(1);
+            commitLocalOnly();
+            put(service, ConfigKey.forKey("b"), ConfigValue.configValue("b", "2"));
+            scheduler.runUntilIdle(10);
+
+            assertThat(remoteSubjects(remote)).as("the local-only commit was not reset away").contains("local-only");
+            assertThat(commitCount(remote)).as("leadership flush, local-only, b").isEqualTo(3);
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.CURRENT);
+        }
+
+        /// The opposite: another writer moved the remote past what the local branch holds (not contained: `merge-base` exits 1), so the flush resets
+        /// the local-only commit away and writes on top of the remote head.
+        @Test
+        void aRemoteHeadTheLocalBranchDoesNotContain_resetsTheLocalCommitAway() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+
+            commitLocalOnly();
+            seedRemoteOnTop(remote, BackupHeader.backupHeader(LINEAGE, 1, INCARNATION_ID, 1));
+            put(service, ConfigKey.forKey("b"), ConfigValue.configValue("b", "2"));
+            scheduler.runUntilIdle(10);
+
+            assertThat(remoteSubjects(remote)).as("the local-only commit was reset away").doesNotContain("local-only");
+            assertThat(commitCount(remote)).as("leadership flush, the other writer, b on top").isEqualTo(3);
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.CURRENT);
+        }
+
+        /// A remote whose head cannot be fetched is UNREACHABLE (the kept guess: a failed remote read is a push that cannot land yet, not a local
+        /// head to push from): nothing is pushed while the fetch fails, though a push would have worked; the first reachable flush carries the queue.
+        @Test
+        void aRemoteThatCannotBeRead_isUnreachable_andNothingIsPushed_untilItCan() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var armed = temp.resolve("armed");
+            var service = shimmedLeaderService(Option.some(remote),
+                                               1,
+                                               GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "fetch", failsWhileArmed(armed, "*")));
+
+            assertThat(commitCount(remote)).as("control: the leadership flush landed").isEqualTo(1);
+            writeFile(armed, "");
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.runUntilIdle(10);
+
+            assertThat(commitCount(remote)).as("nothing was pushed while the remote head could not be read").isEqualTo(1);
+            assertThat(localCommitCount()).as("the change is queued").isEqualTo(2);
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.PUSH_FAILING);
+
+            deleteFile(armed);
+            scheduler.runUntilIdle();
+
+            assertThat(commitCount(remote)).as("control: the reachable flush pushed the queue").isEqualTo(2);
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.CURRENT);
+        }
+
+        /// With no remote the local head's declaration is read with its document (#3464): a foreign-lineage head is gated unless its declaration
+        /// authorizes this cluster, so a declaration read as "none" would gate a write the operator declared.
+        @Test
+        void theLocalHeadsDeclaration_authorizesTheWrite_whenThereIsNoRemote() {
+            var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"), Option.none(), "backup", TimeSpan.timeSpan(30).seconds());
+            var foreign = CODEC.encode(40,
+                                       Map.of(ClusterIncarnationKey.clusterIncarnationKey(),
+                                              ClusterIncarnationValue.clusterIncarnationValue("another-cluster", 1, INCARNATION_ID)))
+                               .unwrap();
+
+            repository.prepare()
+                      .flatMap(_ -> repository.commitFile(GitBackupRepository.FILE, foreign, "foreign head"))
+                      .flatMap(_ -> repository.commitFile(GitBackupRepository.DECLARATION, LINEAGE + " 1\n", "declare"))
+                      .onFailure(cause -> Assertions.fail(cause.message()));
+            var service = leaderService(Option.none());
+
+            assertThat(CODEC.decode(git(temp.resolve("local"), "show", "HEAD:" + GitBackupRepository.FILE))
+                            .unwrap()
+                            .header()
+                            .lineageId()).as("the declared cluster wrote over the foreign head").isEqualTo(LINEAGE);
+            assertThat(service.status()).isNotEqualTo(KvBackupService.Status.GATED);
+        }
+
+        /// A rejection names the remote head it lost against: the commit the remote-tracking ref points at, which is neither the local head
+        /// (a queued commit makes them differ), nor `HEAD`, nor the no-remote-head stand-in. A caller that decides again compares exactly this value.
+        @Test
+        void aRejectedPush_isRecordedAgainstTheRemoteTrackingHeadsCommit() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+
+            commitLocalOnly();
+            service.repository()
+                   .restoreRef()
+                   .onFailure(cause -> Assertions.fail(cause.message()));
+            var tracked = git(temp.resolve("local"), "rev-parse", "refs/remotes/origin/backup").strip();
+
+            assertThat(tracked).as("the tracking ref and the local head differ").isNotEqualTo(localHeadId());
+            assertThat(pushNotLanded(service, GitBackupRepository.BackupRepositoryError.PushRejected.FACTORY.apply("not a fast-forward"))
+                               .rejectedAt()).isEqualTo(Option.some(tracked));
+        }
+
+        /// A plain push failure (the remote is down, a hook refuses) is not a rejection: no remote head is named, so the stop path does not read
+        /// it as a lost race and does not decide again.
+        @Test
+        void aPlainPushFailure_isNotARejection_soItNamesNoRemoteHead() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+            var outcome = pushNotLanded(service, GitBackupRepository.BackupRepositoryError.GitFailed.FACTORY.apply("push", 1, "refused by policy"));
+
+            assertThat(outcome.kind()).isEqualTo(KvBackupService.OutcomeKind.PUSH_FAILED);
+            assertThat(outcome.rejectedAt()).as("a push failure carries no remote head").isEqualTo(Option.none());
+            assertThat(outcome.detail().isPresent()).isTrue();
+        }
+    }
+
+    private void commitLocalOnly() {
+        git(temp.resolve("local"), "-c", "user.email=s@x", "-c", "user.name=local", "commit", "--allow-empty", "--quiet", "-m", "local-only");
+    }
+
+    private static String remoteSubjects(String remote) {
+        return git(Path.of(remote), "log", "--format=%s", "backup");
+    }
+
+    /// [KvBackupService]'s private `pushNotLanded`: what a failed push becomes. The stop path's loop is the only consumer of its `rejectedAt`, and
+    /// no push can be made to fail with a chosen cause and a chosen remote head, so the decision is called directly.
+    private static KvBackupService.Outcome pushNotLanded(KvBackupService service, Cause cause) {
+        try {
+            var method = KvBackupService.class.getDeclaredMethod("pushNotLanded", Cause.class);
+
+            method.setAccessible(true);
+            return (KvBackupService.Outcome) ((Result<?>) method.invoke(service, cause)).unwrap();
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /// A shim behaviour that fails as git does (`fatal: shim` on stderr, exit 128) while `armed` exists and the arguments match the shell `pattern`,

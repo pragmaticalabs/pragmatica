@@ -272,6 +272,45 @@ class GitBackupRepositoryTest {
         assertThat(git(Path.of(remote), "rev-list", "--count", "backup").strip()).isEqualTo("2");
     }
 
+    /// The ancestry answer in the two directions the diverged case above does not cover (#3464): the remote head contained in a local branch that is
+    /// strictly ahead (exit 0, so a flush must not reset the local commits away), and a remote head strictly ahead of the local branch (exit 1).
+    @Test
+    void localContainsRemoteHead_isTrue_whenLocalIsEqualOrStrictlyAhead_andFalse_whenTheRemoteIsStrictlyAhead() {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var first = repository("first", Option.some(remote));
+        var second = repository("second", Option.some(remote));
+
+        first.prepare();
+        second.prepare();
+        first.commit("first\n", "first")
+             .flatMap(_ -> first.push())
+             .onFailure(cause -> Assertions.fail(cause.message()));
+        second.commit("second\n", "second")
+              .flatMap(_ -> second.restoreRef())
+              .flatMap(_ -> second.resetToRemoteHead())
+              .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(second.localContainsRemoteHead()
+                         .unwrap()).as("equal: the remote head is the local head").isTrue();
+
+        second.commit("local-only\n", "local-only")
+              .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(second.localContainsRemoteHead()
+                         .unwrap()).as("local strictly ahead of the remote").isTrue();
+
+        second.resetToRemoteHead()
+              .onFailure(cause -> Assertions.fail(cause.message()));
+        first.commit("ahead\n", "ahead")
+             .flatMap(_ -> first.push())
+             .onFailure(cause -> Assertions.fail(cause.message()));
+        second.restoreRef()
+              .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(second.localContainsRemoteHead()
+                         .unwrap()).as("remote strictly ahead of the local branch").isFalse();
+    }
+
     /// The stop's interrupt can land while the output of a git that already exited is read (a background child of a hook keeps the pipe open): the
     /// interrupt must still be visible to the caller afterwards, or the worker carries on with the rest of its pass (#2924: a push after the stop).
     @Test
