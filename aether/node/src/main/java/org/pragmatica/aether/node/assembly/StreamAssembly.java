@@ -438,7 +438,7 @@ public sealed interface StreamAssembly {
         var allEntries = in.allEntries();
         // #3334: the committed retention change the announcer raises is published by the aggregator.
         allEntries.add(MessageRouter.Entry.route(OperationalEvent.StreamRetentionChanged.class,
-                                                 eventAggregator::onStreamRetentionChanged));
+                                                 event -> eventAggregator.onStreamRetentionChanged(event)));
         var streamMaxMemoryBytes = in.streamMemoryBudget().maxMemoryBytes();
         // A6: activate replication. The replica registry (populated by the A2 ReplicaSetController from
         // HRW placement) and a network-backed ReplicationTransport are constructed here — ahead of the
