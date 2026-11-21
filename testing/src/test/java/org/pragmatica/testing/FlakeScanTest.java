@@ -116,6 +116,11 @@ class FlakeScanTest {
     }
 
     @Test
+    void hash_ignoresSurroundingWhitespaceAndCollapsesInnerRuns() {
+        assertThat(FlakeScan.hash("  a \t b  ")).isEqualTo(FlakeScan.hash("a b"));
+    }
+
+    @Test
     void scan_everyPattern_isFoundByItsOwnPlantedLine() throws IOException {
         var planted = new LinkedHashMap<String, FlakeScan.Kind>();
 
