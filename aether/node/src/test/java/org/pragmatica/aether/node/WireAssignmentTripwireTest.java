@@ -197,9 +197,15 @@ class WireAssignmentTripwireTest {
 
     /// The verdict of the one form rule for a single line: not a candidate, a valid declaration, or refused as malformed.
     static String semanticVerdict(String line) {
-        return !isSemanticCandidate(line)
-               ? VERDICT_IGNORED
-               : SEMANTIC_FORM.matcher(line).matches() ? VERDICT_VALID : VERDICT_REFUSED;
+        return isSemanticCandidate(line)
+               ? formVerdict(line)
+               : VERDICT_IGNORED;
+    }
+
+    private static String formVerdict(String line) {
+        return SEMANTIC_FORM.matcher(line).matches()
+               ? VERDICT_VALID
+               : VERDICT_REFUSED;
     }
 
     /// The `GENERATION` line [WireAssignmentBaselineWriter] records: this binary's [JoinGenerationGuard#WIRE_GENERATION].
