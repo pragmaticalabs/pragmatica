@@ -158,7 +158,18 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// network's live `connectedPeers()` view.
     private final Predicate<NodeId> transportConnected;
     private final Map<NodeId, SwimMember> members = new ConcurrentHashMap<>();
-    private final Object membershipScopeGuard = new Object();
+    /// The ONE serial executor for every mutation of member, suspicion and sibling state (#3529). The tick,
+    /// the probe-timeout callback, [#onMessage], the transport hints, seeding, scope changes, the retirement
+    /// callback, the self-quorum report and the join announce all dispatch onto it, so the read-decide-write
+    /// sequence of a transition (for example the suspect expiry: read the member, decide FAULTY, store it)
+    /// can never interleave with another mutation. This replaces the per-site guards that each covered one
+    /// window (membership-scope monitor, isolation-latch monitor, self-quorum monitor, the expiry's
+    /// suspicion-identity compare). The maps stay concurrent only for readers outside the executor
+    /// ([#members], [#currentHealth], [#healthOf] and the test probes).
+    private final SerialExecutor stateExecutor = SerialExecutor.serialExecutor();
+    /// Count of member/suspicion writes that ran off [#stateExecutor] (#3529 confinement sensor). Always 0
+    /// while every entry point dispatches; a test asserts it after exercising each entry point.
+    private final AtomicLong offExecutorMutations = new AtomicLong();
     private volatile Predicate<NodeId> membershipEligibility = _ -> true;
     /// Where operator warnings go beyond the log (#1574). It is log-only until the node assembly binds
     /// it to its own node's cluster event aggregator.
@@ -166,12 +177,27 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// Restrict retained gossip state. Scope removal is not a death verdict and emits no departure.
     public org.pragmatica.lang.Unit setMembershipEligibility(Predicate<NodeId> eligibility) {
-        synchronized (membershipScopeGuard) {
-            membershipEligibility = eligibility;
-            pruneMembershipScope();
-        }
+        stateExecutor.execute(() -> applyMembershipEligibility(eligibility));
 
         return org.pragmatica.lang.Unit.unit();
+    }
+
+    private void applyMembershipEligibility(Predicate<NodeId> eligibility) {
+        membershipEligibility = eligibility;
+        pruneMembershipScope();
+    }
+
+    /// Record a member/suspicion write that runs off [#stateExecutor]. Never throws: the sensor must not turn a
+    /// confinement slip into a production failure; it is loud in the log and counted for the test.
+    private void requireConfined(String site) {
+        if (stateExecutor.isConfined()) {
+            return;
+        }
+
+        offExecutorMutations.incrementAndGet();
+        LOG.error("SWIM state write off the serial executor (#3529) at {} on thread {}",
+                  site,
+                  Thread.currentThread().getName());
     }
 
     private boolean inMembershipScope(NodeId peer) {
@@ -179,18 +205,18 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private boolean storeScopedMember(NodeId peer, SwimMember member) {
-        synchronized (membershipScopeGuard) {
-            if (!inMembershipScope(peer)) {
-                return false;
-            }
-
-            members.put(peer, member);
-
-            return true;
+        requireConfined("storeScopedMember");
+        if (!inMembershipScope(peer)) {
+            return false;
         }
+
+        members.put(peer, member);
+
+        return true;
     }
 
     private void pruneMembershipScope() {
+        requireConfined("pruneMembershipScope");
         members.keySet().removeIf(peer -> !inMembershipScope(peer));
         everSeenHealthy.removeIf(peer -> !inMembershipScope(peer));
         suspicions.keySet().removeIf(peer -> !inMembershipScope(peer));
@@ -314,8 +340,6 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                                   NodeInfo.LABEL_ZONE,
                                                                   LABEL_QUORUM);
 
-    /// Serialises [#reportSelfQuorum]: the label swap and its incarnation bump are one step.
-    private final Object selfQuorumReportLock = new Object();
     /// Boot-token registry (owner ruling, session 28: terminal removal) — shared with the QUIC
     /// transport via [#setBootTokens] so both layers hold ONE view of which process owns a NodeId.
     /// Outlives membership residency on purpose: a partitioned-but-live process that returns with the
@@ -399,15 +423,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// is expired ([#PiggybackBuffer.expireFaultyUpdates]) so a rejoining isolated node does
     /// NOT inject stale death verdicts into the healed cluster (the S06 partition-heal
     /// collapse root). Volatile: written/read across the probe (scheduler) and message threads.
-    /// Every write goes through [#isolationLatchGuard] (#1990), so the all-FAULTY check and the
-    /// latch write cannot straddle a peer's revival.
+    /// Every write runs on [#stateExecutor] (#1990, #3529), so the all-FAULTY check and the latch write
+    /// cannot straddle a peer's revival.
     private volatile boolean selfIsolated = false;
-    /// Makes "all peers FAULTY, so latch" ([#latchSelfIsolation]) and "reconnection evidence, so
-    /// clear" ([#unlatchSelfIsolation]) mutually atomic. Leaf lock: nothing is acquired while it is
-    /// held (the check reads the lock-free `members` map; the dissemination-backlog expiry and the
-    /// logging run after release), so it joins no lock cycle with [#lifecycleLock],
-    /// [#membershipScopeGuard] or the [PiggybackBuffer] monitor.
-    private final Object isolationLatchGuard = new Object();
     /// Incarnation-aware, TTL-bounded tombstones for ids that died and got cleaned up.
     /// Refuses third-party re-introduction of a dead id (gossip dissemination + bare
     /// channel re-seed) that would otherwise re-create it as SUSPECT and restart the
@@ -655,7 +673,7 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                            JitterUtil.LIGHT_MAX_FACTOR);
             var startup = TimeSpan.timeSpan(jitteredStartupMs).millis();
 
-            tickFuture.set(option(SharedScheduler.scheduleAtFixedRate(this::tick, startup, config.period())));
+            tickFuture.set(option(SharedScheduler.scheduleAtFixedRate(this::dispatchTick, startup, config.period())));
             LOG.info("SWIM protocol started for node {} (first probe in {}ms; jittered from base {}ms)",
                      selfId.id(),
                      jitteredStartupMs,
@@ -703,6 +721,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// escalation run if the seed never acks.
     @Contract
     public void addSeedMember(NodeId nodeId, InetSocketAddress address) {
+        stateExecutor.execute(() -> seedMember(nodeId, address));
+    }
+
+    private void seedMember(NodeId nodeId, InetSocketAddress address) {
         if (!inMembershipScope(nodeId) || selfId.equals(nodeId)) {
             return;
         }
@@ -782,6 +804,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// returns to ALIVE only if it refutes within the window.
     @Contract
     public void recordTransportHint(NodeId peer, TransportObservation hint) {
+        stateExecutor.execute(() -> applyTransportHint(peer, hint));
+    }
+
+    private void applyTransportHint(NodeId peer, TransportObservation hint) {
         if (!inMembershipScope(peer) || selfId.equals(peer)) {
             return;
         }
@@ -967,9 +993,15 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     // -- SwimMessageHandler --
+    /// Dispatches onto [#stateExecutor] (#3529): handling runs serially with the tick and every other mutation.
+    /// Uncontended, it runs on the calling thread before this returns; contended, the running drainer runs it.
     @Override
     @Contract
     public void onMessage(InetSocketAddress sender, SwimMessage message) {
+        stateExecutor.execute(() -> handleMessage(sender, message));
+    }
+
+    private void handleMessage(InetSocketAddress sender, SwimMessage message) {
         LOG.trace("SWIM recv from {}: {}",
                   sender,
                   message.getClass().getSimpleName());
@@ -1049,6 +1081,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     // -- Internal tick --
+    private void dispatchTick() {
+        stateExecutor.execute(this::tick);
+    }
+
     private void tick() {
         pruneMembershipScope();
         sweepAddressCandidates();
@@ -1304,6 +1340,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// ([#emitFaultyAndDeparted]); the residency window between edge and sweep exists
     /// purely for SWIM-map refutability/tombstone correctness.
     private void cleanupFaultyMembers() {
+        requireConfined("cleanupFaultyMembers");
         var now = System.currentTimeMillis();
         var cleanupThreshold = config.suspectTimeout().millis() * 3;
         var iterator = members.entrySet().iterator();
@@ -1541,6 +1578,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// ALIVE member classify as UNKNOWN (cold-boot suppression) until it is
     /// re-proven by a real probe-ack.
     private void clearDeathMemory(NodeId peer) {
+        requireConfined("clearDeathMemory");
         everSeenHealthy.remove(peer);
         suspicions.remove(peer);
         memberFirstSeenAt.remove(peer);
@@ -1592,6 +1630,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void beginSuspicion(NodeId suspect, NodeId accuser) {
         var suspicion = newSuspicion(accuser);
 
+        requireConfined("beginSuspicion");
         suspicions.put(suspect, suspicion);
         LOG.info("SWIM suspicion start (Wave-6 Lifeguard): suspect {} accused by {}; effective window {}ms "
                 + "(dogpile {}ms, min {}ms, max {}ms, LHM score {}, multiplier x{}, K={})",
@@ -1610,6 +1649,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Disarm the suspicion of `suspect` (refuted, promoted ALIVE, expired to FAULTY,
     /// or swept): remove the suspicion with its start-stamp and dogpile state.
     private void endSuspicion(NodeId suspect) {
+        requireConfined("endSuspicion");
         suspicions.remove(suspect);
     }
 
@@ -1807,6 +1847,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         return state.peerUnresponsive() || (state.linkLost() && !transportConnected.test(peer));
     }
 
+    /// Runs on [#stateExecutor] (#3529): `member` is the state this transition decided on, and no other mutation
+    /// can land between that read and the FAULTY store below.
     private void transitionToFaulty(SwimMember member) {
         // Fix 2 (#336): this node's own suspect-window expiry is it INDEPENDENTLY concluding
         // the peer is dead — register self as an accuser so a peer suspected ONLY by this one
@@ -1847,22 +1889,20 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
     }
 
-    /// Check and latch under [#isolationLatchGuard] (#1990). A revival stores ALIVE and THEN runs
-    /// [#unlatchSelfIsolation]; if this section runs first the later unlatch clears the latch, if the
-    /// unlatch runs first this check, run later, sees the ALIVE — a stale latch (latch set while a peer is
+    /// Check and latch on [#stateExecutor] (#1990, #3529). A revival stores ALIVE and THEN runs
+    /// [#unlatchSelfIsolation], in one task; if this check runs first the later unlatch clears the latch, if the
+    /// revival runs first this check, run later, sees the ALIVE — a stale latch (latch set while a peer is
     /// ALIVE) is impossible. Each FAULTY writer stores and THEN checks, so the last writer sees every
     /// earlier store: a missed latch (all FAULTY, latch clear) is impossible too. The check is a parameter
-    /// so a test can hold the check-to-write window open.
-    boolean latchSelfIsolation(BooleanSupplier allPeersFaulty) {
-        synchronized (isolationLatchGuard) {
-            if (selfIsolated || members.isEmpty() || !allPeersFaulty.getAsBoolean()) {
-                return false;
-            }
-
-            selfIsolated = true;
-
-            return true;
+    /// so a test can hold the check-to-write window open ([#latchSelfIsolationForTest]).
+    private boolean latchSelfIsolation(BooleanSupplier allPeersFaulty) {
+        if (selfIsolated || members.isEmpty() || !allPeersFaulty.getAsBoolean()) {
+            return false;
         }
+
+        selfIsolated = true;
+
+        return true;
     }
 
     private boolean allPeersFaulty() {
@@ -1900,7 +1940,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void scheduleProbeTimeout(long seq) {
-        SharedScheduler.schedule(() -> onProbeTimeout(seq), config.probeTimeout());
+        SharedScheduler.schedule(() -> dispatchProbeTimeout(seq), config.probeTimeout());
+    }
+
+    private void dispatchProbeTimeout(long seq) {
+        stateExecutor.execute(() -> onProbeTimeout(seq));
     }
 
     private void onProbeTimeout(long seq) {
@@ -2091,17 +2135,14 @@ public final class SwimProtocol implements SwimMessageHandler {
                  dropped);
     }
 
-    /// Clear the latch under [#isolationLatchGuard]; `true` when it was set. Deliberately no unlocked
-    /// `selfIsolated` fast path: a revival that read `false` and returned could slip between a detector's
-    /// all-FAULTY check and its latch write, leaving the latch set with a live peer (#1990).
+    /// Clear the latch; `true` when it was set. Runs on [#stateExecutor] (#3529), the same executor as the
+    /// detector's all-FAULTY check and latch write, so a revival cannot slip between them (#1990).
     private boolean unlatchSelfIsolation() {
-        synchronized (isolationLatchGuard) {
-            var wasIsolated = selfIsolated;
+        var wasIsolated = selfIsolated;
 
-            selfIsolated = false;
+        selfIsolated = false;
 
-            return wasIsolated;
-        }
+        return wasIsolated;
     }
 
     private void forwardRelay(Ack ack) {
@@ -2388,7 +2429,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     @Contract
     void sweepAddressCandidatesForTest(long nowMs) {
-        sweepAddressCandidates(nowMs);
+        stateExecutor.execute(() -> sweepAddressCandidates(nowMs));
     }
 
     private void sweepAddressCandidates(long now) {
