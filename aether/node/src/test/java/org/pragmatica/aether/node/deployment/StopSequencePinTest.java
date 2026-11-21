@@ -183,6 +183,16 @@ class StopSequencePinTest {
         assertThat(fsm2Close(source)).isEqualTo(FSM2_CLOSE + " deploymentWiring.stop(); return unit; }");
     }
 
+    /// #3557: the node's stop closes the membership FSM, once, among the components' stops. Without it the FSM's per-member timers
+    /// outlive the node on the JVM-global scheduler. Mutant: delete the `membershipFsm.close();` statement and this goes red.
+    @Test
+    void theMembershipFsm_isClosedOnceByTheComponentsStop() {
+        var source = read(NODE_SOURCE);
+
+        assertThat(count(Pattern.compile(Pattern.quote("membershipFsm.close();")), componentStops(source))).isEqualTo(1L);
+        assertThat(count(Pattern.compile(Pattern.quote("membershipFsm.close();")), source)).isEqualTo(1L);
+    }
+
     /// The joins at the end of the components' stop: the backup's flush, then the sealer's (rc5's order), and nothing after them.
     @Test
     void theFlushes_areJoinedBackupFirstThenStreams_asTheLastStepOfTheComponents() {
