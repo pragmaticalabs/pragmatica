@@ -222,6 +222,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DeploymentOutcomeKey (bluepr
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DhtPartitionOwnershipKey (partitionId:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DhtReplicationChangeKey ()
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DhtReplicationReportKey (nodeId:org.pragmatica.consensus.NodeId)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DrainCommandKey (target:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DrainDeadlineKey (nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$EndpointKey (artifact:org.pragmatica.aether.artifact.Artifact,methodName:org.pragmatica.aether.slice.MethodName,instanceNumber:int)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$EntityArcWaiverKey (keyspace:java.lang.String,child:int)
@@ -689,6 +690,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DeploymentOutcomeKey 1671
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DhtPartitionOwnershipKey 1103
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DhtReplicationChangeKey 2120
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DhtReplicationReportKey 2122
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DrainCommandKey 2962
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DrainDeadlineKey 1104
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$EndpointKey 1105
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$EntityArcWaiverKey 3019
