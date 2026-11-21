@@ -27,6 +27,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionStateValue.streamPartitionStateValue;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -44,7 +45,12 @@ class StreamPartitionStateValueTest {
     private static final String TRIPWIRE = "SP3b-1 writes this in S4: delete this half";
     private static final Set<String> SKIPPED_DIRECTORIES = Set.of(".git", ".bb", ".m2-local", "target", "node_modules");
     private static final Pattern WRITE_CALL = Pattern.compile("\\bstreamPartitionStateValue\\(|\\bnew\\s+StreamPartitionStateValue\\(");
-    private static final Pattern CARRY_READ = Pattern.compile("(?:[A-Za-z_][A-Za-z0-9_]*\\s*\\.\\s*)?activationGeneration\\(\\s*\\)");
+    /// The carry sites: the unqualified accessor, or `this.`'s. A read through any other receiver (a Put's, another row's) is
+    /// not a carry and is flagged.
+    private static final Pattern CARRY_READ = Pattern.compile("(?:this\\s*\\.\\s*)?activationGeneration\\(\\s*\\)");
+    /// The methods of the row's record inside AetherValue.java that build it from its own components: the factory and the four
+    /// copy methods. Their bodies are carried by the arms above, so the scan of AetherValue.java skips them by name.
+    private static final Set<String> OWN_BUILDERS = Set.of("streamPartitionStateValue", "withElection", "closed", "released", "newLife");
 
     // ---- (2) carry, one arm per copy method ----
 
@@ -137,6 +143,98 @@ class StreamPartitionStateValueTest {
                                                                CARRIED));
     }
 
+    @Test
+    void newLife_onAClosedRowWithLastOffset_keepsStateLastOffsetParentsAndChildren() {
+        var closed = openRow(some(ELECTION)).closed(900L);
+
+        var result = closed.newLife(500L);
+
+        assertThat(result.state()).as("state kept (a new life keeps state)").isEqualTo(PartitionState.CLOSED);
+        assertThat(result.lastOffset()).as("lastOffset kept").isEqualTo(some(900L));
+        assertThat(result.parents()).as("parents kept").isEqualTo(List.of(1));
+        assertThat(result.children()).as("children kept").isEqualTo(List.of(2, 3));
+        assertThat(result.generation()).as("generation + 1").isEqualTo(3L);
+        assertThat(result.lifeStart()).as("the new lifeStart").isEqualTo(500L);
+        assertThat(result.election()).as("election cleared").isEqualTo(none());
+    }
+
+    @Test
+    void withElection_onAClosedRowWithLastOffset_keepsStateAndLastOffset() {
+        var closed = openRow(none()).closed(900L);
+
+        var set = closed.withElection(some(ELECTION));
+        var cleared = set.withElection(none());
+
+        assertThat(set.state()).as("state after withElection(some)").isEqualTo(PartitionState.CLOSED);
+        assertThat(set.lastOffset()).as("lastOffset after withElection(some)").isEqualTo(some(900L));
+        assertThat(set.election()).as("election set").isEqualTo(some(ELECTION));
+        assertThat(cleared.state()).as("state after withElection(none)").isEqualTo(PartitionState.CLOSED);
+        assertThat(cleared.lastOffset()).as("lastOffset after withElection(none)").isEqualTo(some(900L));
+        assertThat(cleared.election()).as("election cleared").isEqualTo(none());
+    }
+
+    // ---- factory and constructor pass-through, against the INPUTS (not a second factory call) ----
+
+    @Test
+    void factory_passesEveryComponentThrough_distinctInputsComparedToAccessors() {
+        var election = Election.election(Epoch.epoch(4L, 8L, 2L), NODE_A, true, List.of(NODE_B, NODE_A));
+        var parents = List.of(4, 5);
+        var children = List.of(6, 7, 8);
+
+        var row = streamPartitionStateValue(11L, 12L, 13L, PartitionState.CLOSED, 14L, some(15L), some(election), parents, children, 9L);
+
+        assertThat(row.incarnation()).as("incarnation").isEqualTo(11L);
+        assertThat(row.generation()).as("generation").isEqualTo(12L);
+        assertThat(row.lifeStart()).as("lifeStart").isEqualTo(13L);
+        assertThat(row.state()).as("state").isEqualTo(PartitionState.CLOSED);
+        assertThat(row.firstOffset()).as("firstOffset").isEqualTo(14L);
+        assertThat(row.lastOffset()).as("lastOffset").isEqualTo(some(15L));
+        assertThat(row.election()).as("election").isEqualTo(some(election));
+        assertThat(row.parents()).as("parents, not swapped with children").isEqualTo(parents);
+        assertThat(row.children()).as("children, not swapped with parents").isEqualTo(children);
+        assertThat(row.activationGeneration()).as("activationGeneration").isEqualTo(9L);
+    }
+
+    @Test
+    void electionFactory_passesEveryComponentThrough_inputsComparedToAccessors() {
+        var epoch = Epoch.epoch(4L, 8L, 2L);
+        var isr = List.of(NODE_B, NODE_A);
+
+        var election = Election.election(epoch, NODE_A, true, isr);
+
+        assertThat(election.epoch()).as("epoch").isEqualTo(epoch);
+        assertThat(election.node()).as("node").isEqualTo(NODE_A);
+        assertThat(election.entityLoss()).as("entityLoss, not negated").isTrue();
+        assertThat(election.isr()).as("isr, not dropped").isEqualTo(isr);
+        assertThat(Election.election(epoch, NODE_A, false, isr).entityLoss()).as("entityLoss false").isFalse();
+    }
+
+    @Test
+    void election_copiesIsr_laterChangesToTheInputListAreNotSeen() {
+        var isr = new ArrayList<>(List.of(NODE_A));
+
+        var election = Election.election(Epoch.epoch(4L, 8L, 2L), NODE_A, false, isr);
+        isr.add(NODE_B);
+
+        assertThat(election.isr()).as("isr after the input list grew").isEqualTo(List.of(NODE_A));
+        assertThatThrownBy(() -> election.isr().add(NODE_B)).as("isr is unmodifiable").isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void value_copiesParentsAndChildren_laterChangesToTheInputListsAreNotSeen() {
+        var parents = new ArrayList<>(List.of(1));
+        var children = new ArrayList<>(List.of(2, 3));
+
+        var row = streamPartitionStateValue(3L, 2L, 100L, PartitionState.OPEN, 10L, none(), none(), parents, children, CARRIED);
+        parents.add(9);
+        children.add(9);
+
+        assertThat(row.parents()).as("parents after the input list grew").isEqualTo(List.of(1));
+        assertThat(row.children()).as("children after the input list grew").isEqualTo(List.of(2, 3));
+        assertThatThrownBy(() -> row.parents().add(9)).as("parents unmodifiable").isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> row.children().add(9)).as("children unmodifiable").isInstanceOf(UnsupportedOperationException.class);
+    }
+
     // ---- no defaulting overload ----
 
     @Test
@@ -160,8 +258,7 @@ class StreamPartitionStateValueTest {
         var root = repositoryRoot();
         var files = mainSources(root);
         var calls = files.stream()
-                         .filter(file -> !file.endsWith(Path.of("kvstore", "AetherValue.java")))
-                         .flatMap(file -> writeCalls(read(file)).stream().map(call -> file + ": " + call))
+                         .flatMap(file -> writeCalls(scanned(file)).stream().map(call -> file + ": " + call))
                          .toList();
         var offenders = calls.stream()
                              .filter(call -> !carriesOrPassesZero(call))
@@ -171,7 +268,7 @@ class StreamPartitionStateValueTest {
 
         assertThat(files).as("main source files scanned under %s", root).isNotEmpty();
         assertThat(offenders).as(TRIPWIRE).isEmpty();
-        assertThat(calls).as("writes of the row outside AetherValue (none exist yet; the first writer updates this count). "
+        assertThat(calls).as("writes of the row outside the row's own factory and copy methods (none exist yet; the first writer updates this count). "
                              + TRIPWIRE)
                          .isEmpty();
     }
@@ -181,15 +278,43 @@ class StreamPartitionStateValueTest {
         var fixture = String.join("\n",
                                   "var a = streamPartitionStateValue(1L, 1L, 0L, OPEN, 0L, none(), none(), List.of(1, 2), List.of(), 1);",
                                   "var b = new StreamPartitionStateValue(1L, 1L, 0L, OPEN, 0L, none(), none(), List.of(), List.of(), 0);",
-                                  "var c = streamPartitionStateValue(1L, 1L, 0L, OPEN, 0L, none(), none(), List.of(), List.of(), row.activationGeneration());",
-                                  "var d = streamPartitionStateValue(1L, 1L, 0L, OPEN, 0L, none(), none(), List.of(), List.of(), 0L);");
+                                  "var c = streamPartitionStateValue(1L, 1L, 0L, OPEN, 0L, none(), none(), List.of(), List.of(), activationGeneration());",
+                                  "var d = streamPartitionStateValue(1L, 1L, 0L, OPEN, 0L, none(), none(), List.of(), List.of(), 0L);",
+                                  "var e = streamPartitionStateValue(1L, 1L, 0L, OPEN, 0L, none(), none(), List.of(), List.of(), put.activationGeneration());",
+                                  "var f = streamPartitionStateValue(1L, 1L, 0L, OPEN, 0L, none(), none(), List.of(), List.of(), this.activationGeneration());");
 
         var calls = writeCalls(fixture);
 
-        assertThat(calls).as("calls found in the fixture").hasSize(4);
+        assertThat(calls).as("calls found in the fixture").hasSize(6);
         assertThat(calls.stream().filter(call -> !carriesOrPassesZero(call)).toList())
-            .as("only the call ending in 1 is flagged")
-            .containsExactly(calls.getFirst());
+            .as("the call ending in 1 and the call carrying another receiver's component (a Put's) are flagged")
+            .containsExactly(calls.get(0), calls.get(4));
+    }
+
+    @Test
+    void ownBuildersScan_skipsOnlyTheNamedMethods_andSeesAnInjectedWriterAnywhereElse() {
+        var fixture = String.join("\n",
+                                  "public static StreamPartitionStateValue streamPartitionStateValue(long a, long b) {",
+                                  "    return new StreamPartitionStateValue(a, b, activationGeneration);",
+                                  "}",
+                                  "public StreamPartitionStateValue closed(long lastOffset) {",
+                                  "    if (lastOffset > 0) { return new StreamPartitionStateValue(a, b, activationGeneration()); }",
+                                  "    return this;",
+                                  "}",
+                                  "public StreamPartitionStateValue rogue() {",
+                                  "    return streamPartitionStateValue(a, b, 5L);",
+                                  "}",
+                                  "public StreamPartitionStateValue released() {",
+                                  "    return new StreamPartitionStateValue(a, b, activationGeneration());",
+                                  "}",
+                                  "public StreamPartitionStateValue rogueToo() {",
+                                  "    return new StreamPartitionStateValue(a, b, 6);",
+                                  "}");
+
+        var remaining = writeCalls(withoutMethods(fixture, OWN_BUILDERS));
+
+        assertThat(remaining).as("only the writers outside the named methods remain")
+                             .containsExactly("streamPartitionStateValue(a, b, 5L)", "new StreamPartitionStateValue(a, b, 6)");
     }
 
     private static StreamPartitionStateValue openRow(Option<Election> election) {
@@ -205,6 +330,31 @@ class StreamPartitionStateValueTest {
                                          CARRIED);
     }
 
+    /// The text the tripwire scans in `file`: AetherValue.java without the row's own factory and copy methods (those are covered by
+    /// the carry arms), every other main source whole.
+    private static String scanned(Path file) {
+        var text = read(file);
+
+        return file.endsWith(Path.of("kvstore", "AetherValue.java")) ? withoutMethods(text, OWN_BUILDERS) : text;
+    }
+
+    /// `source` with every method that returns `StreamPartitionStateValue` and is named in `names` removed, signature through
+    /// closing brace.
+    private static String withoutMethods(String source, Set<String> names) {
+        var matcher = Pattern.compile("\\bStreamPartitionStateValue\\s+(?:" + String.join("|", names) + ")\\s*\\(").matcher(source);
+        var result = new StringBuilder();
+        var from = 0;
+
+        while (matcher.find(from)) {
+            var body = source.indexOf('{', closing(source, matcher.end() - 1, '(', ')'));
+
+            result.append(source, from, matcher.start());
+            from = closing(source, body, '{', '}') + 1;
+        }
+
+        return result.append(source.substring(from)).toString();
+    }
+
     private static boolean carriesOrPassesZero(String call) {
         var last = lastArgument(call);
 
@@ -217,21 +367,21 @@ class StreamPartitionStateValueTest {
         var calls = new ArrayList<String>();
 
         while (matcher.find()) {
-            calls.add(source.substring(matcher.start(), closingParenthesis(source, matcher.end() - 1) + 1));
+            calls.add(source.substring(matcher.start(), closing(source, matcher.end() - 1, '(', ')') + 1));
         }
 
         return calls;
     }
 
-    private static int closingParenthesis(String source, int open) {
+    private static int closing(String source, int open, char opening, char closing) {
         var depth = 0;
 
         for (var i = open; i < source.length(); i++) {
             var c = source.charAt(i);
 
-            if (c == '(') {
+            if (c == opening) {
                 depth++;
-            } else if (c == ')' && --depth == 0) {
+            } else if (c == closing && --depth == 0) {
                 return i;
             }
         }

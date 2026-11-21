@@ -3746,6 +3746,8 @@ public sealed interface AetherValue {
     /// overload that defaults the component, and every copy method passes it through, so a write derived from the committed row
     /// cannot drop it.
     ///
+    /// Construction: no validation beyond non-null lists; writers own their invariants.
+    ///
     /// @param incarnation          incarnation of the committed stream configuration
     /// @param generation           the partition's life counter, 1 at the first write
     /// @param lifeStart            offset the current life begins at
@@ -3835,7 +3837,8 @@ public sealed interface AetherValue {
                                                  activationGeneration());
         }
 
-        /// The next life of the same partition, beginning at `lifeStart`: one generation later, with no election.
+        /// The next life of the same partition, beginning at `lifeStart`: one generation later, with no election; `state`,
+        /// `lastOffset`, `parents` and `children` are carried (a new life keeps state, parents and children).
         public StreamPartitionStateValue newLife(long lifeStart) {
             return new StreamPartitionStateValue(incarnation,
                                                  generation + 1,
