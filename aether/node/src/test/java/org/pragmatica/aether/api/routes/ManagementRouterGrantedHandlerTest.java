@@ -10,10 +10,12 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.api.routes.ManagementRouter.GrantedHandler;
+import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.http.security.AdminGrant;
 import org.pragmatica.aether.http.security.Authenticated;
 import org.pragmatica.aether.http.security.TestAdminGrants;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
@@ -46,6 +48,26 @@ class ManagementRouterGrantedHandlerTest {
         assertThat(probe.received().toOptional()).as("the route received the very Authenticated the caller passed")
                                     .containsSame(given.get());
         assertThat(probe.liveAtCall()).as("its grant was live while the route ran").isTrue();
+    }
+
+    /// A request that matches a declared [ManagementRoute] is dispatched by its registered name, a different branch from the
+    /// plain path lookup: it too hands a granted route the `Authenticated` the caller passed. Red if that branch passes an
+    /// anonymous one.
+    @Test
+    void handle_matchedManagementRoute_grantedRouteReceivesTheAuthenticatedItWasGiven() {
+        var received = new AtomicReference<Authenticated>();
+        GrantedHandler<String> handler = (_, authenticated) -> {
+            received.set(authenticated);
+            return Promise.success("\"live\"");
+        };
+        var router = ManagementRouter.managementRouter(ManagementRoutes.<String>route(ManagementRoute.HEALTH_LIVE).toJson(handler));
+        var given = Authenticated.authenticated(SecurityContext.securityContext("matched-caller", java.util.Set.of(), AuthorizationRole.ADMIN).unwrap());
+        var writer = new StatusWriter();
+
+        assertThat(router.handle(new PathRequest("/health/live"), writer, given)).isTrue();
+
+        assertThat(writer.status()).isEqualTo(HttpStatus.OK);
+        assertThat(received.get()).as("the matched-route branch passed the caller's Authenticated").isSameAs(given);
     }
 
     @Test
@@ -91,6 +113,14 @@ class ManagementRouterGrantedHandlerTest {
         ran.set(true);
 
         return Promise.success("ran");
+    }
+
+    private record PathRequest(String path) implements HttpRequest {
+        @Override public String requestId() {return "req-matched";}
+        @Override public HttpMethod method() {return HttpMethod.GET;}
+        @Override public Headers headers() {return Headers.empty();}
+        @Override public QueryParams queryParams() {return QueryParams.empty();}
+        @Override public byte[] body() {return new byte[0];}
     }
 
     private record ProbeRequest() implements HttpRequest {
