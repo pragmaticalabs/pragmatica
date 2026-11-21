@@ -12,6 +12,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -20,17 +22,22 @@ import org.pragmatica.aether.slice.ReplicationContext;
 import org.pragmatica.aether.slice.ReplicationFactorsError;
 import org.pragmatica.aether.slice.ReplicationWarning;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.StreamDeclaration;
+import org.pragmatica.aether.slice.TruncationDeclaration;
+import org.pragmatica.aether.slice.TruncationPolicy;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
 import org.pragmatica.aether.slice.blueprint.InertKeyRules;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser.PartitionedStreamResources;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser.RefusedSection;
 import org.pragmatica.aether.slice.blueprint.StreamDeclarationError;
+import org.pragmatica.aether.slice.blueprint.StreamSection;
 import org.pragmatica.aether.slice.blueprint.StreamSourceError;
 import org.pragmatica.aether.slice.resource.ResourceName;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceAddress.ResourceAddressError;
 import org.pragmatica.aether.slice.resource.ResourceVersion.ResourceVersionError;
+import org.pragmatica.aether.slice.stream.DeclarationDefaults;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec.StreamVersionSpecError;
@@ -79,6 +86,18 @@ public sealed interface StreamResourceValidator {
     String RULE_REPLICATION_EXCEEDS_CORE_COUNT = "replication-exceeds-core-count";
     String RULE_UNKNOWN_STREAM_KEY = "unknown-stream-key";
     String RULE_STREAM_KEY_INVALID = "stream-key-invalid";
+    /// #3333: a `[retention]` block that declares no bound, and one that declares `max_count` without `max_bytes`.
+    String RULE_RETENTION_UNDECLARED = "retention-undeclared";
+    String RULE_RETENTION_COUNT_ONLY = "retention-count-only";
+    /// #3333: a key whose release has not merged yet (T-146).
+    String RULE_NOT_YET_AVAILABLE = "not-yet-available";
+    /// #3333 (stream-storage-design 2.2, T-163): the `until_consumed` shape refusals, a `group_idle_expiry` under `window`,
+    /// and a section declaring both retention models.
+    String RULE_UNTIL_CONSUMED_UNCAPPED = "until-consumed-uncapped";
+    String RULE_UNTIL_CONSUMED_MODE_ALL = "until-consumed-mode-all";
+    String RULE_UNTIL_CONSUMED_UNSUPPORTED = "until-consumed-unsupported";
+    String RULE_GROUP_IDLE_EXPIRY_WITHOUT_UNTIL_CONSUMED = "group-idle-expiry-without-until-consumed";
+    String RULE_CONFLICTING_DECLARATION_MODELS = "conflicting-declaration-models";
     String RULE_SOURCE_ADDRESS_INVALID = "source-address-invalid";
     String RULE_NAMESPACE_INVALID = "namespace-invalid";
     String RULE_STREAM_NAME_INVALID = "stream-name-invalid";
@@ -88,6 +107,15 @@ public sealed interface StreamResourceValidator {
     String RULE_VERSION_PIN_RECOMMENDED = "version-pin-recommended";
     String RULE_INERT_STREAM_CONFIG = "inert-stream-config-key";
     String RULE_INERT_CONSUMER_CONFIG = "inert-consumer-config-key";
+    /// #3334 (section 2.5): a redeploy that changes an immutable key of a stream that is already committed, by these four
+    /// ids. The guarantee is per row visibility: the change is refused at deploy validation when the committed row is
+    /// visible in the validating node's KV; otherwise (the row is not yet written, or the local KV lags its commit) it is
+    /// announced not-applied by the node backstop (`StreamConfigChangeNotApplied`). Nothing serialises validation against
+    /// the row's write.
+    String RULE_PARTITION_COUNT_IMMUTABLE = "partition-count-immutable";
+    String RULE_DURABILITY_ONLY_INCREASES = "durability-only-increases";
+    String RULE_TRUNCATION_POLICY_IMMUTABLE = "truncation-policy-immutable";
+    String RULE_STORAGE_KEY_IMMUTABLE = "storage-key-immutable";
     /// #1262: a STRONG declaration fails the deploy through [#ensureHonourableConsistency], which runs
     /// before the bindings are derived. Its own id, so a runbook, a UI or a test keying on the rule can
     /// tell the refusal from the per-section class (#1336: see [#partition] for which other rules gate).
@@ -102,7 +130,11 @@ public sealed interface StreamResourceValidator {
     Set<String> GATING_SECTION_RULES = Set.of(RULE_SOURCE_RESERVED_KIND,
                                               RULE_SOURCE_SYSTEM_NOT_CONSUMER,
                                               RULE_INERT_STREAM_CONFIG,
-                                              RULE_INERT_CONSUMER_CONFIG);
+                                              RULE_INERT_CONSUMER_CONFIG,
+                                              RULE_PARTITION_COUNT_IMMUTABLE,
+                                              RULE_DURABILITY_ONLY_INCREASES,
+                                              RULE_TRUNCATION_POLICY_IMMUTABLE,
+                                              RULE_STORAGE_KEY_IMMUTABLE);
 
     /// Run the full validation pass for a deploy attempt.
     ///
@@ -160,10 +192,16 @@ public sealed interface StreamResourceValidator {
     ///    [#RULE_INERT_STREAM_CONFIG] and [#RULE_INERT_CONSUMER_CONFIG] (#3269, owner ruling 2026-11-14,
     ///    amending #1336): a key the runtime would silently ignore refuses the deploy rather than drop the
     ///    alias, for the same reason. A key leaves [#GATING_SECTION_RULES] when it is wired.
+    ///    [#RULE_PARTITION_COUNT_IMMUTABLE], [#RULE_DURABILITY_ONLY_INCREASES], [#RULE_TRUNCATION_POLICY_IMMUTABLE] and
+    ///    [#RULE_STORAGE_KEY_IMMUTABLE] (#3334, section 2.5): a redeploy that changes an immutable key of a stream whose
+    ///    config is already committed (the overload taking the committed rows) refuses the publish when the committed row
+    ///    is visible in the validating node's KV, so nothing applies and the committed row stays as it is; otherwise the
+    ///    change is announced not-applied by the node backstop. The inert gate wins while a key is inert (R-12): an alias
+    ///    already refused as inert is not compared.
     ///
     /// Every other rule is per-section — the parser's, one id per cause type ([#ruleFor]):
     /// [#RULE_VERSION_AND_SOURCE_EXCLUSIVE], [#RULE_PRODUCER_VERSION_EXACT], [#RULE_PARTITIONS_OVER_CEILING],
-    /// [#RULE_REPLICATION_POLICY_INVALID], [#RULE_REPLICATION_EXCEEDS_CORE_COUNT], [#RULE_UNKNOWN_STREAM_KEY], [#RULE_STREAM_KEY_INVALID], [#RULE_SOURCE_ADDRESS_INVALID], [#RULE_NAMESPACE_INVALID],
+    /// [#RULE_REPLICATION_POLICY_INVALID], [#RULE_REPLICATION_EXCEEDS_CORE_COUNT], [#RULE_UNKNOWN_STREAM_KEY], [#RULE_STREAM_KEY_INVALID], [#RULE_RETENTION_UNDECLARED], [#RULE_RETENTION_COUNT_ONLY], [#RULE_NOT_YET_AVAILABLE], [#RULE_SOURCE_ADDRESS_INVALID], [#RULE_NAMESPACE_INVALID],
     /// [#RULE_STREAM_NAME_INVALID], [#RULE_VERSION_FORMAT_INVALID], [#RULE_STREAM_RESOURCE_INVALID] for a cause
     /// type not named here. Each names the alias it sits under, taken from the section the parser
     /// refused, never from message text. [#RULE_NAMESPACE_RESERVED] on an External source has no producer at
@@ -176,6 +214,24 @@ public sealed interface StreamResourceValidator {
                                                        Artifact blueprintArtifact,
                                                        Map<String, String> roleHints,
                                                        ReplicationContext replication) {
+        return partition(resourcesConfig, blueprintArtifact, roleHints, replication, engineKey -> Option.none());
+    }
+
+    /// #3334 (section 2.5): [#partition] with the committed stream rows, keyed by engine key (the address
+    /// `namespace:alias:version`, which is the `StreamConfigKey` name the create path commits under). An owned alias
+    /// with an exact version whose row exists is compared with it ([#committedRowFailures]); an alias with no row (a first
+    /// deploy) or a `latest` version (no concrete address at deploy time) is not. So an immutable-key change is refused at
+    /// deploy validation when the committed row is visible in the validating node's KV; otherwise (no row visible yet, a
+    /// `latest` alias, or a local KV that lags) it is announced not-applied by the node backstop.
+    static Result<StreamValidationPartition> partition(Option<String> resourcesConfig,
+                                                       Artifact blueprintArtifact,
+                                                       Map<String, String> roleHints,
+                                                       ReplicationContext replication,
+                                                       Function<String, Option<StreamConfig>> committedRows) {
+        BiFunction<String, StreamResource.Owned, Option<StreamConfig>> committedFor = (alias, owned) -> committedRow(blueprintArtifact,
+                                                                                                                     committedRows,
+                                                                                                                     alias,
+                                                                                                                     owned);
         var namespaceFailures = new ArrayList<StreamValidationFailure>();
 
         guardBlueprintNamespace(blueprintArtifact, namespaceFailures);
@@ -191,6 +247,7 @@ public sealed interface StreamResourceValidator {
                                                            resourcesConfig,
                                                            roleHints,
                                                            replication,
+                                                           committedFor,
                                                            namespaceFailures));
     }
 
@@ -198,6 +255,7 @@ public sealed interface StreamResourceValidator {
                                                                Option<String> resourcesConfig,
                                                                Map<String, String> roleHints,
                                                                ReplicationContext replication,
+                                                               BiFunction<String, StreamResource.Owned, Option<StreamConfig>> committedFor,
                                                                List<StreamValidationFailure> namespaceFailures) {
         var accepted = new LinkedHashMap<String, StreamResource>();
         var rejected = new ArrayList<StreamValidationFailure>();
@@ -209,6 +267,7 @@ public sealed interface StreamResourceValidator {
                                                            resource,
                                                            resourcesConfig,
                                                            replication,
+                                                           committedFor,
                                                            accepted,
                                                            rejected));
         var declaresStreams = !parsed.accepted().isEmpty() || !parsed.rejected().isEmpty();
@@ -229,6 +288,7 @@ public sealed interface StreamResourceValidator {
                                        StreamResource resource,
                                        Option<String> resourcesConfig,
                                        ReplicationContext replication,
+                                       BiFunction<String, StreamResource.Owned, Option<StreamConfig>> committedFor,
                                        Map<String, StreamResource> accepted,
                                        List<StreamValidationFailure> rejected) {
         var inert = new ArrayList<StreamValidationFailure>();
@@ -237,7 +297,9 @@ public sealed interface StreamResourceValidator {
             guardOwnedName(alias, inert);
             guardCoreCount(alias, owned.config(), replication, inert);
             guardStreamConfig(alias, owned.config(), inert);
+            resourcesConfig.onPresent(toml -> guardDeclarationTables(alias, toml, inert));
             resourcesConfig.onPresent(toml -> guardConsumerConfigs(alias, toml, inert));
+            guardCommittedRow(alias, owned, committedFor, inert);
         }
 
         if (inert.isEmpty()) {
@@ -245,6 +307,140 @@ public sealed interface StreamResourceValidator {
         } else {
             rejected.addAll(inert);
         }
+    }
+
+    /// #3334 (section 2.5), R-12: the inert gate wins while a key is inert, so the committed row is compared only for an
+    /// alias that has no inert failure yet (`failures` holds this alias's failures at the call).
+    private static void guardCommittedRow(String alias,
+                                          StreamResource.Owned owned,
+                                          BiFunction<String, StreamResource.Owned, Option<StreamConfig>> committedFor,
+                                          List<StreamValidationFailure> failures) {
+        if (failures.isEmpty()) {
+            committedFor.apply(alias, owned)
+                        .onPresent(committed -> failures.addAll(committedRowFailures(alias,
+                                                                                     owned.config(),
+                                                                                     committed)));
+        }
+    }
+
+    /// The committed row of an owned alias: its engine key is the address the bindings carry
+    /// (`BlueprintService#toNamedAddresses` derives it the same way), so it exists only for an exact version.
+    private static Option<StreamConfig> committedRow(Artifact blueprintArtifact,
+                                                     Function<String, Option<StreamConfig>> committedRows,
+                                                     String alias,
+                                                     StreamResource.Owned owned) {
+        return switch (owned.version()) {
+            case StreamVersionSpec.Exact exact -> BlueprintNamespace.deriveNamespace(blueprintArtifact).flatMap(namespace -> ResourceAddress.resourceAddress(namespace,
+                                                                                                                                                             alias,
+                                                                                                                                                             exact.version())).option().flatMap(address -> committedRows.apply(address.asString()));
+            case StreamVersionSpec.Latest _ -> Option.none();
+        };
+    }
+
+    /// #3334 (section 2.5): the immutable keys of a committed stream, compared on model objects (`declared` is the
+    /// resolved declaration, `committed` the row). The partition count and the truncation policy may not change; the
+    /// replication and confirmation factors may only rise; `max_event_size` and `encryption_key_id` may not change.
+    /// Compression is online and has no rule. Mirrors what the node enforces (`StreamPartitionManager#notAppliedReason`),
+    /// which stays the backstop for a local KV that lags a commit.
+    static List<StreamValidationFailure> committedRowFailures(String alias,
+                                                              StreamConfig declared,
+                                                              StreamConfig committed) {
+        var field = "[streams." + alias + "]";
+
+        return Stream.of(partitionCountFailure(field, declared, committed),
+                         durabilityFailure(field, declared, committed),
+                         truncationFailure(field, declared, committed),
+                         maxEventSizeFailure(field, declared, committed),
+                         encryptionKeyFailure(field, declared, committed))
+                     .flatMap(Option::stream)
+                     .toList();
+    }
+
+    private static Option<StreamValidationFailure> partitionCountFailure(String field,
+                                                                         StreamConfig declared,
+                                                                         StreamConfig committed) {
+        return declared.partitions() == committed.partitions()
+               ? Option.none()
+               : Option.some(StreamValidationFailure.streamValidationFailure(field,
+                                                                             RULE_PARTITION_COUNT_IMMUTABLE,
+                                                                             "partitions " + declared.partitions()
+                                                                            + " differs from the committed " + committed.partitions()
+                                                                            + ": the partition count of an existing stream cannot change"));
+    }
+
+    private static Option<StreamValidationFailure> durabilityFailure(String field,
+                                                                     StreamConfig declared,
+                                                                     StreamConfig committed) {
+        return declared.replicationFactor() >= committed.replicationFactor() && declared.confirmationFactor() >= committed.confirmationFactor()
+               ? Option.none()
+               : Option.some(StreamValidationFailure.streamValidationFailure(field,
+                                                                             RULE_DURABILITY_ONLY_INCREASES,
+                                                                             "replication_factor/confirmation_factor " + declared.replicationFactor()
+                                                                            + "/" + declared.confirmationFactor()
+                                                                            + " is below the committed " + committed.replicationFactor()
+                                                                            + "/" + committed.confirmationFactor()
+                                                                            + ": durability only increases online"));
+    }
+
+    private static Option<StreamValidationFailure> truncationFailure(String field,
+                                                                     StreamConfig declared,
+                                                                     StreamConfig committed) {
+        var declaredPolicy = truncationPolicy(declared);
+        var committedPolicy = truncationPolicy(committed);
+
+        return declaredPolicy.equals(committedPolicy)
+               ? Option.none()
+               : Option.some(StreamValidationFailure.streamValidationFailure(field,
+                                                                             RULE_TRUNCATION_POLICY_IMMUTABLE,
+                                                                             "truncation policy " + declaredPolicy.map(Enum::name)
+                                                                                                                  .or("unset")
+                                                                            + " differs from the committed " + committedPolicy.map(Enum::name)
+                                                                                                                              .or("unset")
+                                                                            + ": the truncation policy of an existing stream cannot change"));
+    }
+
+    /// A row with no stored declaration, or a declaration with no policy, is a [DeclarationDefaults#DEFAULT_POLICY] (`window`)
+    /// stream: the one constant the parser resolves for a section that names none, so a stream committed before the declaration existed can be redeployed.
+    private static Option<TruncationPolicy> truncationPolicy(StreamConfig config) {
+        return Option.some(config.declaration()
+                                 .flatMap(StreamDeclaration::truncation)
+                                 .flatMap(TruncationDeclaration::policy)
+                                 .or(DeclarationDefaults.DEFAULT_POLICY));
+    }
+
+    private static Option<StreamValidationFailure> maxEventSizeFailure(String field,
+                                                                       StreamConfig declared,
+                                                                       StreamConfig committed) {
+        return declared.maxEventSizeBytes() == committed.maxEventSizeBytes()
+               ? Option.none()
+               : Option.some(storageKeyFailure(field,
+                                               "max_event_size",
+                                               String.valueOf(declared.maxEventSizeBytes()),
+                                               String.valueOf(committed.maxEventSizeBytes())));
+    }
+
+    private static Option<StreamValidationFailure> encryptionKeyFailure(String field,
+                                                                        StreamConfig declared,
+                                                                        StreamConfig committed) {
+        return declared.encryptionKeyId()
+                       .equals(committed.encryptionKeyId())
+               ? Option.none()
+               : Option.some(storageKeyFailure(field,
+                                               "encryption_key_id",
+                                               declared.encryptionKeyId().or("unset"),
+                                               committed.encryptionKeyId().or("unset")));
+    }
+
+    private static StreamValidationFailure storageKeyFailure(String field,
+                                                             String key,
+                                                             String declared,
+                                                             String committed) {
+        return StreamValidationFailure.streamValidationFailure(field,
+                                                               RULE_STORAGE_KEY_IMMUTABLE,
+                                                               key
+                                                              + " '" + declared
+                                                              + "' differs from the committed '" + committed
+                                                              + "': a storage key of an existing stream cannot change");
     }
 
     private static StreamValidationFailures gating(List<StreamValidationFailure> first,
@@ -385,6 +581,14 @@ public sealed interface StreamResourceValidator {
             case StreamDeclarationError.MalformedValue _ -> RULE_STREAM_KEY_INVALID;
             case StreamDeclarationError.ValueOverflows _ -> RULE_STREAM_KEY_INVALID;
             case StreamDeclarationError.ValueOutOfRange _ -> RULE_STREAM_KEY_INVALID;
+            case StreamDeclarationError.RetentionUndeclared _ -> RULE_RETENTION_UNDECLARED;
+            case StreamDeclarationError.RetentionCountOnly _ -> RULE_RETENTION_COUNT_ONLY;
+            case StreamDeclarationError.NotYetAvailable _ -> RULE_NOT_YET_AVAILABLE;
+            case StreamDeclarationError.UntilConsumedUncapped _ -> RULE_UNTIL_CONSUMED_UNCAPPED;
+            case StreamDeclarationError.UntilConsumedModeAll _ -> RULE_UNTIL_CONSUMED_MODE_ALL;
+            case StreamDeclarationError.UntilConsumedUnsupported _ -> RULE_UNTIL_CONSUMED_UNSUPPORTED;
+            case StreamDeclarationError.GroupIdleExpiryWithoutUntilConsumed _ -> RULE_GROUP_IDLE_EXPIRY_WITHOUT_UNTIL_CONSUMED;
+            case StreamDeclarationError.ConflictingDeclarationModels _ -> RULE_CONFLICTING_DECLARATION_MODELS;
             case ResourceAddressError.General address -> addressRule(address);
             case ResourceVersionError _ -> RULE_VERSION_FORMAT_INVALID;
             case StreamVersionSpecError _ -> RULE_VERSION_FORMAT_INVALID;
@@ -480,6 +684,7 @@ public sealed interface StreamResourceValidator {
             if (resource instanceof StreamResource.Owned owned) {
                 guardOwnedName(alias, failures);
                 guardStreamConfig(alias, owned.config(), failures);
+                resourcesConfig.onPresent(toml -> guardDeclarationTables(alias, toml, failures));
                 resourcesConfig.onPresent(toml -> guardConsumerConfigs(alias, toml, failures));
             }
         });
@@ -492,6 +697,26 @@ public sealed interface StreamResourceValidator {
         InertKeyRules.inertStreamKeys(config).forEach(inert -> failures.add(StreamValidationFailure.streamValidationFailure(field,
                                                                                                                             RULE_INERT_STREAM_CONFIG,
                                                                                                                             inert.message())));
+    }
+
+    /// #3334: the keys of an inert storage-declaration sub-section ([InertKeyRules#inertDeclarationKeys]), read from the
+    /// alias's section of the TOML text the parser read, so deploy refuses what activation refuses over the provider view.
+    private static void guardDeclarationTables(String alias, String toml, List<StreamValidationFailure> failures) {
+        var field = "[streams." + alias + "]";
+
+        inertDeclarationKeys(alias, toml).forEach(inert -> failures.add(StreamValidationFailure.streamValidationFailure(field,
+                                                                                                                        RULE_INERT_STREAM_CONFIG,
+                                                                                                                        inert.message())));
+    }
+
+    /// Design-out, not a dropped failure: the alias exists only because this text parsed, so the parse cannot fail here and
+    /// the empty fallback is unreachable.
+    private static List<InertKeyRules.InertKey> inertDeclarationKeys(String alias, String toml) {
+        return TomlParser.parse(toml)
+                         .map(doc -> InertKeyRules.inertDeclarationKeys(StreamSection.tomlSection(doc,
+                                                                                                  STREAMS_SECTION_PREFIX + alias,
+                                                                                                  alias)))
+                         .or(List.of());
     }
 
     /// A consumer key the parser refuses (#1549: `checkpoint_interval` that is not a duration of at least 1 ms)

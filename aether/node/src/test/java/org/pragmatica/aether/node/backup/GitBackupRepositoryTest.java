@@ -15,9 +15,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 import org.pragmatica.aether.node.backup.GitBackupRepository.BackupRepositoryError;
 import org.pragmatica.lang.Cause;
@@ -297,7 +299,7 @@ class GitBackupRepositoryTest {
     /// Git has exited and the caller waits for the output pipe: the parked frame is the output future's.
     private static void awaitReadingOutput(Thread worker) throws InterruptedException {
         for (var attempt = 0; attempt < 600; attempt++) {
-            if (java.util.Arrays.stream(worker.getStackTrace()).anyMatch(frame -> frame.getClassName().equals("java.util.concurrent.FutureTask"))) {
+            if (Arrays.stream(worker.getStackTrace()).anyMatch(frame -> frame.getClassName().equals("java.util.concurrent.FutureTask"))) {
                 return;
             }
 
@@ -757,6 +759,128 @@ class GitBackupRepositoryTest {
         }
     }
 
+    /// `git show --output=<file>` exits 0 and writes the file, so a ref that is a git option is a file write: refused before git runs, by every read.
+    @Test
+    void aRefBeginningWithADash_isRefusedBeforeGitRuns_byEveryRead_andCreatesNoFile() {
+        var repository = committedRepository("hostile");
+        var planted = temp.resolve("planted");
+        var hostile = "--output=" + planted + ":x";
+
+        assertThat(unreadableReason(repository.readCommitId(hostile))).contains("refused");
+        assertThat(unreadableReason(repository.readPath(hostile, "x"))).contains("refused");
+        assertThat(unreadableReason(repository.readFile(hostile, GitBackupRepository.FILE))).contains("refused");
+        assertThat(unreadableReason(repository.readHistory(hostile))).contains("refused");
+        assertThat(failureOf(repository.commitOf(hostile))).contains("refused");
+        assertThat(failureOf(repository.documentAt(hostile))).contains("refused");
+        assertThat(failureOf(repository.history(hostile))).contains("refused");
+        assertThat(planted).doesNotExist();
+    }
+
+    /// A single dash is an option too (`-p`, `-n`): the refusal is the first barrier, so the reason says refused, not whatever git answers.
+    @Test
+    void aRefBeginningWithASingleDash_isRefused_byEveryRead() {
+        var repository = committedRepository("single-dash");
+
+        assertThat(unreadableReason(repository.readCommitId("-x"))).contains("refused");
+        assertThat(unreadableReason(repository.readPath("-x", "p"))).contains("refused");
+        assertThat(unreadableReason(repository.readFile("-x", GitBackupRepository.FILE))).contains("refused");
+        assertThat(unreadableReason(repository.readHistory("-x"))).contains("refused");
+        assertThat(failureOf(repository.commitOf("-x"))).contains("refused");
+    }
+
+    /// A `git` on the PATH that is not executable is skipped: the next one on the PATH runs (an executable-file check, not an existence check).
+    @Test
+    void aNonExecutableGitOnThePath_isSkipped_forTheNextOne() throws IOException {
+        var bin = temp.resolve("bin-nonexec");
+
+        Files.createDirectories(bin);
+        Files.writeString(bin.resolve("git"), "#!/bin/sh\nexit 99\n");
+        Files.setPosixFilePermissions(bin.resolve("git"), PosixFilePermissions.fromString("rw-r--r--"));
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local-nonexec"),
+                                                                  Option.none(),
+                                                                  "backup",
+                                                                  TIMEOUT,
+                                                                  Map.of("PATH", bin + ":" + System.getenv("PATH")));
+
+        assertThat(repository.prepare().isSuccess()).isTrue();
+    }
+
+    /// The repository directory cannot be created (its parent is a file): nothing is known about the installed git, so the read is Unreadable with the
+    /// filesystem's reason, which does not name the git requirement.
+    @Test
+    void readGitVersion_whenTheDirectoryCannotBeCreated_isUnreadable_withoutNamingTheRequirement() throws IOException {
+        var blocker = temp.resolve("blocker");
+
+        Files.writeString(blocker, "a file, not a directory\n");
+        var repository = GitBackupRepository.gitBackupRepository(blocker.resolve("repo"), Option.none(), "backup", TIMEOUT);
+
+        var read = repository.readGitVersion();
+
+        assertThat(read).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(unreadableReason(read)).doesNotContain("2.43");
+    }
+
+    @Test
+    void aNormalRef_stillReadsThroughEveryRead() {
+        var repository = committedRepository("normal");
+        var head = git(temp.resolve("local-normal"), "rev-parse", "HEAD").strip();
+
+        assertThat(repository.readCommitId("HEAD")).isEqualTo(GitRead.present(head));
+        assertThat(repository.readPath("HEAD", GitBackupRepository.FILE)).isInstanceOf(GitRead.Present.class);
+        assertThat(repository.readFile("HEAD", GitBackupRepository.FILE)).isEqualTo(GitRead.present("one\n"));
+        assertThat(repository.readHistory("HEAD")).isInstanceOf(GitRead.Present.class);
+        assertThat(repository.commitOf("HEAD").unwrap()).isEqualTo(head);
+        assertThat(repository.documentAt("HEAD").unwrap()).isEqualTo("one\n");
+        assertThat(repository.history("HEAD").unwrap()).hasSize(1);
+    }
+
+    /// The second barrier behind the refusal: the argv git is given ends option parsing before the caller's ref (and `--` before a path).
+    @Test
+    void everyGitCallTakingACallersRef_passesEndOfOptionsBeforeIt() throws IOException {
+        assertThat(argvOf("rev-parse-id", "rev-parse", r -> r.readCommitId("HEAD"))).anyMatch(line -> line.contains("--end-of-options HEAD^{commit}"));
+        assertThat(argvOf("rev-parse-of", "rev-parse", r -> r.commitOf("HEAD"))).anyMatch(line -> line.contains("--end-of-options HEAD^{commit}"));
+        assertThat(argvOf("ls-tree", "ls-tree", r -> r.readPath("HEAD", "p"))).anyMatch(line -> line.contains("ls-tree --name-only --end-of-options HEAD"));
+        assertThat(argvOf("show-file", "show", r -> r.readFile("HEAD", GitBackupRepository.FILE))).anyMatch(line -> line.contains("--end-of-options HEAD:"
+                                                                                                                              + GitBackupRepository.FILE));
+        assertThat(argvOf("show-doc", "show", r -> r.documentAt("HEAD"))).anyMatch(line -> line.contains("--end-of-options HEAD:" + GitBackupRepository.FILE));
+        assertThat(argvOf("show-local", "show", r -> r.localFile(GitBackupRepository.FILE))).anyMatch(line -> line.contains("--end-of-options HEAD:"
+                                                                                                                         + GitBackupRepository.FILE));
+        assertThat(argvOf("cat-file", "cat-file", r -> r.localFile(GitBackupRepository.FILE))).anyMatch(line -> line.contains("-e --end-of-options HEAD:"
+                                                                                                                            + GitBackupRepository.FILE));
+        assertThat(argvOf("log-read", "log", r -> r.readHistory("HEAD"))).anyMatch(line -> line.contains("--end-of-options HEAD"));
+        assertThat(argvOf("log-history", "log", r -> r.history("HEAD"))).anyMatch(line -> line.contains("--end-of-options HEAD"));
+        assertThat(argvOf("add", "add", r -> r.commitFile("f.txt", "x\n", "m"))).anyMatch(line -> line.contains("add -- f.txt"));
+    }
+
+    private GitBackupRepository committedRepository(String name) {
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local-" + name), Option.none(), "backup", TIMEOUT);
+
+        repository.prepare()
+                  .flatMap(_ -> repository.commit("one\n", "first"))
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        return repository;
+    }
+
+    /// The argument lines a shimmed git saw for `subcommand` during `call` alone (the setup's own git calls are dropped).
+    private List<String> argvOf(String name, String subcommand, Consumer<GitBackupRepository> call) throws IOException {
+        var log = temp.resolve(name + ".argv");
+        var env = gitShim(temp.resolve("bin-" + name), subcommand, "echo \"$*\" >> " + log);
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local-" + name), Option.none(), "backup", TIMEOUT, env);
+
+        repository.prepare()
+                  .flatMap(_ -> repository.commit("one\n", "first"))
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        Files.deleteIfExists(log);
+        call.accept(repository);
+        return Files.exists(log)
+               ? Files.readAllLines(log)
+               : List.of();
+    }
+
+    private static <T> String failureOf(Result<T> result) {
+        return result.fold(Cause::message, _ -> "succeeded");
+    }
+
     private static RejectionRecord record() {
         return recordOf("lineage-a", 3L, 41L, "inc-9", "abc123");
     }
@@ -1111,6 +1235,7 @@ class GitBackupRepositoryTest {
 
         assertThat(git(dir, "diff", "--cached", "--name-only").strip()).isEqualTo(GitBackupRepository.FILE);
     }
+
     private GitBackupRepository repository(String name, Option<String> remote) {
         return GitBackupRepository.gitBackupRepository(temp.resolve(name), remote, "backup", TIMEOUT);
     }
@@ -1225,5 +1350,144 @@ class GitBackupRepositoryTest {
                                                        "backup",
                                                        timeout,
                                                        Map.of("PATH", bin + ":" + System.getenv("PATH")));
+    }
+
+    // --- #3464: version probe, history read, restore ref ---
+
+    @Test
+    void classifyGitVersion_acceptsFrom243_andNamesTheRequirementOtherwise() {
+        assertThat(unreadableReason(GitBackupRepository.classifyGitVersion(0, Option.some("git version 2.42.0\n")))).contains("git >= 2.43");
+        assertThat(unreadableReason(GitBackupRepository.classifyGitVersion(0, Option.some("2.42.0")))).contains("git >= 2.43");
+        assertThat(GitBackupRepository.classifyGitVersion(0, Option.some("git version 2.43.0\n"))).isEqualTo(GitRead.present("git version 2.43.0"));
+        assertThat(GitBackupRepository.classifyGitVersion(0, Option.some("git version 2.50.1 (Apple Git-155)\n")))
+                .isEqualTo(GitRead.present("git version 2.50.1 (Apple Git-155)"));
+        assertThat(GitBackupRepository.classifyGitVersion(0, Option.some("git version 3.0.0\n"))).isEqualTo(GitRead.present("git version 3.0.0"));
+    }
+
+    @Test
+    void classifyGitVersion_readsLostOutput_aNonZeroExit_andGarbage_asUnreadable() {
+        assertThat(unreadableReason(GitBackupRepository.classifyGitVersion(0, Option.none()))).contains("output was lost");
+        assertThat(unreadableReason(GitBackupRepository.classifyGitVersion(1, Option.some("git version 2.50.0\n")))).contains("git >= 2.43");
+        assertThat(unreadableReason(GitBackupRepository.classifyGitVersion(0, Option.some("bash: git: not found")))).contains("git >= 2.43");
+        assertThat(unreadableReason(GitBackupRepository.classifyGitVersion(0, Option.some("warning: built for 2.50.0, not git"))))
+                .as("the version is read from the start of the line, not from anywhere in it")
+                .contains("git >= 2.43");
+    }
+
+    @Test
+    void readGitVersion_overAGitOlderThan243_isUnreadable_andNamesTheRequirement() {
+        var env = gitShim(temp.resolve("bin"), "--version", "echo 'git version 2.42.0'\n    exit 0");
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"), Option.none(), "backup", TIMEOUT, env);
+
+        assertThat(unreadableReason(repository.readGitVersion())).contains("git >= 2.43");
+    }
+
+    /// Exit 129 is git refusing `--exists`: the reason says which git it needs.
+    @Test
+    void classifyLocalBranch_onAUsageError_namesTheRequiredGit() {
+        assertThat(unreadableReason(GitBackupRepository.classifyLocalBranch(129, Option.some("error: unknown option `exists'")))).contains("git >= 2.43");
+        assertThat(unreadableReason(GitBackupRepository.classifyLocalBranch(128, Option.some("fatal: not a git repository")))).doesNotContain("2.43");
+    }
+
+    @Test
+    void readHistory_overARealRepository_listsTheCommitsNewestFirst() {
+        var repository = repository("local", Option.none());
+
+        repository.prepare()
+                  .flatMap(_ -> repository.commit("one\n", "first"))
+                  .flatMap(_ -> repository.commit("two\n", "second"))
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.readHistory("refs/heads/backup")).isInstanceOfSatisfying(GitRead.Present.class,
+                                                                                         present -> assertThat((List<?>) present.value()).hasSize(2));
+    }
+
+    @Test
+    void readHistory_whenGitFails_orPrintsNothing_isUnreadable_neverAnEmptyList() {
+        assertThat(unreadableReason(GitBackupRepository.classifyHistory(128, Option.some("fatal: bad revision")))).contains("128");
+        assertThat(unreadableReason(GitBackupRepository.classifyHistory(0, Option.some("")))).contains("git exited 0");
+        assertThat(unreadableReason(GitBackupRepository.classifyHistory(0, Option.none()))).contains("output was lost");
+        assertThat(shimmedHistory("fails", SHIM_FAILS)).isInstanceOf(GitRead.Unreadable.class);
+        assertThat(shimmedHistory("prints-nothing", SHIM_PRINTS_NOTHING)).isInstanceOf(GitRead.Unreadable.class);
+    }
+
+    @Test
+    void restoreRef_overAnEmptyLocalRepository_isNone_andOverACommittedOne_isTheLocalBranch() {
+        var repository = repository("local", Option.none());
+
+        repository.prepare().onFailure(cause -> Assertions.fail(cause.message()));
+        assertThat(repository.restoreRef().unwrap()).isEqualTo(Option.none());
+
+        repository.commit("one\n", "first").onFailure(cause -> Assertions.fail(cause.message()));
+        assertThat(repository.restoreRef().unwrap()).isEqualTo(Option.some("refs/heads/backup"));
+    }
+
+    @Test
+    void restoreRef_whenGitCannotSayIfTheBranchExists_isAFailure_notNone() {
+        var env = gitShim(temp.resolve("bin"), "show-ref", SHIM_FAILS);
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"), Option.none(), "backup", TIMEOUT, env);
+
+        repository.prepare().onFailure(cause -> Assertions.fail(cause.message()));
+
+        assertThat(repository.restoreRef().isFailure()).isTrue();
+    }
+
+    private GitRead<List<String>> shimmedHistory(String name, String behaviour) {
+        var env = gitShim(temp.resolve("bin-" + name), "log", behaviour);
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local-" + name), Option.none(), "backup", TIMEOUT, env);
+
+        repository.prepare()
+                  .flatMap(_ -> repository.commit("one\n", "first"))
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+
+        return repository.readHistory("refs/heads/backup");
+    }
+
+    private static String unreadableReason(GitRead<?> read) {
+        return read instanceof GitRead.Unreadable<?> unreadable
+               ? unreadable.reason()
+               : "not unreadable: " + read;
+    }
+
+    /// What a shimmed git subcommand does: refuse as a damaged or unreachable repository would (exit 128), or exit 0 with nothing on stdout.
+    static final String SHIM_FAILS = "echo 'fatal: shim' >&2\n    exit 128";
+    static final String SHIM_PRINTS_NOTHING = "exit 0";
+
+    /// An environment whose PATH starts with a `git` that runs `behaviour` (shell) when its subcommand is `subcommand` (the first argument after the
+    /// `-c`/`-C` pairs, so `--version` counts) and the real git for everything else (#3464). The repository still runs real git for every other step.
+    static Map<String, String> gitShim(Path bin, String subcommand, String behaviour) {
+        var shim = bin.resolve("git");
+        var script = """
+                     #!/bin/sh
+                     sub=""
+                     skip=0
+                     for arg in "$@"; do
+                       if [ "$skip" = 1 ]; then skip=0; continue; fi
+                       case "$arg" in -c|-C) skip=1;; *) sub="$arg"; break;; esac
+                     done
+                     if [ "$sub" = "%s" ]; then
+                         %s
+                     fi
+                     exec %s "$@"
+                     """.formatted(subcommand, behaviour, realGit());
+
+        try {
+            Files.createDirectories(bin);
+            Files.writeString(shim, script);
+            Files.setPosixFilePermissions(shim, PosixFilePermissions.fromString("rwxr-xr-x"));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+
+        return Map.of("PATH", bin + ":" + System.getenv("PATH"));
+    }
+
+    private static String realGit() {
+        return Arrays.stream(System.getenv("PATH").split(":"))
+                   .map(entry -> Path.of(entry).resolve("git"))
+                   .filter(Files::isExecutable)
+                   .findFirst()
+                   .orElseThrow()
+                   .toString();
     }
 }

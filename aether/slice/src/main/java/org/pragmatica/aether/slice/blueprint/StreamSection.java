@@ -40,6 +40,16 @@ public sealed interface StreamSection {
                      .or(Result.success(Option.none()));
     }
 
+    /// Whether the section declares the sub-table `name` (`[streams.<alias>.<name>]` or a dotted `<name>.<key>`): ONE
+    /// rule for both views, by keys. A sub-table is declared by the keys it carries; an empty `[streams.<alias>.<name>]`
+    /// header declares nothing and reads as absent. The rule is the provider view's, because the provider flattens a
+    /// TOML document to keys and an empty table leaves none, so deploy (TOML) and activation (provider) read an empty
+    /// sub-table alike only by keys.
+    default boolean hasTable(String name) {
+        return keys().stream()
+                   .anyMatch(key -> key.startsWith(name + "."));
+    }
+
     /// `consumers.<group>...` belongs to the consumer parser, never to this section.
     private static boolean isConsumerTable(String relative) {
         return relative.startsWith("consumers.");
@@ -80,7 +90,17 @@ public sealed interface StreamSection {
 
         @Override
         public Option<String> string(String key) {
-            return doc.getString(section, key);
+            return doc.getString(section, key)
+                      .orElse(() -> subTableValue(key));
+        }
+
+        /// `<sub>.<key>` read from the `[streams.<alias>.<sub>]` table, the form [#keys] reports it in.
+        private Option<String> subTableValue(String dotted) {
+            var split = dotted.indexOf('.');
+
+            return split < 0
+                   ? Option.none()
+                   : doc.getString(section + "." + dotted.substring(0, split), dotted.substring(split + 1));
         }
     }
 

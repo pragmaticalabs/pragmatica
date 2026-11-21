@@ -108,7 +108,20 @@ public sealed interface StreamError extends Cause {
         }
     }
 
-    record CursorExpired(long requestedOffset, long tailOffset) implements StreamError {
+    /// A cursor whose offset is no longer readable. `reason` says why: [Reason#EXPIRED] (retention reclaimed it) or
+    /// [Reason#LOST] (the data is gone with no retention decision behind it). The two-argument form is [Reason#EXPIRED], so
+    /// every raise site that predates the reason keeps its meaning. On the forward the reason rides `ReadRefusal`'s `flag`
+    /// slot (`false` = [Reason#EXPIRED]).
+    record CursorExpired(long requestedOffset, long tailOffset, Reason reason) implements StreamError {
+        public enum Reason {
+            EXPIRED,
+            LOST
+        }
+
+        public CursorExpired(long requestedOffset, long tailOffset) {
+            this(requestedOffset, tailOffset, Reason.EXPIRED);
+        }
+
         @Override
         public String message() {
             return "Cursor at offset %d has expired, oldest available is %d".formatted(requestedOffset, tailOffset);
@@ -291,6 +304,16 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Stream not found: " + streamName;
+        }
+    }
+
+    /// The stream's existence is confirmed by a committed read, but this node's engine does not hold it yet (config committed,
+    /// apply lagging, or metadata-only placement). Transient: repeat or ask elsewhere. DISTINCT from [StreamNotFound], which
+    /// means no committed config is visible.
+    record StreamNotMaterialized(String streamName) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Stream " + streamName + " is registered but not materialized on this node yet";
         }
     }
 
