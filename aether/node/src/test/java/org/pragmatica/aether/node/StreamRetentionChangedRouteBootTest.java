@@ -168,10 +168,13 @@ class StreamRetentionChangedRouteBootTest {
         return RetentionDeclaration.retentionDeclaration(Option.none(), Option.some(maxBytes), Option.none(), Option.none());
     }
 
+    /// The policy carries the declared `max_bytes` as the deploy path does: the manager adopts a committed config only when
+    /// the storage key changed, so a declaration-only change would leave the enforced config old and make the order of the
+    /// announcer and the manager's handler unobservable.
     private StreamConfig declaring(long maxBytes) {
         var retention = retention(maxBytes);
 
-        return StreamConfig.streamConfig(stream, 1, RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 600_000), "earliest")
+        return StreamConfig.streamConfig(stream, 1, RetentionPolicy.retentionPolicy(1000, maxBytes, 600_000), "earliest")
                            .withReplication(new ReplicationFactors(1, 1))
                            .withIncarnation(1L)
                            .withDeclaration(StreamDeclaration.streamDeclaration(Option.some(retention),
