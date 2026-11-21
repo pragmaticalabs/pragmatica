@@ -2270,7 +2270,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// `adopted` is told the config an adoption replaced ([#adoptConfig]); a hydration or a new life replaces no enforced
     /// config of the same life and tells nothing.
     @NullReturn
-    private StreamEntry reconcileCommittedConfig(StreamConfig config, StreamEntry existing, Consumer<StreamConfig> adopted) {
+    private StreamEntry reconcileCommittedConfig(StreamConfig config,
+                                                 StreamEntry existing,
+                                                 Consumer<StreamConfig> adopted) {
         return option(existing).map(entry -> reconcileExisting(config, entry, adopted))
                      .or(() -> hydrateEntry(config));
     }
