@@ -4598,6 +4598,79 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Payload of an [AetherKey.EntitySeedOfferKey] — a parent partition's offer of its state to the children of a split
+    /// (#3303, design r8.2 V1).
+    ///
+    /// `parentLife` is the offering parent's life and `L` is the parent's cut offset (`L = lastOffset`); the read-back pointer is
+    /// `(L, blockIdHex)`. `parentOwnerEpoch` fences the owner that wrote it. `blockIdHex` names the seed block in stream storage.
+    /// Each [OfferEntry] carries the `keyCount` and `timerCount` of one child for the preview and the events only; no arm reads
+    /// them. A plain Put (V1): the owner writes it, so it carries no leader-authorization marker.
+    ///
+    /// @param parentLife       life of the offering parent
+    /// @param L                the parent's cut offset (`lastOffset`); with `blockIdHex` the read-back pointer
+    /// @param parentOwnerEpoch owner epoch of the parent that wrote the offer
+    /// @param blockIdHex       content id of the seed block in stream storage
+    /// @param entries          one entry per child the offer covers
+    record EntitySeedOfferValue(long parentLife,
+                                long L,
+                                long parentOwnerEpoch,
+                                String blockIdHex,
+                                List<OfferEntry> entries) implements AetherValue {
+        public EntitySeedOfferValue {
+            entries = List.copyOf(entries);
+        }
+
+        public static EntitySeedOfferValue entitySeedOfferValue(long parentLife,
+                                                                long L,
+                                                                long parentOwnerEpoch,
+                                                                String blockIdHex,
+                                                                List<OfferEntry> entries) {
+            return new EntitySeedOfferValue(parentLife, L, parentOwnerEpoch, blockIdHex, entries);
+        }
+
+        /// What one child takes from the offer: its id and how many keys and timers it adopts.
+        public record OfferEntry(int child, long keyCount, long timerCount) {
+            public static OfferEntry offerEntry(int child, long keyCount, long timerCount) {
+                return new OfferEntry(child, keyCount, timerCount);
+            }
+        }
+    }
+
+    /// Payload of an [AetherKey.EntityArcWaiverKey] — the operator's recorded decision to accept the loss of a child's inherited
+    /// base (#3303, design r8.2 V6, `accept-loss`).
+    ///
+    /// `case` is the admitted cause the waiver answers and `discarded` the block ids of the seed blocks given up. [LeaderAuthorized]:
+    /// only the leader's `accept-loss` transaction may write it, so a plain Put is dropped.
+    ///
+    /// @param childLife  life of the child whose base is waived
+    /// @param waiverCase admitted cause of the waiver
+    /// @param discarded  block ids of the discarded seed blocks
+    record EntityArcWaiverValue(long childLife, WaiverCase waiverCase, List<String> discarded) implements AetherValue, LeaderAuthorized {
+        public EntityArcWaiverValue {
+            discarded = List.copyOf(discarded);
+        }
+
+        public static EntityArcWaiverValue entityArcWaiverValue(long childLife,
+                                                                WaiverCase waiverCase,
+                                                                List<String> discarded) {
+            return new EntityArcWaiverValue(childLife, waiverCase, discarded);
+        }
+
+        /// The causes `accept-loss` admits.
+        @Codec
+        public enum WaiverCase {
+            BLOCK_LOST,
+            UNDECODABLE,
+            SEED_CORRUPT,
+            CANNOT_REPRODUCE,
+            FETCH_FAILED,
+            ARC_PARENT_RELEASED,
+            ARC_BASE_WITHHELD,
+            /// Sentinel: a constant a newer node wrote that this one does not know.
+            UNKNOWN
+        }
+    }
+
     /// The phase of a live DHT replication change (#1777, CTO ruling R1b).
     @Codec
     enum DhtReplicationStage {

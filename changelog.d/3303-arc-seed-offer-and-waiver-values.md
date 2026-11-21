@@ -1,0 +1,2 @@
+### Added (2026-11-20 — #3303: entity arc seed-offer and waiver values)
+- **`EntitySeedOfferValue` and `EntityArcWaiverValue` (wire tags 3020..3023)** are the payloads of the arc's seed-offer and arc-waiver keys, and both keys are now bound in the backup codec by their prefixed parsers, so a backup carries them. Decode-only: no node sends either value yet. [verified: `BackupEntryCodecTest`, `EntityArcValuesTest`, `SystemTagsLedgerTest`]
