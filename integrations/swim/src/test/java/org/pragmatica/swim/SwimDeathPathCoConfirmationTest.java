@@ -841,7 +841,8 @@ class SwimDeathPathCoConfirmationTest {
 
             if (target.equals(peerAddress) && message instanceof Ping ping) {
                 Option.option(handler.get())
-                      .onPresent(swim -> swim.deliverForTest(peerAddress, new Ack(peer, ping.sequence(), List.of())))
+                      // ASYNC-DELIVERY: simulated network hop, called from a transport send inside a task; it must not wait (deliverForTest would fail from inside a task, and a real transport never waits)
+                      .onPresent(swim -> swim.onMessage(peerAddress, new Ack(peer, ping.sequence(), List.of())))
                       .onPresent(_ -> acksDelivered.incrementAndGet());
             }
 
