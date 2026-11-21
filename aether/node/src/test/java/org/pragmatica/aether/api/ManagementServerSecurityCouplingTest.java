@@ -546,7 +546,7 @@ class ManagementServerSecurityCouplingTest {
         assertThat(received.get().grant().isEmpty()).as("and no grant").isTrue();
     }
 
-    /// TRIPWIRE for ms18. The secured forward path guards an unsupported method with a `return` before validation, but
+    /// TRIPWIRE for ms18 (Refs #3550). The secured forward path guards an unsupported method with a `return` before validation, but
     /// `dispatchManagementForwardWithinBudget` builds the `ForwardedRequestContext` first, and that constructor throws
     /// `IllegalArgumentException` for an unknown method, so the guard is unreachable and removing its `return` cannot be
     /// observed. This test pins the current behaviour (the receiver throws; neither validator nor route is reached). When
@@ -562,7 +562,8 @@ class ManagementServerSecurityCouplingTest {
         var forwarded = HttpRequestContext.httpRequestContext(PATH_A, "BOGUS", Map.of(), Map.of("X-API-Key", List.of(KEY_A)), new byte[0], "req-fwd-bogus");
         var node = server(validator, true, forwarded, sources -> GrantedBodyRoute.routerWith(sources, route));
 
-        assertThatThrownBy(() -> node.onHttpForwardRequest(forwardRequest())).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> node.onHttpForwardRequest(forwardRequest())).as("Refs #3550: the receiver no longer throws on an unsupported method; delete this tripwire and enable the @Disabled ms18 test")
+                                                                                      .isInstanceOf(IllegalArgumentException.class);
         assertThat(validator.returned().toOptional()).as("the validator was never consulted").isEmpty();
         assertThat(received.get()).as("the route never ran").isNull();
     }
