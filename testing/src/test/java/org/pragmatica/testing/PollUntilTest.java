@@ -17,6 +17,9 @@
 package org.pragmatica.testing;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -24,6 +27,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 /// Pins the wait helper's reporting on both outcomes, with the clock and the pause injected so no assertion depends on real time.
 class PollUntilTest {
@@ -60,7 +64,7 @@ class PollUntilTest {
     }
 
     @Test
-    void pollUntil_missesTheDeadline_reportsNegativeMarginAndBothValues() {
+    void pollUntil_missesTheDeadline_endsExactlyAtTheDeadlineWithZeroMargin() {
         var clock = new AtomicLong();
         var counter = new AtomicInteger();
 
@@ -70,9 +74,8 @@ class PollUntilTest {
         assertThat(report.polls()).isEqualTo(4);
         assertThat(report.firstValue()).isEqualTo(1);
         assertThat(report.finalValue()).isEqualTo(4);
-        assertThat(report.elapsed()).isEqualTo(Duration.ofMillis(60));
-        assertThat(report.margin()).isEqualTo(Duration.ofMillis(-10));
-        assertThat(report.margin().isNegative()).as("a miss overran the deadline").isTrue();
+        assertThat(report.elapsed()).isEqualTo(Duration.ofMillis(50));
+        assertThat(report.margin()).isEqualTo(Duration.ZERO);
     }
 
     @Test
@@ -87,8 +90,8 @@ class PollUntilTest {
             .hasMessageContaining("first=1")
             .hasMessageContaining("final=4")
             .hasMessageContaining("polls=4")
-            .hasMessageContaining("elapsed=60 ms")
-            .hasMessageContaining("margin=-10 ms");
+            .hasMessageContaining("elapsed=50 ms")
+            .hasMessageContaining("margin=0 ms");
     }
 
     @Test
@@ -115,5 +118,104 @@ class PollUntilTest {
 
         assertThat(report.polls()).isEqualTo(3);
         assertThat(report.margin().isPositive()).isTrue();
+    }
+
+    @Test
+    void pollUntil_pausesAreMinOfIntervalAndTimeLeft_soTheWaitEndsAtTheDeadline() {
+        var clock = new AtomicLong();
+        var pauses = new ArrayList<Long>();
+
+        PollUntil.pollUntil(() -> 0, value -> false, DEADLINE, INTERVAL, clock::get, nanos -> {
+            pauses.add(nanos);
+            clock.addAndGet(nanos);
+        });
+
+        assertThat(pauses).as("20 ms, 20 ms, then only the 10 ms that are left, never the full interval")
+                          .containsExactly(Duration.ofMillis(20).toNanos(), Duration.ofMillis(20).toNanos(), Duration.ofMillis(10).toNanos());
+    }
+
+    @Test
+    void pollUntil_atTheDeadlineExactly_stopsAndDoesNotPollAgain() {
+        var clock = new AtomicLong();
+        var counter = new AtomicInteger();
+
+        var report = PollUntil.pollUntil(() -> {
+            if (counter.incrementAndGet() > 10) {
+                throw new IllegalStateException("polled again at or past the deadline: `<` became `<=`");
+            }
+            return 0;
+        }, value -> false, DEADLINE, INTERVAL, clock::get, clock::addAndGet);
+
+        assertThat(report.polls()).isEqualTo(4);
+        assertThat(report.margin()).isEqualTo(Duration.ZERO);
+    }
+
+    @Test
+    void pollUntil_aZeroOrNegativeInterval_isRejectedBeforeAnyPoll() {
+        var polled = new AtomicInteger();
+
+        assertThatIllegalArgumentException().isThrownBy(() -> PollUntil.pollUntil(polled::incrementAndGet, value -> true, DEADLINE, Duration.ZERO));
+        assertThatIllegalArgumentException().isThrownBy(() -> PollUntil.pollUntil(polled::incrementAndGet, value -> true, DEADLINE, Duration.ofMillis(-1)));
+        assertThat(polled).hasValue(0);
+    }
+
+    @Test
+    void defaultInterval_isTenMilliseconds() {
+        assertThat(PollUntil.DEFAULT_INTERVAL).isEqualTo(Duration.ofMillis(10));
+    }
+
+    @Test
+    void pollUntil_realPause_theDefaultPauseActuallyWaits() {
+        var counter = new AtomicInteger();
+
+        var report = PollUntil.pollUntil(counter::incrementAndGet, value -> false, Duration.ofMillis(300), Duration.ofMillis(100));
+
+        assertThat(report.polls()).as("a no-op pause would poll millions of times; a 100 ms pause polls about 4").isBetween(2, 20);
+        assertThat(report.margin()).as("the wait ran to the deadline").isLessThanOrEqualTo(Duration.ZERO);
+    }
+
+    @Test
+    void pollUntil_aBlockingSupplier_failsAtTheDeadlineWithTheReportAndIsCancelled() throws InterruptedException {
+        var cancelled = new CountDownLatch(1);
+
+        assertThatThrownBy(() -> PollUntil.pollUntil(() -> blockUnlessCancelled(cancelled), value -> true, Duration.ofMillis(200)))
+            .isInstanceOf(AssertionError.class)
+            .hasMessageContaining("supplier blocked past the deadline")
+            .hasMessageContaining("polls=0");
+        assertThat(cancelled.await(5, TimeUnit.SECONDS)).as("the blocked supplier was interrupted").isTrue();
+    }
+
+    @Test
+    void pollUntil_anInterruptedWaiter_restoresTheFlagAndFailsAtOnce() {
+        Thread.currentThread().interrupt();
+        try {
+            assertThatThrownBy(() -> PollUntil.pollUntil(() -> blockUnlessCancelled(new CountDownLatch(1)), value -> true, Duration.ofSeconds(5)))
+                .isInstanceOf(AssertionError.class)
+                .hasMessageContaining("interrupted while waiting");
+            assertThat(Thread.currentThread().isInterrupted()).as("the interrupt flag is restored").isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void pollUntil_aSupplierException_propagatesRawOnTheFirstThrow() {
+        var failure = new IllegalStateException("boom");
+        var polls = new AtomicInteger();
+
+        assertThatThrownBy(() -> PollUntil.pollUntil(() -> {
+            polls.incrementAndGet();
+            throw failure;
+        }, value -> true, Duration.ofSeconds(5))).isSameAs(failure);
+        assertThat(polls).as("no retry").hasValue(1);
+    }
+
+    private static int blockUnlessCancelled(CountDownLatch cancelled) {
+        try {
+            new CountDownLatch(1).await(3, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            cancelled.countDown();
+        }
+        return 0;
     }
 }

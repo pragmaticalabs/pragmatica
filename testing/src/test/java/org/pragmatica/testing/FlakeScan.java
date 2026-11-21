@@ -34,14 +34,19 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /// The line scanner behind `FlakeScanTest`: finds the line patterns that past flakes were fixed by removing, in every
-/// `src/test/java` tree under a root, and checks the hits against a shrink-only allow-list.
+/// `src/test/java` and `src/it/java` tree under a root, and checks the hits against a shrink-only allow-list.
 ///
-/// Line based and comment-blind by design (lines starting with `//`, `*` or `/*` are skipped): a pattern split over two
-/// lines is invisible, which the census names. The allow-list key is file + pattern + hash of the whitespace-normalised
-/// line, never a line number, so unrelated edits above a hit do not stale its entry.
+/// Scope: `src/main` stays out, so test-support code that ships in a main tree (for example the cloud harness agent
+/// `M1ProbeAgent`) is not examined; that is a decision, not an oversight.
+///
+/// Line based by design: lines starting with `//`, `*` or `/*` are skipped, a pattern split over two lines is invisible,
+/// and a pattern inside a string literal or after a trailing `//` comment is still counted (a new test text that merely
+/// mentions one must be reworded or listed). The allow-list key is file + pattern + hash of the whitespace-normalised
+/// line, never a line number, so unrelated edits above a hit do not stale its entry. The corollary is that the list pins
+/// counts per file, not locations: moving a listed line elsewhere in the same file is accepted.
 final class FlakeScan {
     private static final Set<String> SKIPPED_DIRECTORIES = Set.of("target", ".git", ".m2-local", "node_modules");
-    private static final String TEST_SOURCES = "/src/test/java/";
+    private static final List<String> SCANNED_SOURCES = List.of("/src/test/java/", "/src/it/java/");
 
     /// A pattern with a fixed flake behind it, and the fix the failure message points at.
     enum Kind {
@@ -87,7 +92,7 @@ final class FlakeScan {
 
     private FlakeScan() {}
 
-    /// Every hit in every `src/test/java` tree under `root`, in path then line order; also the number of files examined.
+    /// Every hit in every `src/test/java` or `src/it/java` tree under `root`, in path then line order; also the number of files examined.
     static Scan scan(Path root) throws IOException {
         var hits = new ArrayList<Hit>();
         var examined = new ArrayList<String>();
@@ -104,7 +109,7 @@ final class FlakeScan {
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
                 var relative = root.relativize(file).toString().replace('\\', '/');
 
-                if (relative.endsWith(".java") && ("/" + relative).contains(TEST_SOURCES)) {
+                if (relative.endsWith(".java") && isScanned("/" + relative)) {
                     examined.add(relative);
                     scanFile(relative, file, hits);
                 }
@@ -132,6 +137,10 @@ final class FlakeScan {
                 }
             }
         }
+    }
+
+    private static boolean isScanned(String path) {
+        return SCANNED_SOURCES.stream().anyMatch(path::contains);
     }
 
     private static boolean isComment(String text) {

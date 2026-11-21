@@ -19,6 +19,7 @@ package org.pragmatica.testing;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -116,26 +117,79 @@ class FlakeScanTest {
 
     @Test
     void scan_everyPattern_isFoundByItsOwnPlantedLine() throws IOException {
-        var source = String.join("\n",
-                                 sleepLine(),
-                                 "java.util.concurrent.TimeUnit.SECONDS" + ".sleep(1);",
-                                 "private static final int BASE_" + "PORT = 28000;",
-                                 "var s = new ServerSocket(" + "9100);",
-                                 "assertThat(elapsedMs).isLess" + "Than(500);",
-                                 "assertTrue(" + "took < 100);",
-                                 "await().atMost(" + "Duration.ofSeconds(2)).until(ready);",
-                                 "await().atMost(" + "300, TimeUnit.MILLISECONDS).until(ready);");
+        var planted = new LinkedHashMap<String, FlakeScan.Kind>();
 
-        var kinds = FlakeScan.scan(plant("A.java", source)).hits().stream().map(FlakeScan.Hit::kind).toList();
+        planted.put(sleepLine(), FlakeScan.Kind.SLEEP);
+        planted.put("java.util.concurrent.TimeUnit.SECONDS" + ".sleep(1);", FlakeScan.Kind.SLEEP);
+        planted.put("private static final int BASE_" + "PORT = 28000;", FlakeScan.Kind.FIXED_PORT);
+        planted.put("int httpPort" + " = 8080;", FlakeScan.Kind.FIXED_PORT);
+        planted.put("long udpPort" + " = 9000;", FlakeScan.Kind.FIXED_PORT);
+        planted.put("Integer serverPort" + " = 9100;", FlakeScan.Kind.FIXED_PORT);
+        planted.put("var s = new ServerSocket(" + "9100);", FlakeScan.Kind.FIXED_PORT);
+        planted.put("var d = new DatagramSocket(" + "9200);", FlakeScan.Kind.FIXED_PORT);
+        planted.put("server.bind" + "(8081);", FlakeScan.Kind.FIXED_PORT);
+        planted.put("server.listen" + "(8082);", FlakeScan.Kind.FIXED_PORT);
+        planted.put("config.withPort" + "(8083);", FlakeScan.Kind.FIXED_PORT);
+        planted.put("config.port" + "(8084);", FlakeScan.Kind.FIXED_PORT);
+        planted.put("config.udpPort" + "(8085);", FlakeScan.Kind.FIXED_PORT);
+        planted.put("config.tcpPort" + "(8086);", FlakeScan.Kind.FIXED_PORT);
+        planted.put("config.httpPort" + "(8087);", FlakeScan.Kind.FIXED_PORT);
+        planted.put("assertThat(elapsedMs).isLess" + "Than(500);", FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put("assertThat(elapsedMs).isLessThan" + "OrEqualTo(500);", FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put("assertThat(elapsedMs).is" + "Between(1, 500);", FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put("assertThat(elapsedMs).isGreater" + "Than(500);", FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put("assertThat(elapsedMs).isGreaterThan" + "OrEqualTo(500);", FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put("assertThat(elapsedMs).isClose" + "To(500, offset);", FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put("assertThat(returnedAfter).isLess" + "Than(500);", FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put("assertThat(callTook).isLess" + "Than(500);", FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put("assertThat(Elapsed()).isLess" + "Than(500);", FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put("assertTrue(" + "took < 100);", FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put("assertTrue(" + "elapsed > 100);", FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put("await().atMost(" + "Duration.ofSeconds(2)).until(ready);", FlakeScan.Kind.SHORT_AWAIT);
+        planted.put("await().atMost(" + "Duration.ofMillis(500)).until(ready);", FlakeScan.Kind.SHORT_AWAIT);
+        planted.put("await().atMost(" + "300, TimeUnit.MILLISECONDS).until(ready);", FlakeScan.Kind.SHORT_AWAIT);
+        planted.put("await().atMost(" + "3, TimeUnit.SECONDS).until(ready);", FlakeScan.Kind.SHORT_AWAIT);
+        planted.put("await().atMost(" + "4, SECONDS).until(ready);", FlakeScan.Kind.SHORT_AWAIT);
 
-        assertThat(kinds).containsExactly(FlakeScan.Kind.SLEEP,
-                                          FlakeScan.Kind.SLEEP,
-                                          FlakeScan.Kind.FIXED_PORT,
-                                          FlakeScan.Kind.FIXED_PORT,
-                                          FlakeScan.Kind.WALL_CLOCK_BOUND,
-                                          FlakeScan.Kind.WALL_CLOCK_BOUND,
-                                          FlakeScan.Kind.SHORT_AWAIT,
-                                          FlakeScan.Kind.SHORT_AWAIT);
+        var hits = FlakeScan.scan(plant("A.java", String.join("\n", planted.keySet()))).hits();
+
+        assertThat(hits.stream().map(hit -> hit.kind() + " <- " + hit.text()).toList())
+            .as("each planted line is found, as exactly its own kind")
+            .containsExactlyElementsOf(planted.entrySet().stream().map(entry -> entry.getValue() + " <- " + entry.getKey()).toList());
+    }
+
+    @Test
+    void scan_aSleepUnderSrcItJava_isFlagged() throws IOException {
+        write(tmp.resolve("m/src/it/java/SomeIT.java"), sleepLine());
+
+        var scan = FlakeScan.scan(tmp);
+
+        assertThat(scan.examinedFiles()).containsExactly("m/src/it/java/SomeIT.java");
+        assertThat(scan.hits()).extracting(FlakeScan.Hit::kind).containsExactly(FlakeScan.Kind.SLEEP);
+    }
+
+    @Test
+    void scan_aRootNamedLikeASkippedDirectory_isStillExamined() throws IOException {
+        var root = tmp.resolve("node_modules");
+
+        write(root.resolve("m/src/test/java/A.java"), sleepLine());
+
+        assertThat(FlakeScan.scan(root).examinedFiles()).containsExactly("m/src/test/java/A.java");
+    }
+
+    @Test
+    void scan_everySkippedDirectoryName_isNotDescendedInto() throws IOException {
+        for (var skipped : List.of("target", ".git", ".m2-local", "node_modules")) {
+            write(tmp.resolve("m/" + skipped + "/x/src/test/java/Gen.java"), sleepLine());
+        }
+
+        assertThat(FlakeScan.scan(tmp).examinedFiles()).isEmpty();
+    }
+
+    @Test
+    void entries_ignoreBlankLinesCommentsAndSurroundingWhitespace() {
+        assertThat(FlakeScan.entries("# header\n\n   \n\t\n  a|SLEEP|1  \n#   b|SLEEP|2\nc|SLEEP|3\n"))
+            .containsExactly("a|SLEEP|1", "c|SLEEP|3");
     }
 
     @Test
@@ -144,6 +198,9 @@ class FlakeScanTest {
                                  "// " + sleepLine(),
                                  "/// the old " + sleepLine(),
                                  " * " + sleepLine(),
+                                 "/* " + sleepLine() + " */",
+                                 "/** " + sleepLine(),
+                                 "await().atMost(" + "Duration.ofSeconds(5)).until(ready);",
                                  "await().atMost(" + "Duration.ofSeconds(10)).until(ready);",
                                  "var s = new ServerSocket(0);",
                                  "private static final int PORT_COUNT = 3;",
