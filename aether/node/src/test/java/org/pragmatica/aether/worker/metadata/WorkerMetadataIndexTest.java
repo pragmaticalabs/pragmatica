@@ -161,7 +161,7 @@ class WorkerMetadataIndexTest {
     @Test
     void nodePlacementKey_isInExactlyItsNodeScope() {
         var index = WorkerMetadataIndex.workerMetadataIndex();
-        var key = AetherKey.NodePlacementKey.nodePlacementKey(CORE);
+        var key = new AetherKey.NodePlacementKey(CORE);
 
         index.put(key, "placement-value");
 
