@@ -48,8 +48,12 @@ import org.slf4j.LoggerFactory;
 /// - No owned thread: nothing to shut down. The queue is empty whenever no drainer is active, so the protocol's
 ///   stop has nothing to drain or reject; a task submitted after stop runs like any other (as onMessage did).
 ///
-/// A task that throws is logged and the drain continues: otherwise one failing task would strand the queue
-/// (no drainer, queued tasks never run) — the confinement must not turn one failure into a total stall.
+/// A task that throws is logged at ERROR with the task's identity and the drain continues with the next task, for
+/// any [Throwable] (an [AssertionError] from a listener included): otherwise one failing task would strand the
+/// queue (no drainer, queued tasks never run) — the confinement must not turn one failure into a total stall. A
+/// [VirtualMachineError] (stack overflow, out of memory) is logged the same way and then propagates to the drainer's
+/// caller, because the drainer's thread is not trusted to keep running after one. The drainer is released on EVERY
+/// exit (a `finally` around the drain), so the tasks still queued after it run on the next submission.
 final class SerialExecutor {
     private static final Logger LOG = LoggerFactory.getLogger(SerialExecutor.class);
     private static final long CALL_WAIT_NANOS = 50_000L;
@@ -122,7 +126,16 @@ final class SerialExecutor {
         var self = Thread.currentThread();
 
         while (!queue.isEmpty() && drainer.compareAndSet(null, self)) {
+            drainAndRelease();
+        }
+    }
+
+    /// Drain while owning [#drainer], then release it on every exit, a propagating [VirtualMachineError] included:
+    /// a drainer left pinned would make every later submission enqueue and return, and nothing would drain again.
+    private void drainAndRelease() {
+        try {
             drainQueue();
+        } finally {
             drainer.set(null);
         }
     }
@@ -133,11 +146,20 @@ final class SerialExecutor {
         }
     }
 
+    /// Run one task: any [Throwable] is logged with the task's identity and absorbed so the drain continues; a
+    /// [VirtualMachineError] is logged and rethrown; the caller's `finally` releases the drainer as it propagates.
+    @SuppressWarnings("JBCT-EX-01")  // #3529: a VM error is never absorbed; it propagates after logging
     private static void runLogged(Runnable task) {
         try {
             task.run();
-        } catch (RuntimeException e) {
-            LOG.error("SWIM serial executor: task failed; the drain continues with the next task", e);
+        } catch (VirtualMachineError e) {
+            LOG.error("SWIM serial executor: task {} failed with a VM error; releasing the drainer and rethrowing",
+                      task,
+                      e);
+
+            throw e;
+        } catch (Throwable e) {
+            LOG.error("SWIM serial executor: task {} failed; the drain continues with the next task", task, e);
         }
     }
 }

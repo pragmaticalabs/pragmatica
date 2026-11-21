@@ -18,6 +18,7 @@ package org.pragmatica.swim;
 import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -71,6 +72,7 @@ class SwimStateConfinementTest {
     private static final long OTHER_TOKEN = 0x2222L;
     private static final int THREADS = 4;
     private static final long WAIT_MS = 10_000;
+    private static final Map<String, String> LABELS = Map.of("role", "core");
 
     @Test
     void everyEntryPoint_mutatesOnlyOnTheSerialExecutor() throws InterruptedException {
@@ -131,6 +133,28 @@ class SwimStateConfinementTest {
 
         assertThat(protocol.members().containsKey(NODE_A)).as("applied once the holder released the executor").isTrue();
         assertThat(protocol.offExecutorMutationsForTest()).isZero();
+    }
+
+    /// The sensor is live: a write reached off the executor is counted. Drives the gossip chain handleMessage ->
+    /// handlePing -> processPiggyback -> applyUpdate -> applyExistingMember -> adoptGossipedLabels off the executor;
+    /// the label adoption's member write (storeScopedMember) is the only write the labelled ping adds over the
+    /// unlabelled control ping, so it must add to the count.
+    @Test
+    void sensor_gossipedLabelAdoptionOffTheExecutor_isCounted() {
+        var protocol = protocol(new SilentListener());
+
+        protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE);
+        protocol.handleMessageOffExecutorForTest(ADDR_A, new Ping(NODE_A, 1L, List.of(alive(NODE_A, 0))));
+        var unlabelledCount = protocol.offExecutorMutationsForTest();
+
+        protocol.handleMessageOffExecutorForTest(ADDR_A, new Ping(NODE_A, 2L, List.of(labelled(NODE_A))));
+        var labelledCount = protocol.offExecutorMutationsForTest() - unlabelledCount;
+
+        assertThat(protocol.members().get(NODE_A).labels()).as("control: the chain reached the label adoption")
+                                                           .isEqualTo(LABELS);
+        assertThat(unlabelledCount).as("the sensor counts a write off the executor").isPositive();
+        assertThat(labelledCount).as("the label adoption's member write off the executor is counted")
+                                 .isGreaterThan(unlabelledCount);
     }
 
     private static void nestedSubmission(SwimProtocol protocol, AtomicBoolean seenInside) {
@@ -222,6 +246,10 @@ class SwimStateConfinementTest {
 
     private static MembershipUpdate alive(NodeId peer, long incarnation) {
         return update(peer, MemberState.ALIVE, incarnation);
+    }
+
+    private static MembershipUpdate labelled(NodeId peer) {
+        return MembershipUpdate.membershipUpdate(peer, MemberState.ALIVE, 0, addressOf(peer), 0L, LABELS);
     }
 
     private static MembershipUpdate update(NodeId peer, MemberState state, long incarnation) {

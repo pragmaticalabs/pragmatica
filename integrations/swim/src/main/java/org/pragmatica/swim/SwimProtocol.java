@@ -4201,6 +4201,13 @@ public final class SwimProtocol implements SwimMessageHandler {
         return offExecutorMutations.get();
     }
 
+    /// Test-only (#3529 sensor liveness): hand `message` straight to its handler OFF [#stateExecutor], so a test can
+    /// prove the confinement sensor counts a write reached on that path. Never used to apply state in a test.
+    @Contract
+    void handleMessageOffExecutorForTest(InetSocketAddress sender, SwimMessage message) {
+        handleMessage(sender, message);
+    }
+
     /// Test-only (#3529): run `action` on [#stateExecutor], serially with the tick and every message, and wait
     /// for it ([SerialExecutor#call], the strict test-only wait). Every state-writing test seam goes through it, so
     /// a test reads its own seam write on return even while the tick drains; a test also uses it to hold the
