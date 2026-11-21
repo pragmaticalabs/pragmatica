@@ -48,8 +48,9 @@ public interface JoinGenerationGuard {
     /// 4: #420 flag day (`ArtifactContentValue` re-tagged, artifact-content binding added).
     /// 5: #3303 RA-2 (`TransactionResult` gained its refusal).
     /// 6: #3481 M1b (`ReadRefusal.Kind` enum changed).
-    /// 7: #3458 M-1b (`ReadRefusal` gained its removal cause).
-    int WIRE_GENERATION = 7;
+    /// 7: #3334 S1a-1a flag day (`ConsumerAssignmentValue`, `AssignmentToken` and `StreamCursorCheckpointValue` re-tagged, `member` added).
+    /// 8: #3458 M-1b (`ReadRefusal` gained its removal cause).
+    int WIRE_GENERATION = 8;
     /// Bound on waiting for core members to handshake [guess: taste; a constant, not configuration].
     TimeSpan JOIN_GENERATION_WAIT = TimeSpan.timeSpan(10).seconds();
     /// Handshake poll cadence while waiting.
