@@ -112,6 +112,38 @@ public sealed interface SnapshotError extends Cause {
         }
     }
 
+    /// #2836: the snapshot declares a format that always carries a `storageId` line (format 3, written for every
+    /// stamped snapshot), and the line is absent: it was removed or its key corrupted. Read as "unstamped" it
+    /// would restore a foreign volume's metadata, so the file is refused (restore then reports it through
+    /// [NothingRestorable] unless an older retained file restores).
+    record StorageIdMissing(String format) implements SnapshotError {
+        static StorageIdMissing storageIdMissing(String format) {
+            return new StorageIdMissing(format);
+        }
+
+        @Override
+        public String message() {
+            return "Snapshot format " + format
+                 + " requires a storageId header line and this file has none; the header was removed or corrupted. "
+                 + "Restore the snapshot directory from a copy, or mount the original volume";
+        }
+    }
+
+    /// #2836: a storage id the snapshot header cannot carry and read back: empty (an empty value means "none"),
+    /// holding a control character (a newline would inject a header line), or not representable in UTF-8.
+    /// Refused where the id is minted ([SnapshotConfig#withStorageId]) and where it is parsed.
+    record InvalidStorageId(String id) implements SnapshotError {
+        static InvalidStorageId invalidStorageId(String id) {
+            return new InvalidStorageId(id);
+        }
+
+        @Override
+        public String message() {
+            return "Storage id " + SnapshotConfig.printable(id)
+                 + " is not usable: it must be non-empty, free of control characters and valid UTF-8";
+        }
+    }
+
     /// #1473: the volume-identity sentinel outside the volume says this node wrote a snapshot
     /// directory before, and the directory now in front of it is empty or carries another volume's
     /// id. An unmounted mount point looks exactly like this; a first boot never does, because it has
