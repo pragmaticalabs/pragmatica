@@ -193,7 +193,7 @@ class RabiaStalePhaseGuardsTest {
         assertThat(applied).as("CONTROL: every slot applied once")
                            .extracting(TestCommand::value)
                            .containsExactly("first", "second", "third");
-        assertThat(engine.phaseDataForTesting(FIRST)).as("the cleaned slot must not be re-created").isEmpty();
+        assertThat(engine.phaseDataForTesting(FIRST)).as("the cleaned slot must not be re-created").isEqualTo(Option.none());
         assertThat(engine.currentPhaseForTesting()).isEqualTo(current);
     }
 
@@ -235,7 +235,7 @@ class RabiaStalePhaseGuardsTest {
         while (engine.phaseDataForTesting(phase).isPresent() && System.currentTimeMillis() < deadline) {
             Thread.onSpinWait();
         }
-        assertThat(engine.phaseDataForTesting(phase)).as("CONTROL: the cleanup sweep removed slot %s", phase).isEmpty();
+        assertThat(engine.phaseDataForTesting(phase)).as("CONTROL: the cleanup sweep removed slot %s", phase).isEqualTo(Option.none());
     }
 
     private void settle() {
