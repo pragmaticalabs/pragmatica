@@ -21,9 +21,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// disconnected from the network (`TestCluster.disconnect`), never made to send forged, conflicting or malformed
 /// messages, so no Byzantine behavior is exercised; a test that did would need a node that emits such messages.
 /// Convergence checks read the connected nodes only (a disconnected node is excluded by design).
-public class ByzantineBehaviorsIT {
-    private static final Logger log = LoggerFactory.getLogger(ByzantineBehaviorsIT.class);
-    private static final int CLUSTER_SIZE = 5; // f=1 in 3f+1 model allows handling one Byzantine node
+public class CrashFaultBehaviorsIT {
+    private static final Logger log = LoggerFactory.getLogger(CrashFaultBehaviorsIT.class);
+    private static final int CLUSTER_SIZE = 5; // Rabia tolerates f crash faults with n >= 2f+1: five nodes survive two; each test crashes one
 
     private TestCluster cluster;
 
@@ -35,34 +35,34 @@ public class ByzantineBehaviorsIT {
     }
 
     /// Test 4.1: A node crashes after the first commit
-    /// Setup: one node is disconnected (a crash fault; it sends no conflicting COMMIT (VoteRound2) messages)
+    /// Setup: one node is disconnected (a crash fault)
     /// Expected: the remaining quorum keeps committing, sequentially and for ten further writes
     @Test
-    void equivocationTest() {
-        log.info("Starting equivocation test with byzantine node sending conflicting commits");
+    void crashAfterFirstCommit_quorumKeepsCommitting() {
+        log.info("Starting crash-after-first-commit test");
 
         // First establish normal operation
         var firstNode = cluster.getFirst();
         var lastNode = cluster.ids().get(CLUSTER_SIZE - 1);
 
         // Make initial request to verify that cluster is working
-        cluster.submitAndWait(firstNode, new KVCommand.Put<>(key("key-honest"), "value-honest"));
+        cluster.submitAndWait(firstNode, new KVCommand.Put<>(key("key-before-crash"), "value-before-crash"));
 
         // Verify all nodes have the initial value
         await().atMost(10, TimeUnit.SECONDS)
-               .until(() -> cluster.allNodesHaveValue(key("key-honest"), "value-honest"));
+               .until(() -> cluster.allNodesHaveValue(key("key-before-crash"), "value-before-crash"));
 
-        // Crash one node by disconnecting it (no Byzantine behavior is simulated)
-        var byzantineNode = cluster.ids().get(1);
-        cluster.disconnect(byzantineNode);
-        log.info("Disconnected Byzantine node: {}", byzantineNode);
+        // Crash one node by disconnecting it
+        var crashedNode = cluster.ids().get(1);
+        cluster.disconnect(crashedNode);
+        log.info("Crashed node: {}", crashedNode);
 
         // System should continue to function with the remaining nodes
-        cluster.submitAndWait(lastNode, new KVCommand.Put<>(key("key-after-byzantine"), "value-after-byzantine"));
+        cluster.submitAndWait(lastNode, new KVCommand.Put<>(key("key-after-crash"), "value-after-crash"));
 
-        // Verify honest nodes still achieve consensus
+        // Verify the connected nodes still reach consensus
         await().atMost(Duration.ofSeconds(10))
-               .until(() -> cluster.allNodesHaveValue(key("key-after-byzantine"), "value-after-byzantine"));
+               .until(() -> cluster.allNodesHaveValue(key("key-after-crash"), "value-after-crash"));
 
         // Make multiple concurrent requests to stress test the system
         for (int i = 0; i < 10; i++) {
@@ -76,7 +76,7 @@ public class ByzantineBehaviorsIT {
                    .onFailure(cause -> fail("Failed to apply command: " + cause.message()));
         }
 
-        // Verify all concurrent requests eventually propagate to all honest nodes
+        // Verify all concurrent requests eventually propagate to every connected node
         for (int i = 0; i < 10; i++) {
             var key = key("concurrent-key-" + i);
             var value = "concurrent-value-" + i;
@@ -85,18 +85,18 @@ public class ByzantineBehaviorsIT {
                    .until(() -> {
                        // Check only connected nodes
                        return cluster.ids().stream()
-                                     .filter(id -> !id.equals(byzantineNode))
+                                     .filter(id -> !id.equals(crashedNode))
                                      .allMatch(id -> value.equals(cluster.stores().get(id).snapshot().get(key)));
                    });
         }
     }
 
     /// Test 4.2: A different node crashes after the first commit
-    /// Setup: one node is disconnected (a crash fault; no malformed signature share is ever sent)
+    /// Setup: one node is disconnected (a crash fault)
     /// Expected: the remaining quorum keeps committing five further writes
     @Test
-    void malformedSignatureTest() {
-        log.info("Starting malformed signature test");
+    void otherNodeCrash_quorumKeepsCommitting() {
+        log.info("Starting other-node crash test");
 
         // Establish baseline operation
         var firstNode = cluster.getFirst();
@@ -105,10 +105,10 @@ public class ByzantineBehaviorsIT {
         await().atMost(10, TimeUnit.SECONDS)
                .until(() -> cluster.allNodesHaveValue(key("initial-key"), "initial-value"));
 
-        // Crash a node by disconnecting it (no malformed signatures are simulated)
-        var maliciousNode = cluster.ids().get(2);
-        cluster.disconnect(maliciousNode);
-        log.info("Disconnected malicious node (simulating malformed signatures): {}", maliciousNode);
+        // Crash a node by disconnecting it
+        var crashedNode = cluster.ids().get(2);
+        cluster.disconnect(crashedNode);
+        log.info("Crashed node: {}", crashedNode);
 
         // System should recover and progress with remaining nodes
         var startTime = System.currentTimeMillis();
@@ -120,17 +120,17 @@ public class ByzantineBehaviorsIT {
 
             cluster.submitAndWait(cluster.ids().get(3), new KVCommand.Put<>(key, value));
 
-            // Check that values propagate to all honest nodes
+            // Check that values propagate to every connected node
             await().atMost(Duration.ofSeconds(10))
                    .until(() -> cluster.ids().stream()
-                                       .filter(id -> !id.equals(maliciousNode))
+                                       .filter(id -> !id.equals(crashedNode))
                                        .allMatch(id -> value.equals(cluster.stores().get(id).snapshot().get(key))));
         }
 
         var endTime = System.currentTimeMillis();
         var executionTime = (endTime - startTime) / 1000.0;
 
-        log.info("Successfully processed commands in {} seconds despite malformed signatures", executionTime);
+        log.info("Successfully processed commands in {} seconds with one node crashed", executionTime);
     }
 
     /// Test 4.3: Silent replica

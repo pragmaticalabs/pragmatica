@@ -9,6 +9,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.net.local.LocalNetwork;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous;
 import org.slf4j.Logger;
@@ -23,7 +24,6 @@ import java.util.stream.Stream;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey.key;
 
@@ -205,10 +205,11 @@ public class MessageSemanticsIT {
     }
 
     /// Test 2.4: Stale-phase messages after a reconnect
-    /// Assertion: a ballot of an already-decided phase, delivered late, is discarded and answered by replaying that
-    /// phase's decision to its sender; the later value of the key is not regressed and the cluster keeps committing.
-    /// The stale ballots are a peer's proposal and votes of the first phase, replayed after another node crashed,
-    /// missed phases, and reconnected.
+    /// Assertion: a node crashes, misses phases and reconnects; its own proposal and votes of the first phase, held back
+    /// until after the reconnect, then reach a healthy node. Each one is answered by sending the reconnected node the
+    /// decision of THAT phase (its phase and its value; a replay of the latest phase does not count), the later value of
+    /// the key is not regressed, and the cluster keeps committing. That a stale ballot is not processed as live is pinned
+    /// per ballot type, on the slot's own state, by `RabiaStalePhaseGuardsTest` in the consensus module.
     @Test
     void staleViewNumbers() {
         log.info("Starting stale phase redelivery test");
@@ -224,10 +225,10 @@ public class MessageSemanticsIT {
                .pollInterval(100, TimeUnit.MILLISECONDS)
                .until(() -> cluster.allNodesHaveValue(hot, "first"));
         await().atMost(TIMEOUT)
-               .until(() -> ballotsSentBy(peer, laggingNode).size() == 3);
+               .until(() -> ballotsSentBy(laggingNode, healthyNode).size() == 3);
 
-        // Everything recorded so far belongs to phases that are decided from here on.
-        var stale = ballotsSentBy(peer, laggingNode);
+        // The lagging node's own ballots, held back: everything recorded so far belongs to phases decided from here on.
+        var stale = ballotsSentBy(laggingNode, healthyNode);
 
         cluster.disconnect(laggingNode);
 
@@ -246,18 +247,23 @@ public class MessageSemanticsIT {
                .pollInterval(100, TimeUnit.MILLISECONDS)
                .until(() -> cluster.allNodesHaveValue(hot, "latest"));
 
-        // Each stale ballot must be answered by a replay of its phase's decision to the lagging sender.
+        // Each stale ballot must be answered by sending the reconnected sender the decision of the ballot's own phase.
+        // Voters do not send each other their decisions, so the value is checked against a second replica's replay of
+        // the same phase: two replicas that decided the phase must replay the same value.
         for (var ballot : stale) {
-            var before = decisionsFrom(peer, healthyNode);
+            var phase = phaseOf(ballot);
+            var replay = replayedDecision(healthyNode, laggingNode, ballot, phase);
+            var reference = replayedDecision(peer, laggingNode, ballot, phase);
 
-            cluster.deliver(healthyNode, ballot);
-            await().atMost(Duration.ofSeconds(10))
-                   .until(() -> decisionsFrom(peer, healthyNode) > before);
+            assertEquals(reference.stateValue(), replay.stateValue(), "replayed decision of phase " + phase);
+            assertEquals(reference.value(), replay.value(), "replayed decision of phase " + phase);
         }
 
-        // Redeliver the stale ballots everywhere; the key must not go back to "first".
+        // Redeliver the stale ballots to every other node; the key must not go back to "first".
         for (var id : cluster.ids()) {
-            stale.forEach(ballot -> cluster.deliver(id, ballot));
+            if (!id.equals(laggingNode)) {
+                stale.forEach(ballot -> cluster.deliver(id, ballot));
+            }
         }
 
         await().during(Duration.ofSeconds(3))
@@ -284,11 +290,35 @@ public class MessageSemanticsIT {
                      .toList();
     }
 
-    private long decisionsFrom(NodeId receiver, NodeId sender) {
+    private static Phase phaseOf(RabiaProtocolMessage ballot) {
+        return switch (ballot) {
+            case Synchronous.Propose<?> propose -> propose.phase();
+            case Synchronous.VoteRound1 vote -> vote.phase();
+            case Synchronous.VoteRound2 vote -> vote.phase();
+            default -> throw new IllegalArgumentException("Not a ballot: " + ballot);
+        };
+    }
+
+    /// Hands `ballot` to `replica` and waits for the decision of `phase` that `replica` sends back to `sender`.
+    private Synchronous.Decision<?> replayedDecision(NodeId replica, NodeId sender, RabiaProtocolMessage ballot, Phase phase) {
+        var before = decisionsOf(sender, replica, phase).size();
+
+        cluster.deliver(replica, ballot);
+        await().atMost(Duration.ofSeconds(10))
+               .until(() -> decisionsOf(sender, replica, phase).size() > before);
+
+        return decisionsOf(sender, replica, phase).getLast();
+    }
+
+    /// The decisions of `phase` that `sender` sent to `receiver`, in delivery order.
+    private List<Synchronous.Decision<?>> decisionsOf(NodeId receiver, NodeId sender, Phase phase) {
         return cluster.deliveredTo(receiver)
                       .stream()
-                      .filter(message -> message instanceof Synchronous.Decision<?> && message.sender().equals(sender))
-                      .count();
+                      .filter(message -> message.sender().equals(sender))
+                      .filter(message -> message instanceof Synchronous.Decision<?>)
+                      .<Synchronous.Decision<?>>map(message -> (Synchronous.Decision<?>) message)
+                      .filter(decision -> decision.phase().equals(phase))
+                      .toList();
     }
 
     private List<KVCommand<StringKey>> generatePutCommands(int count, String keyPrefix) {
