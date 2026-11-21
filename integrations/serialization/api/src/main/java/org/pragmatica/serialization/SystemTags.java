@@ -865,6 +865,13 @@ public interface SystemTags {
         pin(table, 3021, "org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue.OfferEntry");
         pin(table, 3022, "org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue");
         pin(table, 3023, "org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue.WaiverCase");
+        // #3303 S4b: the partition-state value with its election and state enum, and its key (the key class lands with the
+        // next step; a pin names a class by string, so it needs no class yet). Inside the 3070..3109 reservation of
+        // wire-tag-ranges.txt.
+        pin(table, 3070, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionStateValue");
+        pin(table, 3071, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionStateValue.Election");
+        pin(table, 3072, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionStateValue.PartitionState");
+        pin(table, 3073, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionStateKey");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 
