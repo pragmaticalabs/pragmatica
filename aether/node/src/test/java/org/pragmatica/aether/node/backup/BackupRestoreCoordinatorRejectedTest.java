@@ -56,6 +56,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.testing.PollUntil;
 import org.pragmatica.testlogging.LogCapture;
 
 import org.apache.logging.log4j.Level;
@@ -81,6 +82,8 @@ class BackupRestoreCoordinatorRejectedTest {
     private static final SliceCodec NODE_CODEC = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
     private static final BackupEntryCodec CODEC = BackupEntryCodec.backupEntryCodec(NODE_CODEC);
 
+    /// Bounds only a failed wait: a met condition returns at once.
+    private static final Duration SETTLE_DEADLINE = Duration.ofSeconds(30);
     private static final KvBackupService.Timing TIMING = KvBackupService.Timing.timing(500, 5_000, 1_000, 8_000, 3_000);
 
     private static final ConfigKey ALPHA_KEY = ConfigKey.forKey("alpha");
@@ -168,8 +171,8 @@ class BackupRestoreCoordinatorRejectedTest {
             var coordinator = restoringCoordinator(NODE_1);
 
             coordinator.activate();
-            settleUntil(() -> codes().contains(Code.BACKUP_RESTORE_REJECTED));
-            settleBriefly();
+            settleUntil("the rejected warning", () -> codes().contains(Code.BACKUP_RESTORE_REJECTED));
+            drainWorker();
             assertThat(retries).as("no retry scheduled").isEmpty();
             assertThat(coordinator.isComplete()).isFalse();
             assertThat(capture.messages(Level.DEBUG)).as("DEBUG nothing")
@@ -193,7 +196,7 @@ class BackupRestoreCoordinatorRejectedTest {
         var coordinator = restoringCoordinator(NODE_1);
 
         coordinator.activate();
-        settleUntil(() -> !retries.isEmpty());
+        settleUntil("a scheduled retry", () -> !retries.isEmpty());
         assertThat(retries).hasSize(1);
         assertThat(codes()).doesNotContain(Code.BACKUP_RESTORE_REJECTED);
         assertThat(rejectionWrites()).isEmpty();
@@ -246,9 +249,9 @@ class BackupRestoreCoordinatorRejectedTest {
         var first = restoringCoordinator(NODE_1);
 
         first.activate();
-        settleUntil(() -> codes().contains(Code.BACKUP_RESTORE_REJECTED));
+        settleUntil("the rejected warning", () -> codes().contains(Code.BACKUP_RESTORE_REJECTED));
         first.deactivate();
-        settleBriefly();
+        drainWorker();
         warnings.clear();
         var writesBefore = rejectionWrites().size();
 
@@ -256,8 +259,8 @@ class BackupRestoreCoordinatorRejectedTest {
         var second = coordinator(NODE_2, Option.some(source()), BackupRestoreCoordinator::restorePreCheck);
 
         second.activate();
-        settleUntil(() -> codes().contains(Code.BACKUP_RESTORE_REJECTED));
-        settleBriefly();
+        settleUntil("the rejected warning", () -> codes().contains(Code.BACKUP_RESTORE_REJECTED));
+        drainWorker();
         assertThat(codes()).contains(Code.BACKUP_RESTORE_REJECTED).doesNotContain(Code.BACKUP_RESTORE_UNBLOCKED);
         assertThat(rejectionWrites()).as("k == k writes nothing").hasSize(writesBefore);
         assertThat(second.isComplete()).isFalse();
@@ -270,7 +273,7 @@ class BackupRestoreCoordinatorRejectedTest {
         var coordinator = coordinator(NODE_1, Option.none(), BackupRestoreCoordinator::restorePreCheck);
 
         coordinator.activate();
-        settleUntil(coordinator::isComplete);
+        settleUntil("the restore to complete", coordinator::isComplete);
         retries.clear();
         warnings.clear();
         coordinator.onFailure(new RecordedForTest(), FailureAction.WARN_RETRY);
@@ -354,7 +357,7 @@ class BackupRestoreCoordinatorRejectedTest {
         var coordinator = restoringCoordinator(NODE_1);
 
         coordinator.activate();
-        settleUntil(() -> !retries.isEmpty());
+        settleUntil("a scheduled retry", () -> !retries.isEmpty());
         assertThat(retries).hasSize(1);
         assertThat(codes()).doesNotContain(Code.BACKUP_RESTORE_REJECTED);
     }
@@ -387,8 +390,8 @@ class BackupRestoreCoordinatorRejectedTest {
         var coordinator = restoringCoordinator(NODE_1);
 
         coordinator.activate();
-        settleUntil(() -> codes().contains(Code.BACKUP_RESTORE_REJECTED));
-        settleBriefly();
+        settleUntil("the rejected warning", () -> codes().contains(Code.BACKUP_RESTORE_REJECTED));
+        drainWorker();
         assertThat(retries).isEmpty();
         assertThat(marker().rejection()).isEqualTo(Option.none());
         assertThat(rejectedWarning().detail()).contains("does not record the refused key")
@@ -487,7 +490,7 @@ class BackupRestoreCoordinatorRejectedTest {
         var coordinator = restoringCoordinator(NODE_1);
 
         coordinator.activate();
-        settleUntil(() -> !retries.isEmpty());
+        settleUntil("a scheduled retry", () -> !retries.isEmpty());
         assertThat(retries).hasSize(1);
         assertThat(codes()).doesNotContain(Code.BACKUP_RESTORE_REJECTED);
     }
@@ -609,7 +612,7 @@ class BackupRestoreCoordinatorRejectedTest {
         var coordinator = coordinator(NODE_1, Option.none(), BackupRestoreCoordinator::restorePreCheck);
 
         coordinator.activate();
-        settleUntil(() -> !retries.isEmpty() || coordinator.isComplete());
+        settleUntil("a scheduled retry or the completion", () -> !retries.isEmpty() || coordinator.isComplete());
 
         return coordinator;
     }
@@ -729,7 +732,7 @@ class BackupRestoreCoordinatorRejectedTest {
                                       BackupRestoreCoordinator::restorePreCheck);
 
         coordinator.activate();
-        settleUntil(() -> codes().contains(Code.BACKUP_RESTORE_BLOCKED));
+        settleUntil("the blocked warning", () -> codes().contains(Code.BACKUP_RESTORE_BLOCKED));
         var blocked = warnings.stream()
                               .filter(warning -> warning.code() == Code.BACKUP_RESTORE_BLOCKED)
                               .toList();
@@ -775,34 +778,38 @@ class BackupRestoreCoordinatorRejectedTest {
     }
 
     private void fireRetries() {
-        settleUntil(() -> !retries.isEmpty());
+        settleUntil("a scheduled retry", () -> !retries.isEmpty());
         var due = List.copyOf(retries);
 
         retries.clear();
         due.forEach(Runnable::run);
-        settleUntil(() -> !retries.isEmpty());
+        settleUntil("a scheduled retry", () -> !retries.isEmpty());
     }
 
-    private void settleUntil(BooleanSupplier condition) {
-        for (int i = 0; i < 300 && !condition.getAsBoolean(); i++) {
-            worker.advance(0);
-            pause();
-        }
+    /// Drives the worker until `condition` holds, bounded by [#SETTLE_DEADLINE]; a miss fails with the poll report naming `what`.
+    private void settleUntil(String what, BooleanSupplier condition) {
+        PollUntil.pollUntil(() -> advanced(condition), Boolean::booleanValue, SETTLE_DEADLINE)
+                 .assertMet(what);
     }
 
-    private void settleBriefly() {
-        for (int i = 0; i < 20; i++) {
-            worker.advance(0);
-            pause();
-        }
+    private boolean advanced(BooleanSupplier condition) {
+        worker.advance(0);
+
+        return condition.getAsBoolean();
     }
 
-    private static void pause() {
-        try {
-            Thread.sleep(10);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+    /// Quiescence point for the absence assertions that follow a wait on the rejected warning: that warning is the LAST thing the
+    /// stop path emits (`stopOn` -> `recordAndStop` warns after the rejection write settled, and schedules nothing after it), so
+    /// the state read next is final. The worker queue is then driven empty, so no source-side task is left to land later.
+    private void drainWorker() {
+        PollUntil.pollUntil(this::advancedQueue, pending -> pending == 0, SETTLE_DEADLINE)
+                 .assertMet("the worker queue to drain");
+    }
+
+    private int advancedQueue() {
+        worker.advance(0);
+
+        return worker.pending();
     }
 
     private ScheduledFuture<?> capture(Runnable runnable, TimeSpan delay) {
