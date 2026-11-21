@@ -23,6 +23,7 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.function.Supplier;
 
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Result;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -76,14 +77,16 @@ final class SerialExecutor {
     }
 
     /// TEST seams only: run `action` serially and return its value. Unlike [#execute] it waits until the action
-    /// ran (strict, no escape), so it must not be called from inside a task (it would wait on itself) — that is an
-    /// [IllegalStateException], a test-wiring defect rather than a runtime condition. Production code never calls
+    /// ran (strict, no escape), so it must not be called from inside a task (it would wait on itself) — that is a
+    /// failure, [SwimError.General#CALL_FROM_INSIDE_TASK], a test-wiring defect reported as a value, not thrown. Production code never calls
     /// it: a production wait on another drainer is the lock-cycle risk [#execute] is built to avoid.
-    <T> T call(Supplier<T> action) {
-        if (isConfined()) {
-            throw new IllegalStateException("SerialExecutor.call from inside a task would wait on itself");
-        }
+    <T> Result<T> call(Supplier<T> action) {
+        return isConfined()
+               ? SwimError.General.CALL_FROM_INSIDE_TASK.result()
+               : callOutsideTask(action);
+    }
 
+    private <T> Result<T> callOutsideTask(Supplier<T> action) {
         var result = new AtomicReference<T>();
         var done = new AtomicBoolean();
 
@@ -93,7 +96,7 @@ final class SerialExecutor {
             parkUnlessDone(done);
         }
 
-        return result.get();
+        return Result.success(result.get());
     }
 
     /// `true` when the calling thread is inside a task of this executor.

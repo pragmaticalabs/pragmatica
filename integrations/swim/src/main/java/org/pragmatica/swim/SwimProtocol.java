@@ -4192,7 +4192,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Test-only: one [#latchSelfIsolation] with `allPeersFaulty` as the check, run on [#stateExecutor] and
     /// waited for, so a test can hold the check-to-write window open (#1990) and read the outcome.
     boolean latchSelfIsolationForTest(BooleanSupplier allPeersFaulty) {
-        return stateExecutor.call(() -> latchSelfIsolation(allPeersFaulty));
+        return stateExecutor.call(() -> latchSelfIsolation(allPeersFaulty))
+                            .unwrap();
     }
 
     /// Test-only (#3529 confinement sensor): member/suspicion writes that ran off [#stateExecutor] so far.
@@ -4206,7 +4207,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// executor (and so every mutation) at a chosen point. Never call it from inside a task (a listener callback).
     @Contract
     void onStateExecutorForTest(Runnable action) {
-        stateExecutor.call(() -> runForTest(action));
+        stateExecutor.call(() -> runForTest(action)).unwrap();
     }
 
     private static Unit runForTest(Runnable action) {
@@ -4359,7 +4360,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// to drive selection deterministically without scheduler timing. Returns the selected
     /// target (if any) so a test can assert which member was chosen.
     Option<SwimMember> probeOnceForTest() {
-        return stateExecutor.call(this::probeOnce);
+        return stateExecutor.call(this::probeOnce)
+                            .unwrap();
     }
 
     private Option<SwimMember> probeOnce() {
