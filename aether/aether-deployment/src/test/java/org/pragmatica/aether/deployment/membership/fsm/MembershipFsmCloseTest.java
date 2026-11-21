@@ -33,7 +33,8 @@ import static org.pragmatica.testing.PollUntil.pollUntil;
 ///
 /// The arm-time `retired` checks are a second line behind the guard of the route that reaches each arm: the dispatch
 /// guard for the DEPARTING timeout, the transition guard for the eviction backstop, the reaper's own flag for the
-/// join-grace re-arm. `*AfterClose_arms*` drive each route after the close and read the count, so dropping a route guard
+/// join-grace re-arm, and the transition and dispatch guards together for the join-grace re-arm of a fenced rejoin.
+/// `*AfterClose_arms*` drive each route after the close and read the count, so dropping a route guard
 /// together with its arm-time check goes red there.
 ///
 /// `joinGraceDeferralLoop_stopsAtClose` replays the leak itself: a member that is OBSERVED with a live transport link is
@@ -227,6 +228,44 @@ class MembershipFsmCloseTest {
         fsm.close();
 
         assertThat(fsm.pendingTimerCount()).isZero();
+    }
+
+    @Test
+    void rejoinAfterClose_armsNoJoinGrace() {
+        var fsm = departing(SHORT_DEPARTURE);
+
+        pollUntil(() -> fsm.memberStates()
+                           .get(MEMBER),
+                  "Dead"::equals,
+                  DEAD_DEADLINE).assertMet("the DEPARTING timeout terminalizes the member to Dead");
+        fsm.close();
+        fsm.onSwimHealthy(MEMBER, 2L);
+
+        assertThat(fsm.memberStates()).as("a live rejoin would move the DEAD identity to Observed")
+                                      .containsEntry(MEMBER, "Dead");
+        assertThat(fsm.pendingTimerCount()).as("the transition guard, the dispatch guard, then the arm-time check, keep the re-armed reaper unarmed")
+                                           .isZero();
+    }
+
+    // --- the count itself ---
+
+    @Test
+    void firedTimer_isNotCountedAsArmed() {
+        var fsm = fsm(LONG_WINDOW, LONG_WINDOW, SHORT_WINDOW);
+
+        fsm.setJoinGraceReapEligibility(_ -> false);
+        fsm.onPeerConnected(MEMBER);
+
+        var held = fsm.heldTimerFutures();
+
+        assertThat(held).as("the reaper is held").hasSize(1);
+        pollUntil(() -> held.getFirst()
+                            .isDone(),
+                  Boolean::booleanValue,
+                  DEAD_DEADLINE).assertMet("the reaper fires");
+
+        assertThat(fsm.heldTimerFutures()).as("an ineligible firing leaves its handle held").hasSize(1);
+        assertThat(fsm.pendingTimerCount()).as("a fired timer is not armed").isZero();
     }
 
     // --- arrangements ---
