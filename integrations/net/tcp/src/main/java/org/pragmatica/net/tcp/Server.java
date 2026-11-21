@@ -238,7 +238,6 @@ public interface Server {
                                       var boundPort = ((InetSocketAddress) tcpChannel.localAddress()).getPort();
 
                                       logTcpStarted(config, boundPort, sslContext);
-
                                       bindUdpIfConfigured(config,
                                                           workerGroup,
                                                           udpHandlers,
