@@ -163,9 +163,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// callback, the self-quorum report and the join announce all dispatch onto it, so the read-decide-write
     /// sequence of a transition (for example the suspect expiry: read the member, decide FAULTY, store it)
     /// can never interleave with another mutation. This replaces the per-site guards that each covered one
-    /// window (membership-scope monitor, isolation-latch monitor, self-quorum monitor, the expiry's
-    /// suspicion-identity compare of #3526). The maps stay concurrent only for readers outside the executor
-    /// ([#members], [#currentHealth], [#healthOf] and the test probes).
+    /// window (membership-scope monitor, isolation-latch monitor, self-quorum monitor). The expiry keeps its
+    /// suspicion-identity compare of #3526: a listener re-arms inside the same task. The maps stay concurrent
+    /// only for readers outside the executor ([#members], [#currentHealth], [#healthOf] and the test probes).
     private final SerialExecutor stateExecutor = SerialExecutor.serialExecutor();
     /// Count of member/suspicion writes that ran off [#stateExecutor] (#3529 confinement sensor). Always 0
     /// while every entry point dispatches; a test asserts it after exercising each entry point.
@@ -1815,16 +1815,21 @@ public final class SwimProtocol implements SwimMessageHandler {
         // SUSPECT — all of which correctly proceed to FAULTY here.
         option(members.get(nodeId)).filter(member -> member.state() == MemberState.SUSPECT)
               .onPresent(this::transitionToFaulty);
-        endExpiredSuspicion(nodeId);
+        endExpiredSuspicion(nodeId, suspicion);
     }
 
-    /// End the suspicion of `nodeId` that this expiry pass expired (#3526). It is still the active one: the pass
-    /// runs as one [#stateExecutor] task (#3529), and a SUSPECT re-delivered while it runs (an observer of the
-    /// FAULTY edge fired inside [#transitionToFaulty] feeding gossip back, or inbound gossip on another thread)
-    /// is queued behind it, so a re-armed suspicion ([#beginSuspicion]) is begun after this end, never erased by it.
-    private void endExpiredSuspicion(NodeId nodeId) {
+    /// End `expired` only if it is still the active suspicion of `nodeId` (#3526). The FAULTY edge
+    /// fired inside [#transitionToFaulty] is delivered to observers synchronously, on this thread and inside
+    /// this task, so a listener can re-arm a NEW suspicion ([#beginSuspicion]) before this expiry returns; the
+    /// serial executor (#3529) does not order that, because it is the same task. An unconditional
+    /// [#endSuspicion] here erased that re-armed suspicion and left the member SUSPECT with no expiry, so it
+    /// never reached FAULTY. Compared by identity: two suspicions may carry equal values.
+    private void endExpiredSuspicion(NodeId nodeId, Suspicion expired) {
         requireConfined("endExpiredSuspicion");
-        endSuspicion(nodeId);
+        suspicions.computeIfPresent(nodeId,
+                                    (_, current) -> current == expired
+                                                    ? null
+                                                    : current);
     }
 
     /// The window `suspicion` expires on: [#effectiveSuspicionWindowMs] computed from the suspicion
