@@ -122,23 +122,25 @@ public final class PollUntil {
                                    LongSupplier clock,
                                    LongConsumer pause) {
         requirePositive(interval);
-
         var start = clock.getAsLong();
         var limit = deadline.toNanos();
-        var progress = Progress.<T>start();
+        var progress = Progress.<T> start();
         var remaining = limit;
 
         while (true) {
-            var polled = poll(supplier, Math.max(remaining, POLL_GRACE.toNanos()));
+            var polled = poll(supplier,
+                              Math.max(remaining, POLL_GRACE.toNanos()));
 
             if (polled.failure() != null) {
                 return fail(progress.report(elapsed(clock, start), deadline), polled.failure());
             }
+
             progress = progress.observed(polled.value(), predicate);
             remaining = limit - (clock.getAsLong() - start);
             if (progress.met() || remaining <= 0) {
                 return progress.report(elapsed(clock, start), deadline);
             }
+
             pause.accept(Math.min(interval.toNanos(), remaining));
             remaining = limit - (clock.getAsLong() - start);
         }
@@ -167,10 +169,12 @@ public final class PollUntil {
             return Polled.value(task.get(budgetNanos, TimeUnit.NANOSECONDS));
         } catch (TimeoutException e) {
             task.cancel(true);
+
             return Polled.failed("supplier blocked past the deadline");
         } catch (InterruptedException e) {
             task.cancel(true);
             Thread.currentThread().interrupt();
+
             return Polled.failed("interrupted while waiting");
         } catch (ExecutionException e) {
             return propagate(e.getCause());
@@ -183,9 +187,11 @@ public final class PollUntil {
         if (cause instanceof RuntimeException runtime) {
             throw runtime;
         }
+
         if (cause instanceof Error error) {
             throw error;
         }
+
         throw new IllegalStateException(cause);
     }
 
@@ -209,7 +215,12 @@ public final class PollUntil {
         }
 
         Progress<T> observed(T value, Predicate<T> predicate) {
-            return new Progress<>(polls == 0 ? value : first, value, polls + 1, predicate.test(value));
+            return new Progress<>(polls == 0
+                                  ? value
+                                  : first,
+                                  value,
+                                  polls + 1,
+                                  predicate.test(value));
         }
 
         Report<T> report(Duration elapsed, Duration deadline) {
