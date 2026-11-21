@@ -54,6 +54,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReasonKind;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.StreamFootprint;
 import org.pragmatica.aether.stream.segment.StreamRetentionSource.EnforcedRetention;
@@ -6379,7 +6380,8 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         if (records.getFirst().offset() > fromOffset) {
             return new StreamError.CursorExpired(fromOffset,
-                                                 records.getFirst().offset()).result();
+                                                 records.getFirst().offset(),
+                                                 RemovalCause.RETENTION).result();
         }
 
         return firstHole(records, fromOffset).<Result<List<OffHeapRingBuffer.RawEvent>>> map(i -> new StreamError.WalReplayMismatch(ref.streamName(),
@@ -6410,7 +6412,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         var floor = lastSealedOffset.lastSealedOffset(ref.streamName(), ref.partition());
 
         return fromOffset <= floor
-               ? new StreamError.CursorExpired(fromOffset, floor + 1).result()
+               ? new StreamError.CursorExpired(fromOffset, floor + 1, RemovalCause.RETENTION).result()
                : success(List.of());
     }
 
