@@ -593,6 +593,14 @@ class JwtSecurityValidatorTest {
         }
     }
 
+    @Test
+    void authenticate_mintsNone_onAnonymousPaths() {
+        assertThat(validator.authenticate(requestWithoutToken(), SecurityPolicy.publicRoute()).map(Authenticated::grant).or(Option.none()).isPresent())
+            .as("the Public path is anonymous: it mints no grant").isFalse();
+        assertThat(validator.authenticate(requestWithoutToken(), SecurityPolicy.optional()).map(Authenticated::grant).or(Option.none()).isPresent())
+            .as("the OptionalAuth path with no token is anonymous: it mints no grant").isFalse();
+    }
+
     private static HttpRequestContext requestWithAuthorization(String value) {
         return HttpRequestContext.httpRequestContext("/test",
                                                      "GET",

@@ -274,6 +274,18 @@ class ApiKeySecurityValidatorTest {
             .isEqualTo(AuthorizationRole.ADMIN);
     }
 
+    @Test
+    void authenticate_mintsNone_onAnonymousPaths_whileAnAdminKeyIsConfigured() {
+        var validator = HttpAuthenticator.apiKeyValidator(Map.of(
+            VALID_KEY, ApiKeyEntry.apiKeyEntry("admin-svc", Set.of("service"), "ADMIN")));
+        var anonymous = createRequest(Map.of());
+
+        assertThat(validator.authenticate(anonymous, SecurityPolicy.publicRoute()).map(Authenticated::grant).or(Option.none()).isPresent())
+            .as("the Public path is anonymous: it mints no grant").isFalse();
+        assertThat(validator.authenticate(anonymous, SecurityPolicy.optional()).map(Authenticated::grant).or(Option.none()).isPresent())
+            .as("the OptionalAuth path with no key is anonymous: it mints no grant").isFalse();
+    }
+
     private Option<AdminGrant> grantFor(ApiKeyEntry entry) {
         var validator = HttpAuthenticator.apiKeyValidator(Map.of(VALID_KEY, entry));
         var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
