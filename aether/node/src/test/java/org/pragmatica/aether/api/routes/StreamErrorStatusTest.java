@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
@@ -140,6 +141,21 @@ class StreamErrorStatusTest {
         assertThat(covered).containsExactlyInAnyOrderElementsOf(permitted);
         assertThat(expectations().keySet().stream().filter(StreamError.General.class::isInstance).count())
                 .isEqualTo(StreamError.General.values().length);
+    }
+
+    /// stream-mem M-1b-delta: a cursor refusal answers 410 whatever removal it names, for every cause a `CursorExpired` can carry
+    /// (all but `NOT_APPLICABLE`, which its constructor refuses) under every reason that cause goes with. Mutant: a status chosen
+    /// by cause -> RED.
+    @Test
+    void aCursorExpired_answers410_forEveryCauseItCanCarry() {
+        for (var cause : RemovalCause.values()) {
+            for (var reason : StreamError.CursorExpired.Reason.values()) {
+                if (cause != RemovalCause.NOT_APPLICABLE && StreamError.CursorExpired.reasonOf(cause).fold(() -> true, fixed -> fixed == reason)) {
+                    assertThat(StreamErrorStatus.statusOf(new StreamError.CursorExpired(1L, 5L, reason, cause))).as("%s %s", reason, cause)
+                                                                                                                 .isEqualTo(HttpStatus.GONE);
+                }
+            }
+        }
     }
 
     @Test

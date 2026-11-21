@@ -5,11 +5,14 @@
 
 package org.pragmatica.aether.stream;
 
+import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.stream.RemovalCause;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
 import java.util.List;
@@ -37,6 +40,14 @@ class OffHeapRingBufferTest {
     @AfterEach
     void tearDown() {
         buffer.close();
+    }
+
+    /// stream-mem M-1b-delta: the ring's tail check names `RETENTION` (it cannot tell which bound evicted the offset), hence
+    /// `EXPIRED`. Mutant: the raise site naming another cause -> RED.
+    private static void assertExpiredByRetention(Cause cause) {
+        assertThat(cause).asInstanceOf(InstanceOfAssertFactories.type(StreamError.CursorExpired.class))
+                         .extracting(StreamError.CursorExpired::reason, StreamError.CursorExpired::cause)
+                         .containsExactly(StreamError.CursorExpired.Reason.EXPIRED, RemovalCause.RETENTION);
     }
 
     @Nested
@@ -232,7 +243,26 @@ class OffHeapRingBufferTest {
                 // Offset 0 has been evicted
                 smallBuffer.read(0, 10)
                            .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
-                           .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.CursorExpired.class));
+                           .onFailure(OffHeapRingBufferTest::assertExpiredByRetention);
+            } finally {
+                smallBuffer.close();
+            }
+        }
+
+        /// The slice read's own tail check refuses an evicted offset the same way the batch read does. stream-mem M-1b-delta
+        /// mutant: that site naming another cause -> RED.
+        @Test
+        void readSlice_returnsCursorExpired_whenOffsetEvicted() {
+            var smallBuffer = offHeapRingBuffer(3, 1024);
+
+            try {
+                for (int i = 0; i < 6; i++) {
+                    smallBuffer.append(("msg-" + i).getBytes(), 1000L + i);
+                }
+
+                smallBuffer.readSlice(0)
+                           .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
+                           .onFailure(OffHeapRingBufferTest::assertExpiredByRetention);
             } finally {
                 smallBuffer.close();
             }

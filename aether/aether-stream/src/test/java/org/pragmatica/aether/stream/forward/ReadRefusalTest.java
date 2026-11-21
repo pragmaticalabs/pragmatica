@@ -11,9 +11,12 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.aether.stream.StreamError;
+import org.pragmatica.aether.stream.StreamError.CursorExpired.Reason;
 import org.pragmatica.aether.stream.forward.ReadRefusal.Answer;
 import org.pragmatica.aether.stream.forward.ReadRefusal.Behaviour;
 import org.pragmatica.aether.stream.forward.ReadRefusal.Kind;
@@ -31,10 +34,13 @@ import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.storage.StorageError;
 
 import io.netty.buffer.Unpooled;
+import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.pragmatica.aether.stream.forward.StreamForwardClient.streamForwardClient;
 
 
@@ -198,6 +204,299 @@ class ReadRefusalTest {
 
                 assertThat(refusal.flag()).as("the flag of %s", cause).isEqualTo(expected);
             }
+        }
+    }
+
+    /// stream-mem M-1b-delta: the removal cause a refusal names. [RemovalCause]'s ordinal is its wire code, `ReadRefusal`'s
+    /// compact constructor is the ONE table by kind (`CURSOR_EXPIRED` keeps a removal's cause and turns `NOT_APPLICABLE` into
+    /// `UNRECORDED`, every other kind carries `NOT_APPLICABLE`), and a code this node does not know decodes to `UNKNOWN`. Each
+    /// test names the mutant that turns it red.
+    @Nested
+    class TheNamedCause {
+        /// The literal table: one row per member, in wire order (name, code, the reason the cause fixes). Mutant: two constants
+        /// swapped in `RemovalCause`, or a `reasonOf` arm moved -> RED.
+        private static final List<CauseRow> TABLE = List.of(CauseRow.causeRow("RETENTION", 0, Option.some(Reason.EXPIRED)),
+                                                            CauseRow.causeRow("AGE", 1, Option.some(Reason.EXPIRED)),
+                                                            CauseRow.causeRow("COUNT", 2, Option.some(Reason.EXPIRED)),
+                                                            CauseRow.causeRow("BYTES", 3, Option.some(Reason.EXPIRED)),
+                                                            CauseRow.causeRow("RING_FROZEN", 4, Option.some(Reason.LOST)),
+                                                            CauseRow.causeRow("OVER_SHARE", 5, Option.some(Reason.LOST)),
+                                                            CauseRow.causeRow("DROPPED_RUN", 6, Option.some(Reason.LOST)),
+                                                            CauseRow.causeRow("BLOCK_PUT_FAILED", 7, Option.some(Reason.LOST)),
+                                                            CauseRow.causeRow("BLOCK_ABSENT", 8, Option.some(Reason.LOST)),
+                                                            CauseRow.causeRow("UNLISTED_TAIL", 9, Option.some(Reason.LOST)),
+                                                            CauseRow.causeRow("LIFE_LOST", 10, Option.some(Reason.LOST)),
+                                                            CauseRow.causeRow("UNRECORDED", 11, Option.none()),
+                                                            CauseRow.causeRow("NOT_APPLICABLE", 12, Option.none()),
+                                                            CauseRow.causeRow("UNKNOWN", 13, Option.none()));
+
+        /// A code no node of this generation knows: `RemovalCause` has 14 members, so 99 and -1 are both out of range.
+        private static final List<Integer> UNKNOWN_CODES = List.of(99, -1);
+
+        private record CauseRow(String name, int code, Option<Reason> reason) {
+            static CauseRow causeRow(String name, int code, Option<Reason> reason) {
+                return new CauseRow(name, code, reason);
+            }
+        }
+
+        @Test
+        void theCauseTable_isLiteral_aRowPerMember() {
+            assertThat(TABLE).as("a row per member").hasSize(RemovalCause.values().length);
+            for (var row : TABLE) {
+                var member = RemovalCause.valueOf(row.name());
+
+                assertThat(member.ordinal()).as("the code of %s", row.name()).isEqualTo(row.code());
+                assertThat(StreamError.CursorExpired.reasonOf(member)).as("the reason %s fixes", row.name()).isEqualTo(row.reason());
+            }
+        }
+
+        /// Mutant: two constants swapped, or `CHAIN_CUT` re-added anywhere -> RED.
+        @Test
+        void theEnumOrder_endsWithTheThreeThatNameNoRemoval_andHasNoChainCut() {
+            assertThat(Arrays.stream(RemovalCause.values()).map(RemovalCause::name).toList()).containsExactly("RETENTION",
+                                                                                                              "AGE",
+                                                                                                              "COUNT",
+                                                                                                              "BYTES",
+                                                                                                              "RING_FROZEN",
+                                                                                                              "OVER_SHARE",
+                                                                                                              "DROPPED_RUN",
+                                                                                                              "BLOCK_PUT_FAILED",
+                                                                                                              "BLOCK_ABSENT",
+                                                                                                              "UNLISTED_TAIL",
+                                                                                                              "LIFE_LOST",
+                                                                                                              "UNRECORDED",
+                                                                                                              "NOT_APPLICABLE",
+                                                                                                              "UNKNOWN");
+        }
+
+        /// The code table as one line, the form the design states it in. Mutant: two constants swapped -> RED.
+        @Test
+        void theCodeTable_isTheEnumLine() {
+            var line = Arrays.stream(RemovalCause.values())
+                             .map(cause -> cause.name() + "=" + cause.ordinal())
+                             .collect(Collectors.joining(","));
+
+            assertThat(line).isEqualTo("RETENTION=0,AGE=1,COUNT=2,BYTES=3,RING_FROZEN=4,OVER_SHARE=5,DROPPED_RUN=6,BLOCK_PUT_FAILED=7,"
+                                       + "BLOCK_ABSENT=8,UNLISTED_TAIL=9,LIFE_LOST=10,UNRECORDED=11,NOT_APPLICABLE=12,UNKNOWN=13");
+        }
+
+        /// Codes 0-10 fix a reason (0-3 `EXPIRED`, 4-10 `LOST`); the three that name no removal fix none. Mutant: a `reasonOf` arm
+        /// moved between groups -> RED.
+        @Test
+        void reasonOf_fixesTheReasonForCodesZeroToTen_andNoneForTheLastThree() {
+            for (var cause : RemovalCause.values()) {
+                var expected = cause.ordinal() <= 3
+                               ? Option.some(Reason.EXPIRED)
+                               : cause.ordinal() <= 10
+                                 ? Option.some(Reason.LOST)
+                                 : Option.<Reason> none();
+
+                assertThat(StreamError.CursorExpired.reasonOf(cause)).as("%s", cause).isEqualTo(expected);
+            }
+        }
+
+        /// Mutant: the compact constructor's `reasonOf` check dropped -> RED.
+        @Test
+        void aPairWhoseReasonDisagreesWithTheCause_isRefused() {
+            assertThatThrownBy(() -> new StreamError.CursorExpired(1L, 2L, Reason.EXPIRED, RemovalCause.RING_FROZEN)).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> new StreamError.CursorExpired(1L, 2L, Reason.LOST, RemovalCause.AGE)).isInstanceOf(IllegalArgumentException.class);
+        }
+
+        /// A refusal that is not a removal is never a `CursorExpired`. Mutant: the compact constructor's `NOT_APPLICABLE` check
+        /// dropped -> RED (both reasons, since `NOT_APPLICABLE` fixes none).
+        @Test
+        void notApplicable_isRefusedUnderEitherReason() {
+            assertThatThrownBy(() -> new StreamError.CursorExpired(1L, 2L, Reason.EXPIRED, RemovalCause.NOT_APPLICABLE)).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> new StreamError.CursorExpired(1L, 2L, Reason.LOST, RemovalCause.NOT_APPLICABLE)).isInstanceOf(IllegalArgumentException.class);
+        }
+
+        /// The control for the two refusals above: every pair that agrees builds, so the refusals are specific.
+        @Test
+        void everyPairThatAgrees_builds() {
+            for (var cause : namingARemoval()) {
+                for (var reason : reasonsOf(cause)) {
+                    assertThat(new StreamError.CursorExpired(1L, 2L, reason, cause).cause()).as("%s %s", reason, cause).isEqualTo(cause);
+                }
+            }
+        }
+
+        /// Row 1: every member but `NOT_APPLICABLE` round-trips under `CURSOR_EXPIRED`, its reason in `flag` and its cause in
+        /// `cause`; every other component reads back as written. Mutant: the codec drops or crosses `cause`, or `toCause`
+        /// rebuilds another cause -> RED.
+        @Test
+        void row1_everyCauseButNotApplicable_roundTripsUnderCursorExpired() {
+            for (var cause : namingARemoval()) {
+                for (var reason : reasonsOf(cause)) {
+                    var expired = new StreamError.CursorExpired(11L, 29L, reason, cause);
+                    var sent = ReadRefusal.readRefusal(expired).unwrap();
+                    var received = roundTrip(ReadForwardResponse.refusalResponse(SENDER, "corr", sent, expired.message()));
+                    var first = received.refusal().unwrap();
+
+                    assertThat(first).as("%s %s", reason, cause).isEqualTo(sent);
+                    assertThat(first.flag()).as("the reason of %s %s", reason, cause).isEqualTo(reason == Reason.LOST);
+                    assertThat(first.cause()).as("the cause of %s %s", reason, cause).isEqualTo(cause);
+                    assertThat(first.toCause(received.errorMessage())).as("rebuilt %s %s", reason, cause).isEqualTo(expired);
+                }
+            }
+        }
+
+        /// Row 3: `NOT_APPLICABLE` round-trips under every other kind, with every slot distinct. Mutant: the codec drops or
+        /// crosses `cause` -> RED.
+        @Test
+        void row3_notApplicable_roundTripsUnderEveryOtherKind() {
+            for (var kind : otherKinds()) {
+                var sent = sample(kind, true, RemovalCause.NOT_APPLICABLE);
+                var first = roundTrip(ReadForwardResponse.refusalResponse(SENDER, "corr", sent, "text")).refusal().unwrap();
+
+                assertThat(first).as("%s", kind).isEqualTo(sent);
+                assertThat(first.cause()).as("the cause of %s", kind).isEqualTo(RemovalCause.NOT_APPLICABLE);
+            }
+        }
+
+        /// The decode table, one test per cell: the bytes carry the code, the compact constructor decides the cause. Row 2 is the
+        /// `NOT_APPLICABLE -> UNRECORDED` cell, never a round trip. Mutant per row -> RED: a known cause decoded as another,
+        /// `NOT_APPLICABLE` kept for `CURSOR_EXPIRED`, an unknown code not `UNKNOWN`, another kind keeping a written cause.
+        @TestFactory
+        Stream<DynamicTest> theDecodeTable_aCellPerKindAndCode() {
+            var cursorCells = Arrays.stream(RemovalCause.values())
+                                    .map(code -> decodeCell(Kind.CURSOR_EXPIRED, code.ordinal(), cursorCauseOf(code)));
+            var unknownCell = Stream.of(decodeCell(Kind.CURSOR_EXPIRED, 99, RemovalCause.UNKNOWN));
+            var otherCells = otherKinds().stream()
+                                         .flatMap(kind -> Stream.of(RemovalCause.RETENTION.ordinal(), RemovalCause.NOT_APPLICABLE.ordinal(), 99)
+                                                                .map(code -> decodeCell(kind, code, RemovalCause.NOT_APPLICABLE)));
+
+            return Stream.of(cursorCells, unknownCell, otherCells).flatMap(cells -> cells);
+        }
+
+        /// A flag that says `EXPIRED` with a cause that fixes `LOST` decodes with the cause's reason and never throws: the cause
+        /// wins over the flag. Mutant: `toCause` takes the reason from the flag alone -> RED (the constructor throws).
+        @Test
+        void anExpiredFlagWithRingFrozen_decodesAsLost_andDoesNotThrow() {
+            var decoded = decoded(Kind.CURSOR_EXPIRED, false, RemovalCause.RING_FROZEN.ordinal());
+
+            assertThat(decoded.flag()).isFalse();
+            assertThat(decoded.toCause("text")).isEqualTo(new StreamError.CursorExpired(101L, 202L, Reason.LOST, RemovalCause.RING_FROZEN));
+        }
+
+        /// A newer node's code decodes to `UNKNOWN` and rebuilds a `CursorExpired` naming `UNKNOWN`, its reason from the flag.
+        /// Mutant: `toCause` maps `UNKNOWN` to `RETENTION` or `NOT_APPLICABLE`, or throws on it -> RED.
+        @Test
+        void anUnknownCode_decodesToUnknown_andRebuildsNamingIt() {
+            for (var code : UNKNOWN_CODES) {
+                for (var reason : Reason.values()) {
+                    var decoded = decoded(Kind.CURSOR_EXPIRED, reason == Reason.LOST, code);
+
+                    assertThat(decoded.cause()).as("code %d", code).isEqualTo(RemovalCause.UNKNOWN);
+                    assertThat(decoded.toCause("text")).as("code %d %s", code, reason)
+                                                       .isEqualTo(new StreamError.CursorExpired(101L, 202L, reason, RemovalCause.UNKNOWN));
+                }
+            }
+        }
+
+        /// The shim forms name no cause and pass `UNRECORDED`; the pre-cause 11-argument form passes `NOT_APPLICABLE`, which
+        /// `CURSOR_EXPIRED` turns into `UNRECORDED`. Mutant: a shim passing `NOT_APPLICABLE` or `RETENTION`, or a
+        /// `CURSOR_EXPIRED` refusal keeping `NOT_APPLICABLE` -> RED.
+        @Test
+        void theShimForms_passUnrecorded() {
+            var twoArgument = new StreamError.CursorExpired(1L, 2L);
+
+            assertThat(twoArgument.reason()).isEqualTo(Reason.EXPIRED);
+            assertThat(twoArgument.cause()).isEqualTo(RemovalCause.UNRECORDED);
+            for (var reason : Reason.values()) {
+                var withReason = new StreamError.CursorExpired(1L, 2L, reason);
+
+                assertThat(withReason.reason()).as("%s", reason).isEqualTo(reason);
+                assertThat(withReason.cause()).as("%s", reason).isEqualTo(RemovalCause.UNRECORDED);
+            }
+            for (var kind : Kind.values()) {
+                var expected = kind == Kind.CURSOR_EXPIRED
+                               ? RemovalCause.UNRECORDED
+                               : RemovalCause.NOT_APPLICABLE;
+
+                assertThat(elevenArgument(kind).cause()).as("the 11-argument form of %s", kind).isEqualTo(expected);
+            }
+            assertThat(sample(Kind.CURSOR_EXPIRED, false, RemovalCause.NOT_APPLICABLE).cause()).isEqualTo(RemovalCause.UNRECORDED);
+        }
+
+        /// `UNKNOWN` is reserved for decoding: no constructor writes it. The cause form refuses it (it fixes no reason). Mutant: a
+        /// shim or the 11-argument form passing `UNKNOWN` -> RED.
+        @Test
+        void noConstructor_yieldsUnknown() {
+            assertThat(new StreamError.CursorExpired(1L, 2L).cause()).isNotEqualTo(RemovalCause.UNKNOWN);
+            for (var reason : Reason.values()) {
+                assertThat(new StreamError.CursorExpired(1L, 2L, reason).cause()).as("%s", reason).isNotEqualTo(RemovalCause.UNKNOWN);
+            }
+            for (var row : TABLE.subList(0, 11)) {
+                var cause = RemovalCause.valueOf(row.name());
+                var named = new StreamError.CursorExpired(1L, 2L, cause);
+
+                assertThat(named.cause()).as("%s", cause).isEqualTo(cause);
+                assertThat(Option.some(named.reason())).as("the reason %s fixes", cause).isEqualTo(row.reason());
+            }
+            assertThatThrownBy(() -> new StreamError.CursorExpired(1L, 2L, RemovalCause.UNKNOWN)).isInstanceOf(IllegalArgumentException.class);
+            for (var kind : Kind.values()) {
+                assertThat(elevenArgument(kind).cause()).as("the 11-argument form of %s", kind).isNotEqualTo(RemovalCause.UNKNOWN);
+            }
+        }
+
+        /// Only `CURSOR_EXPIRED` carries a cause: every other kind carries `NOT_APPLICABLE` whatever was written. Mutant: the
+        /// compact constructor writes `UNKNOWN` or keeps `RETENTION` for another kind -> RED.
+        @Test
+        void everyOtherKind_carriesNotApplicable_neverUnknown() {
+            for (var kind : otherKinds()) {
+                for (var written : RemovalCause.values()) {
+                    assertThat(sample(kind, false, written).cause()).as("%s written %s", kind, written).isEqualTo(RemovalCause.NOT_APPLICABLE);
+                }
+            }
+        }
+
+        private static DynamicTest decodeCell(Kind kind, int code, RemovalCause expected) {
+            return DynamicTest.dynamicTest(kind + " code " + code + " -> " + expected,
+                                           () -> assertThat(decoded(kind, false, code)).isEqualTo(sample(kind, false, expected)));
+        }
+
+        /// What a `CURSOR_EXPIRED` decode of a known code gives: the code's own cause, except `NOT_APPLICABLE` (row 2).
+        private static RemovalCause cursorCauseOf(RemovalCause code) {
+            return code == RemovalCause.NOT_APPLICABLE
+                   ? RemovalCause.UNRECORDED
+                   : code;
+        }
+
+        /// The sample's bytes with the trailing cause code replaced by `code`: `cause` is the record's last component, so its
+        /// ordinal is the encoding's last byte (asserted, so a codec that moves it fails here rather than patching another slot).
+        private static ReadRefusal decoded(Kind kind, boolean flag, int code) {
+            var written = sample(kind, flag, RemovalCause.NOT_APPLICABLE);
+            var buffer = Unpooled.buffer();
+
+            CODEC.write(buffer, written);
+            assertThat(buffer.getByte(buffer.writerIndex() - 1)).as("the cause code is the last byte")
+                                                                .isEqualTo((byte) written.cause().ordinal());
+            buffer.writerIndex(buffer.writerIndex() - 1);
+            SliceCodec.writeCompact(buffer, code);
+
+            return CODEC.read(buffer);
+        }
+
+        /// Every slot distinct from its neighbours, so a decode that crosses two of them fails by value.
+        private static ReadRefusal sample(Kind kind, boolean flag, RemovalCause cause) {
+            return new ReadRefusal(kind, "s", 5, 101L, 202L, flag, "d", "p1", "p2", PRESENTED, CURRENT, cause);
+        }
+
+        private static ReadRefusal elevenArgument(Kind kind) {
+            return new ReadRefusal(kind, "s", 5, 101L, 202L, false, "d", "p1", "p2", PRESENTED, CURRENT);
+        }
+
+        private static List<Kind> otherKinds() {
+            return Arrays.stream(Kind.values()).filter(kind -> kind != Kind.CURSOR_EXPIRED).toList();
+        }
+
+        private static List<RemovalCause> namingARemoval() {
+            return Arrays.stream(RemovalCause.values()).filter(cause -> cause != RemovalCause.NOT_APPLICABLE).toList();
+        }
+
+        /// The reasons a cause goes with: the one it fixes, or both when it fixes none.
+        private static List<Reason> reasonsOf(RemovalCause cause) {
+            return StreamError.CursorExpired.reasonOf(cause).map(reason -> List.of(reason)).or(() -> List.of(Reason.values()));
         }
     }
 
