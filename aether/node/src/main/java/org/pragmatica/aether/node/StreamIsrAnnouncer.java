@@ -53,7 +53,8 @@ public interface StreamIsrAnnouncer {
     void onOwnershipPut(ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put);
 
     /// Derive and route the events, if any, of one committed stream config Put. Must run BEFORE the stream manager
-    /// applies the same Put: the factor it enforces BEFORE the Put is the baseline.
+    /// applies the same Put: the factor it enforces BEFORE the Put is the baseline. The retention-changed event reads
+    /// no enforced state ([#retentionChanged]), so this order does not reach it.
     @Contract
     void onConfigPut(ValuePut<StreamConfigKey, StreamConfigValue> put);
 
@@ -87,7 +88,7 @@ public interface StreamIsrAnnouncer {
                 var enforced = enforcedConfig.apply(config.name());
 
                 notApplied(value, enforced).onPresent(sink);
-                retentionChanged(value, enforced).onPresent(sink);
+                retentionChanged(value, put.oldValue()).onPresent(sink);
             }
         };
     }
@@ -132,21 +133,28 @@ public interface StreamIsrAnnouncer {
                                                                                                                                                                                             + ":" + config.confirmationFactor())));
     }
 
-    /// #3334: a committed config whose RETENTION declaration differs from the one this node ENFORCES changed the stream's
-    /// retention bounds: an operator-facing change, announced once per committed Put. Only the retention section is
-    /// compared: a truncation, hot-window or ingress change is not a retention change and announces nothing. Compared with what is enforced
-    /// (never with the Put's `oldValue`), so a node that already enforces the declaration (a rejoin replaying the Put)
-    /// announces nothing. Silent for an unchanged declaration, a stream not held here and a new life (a recreate is not a
-    /// retention change). The bounds are the retention declarations rendered as text; the `eventId` is a pure function of the
-    /// committed Put and the two bounds, so two nodes deriving it from one Put agree.
-    static Option<OperationalEvent> retentionChanged(StreamConfigValue value, Option<StreamConfig> enforced) {
+    /// #3334, #3554: "retention bounds changed" is raised exactly when the cluster ADOPTS new bounds, and both that decision
+    /// and the `eventId` are pure functions of COMMITTED data: `previous`, the Put's prior committed value (the KV store's
+    /// `oldValue`), and the Put itself. Node-local enforced state enters neither, so every node raises the same event with
+    /// the same id, including a node whose enforced config differs because it refused, or hydrated from, an earlier Put.
+    /// The decision is [StreamPartitionManager#adopts], the manager's own rule, applied to the two committed configs: a Put
+    /// it refuses (a lowered factor, another partition count, a truncation change) raises nothing here, and its
+    /// not-applied event is [#notApplied]'s. Only the retention section is compared: an adopted hot-window or ingress change
+    /// is not a retention change. Silent for an unchanged declaration, a first commit (no previous value) and
+    /// a new life (a recreate is not a retention change). A redelivered Put (a rejoin replaying it) derives the same id
+    /// again, so a reader that de-duplicates by `eventId` sees one event. The bounds are the retention
+    /// declarations rendered as text: `oldBounds` the previously COMMITTED one, which after a refused Put is not the one
+    /// the node enforced.
+    static Option<OperationalEvent> retentionChanged(StreamConfigValue value, Option<StreamConfigValue> previous) {
         var config = value.config();
 
-        return enforced.filter(current -> current.incarnation() == config.incarnation())
-                       .filter(current -> !retentionOf(current).equals(retentionOf(config)))
-                       .map(current -> retentionChanged(value,
-                                                        String.valueOf(retentionOf(current)),
-                                                        String.valueOf(retentionOf(config))));
+        return previous.map(StreamConfigValue::config)
+                       .filter(prior -> prior.incarnation() == config.incarnation())
+                       .filter(prior -> StreamPartitionManager.adopts(config, prior))
+                       .filter(prior -> !retentionOf(prior).equals(retentionOf(config)))
+                       .map(prior -> retentionChanged(value,
+                                                      String.valueOf(retentionOf(prior)),
+                                                      String.valueOf(retentionOf(config))));
     }
 
     private static Option<RetentionDeclaration> retentionOf(StreamConfig config) {

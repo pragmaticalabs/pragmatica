@@ -2332,8 +2332,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// durability or a changed storage key (`[retention]`, `[hot]`, `expected_ingress`). Adoption swaps the whole config,
     /// so an immutable change would ride along with a storage change; it is not adopted (the deploy validation refuses
     /// it before commit). [#confirmationFactorAfter] reads it too, so what is announced about a factor change cannot
-    /// differ from what [#confirmationFactorFor] then enforces.
-    private static boolean adopts(StreamConfig incoming, StreamConfig existing) {
+    /// differ from what [#confirmationFactorFor] then enforces. Public for the retention-changed announcer, which applies
+    /// this same rule to the previous COMMITTED config and the new one (#3554), so the event follows the adoption rule
+    /// without a copy of it.
+    public static boolean adopts(StreamConfig incoming, StreamConfig existing) {
         return incoming.partitions() == existing.partitions()
                && notWeaker(incoming, existing)
                && immutableUnchanged(incoming, existing)
