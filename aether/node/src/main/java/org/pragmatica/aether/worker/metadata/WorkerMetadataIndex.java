@@ -255,15 +255,12 @@ public final class WorkerMetadataIndex {
             case AetherKey.BlueprintStreamBindingsKey entry -> Set.of("blueprint:" + entry.blueprintId().asString());
             case AetherKey.ActivationDirectiveKey entry -> activationScopes(entry, value);
             case AetherKey.NodePlacementKey entry -> Set.of(node(entry.nodeId()));
-            case AetherKey.JoinDeadlineKey entry -> Set.of(node(entry.nodeId()));
-            case AetherKey.DrainDeadlineKey entry -> Set.of(node(entry.nodeId()));
             case AetherKey.HttpNodeRouteKey entry -> Set.of(node(entry.nodeId()));
             case AetherKey.StorageStatusKey entry -> Set.of(node(entry.nodeId()));
             case AetherKey.ConfigKey entry -> Set.of(entry.nodeScope().map(WorkerMetadataIndex::node).or(GLOBAL));
             case AetherKey.GovernorAnnouncementKey entry -> Set.of(community(entry.communityId()));
             case AetherKey.CommunityKey entry -> Set.of(community(entry.communityId()));
             case AetherKey.CommunityPlacementOperationKey entry -> Set.of(community(entry.communityId()));
-            case AetherKey.WorkerSliceDirectiveKey entry -> Set.of(entry.communityId().map(WorkerMetadataIndex::community).or(GLOBAL));
             case AetherKey.ScheduledTaskKey entry -> Set.of(artifact(entry.artifact()));
             case AetherKey.ScheduledTaskPauseKey entry -> Set.of(artifact(entry.artifact()));
             case AetherKey.ScheduledTaskStateKey entry -> Set.of(artifact(entry.artifact()));
@@ -281,7 +278,7 @@ public final class WorkerMetadataIndex {
             case AetherKey.EntitySeedOfferKey entry -> Set.of("entity:" + entry.keyspace());
             case AetherKey.EntityArcWaiverKey entry -> Set.of("entity:" + entry.keyspace());
             case AetherKey.DrainCommandKey _, AetherKey.DeploymentOutcomeKey _, AetherKey.ArtifactVersionsKey _, AetherKey.ArtifactContentKey _, AetherKey.DeploymentKey _, AetherKey.AbTestKey _, AetherKey.ApiKeyAuditKey _, AetherKey.ClusterConfigKey _, AetherKey.ClusterIncarnationKey _, AetherKey.DeploymentEngineKey _, AetherKey.DhtReplicationChangeKey _, AetherKey.DhtReplicationReportKey _, AetherKey.StreamPartitionRecoveryKey _, AetherKey.CapacityLedgerKey _, AetherKey.CapacityReservationKey _, AetherKey.NodeReplacementKey _, AetherKey.UpgradeRunKey _, AetherKey.WorkflowRunKey _, AetherKey.WorkflowClaimKey _, AetherKey.UnconfirmedTerminationKey _, AetherKey.CapacityAdmissionKey _, AetherKey.CommunityPlacementAvailabilityKey _, AetherKey.ProvisioningSlotKey _, AetherKey.AutoHealStateKey _, AetherKey.DeploymentApplyKey _, AetherKey.ArtifactJudgmentKey _, AetherKey.NodeDepartureKey _, AetherKey.NodeIdentityKey _, AetherKey.NodeLeaseKey _, AetherKey.NodeIdHighWaterKey _, AetherKey.FsmWarningKey _ -> Set.of();
-            case AetherKey.LogLevelKey _, AetherKey.ObservabilityConfigKey _, AetherKey.AlertThresholdKey _, AetherKey.SchemaVersionKey _, AetherKey.SchemaMigrationLockKey _, AetherKey.GossipKeyRotationKey _, AetherKey.StreamConfigKey _, AetherKey.ApiKeyKey _, AetherKey.DhtPartitionOwnershipKey _, AetherKey.StreamPartitionOwnershipKey _, AetherKey.SpokesmanKey _, AetherKey.ClusterPhaseKey _, AetherKey.BackupRestoreKey _, AetherKey.StreamRegistryHolderKey _, AetherKey.StreamRegistryKey _ -> Set.of(GLOBAL);
+            case AetherKey.LogLevelKey _, AetherKey.ObservabilityConfigKey _, AetherKey.AlertThresholdKey _, AetherKey.SchemaVersionKey _, AetherKey.SchemaMigrationLockKey _, AetherKey.GossipKeyRotationKey _, AetherKey.StreamConfigKey _, AetherKey.ApiKeyKey _, AetherKey.DhtPartitionOwnershipKey _, AetherKey.StreamPartitionOwnershipKey _, AetherKey.SpokesmanKey _, AetherKey.BackupRestoreKey _, AetherKey.StreamRegistryHolderKey _, AetherKey.StreamRegistryKey _ -> Set.of(GLOBAL);
         };
     }
 

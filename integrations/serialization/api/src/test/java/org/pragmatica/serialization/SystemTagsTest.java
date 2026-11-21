@@ -16,8 +16,12 @@
 package org.pragmatica.serialization;
 
 import java.util.HashMap;
+import java.util.List;
+import java.util.stream.Stream;
 
+import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestFactory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -102,4 +106,36 @@ class SystemTagsTest {
     void tagFor_unknownName_returnsNotPinned() {
         assertEquals(SystemTags.NOT_PINNED, SystemTags.tagFor("com.example.NeverPinned"));
     }
+
+    /// #3530: the eight tags of the four deleted key types and their values. The classes are gone, so the pin is the only thing that
+    /// keeps a later lane from reusing the number, and a persisted snapshot or backup naming one must still fail as an unknown tag. One
+    /// dynamic test per tag, so dropping or re-pointing any single pin names that tag, and eight drops show eight reds.
+    private static final List<RetiredPin> RETIRED_3530 = List.of(new RetiredPin(1098, "AetherKey.ClusterPhaseKey"),
+                                                                  new RetiredPin(1104, "AetherKey.DrainDeadlineKey"),
+                                                                  new RetiredPin(1111, "AetherKey.JoinDeadlineKey"),
+                                                                  new RetiredPin(1137, "AetherKey.WorkerSliceDirectiveKey"),
+                                                                  new RetiredPin(1612, "AetherValue.ClusterPhaseValue"),
+                                                                  new RetiredPin(1618, "AetherValue.DrainDeadlineValue"),
+                                                                  new RetiredPin(1625, "AetherValue.JoinDeadlineValue"),
+                                                                  new RetiredPin(1658, "AetherValue.WorkerSliceDirectiveValue"));
+
+    @TestFactory
+    Stream<DynamicTest> retiredPins_stayPinnedToTheirTagAndNoOtherTypeTakesIt() {
+        return RETIRED_3530.stream()
+                           .map(pin -> DynamicTest.dynamicTest("tag " + pin.tag() + " " + pin.name(),
+                                                               () -> assertRetired(pin)));
+    }
+
+    private static void assertRetired(RetiredPin pin) {
+        var fullName = "org.pragmatica.aether.slice.kvstore." + pin.name();
+
+        assertEquals(pin.tag(),
+                     SystemTags.tagFor(fullName),
+                     "retired tag %d (%s) must stay pinned: dropping the pin frees the number for reuse".formatted(pin.tag(), fullName));
+        assertEquals(1L,
+                     SystemTags.TAGS.values().stream().filter(tag -> tag == pin.tag()).count(),
+                     "retired tag %d must be claimed by %s alone, it was reused".formatted(pin.tag(), fullName));
+    }
+
+    private record RetiredPin(int tag, String name) {}
 }
