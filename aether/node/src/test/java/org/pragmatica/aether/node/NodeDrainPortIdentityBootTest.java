@@ -124,9 +124,10 @@ class NodeDrainPortIdentityBootTest {
     }
 
     /// The DRAIN channel the server's lifecycle routes hold: both fields are private, and the server exposes no accessor
-    /// (adding one for a test would put test surface on the public management API).
+    /// (adding one for a test would put test surface on the public management API). `ManagementServer` is an interface;
+    /// the field lives on its package-private implementation, read through the runtime class.
     private static NodeLifecycleRoutes.DrainPort drainPortOf(ManagementServer server) throws Exception {
-        var routes = read(ManagementServer.class, "nodeLifecycleRoutes", server);
+        var routes = read(server.getClass(), "nodeLifecycleRoutes", server);
 
         return (NodeLifecycleRoutes.DrainPort) read(NodeLifecycleRoutes.class, "drainPort", routes);
     }
