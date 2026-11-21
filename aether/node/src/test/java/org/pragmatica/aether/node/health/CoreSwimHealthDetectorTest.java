@@ -223,7 +223,7 @@ class CoreSwimHealthDetectorTest {
                         new InetSocketAddress("127.0.0.2", 9101));
                 // Wrap in piggybacked Ack so the protocol consumes it.
                 var ack = SwimMessage.Ack.ack(PEER_A, 1L, java.util.List.of(membershipUpdate));
-                protocol.onMessage(new InetSocketAddress("127.0.0.2", 9101), ack);
+                protocol.deliverForTest(new InetSocketAddress("127.0.0.2", 9101), ack);
 
                 assertThat(received).as("HealthyObserved must reach a listener registered BEFORE start()")
                                     .anyMatch(o -> o instanceof SwimObservation.HealthyObserved h
@@ -310,7 +310,7 @@ class CoreSwimHealthDetectorTest {
                                                                        Map.of("quorum", "lost"));
 
             assertThat(detector.reportsQuorumLoss(PEER_A)).isFalse();
-            protocol.onMessage(address, SwimMessage.Ack.ack(PEER_A, 1L, List.of(update)));
+            protocol.deliverForTest(address, SwimMessage.Ack.ack(PEER_A, 1L, List.of(update)));
 
             assertThat(detector.reportsQuorumLoss(PEER_A)).as("the peer's report, read through the live protocol").isTrue();
         }

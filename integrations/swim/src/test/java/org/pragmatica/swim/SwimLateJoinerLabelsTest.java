@@ -135,6 +135,7 @@ class SwimLateJoinerLabelsTest {
             var handler = net.get(new InetSocketAddress("127.0.0.1", target.getPort()));
 
             if (handler != null) {
+                // ASYNC-DELIVERY: simulated network hop, called from a transport send inside a task or from the wire thread; it must not wait (deliverForTest would fail from inside a task, and a real transport never waits)
                 handler.onMessage(self, message);
             }
         }

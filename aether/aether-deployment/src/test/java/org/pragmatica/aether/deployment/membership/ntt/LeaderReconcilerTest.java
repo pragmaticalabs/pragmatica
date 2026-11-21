@@ -3483,7 +3483,7 @@ class LeaderReconcilerTest {
                                        .unwrap();
 
             protocol.addObservationListener(this::routeToFsm);
-            protocol.onMessage(SWIM_GOSSIPER, new Ping(GOSSIPER, 1L, List.of(gossipedAlive(id))));
+            protocol.deliverForTest(SWIM_GOSSIPER, new Ping(GOSSIPER, 1L, List.of(gossipedAlive(id))));
             health.markHealthy(id);
             sampler.sample();
             agePastDrainSafetyGrace();

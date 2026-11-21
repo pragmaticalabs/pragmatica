@@ -71,7 +71,7 @@ class CoreSwimHealthDetectorMembershipViewTest {
                            .unwrap();
         ctx.dispatch(new SwimHealthEvents.ProtocolReady(swim, transport, GossipEncryptor.none()));
         detector.announceJoin(self, "c", 1L, 7L, List.of(SEED));
-        swim.onMessage(KNOWN_SWIM,
+        swim.deliverForTest(KNOWN_SWIM,
                        Ack.ack(KNOWN, 0L, List.of(MembershipUpdate.membershipUpdate(KNOWN, MemberState.ALIVE, 1, KNOWN_SWIM))));
         assertThat(swim.members()).as("precondition: one live member is known").containsKey(KNOWN);
     }

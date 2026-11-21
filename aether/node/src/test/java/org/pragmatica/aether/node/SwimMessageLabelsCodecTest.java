@@ -179,12 +179,12 @@ class SwimMessageLabelsCodecTest {
                                                                     ADDRESS,
                                                                     0L,
                                                                     hugeLabels);
-                    protocol.onMessage(ADDRESS, new Ping(FROM, 1L, List.of(subject)));
+                    protocol.deliverForTest(ADDRESS, new Ping(FROM, 1L, List.of(subject)));
                 }
 
                 for (int round = 0; round < 40; round++) {
                     transport.sent.clear();
-                    protocol.onMessage(ADDRESS, new Ping(FROM, 100L + round, List.of()));
+                    protocol.deliverForTest(ADDRESS, new Ping(FROM, 100L + round, List.of()));
                     var ack = transport.sent.stream().filter(Ack.class::isInstance).map(Ack.class::cast).findFirst().orElseThrow();
                     byte[] encoded = codec.encode((SwimMessage) ack);
 
@@ -219,7 +219,7 @@ class SwimMessageLabelsCodecTest {
         try {
             await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
                 transport.sent.clear();
-                protocol.onMessage(ADDRESS, new Ping(FROM, 7L, List.of()));
+                protocol.deliverForTest(ADDRESS, new Ping(FROM, 7L, List.of()));
                 var ack = transport.sent.stream().filter(Ack.class::isInstance).map(Ack.class::cast).findFirst().orElseThrow();
                 byte[] encoded = codec.encode((SwimMessage) ack);
 

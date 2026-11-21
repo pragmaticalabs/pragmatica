@@ -197,14 +197,14 @@ class SwimIsolationProbeTest {
 
         protocol.probeRoundForTest();
         var isolationPing = transport.firstPingTo(ADDR_A);
-        holder.onMessage(SELF_ADDR, isolationPing);
+        holder.deliverForTest(SELF_ADDR, isolationPing);
         var ack = holderTransport.sentMessages.stream()
                                               .filter(Ack.class::isInstance)
                                               .map(Ack.class::cast)
                                               .filter(sent -> sent.sequence() == isolationPing.sequence())
                                               .findFirst()
                                               .orElseThrow();
-        protocol.onMessage(ADDR_A, ack);
+        protocol.deliverForTest(ADDR_A, ack);
 
         assertThat(protocol.selfIncarnation()).as("the notice in the isolation ping's Ack is refuted").isEqualTo(2L);
     }
@@ -214,7 +214,7 @@ class SwimIsolationProbeTest {
         protocol.latchSelfIsolationForTest(() -> true);
 
         protocol.probeRoundForTest();
-        protocol.onMessage(ADDR_A, Ack.ack(NODE_A, transport.firstPingTo(ADDR_A).sequence(), List.of()));
+        protocol.deliverForTest(ADDR_A, Ack.ack(NODE_A, transport.firstPingTo(ADDR_A).sequence(), List.of()));
         protocol.probeRoundForTest();
 
         assertThat(protocol.selfIsolatedForTest()).as("an isolation Ack alone does not unlatch (design behaviour)").isTrue();
@@ -303,12 +303,12 @@ class SwimIsolationProbeTest {
     void isolationProbe_throughTheRealTick_latchedNodePingsTheFaultyPeer() {
         protocol.removeMemberForTest(NODE_A);
         protocol.removeMemberForTest(NODE_B);
-        protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(faultyClaim(MemberState.ALIVE, 0L))));
+        protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(faultyClaim(MemberState.ALIVE, 0L))));
         protocol.recordTransportHint(NODE_A,
                                      new TransportObservation.PeerUnreachable(NODE_A,
                                                                               Causes.cause("test peer down"),
                                                                               TransportObservation.HintOrigin.LINK_LOST));
-        protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyClaim(MemberState.FAULTY, 1L))));
+        protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyClaim(MemberState.FAULTY, 1L))));
         protocol.latchSelfIsolationForTest(() -> true);
         transport.sent.clear();
 

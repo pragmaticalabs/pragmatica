@@ -95,7 +95,7 @@ class SwimGossipRoleReachTest {
     private void gossipAlive(NodeId subject, Map<String, String> labels) {
         var update = MembershipUpdate.membershipUpdate(subject, MemberState.ALIVE, 0L, REPLACEMENT_ADDR, 0L, labels);
 
-        protocol.onMessage(GOSSIPER_ADDR, new Ping(GOSSIPER, ++sequence, List.of(update)));
+        protocol.deliverForTest(GOSSIPER_ADDR, new Ping(GOSSIPER, ++sequence, List.of(update)));
     }
 
     private static final class NullTransport implements SwimTransport {

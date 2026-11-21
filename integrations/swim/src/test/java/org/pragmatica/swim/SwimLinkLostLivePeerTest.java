@@ -270,7 +270,7 @@ class SwimLinkLostLivePeerTest {
     }
 
     private void seed(NodeId nodeId, InetSocketAddress addr) {
-        protocol.onMessage(ADDR_B,
+        protocol.deliverForTest(ADDR_B,
                            new Ping(NODE_B,
                                     1L,
                                     List.of(MembershipUpdate.membershipUpdate(nodeId, MemberState.ALIVE, 0, addr))));
@@ -336,6 +336,7 @@ class SwimLinkLostLivePeerTest {
                 var peer = PEERS.get(target);
 
                 if (!hinted.get() || answersAfterHint.getOrDefault(peer, true)) {
+                    // ASYNC-DELIVERY: simulated network hop, called from a transport send inside a task; it must not wait (deliverForTest would fail from inside a task, and a real transport never waits)
                     protocol.get().onMessage(target,
                                              new Ack(peer, ping.sequence(), List.of()));
                 }
