@@ -82,27 +82,27 @@ class GitBackupRepositoryTest {
     }
 
     @Test
-    void fetchRemoteHead_isAbsent_onABrandNewRemote() {
+    void restoreRef_isAbsent_onABrandNewRemote() {
         var repository = repository("local", Option.some(bareRemote(temp.resolve("remote.git"))));
 
         repository.prepare();
 
-        assertThat(repository.fetchRemoteHead()
+        assertThat(repository.restoreRef()
                              .unwrap()).isEqualTo(Option.none());
     }
 
     @Test
-    void fetchRemoteHead_fails_whenTheRemoteCannotBeReached() {
+    void restoreRef_fails_whenTheRemoteCannotBeReached() {
         var repository = repository("local", Option.some(temp.resolve("missing.git").toString()));
 
         repository.prepare();
 
-        assertThat(repository.fetchRemoteHead()
+        assertThat(repository.restoreRef()
                              .isFailure()).isTrue();
     }
 
     @Test
-    void fetchRemoteHead_returnsTheHeadDocument() {
+    void restoreRef_namesTheFetchedHead_whoseDocumentReads() {
         var remote = bareRemote(temp.resolve("remote.git"));
         var writer = repository("writer", Option.some(remote));
 
@@ -114,8 +114,11 @@ class GitBackupRepositoryTest {
 
         reader.prepare();
 
-        assertThat(reader.fetchRemoteHead()
-                         .unwrap()).isEqualTo(Option.some("state-7\n"));
+        var ref = reader.restoreRef()
+                        .unwrap()
+                        .or("");
+
+        assertThat(presentValue(reader.readFile(ref, GitBackupRepository.FILE))).isEqualTo("state-7\n");
     }
 
     /// Never forced: a remote that moved elsewhere answers a typed rejection, and the remote keeps the
@@ -153,7 +156,7 @@ class GitBackupRepositoryTest {
         var locked = repository("locked", Option.some(remote));
 
         locked.prepare();
-        locked.fetchRemoteHead();
+        locked.restoreRef();
         locked.resetToRemoteHead();
         locked.commit("locked\n", "locked");
         Files.writeString(Path.of(remote).resolve("refs/heads/backup.lock"), "");
@@ -226,7 +229,7 @@ class GitBackupRepositoryTest {
         var slow = repository("slow", Option.some(remote));
 
         slow.prepare();
-        slow.fetchRemoteHead();
+        slow.restoreRef();
         slow.resetToRemoteHead();
         slow.commit("slow\n", "slow");
         var started = temp.resolve("hook.started");
@@ -258,7 +261,7 @@ class GitBackupRepositoryTest {
         first.commit("first\n", "first")
              .flatMap(_ -> first.push());
         second.commit("second\n", "second");
-        second.fetchRemoteHead();
+        second.restoreRef();
 
         assertThat(second.localContainsRemoteHead()
                          .unwrap()).isFalse();
@@ -552,8 +555,7 @@ class GitBackupRepositoryTest {
         assertThat(reader.readBranch()).isInstanceOf(GitRead.Unreadable.class);
     }
 
-    /// A warning git writes to stderr under exit 0 never enters a present value (the merged reads of the older commands would carry it). The control:
-    /// the merged read of the same file does.
+    /// A warning git writes to stderr under exit 0 never enters a present value: the value is stdout only.
     @Test
     void readFile_underAStderrWarningAndExit0_returnsStdoutOnly() {
         var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"), Option.none(), "backup", TIMEOUT, Map.of("GIT_TRACE", "1"));
@@ -562,7 +564,6 @@ class GitBackupRepositoryTest {
         repository.commit("state-1\n", "first")
                   .onFailure(cause -> Assertions.fail(cause.message()));
 
-        assertThat(repository.localFile(GitBackupRepository.FILE).unwrap().or("")).as("control: the merged read carries the trace").contains("trace:");
         assertThat(presentValue(repository.readFile("HEAD", GitBackupRepository.FILE))).isEqualTo("state-1\n");
         assertThat(presentValue(repository.readCommitId("HEAD"))).hasSize(40);
     }
@@ -770,9 +771,6 @@ class GitBackupRepositoryTest {
         assertThat(unreadableReason(repository.readPath(hostile, "x"))).contains("refused");
         assertThat(unreadableReason(repository.readFile(hostile, GitBackupRepository.FILE))).contains("refused");
         assertThat(unreadableReason(repository.readHistory(hostile))).contains("refused");
-        assertThat(failureOf(repository.commitOf(hostile))).contains("refused");
-        assertThat(failureOf(repository.documentAt(hostile))).contains("refused");
-        assertThat(failureOf(repository.history(hostile))).contains("refused");
         assertThat(planted).doesNotExist();
     }
 
@@ -785,7 +783,6 @@ class GitBackupRepositoryTest {
         assertThat(unreadableReason(repository.readPath("-x", "p"))).contains("refused");
         assertThat(unreadableReason(repository.readFile("-x", GitBackupRepository.FILE))).contains("refused");
         assertThat(unreadableReason(repository.readHistory("-x"))).contains("refused");
-        assertThat(failureOf(repository.commitOf("-x"))).contains("refused");
     }
 
     /// A `git` on the PATH that is not executable is skipped: the next one on the PATH runs (an executable-file check, not an existence check).
@@ -829,26 +826,16 @@ class GitBackupRepositoryTest {
         assertThat(repository.readPath("HEAD", GitBackupRepository.FILE)).isInstanceOf(GitRead.Present.class);
         assertThat(repository.readFile("HEAD", GitBackupRepository.FILE)).isEqualTo(GitRead.present("one\n"));
         assertThat(repository.readHistory("HEAD")).isInstanceOf(GitRead.Present.class);
-        assertThat(repository.commitOf("HEAD").unwrap()).isEqualTo(head);
-        assertThat(repository.documentAt("HEAD").unwrap()).isEqualTo("one\n");
-        assertThat(repository.history("HEAD").unwrap()).hasSize(1);
     }
 
     /// The second barrier behind the refusal: the argv git is given ends option parsing before the caller's ref (and `--` before a path).
     @Test
     void everyGitCallTakingACallersRef_passesEndOfOptionsBeforeIt() throws IOException {
         assertThat(argvOf("rev-parse-id", "rev-parse", r -> r.readCommitId("HEAD"))).anyMatch(line -> line.contains("--end-of-options HEAD^{commit}"));
-        assertThat(argvOf("rev-parse-of", "rev-parse", r -> r.commitOf("HEAD"))).anyMatch(line -> line.contains("--end-of-options HEAD^{commit}"));
         assertThat(argvOf("ls-tree", "ls-tree", r -> r.readPath("HEAD", "p"))).anyMatch(line -> line.contains("ls-tree --name-only --end-of-options HEAD"));
         assertThat(argvOf("show-file", "show", r -> r.readFile("HEAD", GitBackupRepository.FILE))).anyMatch(line -> line.contains("--end-of-options HEAD:"
                                                                                                                               + GitBackupRepository.FILE));
-        assertThat(argvOf("show-doc", "show", r -> r.documentAt("HEAD"))).anyMatch(line -> line.contains("--end-of-options HEAD:" + GitBackupRepository.FILE));
-        assertThat(argvOf("show-local", "show", r -> r.localFile(GitBackupRepository.FILE))).anyMatch(line -> line.contains("--end-of-options HEAD:"
-                                                                                                                         + GitBackupRepository.FILE));
-        assertThat(argvOf("cat-file", "cat-file", r -> r.localFile(GitBackupRepository.FILE))).anyMatch(line -> line.contains("-e --end-of-options HEAD:"
-                                                                                                                            + GitBackupRepository.FILE));
         assertThat(argvOf("log-read", "log", r -> r.readHistory("HEAD"))).anyMatch(line -> line.contains("--end-of-options HEAD"));
-        assertThat(argvOf("log-history", "log", r -> r.history("HEAD"))).anyMatch(line -> line.contains("--end-of-options HEAD"));
         assertThat(argvOf("add", "add", r -> r.commitFile("f.txt", "x\n", "m"))).anyMatch(line -> line.contains("add -- f.txt"));
     }
 
@@ -1250,7 +1237,7 @@ class GitBackupRepositoryTest {
 
         repository.prepare();
         var started = System.nanoTime();
-        var fetched = repository.fetchRemoteHead();
+        var fetched = repository.restoreRef();
         var elapsedMillis = (System.nanoTime() - started) / 1_000_000;
 
         assertThat(fetched.isFailure()).isTrue();
@@ -1265,7 +1252,7 @@ class GitBackupRepositoryTest {
 
         repository.prepare();
         var started = System.nanoTime();
-        var fetched = repository.fetchRemoteHead();
+        var fetched = repository.restoreRef();
         var elapsedMillis = (System.nanoTime() - started) / 1_000_000;
 
         assertThat(fetched.isFailure()).isTrue();
@@ -1306,7 +1293,7 @@ class GitBackupRepositoryTest {
                                                                             "1"));
 
             repository.prepare();
-            var fetched = repository.fetchRemoteHead();
+            var fetched = repository.restoreRef();
 
             assertThat(fetched.fold(Cause::message, _ -> "fetched")).contains("terminal prompts disabled");
         } finally {
