@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.kvstore.ReplicaFilter;
 import org.pragmatica.aether.worker.metadata.WorkerMetadataIndex;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SystemTags;
 
@@ -66,6 +67,35 @@ class DrainRowWireTest {
         assertThat(DrainCommandKey.drainCommandKey(key.asString()).unwrap()).isEqualTo(key);
         assertThat(DrainCommandKey.drainCommandKey("drain-deadline/core-3").isFailure()).isTrue();
         assertThat(DrainCommandKey.drainCommandKey("drain-command/").isFailure()).isTrue();
+    }
+
+    @Test
+    void theKey_parsesBackToItsOwnNodeId_whateverTheTargetLooksLike() {
+        // multi-digit id, a non-core prefix, and ids made of the separator's neighbours: a '/', the prefix itself, a trailing '/'
+        for (var id : new String[]{"core-12345", "worker-7", "edge-a-b", "x/y/z", "drain-command/core-3", "core-3/", "/core-3"}) {
+            var target = NodeId.nodeId(id).unwrap();
+            var parsed = DrainCommandKey.drainCommandKey("drain-command/" + id).unwrap();
+
+            assertThat(parsed).as("target " + id).isEqualTo(DrainCommandKey.drainCommandKey(target));
+            assertThat(parsed.target().id()).as("target " + id).isEqualTo(id);
+            assertThat(DrainCommandKey.drainCommandKey(parsed.asString()).unwrap()).as("round trip " + id).isEqualTo(parsed);
+        }
+    }
+
+    @Test
+    void theKey_formatError_namesTheOffendingTextAndTheExpectedShape() {
+        assertThat(DrainCommandKey.drainCommandKey("drain-deadline/core-3").fold(Cause::message, _ -> "parsed"))
+            .isEqualTo("Invalid drain-command key format: drain-deadline/core-3");
+        assertThat(DrainCommandKey.drainCommandKey("drain-command/").fold(Cause::message, _ -> "parsed"))
+            .isEqualTo("Invalid drain-command key format: drain-command/");
+    }
+
+    @Test
+    void theKey_rendersItsStoredForm_inToString() {
+        var key = DrainCommandKey.drainCommandKey(TARGET);
+
+        assertThat(key.toString()).isEqualTo("drain-command/core-3");
+        assertThat(DrainCommandKey.drainCommandKey(key.toString()).unwrap()).isEqualTo(key);
     }
 
     @Test
