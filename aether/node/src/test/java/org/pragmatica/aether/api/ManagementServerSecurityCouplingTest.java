@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.buffer.ByteBuf;
 import org.apache.logging.log4j.Level;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.api.routes.GrantedBodyRoute;
 import org.pragmatica.aether.api.routes.GrantedRouteProbe;
@@ -80,7 +81,6 @@ import org.pragmatica.serialization.Serializer;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.io.TimeSpan;
 
-import org.junit.jupiter.api.Disabled;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
