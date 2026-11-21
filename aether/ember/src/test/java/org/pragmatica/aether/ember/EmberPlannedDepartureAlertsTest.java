@@ -15,6 +15,7 @@ import java.util.function.Supplier;
 
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -133,6 +134,16 @@ class EmberPlannedDepartureAlertsTest {
         // owner, e.g. one that loses its system-writer mark, drops the non-owners' events with a WARN and leaves it green). Every
         // observer that raised the alert must therefore have ITS OWN NodeFailed in the stream.
         awaitCondition("every observer raised the CRITICAL node-health alert", DEPARTURE_BUDGET_MS, () -> observers.stream().allMatch(n -> hasCriticalAlert(n, victim)));
+        // #2061: the CI red, replayed deterministically. The leader's DEAD edge dropped the victim's link; the blackholed victim
+        // (its QUIC Hello still passes, only app lanes and SWIM are dropped) re-dialled, and the inbound handshake routed a
+        // PeerJoined that RESOLVED the leader's alert 130 ms after raising it, while the leader's membership FSM still held the
+        // victim DEAD. Route that same observation into every observer: a handshake the FSM has not re-admitted is not a rejoin.
+        var view = nodes.stream().map(AetherNode::self).toList();
+
+        observers.forEach(n -> n.route(TransportObservation.peerJoined(nodeId(victim), view, TransportObservation.ObservationSource.QUIC)));
+        assertThat(observers.stream().filter(n -> !hasCriticalAlert(n, victim)).map(n -> n.self().id()).toList())
+            .as("observers whose CRITICAL alert a transport handshake from the still-dead victim resolved")
+            .isEmpty();
         var alerted = observers.stream().map(n -> n.self().id()).collect(java.util.stream.Collectors.toSet());
 
         awaitCondition(() -> "every observer's own NodeFailed for the unplanned death landed in the stream (forwarded events included); landed from: " + failedObservers(observers, victim) + " of " + alerted,

@@ -224,8 +224,8 @@ cluster_node_count_quiesced() {
 }
 
 # Spec §4.4 / §10 P7: tests must consume the same operator-visible signals.
-# `clusterPhase` is published by HealthReconciler via consensus on ClusterPhaseKey
-# and projected to every node. Empty/default → "COLD_BOOT".
+# `clusterPhase` is derived on every node by ClusterPhaseView (no KV key carries it)
+# and reported by the status endpoint. Empty/default → "COLD_BOOT".
 cluster_phase() {
     aether_field status clusterPhase
 }
@@ -1414,7 +1414,7 @@ wait_for_quorum() {
     wait_for "cluster quorate" "[ \"\$(cluster_quorate)\" = 'true' ]" "$timeout"
 }
 
-# Spec §5 / §10: wait for ClusterPhaseKey to converge to the expected phase
+# Spec §5 / §10: wait for the status clusterPhase to converge to the expected phase
 # (BOOTING / NORMAL / RECOVERING). Use this in place of ad-hoc sleeps after
 # cluster bring-up — `wait_for_phase 'NORMAL' 60` proves the cluster left
 # cold-boot mode and CTM is allowed to operate.

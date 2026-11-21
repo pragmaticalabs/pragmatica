@@ -1441,41 +1441,6 @@ public sealed interface AetherValue {
         }
     }
 
-    record WorkerSliceDirectiveValue(Artifact artifact,
-                                     int targetInstances,
-                                     String placement,
-                                     Option<String> targetCommunity,
-                                     long updatedAt) implements AetherValue {
-        public static WorkerSliceDirectiveValue workerSliceDirectiveValue(Artifact artifact,
-                                                                          int targetInstances,
-                                                                          String placement) {
-            return new WorkerSliceDirectiveValue(artifact,
-                                                 targetInstances,
-                                                 placement,
-                                                 none(),
-                                                 System.currentTimeMillis());
-        }
-
-        public static WorkerSliceDirectiveValue workerSliceDirectiveValue(Artifact artifact,
-                                                                          int targetInstances,
-                                                                          String placement,
-                                                                          String targetCommunity) {
-            return new WorkerSliceDirectiveValue(artifact,
-                                                 targetInstances,
-                                                 placement,
-                                                 Option.option(targetCommunity),
-                                                 System.currentTimeMillis());
-        }
-
-        public WorkerSliceDirectiveValue withInstances(int newCount) {
-            return new WorkerSliceDirectiveValue(artifact,
-                                                 newCount,
-                                                 placement,
-                                                 targetCommunity,
-                                                 System.currentTimeMillis());
-        }
-    }
-
     /// Worker/core activation directive (worker-membership-spec §4 line 79): the leader-authored,
     /// node-keyed role assignment. Extended additively with `communityId` + `governorHint` so a
     /// WORKER directive carries its community assignment and a governor address hint through the
@@ -1792,22 +1757,6 @@ public sealed interface AetherValue {
         /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as
         /// UNKNOWN by an older node either way.
         UNKNOWN
-    }
-
-    record ClusterPhaseValue(ClusterPhase phase, long updatedAt) implements AetherValue {
-        public ClusterPhaseValue {
-            if (phase == null) {
-                phase = ClusterPhase.COLD_BOOT;
-            }
-        }
-
-        public static ClusterPhaseValue clusterPhaseValue(ClusterPhase phase) {
-            return new ClusterPhaseValue(phase, System.currentTimeMillis());
-        }
-
-        public static ClusterPhaseValue clusterPhaseValue(ClusterPhase phase, long updatedAt) {
-            return new ClusterPhaseValue(phase, updatedAt);
-        }
     }
 
     /// The deployment engine a cluster runs (phase-3 design 8.2). `FSM2` is the default of every node; `LEGACY` is the engine it replaces (removed in F7).
@@ -2180,39 +2129,6 @@ public sealed interface AetherValue {
         UNRECOGNISED,
         /// Wire sentinel (#964) — see the type docstring. Must stay LAST.
         UNKNOWN
-    }
-
-    /// Phase 1 step J — replicated mirror of the in-process `JOIN_DEADLINE` scheduler
-    /// entry. `deadlineMs` is wall-clock millis (epoch) when the join deadline fires;
-    /// `setAt` is the HLC stamp of the originating JOINING-entry transition (provides
-    /// causal ordering across leader takeover for observers reconstructing the deadline).
-    /// Pure observability atom — see [AetherKey.JoinDeadlineKey] for trigger semantics.
-    record JoinDeadlineValue(long deadlineMs, HlcTimestamp setAt) implements AetherValue {
-        public JoinDeadlineValue {
-            if (setAt == null) {
-                setAt = HlcTimestamp.ZERO;
-            }
-        }
-
-        public static JoinDeadlineValue joinDeadlineValue(long deadlineMs, HlcTimestamp setAt) {
-            return new JoinDeadlineValue(deadlineMs, setAt);
-        }
-    }
-
-    /// Phase 1 step J — replicated mirror of the in-process `DRAIN_DEADLINE` scheduler
-    /// entry. `deadlineMs` is wall-clock millis (epoch) when the drain hard-deadline
-    /// fires; `setAt` is the HLC stamp of the DRAINING-entry transition. Pure
-    /// observability atom — see [AetherKey.DrainDeadlineKey] for trigger semantics.
-    record DrainDeadlineValue(long deadlineMs, HlcTimestamp setAt) implements AetherValue {
-        public DrainDeadlineValue {
-            if (setAt == null) {
-                setAt = HlcTimestamp.ZERO;
-            }
-        }
-
-        public static DrainDeadlineValue drainDeadlineValue(long deadlineMs, HlcTimestamp setAt) {
-            return new DrainDeadlineValue(deadlineMs, setAt);
-        }
     }
 
     record NodeArtifactValue(SliceState state,
@@ -3728,6 +3644,155 @@ public sealed interface AetherValue {
             all.add(next);
 
             return all;
+        }
+    }
+
+    /// Per-`(stream, partition)` state of one partition's life (#3303): the row the split's elect, re-mint, close and release
+    /// transitions read and write.
+    ///
+    /// `incarnation` is the incarnation of the committed stream configuration; `generation` counts the partition's lives (1 at
+    /// the first write) and `lifeStart` is the offset the current life begins at. `state` is [PartitionState#OPEN] until the
+    /// close records `lastOffset` ([PartitionState#CLOSED]; `lastOffset` is empty while open) and the release ends the partition
+    /// ([PartitionState#RELEASED]); the row is kept after release while the stream lives. `election` is set by the leader's
+    /// elect transaction and cleared by the elected node's re-mint. `parents` and `children` name the partitions this one split
+    /// from and into.
+    ///
+    /// `activationGeneration` is the LAST component and is dormant: no writer sets a non-zero value yet. It is part of the value's
+    /// shape from the value's first wire line, so the step that starts writing it needs no wire bump. There is one factory and no
+    /// overload that defaults the component, and every copy method passes it through, so a write derived from the committed row
+    /// cannot drop it.
+    ///
+    /// Construction: no validation beyond non-null lists; writers own their invariants.
+    ///
+    /// @param incarnation          incarnation of the committed stream configuration
+    /// @param generation           the partition's life counter, 1 at the first write
+    /// @param lifeStart            offset the current life begins at
+    /// @param state                where the partition stands
+    /// @param firstOffset          first offset of the partition
+    /// @param lastOffset           the cut offset, recorded by the close; empty while open
+    /// @param election             the committed election, until the elected node's re-mint clears it
+    /// @param parents              the partitions this one split from
+    /// @param children             the partitions this one split into
+    /// @param activationGeneration dormant; passed through by every copy method
+    record StreamPartitionStateValue(long incarnation,
+                                     long generation,
+                                     long lifeStart,
+                                     PartitionState state,
+                                     long firstOffset,
+                                     Option<Long> lastOffset,
+                                     Option<Election> election,
+                                     List<Integer> parents,
+                                     List<Integer> children,
+                                     long activationGeneration) implements AetherValue {
+        public StreamPartitionStateValue {
+            parents = List.copyOf(parents);
+            children = List.copyOf(children);
+        }
+
+        public static StreamPartitionStateValue streamPartitionStateValue(long incarnation,
+                                                                          long generation,
+                                                                          long lifeStart,
+                                                                          PartitionState state,
+                                                                          long firstOffset,
+                                                                          Option<Long> lastOffset,
+                                                                          Option<Election> election,
+                                                                          List<Integer> parents,
+                                                                          List<Integer> children,
+                                                                          long activationGeneration) {
+            return new StreamPartitionStateValue(incarnation,
+                                                 generation,
+                                                 lifeStart,
+                                                 state,
+                                                 firstOffset,
+                                                 lastOffset,
+                                                 election,
+                                                 parents,
+                                                 children,
+                                                 activationGeneration);
+        }
+
+        /// The same row with election `election` (empty clears it).
+        public StreamPartitionStateValue withElection(Option<Election> election) {
+            return new StreamPartitionStateValue(incarnation,
+                                                 generation,
+                                                 lifeStart,
+                                                 state,
+                                                 firstOffset,
+                                                 lastOffset,
+                                                 election,
+                                                 parents,
+                                                 children,
+                                                 activationGeneration());
+        }
+
+        /// The same row closed at `lastOffset`: [PartitionState#CLOSED], the election carried.
+        public StreamPartitionStateValue closed(long lastOffset) {
+            return new StreamPartitionStateValue(incarnation,
+                                                 generation,
+                                                 lifeStart,
+                                                 PartitionState.CLOSED,
+                                                 firstOffset,
+                                                 some(lastOffset),
+                                                 election,
+                                                 parents,
+                                                 children,
+                                                 activationGeneration());
+        }
+
+        /// The same row released: [PartitionState#RELEASED], every other component carried.
+        public StreamPartitionStateValue released() {
+            return new StreamPartitionStateValue(incarnation,
+                                                 generation,
+                                                 lifeStart,
+                                                 PartitionState.RELEASED,
+                                                 firstOffset,
+                                                 lastOffset,
+                                                 election,
+                                                 parents,
+                                                 children,
+                                                 activationGeneration());
+        }
+
+        /// The next life of the same partition, beginning at `lifeStart`: one generation later, with no election; `state`,
+        /// `lastOffset`, `parents` and `children` are carried (a new life keeps state, parents and children).
+        public StreamPartitionStateValue newLife(long lifeStart) {
+            return new StreamPartitionStateValue(incarnation,
+                                                 generation + 1,
+                                                 lifeStart,
+                                                 state,
+                                                 firstOffset,
+                                                 lastOffset,
+                                                 none(),
+                                                 parents,
+                                                 children,
+                                                 activationGeneration());
+        }
+
+        /// Where a partition stands in its lifecycle.
+        @Codec
+        public enum PartitionState {
+            OPEN,
+            CLOSED,
+            RELEASED,
+            UNKNOWN
+        }
+
+        /// A committed election: the epoch the leader minted, the elected node, whether the election loses entity state, and
+        /// the in-sync set the partition had before it.
+        ///
+        /// @param epoch      the epoch the elect transaction minted
+        /// @param node       the elected node
+        /// @param entityLoss whether the election loses entity state
+        /// @param isr        the in-sync set before the election
+        @Codec
+        public record Election(Epoch epoch, NodeId node, boolean entityLoss, List<NodeId> isr) {
+            public Election {
+                isr = List.copyOf(isr);
+            }
+
+            public static Election election(Epoch epoch, NodeId node, boolean entityLoss, List<NodeId> isr) {
+                return new Election(epoch, node, entityLoss, isr);
+            }
         }
     }
 

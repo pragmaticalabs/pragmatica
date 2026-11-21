@@ -173,12 +173,12 @@ class JoinGenerationGuardTest {
                .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.WireGenerationRefused(B, 1, 2)));
     }
 
-    /// Pin: the generation is bumped to 7 by #3334 S1a-1a (`ConsumerAssignmentValue`, `AssignmentToken` and `StreamCursorCheckpointValue`
-    /// re-tagged and `member` added, so an older node refuses the new frames on an unknown tag); 6 was #3458/#3481 M1b (ReadRefusal.Kind
-    /// renumber). A literal, so a revert to 6 goes red.
+    /// Pin: the generation is bumped to 9 by #3458 M-1b (ReadRefusal gained its `cause` slot, so an older node decodes the
+    /// new shape's extra field as a malformed refusal). 8 was #3530 (four dead key types left the wire baseline); 7 was #3334
+    /// S1a-1a (assignment flag day). A literal, so a revert to 8 goes red.
     @Test
-    void thisBinarysGeneration_isSevenAfterTheAssignmentMemberFlagDay() {
-        assertThat(JoinGenerationGuard.WIRE_GENERATION).isEqualTo(7);
+    void thisBinarysGeneration_isNineAfterTheReadRefusalCauseSlot() {
+        assertThat(JoinGenerationGuard.WIRE_GENERATION).isEqualTo(9);
     }
 
     @Test

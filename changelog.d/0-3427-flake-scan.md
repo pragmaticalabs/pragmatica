@@ -1,0 +1,2 @@
+### Added (2026-11-21 — #3427: a test-source scan for flake-prone patterns)
+- **Flake scan with a pinned allow-list** (#3427). `FlakeScan` walks the repository's test sources for fixed sleeps, fixed ports, wall-clock assertions and short awaits; every existing hit is listed in `flake-scan-allowlist.txt`, so a new hit, or a listed entry that no longer exists, fails `FlakeScanTest`. `PollUntil` is a bounded poll helper for replacing sleeps.

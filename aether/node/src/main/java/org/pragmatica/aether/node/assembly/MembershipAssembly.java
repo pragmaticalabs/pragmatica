@@ -296,6 +296,7 @@ public sealed interface MembershipAssembly {
             // `onTransition` is a single-listener setter — registering a second one would silently
             // replace the transition journal.
             alertManager.noteMembershipTransition(record.nodeId(), record.cause());
+            resolveNodeHealthAlertOnRejoin(alertManager, record);
             onFsmTransition(transitionJournal, quorumLossDetectorRef, record);
             reconcileReplicaSetOnCountedBoundary(clusterEventsControllerRef, record);
             // #1720: a floor-refused operator drain target that has now reached DEAD closes its refusal on this edge.
@@ -929,6 +930,16 @@ public sealed interface MembershipAssembly {
 
     private static boolean isCounted(String state) {
         return "Member".equals(state) || "Suspect".equals(state);
+    }
+
+    /// #2061: the node-health alert raised on this FSM's DEAD edge is resolved by this FSM re-admitting the node
+    /// (DEAD → OBSERVED under a higher incarnation, then → MEMBER), never by a bare transport handshake, which a node
+    /// the FSM still holds DEAD can complete. Every edge into `Member` qualifies; one with no active alert is a no-op.
+    @Contract
+    static void resolveNodeHealthAlertOnRejoin(AlertManager alertManager, MembershipTransitionRecord record) {
+        if ("Member".equals(record.toState())) {
+            alertManager.clearNodeHealthAlert(record.nodeId());
+        }
     }
 
     @Contract
