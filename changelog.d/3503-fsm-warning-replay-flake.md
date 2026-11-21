@@ -1,0 +1,2 @@
+### Fixed (2026-11-21 — #3503: `FsmWarningPutRouteWiringBootTest` flake, test-only)
+- **The replay test counted the leader's later close of its row as a second put** (#3503). The fixture's row now belongs to a warning family the leader keeps open, so only the replayed put is counted. A wait-free test pins that choice: the family's hold test admits the replay fixture's code and refuses the orphan fixture's. No production file changed. [verified: the class 10 of 10 runs green; reverting the family choice goes red 10 of 10, on the new test only]
