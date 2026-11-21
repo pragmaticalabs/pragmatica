@@ -25,6 +25,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.IntPredicate;
 import java.util.function.IntSupplier;
@@ -1759,9 +1760,20 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// A hydration that built no entry (native OOM, WAL refusal) has already been flagged; the caller may retry.
     private Result<Unit> adoptCommittedLife(StreamConfig committed, CommitMode commitMode) {
         return option(streams.compute(committed.name(),
-                                      (_, existing) -> reconcileCommittedConfig(committed, existing))).toResult(new StreamError.StreamConfigNotYetVisible(committed.name()))
+                                      (_, existing) -> reconcileCommittedConfig(committed,
+                                                                                existing,
+                                                                                StreamPartitionManager::noAdoptionHere))).toResult(new StreamError.StreamConfigNotYetVisible(committed.name()))
                      .flatMap(_ -> commitMode.alreadyCommitted());
     }
+
+    /// #3554: [#adoptCommittedLife] re-reconciles the config this node last APPLIED, which only [#onStreamConfigPut] applies,
+    /// after reconciling its entry against that same config. An entry of that life found here enforces that config or one
+    /// [#adopts] already refused it against, so the rule decides the same way again and adopts nothing. Residual, not
+    /// designed out: a NEWER Put applied between [#createAbsentStream]'s read of the applied config and this compute leaves
+    /// the read one stale, and the rule can then adopt it over the newer one. That re-adoption predates #3554 and is
+    /// reported separately; it carries no committed value to name the event by, so it is not told.
+    @Contract
+    private static void noAdoptionHere(StreamConfig replaced) {}
 
     /// Already materialized. A committed config short-circuits with NO consensus: SYNC reports the
     /// `STREAM_ALREADY_EXISTS` sentinel the explicit-create duplicate contract requires, while ASYNC
@@ -2239,10 +2251,15 @@ public final class StreamPartitionManager implements AutoCloseable {
         var streamName = put.cause().key().streamName();
 
         configApplyGate.accept(streamName);
-        var config = put.cause().value().config();
+        var value = put.cause().value();
+        var config = value.config();
+        var adoption = new AtomicReference<Option<StreamConfig>>(none());
+        Consumer<StreamConfig> recordAdoption = replaced -> adoption.set(some(replaced));
 
         entries.appliedConfigs().put(streamName, config);
-        streams.compute(streamName, (_, existing) -> reconcileCommittedConfig(config, existing));
+        streams.compute(streamName, (_, existing) -> reconcileCommittedConfig(config, existing, recordAdoption));
+        // #3554: told after compute releases the entry, so the listener never runs inside the map's update of it.
+        adoption.get().onPresent(replaced -> configAdopted.adopted(replaced, value));
     }
 
     /// Reconcile a committed `StreamConfigKey` Put against the local map. Absent locally — hydrate the
@@ -2250,9 +2267,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// [java.util.Map#compute] contract leaves no entry, exactly as the former `computeIfAbsent` did).
     /// Present — let a genuinely committed app/blueprint config become authoritative over a prior REST
     /// management default (see {@link #adoptIfMoreDurable}).
+    /// `adopted` is told the config an adoption replaced ([#adoptConfig]); a hydration or a new life replaces no enforced
+    /// config of the same life and tells nothing.
     @NullReturn
-    private StreamEntry reconcileCommittedConfig(StreamConfig config, StreamEntry existing) {
-        return option(existing).map(entry -> reconcileExisting(config, entry))
+    private StreamEntry reconcileCommittedConfig(StreamConfig config, StreamEntry existing, Consumer<StreamConfig> adopted) {
+        return option(existing).map(entry -> reconcileExisting(config, entry, adopted))
                      .or(() -> hydrateEntry(config));
     }
 
@@ -2260,14 +2279,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// (and only here); a local entry of another life was a losing proposal — under ruling A it never accepted a
     /// write — and is discarded for the committed one.
     @NullReturn
-    private StreamEntry reconcileExisting(StreamConfig config, StreamEntry existing) {
+    private StreamEntry reconcileExisting(StreamConfig config, StreamEntry existing, Consumer<StreamConfig> adopted) {
         if (config.incarnation() != existing.config().incarnation()) {
             return replaceLosingLife(config, existing);
         }
 
         commitOwnLife(config, existing);
 
-        return adoptIfMoreDurable(config, existing);
+        return adoptIfMoreDurable(config, existing, adopted);
     }
 
     @Contract
@@ -2320,9 +2339,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// change — which cannot be re-shaped onto existing rings — is never adopted (the current entry is
     /// kept). Equal or weaker configs keep the existing entry (the `computeIfAbsent` idempotence this
     /// replaces).
-    private StreamEntry adoptIfMoreDurable(StreamConfig config, StreamEntry existing) {
+    private StreamEntry adoptIfMoreDurable(StreamConfig config, StreamEntry existing, Consumer<StreamConfig> adopted) {
         return adopts(config, existing.config())
-               ? adoptConfig(config, existing)
+               ? adoptConfig(config, existing, adopted)
                : existing;
     }
 
@@ -2332,10 +2351,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// durability or a changed storage key (`[retention]`, `[hot]`, `expected_ingress`). Adoption swaps the whole config,
     /// so an immutable change would ride along with a storage change; it is not adopted (the deploy validation refuses
     /// it before commit). [#confirmationFactorAfter] reads it too, so what is announced about a factor change cannot
-    /// differ from what [#confirmationFactorFor] then enforces. Public for the retention-changed announcer, which applies
-    /// this same rule to the previous COMMITTED config and the new one (#3554), so the event follows the adoption rule
-    /// without a copy of it.
-    public static boolean adopts(StreamConfig incoming, StreamConfig existing) {
+    /// differ from what [#confirmationFactorFor] then enforces.
+    private static boolean adopts(StreamConfig incoming, StreamConfig existing) {
         return incoming.partitions() == existing.partitions()
                && notWeaker(incoming, existing)
                && immutableUnchanged(incoming, existing)
@@ -2419,7 +2436,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                      .or(0);
     }
 
-    private StreamEntry adoptConfig(StreamConfig config, StreamEntry existing) {
+    /// THE adopt site: the one call that replaces the config this node enforces for a life (#3554). `adopted` is told the
+    /// config it replaces, so [ConfigAdoptedListener] hears of exactly the adoptions, with the enforced config before.
+    private StreamEntry adoptConfig(StreamConfig config, StreamEntry existing, Consumer<StreamConfig> adopted) {
         log.info("Adopting committed config for stream '{}' over prior local default: replication_factor {}->{}, confirmation_factor {}->{}, retention {}->{}",
                  config.name(),
                  existing.config().replicationFactor(),
@@ -2428,6 +2447,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                  config.confirmationFactor(),
                  existing.config().retention(),
                  config.retention());
+        adopted.accept(existing.config());
 
         return existing.withConfig(config);
     }
@@ -2455,6 +2475,24 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private volatile StreamRemovedListener streamRemoved = _ -> {};
+
+    /// What [#onStreamConfigPut] tells once a committed config has been ADOPTED over the config this node enforced for the
+    /// same life (#3554): `replaced` is the config enforced before, and `adopted` the committed value enforced from now on.
+    /// Told from the adopt site and only from it, so it hears every adoption and nothing else: not a refused Put, a
+    /// hydration or a new life. Production wires the retention-changed announcer; the default does nothing.
+    @FunctionalInterface
+    public interface ConfigAdoptedListener {
+        @Contract
+        void adopted(StreamConfig replaced, StreamConfigValue adopted);
+    }
+
+    private volatile ConfigAdoptedListener configAdopted = (_, _) -> {};
+
+    /// Late-bind the [ConfigAdoptedListener]. Set once at wiring.
+    @Contract
+    public void onConfigAdopted(ConfigAdoptedListener listener) {
+        this.configAdopted = listener;
+    }
 
     /// Late-bind the [StreamRemovedListener]. Set once at wiring.
     @Contract

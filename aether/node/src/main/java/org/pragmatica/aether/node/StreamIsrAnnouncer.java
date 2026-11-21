@@ -48,15 +48,24 @@ import org.pragmatica.lang.Option;
 /// Every event carries a deterministic `eventId` ([StreamEventIds]; the config path keys on the config's `createdAt`
 /// and the factor pair as well), so two nodes that both pass the events-owner gate during a membership change publish
 /// ONE event as far as every reader that de-duplicates by `eventId` is concerned.
+///
+/// "Retention bounds changed" (#3334, #3554) is not derived here from the Put: the stream manager tells
+/// [#onConfigAdopted] from its adopt site, so the event is exactly a change in what this node enforces.
 public interface StreamIsrAnnouncer {
     @Contract
     void onOwnershipPut(ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put);
 
     /// Derive and route the events, if any, of one committed stream config Put. Must run BEFORE the stream manager
-    /// applies the same Put: the factor it enforces BEFORE the Put is the baseline. The retention-changed event reads
-    /// no enforced state ([#retentionChanged]), so this order does not reach it.
+    /// applies the same Put: the factor it enforces BEFORE the Put is the baseline. It raises no retention-changed
+    /// event: that is [#onConfigAdopted]'s, told by the manager.
     @Contract
     void onConfigPut(ValuePut<StreamConfigKey, StreamConfigValue> put);
+
+    /// Route the retention-changed event, if any, of one adoption: the stream manager tells this from its adopt site
+    /// (`StreamPartitionManager.ConfigAdoptedListener`), with `replaced` the config this node enforced before and
+    /// `adopted` the committed value it enforces from now on.
+    @Contract
+    void onConfigAdopted(StreamConfig replaced, StreamConfigValue adopted);
 
     /// `confirmationFactor` is the factor this node enforces for a stream now; `confirmationFactorAfter` the one it will
     /// enforce once a committed config has been applied; `committedRecord` the committed ownership record of a partition.
@@ -88,7 +97,12 @@ public interface StreamIsrAnnouncer {
                 var enforced = enforcedConfig.apply(config.name());
 
                 notApplied(value, enforced).onPresent(sink);
-                retentionChanged(value, put.oldValue()).onPresent(sink);
+            }
+
+            @Override
+            @Contract
+            public void onConfigAdopted(StreamConfig replaced, StreamConfigValue adopted) {
+                retentionChanged(replaced, adopted).onPresent(sink);
             }
         };
     }
@@ -133,28 +147,22 @@ public interface StreamIsrAnnouncer {
                                                                                                                                                                                             + ":" + config.confirmationFactor())));
     }
 
-    /// #3334, #3554: "retention bounds changed" is raised exactly when the cluster ADOPTS new bounds, and both that decision
-    /// and the `eventId` are pure functions of COMMITTED data: `previous`, the Put's prior committed value (the KV store's
-    /// `oldValue`), and the Put itself. Node-local enforced state enters neither, so every node raises the same event with
-    /// the same id, including a node whose enforced config differs because it refused, or hydrated from, an earlier Put.
-    /// The decision is [StreamPartitionManager#adopts], the manager's own rule, applied to the two committed configs: a Put
-    /// it refuses (a lowered factor, another partition count, a truncation change) raises nothing here, and its
-    /// not-applied event is [#notApplied]'s. Only the retention section is compared: an adopted hot-window or ingress change
-    /// is not a retention change. Silent for an unchanged declaration, a first commit (no previous value) and
-    /// a new life (a recreate is not a retention change). A redelivered Put (a rejoin replaying it) derives the same id
-    /// again, so a reader that de-duplicates by `eventId` sees one event. The bounds are the retention
-    /// declarations rendered as text: `oldBounds` the previously COMMITTED one, which after a refused Put is not the one
-    /// the node enforced.
-    static Option<OperationalEvent> retentionChanged(StreamConfigValue value, Option<StreamConfigValue> previous) {
-        var config = value.config();
+    /// #3334, #3554: "retention bounds changed" is exactly a change in the bounds this node ENFORCES. The stream manager
+    /// tells every adoption from its adopt site and nothing else, so there is no event without an adoption and no adoption
+    /// of new bounds without an event (one residual, the stale re-adoption described at the manager's `noAdoptionHere`,
+    /// is untold); this node takes no adoption decision of its own. `oldBounds` are the retention
+    /// section of `replaced`, the config enforced before the adoption, and `newBounds` that of the adopted one: the
+    /// declarations rendered as text. Only the retention section is compared: an adopted factor, hot-window or ingress
+    /// change is not a retention change. The `eventId` is a function of the name, the incarnation, the Put's `createdAt`
+    /// and both bounds, so nodes whose enforced configs agree raise the same id, and a reader that de-duplicates by
+    /// `eventId` sees one event; nodes whose enforced configs diverged name different old bounds and raise different ids.
+    static Option<OperationalEvent> retentionChanged(StreamConfig replaced, StreamConfigValue adopted) {
+        var oldBounds = retentionOf(replaced);
+        var newBounds = retentionOf(adopted.config());
 
-        return previous.map(StreamConfigValue::config)
-                       .filter(prior -> prior.incarnation() == config.incarnation())
-                       .filter(prior -> StreamPartitionManager.adopts(config, prior))
-                       .filter(prior -> !retentionOf(prior).equals(retentionOf(config)))
-                       .map(prior -> retentionChanged(value,
-                                                      String.valueOf(retentionOf(prior)),
-                                                      String.valueOf(retentionOf(config))));
+        return oldBounds.equals(newBounds)
+               ? Option.none()
+               : Option.some(retentionChanged(adopted, String.valueOf(oldBounds), String.valueOf(newBounds)));
     }
 
     private static Option<RetentionDeclaration> retentionOf(StreamConfig config) {

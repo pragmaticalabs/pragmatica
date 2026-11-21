@@ -2723,9 +2723,10 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
                                                      event.reason())));
     }
 
-    /// Taste: INFO. A committed retention change is routine operator action; the summary states committed facts only,
-    /// no prediction of what the stream will retain. Derived on every node from the committed config Put, so it takes the
-    /// committed gate ([#emitCommitted], #1671 I-35): one node per KV index publishes it, with the raiser's eventId unchanged.
+    /// Taste: INFO. A committed retention change is routine operator action; the summary states the change only, no
+    /// prediction of what the stream will retain. Raised on every node whose stream manager ADOPTS the committed config Put
+    /// (its adopt site, #3554), with `oldBounds` the bounds that node enforced before, so it takes the committed gate
+    /// ([#emitCommitted], #1671 I-35): one node per KV index publishes it, with the raiser's eventId unchanged.
     @Contract
     public void onStreamRetentionChanged(OperationalEvent.StreamRetentionChanged event) {
         emitCommitted(new StreamRetentionChanged(hlcClock.now(),

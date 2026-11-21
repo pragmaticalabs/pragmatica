@@ -559,6 +559,9 @@ public sealed interface StreamAssembly {
                                                                                                                                                                        partition),
                                                                                                                StreamPartitionOwnershipValue.class),
                                                                        delegateRouter::route);
+        // #3554: "retention bounds changed" is raised from the manager's adopt site, inside its own config Put handler
+        // (registered below), so the event is exactly a change in what this node enforces.
+        streamPartitionManager.onConfigAdopted(streamIsrAnnouncer::onConfigAdopted);
         var streamConfigKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                                        .onPut(AetherKey.StreamConfigKey.class,
                                                               streamIsrAnnouncer::onConfigPut)
@@ -571,7 +574,7 @@ public sealed interface StreamAssembly {
                                                        .build();
 
         allEntries.addAll(streamConfigKvRouter.asRouteEntries());
-        // #3334: the committed retention change the announcer raises is published by the aggregator.
+        // #3334: the retention change the manager's adopt site tells the announcer is published by the aggregator.
         allEntries.add(MessageRouter.Entry.route(OperationalEvent.StreamRetentionChanged.class,
                                                  eventAggregator::onStreamRetentionChanged));
         // B5b — provision system:cluster-events:1.0.0 as a REAL partition-managed stream.
