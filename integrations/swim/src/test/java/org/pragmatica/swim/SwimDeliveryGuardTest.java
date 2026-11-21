@@ -44,6 +44,8 @@ class SwimDeliveryGuardTest {
     private static final Pattern BARE_CALL = Pattern.compile("\\.onMessage\\(");
     private static final Pattern DRIVES_SWIM = Pattern.compile("SwimProtocol|SwimMessageHandler");
     private static final Set<String> SKIPPED_DIRECTORIES = Set.of("target", ".git", ".m2-local", "node_modules");
+    private static final String SEAM = "deliver" + "ForTest";
+    private static final String SEAM_OWNER = "integrations/swim/src/main/java/org/pragmatica/swim/SwimProtocol.java";
     private static final int MARKER_REACH = 2;
     private static final int MINIMUM_SWIM_FILES = 30;
 
@@ -108,6 +110,28 @@ class SwimDeliveryGuardTest {
         assertThat(scan.violations()).isEmpty();
     }
 
+    /// The seam is public only because tests in other packages and modules drive a started protocol (#3560); this is
+    /// what keeps it test-only: no production source except its own declaration mentions it.
+    @Test
+    void productionSources_neverCallTheDeliverySeam() throws IOException {
+        var root = repositoryRoot();
+
+        assertThat(productionCallers(root)).as("production source referencing the delivery seam; it is a test-only seam")
+                                           .isEmpty();
+        assertThat(Files.readString(root.resolve(SEAM_OWNER))).as("positive control: the scan knows the seam's owner")
+                                                              .contains(SEAM + "(");
+    }
+
+    @Test
+    void productionScan_aPlantedCallInProductionCode_isReported() throws IOException {
+        var main = tmp.resolve("m/src/main/java");
+
+        Files.createDirectories(main);
+        Files.writeString(main.resolve("A.java"), "class A { void f() { p." + SEAM + "(a, m); } }");
+
+        assertThat(productionCallers(tmp)).containsExactly("m/src/main/java/A.java");
+    }
+
     /// Built from pieces so this file never carries the pattern it scans for.
     private static String bareLine() {
         return "protocol" + ".onMes" + "sage(addr, message);";
@@ -130,6 +154,27 @@ class SwimDeliveryGuardTest {
             }
         }
         return new Scan(examined, violations, marked);
+    }
+
+    private static List<String> productionCallers(Path root) throws IOException {
+        var callers = new ArrayList<String>();
+
+        try (var files = Files.walk(root)) {
+            for (var file : files.filter(Files::isRegularFile).toList()) {
+                var relative = root.relativize(file).toString().replace('\\', '/');
+
+                if (isProductionSource(relative) && !relative.equals(SEAM_OWNER) && Files.readString(file).contains(SEAM + "(")) {
+                    callers.add(relative);
+                }
+            }
+        }
+        return callers;
+    }
+
+    private static boolean isProductionSource(String relative) {
+        return relative.endsWith(".java")
+               && ("/" + relative).contains("/src/main/java/")
+               && Arrays.stream(relative.split("/")).noneMatch(SKIPPED_DIRECTORIES::contains);
     }
 
     private static boolean isTestSource(String relative) {
