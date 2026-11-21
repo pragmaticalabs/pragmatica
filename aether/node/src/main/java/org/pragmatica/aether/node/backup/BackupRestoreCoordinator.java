@@ -416,10 +416,15 @@ public final class BackupRestoreCoordinator {
     /// it stops leading, stops, or restarts (a restart is a stop first). The next leader that cannot read the backup raises it again.
     @Contract
     private void recoverRestoreBlocked() {
+        closeBlocked("this node no longer leads (or is stopping), so its blocked backup restore no longer holds the cluster;"
+                    + " a leader that still cannot read the backup raises backup-restore-blocked again");
+    }
+
+    /// Emits `backup-restore-unblocked` with `why` when this node has a `backup-restore-blocked` standing, and forgets it.
+    @Contract
+    private void closeBlocked(String why) {
         if (blocked.getAndSet(Option.none()).isPresent()) {
-            warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_UNBLOCKED,
-                                                      "this node no longer leads (or is stopping), so its blocked backup restore no longer holds the cluster;"
-                                                     + " a leader that still cannot read the backup raises backup-restore-blocked again"));
+            warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_UNBLOCKED, why));
         }
     }
 
@@ -1037,13 +1042,19 @@ public final class BackupRestoreCoordinator {
 
     /// A deterministic refusal: the pre-check is re-run once over the refused key's entry. Withheld now (the applied state moved since
     /// the chunks were cut), the restore continues and the next pass leaves it out; still admitted, the refusal is recorded (row 6, or
-    /// row 9 over a recorded one) and the restore stops, warned, never retried.
+    /// row 9 over a recorded one) and the restore stops, warned, never retried. The decision is read once, as in [#retryAfter]: a failure
+    /// that lands after a committed decision other than `IN_PROGRESS` is stale (a second pass was in flight), so it warns and records nothing.
     @Contract
     private void stopOn(Cause cause) {
+        if (settled(RestoreGate.decision(kvStore))) {
+            LOG.debug("Backup restore: stale refusal after a committed decision ignored: {}", cause.message());
+            return;
+        }
+
         switch (cause) {
             case RestoreError.Refused refused when withheldNow(refused) -> continueWithout(refused);
             case RestoreError.Refused refused -> recordAndStop(refused);
-            default -> warnRejected(cause);
+            default -> warnRejected(cause, false);
         }
     }
 
@@ -1054,10 +1065,28 @@ public final class BackupRestoreCoordinator {
         scheduleRetry();
     }
 
-    /// The warning follows the write whatever its result: a failed record leaves the restore stopped all the same (once per tenure).
+    /// The warning follows the write whatever its result: a failed record leaves the restore stopped all the same, and its text says
+    /// whether the committed marker records the refused key ([#recordsRefusedKey]), read after the write settled.
     @Contract
     private void recordAndStop(RestoreError.Refused refused) {
-        refused.refusal().fold(Promise::unitPromise, this::submitRejected).onResultRun(() -> warnRejected(refused));
+        refused.refusal()
+               .fold(Promise::unitPromise, this::submitRejected)
+               .onResultRun(() -> warnRejected(refused, recordsRefusedKey(refused)));
+    }
+
+    private boolean recordsRefusedKey(RestoreError.Refused refused) {
+        var key = refused.refusal()
+                         .flatMap(BackupRestoreCoordinator::refusedKey);
+
+        return key.isPresent() && RestoreGate.decision(kvStore)
+                                             .filter(marker -> marker.rejection()
+                                                                     .equals(key))
+                                             .isPresent();
+    }
+
+    private static Option<String> refusedKey(KVCommand.Refusal refusal) {
+        return refusal.key()
+                      .map(BackupRestoreCoordinator::keyName);
     }
 
     private boolean withheldNow(RestoreError.Refused refused) {
@@ -1066,32 +1095,50 @@ public final class BackupRestoreCoordinator {
                       .isPresent();
     }
 
+    /// A restore that stops has no retry to resume a `backup-restore-blocked` raised earlier in the same tenure, so that warning is closed first.
     @Contract
-    private void warnRejected(Cause cause) {
+    private void warnRejected(Cause cause, boolean recorded) {
+        closeBlocked("the backup restore is no longer blocked: the backup was read, and its restore stopped on a refusal (see backup-restore-rejected)");
         warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_REJECTED,
                                                   cause.message()
                                                  + "; this build's restore refuses that entry the same way on every attempt, so the restore stops"
-                                                 + " and is not retried, and writes to cluster state stay refused. The restore marker records the"
-                                                 + " refused key; the restore resumes from it on a build that fixes the refusal"));
+                                                 + " and is not retried, and writes to cluster state stay refused. " + markerNote(recorded)));
+    }
+
+    private static String markerNote(boolean recorded) {
+        return recorded
+               ? "The restore marker records the refused key; the restore resumes from it on a build that fixes the refusal"
+               : "The restore marker does not record the refused key (no record was written by this pass); the restore resumes from the marker"
+                + " on a build that fixes the refusal";
     }
 
     /// #3303 rows 6 and 9 (ruling (4)): records the refusal's key on the committed `IN_PROGRESS` marker, (c) -> (c,r) or (c,r) -> (c,r,k'),
-    /// at most once per leader tenure: a second call under the same [LeaderValue] writes nothing, so `deactivate` needs no reset. A
-    /// marker already refused at the same key, a marker being abandoned, a settled decision or a refusal with no key write nothing.
+    /// at most once per leader tenure: once a write is accepted (or is in flight) under a [LeaderValue], a second call under it writes
+    /// nothing, so `deactivate` needs no reset. A write that is refused or fails gives the tenure back, so a later call in it writes again.
+    /// A marker already refused at the same key, a marker being abandoned, a settled decision or a refusal with no key write nothing, and
+    /// consume nothing. A call that finds the tenure claimed returns at once, before an in-flight first write has landed.
     Promise<Unit> submitRejected(KVCommand.Refusal refusal) {
         return leaderValue().async()
                           .flatMap(leaderValue -> rejectOnce(leaderValue, refusal));
     }
 
     private Promise<Unit> rejectOnce(LeaderValue leaderValue, KVCommand.Refusal refusal) {
-        return rejectedTenure.getAndSet(Option.some(leaderValue))
-                             .equals(Option.some(leaderValue))
+        return rejectionWrite(leaderValue, refusal).fold(Promise::unitPromise, write -> claimAndSubmit(leaderValue, write));
+    }
+
+    /// The claim is taken before the write goes out (a second caller in flight writes nothing) and handed back when the write is not
+    /// accepted. The failure passes through unchanged: the claim is not a recovery.
+    private Promise<Unit> claimAndSubmit(LeaderValue leaderValue, KVCommand<AetherKey> write) {
+        var claim = Option.some(leaderValue);
+        var prior = rejectedTenure.getAndSet(claim);
+
+        return prior.equals(claim)
                ? Promise.unitPromise()
-               : rejectionWrite(leaderValue, refusal).fold(Promise::unitPromise, this::submit);
+               : submit(write).onFailureRun(() -> rejectedTenure.compareAndSet(claim, prior));
     }
 
     private Option<KVCommand<AetherKey>> rejectionWrite(LeaderValue leaderValue, KVCommand.Refusal refusal) {
-        var key = refusal.key().map(BackupRestoreCoordinator::keyName);
+        var key = refusedKey(refusal);
 
         return RestoreGate.decision(kvStore)
                           .filter(marker -> inProgress(marker) && !marker.abandon())

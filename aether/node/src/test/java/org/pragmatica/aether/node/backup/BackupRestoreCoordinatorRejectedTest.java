@@ -64,6 +64,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.pragmatica.aether.node.backup.GitFixtures.bareRemote;
 import static org.pragmatica.aether.node.backup.GitFixtures.git;
@@ -110,6 +111,10 @@ class BackupRestoreCoordinatorRejectedTest {
 
     /// Refuses the next rejection write with a LEADER refusal (the leader is lost before it lands).
     private boolean refuseNextRejection;
+    /// A chunk transaction fails in the applier itself (not a refusal): a worker or transport failure.
+    private Option<Cause> chunkApplierFailure = Option.none();
+    /// A chunk's result list leads with another transaction's ARM refusal (a batch answered in one list).
+    private boolean foreignResultFirst;
     /// Keys the test pre-check withholds (the applied state's arms, as the pre-check reads them).
     private final Set<AetherKey> armed = new CopyOnWriteArraySet<>();
     private long slot;
@@ -172,6 +177,9 @@ class BackupRestoreCoordinatorRejectedTest {
             assertThat(rejectedWarning().detail()).contains(FIXED_BUILD)
                       .contains("ARM")
                       .contains(ALPHA_KEY.asString())
+                      .contains("is not retried")
+                      .contains("writes to cluster state stay refused")
+                      .contains("The restore marker records the refused key")
                       .doesNotContain("fresh");
             assertThat(marker().rejection()).as("row 6: (c) -> (c,k)").isEqualTo(Option.some(ALPHA_KEY.asString()));
             assertThat(marker().outcome()).isEqualTo(BackupRestoreOutcome.IN_PROGRESS);
@@ -317,33 +325,207 @@ class BackupRestoreCoordinatorRejectedTest {
         assertThat(marker().rejection()).isEqualTo(Option.some(BETA_KEY.asString()));
     }
 
-    /// T-RA9: the blocked advice over a refused marker offers no `fresh` exit, only a fixed build.
+    /// T-RA9: the blocked advice over a refused marker offers no `fresh` exit, only a fixed build, and names the refused key.
     @Test
-    void blockedOverARejectedMarker_adviceNamesAFixedBuild_andNoFresh() {
-        var remote = bareRemote(temp.resolve("remote.git"));
+    void blockedOverARejectedMarker_adviceNamesAFixedBuild_theKey_andNoFresh() {
+        var rejected = unrefusedMarker();
 
-        seedRemote(remote, Map.of(ALPHA_KEY, ALPHA));
-        var rejected = BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
-                                                             LINEAGE,
-                                                             3,
-                                                             40,
-                                                             ABSENT_COMMIT,
-                                                             Option.none(),
-                                                             false,
-                                                             0L);
+        assertThat(blockedWarningOver(rejected, withRejection(rejected, ALPHA_KEY.asString())).detail())
+            .contains(FIXED_BUILD)
+            .contains("was refused at key " + ALPHA_KEY.asString())
+            .doesNotContain("restore = \"fresh\"");
+    }
 
-        leaderWrites(rejected, withRejection(rejected, ALPHA_KEY.asString()));
-        var coordinator = coordinator(NODE_1,
-                                      Option.some(BackupRestoreCoordinator.Source.source(service(Option.some(remote)),
-                                                                                         RestoreMode.AUTO)),
-                                      BackupRestoreCoordinator::restorePreCheck);
+    /// The marker records no refusal: the advice is the pinned one (the whole-cluster `fresh` cold start is its exit), never the fixed-build one.
+    @Test
+    void blockedOverAnUnrefusedMarker_adviceIsThePinnedOne_notTheFixedBuildOne() {
+        assertThat(blockedWarningOver(unrefusedMarker()).detail())
+            .contains("is in progress and that commit is pinned")
+            .contains("restore = \"fresh\"")
+            .doesNotContain(FIXED_BUILD)
+            .doesNotContain("was refused at key");
+    }
+
+    // --- RR-1 fix round: the stop's edges ---
+    /// A failure that is no [RestoreError] (an applier or worker failure) is retried, never stopped on.
+    @Test
+    void applierFailure_thatIsNoRestoreError_isRetried_andNothingIsRejected() {
+        chunkApplierFailure = Option.some(Causes.cause("the applier is down"));
+        var coordinator = restoringCoordinator(NODE_1);
 
         coordinator.activate();
-        settleUntil(() -> codes().contains(Code.BACKUP_RESTORE_BLOCKED));
-        assertThat(warnings).filteredOn(warning -> warning.code() == Code.BACKUP_RESTORE_BLOCKED)
-                  .singleElement()
-                  .satisfies(warning -> assertThat(warning.detail()).contains(FIXED_BUILD)
-                                                  .doesNotContain("restore = \"fresh\""));
+        settleUntil(() -> !retries.isEmpty());
+        assertThat(retries).hasSize(1);
+        assertThat(codes()).doesNotContain(Code.BACKUP_RESTORE_REJECTED);
+    }
+
+    /// A stop on a cause that is no refusal warns and schedules nothing; no key was refused, so the text says no record was written.
+    @Test
+    void stopOnACauseThatIsNoRefusal_warnsRejected_schedulesNoRetry_andSaysNothingWasRecorded() {
+        var coordinator = markedCoordinator();
+
+        retries.clear();
+        warnings.clear();
+        coordinator.onFailure(new RecordedForTest(), FailureAction.WARN_STOP);
+        assertThat(retries).isEmpty();
+        assertThat(rejectionWrites()).isEmpty();
+        assertThat(warnings).singleElement()
+                  .satisfies(warning -> {
+                                 assertThat(warning.code()).isEqualTo(Code.BACKUP_RESTORE_REJECTED);
+                                 assertThat(warning.detail()).contains(new RecordedForTest().message())
+                                                             .contains("does not record the refused key")
+                                                             .doesNotContain("marker records the refused key")
+                                                             .contains(FIXED_BUILD);
+                             });
+    }
+
+    /// The warning follows the write whatever its result (here: refused), and its text says the marker does not record the key (L2).
+    @Test
+    void refusedRejectionWrite_stillWarnsRejected_andSaysTheMarkerDoesNotRecordTheKey() {
+        refuseChunks(RefusalKind.ARM, false);
+        refuseNextRejection = true;
+        var coordinator = restoringCoordinator(NODE_1);
+
+        coordinator.activate();
+        settleUntil(() -> codes().contains(Code.BACKUP_RESTORE_REJECTED));
+        settleBriefly();
+        assertThat(retries).isEmpty();
+        assertThat(marker().rejection()).isEqualTo(Option.none());
+        assertThat(rejectedWarning().detail()).contains("does not record the refused key")
+                                              .doesNotContain("marker records the refused key");
+    }
+
+    /// L1: a rejection write that was refused gives the tenure back, so a later call in the SAME tenure writes again.
+    @Test
+    void submitRejected_refusedWrite_givesTheTenureBack_aLaterCallInTheSameTenureWrites() {
+        var coordinator = markedCoordinator();
+
+        refuseNextRejection = true;
+        assertThat(coordinator.submitRejected(refusal(RefusalKind.ARM, ALPHA_KEY)).await().isFailure()).isTrue();
+        coordinator.submitRejected(refusal(RefusalKind.ARM, ALPHA_KEY)).await();
+        assertThat(rejectionWrites()).hasSize(2);
+        assertThat(marker().rejection()).isEqualTo(Option.some(ALPHA_KEY.asString()));
+    }
+
+    /// L1: a refusal with no key builds no write and consumes nothing, so a later keyed refusal in the same tenure is recorded.
+    @Test
+    void submitRejected_refusalWithoutKey_writesNothing_andConsumesNoTenure() {
+        var coordinator = markedCoordinator();
+
+        coordinator.submitRejected(Refusal.refusal(RefusalKind.ARM, Option.none())).await();
+        assertThat(rejectionWrites()).isEmpty();
+        coordinator.submitRejected(refusal(RefusalKind.ARM, ALPHA_KEY)).await();
+        assertThat(rejectionWrites()).hasSize(1);
+        assertThat(marker().rejection()).isEqualTo(Option.some(ALPHA_KEY.asString()));
+    }
+
+    /// A refusal with no key over a marker that already records one must not clear it.
+    @Test
+    void submitRejected_refusalWithoutKey_overARefusedMarker_writesNothing() {
+        var coordinator = coordinatorOver(withRejection(plainMarker(), ALPHA_KEY.asString()));
+
+        coordinator.submitRejected(Refusal.refusal(RefusalKind.ARM, Option.none())).await();
+        assertThat(rejectionWrites()).isEmpty();
+        assertThat(marker().rejection()).isEqualTo(Option.some(ALPHA_KEY.asString()));
+    }
+
+    /// A marker being abandoned is not refused again.
+    @Test
+    void submitRejected_markerBeingAbandoned_writesNothing() {
+        var coordinator = coordinatorOver(abandoning(plainMarker()));
+
+        coordinator.submitRejected(refusal(RefusalKind.ARM, ALPHA_KEY)).await();
+        assertThat(rejectionWrites()).isEmpty();
+    }
+
+    /// A settled decision has no restore to refuse.
+    @Test
+    void submitRejected_settledDecision_writesNothing() {
+        var restored = BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.RESTORED, LINEAGE, 3, 40, "c0ffee");
+        var coordinator = coordinatorOver(restored);
+
+        coordinator.submitRejected(refusal(RefusalKind.ARM, ALPHA_KEY)).await();
+        assertThat(rejectionWrites()).isEmpty();
+        assertThat(marker()).isEqualTo(restored);
+    }
+
+    /// The rejection write guards on the very marker it replaces, so a marker that moved first refuses it.
+    @Test
+    void submitRejected_witnessesTheMarkerItReplaces() {
+        var coordinator = markedCoordinator();
+        var before = marker();
+
+        coordinator.submitRejected(refusal(RefusalKind.ARM, ALPHA_KEY)).await();
+        assertThat(rejectionWrites()).singleElement()
+                  .satisfies(write -> assertThat(((KVCommand.LeaderTransaction<?, ?>) write).guards()).hasSize(1)
+                                                                                                      .first()
+                                                                                                      .isEqualTo(new KVCommand.ReadWitness<>(BackupRestoreKey.backupRestoreKey(),
+                                                                                                                                             Option.some(before))));
+    }
+
+    /// Another transaction's result in the same list is not this transaction's refusal (WITNESS here, retried).
+    @Test
+    void chunkRefusal_amongForeignResults_usesTheOwnTransactionsResult() {
+        refuseChunks(RefusalKind.WITNESS, false);
+        foreignResultFirst = true;
+        var coordinator = restoringCoordinator(NODE_1);
+
+        coordinator.activate();
+        settleUntil(() -> !retries.isEmpty());
+        assertThat(retries).hasSize(1);
+        assertThat(codes()).doesNotContain(Code.BACKUP_RESTORE_REJECTED);
+    }
+
+    /// The pre-check re-run judges the entry of the key the refusal names, whichever entry of the chunk that is.
+    @ParameterizedTest
+    @ValueSource(strings = {"alpha", "beta"})
+    void armMovedAtAnyKeyOfTheChunk_reRunWithholdsThatEntry_theRestoreFinishes(String name) {
+        var key = ConfigKey.forKey(name);
+
+        refuseChunks(RefusalKind.ARM, key, true);
+        onChunkRefused = () -> armed.add(key);
+        var coordinator = restoringCoordinator(NODE_1);
+
+        coordinator.activate();
+        for (int i = 0; i < 50 && !coordinator.isComplete(); i++) {
+            fireRetries();
+        }
+
+        assertThat(coordinator.isComplete()).isTrue();
+        assertThat(kvStore.get(key)).as("withheld").isEqualTo(Option.none());
+        assertThat(codes()).doesNotContain(Code.BACKUP_RESTORE_REJECTED);
+        assertThat(rejectionWrites()).isEmpty();
+    }
+
+    /// L3: a refusal that lands after a committed decision (a second pass was in flight) is stale: no warning, no write, no retry.
+    @Test
+    void staleRefusalAfterASettledDecision_warnsNothing_recordsNothing_schedulesNothing() {
+        var coordinator = coordinatorOver(BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.RESTORED, LINEAGE, 3, 40, "c0ffee"));
+
+        retries.clear();
+        warnings.clear();
+        coordinator.onFailure(refusedAt(RefusalKind.ARM), FailureAction.WARN_STOP);
+        assertThat(warnings).isEmpty();
+        assertThat(rejectionWrites()).isEmpty();
+        assertThat(retries).isEmpty();
+    }
+
+    /// L4: a `backup-restore-blocked` raised earlier in the tenure is closed when the restore stops, before the rejected warning.
+    @Test
+    void stop_closesABlockedWarningRaisedEarlierInTheTenure_beforeTheRejectedOne() {
+        var coordinator = markedCoordinator();
+
+        warnings.clear();
+        coordinator.onFailure(RestoreError.Blocked.blocked(Step.SOURCE_UNREACHABLE, Causes.cause("unreachable")), FailureAction.RETRY);
+        assertThat(codes()).containsExactly(Code.BACKUP_RESTORE_BLOCKED);
+        coordinator.onFailure(refusedAt(RefusalKind.ARM), FailureAction.WARN_STOP);
+        assertThat(codes()).containsExactly(Code.BACKUP_RESTORE_BLOCKED,
+                                            Code.BACKUP_RESTORE_UNBLOCKED,
+                                            Code.BACKUP_RESTORE_REJECTED);
+        assertThat(rejectedWarning().detail()).contains("The restore marker records the refused key");
+        warnings.clear();
+        coordinator.deactivate();
+        assertThat(codes()).as("nothing left standing to close").doesNotContain(Code.BACKUP_RESTORE_UNBLOCKED);
     }
 
     // --- fixtures ---
@@ -363,8 +545,16 @@ class BackupRestoreCoordinatorRejectedTest {
     }
 
     private void refuseChunks(RefusalKind kind, boolean once) {
-        chunkRefusal = Option.some(refusal(kind, ALPHA_KEY));
+        refuseChunks(kind, ALPHA_KEY, once);
+    }
+
+    private void refuseChunks(RefusalKind kind, AetherKey key, boolean once) {
+        chunkRefusal = Option.some(refusal(kind, key));
         refuseChunkOnce = once;
+    }
+
+    private static KVCommand.TransactionResult foreignArmRefusal() {
+        return KVCommand.TransactionResult.transactionResult("foreign-transaction", Option.some(refusal(RefusalKind.ARM, ALPHA_KEY)));
     }
 
     /// A coordinator restoring a backup of alpha and beta, judged by the test pre-check (withholds `armed` keys).
@@ -388,11 +578,21 @@ class BackupRestoreCoordinatorRejectedTest {
     /// A leading coordinator over a committed (c) marker, with no source (its passes fail NOTHING_TO_RESUME and wait for a retry
     /// that never fires).
     private BackupRestoreCoordinator markedCoordinator() {
-        leaderWrites(BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS, LINEAGE, 3, 40, "c0ffee"));
+        return coordinatorOver(plainMarker());
+    }
+
+    private static BackupRestoreValue plainMarker() {
+        return BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS, LINEAGE, 3, 40, "c0ffee");
+    }
+
+    /// A leading coordinator over the committed `marker`, with no source: an `IN_PROGRESS` marker leaves it waiting for a retry that
+    /// never fires, a settled one completes it at once.
+    private BackupRestoreCoordinator coordinatorOver(BackupRestoreValue marker) {
+        leaderWrites(marker);
         var coordinator = coordinator(NODE_1, Option.none(), BackupRestoreCoordinator::restorePreCheck);
 
         coordinator.activate();
-        settleUntil(() -> !retries.isEmpty());
+        settleUntil(() -> !retries.isEmpty() || coordinator.isComplete());
 
         return coordinator;
     }
@@ -424,6 +624,10 @@ class BackupRestoreCoordinatorRejectedTest {
         submitted.addAll(commands);
         var id = ((KVCommand.LeaderTransaction<?, ?>) commands.getFirst()).transactionId();
 
+        if (id.startsWith(CHUNK_PREFIX) && chunkApplierFailure.isPresent()) {
+            return chunkApplierFailure.unwrap().promise();
+        }
+
         if (id.startsWith(CHUNK_PREFIX) && chunkRefusal.isPresent()) {
             var refusal = chunkRefusal.unwrap();
 
@@ -433,7 +637,9 @@ class BackupRestoreCoordinatorRejectedTest {
 
             onChunkRefused.run();
 
-            return Promise.success(List.of(KVCommand.TransactionResult.transactionResult(id, Option.some(refusal))));
+            return Promise.success(foreignResultFirst
+                                   ? List.of(foreignArmRefusal(), KVCommand.TransactionResult.transactionResult(id, Option.some(refusal)))
+                                   : List.of(KVCommand.TransactionResult.transactionResult(id, Option.some(refusal))));
         }
 
         if (id.startsWith(REJECTED_PREFIX) && refuseNextRejection) {
@@ -477,6 +683,43 @@ class BackupRestoreCoordinatorRejectedTest {
                                                                                                                          Option.some(step))))));
             assertThat(kvStore.get(key)).as("fixture: the fence admits %s", step).isEqualTo(Option.some(step));
         }
+    }
+
+    private static BackupRestoreValue unrefusedMarker() {
+        return BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS, LINEAGE, 3, 40, ABSENT_COMMIT);
+    }
+
+    private static BackupRestoreValue abandoning(BackupRestoreValue marker) {
+        return BackupRestoreValue.backupRestoreValue(marker.outcome(),
+                                                     marker.lineageId(),
+                                                     marker.incarnation(),
+                                                     marker.revision(),
+                                                     marker.commit(),
+                                                     marker.rejection(),
+                                                     true,
+                                                     0L);
+    }
+
+    /// The one `backup-restore-blocked` warning a leading coordinator raises over `steps` (committed in order) and a backup that lacks the commit.
+    private BackupWarning blockedWarningOver(BackupRestoreValue... steps) {
+        var remote = bareRemote(temp.resolve("remote.git"));
+
+        seedRemote(remote, Map.of(ALPHA_KEY, ALPHA));
+        leaderWrites(steps);
+        var coordinator = coordinator(NODE_1,
+                                      Option.some(BackupRestoreCoordinator.Source.source(service(Option.some(remote)),
+                                                                                         RestoreMode.AUTO)),
+                                      BackupRestoreCoordinator::restorePreCheck);
+
+        coordinator.activate();
+        settleUntil(() -> codes().contains(Code.BACKUP_RESTORE_BLOCKED));
+        var blocked = warnings.stream()
+                              .filter(warning -> warning.code() == Code.BACKUP_RESTORE_BLOCKED)
+                              .toList();
+
+        assertThat(blocked).hasSize(1);
+
+        return blocked.getFirst();
     }
 
     private static BackupRestoreValue withRejection(BackupRestoreValue marker, String key) {

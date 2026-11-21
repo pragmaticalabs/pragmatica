@@ -44,6 +44,18 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.STORAGE_WAL_RETIRED.closesAcrossNodes()).as("raised by the node that holds the open warning").isFalse();
     }
 
+    /// #3303 RA-5a: the wire name, subject and level of the stopped-restore warning are what operators alert on; none has a recovery code
+    /// (the stopped restore has no runtime step that could publish one).
+    @Test
+    void backupRestoreRejected_pinsItsCodeSubsystemLevelAndNoRecovery() {
+        var rejected = OperatorWarningCode.BACKUP_RESTORE_REJECTED;
+
+        assertThat(rejected.code()).isEqualTo("backup-restore-rejected");
+        assertThat(rejected.subsystem()).isEqualTo("kv-backup");
+        assertThat(rejected.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(rejected.recoveryOf()).isEqualTo(Option.none());
+    }
+
     @Test
     void codes_areUnique() {
         var byCode = Arrays.stream(OperatorWarningCode.values())
