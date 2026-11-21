@@ -12,7 +12,7 @@
 # no skip metadata, so an old reader desynchronises rather than ignoring the change).
 # Rename only, same type and position = byte-neutral, pinned so a same-typed name swap is
 # visible in this diff. See WireAssignmentTripwireTest for the derivation from the generator.
-GENERATION 6
+GENERATION 7
 ENUM org.pragmatica.aether.api.ClusterEvent$Severity INFO=0,WARNING=1,CRITICAL=2,UNKNOWN=3
 ENUM org.pragmatica.aether.http.forward.HttpForwardMessage$NotAppliedReason ROUTE_NOT_FOUND=0,BUDGET_EXHAUSTED=1,UNDECODABLE_REQUEST=2,UNKNOWN=3
 ENUM org.pragmatica.aether.http.forward.HttpForwardMessage$Pipeline APP=0,MANAGEMENT=1,UNKNOWN=2
@@ -361,7 +361,7 @@ SHAPE org.pragmatica.aether.stream.consensus.StreamConsensusCommand (streamName:
 SHAPE org.pragmatica.aether.stream.forward.ControlOutcomeDto (kind:org.pragmatica.aether.stream.forward.ControlOutcomeDto$Kind,offset:long,message:java.lang.String,retryable:boolean)
 SHAPE org.pragmatica.aether.stream.forward.ControlRecordDto (kind:java.lang.String,key:java.lang.String,payload:byte[],hlc:long)
 SHAPE org.pragmatica.aether.stream.forward.RawEventDto (offset:long,timestamp:long,data:byte[])
-SHAPE org.pragmatica.aether.stream.forward.ReadRefusal (kind:org.pragmatica.aether.stream.forward.ReadRefusal$Kind,stream:java.lang.String,partition:int,first:long,second:long,flag:boolean,detail:java.lang.String,peerFirst:java.lang.String,peerSecond:java.lang.String,epochFirst:org.pragmatica.aether.slice.generation.Epoch,epochSecond:org.pragmatica.aether.slice.generation.Epoch)
+SHAPE org.pragmatica.aether.stream.forward.ReadRefusal (kind:org.pragmatica.aether.stream.forward.ReadRefusal$Kind,stream:java.lang.String,partition:int,first:long,second:long,flag:boolean,detail:java.lang.String,peerFirst:java.lang.String,peerSecond:java.lang.String,epochFirst:org.pragmatica.aether.slice.generation.Epoch,epochSecond:org.pragmatica.aether.slice.generation.Epoch,cause:org.pragmatica.aether.slice.stream.RemovalCause)
 SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$ControlAppendForward (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,streamName:java.lang.String,partition:int,records:java.util.List<org.pragmatica.aether.stream.forward.ControlRecordDto>)
 SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$ControlAppendForwardResponse (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,outcomes:java.util.List<org.pragmatica.aether.stream.forward.ControlOutcomeDto>)
 SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$PublishForward (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,streamName:java.lang.String,partition:int,payload:byte[],timestamp:long,systemWriter:boolean)
