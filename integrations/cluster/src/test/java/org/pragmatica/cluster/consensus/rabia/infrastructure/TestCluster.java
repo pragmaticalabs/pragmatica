@@ -15,6 +15,8 @@ import org.pragmatica.consensus.rabia.RabiaCodecs;
 import org.pragmatica.consensus.rabia.RabiaEngine;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.TcpCodecs;
@@ -25,6 +27,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.fail;
@@ -49,6 +54,13 @@ public class TestCluster {
     private final Map<NodeId, RabiaEngine<KVCommand<StringKey>>> engines = new LinkedHashMap<>();
     private final Map<NodeId, KVStore<StringKey, String>> stores = new LinkedHashMap<>();
     private final Map<NodeId, MessageRouter.MutableRouter> routers = new LinkedHashMap<>();
+    private final Map<NodeId, Consumer<RabiaProtocolMessage>> handlers = new LinkedHashMap<>();
+    /// Per node, every Propose / VoteRound1 / VoteRound2 / Decision the network delivered to it, in delivery order:
+    /// the raw material of a stale-phase redelivery (see [#deliver]) and the record of repair replies.
+    private final Map<NodeId, ConcurrentLinkedQueue<RabiaProtocolMessage>> delivered = new ConcurrentHashMap<>();
+    /// Per node, how many times each key was PUT into its store: a non-idempotent view of apply (a batch applied
+    /// twice counts a key twice, where the stored value alone cannot tell).
+    private final Map<NodeId, Map<StringKey, AtomicInteger>> putCounts = new ConcurrentHashMap<>();
     private final SliceCodec codec = buildTestCodec();
     private final int size;
 
@@ -106,6 +118,32 @@ public class TestCluster {
         network.disconnectNode(id);
     }
 
+    /// Puts a disconnected node back on the network with its existing engine and store.
+    @Contract
+    public void reconnect(NodeId id) {
+        network.addNode(id, handlers.get(id));
+    }
+
+    /// Everything the network delivered to `id` so far that carries a phase (proposals, both vote rounds, decisions).
+    public List<RabiaProtocolMessage> deliveredTo(NodeId id) {
+        return List.copyOf(delivered.get(id));
+    }
+
+    /// Hands `message` straight to `id`'s engine, bypassing the network and its fault injection.
+    @Contract
+    public void deliver(NodeId id, RabiaProtocolMessage message) {
+        handlers.get(id).accept(message);
+    }
+
+    /// How many ValuePut notifications `id`'s store has emitted for `key`.
+    public int putCount(NodeId id, StringKey key) {
+        return Option.option(putCounts.get(id).get(key)).map(AtomicInteger::get).or(0);
+    }
+
+    public boolean hasPendingNotifications(NodeId id) {
+        return stores.get(id).hasPendingNotifications();
+    }
+
     public void addNewNode(NodeId id) {
         var router = MessageRouter.mutable();
         var store = new KVStore<StringKey, String>(router, codec, codec);
@@ -117,6 +155,8 @@ public class TestCluster {
 
         var stateChangePrinter = new StateChangePrinter(id);
         router.addRoute(KVStoreNotification.ValuePut.class, stateChangePrinter::accept);
+        putCounts.put(id, new ConcurrentHashMap<>());
+        router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut<?, ?> put) -> countPut(id, put));
 
         // Register router BEFORE adding node to network to ensure ClusterStateNotification
         // is received by all nodes when quorum is reached
@@ -124,7 +164,26 @@ public class TestCluster {
         engines.put(id, engine);
         routers.put(id, router);
 
-        network.addNode(id, createHandler(engine));
+        var handler = recording(id, createHandler(engine));
+
+        handlers.put(id, handler);
+        delivered.put(id, new ConcurrentLinkedQueue<>());
+        network.addNode(id, handler);
+    }
+
+    private void countPut(NodeId id, KVStoreNotification.ValuePut<?, ?> put) {
+        putCounts.get(id).computeIfAbsent((StringKey) put.cause().key(), _ -> new AtomicInteger()).incrementAndGet();
+    }
+
+    private Consumer<RabiaProtocolMessage> recording(NodeId id, Consumer<RabiaProtocolMessage> next) {
+        return message -> recordAndDeliver(id, message, next);
+    }
+
+    private void recordAndDeliver(NodeId id, RabiaProtocolMessage message, Consumer<RabiaProtocolMessage> next) {
+        if (message instanceof Synchronous.Propose<?> || message instanceof Synchronous.VoteRound1 || message instanceof Synchronous.VoteRound2 || message instanceof Synchronous.Decision<?>) {
+            delivered.get(id).add(message);
+        }
+        next.accept(message);
     }
 
     @SuppressWarnings("unchecked")
@@ -173,6 +232,8 @@ public class TestCluster {
                .onFailure(cause -> fail("Failed to apply command: (a, 1): " + cause));
     }
 
+    /// True when every node CURRENTLY CONNECTED to the network holds `v1` under `k1`; a disconnected node is not
+    /// read, so a stale replica is invisible to this check until it is reconnected.
     public boolean allNodesHaveValue(StringKey k1, String v1) {
         return network.connectedNodes().stream()
                       .allMatch(id -> v1.equals(stores.get(id).snapshot().get(k1)));
