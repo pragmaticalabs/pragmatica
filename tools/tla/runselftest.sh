@@ -77,4 +77,40 @@ PINS='Fix\tbad\tsmall\t4\tx\n' run pin-on-fail-row-is-error nonzero 'need a mode
 VARIANTS=ok run variant-filter-runs-only-the-selected 0 'configs=1 .*GREEN' small < <(rows pass - fail Small pass - | grep -v broken)
 VARIANTS=ok KEEP_BROKEN=1 run variant-filter-keeps-coverage nonzero 'configs and models.tsv rows differ' small < <(rows pass - fail Small pass - | grep -v 'Fix.src.broken')
 VARIANTS=nosuch run variant-filter-no-match-is-error nonzero 'no row matches variant' small < <(rows pass - fail Small pass - | grep -v broken)
+# Evidence rows (#3584): one row per config that ran, with the actual verdict read from TLC's exit code, never from the expectation.
+res="$work/out/results.tsv"
+cell() { awk -F'\t' -v m="$1" -v v="$2" -v c="$3" 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == c) col = i } NR > 1 && $5 == m && $6 == v { print $col }' "$res"; }
+want() { # want <name> <expected> <actual>
+  if [[ $2 == "$3" ]]; then echo "PASS $1 ($3)"; else echo "FAIL $1: want '$2', got '$3'"; fail=1; fi; }
+run rows-control 0 'evidence rows in' small < <(rows pass - fail Small pass - | grep -v broken)
+want rows-count 3 "$(wc -l < "$res" | tr -d ' ')"
+want rows-ok-actual pass "$(cell Fix ok actual)"
+want rows-ok-distinct 4 "$(cell Fix ok distinct)"
+want rows-ok-verdict OK "$(cell Fix ok verdict)"
+want rows-bad-actual fail "$(cell Fix bad actual)"
+want rows-bad-violated Small "$(cell Fix bad violated)"
+want rows-bad-verdict-ok-because-expected-fail OK "$(cell Fix bad verdict)"
+want rows-outside-git-commit-none none "$(cell Fix ok commit)"
+want rows-tlc-version-read 1 "$([[ -n $(cell Fix ok tlc) ]] && echo 1 || echo 0)"
+run rows-wrong-verdict nonzero - small < <(rows fail Big fail Small pass - | grep -v broken)
+want rows-wrong-verdict-red RED "$(cell Fix ok verdict)"
+want rows-wrong-verdict-keeps-expect-and-actual 'fail/pass' "$(cell Fix ok expect)/$(cell Fix ok actual)"
+run rows-error nonzero - small < <(rows pass - fail Small pass -)
+want rows-error-actual error "$(cell Fix broken actual)"
+want rows-error-verdict ERROR "$(cell Fix broken verdict)"
+want rows-error-never-distinct-from-a-pass "" "$(cell Fix broken distinct)"
+# a results file with another header is refused, never appended to
+printf 'commit\tother\n' > "$work/foreign.tsv"
+out=$(cd "$work" && MODELS_TSV="$work/models.tsv" PINS_TSV="$work/pins.tsv" TLA_OUT="$work/out2" TLA_RESULTS="$work/foreign.tsv" bash "$here/run.sh" small Fix 2>&1); rc=$?
+want rows-foreign-header-refused 2 "$rc"
+want rows-foreign-header-untouched 1 "$(wc -l < "$work/foreign.tsv" | tr -d ' ')"
+# inside a git repository the row names HEAD, and a tracked change makes the row dirty
+rows pass - fail Small pass - | grep -v broken > "$work/models.tsv"; : > "$work/pins.tsv"
+rm -rf "$work/out"; git -C "$work" init -q && git -C "$work" add -A >/dev/null && git -C "$work" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q -m fixture
+rm -rf "$work/out"; (cd "$work" && MODELS_TSV="$work/models.tsv" PINS_TSV="$work/pins.tsv" TLA_OUT="$work/out" TLC_WORKERS=1 bash "$here/run.sh" small Fix >/dev/null 2>&1)
+want rows-git-commit-is-head "$(git -C "$work" rev-parse HEAD)" "$(cell Fix ok commit)"
+want rows-git-clean clean "$(cell Fix ok dirty)"
+echo changed >> "$work/src/Fix.java"
+rm -rf "$work/out"; (cd "$work" && MODELS_TSV="$work/models.tsv" PINS_TSV="$work/pins.tsv" TLA_OUT="$work/out" TLC_WORKERS=1 bash "$here/run.sh" small Fix >/dev/null 2>&1)
+want rows-git-dirty dirty "$(cell Fix ok dirty)"
 exit $fail

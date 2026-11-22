@@ -18,6 +18,14 @@
 # config, needs coreutils timeout), MODELS_TSV (default: models.tsv beside this script; used by runselftest.sh),
 # SIM_SECONDS (time budget per config, default 60), SIM_TRACES (trace cap, default 1000000), SIM_DEPTH (default 40; at 200 the Stalled "settled" row was not found in 60 s, at 40 it is found in seconds),
 # PINS_TSV (default: pinned-counts.tsv beside this script).
+# Evidence rows: every config that ran appends one row to TLA_RESULTS (default: $TLA_OUT/results.tsv; a PR that touches a
+# modelled region commits its run's rows to tools/tla/results.tsv, README "Evidence rows"). One TSV with a header:
+#   commit dirty date profile module variant expect actual violated distinct tlc verdict constants
+# commit = HEAD of the repository run.sh is started in ("none" outside a git repository); dirty = "dirty" when tracked
+# files differed from HEAD when the run started (the commit then does not name the code that ran), "clean", or "unknown";
+# actual = pass | fail | error from TLC's exit code (the verdict column, OK | RED | ERROR, also reads the violated
+# property and the pinned count); distinct = TLC's distinct-state count; tlc = TLC's version; date = UTC end of the row.
+# A results file with another header is refused (exit 2), never appended to.
 # Pinned counts (pinned-counts.tsv: module variant profile distinct why): a listed pass row must also find exactly that
 # many distinct states at that profile, or it is RED. A spec that extends a model by a mode switch must leave the old
 # mode's state space unchanged; the pin makes an extension that leaks into the old mode go red, which a verdict alone
@@ -40,6 +48,16 @@ if [[ -n $pinrows ]]; then
   [[ -z $badpin ]] || { echo "run: ERROR $pins rows need a models.tsv pass row, profile small|full and a digit count: $badpin" >&2; exit 2; }
 fi
 awk -F'\t' -v f="$vfilter" '$3 ~ "^(" f ")$" { n++ } END { exit n == 0 }' <<<"$rows" || { echo "run: ERROR no row matches variant '$vfilter'" >&2; exit 2; }
+results=${TLA_RESULTS:-$outroot/results.tsv}
+header=$'commit\tdirty\tdate\tprofile\tmodule\tvariant\texpect\tactual\tviolated\tdistinct\ttlc\tverdict\tconstants'
+if [[ -s $results ]]; then
+  [[ $(head -1 "$results") == "$header" ]] || { echo "run: ERROR $results has a header other than the evidence-row header; not appending" >&2; exit 2; }
+else
+  mkdir -p "$(dirname "$results")"; printf '%s\n' "$header" > "$results"
+fi
+if commit=$(git rev-parse HEAD 2>/dev/null); then
+  if [[ -z $(git status --porcelain --untracked-files=no 2>/dev/null) ]]; then dirty=clean; else dirty=dirty; fi
+else commit=none; dirty=unknown; fi
 red=0; summary=(); runstart=$(date +%s)
 if [[ $profile == sim ]]; then
   export TLC_OPTS="${TLC_OPTS:-} -simulate num=${SIM_TRACES:-1000000} -depth ${SIM_DEPTH:-40}"
@@ -97,10 +115,16 @@ while IFS=$'\t' read -r module root variant expect property small _; do
     simstat=$(grep -E '^Progress:.*traces generated' "$log" 2>/dev/null | tail -1 | sed -E 's/^Progress: ([0-9]+) states checked, ([0-9]+) traces generated \(trace length: mean=([0-9]+).*/traces=\2 mean-length=\3 states=\1/')
     [[ -n $simstat ]] || simstat="no trace count"
   fi
+  tlcver=$(sed -nE 's/^TLC2 Version ([^ ]+).*/\1/p' "$log" 2>/dev/null | head -1)
+  case $rc in 0) actual=pass ;; 12|13) actual=fail ;; *) actual=error ;; esac
+  distinct=$(grep -oE '[0-9,]+ distinct states found' "$log" 2>/dev/null | tail -1 | tr -dc '0-9')
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$commit" "$dirty" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$profile" "$module" "$variant" \
+    "$expect" "$actual" "$violated" "$distinct" "$tlcver" "$verdict" "$consts" >> "$results"
   line="$verdict $module/$variant expect=$expect got=$got${note} ${secs}s ${simstat:-${states:-no state count}} ${consts:+[$consts]}"
   echo "$line"; summary+=("$line")
   [[ $verdict != OK ]] && tail -20 "$outroot/$module/run_${variant}.txt" | sed 's/^/    /'
 done < <(awk -F'\t' -v f="$vfilter" '$3 ~ "^(" f ")$"' <<<"$rows")
 
+echo "run: evidence rows in $results (commit $commit, $dirty)"
 echo "run: profile=$profile models=$filter variants=$vfilter configs=${#summary[@]} wall=$(( $(date +%s) - runstart ))s $([[ $red == 0 ]] && echo GREEN || echo RED)$([[ $profile == sim ]] && echo ' (simulation: sampled, not a proof)')"
 exit $red

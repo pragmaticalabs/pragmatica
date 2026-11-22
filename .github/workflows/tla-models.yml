@@ -123,6 +123,9 @@ jobs:
       - name: Runner self-test
         run: bash tools/tla/runselftest.sh
 
+      - name: Evidence-row check self-test
+        run: python3 -m unittest discover -s tools/tla -p 'test_results_check.py' -v
+
       - name: Model check (${{ env.PROFILE }})
         env:
           TLC_WORKERS: auto
@@ -142,3 +145,14 @@ jobs:
             target-tla-summary.txt
           if-no-files-found: warn
           retention-days: 30
+
+      # the evidence rows of this run (tools/tla/README.md, "Evidence rows") as an artifact of their own, so a scheduled
+      # run's rows can be downloaded and compared without unpacking the TLC logs
+      - name: Upload evidence rows
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: tla-results-${{ env.PROFILE }}-${{ github.run_id }}
+          path: target/tla/results.tsv
+          if-no-files-found: warn
+          retention-days: 90

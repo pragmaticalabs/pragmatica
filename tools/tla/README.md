@@ -132,6 +132,29 @@ line that holds code (not a blank line, not a comment) falls inside such a regio
 - Not a required check (a ruleset edit, the owner's). Tests: `python3 -m unittest discover -s tools/tla -p test_touched.py`
   (fixture repositories for every case, plus the real rc6 commits of #3455 and #3278 as positive controls).
 
+### Evidence rows (`results.tsv`)
+
+Evidence that a model was checked used to live in PR prose. `run.sh` now appends one row per config that ran to
+`$TLA_RESULTS` (default `<TLA_OUT>/results.tsv`), one TSV with a header: `commit dirty date profile module variant expect
+actual violated distinct tlc verdict constants`. `actual` is TLC's own outcome (`pass`, `fail`, `error` from its exit code),
+`expect` the `models.tsv` verdict, `verdict` (`OK`, `RED`, `ERROR`) what run.sh concluded from both plus the violated
+property and the pinned count. A results file with another header is refused (exit 2), never appended to.
+
+- **Commit and dirty.** `commit` is HEAD of the repository `run.sh` was started in; `dirty` is `dirty` when a tracked file
+  differed from HEAD, so the commit does not name the code that ran. Commit the code, then run, then commit the rows: the rows
+  name the code commit, and a row can never name the commit that contains it.
+- **A PR that touches a modelled region commits its run's rows** by appending the run's `results.tsv` rows to
+  `tools/tla/results.tsv`.
+- **`results-check.py [--base REV] [--head REV]`** (the `TLA+ PR checks` workflow, job `evidence-rows`) checks the rows
+  the PR adds (the diff from the merge base; a squash merge rewrites commits, so rows already merged are history): a header
+  other than `run.sh`'s, a malformed row or value, a commit that is not in the repository or is not an ancestor of the head,
+  a dirty row, and a commit recorded as `none` are RED. Not a required check (a ruleset edit, the owner's). Tests:
+  `python3 -m unittest discover -s tools/tla -p test_results_check.py` (fixture repositories; the three ancestry cases go red
+  when the ancestry test is removed) and the `rows-*` cases of `runselftest.sh`.
+- **The scheduled and pushed `TLA+ models` run uploads its rows** as the `tla-results-*` artifact (90 days).
+- **What a row does not say.** It records that TLC explored a model extracted from the code at that commit, within the
+  profile's bounds; it does not say the code still matches the model after later commits (that is `touched.py`'s job).
+
 ### In CI
 
 The `TLA+ models` workflow (`.github/workflows/tla-models.yml`) runs on demand, on a push to `release-1.0.0-rc6` that
