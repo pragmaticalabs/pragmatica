@@ -113,6 +113,25 @@ sampling, not a proof**: a `pass` row means no violation among the sampled trace
 row still FAILS (a bug the sampler cannot find in the budget turns that row red). Every row of every profile prints its
 wall time, which is the reference for a timing budget.
 
+### Fragment-touched check (pull requests)
+
+Code inside a region documented by a `tla` fragment can change while the fragment stays as it was; in three weeks on
+rc6 four PRs did, and one left the model silent on a new ordering (Rabia announce order, #3455).
+`tools/tla/touched.py --base <rev> [--head <rev>]` (the `TLA+ PR checks` workflow, on a pull request) fails when a changed
+line that holds code (not a blank line, not a comment) falls inside such a region and that region's fragment (same
+`Module:Part`, same file's base version) is unchanged. The output names each region as `file:line` with the changed lines.
+
+- **Region** = the declaration the doc comment documents, from its first line to its end: a method, a field with its
+  initialiser, a `package` statement. A class, interface, enum or record documents its header only (the skeleton
+  fragments sit there; a class body is not one atomic step). The end is found by a brace and parenthesis depth scan
+  with comments, string literals, text blocks and character literals blanked, so a brace in a string cannot end a
+  region early or late.
+- **Excuse**: a line `tla-unchanged: <Module>: <reason>` in the PR body (the reason is required; the marker covers every
+  fragment of that module in the PR). Use it when the model still describes the code, e.g. metrics-only edits.
+- The base is reduced to `merge-base(base, head)`; a rename is followed; a file new in the PR has no fragment to keep.
+- Not a required check (a ruleset edit, the owner's). Tests: `python3 -m unittest discover -s tools/tla -p test_touched.py`
+  (fixture repositories for every case, plus the real rc6 commits of #3455 and #3278 as positive controls).
+
 ### In CI
 
 The `TLA+ models` workflow (`.github/workflows/tla-models.yml`) runs on demand, on a push to `release-1.0.0-rc6` that

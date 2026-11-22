@@ -1,0 +1,39 @@
+# Checks on a pull request that the embedded TLA+ models (tools/tla/README.md) still describe the code.
+#  - fragment-touched: fails when a changed line of code falls inside a region (method, field, declaration) documented by a
+#    `tla <Module>:<Part>` fragment and that fragment's text is unchanged. Excused per module by a line
+#    `tla-unchanged: <Module>: <reason>` in the PR body (editing the body re-runs the check).
+# Not a required check: making it required is a repository ruleset edit, the owner's.
+name: TLA+ PR checks
+
+on:
+  pull_request:
+    branches:
+      - 'release-*'
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tla-pr-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  fragment-touched:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout, full history because the check reads the merge base
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Fragment-touched self-test
+        run: python3 -m unittest discover -s tools/tla -p 'test_touched.py' -v
+
+      - name: Code under a tla fragment changed without its fragment
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python3 tools/tla/touched.py --base "origin/$BASE_REF" --head HEAD
