@@ -309,6 +309,22 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// visible and KV state still catching up, the wait is stretched by another grace window (bounded by
     /// [`LeaderElectionContext#kvSyncMaxWait`]) so the leader can still arrive through KV sync. Only a
     /// cluster that shows no leader and no sync in flight is genuinely leaderless and lets this node elect.
+    ///
+    /// ```tla LeaderAdmission:V_Grace
+    /// \* The waiting states' KV pull (AwaitingKvSync's entry and grace timeout, QuorumWaiting's poll), cluster
+    /// \* mode: a committed leader in the KV record is adopted unconditionally (FIX 1, sequence-less:
+    /// \* recordAdoptedSequence keeps the observed sequence); with none, the grace timeout elects (Electing or
+    /// \* ReElecting, whose entry snapshots the baseline). The re-arm while KV sync is pending changes no modelled
+    /// \* variable, so it is left out.
+    /// V_Grace == /\ st = "waiting"
+    ///            /\ IF kv # NoRec
+    ///               THEN /\ st' = "led" /\ leader' = kv[1] /\ lastAd' = kv[1] /\ adSeq' = obsSeq /\ cluster' = TRUE
+    ///                    /\ UNCHANGED base
+    ///               ELSE /\ st' = "electing" /\ base' = obsSeq
+    ///                    /\ UNCHANGED <<leader, lastAd, adSeq, cluster>>
+    ///            /\ named' = None
+    ///            /\ UNCHANGED <<view, vseq, kv, pend, obsSeq, adm, env, hi, removed, suspect>>
+    /// ```
     private static void graceTimeoutFallthrough(LeaderElectionContext ctx,
                                                 TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx,
                                                 AwaitingKvSync waiting) {
@@ -1007,15 +1023,21 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         /// Installs the electorate and pulls the committed leader through the one admission (#3414).
         ///
         /// ```tla LeaderAdmission:P_Enter
-        /// \* PassiveDirectory: Dormant -> Passive; the entry pulls the committed LeaderKey through the one admission (#3414).
-        /// P_Enter == /\ st = "dormant"
-        ///            /\ Role = "passive"
+        /// \* PassiveDirectory: Dormant -> Passive, and with "demote" every voting state -> Passive (the arms in
+        /// \* QuorumWaiting, AwaitingKvSync, Electing, Led and ReElecting); the context's leader, adopted sequence
+        /// \* and last adopted leader carry over (Led.onExit does not clear them). With the fix "entryhold" (#3581)
+        /// \* the entry holds the inherited leader to the stored view first; then it pulls the committed LeaderKey
+        /// \* through the one admission (#3414), and a refused pull keeps what the hold left.
+        /// P_Enter == /\ \/ st = "dormant"
+        ///               \/ st \in {"waiting", "electing", "led"} /\ "demote" \in Env
         ///            /\ st' = "passive"
         ///            /\ IF Fix("entrypull") /\ kv # NoRec /\ Admits(kv, "pull", view)
         ///               THEN AdoptP(kv) /\ suspect' = IF kv[2] > adSeq THEN None ELSE suspect
-        ///               ELSE UNCHANGED <<leader, adSeq, lastAd, suspect>>
+        ///               ELSE /\ leader' = IF Fix("entryhold") /\ Lost(view, leader, None) THEN None ELSE leader
+        ///                    /\ UNCHANGED <<adSeq, lastAd, suspect>>
         ///            /\ named' = None
-        ///            /\ UNCHANGED <<view, vseq, kv, pend, obsSeq, base, adm, env, hi, removed, cluster>>
+        ///            /\ cluster' = FALSE
+        ///            /\ UNCHANGED <<view, vseq, kv, pend, obsSeq, base, adm, env, hi, removed>>
         /// ```
         @Override
         public void onEntry() {
@@ -1106,8 +1128,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// only for the leader adopted at it), and the leader is in the stored view ([#admittedToView], I2's admission).
     ///
     /// ```tla LeaderAdmission:P_Push
-    /// \* Passive's one admission for a pushed commit (#3581), one atomic step (Interleave = FALSE).
-    /// P_Push(r) == /\ ~Interleave
+    /// \* Passive's one admission for a pushed commit (#3581), one atomic step with the fix "serial" (#3587).
+    /// P_Push(r) == /\ Fix("serial")
     ///              /\ st = "passive"
     ///              /\ PushStep(r)
     ///              /\ IF Admits(r, "push", view)
@@ -1117,9 +1139,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// ```
     ///
     /// ```tla LeaderAdmission:P_Check
-    /// \* Interleave = TRUE: the gate and admittedToView read the stored view, then the writes follow; a view write on
-    /// \* another thread (Fsm.dispatch runs on the caller thread) may run in between.
-    /// P_Check(r) == /\ Interleave
+    /// \* Without "serial" (the code as it stands, #3587): the gate and admittedToView read the stored view, then the
+    /// \* writes follow; a view write on another thread (Fsm.dispatch runs on the caller thread) may run in between.
+    /// P_Check(r) == /\ ~Fix("serial")
     ///               /\ st = "passive"
     ///               /\ adm = NoRec
     ///               /\ PushStep(r)

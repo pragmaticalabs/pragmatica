@@ -13,9 +13,14 @@
 /// proofs: a passing config says no violation exists within its constants.
 ///
 /// Abstractions (what the model leaves out, so a result says nothing about it): eligibility (every candidate is
-/// eligible, this node is none of them); the voting states' KV pull and proposals (a voting node learns a leader only
-/// from a pushed commit or, in local mode, its own tick); the local view path's election (`LeaderManager`
-/// `electLocallyIfPossible`: I3 is claimed from ticks alone); `Passive` re-entry; and, with `Interleave` = TRUE, every
+/// eligible, this node is none of them); the electing states' KV pull and proposals (an electing node learns a
+/// leader only from a pushed commit or, in local mode, its own tick; the waiting states' KV pulls, at entry, on the
+/// poll and at the grace timeout, are the one unconditional adoption `V_Grace` models, with the local KV replica equal
+/// to the committed record); the grace timer's re-arm while KV sync is pending (the timeout may fire at any time, or
+/// never); the pre-vote (consensus mode's `enableLeaderPreVote`: `loseLeader` keeps `Led` with an out-of-view leader
+/// while the electorate votes, and the model drops that leader at once, so `VotingInView` is claimed for pre-vote
+/// disabled only); the local view path's election (`LeaderManager` `electLocallyIfPossible`: I3 is claimed from ticks
+/// alone); `QuorumLost` (its entry clears the leader); `Passive` re-entry; and, without the fix `serial`, every
 /// handler but the push's admission stays one atomic step.
 ///
 /// ```tla LeaderAdmission:head
@@ -24,13 +29,17 @@
 /// \* One node's leader-election FSM against its environment. Role "passive": a worker, Dormant then Passive. Role
 /// \* "voting": a core node in the voting states (QuorumWaiting/AwaitingKvSync = "waiting", Electing/ReElecting =
 /// \* "electing", Led = "led"). Nodes: the NodeCount eligible candidates (this node is not one). Local: local mode (no
-/// \* commits; a tick elects). Interleave: the push's admission check and its write are two steps a concurrent view
-/// \* write may run between (Fsm.dispatch runs on the caller thread; FALSE = every dispatch is one atomic step). The
-/// \* code as it stands carries the split (#3587, know 45a9e2fdd9): config `interleave` is a FINDING, expected to fail.
-/// \* MaxSeq bounds view sequences, MaxCommits the LeaderKey commits, EnvSteps the view writes and removals. Env: the
-/// \* environment events enabled in a run ("view", "stale", "remove", "commit").
-/// \* Fixed: the fixes the modelled code carries (the code as it stands carries AllFixes). A config that drops one
-/// \* models the earlier version and must fail:
+/// \* commits; a tick elects). MaxSeq bounds view sequences, MaxCommits the LeaderKey commits, EnvSteps the view writes
+/// \* and removals. Env: the environment events enabled in a run ("view", "stale", "remove", "commit", and "demote": a
+/// \* PassiveDirectory reaching a voting state).
+/// \* Fixed: the fixes the modelled code carries. AllFixes is the code as it stands plus two fixes it does not carry
+/// \* yet, so a config with AllFixes models the intended code: "serial" (#3587, open) and "entryhold" (#3581, until it
+/// \* carries the entry hold). A config that drops one models the code without it and must fail:
+/// \*   serial        - Passive's push admission check and its write are one step against the view (#3587, know
+/// \*                   45a9e2fdd9: the code as it stands splits them, Fsm.dispatch runs on the caller thread and a
+/// \*                   view write on another thread may run between; config `interleave` drops it, a FINDING)
+/// \*   entryhold     - Passive's entry holds an inherited leader to the stored view, whatever the predecessor (#3581:
+/// \*                   without it a Led holding a FIX 1 leader absent from the view enters Passive still holding it)
 /// \*   entrypull     - Passive's entry pulls the committed LeaderKey (#3414: a worker entering Passive after the push
 /// \*                   passed in Dormant never learned the leader)
 /// \*   pushinview    - Passive's push passes the in-view admission (78e44f01a8; before, FIX 1 applied to an observer
@@ -43,10 +52,10 @@
 /// \* Mutant: vacuity controls, edits no version of the code carried; each must break the invariant it names:
 /// \*   dropempty (I1: an empty view is not stored), nostalegate (I1: a stale view is applied), nohold (I2: the I2
 /// \*   site holds nothing), seqgatelocal (I3: a local commit takes the cluster sequence gate)
-/// CONSTANTS NodeCount, Role, Local, Interleave, MaxSeq, MaxCommits, EnvSteps, Env, Fixed, Mutant
+/// CONSTANTS NodeCount, Role, Local, MaxSeq, MaxCommits, EnvSteps, Env, Fixed, Mutant
 ///
 /// Nodes == 1..NodeCount
-/// AllFixes == {"entrypull", "pushinview", "pullinview", "repull", "removalnopull"}
+/// AllFixes == {"serial", "entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull"}
 /// Fix(f) == f \in Fixed
 /// Mut(m) == m \in Mutant
 /// ASSUME Fixed \subseteq AllFixes
@@ -68,7 +77,7 @@
 ///     lastAd,   \* lastAdoptedLeader
 ///     obsSeq,   \* committedViewSequence (LeaderManager observes a push's sequence before dispatching it)
 ///     base,     \* the electing state's entryBaseline
-///     adm,      \* Interleave: the push between its admission check and its write, NoRec if none
+///     adm,      \* without "serial": the push between its admission check and its write, NoRec if none
 ///     env,      \* environment steps left
 ///     hi,       \* ghost: <<view, sequence>> of the newest sequenced view delivered (I1)
 ///     removed,  \* ghost: the nodes removed view-free since that view (I1)
@@ -151,12 +160,13 @@
 /// ViewNext == \/ \E S \in SUBSET Nodes, q \in 1..MaxSeq : P_View(S, q) \/ V_View(S, q)
 ///             \/ \E n \in Nodes : P_Remove(n) \/ V_Remove(n)
 /// Push(r) == D_Push(r) \/ P_Push(r) \/ P_Check(r) \/ V_PushWaiting(r) \/ V_PushElecting(r) \/ V_PushLed(r)
-/// SysNext == \/ P_Enter \/ P_Write \/ L_Tick
+/// SysNext == \/ P_Enter \/ P_Write \/ L_Tick \/ V_Grace
 ///            \/ \E r \in pend : \/ D_Push(r) \/ P_Push(r) \/ P_Check(r)
 ///                             \/ V_PushWaiting(r) \/ V_PushElecting(r) \/ V_PushLed(r)
 /// Next == EnvNext \/ ViewNext \/ SysNext
 ///
-/// \* PassiveDirectory reaches the worker, every push is dispatched, a started admission writes, ticks keep coming.
+/// \* PassiveDirectory reaches the worker (with "demote", a voting state too), every push is dispatched, a started
+/// \* admission writes, ticks keep coming.
 /// Fairness == /\ WF_vars(P_Enter) /\ WF_vars(P_Write) /\ WF_vars(L_Tick)
 ///             /\ \A l \in Nodes, s \in 1..MaxCommits : WF_vars(Push(<<l, s>>))
 ///
@@ -173,7 +183,8 @@
 /// \* I2, every state: the held leader is not the node the step's view-free removal named failed.
 /// NotNamedFailed == leader # None => leader # named
 /// \* I2, voting: Led's leader is in the stored view unless a cluster commit adopted it and no view checked it since
-/// \* (FIX 1: a consensus decision the node took part in is adopted when absent; the next view checks it).
+/// \* (FIX 1: a consensus decision the node took part in is adopted when absent; the next view checks it). Pre-vote
+/// \* disabled: with the pre-vote Led keeps an out-of-view leader while the electorate votes (an abstraction, above).
 /// VotingInView == st = "led" /\ ~cluster => leader \in view
 ///
 /// Safety == I1 /\ PassiveInView /\ NotNamedFailed /\ VotingInView
@@ -183,6 +194,9 @@
 /// \* adopts it: a refused or lagging push heals on the next view write, a push missed in Dormant on entry.
 /// PassiveLearns == <>[](st = "passive" /\ kv # NoRec /\ kv[1] \in view /\ kv[1] # suspect)
 ///                      => <>[](leader = kv[1])
+/// \* adoptedViewSequence never moves back: an adoption at an older sequence is a lost update (the split admission
+/// \* writes a push the view write's re-pull has overtaken).
+/// AdSeqMono == [][adSeq' >= adSeq]_vars
 /// \* I3: a leaderless electing state in local mode makes progress on its own ticks: a stable non-empty view ends Led.
 /// LocalProgress == <>[](view # {}) => <>[](st = "led")
 /// ```
@@ -195,7 +209,6 @@
 /// ```tlacfg LeaderAdmission:pushfirst
 /// CONSTANTS Role = "passive"
 ///           Local = FALSE
-///           Interleave = FALSE
 ///           MaxSeq = 5
 ///           MaxCommits = 3
 ///           EnvSteps = 5
@@ -203,13 +216,12 @@
 ///           Mutant = {}
 /// CONSTANT Fixed <- AllFixes
 /// INVARIANT Safety
-/// PROPERTY PassiveLearns
+/// PROPERTY PassiveLearns AdSeqMono
 /// ```
 ///
 /// ```tlacfg LeaderAdmission:removal
 /// CONSTANTS Role = "passive"
 ///           Local = FALSE
-///           Interleave = FALSE
 ///           MaxSeq = 5
 ///           MaxCommits = 3
 ///           EnvSteps = 5
@@ -217,13 +229,12 @@
 ///           Mutant = {}
 /// CONSTANT Fixed <- AllFixes
 /// INVARIANT Safety
-/// PROPERTY PassiveLearns
+/// PROPERTY PassiveLearns AdSeqMono
 /// ```
 ///
 /// ```tlacfg LeaderAdmission:stale
 /// CONSTANTS Role = "passive"
 ///           Local = FALSE
-///           Interleave = FALSE
 ///           MaxSeq = 5
 ///           MaxCommits = 3
 ///           EnvSteps = 5
@@ -231,13 +242,12 @@
 ///           Mutant = {}
 /// CONSTANT Fixed <- AllFixes
 /// INVARIANT Safety
-/// PROPERTY PassiveLearns
+/// PROPERTY PassiveLearns AdSeqMono
 /// ```
 ///
 /// ```tlacfg LeaderAdmission:passive
 /// CONSTANTS Role = "passive"
 ///           Local = FALSE
-///           Interleave = FALSE
 ///           MaxSeq = 5
 ///           MaxCommits = 3
 ///           EnvSteps = 5
@@ -245,26 +255,25 @@
 ///           Mutant = {}
 /// CONSTANT Fixed <- AllFixes
 /// INVARIANT Safety
-/// PROPERTY PassiveLearns
+/// PROPERTY PassiveLearns AdSeqMono
 /// ```
 ///
 /// ```tlacfg LeaderAdmission:voting
 /// CONSTANTS Role = "voting"
 ///           Local = FALSE
-///           Interleave = FALSE
 ///           MaxSeq = 5
 ///           MaxCommits = 3
 ///           EnvSteps = 5
-///           Env = {"view", "stale", "remove", "commit"}
+///           Env = {"view", "stale", "remove", "commit", "demote"}
 ///           Mutant = {}
 /// CONSTANT Fixed <- AllFixes
 /// INVARIANT Safety
+/// PROPERTY AdSeqMono
 /// ```
 ///
 /// ```tlacfg LeaderAdmission:local
 /// CONSTANTS Role = "voting"
 ///           Local = TRUE
-///           Interleave = FALSE
 ///           MaxSeq = 5
 ///           MaxCommits = 3
 ///           EnvSteps = 5
@@ -272,78 +281,72 @@
 ///           Mutant = {}
 /// CONSTANT Fixed <- AllFixes
 /// INVARIANT Safety
-/// PROPERTY LocalProgress
+/// PROPERTY LocalProgress AdSeqMono
 /// ```
 ///
 /// ```tlacfg LeaderAdmission:noentrypull
 /// CONSTANTS Role = "passive"
 ///           Local = FALSE
-///           Interleave = FALSE
 ///           MaxSeq = 3
 ///           MaxCommits = 2
 ///           EnvSteps = 3
 ///           Env = {"view", "commit"}
 ///           Mutant = {}
-/// CONSTANT Fixed = {"pushinview", "pullinview", "repull", "removalnopull"}
+/// CONSTANT Fixed = {"serial", "entryhold", "pushinview", "pullinview", "repull", "removalnopull"}
 /// PROPERTY PassiveLearns
 /// ```
 ///
 /// ```tlacfg LeaderAdmission:pushnoview
 /// CONSTANTS Role = "passive"
 ///           Local = FALSE
-///           Interleave = FALSE
 ///           MaxSeq = 3
 ///           MaxCommits = 2
 ///           EnvSteps = 3
 ///           Env = {"view", "commit"}
 ///           Mutant = {}
-/// CONSTANT Fixed = {"entrypull", "pullinview", "repull", "removalnopull"}
+/// CONSTANT Fixed = {"serial", "entryhold", "entrypull", "pullinview", "repull", "removalnopull"}
 /// INVARIANT PassiveInView
 /// ```
 ///
 /// ```tlacfg LeaderAdmission:pullnoview
 /// CONSTANTS Role = "passive"
 ///           Local = FALSE
-///           Interleave = FALSE
 ///           MaxSeq = 3
 ///           MaxCommits = 2
 ///           EnvSteps = 3
 ///           Env = {"view", "commit"}
 ///           Mutant = {}
-/// CONSTANT Fixed = {"entrypull", "pushinview", "repull", "removalnopull"}
+/// CONSTANT Fixed = {"serial", "entryhold", "entrypull", "pushinview", "repull", "removalnopull"}
 /// INVARIANT PassiveInView
 /// ```
 ///
 /// ```tlacfg LeaderAdmission:norepull
 /// CONSTANTS Role = "passive"
 ///           Local = FALSE
-///           Interleave = FALSE
 ///           MaxSeq = 3
 ///           MaxCommits = 2
 ///           EnvSteps = 3
 ///           Env = {"view", "commit"}
 ///           Mutant = {}
-/// CONSTANT Fixed = {"entrypull", "pushinview", "pullinview", "removalnopull"}
+/// CONSTANT Fixed = {"serial", "entryhold", "entrypull", "pushinview", "pullinview", "removalnopull"}
 /// PROPERTY PassiveLearns
 /// ```
 ///
 /// ```tlacfg LeaderAdmission:removalpull
 /// CONSTANTS Role = "passive"
 ///           Local = FALSE
-///           Interleave = FALSE
 ///           MaxSeq = 3
 ///           MaxCommits = 2
 ///           EnvSteps = 3
 ///           Env = {"view", "remove", "commit"}
 ///           Mutant = {}
-/// CONSTANT Fixed = {"entrypull", "pushinview", "pullinview", "repull"}
+/// CONSTANT Fixed = {"serial", "entryhold", "entrypull", "pushinview", "pullinview", "repull"}
 /// INVARIANT NotNamedFailed
 /// ```
 ///
 /// ```tlacfg LeaderAdmission:mutdropempty
 /// CONSTANTS Role = "passive"
 ///           Local = FALSE
-///           Interleave = FALSE
 ///           MaxSeq = 3
 ///           MaxCommits = 2
 ///           EnvSteps = 3
@@ -356,7 +359,6 @@
 /// ```tlacfg LeaderAdmission:mutnostale
 /// CONSTANTS Role = "passive"
 ///           Local = FALSE
-///           Interleave = FALSE
 ///           MaxSeq = 3
 ///           MaxCommits = 2
 ///           EnvSteps = 3
@@ -369,7 +371,6 @@
 /// ```tlacfg LeaderAdmission:mutnohold
 /// CONSTANTS Role = "voting"
 ///           Local = FALSE
-///           Interleave = FALSE
 ///           MaxSeq = 3
 ///           MaxCommits = 2
 ///           EnvSteps = 3
@@ -382,7 +383,6 @@
 /// ```tlacfg LeaderAdmission:mutnoholdp
 /// CONSTANTS Role = "passive"
 ///           Local = FALSE
-///           Interleave = FALSE
 ///           MaxSeq = 3
 ///           MaxCommits = 2
 ///           EnvSteps = 3
@@ -395,7 +395,6 @@
 /// ```tlacfg LeaderAdmission:mutnoholdr
 /// CONSTANTS Role = "voting"
 ///           Local = FALSE
-///           Interleave = FALSE
 ///           MaxSeq = 3
 ///           MaxCommits = 2
 ///           EnvSteps = 3
@@ -408,7 +407,6 @@
 /// ```tlacfg LeaderAdmission:mutseqgate
 /// CONSTANTS Role = "voting"
 ///           Local = TRUE
-///           Interleave = FALSE
 ///           MaxSeq = 3
 ///           MaxCommits = 2
 ///           EnvSteps = 3
@@ -421,13 +419,25 @@
 /// ```tlacfg LeaderAdmission:interleave
 /// CONSTANTS Role = "passive"
 ///           Local = FALSE
-///           Interleave = TRUE
 ///           MaxSeq = 3
 ///           MaxCommits = 2
 ///           EnvSteps = 3
 ///           Env = {"view", "commit"}
 ///           Mutant = {}
-/// CONSTANT Fixed <- AllFixes
+/// CONSTANT Fixed = {"entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull"}
+/// INVARIANT PassiveInView
+/// PROPERTY PassiveLearns AdSeqMono
+/// ```
+///
+/// ```tlacfg LeaderAdmission:noentryhold
+/// CONSTANTS Role = "voting"
+///           Local = FALSE
+///           MaxSeq = 3
+///           MaxCommits = 2
+///           EnvSteps = 3
+///           Env = {"view", "commit", "demote"}
+///           Mutant = {}
+/// CONSTANT Fixed = {"serial", "entrypull", "pushinview", "pullinview", "repull", "removalnopull"}
 /// INVARIANT PassiveInView
 /// ```
 package org.pragmatica.consensus.leader.fsm;
