@@ -4,9 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.lang.invoke.VarHandle;
+import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -36,6 +39,8 @@ class OffHeapRingBufferPublishedRTest {
     private static final int LOG_SIZE = 1 << 21;
     private static final long MIN_STRADDLES = 1000;
     private static final long MIN_READS = 1000;
+    private static final int SEEDS = 3000;
+    private static final long SEED_BASE = 100;
     private static final long DEADLINE_MILLIS = 20_000;
 
     /// The T-C3 race arm. The writer appends one record and removes it, alternating the cause, and logs the next R under a
@@ -129,7 +134,9 @@ class OffHeapRingBufferPublishedRTest {
     }
 
     /// R's fields are never updated in place: after later publishes, every earlier R still answers as it did when it was
-    /// published, and every field of the type is `final`. Mutant (part 4): the successor mutates the current R.
+    /// published, its run array included (read by reflection: the array's contents are the only part of R a `final` field does
+    /// not protect), and every field of the type is `final`. Removals come in same-cause pairs so the merge path runs. Mutant
+    /// (part 4): the successor mutates the current R (a merge writing into the published run array).
     @Test
     void publishedR_isNeverUpdatedInPlace() {
         var seen = new ArrayList<RemovalLedger>();
@@ -138,7 +145,7 @@ class OffHeapRingBufferPublishedRTest {
         try (var ring = memoryRing()) {
             for (var i = 1; i <= 60; i++) {
                 ring.append("e".getBytes(StandardCharsets.UTF_8), i).unwrap();
-                ring.advanceTail(i, i % 2 == 0 ? RemovalCause.AGE : RemovalCause.BYTES).unwrap();
+                ring.advanceTail(i, (i / 2) % 2 == 0 ? RemovalCause.AGE : RemovalCause.BYTES).unwrap();
                 seen.add(ring.removalLedger());
                 snapshots.add(describe(ring.removalLedger()));
             }
@@ -152,6 +159,80 @@ class OffHeapRingBufferPublishedRTest {
             if (!Modifier.isStatic(field.getModifiers())) {
                 assertThat(Modifier.isFinal(field.getModifiers())).as("field " + field.getName() + " is final").isTrue();
             }
+        }
+    }
+
+    /// A seed publishes R BEFORE it stores the head (a reader that saw the head at the base while the tail was still 0 would
+    /// pass both range checks for an unwritten slot): a reader that loads the head and then the tail never sees the head at the
+    /// seed base with a tail at or below it. A race pin, so it can fail to catch a mutant on a lucky run but never fails the
+    /// code: 3,000 seeds, each overlapped with a reader sampling the ring. Mutant (part 4): the head stored before the publish.
+    @Test
+    void seedHead_publishesRBeforeTheHead_toAConcurrentReader() throws Exception {
+        var current = new AtomicReference<OffHeapRingBuffer>();
+        var sampling = new AtomicLong();
+        var stop = new AtomicBoolean();
+        var violations = new AtomicInteger();
+        var pool = Executors.newSingleThreadExecutor();
+        var reader = pool.submit(() -> sampleHeadThenTail(current, sampling, stop, violations));
+
+        try {
+            for (var i = 0; i < SEEDS && violations.get() == 0; i++) {
+                seedWhileSampled(current, sampling);
+            }
+        } finally {
+            stop.set(true);
+            reader.get(30, TimeUnit.SECONDS);
+            pool.shutdownNow();
+        }
+
+        assertThat(violations.get()).as("samples with the head at the seed base and the tail at or below it").isZero();
+    }
+
+    private static void seedWhileSampled(AtomicReference<OffHeapRingBuffer> current, AtomicLong sampling) {
+        try (var ring = memoryRing()) {
+            current.set(ring);
+
+            var before = sampling.get();
+
+            while (sampling.get() == before) {
+                Thread.onSpinWait();
+            }
+
+            ring.seedHead(SEED_BASE).unwrap();
+
+            var after = sampling.get();
+
+            while (sampling.get() < after + 2) {
+                Thread.onSpinWait();
+            }
+
+            current.set(null);
+        }
+    }
+
+    private static void sampleHeadThenTail(AtomicReference<OffHeapRingBuffer> current,
+                                           AtomicLong sampling,
+                                           AtomicBoolean stop,
+                                           AtomicInteger violations) {
+        while (!stop.get()) {
+            var ring = current.get();
+
+            if (ring == null) {
+                Thread.onSpinWait();
+                continue;
+            }
+
+            var head = ring.headOffset();
+
+            VarHandle.acquireFence();
+
+            var tail = ring.tailOffset();
+
+            if (head >= SEED_BASE && tail <= head) {
+                violations.incrementAndGet();
+            }
+
+            sampling.incrementAndGet();
         }
     }
 
@@ -212,6 +293,7 @@ class OffHeapRingBufferPublishedRTest {
     private static String describe(RemovalLedger ledger) {
         var builder = new StringBuilder();
 
+        builder.append(Arrays.toString(runsOf(ledger))).append('#');
         builder.append(ledger.firstHeld()).append('/').append(ledger.floor()).append('/').append(ledger.tail())
                .append('/').append(ledger.runCount()).append('/').append(ledger.droppedMask());
 
@@ -220,6 +302,18 @@ class OffHeapRingBufferPublishedRTest {
         }
 
         return builder.toString();
+    }
+
+    private static long[] runsOf(RemovalLedger ledger) {
+        try {
+            Field runs = RemovalLedger.class.getDeclaredField("runs");
+
+            runs.setAccessible(true);
+
+            return ((long[]) runs.get(ledger)).clone();
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("RemovalLedger.runs is read by this test", e);
+        }
     }
 
     private static OffHeapRingBuffer memoryRing() {

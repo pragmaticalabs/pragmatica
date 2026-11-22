@@ -99,6 +99,23 @@ class RemovalLedgerTest {
         assertThat(second.causes()).containsExactly(RemovalCause.BYTES);
     }
 
+    /// Adjacent removals of one cause extend the last run instead of opening a new one: twenty single-record removals by one
+    /// cause stay ONE run, so nothing drops into the set and the floor stays 0. Mutant (never merge): twenty runs, the lowest
+    /// four dropped, the floor raised.
+    @Test
+    void removed_adjacentRemovalsOfOneCause_extendTheLastRun() {
+        var ledger = RemovalLedger.EMPTY;
+
+        for (var i = 1; i <= 20; i++) {
+            ledger = removed(ledger, i, RemovalCause.AGE);
+        }
+
+        assertThat(ledger.runCount()).isEqualTo(1);
+        assertThat(ledger.floor()).isZero();
+        assertThat(ledger.droppedMask()).isZero();
+        assertThat(((StreamError.CursorExpired) ledger.answer(0, false)).cause()).isEqualTo(RemovalCause.AGE);
+    }
+
     @Test
     void seeded_onAValueThatIsNotEmpty_isRefused() {
         assertRefused(seeded(4).seeded(9));
