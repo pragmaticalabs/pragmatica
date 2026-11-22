@@ -329,6 +329,32 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                           NO_BUDGET_FREED);
     }
 
+    /// A [Mode#MEMORY] ring over a caller-supplied budget seam: `reserve` admits each growth and `budgetFreed` reports the
+    /// bytes the budget has freed since, the pair the freeze/thaw path reads. Nothing is released back (`NOOP_RELEASE`).
+    /// Package-private: the seam exists so tests drive a frozen ring and its thaw without reflection.
+    static OffHeapRingBuffer memoryRingBuffer(String streamName,
+                                              int partition,
+                                              long capacity,
+                                              long dataRegionSize,
+                                              long maxEventSize,
+                                              EvictionListener listener,
+                                              EvictionPolicy policy,
+                                              LongPredicate reserve,
+                                              LongSupplier budgetFreed) {
+        return buildFloor(Mode.MEMORY,
+                          Arena.ofShared(),
+                          streamName,
+                          partition,
+                          capacity,
+                          dataRegionSize,
+                          maxEventSize,
+                          listener,
+                          policy,
+                          reserve,
+                          NOOP_RELEASE,
+                          budgetFreed);
+    }
+
     /// Floor bytes a buffer reserves at creation: control region (header + index) plus the first
     /// data segment (`min(DEFAULT_SEGMENT_BYTES, maxBytes)`). See spec §4.0.
     public static long floorBytes(long capacity, long maxBytes) {
@@ -497,7 +523,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return new OffHeapRingBuffer(mode,
                                      arena,
                                      header,
-                                     controlSegment.asSlice(HEADER_SIZE),
+                                     RingHeader.index(controlSegment),
                                      firstDataSegments,
                                      firstSegmentBytes,
                                      capacity,

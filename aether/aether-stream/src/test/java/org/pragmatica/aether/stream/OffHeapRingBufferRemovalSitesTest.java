@@ -4,13 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
-import java.lang.foreign.Arena;
 import java.nio.charset.StandardCharsets;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.LongConsumer;
 import java.util.function.LongPredicate;
 import java.util.function.LongSupplier;
 
@@ -152,9 +150,9 @@ class OffHeapRingBufferRemovalSitesTest {
 
     /// `thawAtTheWrapPoint`: a ring frozen by a refused budget, then released, hands over the records above the head to unwrap
     /// its live bytes, and names them `RING_FROZEN`; the removals before it were the bytes' (`BYTES`). The ring is a MEMORY
-    /// ring reached through the private floor builder, as no public factory makes a MEMORY ring with a budget seam yet.
+    /// ring built through the package-private budget-seam factory.
     @Test
-    void thawAtTheWrapPoint_namesRingFrozen() throws ReflectiveOperationException {
+    void thawAtTheWrapPoint_namesRingFrozen() {
         var allow = new AtomicBoolean(false);
         var freed = new AtomicLong();
 
@@ -187,38 +185,16 @@ class OffHeapRingBufferRemovalSitesTest {
                                                    EvictionPolicy.DROP_OLDEST);
     }
 
-    private static OffHeapRingBuffer memoryRingWithBudget(LongPredicate reserve, LongSupplier budgetFreed) throws ReflectiveOperationException {
-        var build = OffHeapRingBuffer.class.getDeclaredMethod("buildFloor",
-                                                              OffHeapRingBuffer.Mode.class,
-                                                              Arena.class,
-                                                              String.class,
-                                                              int.class,
-                                                              long.class,
-                                                              long.class,
-                                                              long.class,
-                                                              EvictionListener.class,
-                                                              EvictionPolicy.class,
-                                                              LongPredicate.class,
-                                                              LongConsumer.class,
-                                                              LongSupplier.class);
-
-        build.setAccessible(true);
-
-        LongConsumer release = _ -> {};
-
-        return (OffHeapRingBuffer) build.invoke(null,
-                                                OffHeapRingBuffer.Mode.MEMORY,
-                                                Arena.ofShared(),
-                                                STREAM,
-                                                0,
-                                                10_000L,
-                                                MIB,
-                                                0L,
-                                                EvictionListener.NOOP,
-                                                EvictionPolicy.DROP_OLDEST,
-                                                reserve,
-                                                release,
-                                                budgetFreed);
+    private static OffHeapRingBuffer memoryRingWithBudget(LongPredicate reserve, LongSupplier budgetFreed) {
+        return OffHeapRingBuffer.memoryRingBuffer(STREAM,
+                                                  0,
+                                                  10_000L,
+                                                  MIB,
+                                                  0L,
+                                                  EvictionListener.NOOP,
+                                                  EvictionPolicy.DROP_OLDEST,
+                                                  reserve,
+                                                  budgetFreed);
     }
 
     private static void append(OffHeapRingBuffer ring, int count, int size) {

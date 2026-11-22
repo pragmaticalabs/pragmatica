@@ -46,24 +46,15 @@ final class RingHeader {
         this.header = header;
     }
 
-    /// The header view of `controlSegment`: its first `RingGeometry.HEADER_SIZE` bytes.
+    /// The header view of `controlSegment`: its first `RingGeometry.HEADER_SIZE` bytes. `RingGeometry.HEADER_SIZE` is the one
+    /// geometry source: [#index] derives the index start from the same constant, so the two slices cannot overlap or leave a gap.
     static RingHeader ringHeader(MemorySegment controlSegment) {
-        return ringHeader(controlSegment, RingGeometry.HEADER_SIZE, RingGeometry.HEADER_SIZE);
+        return new RingHeader(controlSegment.asSlice(0, RingGeometry.HEADER_SIZE));
     }
 
-    /// The header view over the first `headerSize` bytes of `controlSegment`, refused unless the geometry holds every header
-    /// word (`headerSize >= SIZE`) and the index starts at or after them (`indexStart >= SIZE`). A mismatch is a programming
-    /// error in the geometry constants, and a header over the index would be corrupted by the first append.
-    @SuppressWarnings("JBCT-EX-01")
-    static RingHeader ringHeader(MemorySegment controlSegment, long headerSize, long indexStart) {
-        if (headerSize < SIZE || indexStart < SIZE) {
-            throw new IllegalArgumentException("Ring geometry header size " + headerSize
-                                              + " / index start " + indexStart
-                                              + " is below the " + SIZE
-                                              + " bytes of header words");
-        }
-
-        return new RingHeader(controlSegment.asSlice(0, headerSize));
+    /// The index view of `controlSegment`: everything after the header slice, starting at `RingGeometry.HEADER_SIZE`.
+    static MemorySegment index(MemorySegment controlSegment) {
+        return controlSegment.asSlice(RingGeometry.HEADER_SIZE);
     }
 
     /// The allocation-time header: an empty ring (head `-1`, count and both data positions `0`) of the given data

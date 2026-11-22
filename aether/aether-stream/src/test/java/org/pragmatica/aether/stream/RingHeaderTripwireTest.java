@@ -16,7 +16,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// The tripwires of [RingHeader] (M-2r-1, ruling 9): a step that would break the ring's own invariants is refused with a typed
 /// [RingStateViolated] and leaves the header as it was. Also the geometry checks made at construction.
@@ -73,23 +72,24 @@ class RingHeaderTripwireTest {
         }
     }
 
-    /// Runtime checks 7 and 8: an index slice that starts inside the header words, and a geometry whose header is smaller than
-    /// they are, are refused at construction.
+    /// The geometry holds the header words, and the index slice starts exactly where the header slice ends: a header over the
+    /// index would be corrupted by the first append, a gap would waste bytes.
     @Test
-    void ringHeader_withAGeometryThatCannotHoldTheWords_isRefused() {
+    void ringHeader_andIndex_splitTheControlSegmentAtTheHeaderSize() {
         try (var arena = Arena.ofConfined()) {
             var segment = arena.allocate(RingGeometry.HEADER_SIZE + 64);
+            var header = RingHeader.ringHeader(segment);
+            var index = RingHeader.index(segment);
 
-            assertThatThrownBy(() -> RingHeader.ringHeader(segment, RingGeometry.HEADER_SIZE, 0))
-                .as("index slice at 0")
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("index start 0");
-            assertThatThrownBy(() -> RingHeader.ringHeader(segment, 0, RingGeometry.HEADER_SIZE))
-                .as("geometry header size 0")
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("header size 0");
-            assertThat(RingHeader.ringHeader(segment, RingGeometry.HEADER_SIZE, RingGeometry.HEADER_SIZE)).isNotNull();
             assertThat(RingGeometry.HEADER_SIZE).as("the real geometry holds the words").isGreaterThanOrEqualTo(RingHeader.SIZE);
+            assertThat(index.address() - segment.address()).as("index start").isEqualTo(RingGeometry.HEADER_SIZE);
+            assertThat(index.byteSize()).as("index size").isEqualTo(64L);
+
+            header.initialize(4096, 8);
+            index.fill((byte) 0x7f);
+
+            assertThat(header.capacity()).as("index writes leave the header words intact").isEqualTo(8L);
+            assertThat(header.head()).isEqualTo(-1L);
         }
     }
 
