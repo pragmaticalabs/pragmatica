@@ -272,6 +272,22 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
         }
     }
 
+    /// A copy of the ring taken under one read lock: every placement asked of it answers from one membership, whatever the
+    /// original does afterwards (#3345: a departure re-plan observes the ring once). Removal listeners are not copied.
+    public ConsistentHashRing<N> snapshot() {
+        var copy = new ConsistentHashRing<N>(virtualNodesPerPhysical);
+
+        lock.readLock().lock();
+        try {
+            ring.forEach((point, members) -> copy.ring.put(point, new TreeSet<>(members)));
+            nodeToVirtualNodes.forEach((member, points) -> copy.nodeToVirtualNodes.put(member, List.copyOf(points)));
+        } finally {
+            lock.readLock().unlock();
+        }
+
+        return copy;
+    }
+
     /// Get the number of nodes in the ring.
     public int nodeCount() {
         lock.readLock().lock();

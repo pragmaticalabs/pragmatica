@@ -50,9 +50,10 @@ public sealed interface DhtDeparturePush {
                                                                              Supplier<Function<String, DeparturePushObserver>> observers) {
         return window -> rebalancer.pushOnDeparture(new DepartureWindow(window.legsDeadlineNanos(),
                                                                         window.eventFloorNanos(),
-                                                                        window.halted()),
+                                                                        window.halted(),
+                                                                        window.drainStartMillis()),
                                                     DeparturePushTuning.DEFAULT,
-                                                    drainCommands.commandedDrainNodes(),
+                                                    drainCommands::commandedDrainNodes,
                                                     observers.get().apply(subject(self,
                                                                                   window.drainStartMillis())))
                                    .map(DhtDeparturePush::outcome);

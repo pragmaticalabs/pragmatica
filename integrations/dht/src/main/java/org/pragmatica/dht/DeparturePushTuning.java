@@ -20,38 +20,23 @@ import org.pragmatica.lang.io.TimeSpan;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// The time knobs of a graceful-departure push (#2034).
+/// The time knobs of a graceful-departure push (#2034, #3345).
 ///
-/// - `baseBudget`: how long every page is resent. A replicated page stops here; its key still has a surviving replica.
-/// - `soleExtra`: the extra window a sole-copy page gets after `baseBudget` (a page whose keys no surviving replica holds).
-/// - `resendAfter`: how long one attempt waits for an ack before the page is resent, and the pause after a refused send.
-/// - `nackBackoffCap`: a nacked page is resent after `min(resendAfter, nackBackoffCap)`, doubling per nack up to this cap.
+/// - `resendAfter`: how long one attempt waits for an ack before the page is split (several keys) or resent (one key), the
+///   pause after a refused send, and the deadline of the pre-exit probe of a holder (silence past it is a failed probe).
+/// - `nackBackoffCap`: a nacked page is split (several keys) or resent (one key) after `min(resendAfter, nackBackoffCap)`; a
+///   single key's pause doubles per nack up to this cap.
+/// - `reportAfter`: how long an unfinished drain runs before it reports what is still owed (used by the hold, a later step).
 /// - `eventDeliveryWait`: the tail of the window reserved for the events the push raises to land before the node halts.
 ///
-/// Every window is also clipped by the [DepartureWindow] deadline, so a late start shortens them and never extends the drain.
-public record DeparturePushTuning(TimeSpan baseBudget,
-                                  TimeSpan soleExtra,
-                                  TimeSpan resendAfter,
+/// The run itself ends at the [DepartureWindow] deadline less `eventDeliveryWait`, or earlier when nothing is owed.
+public record DeparturePushTuning(TimeSpan resendAfter,
                                   TimeSpan nackBackoffCap,
+                                  TimeSpan reportAfter,
                                   TimeSpan eventDeliveryWait) {
-    /// 10 s base, 5 s sole extra, 1 s resend, 4 s nack cap, 2 s event wait. [taste, marked: settle by forge drain timings]
-    public static final DeparturePushTuning DEFAULT = new DeparturePushTuning(timeSpan(10).seconds(),
-                                                                              timeSpan(5).seconds(),
-                                                                              timeSpan(1).seconds(),
+    /// 1 s resend, 4 s nack cap, 15 s report, 2 s event wait. [taste, marked: settle by forge drain timings]
+    public static final DeparturePushTuning DEFAULT = new DeparturePushTuning(timeSpan(1).seconds(),
                                                                               timeSpan(4).seconds(),
+                                                                              timeSpan(15).seconds(),
                                                                               timeSpan(2).seconds());
-
-    /// The legacy budget-only form: `budget` is the whole resend window, with no sole extra, and an attempt waits at most
-    /// `min(1 s, budget / 4)`.
-    public static DeparturePushTuning forBudget(TimeSpan budget) {
-        var resend = Math.max(1L,
-                              Math.min(DEFAULT.resendAfter().nanos(),
-                                       budget.nanos() / 4));
-
-        return new DeparturePushTuning(budget,
-                                       timeSpan(0).nanos(),
-                                       timeSpan(resend).nanos(),
-                                       DEFAULT.nackBackoffCap(),
-                                       DEFAULT.eventDeliveryWait());
-    }
 }

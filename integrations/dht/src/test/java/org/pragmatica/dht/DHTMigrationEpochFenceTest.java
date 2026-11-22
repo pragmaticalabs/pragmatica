@@ -132,7 +132,7 @@ class DHTMigrationEpochFenceTest {
                                                                              .isFalse();
 
         cluster.markDeparting(holder.id());
-        holder.rebalancer().pushOnDeparture(Set.of(), DeparturePushObserver.noop()).await();
+        DeparturePushes.push(holder.rebalancer(), Set.of(), DeparturePushObserver.noop()).await();
 
         assertThat(cluster.holds(newcomer, key)).as("the departure push stored its copy on the newcomer").isTrue();
     }
@@ -210,9 +210,7 @@ class DHTMigrationEpochFenceTest {
 
         cluster.writeAtPreRewriteEpoch(holder, key);
         cluster.markDeparting(holder.id());
-        holder.rebalancer()
-              .pushOnDeparture(PUSH_BUDGET, Set.of(), (keysAtRisk, _) -> reported.set(keysAtRisk))
-              .await();
+        DeparturePushes.push(holder.rebalancer(), PUSH_BUDGET, Set.of(), (keysAtRisk, _) -> reported.set(keysAtRisk)).await();
 
         assertThat(reported.get()).as("the chunk the newcomer failed to store is reported at risk").isEqualTo(1);
         assertThat(cluster.departurePushesSent()).as("a nacked page is resent (#2034)").isGreaterThanOrEqualTo(2);
