@@ -374,7 +374,21 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// a newer stored entry; `false` is a nack (issue #1818) — the sender counts the batch as not
     /// delivered. Additive to the internal cluster protocol (rebuilt-together within the rc), mirroring
     /// the `PublishForwardResponse.retryable` precedent.
-    record MigrationDataAck(String requestId, NodeId sender, boolean applied) implements DHTMessage {}
+    ///
+    /// #3345: `bootToken` is the receiver's process token and `storeGeneration` its store generation, so the drainer can tell a
+    /// restarted holder from the one it recorded; `draining` is true when the receiver's own drain is in progress, which makes it
+    /// no holder. This step sends 0, 0, false; a later step fills them.
+    record MigrationDataAck(String requestId,
+                            NodeId sender,
+                            boolean applied,
+                            long bootToken,
+                            long storeGeneration,
+                            boolean draining) implements DHTMessage {
+        /// An ack without process identity (token and generation 0) from a receiver that is not draining.
+        public MigrationDataAck(String requestId, NodeId sender, boolean applied) {
+            this(requestId, sender, applied, 0L, 0L, false);
+        }
+    }
 
     /// Request to compute digest of keys in a partition range.
     record DigestRequest(String requestId, NodeId sender, int partitionStart, int partitionEnd) implements DHTMessage {}

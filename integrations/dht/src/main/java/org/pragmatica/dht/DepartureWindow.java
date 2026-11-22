@@ -25,8 +25,10 @@ import java.util.function.BooleanSupplier;
 /// - `eventFloorNanos`: a later bound the event wait may extend to when `deadlineNanos` leaves it less than
 ///   [DeparturePushTuning#eventDeliveryWait] (a late quiesce): the events still get a chance to land before the halt.
 ///   Equal to `deadlineNanos` when the caller runs nothing after the push.
+/// - `drainStartMillis`: wall-clock millis of the drain's write fence. A key a re-read of the inventory finds whose stamp is
+///   not older than this was brought by anti-entropy from a current holder and is not owed (#3345 R4).
 /// - `halted`: true once the node has halted (in-JVM hosts keep running); the push then stops at once and raises nothing more.
-public record DepartureWindow(long deadlineNanos, long eventFloorNanos, BooleanSupplier halted) {
+public record DepartureWindow(long deadlineNanos, long eventFloorNanos, BooleanSupplier halted, long drainStartMillis) {
     /// A window ending at `deadlineNanos` with nothing after it, never halted.
     public static DepartureWindow departureWindow(long deadlineNanos) {
         return departureWindow(deadlineNanos, () -> false);
@@ -34,6 +36,6 @@ public record DepartureWindow(long deadlineNanos, long eventFloorNanos, BooleanS
 
     /// A window ending at `deadlineNanos` with nothing after it.
     public static DepartureWindow departureWindow(long deadlineNanos, BooleanSupplier halted) {
-        return new DepartureWindow(deadlineNanos, deadlineNanos, halted);
+        return new DepartureWindow(deadlineNanos, deadlineNanos, halted, System.currentTimeMillis());
     }
 }
