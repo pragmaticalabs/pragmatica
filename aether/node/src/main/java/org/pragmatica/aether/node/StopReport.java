@@ -43,11 +43,10 @@ public sealed interface StopReport {
 
     /// Every step settled; these (at least one, in step order) failed. The node is stopped.
     ///
-    /// An empty list is unrepresentable: the compact constructor refuses it (an invariant guard, unreachable through
+    /// An empty list is unrepresentable: the compact constructor refuses it (a canonical constructor cannot return Result, so the guard throws; unreachable through
     /// [#completedWithFailures] and [#of], which test the list first), so a report with no failure can never claim to be one.
     record CompletedWithFailures(List<StepFailure> failures) implements StopReport {
-        @SuppressWarnings("JBCT-EX-01") // a canonical constructor cannot return Result; the guard is the invariant itself
-        public CompletedWithFailures {
+        @SuppressWarnings("JBCT-EX-01") public CompletedWithFailures {
             if (failures.isEmpty()) {
                 throw new IllegalArgumentException(NO_FAILURES_MESSAGE);
             }
