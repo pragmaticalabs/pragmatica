@@ -314,7 +314,7 @@ class BelowCopyTailForwardTest {
 
     // ---- the forwardToOwner fallback stays un-armed ------------------------------------------------------------------
 
-    /// The first local read is `PARTITION_NOT_LOCAL` (or empty, on the NEAREST arms), the HRW owner is self (so the owner forward soft-fails to a
+    /// The first local read is `PARTITION_NOT_LOCAL` (or empty, on the NEAREST arm that has a registry not covering this node), the HRW owner is self (so the owner forward soft-fails to a
     /// second local read), a committed owner names ANOTHER node, and the second local read is `BelowCopyTail`. That second read
     /// follows a forward decision, so it is not armed: zero forwards, the `BelowCopyTail` surfaces. An armed fallback would
     /// forward to the committed owner.
@@ -337,11 +337,12 @@ class BelowCopyTailForwardTest {
         }
     }
 
-    /// The GOVERNOR arm forwards only on `PARTITION_NOT_LOCAL`; an empty first read is its answer. NEAREST forwards on both.
+    /// Only the NEAREST arm that has a registry not covering this node forwards an empty first read; the GOVERNOR and the
+    /// NEAREST-without-registry arms forward on `PARTITION_NOT_LOCAL` alone, and an empty first read is their answer.
     private static List<Boolean> firstReadsOf(Arm arm) {
-        return arm == Arm.GOVERNOR_NOT_BEHIND
-               ? List.of(true)
-               : List.of(true, false);
+        return arm == Arm.NEAREST_NOT_COVERING
+               ? List.of(true, false)
+               : List.of(true);
     }
 
     private static Promise<List<String>> scriptedRead(int call, boolean firstIsNotLocal) {
