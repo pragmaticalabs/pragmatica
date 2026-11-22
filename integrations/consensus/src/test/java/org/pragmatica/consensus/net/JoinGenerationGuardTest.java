@@ -173,13 +173,14 @@ class JoinGenerationGuardTest {
                .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.WireGenerationRefused(B, 1, 2)));
     }
 
-    /// Pin: the generation is bumped to 11 by #3458 W-4 (`ReadRefusal.Kind` gained `BELOW_COPY_TAIL`, so `UNKNOWN`'s ordinal
-    /// moved from 16 to 17 and an older node misreads the new kind). 10 was #3458 M-1c (ReadRefusal gained its `causes` slot, so
+    /// Pin: the generation is bumped to 12 by #3345 (`MigrationDataAck` gained `bootToken`, `storeGeneration` and `draining`, so an
+    /// older node decodes the new ack's extra fields as a malformed message). 11 was #3458 W-4 (`ReadRefusal.Kind` gained
+    /// `BELOW_COPY_TAIL`, so `UNKNOWN`'s ordinal moved from 16 to 17 and an older node misreads the new kind). 10 was #3458 M-1c (ReadRefusal gained its `causes` slot, so
     /// an older node decodes the new shape's extra field as a malformed refusal). 9 was #3458 M-1b (the `cause` slot); 8 was #3530 (four dead key types
-    /// left the wire baseline); 7 was #3334 S1a-1a (assignment flag day). A literal, so a revert to 9 goes red.
+    /// left the wire baseline); 7 was #3334 S1a-1a (assignment flag day). A literal, so a revert to 11 goes red.
     @Test
-    void thisBinarysGeneration_isElevenAfterTheBelowCopyTailKind() {
-        assertThat(JoinGenerationGuard.WIRE_GENERATION).isEqualTo(11);
+    void thisBinarysGeneration_isTwelveAfterTheMigrationAckHolderFields() {
+        assertThat(JoinGenerationGuard.WIRE_GENERATION).isEqualTo(12);
     }
 
     @Test
