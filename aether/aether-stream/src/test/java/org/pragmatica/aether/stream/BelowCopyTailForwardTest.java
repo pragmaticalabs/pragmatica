@@ -32,6 +32,7 @@ import org.pragmatica.lang.Promise;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -287,6 +288,61 @@ class BelowCopyTailForwardTest {
               .await()
               .onFailure(BelowCopyTailForwardTest::failUnexpected)
               .onSuccess(read -> assertThat(read.events()).hasSize(1));
+    }
+
+    /// The base (six-argument) public factory wires the same production local read: a colocated consumer read through it is
+    /// served by the manager. A factory whose local read always answered `PARTITION_NOT_LOCAL` would fail every real read.
+    @Test
+    void readValidated_isServedByThePartitionManager_onTheBaseFactory() {
+        partitions.createStream(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000), "earliest"))
+                  .onFailure(BelowCopyTailForwardTest::failUnexpected);
+        partitions.publishLocal(STREAM, PARTITION, new byte[]{1}, 1_000L)
+                  .onFailure(BelowCopyTailForwardTest::failUnexpected);
+        partitions.ownerLease(OwnerLease.TEST_VALID);
+        var router = StreamReadRouter.streamReadRouter(partitions,
+                                                       Option.none(),
+                                                       Option.none(),
+                                                       SELF,
+                                                       (_, _) -> Option.none(),
+                                                       StreamReadForwardMetrics.NOOP);
+
+        router.readValidated(STREAM, PARTITION, 0, 10, EPOCH)
+              .await()
+              .onFailure(BelowCopyTailForwardTest::failUnexpected)
+              .onSuccess(read -> assertThat(read.events()).hasSize(1));
+    }
+
+    // ---- the forwardToOwner fallback stays un-armed ------------------------------------------------------------------
+
+    /// The first local read is `PARTITION_NOT_LOCAL` or empty, the HRW owner is self (so the owner forward soft-fails to a
+    /// second local read), a committed owner names ANOTHER node, and the second local read is `BelowCopyTail`. That second read
+    /// follows a forward decision, so it is not armed: zero forwards, the `BelowCopyTail` surfaces. An armed fallback would
+    /// forward to the committed owner.
+    @Test
+    void route_doesNotForwardTheBelowCopyTailOfTheFallbackRead_whenTheFirstReadWasNotLocalOrEmpty() {
+        var arms = List.of(Arm.GOVERNOR_NOT_BEHIND, Arm.NEAREST_NO_REGISTRY, Arm.NEAREST_NOT_COVERING);
+
+        for (var arm : arms) {
+            for (var notLocal : List.of(true, false)) {
+                var calls = new AtomicInteger();
+                LocalReader<String> scripted = (_, _, _, _) -> scriptedRead(calls.getAndIncrement(), notLocal);
+                var client = CountingClient.serving("committed-served");
+                var router = frr(preferenceOf(arm), registryOf(arm), scripted, Option.some(client), owner(SELF), committedAt(COMMITTED));
+                var label = arm.name() + (notLocal ? " (first read PARTITION_NOT_LOCAL)" : " (first read empty)");
+
+                assertFailsWith(label, router.route(STREAM, PARTITION, 0, 10), LOCAL_REFUSAL);
+                assertThat(calls.get()).as(label + " local reads").isEqualTo(2);
+                assertThat(client.targets).as(label).isEmpty();
+            }
+        }
+    }
+
+    private static Promise<List<String>> scriptedRead(int call, boolean firstIsNotLocal) {
+        return call > 0
+               ? LOCAL_REFUSAL.promise()
+               : firstIsNotLocal
+                 ? StreamError.General.PARTITION_NOT_LOCAL.promise()
+                 : Promise.success(List.of());
     }
 
     // ---- fixture -----------------------------------------------------------------------------------------------------
