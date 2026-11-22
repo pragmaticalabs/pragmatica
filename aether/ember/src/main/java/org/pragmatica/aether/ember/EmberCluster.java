@@ -1268,6 +1268,9 @@ public final class EmberCluster {
     /// `node.stop()` as a plain "the node is stopped" outcome (#3565): the stop succeeds with a report once every step has
     /// settled, so a report carrying step failures (a listener close that timed out) still means STOPPED. It is logged here and
     /// never read as "did not stop"; only a stop that FAILS (the sequence could not complete) is a node that did not stop.
+    /// Strategy: FER (degrade forward) -- the step failures are dropped from the outcome because every step ran and the node is stopped;
+    /// the WARN line here, the step's own WARN in `NodeStopSequence` and the report itself keep them legible. Pinned by
+    /// `EmberClusterStopBoundTest#clusterStop_succeeds_whenANodeStopCompletedWithFailures_theNodeCountsAsStopped`.
     private static Promise<Unit> stopped(AetherNode node) {
         return node.stop()
                    .onSuccess(report -> Option.option(report)
