@@ -4226,17 +4226,16 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// The one waiting path of every test seam (#3568): run `action` as a task, then wait until the executor is quiet.
     private <T> T callForTest(Supplier<T> action) {
-        var value = stateExecutor.call(action)
-                                 .unwrap();
+        var value = stateExecutor.call(action).unwrap();
 
         awaitQuietForTest();
+
         return value;
     }
 
     @Contract
     private void awaitQuietForTest() {
-        stateExecutor.awaitQuiet()
-                     .unwrap();
+        stateExecutor.awaitQuiet().unwrap();
     }
 
     /// Test-only (#3568): call one public entry point (`addSeedMember`, `recordTransportHint`, `announceJoin`,
