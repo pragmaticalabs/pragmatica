@@ -1728,6 +1728,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         readWindowProbe = probe;
     }
 
+    /// Test-only seam: the ring's current R, for the pins on how R is published (once per change, never updated in place).
+    RemovalLedger removalLedger() {
+        return header.ledger();
+    }
+
     public long allocatedBytes() {
         return controlBytes() + allocatedDataBytes;
     }
